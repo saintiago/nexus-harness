@@ -25,6 +25,7 @@ import {
   readCommandOutput,
   runLogPath,
   runReportPath,
+  summarizeChanges,
   writeRunReport,
 } from '../src/report.js';
 import type { RunReportRequest } from '../src/report.js';
@@ -32,6 +33,7 @@ import { WorkspaceError, allocateRunDirectory, prepareWorkspace } from '../src/w
 import type { PreparedWorkspace, RunDirectory, SourcePreflight } from '../src/workspace.js';
 import type {
   AttemptEvidence,
+  ChangedPath,
   CheckRoundResult,
   Command,
   CommandResult,
@@ -169,6 +171,9 @@ function reportRequest(
     baseline: null,
     attempts: [],
     timeout: null,
+    // A run whose working copy matched the base: the shape most of these tests
+    // are not about. The T10 cases below hand in the summary they are about.
+    changes: summarizeChanges({ baseCommit: context.source.baseCommit, paths: [] }),
     ...parts,
   };
 }
@@ -886,5 +891,227 @@ describe('a report that cannot be written', () => {
     expect(anonymous.message).toMatch(/has no agent log/);
 
     expect(existsSync(runReportPath(fixture.run.runDir))).toBe(false);
+  }, 60_000);
+});
+
+/** One changed path as an inspection reports it, for the cases below. */
+function changedPath(
+  file: string,
+  kind: ChangedPath['kind'],
+  states: ChangedPath['states'],
+  categories: ChangedPath['categories'] = [],
+): ChangedPath {
+  return { path: file, kind, states, categories };
+}
+
+/** Why a run whose stop could not be confirmed has no final summary to show. */
+const UNCONFIRMED_PROBLEM = 'the invocation was still running 5000 ms after it was stopped';
+
+describe('what a report says about the changes a run left', () => {
+  it('keeps the complete list, flags the paths that need review, and states its limits', async () => {
+    const fixture = await createFixture();
+    const observed = await runRound(fixture, 'attempt-1', [check(fixture, 'check-1')]);
+    const implementation = await recordTurn(fixture, {
+      turn: 1,
+      summary: 'Implemented the greeting.',
+      checks: observed,
+    });
+    const paths = [
+      changedPath('README.md', 'modified', ['committed', 'unstaged']),
+      changedPath('app.ts', 'modified', ['unstaged']),
+      changedPath('package.json', 'modified', ['unstaged'], ['tooling']),
+      changedPath('tests/app.test.ts', 'deleted', ['unstaged'], ['tests']),
+      changedPath('untracked.txt', 'added', ['untracked']),
+    ];
+
+    const file = await writeRunReport(
+      reportRequest(fixture, {
+        status: 'passed',
+        reason: 'every configured check passed after the implementation turn',
+        attempts: [implementation],
+        changes: summarizeChanges({ baseCommit: BASE_COMMIT, paths }),
+      }),
+    );
+
+    const { report } = await readReport(file);
+    // The complete list is in the report, flagged or not: a reviewer reads every
+    // changed path, and the flags only say where to start.
+    expect(report.changes.paths).toEqual(paths);
+    expect(report.changes.baseCommit).toBe(BASE_COMMIT);
+    expect(report.changes.inspected).toBe(true);
+    expect(report.changes.problem).toBeNull();
+    // The flagged subset is exactly the paths that touch tests, tooling, or
+    // configuration — including a deleted test file.
+    expect(report.changes.highlighted.map((entry) => entry.path)).toEqual([
+      'package.json',
+      'tests/app.test.ts',
+    ]);
+
+    // What `passed` means, and what it does not: the configured checks exiting
+    // successfully, not the acceptance criteria and not a safe-to-ship verdict.
+    expect(report.changes.warnings.checks).toContain(
+      '`passed` means the configured post-agent checks exited successfully for the retained working copy',
+    );
+    expect(report.changes.warnings.checks).toMatch(
+      /does not prove that every acceptance criterion is met/,
+    );
+    expect(report.changes.warnings.checks).toMatch(/does not mean the change is safe to ship/);
+    // The flagged paths are pointed at, not judged, and nothing is claimed to be
+    // tamper-proof.
+    expect(report.changes.warnings.highlighted).toMatch(/tests, tooling, or configuration/);
+    expect(report.changes.warnings.highlighted).toMatch(/does not enforce tamper-proof tests/);
+  }, 60_000);
+
+  it('tells a working copy that matched its base apart from one that could not be read', async () => {
+    const fixture = await createFixture();
+    const clean = summarizeChanges({ baseCommit: BASE_COMMIT, paths: [] });
+    const unreadable = summarizeChanges({
+      baseCommit: BASE_COMMIT,
+      problem:
+        'the working copy could not be compared with its recorded base: it is not a repository',
+    });
+
+    // A run that really left nothing behind: inspected, no paths, no reason.
+    expect(clean.inspected).toBe(true);
+    expect(clean.problem).toBeNull();
+    expect(clean.paths).toEqual([]);
+    // Nothing changed, so nothing needs review.
+    expect(clean.warnings.highlighted).toBeNull();
+
+    // A run whose summary could not be taken: the same empty list, and a reader
+    // is told why rather than left to read it as a working copy that matched.
+    expect(unreadable.inspected).toBe(false);
+    expect(unreadable.problem).toMatch(/could not be compared/);
+    expect(unreadable.paths).toEqual([]);
+    expect(unreadable.warnings.highlighted).toBeNull();
+    // What the run's status proves does not depend on the comparison.
+    expect(unreadable.warnings.checks).toBe(clean.warnings.checks);
+
+    const file = await writeRunReport(
+      reportRequest(fixture, {
+        status: 'failed',
+        reason: 'the checks after the implementation turn could not be executed',
+        changes: unreadable,
+      }),
+    );
+
+    const { text, report } = await readReport(file);
+    expect(report.changes).toEqual(unreadable);
+    expect(text).toContain('could not be compared with its recorded base');
+  }, 60_000);
+
+  it('refuses a summary that would describe a comparison that did not happen', async () => {
+    const fixture = await createFixture();
+    const file = runReportPath(fixture.run.runDir);
+    const paths = [changedPath('app.ts', 'modified', ['unstaged'])];
+    const unreadable = summarizeChanges({
+      baseCommit: BASE_COMMIT,
+      problem: 'the comparison failed',
+    });
+
+    // A comparison that was not made cannot carry a list of what it found...
+    const listed = await expectReportError(() =>
+      writeRunReport(
+        reportRequest(fixture, { changes: { ...unreadable, paths, highlighted: paths } }),
+      ),
+    );
+    expect(listed.message).toMatch(/cannot list changed paths/);
+
+    // ...it cannot claim to have been made and explain why it was not...
+    const bothWays = await expectReportError(() =>
+      writeRunReport(
+        reportRequest(fixture, {
+          changes: { ...summarizeChanges({ baseCommit: BASE_COMMIT, paths }), problem: 'failed' },
+        }),
+      ),
+    );
+    expect(bothWays.message).toMatch(/nothing left to explain/);
+
+    // ...and it has to say why, rather than leaving a reader to guess.
+    const silent = await expectReportError(() =>
+      writeRunReport(reportRequest(fixture, { changes: { ...unreadable, problem: null } })),
+    );
+    expect(silent.message).toMatch(/has to say why/);
+
+    // Paths are differences from the run's recorded base, so a summary against
+    // another commit describes another run.
+    const elsewhere = await expectReportError(() =>
+      writeRunReport(
+        reportRequest(fixture, {
+          changes: {
+            ...summarizeChanges({ baseCommit: BASE_COMMIT, paths }),
+            baseCommit: 'a'.repeat(40),
+          },
+        }),
+      ),
+    );
+    expect(elsewhere.message).toMatch(/not against the base this run recorded/);
+
+    expect(existsSync(file)).toBe(false);
+  }, 60_000);
+
+  it('refuses to summarize a working copy whose shutdown was not confirmed', async () => {
+    const fixture = await createFixture();
+    const paths = [changedPath('app.ts', 'modified', ['unstaged'])];
+
+    // Something the harness could not stop may still be writing to the working
+    // copy, so its contents are not a final record of anything.
+    const timedOut = await expectReportError(() =>
+      writeRunReport(
+        reportRequest(fixture, {
+          status: 'failed',
+          reason: 'a configured command was stopped at its limit during the checks',
+          timeout: {
+            limit: 'command',
+            phase: 'the checks after the implementation turn',
+            limitMs: 600_000,
+            elapsedMs: 1_000,
+            termination: 'unconfirmed',
+            problem: UNCONFIRMED_PROBLEM,
+          },
+          changes: summarizeChanges({ baseCommit: BASE_COMMIT, paths }),
+        }),
+      ),
+    );
+    expect(timedOut.message).toMatch(/cannot be summarized as final/);
+
+    const stopped = {
+      phase: 'the implementation turn',
+      elapsedMs: 1_000,
+      termination: 'unconfirmed' as const,
+      problem: UNCONFIRMED_PROBLEM,
+    };
+    const cancelled = await expectReportError(() =>
+      writeRunReport(
+        reportRequest(fixture, {
+          status: 'cancelled',
+          reason: 'the user cancelled the run during the implementation turn',
+          cancellation: stopped,
+          changes: summarizeChanges({ baseCommit: BASE_COMMIT, paths: [] }),
+        }),
+      ),
+    );
+    expect(cancelled.message).toMatch(/cannot be summarized as final/);
+
+    // The same run, saying why the summary is missing, is accepted — and the
+    // report keeps the limitation rather than a list it cannot stand behind.
+    const file = await writeRunReport(
+      reportRequest(fixture, {
+        status: 'cancelled',
+        reason: 'the user cancelled the run during the implementation turn',
+        cancellation: stopped,
+        changes: summarizeChanges({
+          baseCommit: BASE_COMMIT,
+          problem: `the run ended without confirming that everything it had started had stopped (${UNCONFIRMED_PROBLEM}), so the working copy may still be written to`,
+        }),
+      }),
+    );
+
+    const { report } = await readReport(file);
+    expect(report.status).toBe('cancelled');
+    expect(report.cancellation).toEqual(stopped);
+    expect(report.changes.inspected).toBe(false);
+    expect(report.changes.problem).toContain('may still be written to');
+    expect(report.changes.paths).toEqual([]);
   }, 60_000);
 });

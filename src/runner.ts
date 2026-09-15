@@ -88,6 +88,24 @@
  * does not own: only a process tree it started itself is ever stopped, and a
  * process something else started is left alone.
  *
+ * ## What the run left behind
+ *
+ * Once the run has stopped writing to its working copy — after the last coding
+ * turn has returned and been awaited, or after a stop has been carried out — the
+ * working copy is read one last time and compared with the base the run recorded.
+ * Nothing is committed, checked out, or cleaned to make that comparison easier:
+ * the run has already stopped, and the working copy is evidence. The comparison
+ * covers what the turns committed as well as what they left staged, unstaged, or
+ * untracked, because a run is judged on what it leaves behind rather than on
+ * what it happened to commit (see {@link inspectWorkspaceChanges}).
+ *
+ * That summary is recorded in the run's timeline and in its report, and it
+ * carries two statements with it: what the run's status proves, and which of the
+ * changed paths touch tests, tooling, or configuration. The harness points at
+ * those paths and stops there — it is not a code auditor, and it does not decide
+ * whether a change is a weakening. A run whose working copy cannot be read at all
+ * records why, which is never the same as a working copy with nothing to show.
+ *
  * Everything the runner needs from outside is a function it was given: the
  * working copy, the checks, the coding turn, the report files, and the clock
  * (see {@link RunnerDependencies}). Only the order is decided here — the helper
@@ -101,12 +119,14 @@
 
 import { commandSucceeded } from './checks.js';
 import type { CheckRoundRequest } from './checks.js';
-import { readCommandOutput, runLogPath } from './report.js';
+import { readCommandOutput, runLogPath, summarizeChanges } from './report.js';
 import type { AgentLog, RunReportRequest } from './report.js';
 import type {
   AttemptEvidence,
   AttemptKind,
   CancellationEvidence,
+  ChangedPath,
+  ChangeSummary,
   CheckRoundResult,
   FailedCommand,
   HarnessConfig,
@@ -117,6 +137,7 @@ import type {
   TimeoutEvidence,
   TimeoutLimit,
 } from './types.js';
+import { inspectWorkspaceChanges } from './workspace.js';
 import type {
   PreparedWorkspace,
   PrepareWorkspaceBounds,
@@ -298,6 +319,13 @@ export interface RunTaskResult {
    * stopped by its caller, with whether that stop was confirmed.
    */
   readonly cancellation: CancellationEvidence | null;
+  /**
+   * What the retained working copy differs from its recorded base by, what a
+   * reader must not conclude from the status, and — when the comparison could not
+   * be made — why; see {@link ChangeSummary}. A caller prints this rather than
+   * summarizing the working copy again.
+   */
+  readonly changes: ChangeSummary;
   /** The written final report: `<runDir>/result.json`. */
   readonly reportPath: string;
 }
@@ -508,6 +536,20 @@ function describeRoundCancelled(evidence: CancellationEvidence): string {
 const NO_TERMINATION_REASON = 'the harness recorded no reason for the unconfirmed stop';
 
 /**
+ * One changed path, as the run timeline lists it: what happened to it, where the
+ * difference was seen, and — for the three categories a reviewer has to look at
+ * first — why it is worth a look. The path is squeezed onto one line, because the
+ * timeline holds one line per state change; the report keeps the path exactly as
+ * Git reported it.
+ */
+function describeChangedPath(entry: ChangedPath): string {
+  const file = entry.path.replace(/\s+/g, ' ').trim();
+  const review =
+    entry.categories.length === 0 ? '' : ` - ${entry.categories.join('/')}: review this change`;
+  return `${file} (${entry.kind}, ${entry.states.join(', ')})${review}`;
+}
+
+/**
  * What stopped a run, and why it ended there. The run ends for exactly one of
  * these: the deadline it was given, or the stop its caller asked for. Each
  * carries the evidence its report keeps — the two are different records, because
@@ -663,6 +705,82 @@ export async function runTask(
     problem: parts.termination === 'unconfirmed' ? (parts.problem ?? NO_TERMINATION_REASON) : null,
   });
 
+  /**
+   * What the retained working copy differs from its recorded base by, read once
+   * the run has stopped writing to it: everything every coding turn left behind,
+   * whether it committed it, staged it, or only wrote the file (docs/spec.md §5).
+   *
+   * The comparison is made only when the run is in a state that can be summarized
+   * as final. A stop the harness could not confirm leaves a working copy that
+   * something may still be writing to, and a run that never had a working copy
+   * has nothing to compare; both record why the summary is unavailable rather
+   * than reporting a working copy that matches its base. A comparison that fails
+   * is recorded the same way: the run is over either way, and a report must not
+   * turn "could not be read" into "nothing changed".
+   */
+  const finalChanges = async (parts: {
+    readonly timeout: TimeoutEvidence | null;
+    readonly cancellation: CancellationEvidence | null;
+  }): Promise<ChangeSummary> => {
+    if (workspace === null) {
+      return summarizeChanges({
+        baseCommit: source.baseCommit,
+        problem:
+          'no working copy was prepared, so there was nothing to compare with the recorded base',
+      });
+    }
+
+    const unconfirmed = parts.timeout ?? parts.cancellation;
+    if (unconfirmed !== null && unconfirmed.termination !== 'confirmed') {
+      return summarizeChanges({
+        baseCommit: workspace.baseCommit,
+        problem:
+          'the run ended without confirming that everything it had started had stopped ' +
+          `(${oneLine(unconfirmed.problem ?? NO_TERMINATION_REASON)}), so the working copy may still ` +
+          'be written to and is not a final record of what this run left behind',
+      });
+    }
+
+    try {
+      return summarizeChanges({
+        baseCommit: workspace.baseCommit,
+        paths: await inspectWorkspaceChanges(workspace),
+      });
+    } catch (cause) {
+      return summarizeChanges({
+        baseCommit: workspace.baseCommit,
+        problem: `the working copy could not be compared with its recorded base: ${oneLine(messageOf(cause))}`,
+      });
+    }
+  };
+
+  /**
+   * What the run left in its working copy, as the timeline records it: the
+   * complete list of differing paths, with the flagged ones marked where they
+   * appear, and the two statements the report carries as well. The list is the
+   * human-readable half of the summary; the report keeps the same list in full.
+   */
+  const changeLines = (changes: ChangeSummary): string[] => {
+    const lines: string[] = [];
+    if (!changes.inspected) {
+      lines.push(`changes: unavailable, ${oneLine(changes.problem ?? NO_TERMINATION_REASON)}`);
+    } else if (changes.paths.length === 0) {
+      lines.push(`changes: the working copy matches the recorded base ${changes.baseCommit}`);
+    } else {
+      lines.push(
+        `changes: ${count(changes.paths.length, 'path')} differ from the recorded base ${changes.baseCommit}`,
+      );
+      for (const entry of changes.paths) {
+        lines.push(`changed path: ${describeChangedPath(entry)}`);
+      }
+    }
+    lines.push(`review warning: ${changes.warnings.checks}`);
+    if (changes.warnings.highlighted !== null) {
+      lines.push(`review warning: ${changes.warnings.highlighted}`);
+    }
+    return lines;
+  };
+
   /** Ends the run: the timeline records the status, then the report is written. */
   const endRun = async (parts: {
     readonly status: RunStatus;
@@ -672,6 +790,13 @@ export async function runTask(
     readonly timeout: TimeoutEvidence | null;
     readonly cancellation: CancellationEvidence | null;
   }): Promise<RunTaskResult> => {
+    // The run has stopped writing to its working copy, so this is the moment its
+    // changes are read — before the status is recorded, so the timeline reads as
+    // what the run left and then how it ended.
+    const changes = await finalChanges(parts);
+    for (const line of changeLines(changes)) {
+      await dependencies.appendRunLog(timeline, line);
+    }
     await dependencies.appendRunLog(
       timeline,
       `final status: ${parts.status}, ${oneLine(parts.reason)}`,
@@ -690,6 +815,7 @@ export async function runTask(
       attempts: parts.attempts,
       timeout: parts.timeout,
       cancellation: parts.cancellation,
+      changes,
     });
     return {
       run,
@@ -698,6 +824,7 @@ export async function runTask(
       reason: parts.reason,
       timeout: parts.timeout,
       cancellation: parts.cancellation,
+      changes,
       reportPath,
     };
   };

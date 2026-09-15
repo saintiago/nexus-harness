@@ -51,7 +51,7 @@ Dependencies are task IDs. The normal execution order is top to bottom.
 | [x] | T07 | Bounded repair loop and honest outcomes | T06 |
 | [x] | T08 | Total deadline, command limits, and timeout shutdown | T07 |
 | [x] | T09 | Cancellation and confirmed process shutdown | T08 |
-| [ ] | T10 | Final diff inspection and review warnings | T07, T09 |
+| [x] | T10 | Final diff inspection and review warnings | T07, T09 |
 | [ ] | T11 | Offline local-loop milestone | T10 |
 | [ ] | T12 | Real Codex adapter with offline contract tests | T11 |
 | [ ] | T13 | Public `run` command and terminal UX | T12 |
@@ -853,4 +853,61 @@ Limitations: only process trees the harness started itself are ever stopped, and
   its own, leaving none. Verified on Windows 11 / Node 24.14 only; the POSIX group-signal path is
   unexercised here, and no live LLM, network, or credentials were used.
 Next ready task: T10
+```
+
+```text
+Task: T10 — Final diff inspection and review warnings
+Result: complete
+Changed: src/workspace.ts gains inspectWorkspaceChanges(workspace), the only place the
+  retained copy is compared with its base. It reads git diff --name-status -z --no-renames
+  <base> HEAD (changes the agent committed locally) plus git status --porcelain=v1 -z
+  --untracked-files=all --no-renames (staged, unstaged, untracked, deletions), merges both into
+  one ChangedPath per path (kind by precedence deleted > added > modified; states in a fixed
+  committed/staged/unstaged/untracked order; paths sorted), and tags each with a small documented
+  category set: tests (test/tests/__tests__/spec/specs directories, *.test.*/*.spec.* names),
+  tooling (package.json and lock files, Makefile/Dockerfile/Jenkinsfile, .gitignore/.npmrc,
+  .github/.circleci/.gitlab/.devcontainer), configuration (*config.*, tsconfig/jsconfig, .env*,
+  .editorconfig, *.ini|toml|cfg). src/report.ts adds summarizeChanges() and the ChangeSummary
+  contract: the full path list, the highlighted subset, and two review warnings — "`passed` means
+  the configured post-agent checks exited successfully for the retained working copy. It does not
+  prove that every acceptance criterion is met, and it does not mean the change is safe to ship:
+  review the diff before delivery.", and, only when paths are flagged, "the flagged paths change
+  tests, tooling, or configuration, so the checks that decided this run may not be the checks the
+  task needed. The harness flags them; it does not judge them, and it does not enforce tamper-proof
+  tests." assertReportable refuses a report that lists paths it did not inspect, an inspected
+  summary with a problem, a silent uninspected one, a base other than the run's own, or any
+  summary at all when a timeout/cancellation shutdown was unconfirmed. src/runner.ts inspects only
+  after every owned process has stopped, writes the complete list to logs/run.log (changes: N paths
+  differ from the recorded base <sha>, one "changed path: <file> (<kind>, <states>)[ - cat: review
+  this change]" line each, then both review-warning lines before the final-status line), and
+  returns the same summary in RunTaskResult and the report. Git stays in workspace.ts; the runner
+  calls the inspection and summarizeChanges directly, so RunnerDependencies is unchanged. Types
+  added: ChangeKind/ChangeState/ChangeCategory/ChangedPath/ReviewWarnings/ChangeSummary, plus
+  RunReport.changes.
+Verification: npm ci — exit 0 (137 packages, 0 vulnerabilities). npm test --
+  tests/workspace.test.ts tests/report.test.ts — exit 0, 2 files passed, 64 passed | 1 skipped
+  (65). npm run validate — exit 0: format:check, lint, typecheck clean, 8 files passed, 199
+  passed | 1 skipped (200), build ok. New cases: four in tests/workspace.test.ts (every change
+  category against the original base; test/tooling/config highlighting with an ordinary source
+  edit still listed; read-only — HEAD, refs, index, status and file contents of both the retained
+  copy and the source identical before and after two inspections; an unknown base and a copy with
+  no .git both rejected rather than reported as "no changes"), four in tests/report.test.ts
+  (wording of both warnings and the refusal set), and two in tests/runner.test.ts (the exact
+  timeline lines and path list for a passed run; the unconfirmed-stop case recording
+  changes.inspected === false with its problem and no changed-path lines). Regression probes: with
+  the committed-diff reading dropped so a local commit went unreported, "reports every kind of
+  change against the base the run recorded" failed (1 failed | 63 passed | 1 skipped); with the
+  inspection returning [] when git diff fails, "refuses to report a comparison it could not make"
+  failed (1 failed | 63 passed | 1 skipped). Both probes were reverted and the files returned to
+  2 passed / 64 passed | 1 skipped.
+Evidence: no integration run yet (no public run command until T13); the summary a run writes is
+  asserted through real run directories and logs/run.log in tests/runner.test.ts.
+Limitations: this is a naming-based heuristic over paths only — it never reads file contents, so
+  a test change hidden in an unflagged path is not detected and a flagged path is not judged; it
+  claims no tamper-proofness and no semantic review, and the categories are fixed, not
+  configurable. Paths are compared against one recorded base with --no-renames, so a rename reads
+  as a deletion plus an addition. An unconfirmed shutdown yields no summary at all rather than a
+  possibly-stale one, which is deliberate. Verified on Windows 11 / Node 24.14 only; no live LLM,
+  network, or credentials were used.
+Next ready task: T11
 ```

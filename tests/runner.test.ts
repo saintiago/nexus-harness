@@ -2514,6 +2514,113 @@ describe('the collaborators a run is given', () => {
   });
 });
 
+describe('what a run records about the working copy it left', () => {
+  it('lists and flags the changes a coding turn left, against the base it recorded', async () => {
+    const fixture = await createFixture();
+    const config = configuration(fixture, {
+      checks: [command(fixture, 'check-1', 'need', 'app.txt', 'committed baseline')],
+    });
+    const agent = fakeAgent(fixture, {
+      extras: [{ file: 'app.test.ts', text: 'export const test = 1;\n' }],
+    });
+
+    const result = await runTask(request(fixture, config), dependencies(agent.turn));
+
+    expect(result.status).toBe('passed');
+
+    const report = await readReport(result.reportPath);
+    // Every path is a difference from the base the run recorded, and what the
+    // turn left uncommitted is in the list: a run is judged on what it left
+    // behind, not on what it happened to commit.
+    expect(report.changes.baseCommit).toBe(report.source.baseCommit);
+    expect(report.changes.inspected).toBe(true);
+    expect(report.changes.problem).toBeNull();
+    expect(report.changes.paths).toEqual([
+      { path: 'app.test.ts', kind: 'added', states: ['untracked'], categories: ['tests'] },
+      { path: 'app.txt', kind: 'modified', states: ['unstaged'], categories: [] },
+    ]);
+    // The new test file is the one a reviewer has to look at first; the ordinary
+    // edit is listed without being flagged.
+    expect(report.changes.highlighted.map((entry) => entry.path)).toEqual(['app.test.ts']);
+
+    // The caller is handed the same summary, and the timeline records it before
+    // the status the run ends with.
+    expect(result.changes).toEqual(report.changes);
+    const timeline = timelineMessages(await readText(report.runLog));
+    expect(timeline).toContain(
+      `changes: 2 paths differ from the recorded base ${report.source.baseCommit}`,
+    );
+    expect(timeline).toContain(
+      'changed path: app.test.ts (added, untracked) - tests: review this change',
+    );
+    expect(timeline).toContain('changed path: app.txt (modified, unstaged)');
+    expect(timeline).toContain(`review warning: ${report.changes.warnings.checks}`);
+    expect(timeline).toContain(`review warning: ${report.changes.warnings.highlighted}`);
+    expect(timeline.at(-1)).toMatch(/^final status: passed, /);
+  }, 60_000);
+
+  it('says why there is no summary when a stop could not be confirmed', async () => {
+    const fixture = await createFixture();
+    const clock = testClock();
+    const config = configuration(fixture, { maxRepairs: 2 });
+    const agent = fakeAgent(fixture);
+    const reason = 'the invocation was still running 5000 ms after it was stopped';
+    const rounds = standInRounds(async (asked) =>
+      asked.name === 'baseline'
+        ? passedRound()
+        : stoppedRound(
+            await standInCommand(
+              { cwd: asked.cwd, logsDir: asked.logsDir },
+              {
+                label: 'stand-in-check',
+                outcome: 'timed-out',
+                timeoutMs: minutes(10),
+                termination: 'unconfirmed',
+                terminationProblem: reason,
+              },
+            ),
+            {
+              as: 'check',
+              problem: 'the check was stopped at its limit and could not be confirmed',
+            },
+          ),
+    );
+
+    const result = await runTask(
+      request(fixture, config),
+      dependencies(agent.turn, { now: clock.now, runCheckRound: rounds.run }),
+    );
+
+    expect(result.status).toBe('failed');
+    // The turn's edit is really there, and the working copy may still be written
+    // to by something the harness could not stop: so nothing is compared, and the
+    // reason is recorded instead of an empty list that would read as "no changes".
+    expect(existsSync(path.join(result.run.workspacePath, 'app.txt'))).toBe(true);
+    expect(result.changes.inspected).toBe(false);
+    expect(result.changes.problem).toBe(
+      'the run ended without confirming that everything it had started had stopped ' +
+        `(${reason}), so the working copy may still be written to and is not a final record of ` +
+        'what this run left behind',
+    );
+    expect(result.changes.paths).toEqual([]);
+    expect(result.changes.highlighted).toEqual([]);
+    // What the status means is still stated; only the comparison is missing.
+    expect(result.changes.warnings.checks).toContain(
+      '`passed` means the configured post-agent checks',
+    );
+
+    const report = await readReport(result.reportPath);
+    expect(report.timeout?.termination).toBe('unconfirmed');
+    expect(report.changes).toEqual(result.changes);
+
+    const timeline = timelineMessages(await readText(report.runLog));
+    expect(timeline).toContain(`changes: unavailable, ${result.changes.problem}`);
+    expect(timeline.some((message) => message.startsWith('changed path:'))).toBe(false);
+    expect(timeline.join('\n')).not.toContain('the working copy matches the recorded base');
+    expect(timeline.at(-1)).toMatch(/^final status: failed, /);
+  }, 60_000);
+});
+
 /** `<runDir>/logs`, derived from the report path a run returned. */
 function runLogsDir(reportPath: string): string {
   return path.join(path.dirname(reportPath), 'logs');

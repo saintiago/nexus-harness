@@ -32,7 +32,16 @@
  * ended. A run stopped by its caller carries one cancellation record of its own
  * instead, in the same shape and with the same limitation stated: a stop that
  * could not be confirmed leaves a working copy that may still be written to, and
- * a report that did not say so would invite reusing it. It is written once, and
+ * a report that did not say so would invite reusing it.
+ *
+ * Beside the evidence, every report carries one change summary: what the retained
+ * working copy differs from its recorded base by, which of those paths touch
+ * tests, tooling, or configuration, and the two statements a reader must not be
+ * left to assume — that `passed` means the configured checks passed, and that a
+ * flagged path is one to look at rather than one the harness has judged
+ * (docs/spec.md §5). {@link summarizeChanges} is that summary, and it records an
+ * inspection that could not be made as such, never as an empty one. It is written
+ * once, and
  * only for a run that got as far as a run directory: an invocation refused
  * before that has nothing to report and is a CLI error instead. See
  * docs/spec.md §§3–5.
@@ -46,6 +55,8 @@ import type {
   AttemptEvidence,
   AttemptKind,
   CancellationEvidence,
+  ChangedPath,
+  ChangeSummary,
   CheckRoundResult,
   CommandResult,
   RunReport,
@@ -361,6 +372,77 @@ const REPORT_TAKEN = [
   'it is left exactly as it is.',
 ].join('\n');
 
+/**
+ * What a `passed` run means, and what it does not (docs/spec.md §5). It is
+ * written once here so the run timeline and the report cannot drift into saying
+ * different things, and so neither can be read as a stronger claim than the
+ * checks the harness really ran: the configured post-agent checks exiting `0` is
+ * evidence about those commands, not proof of the task and not a safety verdict.
+ */
+const CHECKS_WARNING = [
+  '`passed` means the configured post-agent checks exited successfully for the retained working copy.',
+  'It does not prove that every acceptance criterion is met, and it does not mean the change is safe to',
+  'ship: review the diff before delivery.',
+].join(' ');
+
+/**
+ * Why the flagged paths need a human look. The harness points at them; it does
+ * not read them, and it does not enforce anything about them (docs/spec.md §5).
+ */
+const HIGHLIGHTED_WARNING = [
+  'the flagged paths change tests, tooling, or configuration, so the checks that decided this run may',
+  'not be the checks the task needed. The harness flags them; it does not judge them, and it does not',
+  'enforce tamper-proof tests.',
+].join(' ');
+
+/**
+ * What a change summary is built from: the paths a working-copy inspection found,
+ * or why the inspection could not be made. Exactly one of the two, because a
+ * summary that could not be taken has nothing to list and must not read as one
+ * that found nothing (docs/spec.md §5).
+ */
+export type ChangeSummaryRequest =
+  | {
+      /** The recorded base commit the paths were compared against. */
+      readonly baseCommit: string;
+      /** Every path that differs from the base, as the inspection found it. */
+      readonly paths: readonly ChangedPath[];
+    }
+  | {
+      /** The recorded base commit the comparison would have been made against. */
+      readonly baseCommit: string;
+      /** Why the comparison was not made, in one sentence. Never blank. */
+      readonly problem: string;
+    };
+
+/**
+ * The final summary of what a run left in its working copy, with the two
+ * statements a reader must not be left to assume: what the run's status proves,
+ * and why the flagged paths need looking at.
+ *
+ * A comparison that was not made keeps the reason and lists nothing, which is the
+ * one thing it must not be confused with: a working copy that really matched its
+ * base. {@link ChangeSummary.inspected} is what tells the two apart, and it is
+ * set only for a summary built from a real inspection.
+ */
+export function summarizeChanges(request: ChangeSummaryRequest): ChangeSummary {
+  const problem = 'problem' in request ? request.problem : null;
+  const paths = 'paths' in request ? request.paths : [];
+  const highlighted = paths.filter((entry) => entry.categories.length > 0);
+
+  return {
+    baseCommit: request.baseCommit,
+    inspected: problem === null,
+    problem,
+    paths,
+    highlighted,
+    warnings: {
+      checks: CHECKS_WARNING,
+      highlighted: highlighted.length === 0 ? null : HIGHLIGHTED_WARNING,
+    },
+  };
+}
+
 /** What the caller asks a final report to record. */
 export interface RunReportRequest {
   /** The allocated run directory: run ID, layout, and log directory. */
@@ -404,6 +486,13 @@ export interface RunReportRequest {
    * optional rather than required of that status.
    */
   readonly cancellation?: CancellationEvidence | null;
+  /**
+   * What the retained working copy differs from its recorded base by, and what a
+   * reader must not conclude from the status above; see {@link ChangeSummary}.
+   * Required of every run: a run whose working copy could not be compared with
+   * its base says so here, rather than reporting no changes.
+   */
+  readonly changes: ChangeSummary;
 }
 
 /** Refuses a request that would describe a run other than the one that happened. */
@@ -495,6 +584,45 @@ function assertReportable(request: RunReportRequest): void {
     }
   }
 
+  const { changes } = request;
+  if (changes.inspected && changes.problem !== null) {
+    throw new ReportError(
+      'a change summary that was inspected has nothing left to explain, so it cannot also carry a ' +
+        'problem: the report would describe a working copy that both was and was not compared with ' +
+        'its base.',
+    );
+  }
+  if (!changes.inspected && changes.problem === null) {
+    throw new ReportError(
+      'a change summary that was not inspected has to say why: a run whose working copy could not be ' +
+        'compared with its recorded base must never read as one that left no changes.',
+    );
+  }
+  if (!changes.inspected && (changes.paths.length > 0 || changes.highlighted.length > 0)) {
+    throw new ReportError(
+      'a change summary that was not inspected cannot list changed paths: nothing was read, so a list ' +
+        'of paths would describe a comparison that never happened.',
+    );
+  }
+  if (changes.baseCommit !== request.source.baseCommit) {
+    throw new ReportError(
+      `the change summary is recorded against ${changes.baseCommit}, not against the base this run ` +
+        `recorded (${request.source.baseCommit}): every path in it is a difference from the recorded ` +
+        'base, and a summary against another commit describes another run.',
+    );
+  }
+
+  const stoppedUnconfirmed =
+    request.timeout?.termination === 'unconfirmed' ||
+    request.cancellation?.termination === 'unconfirmed';
+  if (stoppedUnconfirmed && changes.inspected) {
+    throw new ReportError(
+      'the run ended without confirming that everything it had started had stopped, so its working ' +
+        'copy cannot be summarized as final: something may still be writing to it, and the report has ' +
+        'to record why the summary is unavailable instead.',
+    );
+  }
+
   const last = request.attempts.at(-1) ?? null;
   if (request.status === 'passed' && last?.checks?.outcome !== 'passed') {
     throw new ReportError(
@@ -580,6 +708,7 @@ function buildReport(request: RunReportRequest): RunReport {
     attempts: request.attempts,
     timeout: request.timeout,
     cancellation: request.cancellation ?? null,
+    changes: request.changes,
     runLog: runLogPath(request.run.logsDir),
   };
 }

@@ -17,6 +17,7 @@ import { taskSchema } from '../src/config.js';
 import {
   WorkspaceError,
   allocateRunDirectory,
+  inspectWorkspaceChanges,
   prepareWorkspace,
   preflightSource,
 } from '../src/workspace.js';
@@ -966,5 +967,198 @@ describe('task IDs as labels', () => {
     expect((await readdir(fixture.parent)).sort()).toEqual([...before, 'runs'].sort());
     expect(existsSync(path.join(fixture.parent, 'evil'))).toBe(false);
     expect(await readFile(sentinel, 'utf8')).toBe('untouched\n');
+  }, 60_000);
+});
+
+/**
+ * A prepared working copy holding one of every kind of change a run can leave: a
+ * local commit, an edit made after that commit, a staged file, a new file Git
+ * never tracked, and a deletion. The base the run recorded is the fixture's
+ * committed baseline, not the commit the task made.
+ */
+async function prepareChangedRun(): Promise<{
+  readonly fixture: Fixture;
+  readonly prepared: PreparedWorkspace;
+}> {
+  const fixture = await createRepository();
+  // A file the task removes, so the fixture has a deletion to report as well.
+  await writeFile(path.join(fixture.repo, 'obsolete.txt'), 'to be removed\n', 'utf8');
+  await gitOrFail(['add', '--all'], fixture.repo);
+  await gitOrFail(['commit', '--quiet', '--message', 'a file the task removes'], fixture.repo);
+
+  const prepared = await prepareRun(fixture);
+  const { workspacePath } = prepared;
+
+  // Committed by a coding turn. The two files it changed are named rather than
+  // staged with `--all`: a host whose Git rewrites line endings when it checks
+  // out would otherwise renormalize the files this fixture never touched, and
+  // the inspection would report those honestly but distractingly as changes.
+  await writeFile(path.join(workspacePath, 'committed.txt'), 'the turn committed this\n', 'utf8');
+  await writeFile(path.join(workspacePath, 'README.md'), 'rewritten by the turn\n', 'utf8');
+  await gitOrFail(['add', 'committed.txt', 'README.md'], workspacePath);
+  await gitOrFail(['commit', '--quiet', '--message', 'the turn committed its work'], workspacePath);
+
+  // ...then edited again, so one path carries two readings at once.
+  await writeFile(path.join(workspacePath, 'README.md'), 'rewritten, then edited again\n', 'utf8');
+
+  await writeFile(path.join(workspacePath, 'staged.txt'), 'staged, not committed\n', 'utf8');
+  await gitOrFail(['add', 'staged.txt'], workspacePath);
+
+  await writeFile(path.join(workspacePath, 'untracked.txt'), 'left behind\n', 'utf8');
+
+  await rm(path.join(workspacePath, 'obsolete.txt'));
+
+  return { fixture, prepared };
+}
+
+describe('what a run left in its working copy', () => {
+  it('reports every kind of change against the base the run recorded', async () => {
+    const { prepared } = await prepareChangedRun();
+
+    const changes = await inspectWorkspaceChanges(prepared);
+    const byPath = new Map(changes.map((entry) => [entry.path, entry]));
+
+    // The task committed its own work, so the working copy is ahead of the base
+    // the run recorded: a comparison with `HEAD` alone would report nothing here.
+    expect(await headOf(prepared.workspacePath)).not.toBe(prepared.baseCommit);
+    expect(prepared.baseCommit).toBe(await headOf(prepared.sourceRoot));
+
+    // One entry per path, in path order, whatever reading saw it.
+    expect(changes.map((entry) => entry.path)).toEqual([
+      'README.md',
+      'committed.txt',
+      'obsolete.txt',
+      'staged.txt',
+      'untracked.txt',
+    ]);
+
+    // Committed by the turn, and only committed.
+    expect(byPath.get('committed.txt')).toEqual({
+      path: 'committed.txt',
+      kind: 'added',
+      states: ['committed'],
+      categories: [],
+    });
+    // Committed and then edited again: both readings are kept, in reading order.
+    expect(byPath.get('README.md')).toEqual({
+      path: 'README.md',
+      kind: 'modified',
+      states: ['committed', 'unstaged'],
+      categories: [],
+    });
+    // Staged, and not committed.
+    expect(byPath.get('staged.txt')).toEqual({
+      path: 'staged.txt',
+      kind: 'added',
+      states: ['staged'],
+      categories: [],
+    });
+    // Never added to Git at all.
+    expect(byPath.get('untracked.txt')).toEqual({
+      path: 'untracked.txt',
+      kind: 'added',
+      states: ['untracked'],
+      categories: [],
+    });
+    // A deletion is a change like any other, and it is not hidden by the edits.
+    expect(byPath.get('obsolete.txt')).toEqual({
+      path: 'obsolete.txt',
+      kind: 'deleted',
+      states: ['unstaged'],
+      categories: [],
+    });
+  }, 60_000);
+
+  it('flags test, tooling, and configuration paths and still lists the rest', async () => {
+    const fixture = await createRepository();
+    // Representative files of each kind a reviewer has to look at first: a CI
+    // definition, an ordinary source file, a package manifest, and a build
+    // configuration.
+    await mkdir(path.join(fixture.repo, '.github', 'workflows'), { recursive: true });
+    await writeFile(
+      path.join(fixture.repo, '.github', 'workflows', 'ci.yml'),
+      'on: push\n',
+      'utf8',
+    );
+    await writeFile(path.join(fixture.repo, 'app.ts'), 'export const app = 1;\n', 'utf8');
+    await writeFile(path.join(fixture.repo, 'package.json'), '{"name":"target"}\n', 'utf8');
+    await writeFile(path.join(fixture.repo, 'vitest.config.ts'), 'export default {};\n', 'utf8');
+    await gitOrFail(['add', '--all'], fixture.repo);
+    await gitOrFail(['commit', '--quiet', '--message', 'the files the task edits'], fixture.repo);
+
+    const prepared = await prepareRun(fixture);
+    const { workspacePath } = prepared;
+    await writeFile(
+      path.join(workspacePath, '.github', 'workflows', 'ci.yml'),
+      'on: [push, pull_request]\n',
+      'utf8',
+    );
+    await writeFile(path.join(workspacePath, 'app.ts'), 'export const app = 2;\n', 'utf8');
+    await writeFile(
+      path.join(workspacePath, 'package.json'),
+      '{"name":"target","version":"2"}\n',
+      'utf8',
+    );
+    await mkdir(path.join(workspacePath, 'tests'));
+    await writeFile(
+      path.join(workspacePath, 'tests', 'app.test.ts'),
+      'export const test = 1;\n',
+      'utf8',
+    );
+    await writeFile(
+      path.join(workspacePath, 'vitest.config.ts'),
+      'export default { test: {} };\n',
+      'utf8',
+    );
+
+    const changes = await inspectWorkspaceChanges(prepared);
+
+    // The whole list is reported, flagged or not: a reviewer reads the complete
+    // set of changes, and the flags only say where to start.
+    expect(changes.map((entry) => [entry.path, [...entry.categories]])).toEqual([
+      ['.github/workflows/ci.yml', ['tooling']],
+      ['app.ts', []],
+      ['package.json', ['tooling']],
+      ['tests/app.test.ts', ['tests']],
+      ['vitest.config.ts', ['configuration']],
+    ]);
+    expect(changes.filter((entry) => entry.categories.length > 0)).toHaveLength(4);
+  }, 60_000);
+
+  it('reads the working copy and the source without changing either', async () => {
+    const { fixture, prepared } = await prepareChangedRun();
+    const sourceBefore = await snapshotRepository(fixture.repo);
+    const workspaceBefore = await snapshotRepository(prepared.workspacePath);
+    const filesBefore = await readTree(prepared.workspacePath);
+
+    const first = await inspectWorkspaceChanges(prepared);
+    const second = await inspectWorkspaceChanges(prepared);
+
+    // Reading twice says the same thing, and neither reading wrote anything: the
+    // HEAD, the refs, the index, the status, and every file are as they were —
+    // `git status` did not refresh the index on the way past, and the source was
+    // not the one being read at all.
+    expect(second).toEqual(first);
+    expect(await snapshotRepository(prepared.workspacePath)).toEqual(workspaceBefore);
+    expect(await readTree(prepared.workspacePath)).toEqual(filesBefore);
+    expect(await snapshotRepository(fixture.repo)).toEqual(sourceBefore);
+  }, 60_000);
+
+  it('refuses to report a comparison it could not make', async () => {
+    const { prepared } = await prepareChangedRun();
+
+    // A base the working copy does not have: Git answers with an error, and an
+    // empty list would claim the comparison found nothing.
+    const unknownBase: PreparedWorkspace = { ...prepared, baseCommit: '0'.repeat(40) };
+    const missing = await expectWorkspaceError(() => inspectWorkspaceChanges(unknownBase));
+    expect(missing.message).toContain(prepared.workspacePath);
+    expect(missing.message).toContain('0'.repeat(40));
+
+    // A working copy with no repository behind it fails the same way, naming the
+    // working copy and the base rather than reporting no changes.
+    await rm(path.join(prepared.workspacePath, '.git'), { recursive: true, force: true });
+    const gone = await expectWorkspaceError(() => inspectWorkspaceChanges(prepared));
+    expect(gone.message).toContain(prepared.workspacePath);
+    expect(gone.message).toContain(prepared.baseCommit);
   }, 60_000);
 });

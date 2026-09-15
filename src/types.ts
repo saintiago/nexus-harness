@@ -284,6 +284,101 @@ export interface CancellationEvidence {
   readonly problem: string | null;
 }
 
+/**
+ * What happened to one path, relative to the recorded base commit: it is there
+ * and was not, it is gone and was not, or it changed. A deletion is a change
+ * like any other — a file that quietly disappeared is as interesting to a
+ * reviewer as one that was rewritten.
+ */
+export type ChangeKind = 'added' | 'modified' | 'deleted';
+
+/**
+ * Where a path's difference from the recorded base was observed. A path can be
+ * seen in more than one of these: an edit committed by a coding turn and then
+ * edited again is both `committed` and `unstaged`. They are kept apart because
+ * "the turn committed this" and "this is an uncommitted leftover" are different
+ * facts about the same path.
+ */
+export type ChangeState = 'committed' | 'staged' | 'unstaged' | 'untracked';
+
+/**
+ * What kind of file a changed path is, when it is one of the kinds that decide
+ * whether the run's checks were the checks the task needed. An ordinary source
+ * file is in no category, and the categories never claim more than they are:
+ * they are a small reading of the path's name, not an analysis of its contents
+ * (docs/spec.md §5).
+ */
+export type ChangeCategory = 'tests' | 'tooling' | 'configuration';
+
+/** One path that differs from the recorded base, and how it differs. */
+export interface ChangedPath {
+  /** Path inside the working copy, as Git reports it: relative, with `/`. */
+  readonly path: string;
+  /** What happened to it; see {@link ChangeKind}. */
+  readonly kind: ChangeKind;
+  /** Where the difference was seen, in reading order; see {@link ChangeState}. */
+  readonly states: readonly ChangeState[];
+  /** What kind of file it is, when it is one worth reviewing; may be empty. */
+  readonly categories: readonly ChangeCategory[];
+}
+
+/**
+ * What a reader must not conclude from a run's change summary. Both are report
+ * wording rather than data about the working copy: they are recorded in the
+ * report so that the summary and the run timeline say the same thing, and so
+ * that neither can be read as a stronger claim than the harness can support.
+ */
+export interface ReviewWarnings {
+  /**
+   * What the run's status does and does not prove: a `passed` run means the
+   * configured post-agent checks exited `0` for the retained working copy, and
+   * nothing more than that (docs/spec.md §5).
+   */
+  readonly checks: string;
+  /**
+   * Why the highlighted paths need a human look; `null` when nothing is
+   * highlighted. A change to a test, tooling, or configuration file can change
+   * what the checks that decided the run actually did.
+   */
+  readonly highlighted: string | null;
+}
+
+/**
+ * The final comparison of a retained working copy with its recorded base: every
+ * path that differs from it, the ones that need review, and what the run's
+ * status does and does not prove.
+ *
+ * It is a summary of what is there, not an audit of what it means. The harness
+ * does not decide whether a changed test still tests the right thing, and it
+ * makes no claim that the paths it read are the paths that were really checked:
+ * `passed` means the configured checks exited `0`, not that the working copy is
+ * the one they were meant to judge (docs/spec.md §5).
+ *
+ * A run that could not be inspected — no working copy was prepared, a stop was
+ * never confirmed, or the comparison itself failed — records why instead. That is
+ * never the same as a working copy that matched its base: an unavailable summary
+ * has `inspected: false` and a `problem`, where a clean one has `inspected: true`,
+ * no problem, and no paths.
+ */
+export interface ChangeSummary {
+  /** The recorded base commit every path above was compared against. */
+  readonly baseCommit: string;
+  /** True only when the retained working copy was really read and compared. */
+  readonly inspected: boolean;
+  /**
+   * Why the comparison was not made, when it was not; `null` exactly when it
+   * was. A summary nobody could take must say so rather than read as a clean
+   * one.
+   */
+  readonly problem: string | null;
+  /** Every path that differs from the base, in path order; empty when none is known. */
+  readonly paths: readonly ChangedPath[];
+  /** The paths above that touch tests, tooling, or configuration. */
+  readonly highlighted: readonly ChangedPath[];
+  /** What the summary and the run's status do and do not mean. */
+  readonly warnings: ReviewWarnings;
+}
+
 /** The final report of one run: the contents of `<runDir>/result.json`. */
 export interface RunReport {
   /** Generated run ID: the run's name in logs, reports, and its branch. */
@@ -322,6 +417,12 @@ export interface RunReport {
    * when the run stopped because it was cancelled.
    */
   readonly cancellation: CancellationEvidence | null;
+  /**
+   * What the retained working copy differs from its base by, and what a reader
+   * must not conclude from the run's status; see {@link ChangeSummary}. A run
+   * that could not be inspected says so here rather than reporting no changes.
+   */
+  readonly changes: ChangeSummary;
   /** The run's compact lifecycle timeline: `<runDir>/logs/run.log`. */
   readonly runLog: string;
 }
