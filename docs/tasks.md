@@ -55,7 +55,7 @@ Dependencies are task IDs. The normal execution order is top to bottom.
 | [x] | T11 | Offline local-loop milestone | T10 |
 | [x] | T12 | Real Codex adapter with offline contract tests | T11 |
 | [x] | T13 | Public `run` command and terminal UX | T12 |
-| [ ] | T14 | Built-CLI end-to-end regression gate | T13 |
+| [x] | T14 | Built-CLI end-to-end regression gate | T13 |
 | [ ] | T15 | Operating docs, live-test entrypoint, and offline validation | T14 |
 | [ ] | T16 | Opt-in live Codex implementation and repair exercise | T15 |
 
@@ -1107,4 +1107,60 @@ Limitations: no live Codex call was made, so nothing here proves the adapter's b
   T14. Pre-existing intermittent failures of the wider suite under artificial parallel load (noted
   in T12) are unchanged and were not reproduced during this task's verification.
 Next ready task: T14
+```
+
+```text
+Task: T14 — Built-CLI end-to-end regression gate
+Result: complete
+Changed: tests/cli.integration.test.ts (new) spawns the built artifact as a process (`node
+  dist/cli.js`, the file `npm start` runs) against a disposable repository in a temporary directory,
+  and never imports the CLI's modules to decide anything a user would see. Ten scenarios, one per
+  acceptance bullet: a passed run; repair-then-pass; red baseline; repair exhaustion; a turn that
+  failed; a runtime that reported no turn at all; invalid input (bad task file, unknown option,
+  missing option); an OS interrupt; paths with spaces in the config, task, source and output
+  directories; help + check-config. tests/fixtures/local-target.ts (new) holds the target project as
+  committed source, the disposable repository/inputs/outputs, `runCli`, and `interruptCli`.
+  tests/fixtures/fake-codex.mjs (new) is the substituted runtime: a real program named by `codex.cmd`
+  (POSIX: `codex`) in a directory put first on the CLI's PATH, reading the real prompt from stdin,
+  working in the real clone, and writing the documented event stream. It records its arguments,
+  working directory, prompt and observed signals, so the suite proves the production adapter's own
+  invocation instead of assuming it. Nothing in src/ knows it exists: no flag, no environment
+  bypass, no test-only command. package.json: `validate` now runs `build` before `test`
+  (non-recursive; the suite also builds dist/ directly when it is missing or older than src/).
+  src/cli.ts: INTERRUPT_SIGNALS adds `SIGBREAK` on win32, and the help text names Ctrl+Break beside
+  Ctrl+C. That is a real product change and the only one: on Windows a Ctrl+C is not delivered to a
+  process another program started in its own process group, so a CLI listening only for SIGINT is
+  ended by Ctrl+Break where it wanted to stop and finalize — and it is what makes the interrupt
+  scenario below a genuine OS interrupt rather than a test-only seam.
+Verification: npm ci — exit 0 (137 packages, 0 vulnerabilities). npm run build — exit 0.
+  npm test -- tests/cli.integration.test.ts — exit 0, 1 file passed, 10 passed (10), ~10 s.
+  npm run validate — exit 0: format:check clean, lint clean, typecheck clean, build ok, 11 files
+  passed, 258 passed | 1 skipped (259). The skip is the pre-existing platform-conditional symlink
+  case in tests/workspace.test.ts. No provider was contacted and no credential was used.
+Evidence: every assertion is read from artifacts a run left behind — result.json, logs/run.log, the
+  per-turn agent logs, the per-command stdout/stderr logs, and the retained working copy with its own
+  Git status — plus the runtime stand-in's records of what it was asked to do. The suite removes its
+  fixture directories in afterAll, so no path is retained for inspection, and `npm run validate`
+  leaves nothing behind: temp directories 26 -> 26, node processes 7 -> 7, no fixture process alive.
+  Positive control for that check: the same detection (fixture records + a probe signal 0) reports a
+  live fixture process as running, and reports it gone once it is killed. Regression probes, each
+  reverted and re-run green: making a failed run exit 0 failed 4 tests; giving check-config an
+  execution side effect (creating the output directory) failed the help/check-config test; stopping
+  the process tree without `taskkill /T` failed the interrupt test, whose run never finished and
+  whose fixture processes survived until they were killed by hand.
+Limitations: the OS interrupt was verified on Windows only, and only as a console control event. On
+  this host (Windows 11 10.0.26200, Node 24.14.1) `child.kill('SIGINT')` terminates a process
+  without running its handler, `process.kill(-pid)` has no process groups in Node, and
+  `GenerateConsoleCtrlEvent(CTRL_C_EVENT, …)` is not delivered to a process started in its own
+  process group. What is delivered is `CTRL_BREAK_EVENT` to a group created with
+  CREATE_NEW_CONSOLE|CREATE_NEW_PROCESS_GROUP, which Node reports as SIGBREAK; the suite starts the
+  CLI that way and sends it, then asserts the exit code (130), the cancellation record (phase
+  "implementation turn", termination confirmed), the timeline, and that the runtime process and the
+  child it held are both gone. A real Ctrl+C keypress was not delivered and is not claimed. The POSIX
+  branch (SIGINT sent to the CLI process itself) is implemented but unverified: no POSIX host was
+  available, so the interrupt scenario exercised its Windows path only. The stand-in runtime ignores
+  SIGINT/SIGTERM/SIGBREAK by design; measured here, the interrupt reaches the CLI alone, because the
+  harness starts its runtime without a console on Windows and in its own process group elsewhere — so
+  the harness's own stop is what ends it, which is what the scenario asserts.
+Next ready task: T15
 ```

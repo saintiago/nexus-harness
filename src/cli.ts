@@ -129,14 +129,15 @@ the runtime the observed failures to repair within maxRepairs. Progress and the
 outcome are printed; the working copy and the report are always kept. Nothing is
 committed, pushed, or published. The run ends at the first of: a green round, a red
 round with no repair allowance left, a failure it cannot repair away, the task
-deadline, or a user interrupt (Ctrl+C), which stops the run and waits for it to
-finalize.
+deadline, or a user interrupt (Ctrl+C, or Ctrl+Break on Windows), which stops
+the run and waits for it to finalize.
 
 Exit codes:
   0    the run passed
   1    the run failed, or an input, preflight, or reporting error stopped the CLI
   2    usage error (unknown command or option, missing value)
-  130  the run was stopped by the user (Ctrl+C), and was finalized first
+  130  the run was stopped by the user (Ctrl+C, or Ctrl+Break on Windows), and
+       was finalized first
 
 Input contract: docs/WORKFLOW.md. Behaviour: docs/spec.md.`;
 
@@ -352,12 +353,23 @@ function composeDependencies(
  * sends on every supported platform — Node delivers it on Windows too — and
  * `SIGTERM` is the ordinary way a Unix supervisor asks a process to stop.
  *
+ * Windows has a second one, and the CLI would be wrong to ignore it. Ctrl+C is
+ * delivered to a process the console considers its own: it is disabled for a
+ * process started in a new process group, which is exactly how a supervisor, an
+ * IDE, or another program starts one. Ctrl+Break reaches those processes, and
+ * Node reports it as `SIGBREAK`, which is not a signal the default handler
+ * cancels on — a Windows CLI listening only for `SIGINT` would be ended where it
+ * wanted to stop, leaving the working copy, the runtime it started, and the
+ * report behind. It is installed on Windows alone, where Node sends it; the
+ * name is not a signal the other platforms have.
+ *
  * A listener replaces Node's default handling of these signals, and it is
  * installed only for the duration of a `run`: it is released the moment the run
  * has finalized, and nothing else this CLI does installs one at all. A `--help`
  * call, and any module that imports this one, leaves the process's signals alone.
  */
-const INTERRUPT_SIGNALS: readonly NodeJS.Signals[] = ['SIGINT', 'SIGTERM'];
+const INTERRUPT_SIGNALS: readonly NodeJS.Signals[] =
+  process.platform === 'win32' ? ['SIGINT', 'SIGTERM', 'SIGBREAK'] : ['SIGINT', 'SIGTERM'];
 
 function hostSignals(): InterruptSignals {
   return {
