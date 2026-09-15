@@ -44,7 +44,7 @@ Dependencies are task IDs. The normal execution order is top to bottom.
 | --- | --- | --- | --- |
 | [x] | T01 | Read-only repository and output-path preflight | Scaffold |
 | [x] | T02 | Unique run directory and dedicated local clone | T01 |
-| [ ] | T03 | Literal-argument command execution and logs | T02 |
+| [x] | T03 | Literal-argument command execution and logs | T02 |
 | [ ] | T04 | Sequential setup and complete check rounds | T03 |
 | [ ] | T05 | Final report and attempt evidence | T02, T04 |
 | [ ] | T06 | Baseline and implementation loop with a fake agent | T04, T05 |
@@ -522,4 +522,33 @@ Limitations: verified on Windows 11 with Git 2.53 and Node 24.14 only; POSIX clo
   checks it in the environment that wrote the checkout. Removing the clone's remote means
   later phases cannot fetch from the source (intentional). No CLI wiring yet (T13).
 Next ready task: T03
+```
+
+```text
+Task: T03 — Literal-argument command execution and logs
+Result: complete
+Changed: src/checks.ts (new) exports runCommand() and commandSucceeded(): one configured
+  command is started as a literal argument array in the task workspace, nothing is
+  concatenated, interpolated, or expanded, and the result records the command, cwd,
+  start/end times, outcome, exit code or signal, launch error, and the two output log
+  paths. A command that never started is `failed-to-launch` with a null exit code, so it
+  can be neither an exit-0 success nor an ordinary nonzero exit. src/report.ts (new)
+  exports ReportError, runLogPath(), appendRunLog() for the append-only
+  `<runDir>/logs/run.log` timeline, and openCommandLog() for the per-invocation
+  `<label>.stdout.log`/`.stderr.log` pair; files are created exclusively and only
+  appended to. src/types.ts gained CommandOutcome and CommandResult. tests/checks.test.ts
+  (new), 22 cases over real child processes.
+Verification: npm ci exit 0 (137 packages, 0 vulnerabilities); npm test -- tests/checks.test.ts
+  exit 0 (22 passed); npm run validate exit 0 (format:check, lint, typecheck, test 121 passed /
+  1 skipped, build).
+Evidence: temporary directories only; no run directory is allocated by these modules. Log
+  files are plain text under `<logsDir>`; result.json is not built here (T05).
+Limitations: launcher verification is Windows 11 / Node 24.14 with cmd.exe only; on POSIX
+  the executable is always started directly and no interpreter path exists. A `.cmd`/`.bat`
+  shim is run through `cmd.exe /d /s /v:off /c` with the resolved absolute path; three
+  argument contents cannot survive that interpreter and are refused with an explanation
+  instead of being silently altered — a double quote, a percent sign, and a line break (a
+  command needing one must name a real executable). Timeouts and cancellation are not
+  implemented here (T08–T09); no CLI wiring yet (T13).
+Next ready task: T04
 ```

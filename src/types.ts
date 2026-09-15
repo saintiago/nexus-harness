@@ -28,6 +28,37 @@ export interface HarnessConfig {
   readonly checks: readonly Command[];
 }
 
+/**
+ * How one configured command ended. Only `exited` with exit code `0` is a
+ * success: a command that could not be started is never reported as an exit,
+ * and a signalled command is an execution failure, not repair feedback.
+ */
+export type CommandOutcome = 'exited' | 'signalled' | 'failed-to-launch';
+
+/** What one configured command invocation did, and where its output went. */
+export interface CommandResult {
+  /** The configured command, unchanged: executable plus literal arguments. */
+  readonly command: Command;
+  /** Working directory the command ran in: the task's working copy. */
+  readonly cwd: string;
+  /** Start of the invocation, as an ISO timestamp. */
+  readonly startedAt: string;
+  /** End of the invocation, as an ISO timestamp. */
+  readonly endedAt: string;
+  /** How the invocation ended; see {@link CommandOutcome}. */
+  readonly outcome: CommandOutcome;
+  /** Exit code of a command that ran and exited; `null` otherwise. */
+  readonly exitCode: number | null;
+  /** Terminating signal of a command that was killed; `null` otherwise. */
+  readonly signal: string | null;
+  /** Why the command could not be started; `null` when it did run. */
+  readonly launchError: string | null;
+  /** Log file holding this invocation's standard output. */
+  readonly stdoutPath: string;
+  /** Log file holding this invocation's standard error. */
+  readonly stderrPath: string;
+}
+
 /** Validated contents of a task file. */
 export interface Task {
   /** Label used in reports and logs. Never a path and never a shell argument. */
