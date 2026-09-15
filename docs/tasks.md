@@ -52,7 +52,7 @@ Dependencies are task IDs. The normal execution order is top to bottom.
 | [x] | T08 | Total deadline, command limits, and timeout shutdown | T07 |
 | [x] | T09 | Cancellation and confirmed process shutdown | T08 |
 | [x] | T10 | Final diff inspection and review warnings | T07, T09 |
-| [ ] | T11 | Offline local-loop milestone | T10 |
+| [x] | T11 | Offline local-loop milestone | T10 |
 | [ ] | T12 | Real Codex adapter with offline contract tests | T11 |
 | [ ] | T13 | Public `run` command and terminal UX | T12 |
 | [ ] | T14 | Built-CLI end-to-end regression gate | T13 |
@@ -910,4 +910,64 @@ Limitations: this is a naming-based heuristic over paths only — it never reads
   possibly-stale one, which is deliberate. Verified on Windows 11 / Node 24.14 only; no live LLM,
   network, or credentials were used.
 Next ready task: T11
+```
+
+```text
+Task: T11 — Offline local-loop milestone
+Result: complete
+Changed: tests/local-run.integration.test.ts (new, the whole deliverable; no production file
+  changed). It drives the real runTask with the real production dependencies imported directly
+  from src/workspace.ts, src/checks.ts and src/report.ts, and substitutes exactly two things: the
+  coding agent (runAgentTurn only, in the spirit of the T06 fake) and, in the deadline test, a
+  test-owned clock. Everything else is real — a real temporary Git repository cloned by the real
+  prepareWorkspace, real setup and check child processes, real per-command log files, a real
+  logs/run.log timeline, and a real result.json/report written by the real writeRunReport. The
+  fixture target project is a four-file Node project (src/greet.mjs, test/greet.test.mjs,
+  test/greet-all.test.mjs, tools/prepare.mjs, tools/run-checks.mjs) committed once as its green
+  baseline; its runner executes each test file in a real child process, so the checks really run
+  the agent's code. The runtime stand-in is written as an .mjs program into the temp parent and
+  spawned as a child: it edits the actual clone, signals start/edits-written/end through a
+  JSON-lines events file, and holds the tree it manages, so it can be really stopped. No test-only
+  hook was added to the public CLI, the config schema or the JSON formats; the harness still has
+  no provider code at all (src reads no credential environment variable — src/checks.ts reads only
+  PATH, PATHEXT and ComSpec).
+Verification: npm ci — exit 0 (137 packages, 0 vulnerabilities). npm test --
+  tests/local-run.integration.test.ts — exit 0, 1 file passed, 10 passed (10), 14.2–14.6 s per
+  run over five consecutive runs (wall clock about 15.3 s). npm run validate with
+  OPENAI_API_KEY/CODEX_API_KEY/ANTHROPIC_API_KEY/OPENAI_BASE_URL unset — exit 0: format:check
+  clean, lint clean, typecheck clean, 9 files passed, 209 passed | 1 skipped (210), build ok. The
+  skip is the pre-existing platform-conditional one in tests/workspace.test.ts, not this suite.
+  Orphan check: node PIDs and $TEMP/nexus-harness-* directories snapshotted before and after a
+  full suite run are identical (1 PID, 7 dirs on both sides; the 7 dirs predate this work and
+  belong to other suites), so the suite leaves no fixture process and no stray temp directory.
+  Regression probes: with the post-agent round treated as passed whenever the turn's own summary
+  was non-empty, the lying-agent test failed (report.ts refused to write a passed report over red
+  checks) and the repair-exhaustion test failed; with the red-baseline gate disabled so a red
+  baseline still reached the agent, "stops before any coding turn when the committed baseline is
+  red" failed with the observed reason "repair turn 2 failed, so no check was run after it". Both
+  probes were reverted; git diff of src/ is empty and the suite returned to 10 passed.
+Evidence: the ten scenarios proven end to end are implementation then a complete green post-agent
+  round (asserting the check's own log line "greet-all: ok", so the checks ran the written code);
+  failed implementation then a repair told the exact failure the checks observed, with the first
+  attempt's log still readable afterwards; repair exhaustion at the exact limit with a no-op last
+  turn; a lying turn that cannot turn failing checks into a pass, its claim kept in its own log
+  beside the red round; a red committed baseline that stops the run with no attempt at all; a
+  setup command that fails after a turn, ending the run with no repair; a check that cannot be
+  launched, ending the baseline with no coding turn; the run's own deadline stopping a really
+  hanging check process tree (limit task, limitMs 4000 = 60000 − 56000 of clock advanced, exact
+  startedAt/endedAt, termination confirmed, and the hanging PID from the run's own log gone); a
+  cancelled turn whose managed child tree is stopped and whose written file is retained; and two
+  runs of one task getting distinct run directories, run ids, branches and clones (run 2's
+  baseline shows the feature absent) with the source repository's HEAD, status and contents
+  unchanged.
+Limitations: the fake agent is controlled by the test, so the run loop can only be exercised in a
+  scope the fake can reach; the fixture's prepare log is not a highlighted "tooling" path, because
+  tools/ is not one of the name-based change categories (asserted as such rather than fabricated).
+  As stated in the suite header, a baseline round and a no-op coding turn observe the same working
+  copy, so no deterministic check can be green on the one and red on the other; the suite proves
+  the checks really execute the agent's code instead. The deadline scenario compresses real
+  minutes into a controlled clock, so the multi-minute wall-clock path is not exercised. Verified
+  on Windows 11 / Node 24.14 only; the POSIX process-group stop is unexercised here, and no live
+  LLM, network, or credentials were used.
+Next ready task: T12
 ```
