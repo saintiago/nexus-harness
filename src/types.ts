@@ -100,3 +100,87 @@ export interface Task {
   /** Nonempty list of nonblank statements guiding implementation and review. */
   readonly acceptanceCriteria: readonly string[];
 }
+
+/** How a run ended. These three are the only final statuses (docs/spec.md §3). */
+export type RunStatus = 'passed' | 'failed' | 'cancelled';
+
+/**
+ * Which top-level coding turn an attempt was: the initial implementation, or one
+ * of the repair turns that follow it. Internal tool calls and runtime events are
+ * not turns.
+ */
+export type AttemptKind = 'implementation' | 'repair';
+
+/**
+ * What one top-level coding turn left behind: the agent's own account of it, and
+ * the checks the harness observed for itself afterwards.
+ *
+ * The two stay separate on purpose. `agentSummary` is agent text: it is kept for
+ * review and never decides the run status, because a claim that the work is done
+ * is not a check result. `checks` is the observed evidence, or `null` when no
+ * round ran after that turn — the turn failed, the run was stopped, or the
+ * allowance had already run out.
+ */
+export interface AttemptEvidence {
+  /** 1 for the implementation turn; the repair turns follow as 2, 3, … */
+  readonly turn: number;
+  /** Whether this turn was the implementation or a repair. */
+  readonly kind: AttemptKind;
+  /**
+   * File holding this turn's useful agent output. A reference: a report never
+   * copies the transcript into itself.
+   */
+  readonly agentLog: string;
+  /** The agent's own summary of the turn, or `null` when it gave none. */
+  readonly agentSummary: string | null;
+  /** The setup/check round observed after this turn; `null` when none ran. */
+  readonly checks: CheckRoundResult | null;
+}
+
+/**
+ * The working copy a run used, as a report records it. A run directory can exist
+ * without this being a working copy: preparation can fail after the directory was
+ * created, and the report then says so instead of describing a clone that was
+ * never made.
+ */
+export interface WorkspaceReport {
+  /** `<runDir>/workspace`: where the working copy is, or would have been. */
+  readonly path: string;
+  /** True only for a working copy that was really prepared and verified. */
+  readonly prepared: boolean;
+  /** The run's dedicated branch; `null` when no working copy was prepared. */
+  readonly branch: string | null;
+  /** Why there is no usable working copy; `null` when there is one. */
+  readonly problem: string | null;
+}
+
+/** The final report of one run: the contents of `<runDir>/result.json`. */
+export interface RunReport {
+  /** Generated run ID: the run's name in logs, reports, and its branch. */
+  readonly runId: string;
+  /** The task the run was asked to complete, as a label. */
+  readonly task: { readonly id: string; readonly title: string };
+  /** The repository the run started from, and the committed base it recorded. */
+  readonly source: { readonly path: string; readonly baseCommit: string };
+  /** The working copy of this run; see {@link WorkspaceReport}. */
+  readonly workspace: WorkspaceReport;
+  /** Start of the run, as an ISO timestamp. */
+  readonly startedAt: string;
+  /** End of the run, as an ISO timestamp. */
+  readonly endedAt: string;
+  /** How the run ended; see {@link RunStatus}. */
+  readonly status: RunStatus;
+  /** Why it ended that way, in one sentence a reader can act on. */
+  readonly reason: string;
+  /**
+   * Additional top-level coding turns the run spent, counted from `attempts`.
+   * Never a number the caller supplies alongside the evidence it contradicts.
+   */
+  readonly repairsUsed: number;
+  /** Check evidence from before any coding turn; `null` when none was observed. */
+  readonly baseline: CheckRoundResult | null;
+  /** One entry per top-level coding turn, oldest first. */
+  readonly attempts: readonly AttemptEvidence[];
+  /** The run's compact lifecycle timeline: `<runDir>/logs/run.log`. */
+  readonly runLog: string;
+}

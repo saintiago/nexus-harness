@@ -46,7 +46,7 @@ Dependencies are task IDs. The normal execution order is top to bottom.
 | [x] | T02 | Unique run directory and dedicated local clone | T01 |
 | [x] | T03 | Literal-argument command execution and logs | T02 |
 | [x] | T04 | Sequential setup and complete check rounds | T03 |
-| [ ] | T05 | Final report and attempt evidence | T02, T04 |
+| [x] | T05 | Final report and attempt evidence | T02, T04 |
 | [ ] | T06 | Baseline and implementation loop with a fake agent | T04, T05 |
 | [ ] | T07 | Bounded repair loop and honest outcomes | T06 |
 | [ ] | T08 | Total deadline, command limits, and timeout shutdown | T07 |
@@ -576,4 +576,39 @@ Limitations: verified on Windows 11 / Node 24.14 only. The signalled stop path i
   the T08/T09 stop paths. Timeout/cancellation are not built here, and run.log round lines stay the
   runner's job (T06). No CLI wiring yet (T13).
 Next ready task: T05
+```
+
+```text
+Task: T05 — Final report and attempt evidence
+Result: complete
+Changed: src/report.ts exports writeRunReport()/runReportPath() (the readable
+  <runDir>/result.json), openAgentLog()/agentLogPath() (agent-implementation.log for
+  turn 1, agent-repair-N.log after it, created exclusively so no turn overwrites an
+  earlier one), and RunReportRequest. src/types.ts gained RunStatus, AttemptKind,
+  AttemptEvidence, WorkspaceReport, and RunReport. The report holds task/run IDs, the
+  normalized source path and base commit, the workspace path with prepared/branch/
+  problem, run start/end, status and reason, repairsUsed derived from the recorded
+  attempts, the baseline round, one entry per coding turn that keeps the agent summary
+  apart from the observed round, and the run timeline path. Command arguments, working
+  directory, exit code/signal, launch error, and log locations are carried as the
+  command helper recorded them; the report references log files instead of copying
+  their contents. `passed` is refused unless the last turn's observed round is a
+  completed green one, and a report without a prepared working copy must name the
+  preparation problem. tests/report.test.ts (new), 14 cases over real run directories,
+  real check rounds, and a real failing prepareWorkspace.
+Verification: npm ci exit 0 (137 packages, 0 vulnerabilities); npm test -- tests/report.test.ts
+  exit 0 (14 passed); npm run validate exit 0 (format:check, lint, typecheck, test 142
+  passed / 1 skipped, build).
+Evidence: temporary run directories only. Writing a report left the working copy, the
+  run's other logs, and a sibling run's artifacts byte-identical. Regression probes
+  confirmed the new cases bite: deriving repairsUsed as 0 failed 2 cases, and a
+  weakened pass guard failed 8; both probes were reverted.
+Limitations: timeout evidence is not in the report yet — T08 owns the timeout outcome,
+  and the report serializes the command result as it exists today. Timeout information
+  is therefore absent rather than fabricated, and T08 extends the contract. Verified on
+  Windows 11 / Node 24.14 only; the unwritable-destination case is exercised with a path
+  that cannot be a directory and with an existing result.json, not with a read-only
+  volume. The writer records the log paths the run produced; it does not re-verify that
+  each referenced file still exists. No CLI wiring yet (T13).
+Next ready task: T06
 ```
