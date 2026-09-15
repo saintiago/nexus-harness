@@ -48,7 +48,7 @@ Dependencies are task IDs. The normal execution order is top to bottom.
 | [x] | T04 | Sequential setup and complete check rounds | T03 |
 | [x] | T05 | Final report and attempt evidence | T02, T04 |
 | [x] | T06 | Baseline and implementation loop with a fake agent | T04, T05 |
-| [ ] | T07 | Bounded repair loop and honest outcomes | T06 |
+| [x] | T07 | Bounded repair loop and honest outcomes | T06 |
 | [ ] | T08 | Total deadline, command limits, and timeout shutdown | T07 |
 | [ ] | T09 | Cancellation and confirmed process shutdown | T08 |
 | [ ] | T10 | Final diff inspection and review warnings | T07, T09 |
@@ -652,4 +652,50 @@ Limitations: the coding runtime is still absent, so runAgentTurn has no producti
   only. Cancellation and the total deadline are T08/T09. Verified on Windows 11 /
   Node 24.14 only; no live LLM, network, or credentials were used.
 Next ready task: T07
+```
+
+```text
+Task: T07 — Bounded repair loop and honest outcomes
+Result: complete
+Changed: src/runner.ts — T06's runTask/RunnerDependencies extended into the bounded loop:
+  baseline, then one coding turn per iteration (implementation, then repair turns), a setup
+  + full check round after every completed turn, and a stop at the first of a green round,
+  an exhausted allowance, a failed turn, or an unexecutable round. AgentTurnRequest carries
+  `repair: RepairFeedback | null` — null for the implementation, and for a repair the failed
+  commands of the round it repairs (configured arguments, exit code, both log paths) plus the
+  output they wrote. src/types.ts adds FailedCommand and RepairFeedback, and nothing else.
+  src/report.ts adds readCommandOutput(), the one read-back: it owns the log layout, so it
+  returns each stream labelled with its file, bounded to the last 4000 characters with an
+  explicit "earlier output omitted" marker, "(no output was written)" for an empty stream,
+  and no failure of its own when a file cannot be read. `maxRepairs` counts additional
+  top-level coding turns: the allowance is spent only when a completed red round exists, so
+  0 allows one turn and 2 allows at most three. A setup launch error or a command that cannot
+  execute ends the round as execution-error and returns immediately — infrastructure failure
+  is terminal and costs no repair; a failed agent turn returns before any round runs. No
+  outer-loop retry exists anywhere, and `repairsUsed` stays derived in buildReport from the
+  attempts array, never supplied.
+Verification: npm ci exit 0 (137 packages, 0 vulnerabilities); npm test --
+  tests/runner.test.ts exit 0 (14 passed); npm run validate exit 0 (format:check, lint,
+  typecheck, test 159 passed / 1 skipped, build).
+Evidence: tests/runner.test.ts (extended), 14 cases. The four new bounded-loop cases cover
+  an exhausted allowance with maxRepairs: 0 (one turn, zero repairs, failed, exact 14-event
+  order, no turn-2 agent log); maxRepairs: 2 with both repairs red (turns implementation 1,
+  repair 2, repair 3, feedback of turn 3 pointing at attempt-2-check-1.stdout.log,
+  repairsUsed 2, no turn-4 log); implementation red then a passing repair (exactly two turns,
+  repairsUsed 1, the agent's "done — every test passes" claim kept as text beside the red
+  round it did not change); a repair turn failing (checks null, no round run, one turn less);
+  and a setup launch error after a repair (execution-error, checks empty, repairedTurn 1,
+  repairsUsed 1, stops). Exact request kinds/turns, event order, lifecycle phases, and log
+  files are asserted throughout. tests/report.test.ts adds 3 cases for readCommandOutput:
+  a real failing round's logs read back, a 50,000-character log bounded to its tail, and an
+  empty stream recorded as "(no output was written)". Regression probes confirmed the cases
+  bite: allowing one repair past the allowance failed the maxRepairs 0 and 2 cases, and
+  letting an execution-error round fall through to the repair decision spent the remaining
+  allowance and failed the setup-launch case; both were reverted, suite back to 14/14.
+Limitations: the coding runtime is still absent, so runAgentTurn has no production
+  implementation and the public `run` command stays unavailable (T13). No timeout, total
+  deadline, or cancellation path yet — T08/T09 own those, so a command that hangs is not
+  stopped here. Verified on Windows 11 / Node 24.14 only; no live LLM, network, or
+  credentials were used.
+Next ready task: T08
 ```

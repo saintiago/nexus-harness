@@ -7,7 +7,8 @@
  * running a harmless fixture program in a temporary directory, and the agent
  * logs are written through the same helper the runner uses: no network, no
  * credentials, and nothing outside those temporary directories is touched. See
- * docs/tasks.md T05 for the acceptance criteria.
+ * docs/tasks.md T05 for the report and its evidence, and T07 for the bounded
+ * failure output a repair turn is given.
  */
 
 import { spawn } from 'node:child_process';
@@ -21,6 +22,7 @@ import {
   agentLogPath,
   appendRunLog,
   openAgentLog,
+  readCommandOutput,
   runLogPath,
   runReportPath,
   writeRunReport,
@@ -32,6 +34,7 @@ import type {
   AttemptEvidence,
   CheckRoundResult,
   Command,
+  CommandResult,
   RunReport,
   RunStatus,
 } from '../src/types.js';
@@ -184,6 +187,33 @@ async function expectReportError(operation: () => Promise<unknown>): Promise<Rep
     throw new Error(`expected a ReportError, received ${String(cause)}`);
   }
   return cause;
+}
+
+/**
+ * A recorded invocation whose two output files hold exactly what the test wrote,
+ * for the cases a real command cannot produce conveniently — a long log, or a
+ * stream that stayed empty.
+ */
+async function recordedCommand(
+  fixture: RunFixture,
+  parts: { readonly label: string; readonly stdout: string; readonly stderr: string },
+): Promise<CommandResult> {
+  const stdoutPath = path.join(fixture.run.logsDir, `${parts.label}.stdout.log`);
+  const stderrPath = path.join(fixture.run.logsDir, `${parts.label}.stderr.log`);
+  await writeFile(stdoutPath, parts.stdout, 'utf8');
+  await writeFile(stderrPath, parts.stderr, 'utf8');
+  return {
+    command: ['a-command', 'that', 'failed'],
+    cwd: fixture.run.workspacePath,
+    startedAt: RUN_STARTED_AT,
+    endedAt: RUN_ENDED_AT,
+    outcome: 'exited',
+    exitCode: 1,
+    signal: null,
+    launchError: null,
+    stdoutPath,
+    stderrPath,
+  };
 }
 
 /** Every log file a round wrote, in configured order. */
@@ -489,6 +519,61 @@ describe('agent text and observed checks', () => {
 
     // No report was written, so there is no location to announce as one.
     expect(existsSync(file)).toBe(false);
+  }, 60_000);
+});
+
+describe('the failure output a repair turn is given', () => {
+  it('reads back what one invocation wrote, with the file each stream came from', async () => {
+    const fixture = await createFixture();
+    const round = await runRound(fixture, 'attempt-1', [check(fixture, 'check-1', 1)]);
+    const failed = round.checks[0];
+    if (failed === undefined) {
+      throw new Error('the fixture round recorded no check result');
+    }
+
+    const output = await readCommandOutput(failed);
+
+    expect(output).toContain(`stdout (${failed.stdoutPath}):`);
+    expect(output).toContain('stdout of check-1');
+    expect(output).toContain(`stderr (${failed.stderrPath}):`);
+    expect(output).toContain('stderr of check-1');
+    // Reading is not a copy of the evidence into the report: the files are still
+    // exactly what the command wrote.
+    expect(await readText(failed.stdoutPath)).toBe('stdout of check-1\n');
+    expect(await readText(failed.stderrPath)).toBe('stderr of check-1\n');
+  }, 60_000);
+
+  it('bounds a long output to its end and says earlier output was left out', async () => {
+    const fixture = await createFixture();
+    const head = 'THE-BEGINNING-OF-A-LONG-LOG\n';
+    const tail = 'THE-LAST-LINE\n';
+    const result = await recordedCommand(fixture, {
+      label: 'long',
+      stdout: head + 'x'.repeat(50_000) + `\n${tail}`,
+      stderr: '',
+    });
+
+    const output = await readCommandOutput(result);
+
+    // The end is what a repair turn needs: a command reports the failure after
+    // the work that led to it.
+    expect(output).toContain(tail);
+    expect(output).toContain('earlier output omitted');
+    expect(output).not.toContain(head);
+    // ...and it stays small: bounded, not the whole file.
+    expect(output.length).toBeLessThan(10_000);
+    // The output file itself is untouched by the reading.
+    expect((await readText(result.stdoutPath)).length).toBeGreaterThan(50_000);
+  }, 60_000);
+
+  it('records a stream that wrote nothing as writing nothing', async () => {
+    const fixture = await createFixture();
+    const result = await recordedCommand(fixture, { label: 'silent', stdout: '', stderr: '' });
+
+    const output = await readCommandOutput(result);
+
+    expect(output).toContain(`stdout (${result.stdoutPath}):`);
+    expect(output).toContain('(no output was written)');
   }, 60_000);
 });
 

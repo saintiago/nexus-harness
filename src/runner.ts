@@ -2,10 +2,14 @@
  * The task loop: the order the work happens in, and nothing else.
  *
  * {@link runTask} is an ordinary async function that takes one loaded task and
- * one loaded configuration through the first vertical path:
+ * one loaded configuration through the bounded loop:
  *
  * ```text
- * prepare → baseline checks → implementation turn → post-agent checks → report
+ * prepare → baseline checks → implementation turn → post-agent checks
+ *                                    ↑                     |
+ *                                    └──── repair turn ←───┘
+ *                                       (while maxRepairs allows, and only
+ *                                        for a completed red round)
  * ```
  *
  * The task and the command plan come from the caller and stay in memory: the
@@ -16,27 +20,48 @@
  * that does not pass says the task's starting point is not the one the run was
  * approved against, and a coding turn cannot fix that.
  *
+ * After each coding turn the configured checks are rerun — setup first, then
+ * every check — and what they observed decides what happens next:
+ *
+ * - a completed green round ends the run as `passed`, immediately, with no
+ *   further turn;
+ * - a completed red round is repair feedback, and a repair turn is spent on it
+ *   only while `maxRepairs` allows one. The repair turn is given the commands
+ *   that failed, the output they wrote, and the log files that hold it, along
+ *   with the same task context the implementation got;
+ * - a round that could not be executed, and a turn that failed, are terminal.
+ *   The harness could not run the task's own commands or could not finish the
+ *   coding turn, and another coding turn cannot change either. No repair is spent
+ *   on an infrastructure failure, and nothing outside this loop retries.
+ *
+ * `maxRepairs` counts additional top-level coding turns and nothing else: not the
+ * checks, not the configured commands, and not the tool calls or other internal
+ * events a runtime reports inside one turn (docs/spec.md §3). Every attempt, and
+ * with it the agent's own summary of it, is kept in the result; the agent's
+ * account of a turn is never what decides the status.
+ *
  * Everything the runner needs from outside is a function it was given: the
  * working copy, the checks, the coding turn, the report files, and the clock
  * (see {@link RunnerDependencies}). Only the order is decided here — the helper
  * modules keep their own responsibilities (docs/architecture.md §§2, 3, 5), and
  * the runner does not parse arguments, build commands, or talk to a runtime.
  *
- * This task implements the no-repair path: after the implementation turn the
- * configured checks run once, and a round that is not green ends the run as
- * `failed`. The bounded repair loop is the next task, and the public `run`
- * command stays unavailable until the real coding runtime is wired in.
+ * The coding runtime is still absent, so `runAgentTurn` has no production
+ * implementation and the public `run` command stays unavailable; the deadline and
+ * cancellation stop paths are the following tasks' work.
  */
 
 import { commandSucceeded } from './checks.js';
 import type { CheckRoundRequest } from './checks.js';
-import { runLogPath } from './report.js';
+import { readCommandOutput, runLogPath } from './report.js';
 import type { AgentLog, RunReportRequest } from './report.js';
 import type {
   AttemptEvidence,
   AttemptKind,
   CheckRoundResult,
+  FailedCommand,
   HarnessConfig,
+  RepairFeedback,
   RunStatus,
   Task,
 } from './types.js';
@@ -90,6 +115,14 @@ export interface AgentTurnRequest {
    * what it did here, and an earlier turn's file is never reused.
    */
   readonly agentLog: AgentLog;
+  /**
+   * What this turn repairs: the failures of the round that was red after the
+   * previous coding turn, with the output they wrote and where it lives. `null`
+   * for the implementation turn, which repairs no round. The task context above
+   * is the same one the implementation turn received, so a repair turn has both
+   * the original task and what was observed to go wrong.
+   */
+  readonly repair: RepairFeedback | null;
 }
 
 /**
@@ -181,6 +214,48 @@ function describeFailedChecks(round: CheckRoundResult): string {
   return `${failed} of ${count(round.checks.length, 'check')} did not pass`;
 }
 
+/** How the timeline names one top-level coding turn. */
+function nameTurn(kind: AttemptKind, turn: number): string {
+  return kind === 'implementation' ? 'implementation turn' : `repair turn ${String(turn)}`;
+}
+
+/** How the reasons name one top-level coding turn, in a sentence. */
+function describeTurn(kind: AttemptKind, turn: number): string {
+  return kind === 'implementation' ? 'the implementation turn' : nameTurn(kind, turn);
+}
+
+/** How many repair turns the attempts so far have spent. */
+function repairsSpent(attempts: readonly AttemptEvidence[]): number {
+  return attempts.filter((attempt) => attempt.kind === 'repair').length;
+}
+
+/** Why a run that ends green ended where it did, with the allowance it spent. */
+function describePassed(kind: AttemptKind, turn: number, spent: number, allowed: number): string {
+  return kind === 'implementation'
+    ? `every configured check passed after ${describeTurn(kind, turn)}`
+    : `every configured check passed after ${describeTurn(kind, turn)} (${String(spent)} of ${String(allowed)} repair turns used)`;
+}
+
+/**
+ * What a completed red round observed not to succeed, with the output each of
+ * those commands wrote, as a repair turn is given it.
+ *
+ * Only a completed red round reaches a repair turn, and such a round ran every
+ * check and every setup command successfully — a setup command that did not
+ * succeed, and a command that could not be started, would have stopped the round
+ * as an execution error instead — so the failures are the checks that did not
+ * exit `0`.
+ */
+async function failedCommands(round: CheckRoundResult): Promise<FailedCommand[]> {
+  const failures: FailedCommand[] = [];
+  for (const result of round.checks) {
+    if (!commandSucceeded(result)) {
+      failures.push({ result, output: await readCommandOutput(result) });
+    }
+  }
+  return failures;
+}
+
 /** What a completed round did, as the timeline records it. */
 function describeRound(round: CheckRoundResult): string {
   if (round.outcome === 'passed') {
@@ -193,15 +268,16 @@ function describeRound(round: CheckRoundResult): string {
 }
 
 /**
- * Runs one task through the no-repair path and writes its final report.
+ * Runs one task through the bounded loop and writes its final report.
  *
  * The source repository and the output location are checked before anything is
  * allocated: a run that is refused there has no run directory and therefore
  * nothing to report, so the refusal is thrown to the caller instead of becoming
  * a fictional run (docs/spec.md §3). Every failure after that point keeps the run
  * directory and its evidence, and ends the run as `failed` with a report naming
- * the reason. A report that cannot be written is a thrown `ReportError`: a run
- * must never announce a report location that does not exist.
+ * the reason — the loop stops at the first of those, and nothing retries a turn,
+ * a round, or the run itself. A report that cannot be written is a thrown
+ * `ReportError`: a run must never announce a report location that does not exist.
  */
 export async function runTask(
   request: RunTaskRequest,
@@ -317,100 +393,131 @@ export async function runTask(
     });
   }
 
-  // The implementation turn, awaited to completion: the checks run after it must
-  // observe a working copy nothing else is writing to.
-  await dependencies.appendRunLog(timeline, 'implementation turn started');
-  const agentLog = await dependencies.openAgentLog(run.logsDir, 1);
-  let turn: AgentTurnResult | null = null;
-  let turnProblem: string | null = null;
-  try {
-    turn = await dependencies.runAgentTurn({
-      kind: 'implementation',
-      turn: 1,
-      task,
-      workspacePath: workspace.workspacePath,
-      sourceRoot: workspace.sourceRoot,
-      baseCommit: workspace.baseCommit,
-      agentLog,
+  // The coding turns: the implementation first, then one repair turn per
+  // completed red round while `maxRepairs` allows one. Every way out of this loop
+  // ends the run: green, red with no allowance left, a turn that failed, and a
+  // round that could not be executed.
+  const attempts: AttemptEvidence[] = [];
+  let turn = 1;
+  let kind: AttemptKind = 'implementation';
+  let repair: RepairFeedback | null = null;
+
+  for (;;) {
+    // The coding turn, awaited to completion: the checks that follow it must
+    // observe a working copy nothing else is writing to.
+    await dependencies.appendRunLog(
+      timeline,
+      kind === 'implementation'
+        ? `${nameTurn(kind, turn)} started`
+        : `${nameTurn(kind, turn)} started: repair ${String(turn - 1)} of ${String(config.maxRepairs)} allowed`,
+    );
+    const agentLog = await dependencies.openAgentLog(run.logsDir, turn);
+    let completed: AgentTurnResult | null = null;
+    let turnProblem: string | null = null;
+    try {
+      completed = await dependencies.runAgentTurn({
+        kind,
+        turn,
+        task,
+        workspacePath: workspace.workspacePath,
+        sourceRoot: workspace.sourceRoot,
+        baseCommit: workspace.baseCommit,
+        agentLog,
+        repair,
+      });
+    } catch (cause) {
+      turnProblem = messageOf(cause);
+    }
+    // The log is closed either way: a turn that failed keeps whatever it wrote
+    // before the failure, and a log that cannot be flushed is a reporting failure.
+    await agentLog.close();
+    await dependencies.appendRunLog(
+      timeline,
+      completed === null
+        ? `${nameTurn(kind, turn)} result: failed, ${oneLine(turnProblem ?? 'no explanation was recorded')}`
+        : `${nameTurn(kind, turn)} result: completed`,
+    );
+
+    if (completed === null) {
+      // A turn that could not finish is terminal: no round was observed after it,
+      // none is invented, and the failure is not something another coding turn is
+      // asked to repair.
+      attempts.push({ turn, kind, agentLog: agentLog.path, agentSummary: null, checks: null });
+      return endRun({
+        status: 'failed',
+        reason: `${describeTurn(kind, turn)} failed, so no check was run after it: ${oneLine(turnProblem ?? 'no explanation was recorded')}`,
+        baseline,
+        attempts,
+      });
+    }
+
+    // The post-agent round: setup again, then every configured check. The agent's
+    // own account of the turn is kept beside these results, never in place of them.
+    await dependencies.appendRunLog(
+      timeline,
+      `post-agent check-round started: ${describePlan(config)}`,
+    );
+    const observed = await dependencies.runCheckRound({
+      setup: config.setup,
+      checks: config.checks,
+      cwd: workspace.workspacePath,
+      logsDir: run.logsDir,
+      name: `attempt-${String(turn)}`,
     });
-  } catch (cause) {
-    turnProblem = messageOf(cause);
-  }
-  // The log is closed either way: a turn that failed keeps whatever it wrote
-  // before the failure, and a log that cannot be flushed is a reporting failure.
-  await agentLog.close();
-  await dependencies.appendRunLog(
-    timeline,
-    turn === null
-      ? `implementation turn result: failed, ${oneLine(turnProblem ?? 'no explanation was recorded')}`
-      : 'implementation turn result: completed',
-  );
-
-  if (turn === null) {
-    return endRun({
-      status: 'failed',
-      reason: `the implementation turn failed, so no check was run after it: ${oneLine(turnProblem ?? 'no explanation was recorded')}`,
-      baseline,
-      attempts: [
-        {
-          turn: 1,
-          kind: 'implementation',
-          agentLog: agentLog.path,
-          agentSummary: null,
-          checks: null,
-        },
-      ],
-    });
-  }
-
-  // The post-agent round: setup again, then every configured check. The agent's
-  // own account of the turn is kept beside these results, never in place of them.
-  await dependencies.appendRunLog(
-    timeline,
-    `post-agent check-round started: ${describePlan(config)}`,
-  );
-  const observed = await dependencies.runCheckRound({
-    setup: config.setup,
-    checks: config.checks,
-    cwd: workspace.workspacePath,
-    logsDir: run.logsDir,
-    name: 'attempt-1',
-  });
-  await dependencies.appendRunLog(
-    timeline,
-    `post-agent check-round result: ${describeRound(observed)}`,
-  );
-
-  const attempts: AttemptEvidence[] = [
-    {
-      turn: 1,
-      kind: 'implementation',
+    await dependencies.appendRunLog(
+      timeline,
+      `post-agent check-round result: ${describeRound(observed)}`,
+    );
+    attempts.push({
+      turn,
+      kind,
       agentLog: agentLog.path,
-      agentSummary: turn.summary,
+      agentSummary: completed.summary,
       checks: observed,
-    },
-  ];
+    });
 
-  if (observed.outcome === 'passed') {
-    return endRun({
-      status: 'passed',
-      reason: 'every configured check passed after the implementation turn',
-      baseline,
-      attempts,
-    });
+    if (observed.outcome === 'passed') {
+      return endRun({
+        status: 'passed',
+        reason: describePassed(kind, turn, repairsSpent(attempts), config.maxRepairs),
+        baseline,
+        attempts,
+      });
+    }
+
+    if (observed.outcome === 'execution-error') {
+      // The harness could not run the task's own commands. That is not a failed
+      // check to code around, so it costs no repair turn and ends the run here.
+      return endRun({
+        status: 'failed',
+        reason: `the checks after ${describeTurn(kind, turn)} could not be executed: ${oneLine(observed.problem ?? 'no explanation was recorded')}`,
+        baseline,
+        attempts,
+      });
+    }
+
+    // A completed red round is repair feedback. It is sent back only while the
+    // allowance lasts: `maxRepairs` counts these additional coding turns, so the
+    // check is against the repairs already spent, not against the checks run.
+    const spent = repairsSpent(attempts);
+    if (spent >= config.maxRepairs) {
+      await dependencies.appendRunLog(
+        timeline,
+        `repair allowance exhausted: ${String(spent)} of ${String(config.maxRepairs)} repair turns used`,
+      );
+      return endRun({
+        status: 'failed',
+        reason:
+          `the checks after ${describeTurn(kind, turn)} did not pass and the repair allowance is ` +
+          `exhausted (${String(spent)} of ${String(config.maxRepairs)} repair turns used): ` +
+          describeFailedChecks(observed),
+        baseline,
+        attempts,
+      });
+    }
+
+    turn += 1;
+    kind = 'repair';
+    repair = { repairedTurn: turn - 1, failures: await failedCommands(observed) };
   }
-  if (observed.outcome === 'execution-error') {
-    return endRun({
-      status: 'failed',
-      reason: `the checks after the implementation turn could not be executed: ${oneLine(observed.problem ?? 'no explanation was recorded')}`,
-      baseline,
-      attempts,
-    });
-  }
-  return endRun({
-    status: 'failed',
-    reason: `the checks after the implementation turn did not pass: ${describeFailedChecks(observed)}`,
-    baseline,
-    attempts,
-  });
 }

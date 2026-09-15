@@ -8,7 +8,8 @@
  * "the checks run after the turn" is asserted from what the processes observed
  * rather than from what the runner intended. There is no network, no provider,
  * and no credentials, and nothing outside the temporary directories is touched.
- * See docs/tasks.md T06 for the acceptance criteria.
+ * See docs/tasks.md T06 for the baseline and implementation path, and T07 for the
+ * bounded repair loop.
  */
 
 import { spawn } from 'node:child_process';
@@ -206,8 +207,14 @@ interface Fixture {
   readonly task: Task;
 }
 
+/** A file the fixture's target project commits alongside its baseline. */
+interface FixtureFile {
+  readonly file: string;
+  readonly text: string;
+}
+
 /** A temporary target repository with a clean committed baseline. */
-async function createFixture(): Promise<Fixture> {
+async function createFixture(extraFiles: readonly FixtureFile[] = []): Promise<Fixture> {
   const parent = await createTempDir();
   const repo = path.join(parent, 'repo');
   await mkdir(repo);
@@ -219,6 +226,9 @@ async function createFixture(): Promise<Fixture> {
   await writeFile(path.join(repo, '.gitattributes'), '* -text\n', 'utf8');
   await writeFile(path.join(repo, 'app.txt'), BASELINE_TEXT, 'utf8');
   await writeFile(path.join(repo, 'README.md'), 'a tiny target project\n', 'utf8');
+  for (const extra of extraFiles) {
+    await writeFile(path.join(repo, extra.file), extra.text, 'utf8');
+  }
   await gitOrFail(['add', '--all'], repo);
   await gitOrFail(['commit', '--quiet', '--message', 'baseline'], repo);
 
@@ -315,6 +325,8 @@ interface FakeTurn {
   readonly holdMs?: number;
   /** Its own failure: the turn rejects after its process exited. */
   readonly failWith?: string;
+  /** What it says about the turn, in its own words. */
+  readonly summary?: string;
 }
 
 interface FakeAgent {
@@ -328,22 +340,32 @@ interface FakeAgent {
  * The stand-in coding turn. It takes its lock before its first `await`, so any
  * command the runner starts from that moment on finds the lock held, and it
  * holds the lock until the turn is over — however the turn ends.
+ *
+ * `script` is what every turn does. `byTurn` overrides it for the turns it names,
+ * keyed by the top-level turn number — `1` is the implementation and the repairs
+ * follow as `2`, `3`, … — which is how a test gives an implementation and a
+ * repair different work to do.
  */
-function fakeAgent(fixture: Fixture, script: FakeTurn = {}): FakeAgent {
-  const { file = 'app.txt', text = IMPLEMENTED_TEXT, mode = 'append', holdMs = 150 } = script;
+function fakeAgent(
+  fixture: Fixture,
+  script: FakeTurn = {},
+  byTurn: Readonly<Record<number, FakeTurn>> = {},
+): FakeAgent {
   const requests: AgentTurnRequest[] = [];
 
   return {
     requests,
     turn: async (agentRequest: AgentTurnRequest): Promise<AgentTurnResult> => {
       requests.push(agentRequest);
+      const plan = { ...script, ...(byTurn[agentRequest.turn] ?? {}) };
+      const { file = 'app.txt', text = IMPLEMENTED_TEXT, mode = 'append', holdMs = 150 } = plan;
       writeFileSync(fixture.agentLock, 'the coding turn is active\n', 'utf8');
       try {
-        for (const extra of script.extras ?? []) {
+        for (const extra of plan.extras ?? []) {
           await writeFile(path.join(agentRequest.workspacePath, extra.file), extra.text, 'utf8');
         }
         agentRequest.agentLog.write(
-          script.logText ??
+          plan.logText ??
             `turn ${String(agentRequest.turn)}: working in ${agentRequest.workspacePath}\n`,
         );
         const id = `turn-${String(agentRequest.turn)}`;
@@ -365,10 +387,10 @@ function fakeAgent(fixture: Fixture, script: FakeTurn = {}): FakeAgent {
         if (result.code !== 0) {
           throw new Error(`the coding turn's own process exited ${String(result.code)}`);
         }
-        if (script.failWith !== undefined) {
-          throw new Error(script.failWith);
+        if (plan.failWith !== undefined) {
+          throw new Error(plan.failWith);
         }
-        return { summary: `the implementation turn edited ${file}` };
+        return { summary: plan.summary ?? `the implementation turn edited ${file}` };
       } finally {
         rmSync(fixture.agentLock, { force: true });
       }
@@ -437,6 +459,7 @@ function lifecyclePhases(messages: readonly string[]): string[] {
   const phases = [
     'baseline check-round',
     'implementation turn',
+    'repair turn',
     'post-agent check-round',
     'final status',
   ];
@@ -709,9 +732,12 @@ describe('a run whose baseline passes', () => {
     ]);
   }, 60_000);
 
-  it('does not pass a run whose post-agent checks fail', async () => {
+  it('does not pass a run whose post-agent checks fail, and spends no repair turn when none is allowed', async () => {
     const fixture = await createFixture();
     const config = configuration(fixture, {
+      // No repair turn is allowed, so the red round ends the run: that is what
+      // `maxRepairs: 0` means, and the repair loop itself is covered below.
+      maxRepairs: 0,
       checks: [
         command(fixture, 'check-1', 'need', 'app.txt', 'committed baseline'),
         command(fixture, 'check-2'),
@@ -725,18 +751,56 @@ describe('a run whose baseline passes', () => {
 
     expect(result.status).toBe('failed');
     expect(result.reason).toMatch(/did not pass/);
+    // One implementation turn, and no repair turn at all: the allowance was zero.
     expect(agent.requests).toHaveLength(1);
+    expect(agent.requests.filter((asked) => asked.kind === 'repair')).toEqual([]);
 
     const report = await readReport(result.reportPath);
     expect(report.status).toBe('failed');
     expect(report.baseline?.outcome).toBe('passed');
+    expect(report.repairsUsed).toBe(0);
     // The post-agent round is completed and red: every check ran, and each
     // result is kept as its own evidence.
+    expect(report.attempts).toHaveLength(1);
     expect(report.attempts[0]?.checks?.outcome).toBe('failed');
     expect(report.attempts[0]?.checks?.checks.map((entry) => entry.exitCode)).toEqual([1, 0]);
     expect(await readText(report.attempts[0]?.checks?.checks[0]?.stdoutPath ?? '')).toBe(
       'ran check-1\n',
     );
+
+    // Nothing of the repair loop exists for this run: no repair turn in the
+    // timeline, no round after the implementation's, and no repair log file.
+    const timeline = timelineMessages(await readText(report.runLog));
+    expect(lifecyclePhases(timeline)).toEqual([
+      'baseline check-round started',
+      'baseline check-round result',
+      'implementation turn started',
+      'implementation turn result',
+      'post-agent check-round started',
+      'post-agent check-round result',
+      'final status',
+    ]);
+    expect(timeline.some((message) => message.startsWith('repair turn'))).toBe(false);
+    expect(existsSync(agentLogPath(result.run.logsDir, 2))).toBe(false);
+    expect(existsSync(path.join(result.run.logsDir, 'attempt-2-check-1.stdout.log'))).toBe(false);
+
+    // Two rounds ran and one turn, in order, and nothing else.
+    expect(eventOrder(await recordedEvents(fixture))).toEqual([
+      'start setup-1',
+      'end setup-1',
+      'start check-1',
+      'end check-1',
+      'start check-2',
+      'end check-2',
+      'turn-start turn-1',
+      'turn-end turn-1',
+      'start setup-1',
+      'end setup-1',
+      'start check-1',
+      'end check-1',
+      'start check-2',
+      'end check-2',
+    ]);
   }, 60_000);
 
   it('fails the run when the implementation turn fails, without inventing a round', async () => {
@@ -847,6 +911,370 @@ describe('a run whose baseline passes', () => {
   }, 60_000);
 });
 
+describe('the bounded repair loop', () => {
+  it('repairs a red round once, stops at the first green one, and keeps both attempts', async () => {
+    const fixture = await createFixture();
+    const config = configuration(fixture);
+    // The implementation turn really breaks the committed state the check
+    // verifies while claiming it is done; the repair turn restores it. What it
+    // says is agent text either way, and the checks decide the run.
+    const agent = fakeAgent(
+      fixture,
+      {
+        mode: 'replace',
+        text: 'broken by the implementation turn\n',
+        holdMs: 0,
+        summary: 'done — every test passes',
+      },
+      {
+        2: {
+          mode: 'replace',
+          text: BASELINE_TEXT + IMPLEMENTED_TEXT,
+          holdMs: 0,
+          summary: 'the repair restored the committed line',
+        },
+      },
+    );
+
+    const result = await runTask(request(fixture, config), dependencies(agent.turn));
+
+    expect(result.status).toBe('passed');
+    expect(result.reason).toBe(
+      'every configured check passed after repair turn 2 (1 of 2 repair turns used)',
+    );
+
+    // Exactly two coding turns: the implementation and the one repair. The run
+    // stopped at the green round instead of asking for anything further.
+    expect(agent.requests).toHaveLength(2);
+    const [implementation, repair] = agent.requests;
+    expect(implementation?.kind).toBe('implementation');
+    expect(implementation?.turn).toBe(1);
+    expect(implementation?.repair).toBeNull();
+    expect(repair?.kind).toBe('repair');
+    expect(repair?.turn).toBe(2);
+
+    // The repair turn gets the original task context...
+    expect(repair?.task).toEqual(fixture.task);
+    expect(repair?.task.acceptanceCriteria).toEqual(fixture.task.acceptanceCriteria);
+    expect(repair?.workspacePath).toBe(result.run.workspacePath);
+    expect(repair?.sourceRoot).toBe(implementation?.sourceRoot);
+    expect(repair?.baseCommit).toBe(implementation?.baseCommit);
+
+    // ...and the failures the harness observed for itself, with the output those
+    // commands wrote and the log file each part of it is in.
+    expect(repair?.repair?.repairedTurn).toBe(1);
+    expect(repair?.repair?.failures).toHaveLength(1);
+    const failure = repair?.repair?.failures[0];
+    expect(failure?.result.command).toEqual(config.checks[0]);
+    expect(failure?.result.outcome).toBe('exited');
+    expect(failure?.result.exitCode).toBe(1);
+    expect(failure?.result.stdoutPath).toBe(
+      path.join(result.run.logsDir, 'attempt-1-check-1.stdout.log'),
+    );
+    expect(failure?.output).toContain(`stdout (${failure?.result.stdoutPath ?? ''}):`);
+    expect(failure?.output).toContain(`stderr (${failure?.result.stderrPath ?? ''}):`);
+    expect(failure?.output).toContain('ran check-1\n');
+    expect(failure?.output).toContain('err check-1');
+
+    // Both turns are in the report, each with its own log and its own summary,
+    // and the lying summary of the failed turn sits beside the red round it did
+    // not change.
+    const report = await readReport(result.reportPath);
+    expect(report.repairsUsed).toBe(1);
+    expect(report.attempts).toHaveLength(2);
+    expect(report.attempts[0]?.agentSummary).toBe('done — every test passes');
+    expect(report.attempts[0]?.checks?.outcome).toBe('failed');
+    expect(report.attempts[1]?.agentSummary).toBe('the repair restored the committed line');
+    expect(report.attempts[1]?.checks?.outcome).toBe('passed');
+    expect(report.attempts[1]?.agentLog).toBe(agentLogPath(result.run.logsDir, 2));
+
+    // The earlier attempt's evidence is still exactly where it was recorded.
+    expect(await readText(failure?.result.stdoutPath ?? '')).toBe('ran check-1\n');
+    expect(await readText(failure?.result.stderrPath ?? '')).toBe('err check-1\n');
+    expect(await readText(report.attempts[0]?.agentLog ?? '')).toContain('turn 1: working in');
+
+    // Two rounds ran after the implementation — setup, then the check, each one
+    // after its own turn — and nothing ran after the round that came back green.
+    expect(eventOrder(await recordedEvents(fixture))).toEqual([
+      'start setup-1',
+      'end setup-1',
+      'start check-1',
+      'end check-1',
+      'turn-start turn-1',
+      'turn-end turn-1',
+      'start setup-1',
+      'end setup-1',
+      'start check-1',
+      'end check-1',
+      'turn-start turn-2',
+      'turn-end turn-2',
+      'start setup-1',
+      'end setup-1',
+      'start check-1',
+      'end check-1',
+    ]);
+    expect(existsSync(path.join(result.run.logsDir, 'attempt-3-check-1.stdout.log'))).toBe(false);
+    expect(existsSync(agentLogPath(result.run.logsDir, 3))).toBe(false);
+
+    const timeline = timelineMessages(await readText(report.runLog));
+    expect(lifecyclePhases(timeline)).toEqual([
+      'baseline check-round started',
+      'baseline check-round result',
+      'implementation turn started',
+      'implementation turn result',
+      'post-agent check-round started',
+      'post-agent check-round result',
+      'repair turn 2 started',
+      'repair turn 2 result',
+      'post-agent check-round started',
+      'post-agent check-round result',
+      'final status',
+    ]);
+    expect(timeline).toContain('repair turn 2 started: repair 1 of 2 allowed');
+    expect(timeline.at(-1)).toMatch(/^final status: passed, /);
+  }, 60_000);
+
+  it('spends at most maxRepairs additional turns and reports the exhausted allowance', async () => {
+    const fixture = await createFixture();
+    // Every turn breaks what the check verifies, so every round is red and the
+    // allowance is what ends the run.
+    const agent = fakeAgent(fixture, { mode: 'replace', text: 'still broken\n', holdMs: 0 });
+
+    const result = await runTask(
+      request(fixture, configuration(fixture)),
+      dependencies(agent.turn),
+    );
+
+    expect(result.status).toBe('failed');
+    expect(result.reason).toMatch(/the repair allowance is exhausted \(2 of 2 repair turns used\)/);
+
+    // Three coding turns in total — the implementation and two repairs — and no
+    // fourth attempt once the allowance is gone.
+    expect(agent.requests.map((asked) => `${asked.kind} ${String(asked.turn)}`)).toEqual([
+      'implementation 1',
+      'repair 2',
+      'repair 3',
+    ]);
+    expect(agent.requests[1]?.repair?.repairedTurn).toBe(1);
+    expect(agent.requests[2]?.repair?.repairedTurn).toBe(2);
+    // Each repair was sent the round that failed just before it.
+    expect(agent.requests[2]?.repair?.failures.map((entry) => entry.result.exitCode)).toEqual([1]);
+    expect(agent.requests[2]?.repair?.failures[0]?.result.stdoutPath).toBe(
+      path.join(result.run.logsDir, 'attempt-2-check-1.stdout.log'),
+    );
+
+    const report = await readReport(result.reportPath);
+    expect(report.status).toBe('failed');
+    expect(report.repairsUsed).toBe(2);
+    expect(report.attempts.map((attempt) => attempt.kind)).toEqual([
+      'implementation',
+      'repair',
+      'repair',
+    ]);
+    expect(report.attempts.map((attempt) => attempt.checks?.outcome)).toEqual([
+      'failed',
+      'failed',
+      'failed',
+    ]);
+    // Every turn kept its own log, and every round kept its own output.
+    expect(report.attempts.map((attempt) => attempt.agentLog)).toEqual([
+      agentLogPath(result.run.logsDir, 1),
+      agentLogPath(result.run.logsDir, 2),
+      agentLogPath(result.run.logsDir, 3),
+    ]);
+    for (const attempt of report.attempts) {
+      expect(existsSync(attempt.agentLog)).toBe(true);
+      expect(await readText(attempt.checks?.checks[0]?.stdoutPath ?? '')).toBe('ran check-1\n');
+    }
+
+    // Four rounds in all: the baseline and one after each turn, each running
+    // setup and the check, and none after the allowance ran out.
+    const events = eventOrder(await recordedEvents(fixture));
+    expect(events.filter((event) => event === 'start setup-1')).toHaveLength(4);
+    expect(events.filter((event) => event === 'end check-1')).toHaveLength(4);
+    expect(events.filter((event) => event.startsWith('turn-start'))).toEqual([
+      'turn-start turn-1',
+      'turn-start turn-2',
+      'turn-start turn-3',
+    ]);
+    expect(existsSync(path.join(result.run.logsDir, 'attempt-4-check-1.stdout.log'))).toBe(false);
+
+    const timeline = timelineMessages(await readText(report.runLog));
+    expect(lifecyclePhases(timeline)).toEqual([
+      'baseline check-round started',
+      'baseline check-round result',
+      'implementation turn started',
+      'implementation turn result',
+      'post-agent check-round started',
+      'post-agent check-round result',
+      'repair turn 2 started',
+      'repair turn 2 result',
+      'post-agent check-round started',
+      'post-agent check-round result',
+      'repair turn 3 started',
+      'repair turn 3 result',
+      'post-agent check-round started',
+      'post-agent check-round result',
+      'final status',
+    ]);
+    expect(timeline).toContain('repair allowance exhausted: 2 of 2 repair turns used');
+    expect(timeline.at(-1)).toMatch(/^final status: failed, /);
+  }, 60_000);
+
+  it('stops without another turn when a repair turn itself fails', async () => {
+    const fixture = await createFixture();
+    const agent = fakeAgent(
+      fixture,
+      { mode: 'replace', text: 'broken by the implementation turn\n', holdMs: 0 },
+      {
+        2: {
+          failWith: 'the coding runtime exited unexpectedly',
+          logText: 'turn 2: read the failures, then the runtime died\n',
+        },
+      },
+    );
+
+    const result = await runTask(
+      request(fixture, configuration(fixture)),
+      dependencies(agent.turn),
+    );
+
+    expect(result.status).toBe('failed');
+    expect(result.reason).toMatch(/repair turn 2 failed, so no check was run after it/);
+    // The failed repair was the last thing the run asked for.
+    expect(agent.requests).toHaveLength(2);
+
+    const report = await readReport(result.reportPath);
+    expect(report.repairsUsed).toBe(1);
+    expect(report.attempts).toHaveLength(2);
+    expect(report.attempts[0]?.checks?.outcome).toBe('failed');
+    // No round was observed after the failed turn, and none is invented for it.
+    expect(report.attempts[1]?.checks).toBeNull();
+    expect(report.attempts[1]?.agentSummary).toBeNull();
+    // What the turn wrote before it failed is kept in its own log...
+    expect(await readText(report.attempts[1]?.agentLog ?? '')).toContain('the runtime died');
+    // ...and no check round of that attempt exists on disk.
+    expect(existsSync(path.join(result.run.logsDir, 'attempt-2-check-1.stdout.log'))).toBe(false);
+    expect(existsSync(path.join(result.run.logsDir, 'attempt-3-check-1.stdout.log'))).toBe(false);
+
+    expect(eventOrder(await recordedEvents(fixture))).toEqual([
+      'start setup-1',
+      'end setup-1',
+      'start check-1',
+      'end check-1',
+      'turn-start turn-1',
+      'turn-end turn-1',
+      'start setup-1',
+      'end setup-1',
+      'start check-1',
+      'end check-1',
+      'turn-start turn-2',
+      'turn-end turn-2',
+    ]);
+
+    const timeline = timelineMessages(await readText(report.runLog));
+    expect(lifecyclePhases(timeline)).toEqual([
+      'baseline check-round started',
+      'baseline check-round result',
+      'implementation turn started',
+      'implementation turn result',
+      'post-agent check-round started',
+      'post-agent check-round result',
+      'repair turn 2 started',
+      'repair turn 2 result',
+      'final status',
+    ]);
+    expect(timeline).toContain(
+      'repair turn 2 result: failed, the coding runtime exited unexpectedly',
+    );
+  }, 60_000);
+
+  it('stops without another turn when the round after a repair cannot be executed', async () => {
+    // The setup command succeeds only while `gate.txt` says "open", which is how
+    // a repair turn can break the round that follows it.
+    const fixture = await createFixture([{ file: 'gate.txt', text: 'open\n' }]);
+    const config = configuration(fixture, {
+      setup: [command(fixture, 'setup-1', 'need', 'gate.txt', 'open')],
+    });
+    // The implementation turn breaks what the check verifies, so the first
+    // post-agent round is a completed red one and this repair is sent back. That
+    // repair closes the gate, so the round after it cannot run at all.
+    const agent = fakeAgent(
+      fixture,
+      { mode: 'replace', text: 'broken by the implementation turn\n', holdMs: 0 },
+      {
+        2: {
+          mode: 'replace',
+          text: BASELINE_TEXT,
+          holdMs: 0,
+          extras: [{ file: 'gate.txt', text: 'closed\n' }],
+          summary: 'the repair fixed the check and closed the gate',
+        },
+      },
+    );
+
+    const result = await runTask(request(fixture, config), dependencies(agent.turn));
+
+    expect(result.status).toBe('failed');
+    expect(result.reason).toMatch(/the checks after repair turn 2 could not be executed/);
+    // An infrastructure failure costs no further coding turn.
+    expect(agent.requests).toHaveLength(2);
+
+    const report = await readReport(result.reportPath);
+    expect(report.repairsUsed).toBe(1);
+    expect(report.attempts).toHaveLength(2);
+    const observed = report.attempts[1]?.checks;
+    expect(observed?.outcome).toBe('execution-error');
+    // The check never ran, so it has no result — and the repair turn's claim that
+    // it fixed everything stays agent text, not a missing green check.
+    expect(observed?.checks).toEqual([]);
+    expect(observed?.setup.map((entry) => entry.exitCode)).toEqual([1]);
+    expect(observed?.problem).toContain('gate.txt');
+    expect(report.attempts[1]?.agentSummary).toBe('the repair fixed the check and closed the gate');
+    // The failed setup kept its own output, and the round stopped there.
+    expect(await readText(observed?.setup[0]?.stdoutPath ?? '')).toBe('ran setup-1\n');
+    expect(await readText(observed?.setup[0]?.stderrPath ?? '')).toBe('err setup-1\n');
+
+    expect(eventOrder(await recordedEvents(fixture))).toEqual([
+      'start setup-1',
+      'end setup-1',
+      'start check-1',
+      'end check-1',
+      'turn-start turn-1',
+      'turn-end turn-1',
+      'start setup-1',
+      'end setup-1',
+      'start check-1',
+      'end check-1',
+      'turn-start turn-2',
+      'turn-end turn-2',
+      'start setup-1',
+      'end setup-1',
+    ]);
+    expect(existsSync(path.join(result.run.logsDir, 'attempt-3-check-1.stdout.log'))).toBe(false);
+
+    const timeline = timelineMessages(await readText(report.runLog));
+    expect(lifecyclePhases(timeline)).toEqual([
+      'baseline check-round started',
+      'baseline check-round result',
+      'implementation turn started',
+      'implementation turn result',
+      'post-agent check-round started',
+      'post-agent check-round result',
+      'repair turn 2 started',
+      'repair turn 2 result',
+      'post-agent check-round started',
+      'post-agent check-round result',
+      'final status',
+    ]);
+    // The timeline says the round could not be executed, naming the command that
+    // stopped it — the last post-agent result of the run is that one.
+    expect(
+      timeline.filter((message) => message.startsWith('post-agent check-round result')).at(-1),
+    ).toMatch(/^post-agent check-round result: execution-error, setup command 1 of 1 /);
+  }, 60_000);
+});
+
 describe('the collaborators a run is given', () => {
   it('runs the loaded plan through the functions it was handed', async () => {
     const workDir = path.join(await createTempDir(), 'runs');
@@ -952,6 +1380,7 @@ describe('the collaborators a run is given', () => {
     expect(turn?.sourceRoot).toBe(source.sourceRoot);
     expect(turn?.baseCommit).toBe(source.baseCommit);
     expect(turn?.agentLog.path).toBe(agentLogPath(run.logsDir, 1));
+    expect(turn?.repair).toBeNull();
 
     // The report was asked for with the run's own facts, and the clock it was
     // given decided the run's times.

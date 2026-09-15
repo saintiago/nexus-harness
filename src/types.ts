@@ -138,6 +138,37 @@ export interface AttemptEvidence {
 }
 
 /**
+ * One command a completed red round observed not to succeed, as a repair turn is
+ * told about it: the invocation the harness recorded, and the output it wrote.
+ */
+export interface FailedCommand {
+  /** The invocation: its configured arguments, its exit code, and its two logs. */
+  readonly result: CommandResult;
+  /**
+   * What the command wrote, as far as it was recorded: a bounded excerpt of its
+   * two log files, or `'(no output was written)'` when it wrote nothing. The log
+   * files stay where they are — the excerpt is what a repair turn is given, not a
+   * replacement for the evidence.
+   */
+  readonly output: string;
+}
+
+/**
+ * What a repair turn is told about the round it repairs: the commands the harness
+ * observed to fail, the output they wrote, and where that output lives, alongside
+ * the task context every turn receives.
+ *
+ * Only a completed red round becomes feedback. A round that could not be executed
+ * is an infrastructure failure, so no repair turn is given it (docs/spec.md §2).
+ */
+export interface RepairFeedback {
+  /** The top-level coding turn whose post-agent round was red: the one repaired. */
+  readonly repairedTurn: number;
+  /** The checks that did not exit `0`, in the order the round ran them. */
+  readonly failures: readonly FailedCommand[];
+}
+
+/**
  * The working copy a run used, as a report records it. A run directory can exist
  * without this being a working copy: preparation can fail after the directory was
  * created, and the report then says so instead of describing a clone that was

@@ -17,6 +17,11 @@
  * Files are created exclusively and only appended to afterwards: evidence from
  * an earlier invocation or turn is never truncated or overwritten.
  *
+ * {@link readCommandOutput} reads back one invocation's two output files, bounded,
+ * for the failure output a repair turn is given. That is the only reading here:
+ * the files decide the run's evidence, and the copy handed to a coding turn never
+ * replaces them.
+ *
  * {@link writeRunReport} writes the readable final `result.json`: what the run
  * was, what every attempt did, and how it ended. It carries the evidence in the
  * same shape the run observed it in, and it points at the log files rather than
@@ -27,13 +32,14 @@
  */
 
 import { createWriteStream } from 'node:fs';
-import { appendFile, writeFile } from 'node:fs/promises';
+import { appendFile, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { WriteStream } from 'node:fs';
 import type {
   AttemptEvidence,
   AttemptKind,
   CheckRoundResult,
+  CommandResult,
   RunReport,
   RunStatus,
   WorkspaceReport,
@@ -203,6 +209,52 @@ export async function openCommandLog(logsDir: string, label: string): Promise<Co
       }
     },
   };
+}
+
+/** How much of one output file a repair turn is given, in characters. */
+const OUTPUT_EXCERPT_LIMIT = 4000;
+
+/** Marks an excerpt that left earlier output out. */
+const OUTPUT_OMITTED = '… (earlier output omitted)\n';
+
+/** What an invocation that wrote nothing is recorded as, in feedback. */
+const OUTPUT_EMPTY = '(no output was written)';
+
+/**
+ * The end of one log file, bounded. The end is the interesting part: a command
+ * reports the failure after the work that led to it. A file this run's own
+ * command wrote and that cannot be read now contributes nothing — the path is
+ * still recorded in the command result, so nothing is hidden by that.
+ */
+async function readOutputTail(file: string): Promise<string> {
+  let text: string;
+  try {
+    text = await readFile(file, 'utf8');
+  } catch {
+    return '';
+  }
+  if (text.length <= OUTPUT_EXCERPT_LIMIT) {
+    return text.trimEnd();
+  }
+  return OUTPUT_OMITTED + text.slice(text.length - OUTPUT_EXCERPT_LIMIT).trimEnd();
+}
+
+/**
+ * What one command invocation wrote, as far as it was recorded: its standard
+ * output and its standard error, each labelled with the log file it came from and
+ * bounded to the end of that file. This is the failure output a repair turn is
+ * given (docs/spec.md §2). It is a copy for that turn; the files themselves stay
+ * where they are, unchanged.
+ */
+export async function readCommandOutput(result: CommandResult): Promise<string> {
+  const stdout = await readOutputTail(result.stdoutPath);
+  const stderr = await readOutputTail(result.stderrPath);
+  return [
+    `stdout (${result.stdoutPath}):`,
+    stdout === '' ? OUTPUT_EMPTY : stdout,
+    `stderr (${result.stderrPath}):`,
+    stderr === '' ? OUTPUT_EMPTY : stderr,
+  ].join('\n');
 }
 
 /** Why a taken agent-log name is refused rather than reused. */
