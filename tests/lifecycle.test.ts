@@ -417,19 +417,62 @@ async function beatsOf(fixture: Fixture, id: string): Promise<Beat[]> {
  * readiness signal these tests coordinate on, so nothing here waits a fixed time
  * hoping that a process has started. The PIDs are registered for cleanup before
  * they are returned, which is before any assertion about them.
+ *
+ * What is waited for is the complete record, not the file: the file appears when
+ * it is opened, and a reader that arrives between the open and the write sees a
+ * name with nothing in it. A record that never becomes readable still fails this
+ * test, with the same explanation as one that never appears.
  */
 async function fixtureRecorded(fixture: Fixture, id: string): Promise<PidRecord> {
   const file = `${fixture.pidFile}.${id}`;
+  let read = '';
   const deadline = Date.now() + 30_000;
-  while (!existsSync(file) && Date.now() < deadline) {
+  for (;;) {
+    if (existsSync(file)) {
+      read = await readText(file);
+      try {
+        const record = JSON.parse(read) as PidRecord;
+        registerFixture(record);
+        return record;
+      } catch {
+        // Half-written: the fixture is still writing its record.
+      }
+    }
+    if (Date.now() >= deadline) {
+      break;
+    }
     await pause(20);
   }
-  if (!existsSync(file)) {
-    throw new Error(`the fixture "${id}" never recorded its PIDs in ${file}`);
+  throw new Error(
+    `the fixture "${id}" never recorded its PIDs in ${file}` +
+      (read === '' ? '' : `; it was left holding ${JSON.stringify(read)}`),
+  );
+}
+
+/**
+ * Waits, bounded, for one fixture process to record a beat, and returns it.
+ *
+ * The PID file is written before the beats that follow it, so it is a signal that
+ * the process is running, not that a later beat exists yet: asserting on a beat
+ * as soon as the PID file appears can read the beat file in the window between
+ * the two, which a loaded machine widens. Waiting for the beat itself is waiting
+ * on the condition the assertion is about, so a beat that really never arrives
+ * fails this test rather than passing it by luck.
+ */
+async function fixtureBeat(fixture: Fixture, id: string, event: Beat['event']): Promise<Beat> {
+  const deadline = Date.now() + 30_000;
+  for (;;) {
+    const beat = (await beatsOf(fixture, id)).find((one) => one.event === event);
+    if (beat !== undefined) {
+      return beat;
+    }
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `the fixture "${id}" never recorded a "${event}" beat in ${fixture.beatsFile}`,
+      );
+    }
+    await pause(10);
   }
-  const record = JSON.parse(await readText(file)) as PidRecord;
-  registerFixture(record);
-  return record;
 }
 
 /** The written report, parsed: these tests read what the run left on disk. */
@@ -506,8 +549,8 @@ describe('a run its caller stops, for real', () => {
     const setup = await fixtureRecorded(fixture, 'setup-one');
     expect(stillRunning(setup.pid)).toBe(true);
     expect(setup.child).not.toBeNull();
-    expect(await beatsOf(fixture, 'setup-one')).toContainEqual(
-      expect.objectContaining({ event: 'hanging' }),
+    expect(await fixtureBeat(fixture, 'setup-one', 'hanging')).toEqual(
+      expect.objectContaining({ id: 'setup-one', event: 'hanging' }),
     );
 
     controller.abort();
@@ -602,10 +645,13 @@ describe('a run its caller stops, for real', () => {
       }),
     );
 
-    // The check the implementation made hang is running, with a child of its own.
+    // The check the implementation made hang is running, with a child of its own,
+    // and it has beat at least once: the PID file precedes the beats, so the
+    // heartbeat the assertion below reads is waited for here rather than assumed.
     const check = await fixtureRecorded(fixture, 'check-one');
     expect(stillRunning(check.pid)).toBe(true);
     expect(check.child).not.toBeNull();
+    await fixtureBeat(fixture, 'check-one', 'beating');
 
     controller.abort();
     const result = await running;
