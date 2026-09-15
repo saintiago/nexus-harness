@@ -45,7 +45,7 @@ Dependencies are task IDs. The normal execution order is top to bottom.
 | [x] | T01 | Read-only repository and output-path preflight | Scaffold |
 | [x] | T02 | Unique run directory and dedicated local clone | T01 |
 | [x] | T03 | Literal-argument command execution and logs | T02 |
-| [ ] | T04 | Sequential setup and complete check rounds | T03 |
+| [x] | T04 | Sequential setup and complete check rounds | T03 |
 | [ ] | T05 | Final report and attempt evidence | T02, T04 |
 | [ ] | T06 | Baseline and implementation loop with a fake agent | T04, T05 |
 | [ ] | T07 | Bounded repair loop and honest outcomes | T06 |
@@ -551,4 +551,29 @@ Limitations: launcher verification is Windows 11 / Node 24.14 with cmd.exe only;
   command needing one must name a real executable). Timeouts and cancellation are not
   implemented here (T08–T09); no CLI wiring yet (T13).
 Next ready task: T04
+```
+
+```text
+Task: T04 — Sequential setup and complete check rounds
+Result: complete
+Changed: src/checks.ts exports runCheckRound() and CheckRoundRequest: one reusable round that runs
+  the configured setup commands in order (an empty setup list is valid) and, only when every one of
+  them exited 0, runs every configured check in order, one at a time. An ordinary nonzero check
+  exit is recorded and the later checks still run: a completed red round. A setup command that does
+  not exit 0, a command that could not be started, and a command killed by a signal stop the round
+  as an execution error with an explanation, and the commands after it have no result at all.
+  src/types.ts gained RoundOutcome and CheckRoundResult. tests/checks.test.ts gained an
+  event-recording fixture and 7 cases.
+Verification: npm ci exit 0 (137 packages, 0 vulnerabilities); npm test -- tests/checks.test.ts
+  exit 0 (29 passed); npm run validate exit 0 (format:check, lint, typecheck, test 128 passed /
+  1 skipped, build).
+Evidence: temporary directories only; a round writes only its own log files under `<logsDir>`.
+  Regression probes confirmed the new cases bite: starting the checks concurrently failed 3 of
+  them, and stopping at the first failing check failed 2; both probes were reverted.
+Limitations: verified on Windows 11 / Node 24.14 only. The signalled stop path is implemented but
+  not exercised by a test: a child that kills itself on Windows is reported as an ordinary nonzero
+  exit (code 1, signal null), and only Node's own child.kill produces a signal, which belongs to
+  the T08/T09 stop paths. Timeout/cancellation are not built here, and run.log round lines stay the
+  runner's job (T06). No CLI wiring yet (T13).
+Next ready task: T05
 ```

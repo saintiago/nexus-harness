@@ -59,6 +59,38 @@ export interface CommandResult {
   readonly stderrPath: string;
 }
 
+/**
+ * How one setup/check round ended.
+ *
+ * `passed` and `failed` are completed rounds: every configured check was
+ * attempted, and each has a result. `failed` means at least one of them exited
+ * nonzero, which is an ordinary red round: repair feedback. `execution-error`
+ * is an incomplete round — a setup command failed, or a command could not be
+ * executed — so the round stopped early and the commands after it have no
+ * result at all.
+ */
+export type RoundOutcome = 'passed' | 'failed' | 'execution-error';
+
+/** What one setup/check round did, and how it ended. */
+export interface CheckRoundResult {
+  /** How the round ended; see {@link RoundOutcome}. */
+  readonly outcome: RoundOutcome;
+  /** Setup invocations that ran, in configured order. Empty for an empty setup list. */
+  readonly setup: readonly CommandResult[];
+  /**
+   * Check invocations that ran, in configured order. A completed round holds one
+   * result per configured check; a round that stopped early holds only the ones
+   * that ran. A check that never ran is absent, never a successful result.
+   */
+  readonly checks: readonly CommandResult[];
+  /**
+   * Why the round stopped before running every configured check, or `null` for a
+   * completed round. A red round is completed: its failed checks are results,
+   * not a problem to explain.
+   */
+  readonly problem: string | null;
+}
+
 /** Validated contents of a task file. */
 export interface Task {
   /** Label used in reports and logs. Never a path and never a shell argument. */

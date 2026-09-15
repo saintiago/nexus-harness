@@ -1,21 +1,21 @@
 /**
- * Command execution and log tests.
+ * Command execution, setup/check rounds, and log tests.
  *
  * Every command here is a real, harmless child process started in a temporary
  * fixture directory: no network, no credentials, and nothing outside those
- * temporary directories is written or removed. The fixture program reports the
- * arguments, working directory, and environment it actually received, so these
+ * temporary directories is written or removed. The fixture programs report the
+ * arguments, working directory, and environment they actually received, so these
  * tests assert what the operating system delivered rather than what the harness
- * intended to send. See docs/tasks.md T03 for the acceptance criteria.
+ * intended to send. See docs/tasks.md T03 and T04 for the acceptance criteria.
  */
 
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { commandSucceeded, runCommand } from '../src/checks.js';
+import { commandSucceeded, runCheckRound, runCommand } from '../src/checks.js';
 import { ReportError, appendRunLog, openCommandLog, runLogPath } from '../src/report.js';
-import type { Command, CommandResult } from '../src/types.js';
+import type { CheckRoundResult, Command, CommandResult } from '../src/types.js';
 import { cleanupTempDirectories, createTempDir } from './support.js';
 
 afterEach(cleanupTempDirectories);
@@ -122,6 +122,118 @@ function expectNothingInjected(fixture: Fixture): void {
   for (const directory of [fixture.workspace, fixture.base, fixture.root]) {
     expect(existsSync(path.join(directory, 'redirected.txt'))).toBe(false);
   }
+}
+
+/**
+ * The recording fixture: every invocation appends its own `start` and `end`
+ * record to one shared event file, so the order the commands ran in — and
+ * whether any two were alive at the same time — is read from what the child
+ * processes did rather than from what the harness intended. A lock file is held
+ * for the whole life of an invocation: a second invocation running at the same
+ * moment finds it and records an `overlap` instead of hiding the overlap.
+ */
+const RECORD_SOURCE = [
+  "import { appendFileSync, rmSync, writeFileSync } from 'node:fs';",
+  '',
+  'const [, , id, eventsFile, lockFile, exitCode] = process.argv;',
+  'const record = (event) =>',
+  "  appendFileSync(eventsFile, `${JSON.stringify({ event, id, at: Date.now() })}\\n`, 'utf8');",
+  '',
+  'let holdsLock = true;',
+  'try {',
+  "  writeFileSync(lockFile, `${id}\\n`, { flag: 'wx' });",
+  '} catch {',
+  '  holdsLock = false;',
+  '}',
+  '',
+  "record(holdsLock ? 'start' : 'overlap');",
+  'process.stdout.write(`ran ${id}\\n`);',
+  'process.stderr.write(`err ${id}\\n`);',
+  'if (holdsLock) {',
+  '  rmSync(lockFile);',
+  '}',
+  "record('end');",
+  'process.exit(holdsLock ? Number(exitCode) : 97);',
+  '',
+].join('\n');
+
+/** A fixture whose commands record their own execution. */
+interface RoundFixture extends Fixture {
+  /** The program that records what each invocation did. */
+  readonly record: string;
+  /** One JSON event record per line, appended by every invocation. */
+  readonly eventsFile: string;
+  /** Held by a running invocation, so a concurrent one records an overlap. */
+  readonly lockFile: string;
+}
+
+/** A fixture with the recording program, on top of the usual temporary layout. */
+async function createRoundFixture(options: { spaced?: boolean } = {}): Promise<RoundFixture> {
+  const fixture = await createFixture(options);
+  const record = path.join(fixture.base, 'record.mjs');
+  await writeFile(record, RECORD_SOURCE, 'utf8');
+  return {
+    ...fixture,
+    record,
+    eventsFile: path.join(fixture.base, 'events.jsonl'),
+    lockFile: path.join(fixture.base, 'record.lock'),
+  };
+}
+
+/** One configured command that runs the recording fixture under `id`. */
+function recorded(fixture: RoundFixture, id: string, exitCode = 0): Command {
+  return [
+    process.execPath,
+    fixture.record,
+    id,
+    fixture.eventsFile,
+    fixture.lockFile,
+    String(exitCode),
+  ];
+}
+
+/** Runs one setup/check round in the fixture workspace. */
+function runRound(
+  fixture: RoundFixture,
+  parts: { name: string; setup?: readonly Command[]; checks: readonly Command[] },
+): Promise<CheckRoundResult> {
+  return runCheckRound({
+    setup: parts.setup ?? [],
+    checks: parts.checks,
+    cwd: fixture.workspace,
+    logsDir: fixture.logsDir,
+    name: parts.name,
+  });
+}
+
+interface RecordedEvent {
+  readonly event: 'start' | 'end' | 'overlap';
+  readonly id: string;
+  readonly at: number;
+}
+
+/** The events recorded so far, in the order the child processes wrote them. */
+async function recordedEvents(fixture: RoundFixture): Promise<RecordedEvent[]> {
+  if (!existsSync(fixture.eventsFile)) {
+    return [];
+  }
+  return (await readText(fixture.eventsFile))
+    .split('\n')
+    .filter((line) => line !== '')
+    .map((line) => JSON.parse(line) as RecordedEvent);
+}
+
+/**
+ * Asserts that exactly these invocations started and finished, in this order,
+ * one at a time. A second invocation alive at the same moment shows up either as
+ * an `overlap` record or as an interleaved `start`/`end` pair.
+ */
+async function expectSequential(fixture: RoundFixture, ids: readonly string[]): Promise<void> {
+  const events = await recordedEvents(fixture);
+  expect(events.map((event) => event.event)).not.toContain('overlap');
+  expect(events.map((event) => `${event.event} ${event.id}`)).toEqual(
+    ids.flatMap((id) => [`start ${id}`, `end ${id}`]),
+  );
 }
 
 describe('a configured command', () => {
@@ -460,6 +572,168 @@ describe('a workspace path containing spaces', () => {
     expect((await reportedBy(result)).cwd).toBe(fixture.workspace);
     expect(existsSync(path.join(fixture.logsDir, 'check-1.stdout.log'))).toBe(true);
   }, 30_000);
+});
+
+/**
+ * One setup/check round: the configured setup commands first, then every
+ * configured check. The commands are real child processes that record and
+ * serialize themselves, so order and overlap are asserted from what the children
+ * did. See docs/tasks.md T04.
+ */
+describe('a setup/check round', () => {
+  it('runs setup and every check in the configured order, one at a time', async () => {
+    const fixture = await createRoundFixture();
+    const setup: Command[] = [recorded(fixture, 'setup-1'), recorded(fixture, 'setup-2')];
+    const checks: Command[] = [
+      recorded(fixture, 'check-1'),
+      recorded(fixture, 'check-2'),
+      recorded(fixture, 'check-3'),
+    ];
+
+    const round = await runRound(fixture, { name: 'baseline', setup, checks });
+
+    expect(round.outcome).toBe('passed');
+    expect(round.problem).toBeNull();
+    expect(round.setup.map((result) => result.command)).toEqual(setup);
+    expect(round.checks.map((result) => result.command)).toEqual(checks);
+    // Exactly one successful observation per configured check, each with its own
+    // log files holding that command's own output.
+    expect(round.checks).toHaveLength(checks.length);
+    expect(round.checks.every(commandSucceeded)).toBe(true);
+    expect(new Set(round.checks.map((result) => result.stdoutPath)).size).toBe(checks.length);
+    for (const [index, result] of round.checks.entries()) {
+      const position = index + 1;
+      expect(result.stdoutPath).toBe(
+        path.join(fixture.logsDir, `baseline-check-${position}.stdout.log`),
+      );
+      expect(await readText(result.stdoutPath)).toBe(`ran check-${position}\n`);
+    }
+    await expectSequential(fixture, ['setup-1', 'setup-2', 'check-1', 'check-2', 'check-3']);
+  }, 60_000);
+
+  it('keeps running every check after one of them fails', async () => {
+    const fixture = await createRoundFixture();
+    const checks: Command[] = [
+      recorded(fixture, 'check-1', 3),
+      recorded(fixture, 'check-2'),
+      recorded(fixture, 'check-3', 7),
+    ];
+
+    const round = await runRound(fixture, { name: 'attempt-1', checks });
+
+    // A completed red round: every configured check was attempted, and each
+    // result is kept as its own evidence for a repair turn to read.
+    expect(round.outcome).toBe('failed');
+    expect(round.problem).toBeNull();
+    expect(round.checks).toHaveLength(checks.length);
+    expect(round.checks.map((result) => result.exitCode)).toEqual([3, 0, 7]);
+    expect(round.checks.map(commandSucceeded)).toEqual([false, true, false]);
+    expect(await readText(round.checks[0]?.stdoutPath ?? '')).toBe('ran check-1\n');
+    expect(await readText(round.checks[1]?.stdoutPath ?? '')).toBe('ran check-2\n');
+    await expectSequential(fixture, ['check-1', 'check-2', 'check-3']);
+  }, 60_000);
+
+  it('stops at a failing setup command, before the later setup and all checks', async () => {
+    const fixture = await createRoundFixture();
+    const setup: Command[] = [recorded(fixture, 'setup-1', 1), recorded(fixture, 'setup-2')];
+    const checks: Command[] = [recorded(fixture, 'check-1'), recorded(fixture, 'check-2')];
+
+    const round = await runRound(fixture, { name: 'baseline', setup, checks });
+
+    expect(round.outcome).toBe('execution-error');
+    expect(round.problem).toMatch(/setup command 1 of 2/);
+    expect(round.problem).toMatch(/exited with code 1/);
+    expect(round.setup).toHaveLength(1);
+    expect(round.setup[0]?.exitCode).toBe(1);
+    // No check has a result: none of them ran.
+    expect(round.checks).toEqual([]);
+    await expectSequential(fixture, ['setup-1']);
+  }, 60_000);
+
+  it('stops at a setup command that cannot start, and runs no check', async () => {
+    const fixture = await createRoundFixture();
+    const absent = path.join(fixture.root, 'no-such-program-xyz');
+    const setup: Command[] = [recorded(fixture, 'setup-1'), [absent]];
+    const checks: Command[] = [recorded(fixture, 'check-1')];
+
+    const round = await runRound(fixture, { name: 'baseline', setup, checks });
+
+    expect(round.outcome).toBe('execution-error');
+    expect(round.problem).toMatch(/setup command 2 of 2/);
+    expect(round.problem).toContain(absent);
+    expect(round.setup).toHaveLength(2);
+    expect(round.setup[1]?.outcome).toBe('failed-to-launch');
+    expect(round.checks).toEqual([]);
+    await expectSequential(fixture, ['setup-1']);
+  }, 60_000);
+
+  it('stops at a check that cannot execute, and is not a red check round', async () => {
+    const fixture = await createRoundFixture();
+    const absent = path.join(fixture.root, 'no-such-program-xyz');
+    const checks: Command[] = [
+      recorded(fixture, 'check-1'),
+      [absent, 'argument'],
+      recorded(fixture, 'check-3'),
+    ];
+
+    const stopped = await runRound(fixture, { name: 'attempt-1', checks });
+
+    expect(stopped.outcome).toBe('execution-error');
+    expect(stopped.problem).toMatch(/check 2 of 3/);
+    expect(stopped.problem).toContain(absent);
+    // Only the checks that ran are results: the one that never started is not a
+    // failed check, and the one after it is not a success either.
+    expect(stopped.checks).toHaveLength(2);
+    expect(stopped.checks[1]?.outcome).toBe('failed-to-launch');
+    expect(stopped.checks[1]?.exitCode).toBeNull();
+    expect(stopped.checks.map(commandSucceeded)).toEqual([true, false]);
+    await expectSequential(fixture, ['check-1']);
+
+    // A completed red round is a different thing in the same returned data:
+    // every configured check has a result, the round is red, and the round has
+    // nothing to explain.
+    const red = await runRound(fixture, {
+      name: 'attempt-2',
+      checks: [recorded(fixture, 'red-1', 2)],
+    });
+    expect(red.outcome).toBe('failed');
+    expect(red.problem).toBeNull();
+    expect(red.checks).toHaveLength(1);
+    expect(stopped.outcome).not.toBe(red.outcome);
+    expect(stopped.problem).not.toBeNull();
+  }, 60_000);
+
+  it('runs the checks directly when setup is empty', async () => {
+    const fixture = await createRoundFixture();
+    const checks: Command[] = [recorded(fixture, 'check-1'), recorded(fixture, 'check-2')];
+
+    const round = await runRound(fixture, { name: 'attempt-1', setup: [], checks });
+
+    expect(round.outcome).toBe('passed');
+    expect(round.setup).toEqual([]);
+    expect(round.checks).toHaveLength(checks.length);
+    expect(round.checks.every(commandSucceeded)).toBe(true);
+    await expectSequential(fixture, ['check-1', 'check-2']);
+    // Nothing ran before the checks, so nothing was logged for setup.
+    expect((await readdir(fixture.logsDir)).sort()).toEqual([
+      'attempt-1-check-1.stderr.log',
+      'attempt-1-check-1.stdout.log',
+      'attempt-1-check-2.stderr.log',
+      'attempt-1-check-2.stdout.log',
+    ]);
+  }, 60_000);
+
+  it('keeps the logs of an earlier round when the same checks run again', async () => {
+    const fixture = await createRoundFixture();
+    const checks: Command[] = [recorded(fixture, 'check-1', 4)];
+
+    const baseline = await runRound(fixture, { name: 'baseline', checks });
+    const attempt = await runRound(fixture, { name: 'attempt-1', checks });
+
+    expect(baseline.checks[0]?.stdoutPath).not.toBe(attempt.checks[0]?.stdoutPath);
+    expect(await readText(baseline.checks[0]?.stdoutPath ?? '')).toBe('ran check-1\n');
+    expect(await readText(attempt.checks[0]?.stdoutPath ?? '')).toBe('ran check-1\n');
+  }, 60_000);
 });
 
 /**

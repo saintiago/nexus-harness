@@ -36,15 +36,24 @@
  * shim. On every platform the executable is resolved from `PATH` (and, on
  * Windows, `PATHEXT`); the working directory is never searched implicitly.
  *
+ * {@link runCheckRound} composes this helper into one reusable setup/check
+ * round: the configured setup commands run first, in order, and only when every
+ * one of them succeeded do all configured checks run, in order, one at a time.
+ * An ordinary failing check does not skip the checks after it — that is the red
+ * round the repair loop works from — while a failing setup command, a command
+ * that could not be started, and a command killed by a signal end the round as
+ * an execution error. The result says which of the two happened, and a check
+ * that never ran has no result at all.
+ *
  * Timeouts and cancellation are not implemented here yet: they belong to the
- * deadline and cancellation tasks, which wrap this helper.
+ * deadline and cancellation tasks, which wrap these helpers.
  */
 
 import { spawn } from 'node:child_process';
 import { statSync } from 'node:fs';
 import path from 'node:path';
 import { openCommandLog } from './report.js';
-import type { Command, CommandOutcome, CommandResult } from './types.js';
+import type { CheckRoundResult, Command, CommandOutcome, CommandResult } from './types.js';
 
 /** What one command invocation is asked to do. */
 export interface RunCommandRequest {
@@ -56,6 +65,25 @@ export interface RunCommandRequest {
   readonly logsDir: string;
   /** Names this invocation's two log files, for example `check-2`. */
   readonly label: string;
+}
+
+/** What one setup/check round is asked to do. */
+export interface CheckRoundRequest {
+  /** Setup commands, run in this order before the checks. May be empty. */
+  readonly setup: readonly Command[];
+  /** Checks, run in this order once setup has succeeded. */
+  readonly checks: readonly Command[];
+  /** Working directory every command of the round runs in. */
+  readonly cwd: string;
+  /** `<runDir>/logs`, where each invocation's output files are created. */
+  readonly logsDir: string;
+  /**
+   * Names this round, and with it every invocation's log files:
+   * `<name>-setup-1`, `<name>-check-2`. A later round in the same run needs a
+   * different name, because log files are created exclusively and the output of
+   * an earlier round is never overwritten.
+   */
+  readonly name: string;
 }
 
 /** Extensions a Windows command interpreter has to start for the harness. */
@@ -335,4 +363,115 @@ export async function runCommand(request: RunCommandRequest): Promise<CommandRes
 
   await log.close();
   return result;
+}
+
+/** How a round names one invocation when explaining why it stopped. */
+function describeInvocation(
+  kind: 'setup command' | 'check',
+  position: number,
+  total: number,
+  command: Command,
+): string {
+  return `${kind} ${position} of ${total} (${JSON.stringify(command)})`;
+}
+
+/** Why a command stopped a round, for a command that did not simply exit `0`. */
+function describeStop(where: string, result: CommandResult): string {
+  if (result.outcome === 'failed-to-launch') {
+    return `${where} could not be started: ${result.launchError ?? 'no launch error was recorded'}`;
+  }
+  if (result.outcome === 'signalled') {
+    return (
+      `${where} was killed by ${result.signal ?? 'a signal'}: a command that does not run to ` +
+      'completion is an execution failure, not a failed check'
+    );
+  }
+  return `${where} exited with code ${String(result.exitCode)}`;
+}
+
+/** What an early stop costs the rest of the round, said once per stage. */
+const SETUP_STOPPED =
+  'The round stopped before the checks ran: no later setup command and no check was run. A ' +
+  'setup problem is not a failed check to repair.';
+const EXECUTION_STOPPED =
+  'The round stopped there: no later check was run. A command that could not be executed is ' +
+  'not a failed check to repair.';
+
+/** The result of a round that stopped before it had attempted every check. */
+function incompleteRound(
+  setup: readonly CommandResult[],
+  checks: readonly CommandResult[],
+  problem: string,
+): CheckRoundResult {
+  return { outcome: 'execution-error', setup, checks, problem };
+}
+
+/**
+ * Runs one setup/check round and reports what every invocation did.
+ *
+ * Setup runs first, in configured order, and an empty setup list is valid. Only
+ * when every setup command exited `0` do the checks run, in configured order,
+ * one at a time, and each is recorded whether it passes or fails: an ordinary
+ * nonzero check exits and the later checks still run. Such a round is complete
+ * and red (`'failed'`), which is what a repair turn is for.
+ *
+ * A setup command that does not exit `0`, and any command that cannot be
+ * executed at all — one that never started, or one killed by a signal — ends the
+ * round immediately as `'execution-error'` with a `problem` explaining it. The
+ * commands after it did not run, so they have no result: an unexecuted check is
+ * absent from `checks`, never reported as a success.
+ *
+ * A failure to create or write an invocation's log files is a
+ * {@link ReportError}: the round stops with that error rather than returning a
+ * result whose evidence was lost.
+ */
+export async function runCheckRound(request: CheckRoundRequest): Promise<CheckRoundResult> {
+  const { setup, checks, cwd, logsDir, name } = request;
+  const setupResults: CommandResult[] = [];
+  const checkResults: CommandResult[] = [];
+
+  for (const [index, command] of setup.entries()) {
+    const result = await runCommand({
+      command,
+      cwd,
+      logsDir,
+      label: `${name}-setup-${index + 1}`,
+    });
+    setupResults.push(result);
+    if (!commandSucceeded(result)) {
+      const where = describeInvocation('setup command', index + 1, setup.length, command);
+      return incompleteRound(
+        setupResults,
+        checkResults,
+        `${describeStop(where, result)}.\n${SETUP_STOPPED}`,
+      );
+    }
+  }
+
+  for (const [index, command] of checks.entries()) {
+    const result = await runCommand({
+      command,
+      cwd,
+      logsDir,
+      label: `${name}-check-${index + 1}`,
+    });
+    checkResults.push(result);
+    // A check that exited nonzero is a result like any other, and the remaining
+    // checks still run. A check that could not run has no result to keep.
+    if (result.outcome !== 'exited') {
+      const where = describeInvocation('check', index + 1, checks.length, command);
+      return incompleteRound(
+        setupResults,
+        checkResults,
+        `${describeStop(where, result)}.\n${EXECUTION_STOPPED}`,
+      );
+    }
+  }
+
+  return {
+    outcome: checkResults.every(commandSucceeded) ? 'passed' : 'failed',
+    setup: setupResults,
+    checks: checkResults,
+    problem: null,
+  };
 }
