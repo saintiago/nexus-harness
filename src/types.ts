@@ -32,8 +32,24 @@ export interface HarnessConfig {
  * How one configured command ended. Only `exited` with exit code `0` is a
  * success: a command that could not be started is never reported as an exit,
  * and a signalled command is an execution failure, not repair feedback.
+ *
+ * `timed-out` is the harness's own doing: the invocation was still running when
+ * the limit it was given expired, so the harness stopped it. It is an execution
+ * failure — never a failed check to repair — and it says nothing about whether
+ * the command would have passed given more time.
  */
-export type CommandOutcome = 'exited' | 'signalled' | 'failed-to-launch';
+export type CommandOutcome = 'exited' | 'signalled' | 'timed-out' | 'failed-to-launch';
+
+/**
+ * Whether the harness established that a process tree it stopped really ended.
+ *
+ * `confirmed` means the stop was requested successfully *and* nothing of the
+ * stopped invocation was left running. Anything else — the host has no usable
+ * way to stop it, or it did not end in time — is `unconfirmed`, which is a
+ * limitation a report must state rather than round down: a working copy that may
+ * still be written to must not be declared safe to reuse (docs/spec.md §3).
+ */
+export type TerminationOutcome = 'confirmed' | 'unconfirmed';
 
 /** What one configured command invocation did, and where its output went. */
 export interface CommandResult {
@@ -53,6 +69,22 @@ export interface CommandResult {
   readonly signal: string | null;
   /** Why the command could not be started; `null` when it did run. */
   readonly launchError: string | null;
+  /**
+   * The limit this invocation ran under, in milliseconds: the smaller of its
+   * configured command limit and the task time that was left when it started
+   * (docs/spec.md §3). The remaining task time always wins, so this is the
+   * limit that expired for an invocation that ended as `timed-out`.
+   */
+  readonly timeoutMs: number;
+  /**
+   * How the process tree this invocation started was stopped when its limit
+   * expired; `null` when the harness stopped nothing, because the invocation had
+   * ended by itself. A stop this harness cannot confirm is recorded as
+   * `unconfirmed` together with {@link CommandResult.terminationProblem}.
+   */
+  readonly termination: TerminationOutcome | null;
+  /** What could not be confirmed about the stop; `null` when it was confirmed. */
+  readonly terminationProblem: string | null;
   /** Log file holding this invocation's standard output. */
   readonly stdoutPath: string;
   /** Log file holding this invocation's standard error. */
@@ -67,7 +99,8 @@ export interface CommandResult {
  * nonzero, which is an ordinary red round: repair feedback. `execution-error`
  * is an incomplete round — a setup command failed, or a command could not be
  * executed — so the round stopped early and the commands after it have no
- * result at all.
+ * result at all. An expired limit is one of those ways to stop: a command that
+ * was stopped for running too long is an execution error, never a red round.
  */
 export type RoundOutcome = 'passed' | 'failed' | 'execution-error';
 
@@ -185,6 +218,40 @@ export interface WorkspaceReport {
   readonly problem: string | null;
 }
 
+/** Which limit expired for a run: its total task time, or one command's own. */
+export type TimeoutLimit = 'task' | 'command';
+
+/**
+ * What a run that stopped because time ran out has to say about it: which limit
+ * expired, where in the run it expired, and whether the harness was able to
+ * confirm that the execution it stopped really ended.
+ *
+ * A timeout is a `failed` run, never a red check round, and this is the record
+ * of it — the run's report keeps exactly one, so a reader is never left to infer
+ * from a bare "timed out" which limit was involved or whether anything of the
+ * run's own work is still running (docs/spec.md §3).
+ */
+export interface TimeoutEvidence {
+  /** Whether the run's total task time or one command's limit expired. */
+  readonly limit: TimeoutLimit;
+  /** The part of the run that was in progress, in a few words. */
+  readonly phase: string;
+  /** The limit that expired, in milliseconds. */
+  readonly limitMs: number;
+  /** How much of the run's total task time had been used, in milliseconds. */
+  readonly elapsedMs: number;
+  /**
+   * Whether owned execution was confirmed to have stopped. `confirmed` when
+   * nothing was left to stop, or when the harness stopped it and saw it end.
+   */
+  readonly termination: TerminationOutcome;
+  /**
+   * What could not be confirmed, when {@link TimeoutEvidence.termination} is
+   * `unconfirmed`; `null` when termination was confirmed.
+   */
+  readonly problem: string | null;
+}
+
 /** The final report of one run: the contents of `<runDir>/result.json`. */
 export interface RunReport {
   /** Generated run ID: the run's name in logs, reports, and its branch. */
@@ -212,6 +279,11 @@ export interface RunReport {
   readonly baseline: CheckRoundResult | null;
   /** One entry per top-level coding turn, oldest first. */
   readonly attempts: readonly AttemptEvidence[];
+  /**
+   * Why the run's time ran out; `null` for a run that ended for another reason.
+   * Present exactly when the run stopped because a limit expired.
+   */
+  readonly timeout: TimeoutEvidence | null;
   /** The run's compact lifecycle timeline: `<runDir>/logs/run.log`. */
   readonly runLog: string;
 }

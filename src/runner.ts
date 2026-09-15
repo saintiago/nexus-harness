@@ -40,6 +40,23 @@
  * with it the agent's own summary of it, is kept in the result; the agent's
  * account of a turn is never what decides the status.
  *
+ * ## One deadline, spent by every phase
+ *
+ * The run's total task time is turned into one absolute deadline before
+ * preparation and is never recomputed: preparation, setup, coding turns, and
+ * checks all spend that same budget, and a repair turn is not given a fresh one.
+ * Each configured command runs under the smaller of its configured limit and the
+ * time that is left, and each phase reads what is left before it starts anything.
+ *
+ * When a limit expires the run is over. It stops there — no later command, no
+ * further round, no repair turn — records what it stopped and whether that stop
+ * could be confirmed, and ends as `failed`: an expired limit is not a red check
+ * round to repair, and the exit code of a command that was cut short says nothing
+ * about the task (docs/spec.md §3). An unconfirmed stop is stated rather than
+ * assumed, because a working copy that something may still be writing to must
+ * not be reused. A run that runs out of time before a run directory exists has
+ * nothing to report and is refused instead.
+ *
  * Everything the runner needs from outside is a function it was given: the
  * working copy, the checks, the coding turn, the report files, and the clock
  * (see {@link RunnerDependencies}). Only the order is decided here — the helper
@@ -47,8 +64,8 @@
  * the runner does not parse arguments, build commands, or talk to a runtime.
  *
  * The coding runtime is still absent, so `runAgentTurn` has no production
- * implementation and the public `run` command stays unavailable; the deadline and
- * cancellation stop paths are the following tasks' work.
+ * implementation and the public `run` command stays unavailable; cancellation is
+ * the following task's work, and reuses the stop path this one establishes.
  */
 
 import { commandSucceeded } from './checks.js';
@@ -64,6 +81,9 @@ import type {
   RepairFeedback,
   RunStatus,
   Task,
+  TerminationOutcome,
+  TimeoutEvidence,
+  TimeoutLimit,
 } from './types.js';
 import type {
   PreparedWorkspace,
@@ -71,6 +91,19 @@ import type {
   RunDirectory,
   SourcePreflight,
 } from './workspace.js';
+
+/**
+ * A run refused because its task time ran out before a run directory existed.
+ * It is thrown rather than reported: with no run directory there is no report to
+ * write and no working copy to keep, and inventing one would describe a run that
+ * never happened (docs/spec.md §3).
+ */
+export class RunTimeoutError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = 'RunTimeoutError';
+  }
+}
 
 /** What one run is asked to do: the loaded inputs, already validated and resolved. */
 export interface RunTaskRequest {
@@ -123,6 +156,16 @@ export interface AgentTurnRequest {
    * the original task and what was observed to go wrong.
    */
   readonly repair: RepairFeedback | null;
+  /**
+   * Asked to abort when the run's remaining task time is used up, and — from
+   * T09 — when the user stops the run. A turn is not the only thing that spends
+   * the run's budget, so this signal carries the same deadline every other phase
+   * does, in the one form a runtime can honour: the turn stops working, stops
+   * the processes it manages, and returns. The runner awaits it and then starts
+   * nothing further, so a turn that ignores the signal delays the run's end but
+   * can never add a check, a repair, or a status of its own.
+   */
+  readonly stop: AbortSignal;
 }
 
 /**
@@ -150,10 +193,14 @@ export interface RunnerDependencies {
   readonly preflight: (request: PreflightRequest) => Promise<SourcePreflight>;
   /** Allocates `<workDir>/<runId>` with its `workspace` and `logs` directories. */
   readonly allocateRunDirectory: (workDir: string) => Promise<RunDirectory>;
-  /** Fills an allocated run directory with a clone of the recorded base. */
+  /**
+   * Fills an allocated run directory with a clone of the recorded base, bounded
+   * by the run's remaining task time.
+   */
   readonly prepareWorkspace: (
     run: RunDirectory,
     source: SourcePreflight,
+    bounds: { readonly deadlineMs: number; readonly now: () => Date },
   ) => Promise<PreparedWorkspace>;
   /** Runs one setup/check round in the working copy. */
   readonly runCheckRound: (request: CheckRoundRequest) => Promise<CheckRoundResult>;
@@ -179,8 +226,36 @@ export interface RunTaskResult {
   readonly status: RunStatus;
   /** Why it ended that way, in one sentence. */
   readonly reason: string;
+  /**
+   * What stopped the run when its time ran out, as the report records it;
+   * `null` for a run that ended for any other reason.
+   */
+  readonly timeout: TimeoutEvidence | null;
   /** The written final report: `<runDir>/result.json`. */
   readonly reportPath: string;
+}
+
+/**
+ * A stop request that fires when the run's remaining task time is used up, with
+ * the way to release it. The signal carries a reason, so a runtime that stops a
+ * turn can say why without a second channel for the run's deadline.
+ */
+function deadlineSignal(remainingMs: number): { readonly signal: AbortSignal; cancel(): void } {
+  const controller = new AbortController();
+  const timer = setTimeout(
+    () => {
+      controller.abort(
+        new Error(`the run's remaining task time (${String(remainingMs)} ms) is used up`),
+      );
+    },
+    Math.max(0, remainingMs),
+  );
+  return {
+    signal: controller.signal,
+    cancel: () => {
+      clearTimeout(timer);
+    },
+  };
 }
 
 function messageOf(cause: unknown): string {
@@ -267,6 +342,26 @@ function describeRound(round: CheckRoundResult): string {
   return `execution-error, ${oneLine(round.problem ?? 'no explanation was recorded')}`;
 }
 
+/** How the timeline names the limit that expired. */
+function describeTimeoutLimit(evidence: TimeoutEvidence): string {
+  return evidence.limit === 'task'
+    ? `the run's task deadline (${String(evidence.limitMs)} ms)`
+    : `a configured command limit (${String(evidence.limitMs)} ms)`;
+}
+
+/** Why a run whose limit expired during a round of checks ended there. */
+function describeRoundTimeout(phase: string, evidence: TimeoutEvidence): string {
+  const what =
+    evidence.limit === 'task'
+      ? "the run's task deadline expired"
+      : 'a configured command was stopped at its limit';
+  const stopped =
+    evidence.termination === 'confirmed'
+      ? 'nothing further was started'
+      : 'the stop could not be confirmed, so the working copy must not be reused and nothing further was started';
+  return `${what} during ${phase}: ${stopped}`;
+}
+
 /**
  * Runs one task through the bounded loop and writes its final report.
  *
@@ -278,29 +373,65 @@ function describeRound(round: CheckRoundResult): string {
  * the reason — the loop stops at the first of those, and nothing retries a turn,
  * a round, or the run itself. A report that cannot be written is a thrown
  * `ReportError`: a run must never announce a report location that does not exist.
+ *
+ * The run's deadline is established here, before preparation, and is the one
+ * budget every phase afterwards spends. A run that reaches the end of it is
+ * finalized from the evidence it already has, with a {@link TimeoutEvidence}
+ * naming the limit that expired and what could not be confirmed about the stop.
  */
 export async function runTask(
   request: RunTaskRequest,
   dependencies: RunnerDependencies,
 ): Promise<RunTaskResult> {
   const { task, config } = request;
-  const startedAt = dependencies.now().toISOString();
+  const start = dependencies.now();
+  const startedAt = start.toISOString();
+  const taskLimitMs = config.taskTimeoutMinutes * 60_000;
+  const commandLimitMs = config.commandTimeoutMinutes * 60_000;
+  /**
+   * The one deadline of this run, and what it has left. Every phase reads its
+   * budget from here, and nothing recomputes the deadline from a new limit: a
+   * later phase — a repair turn above all — cannot hand the run time it has
+   * already spent.
+   */
+  const deadlineMs = start.getTime() + taskLimitMs;
+  const remainingMs = (): number => deadlineMs - dependencies.now().getTime();
 
   const source = await dependencies.preflight({
     repoPath: request.repoPath,
     workDir: request.workDir,
   });
+
+  if (remainingMs() <= 0) {
+    // Nothing of the run exists yet: there is no run directory to keep, no
+    // working copy, and no report, and saying so is the honest answer.
+    throw new RunTimeoutError(
+      [
+        `the run's task time limit of ${String(taskLimitMs)} ms expired while the source repository was being checked, before any run directory was allocated.`,
+        'No run directory, no working copy, and no report were created: there is nothing to inspect and nothing to reuse, and no command and no coding turn was started.',
+        `Run the task again with more than ${String(config.taskTimeoutMinutes)} minutes of task time available.`,
+      ].join('\n'),
+    );
+  }
+
   const run = await dependencies.allocateRunDirectory(request.workDir);
   const timeline = runLogPath(run.logsDir);
   await dependencies.appendRunLog(
     timeline,
     `run ${run.runId} started: task ${JSON.stringify(task.id)} (${oneLine(task.title)})`,
   );
+  await dependencies.appendRunLog(
+    timeline,
+    `task deadline set for ${new Date(deadlineMs).toISOString()}: ${String(taskLimitMs)} ms of total task time, ${String(commandLimitMs)} ms per configured command`,
+  );
 
   let workspace: PreparedWorkspace | null = null;
   let preparationProblem: string | null = null;
   try {
-    workspace = await dependencies.prepareWorkspace(run, source);
+    workspace = await dependencies.prepareWorkspace(run, source, {
+      deadlineMs,
+      now: dependencies.now,
+    });
     await dependencies.appendRunLog(
       timeline,
       `workspace prepared at ${oneLine(workspace.workspacePath)} on branch ${workspace.branch} at ${source.baseCommit}`,
@@ -316,12 +447,34 @@ export async function runTask(
     );
   }
 
+  /** The record of a limit that expired, as the report keeps it. */
+  const timedOut = (parts: {
+    readonly limit: TimeoutLimit;
+    readonly phase: string;
+    readonly limitMs: number;
+    readonly termination?: TerminationOutcome;
+    readonly problem?: string | null;
+  }): TimeoutEvidence => ({
+    limit: parts.limit,
+    phase: parts.phase,
+    limitMs: parts.limitMs,
+    elapsedMs: Math.max(0, dependencies.now().getTime() - start.getTime()),
+    // A limit that expires between two commands leaves nothing of the run's own
+    // running, so an unconfirmed stop is always one a command reported.
+    termination: parts.termination ?? 'confirmed',
+    problem:
+      parts.termination === 'unconfirmed'
+        ? (parts.problem ?? 'the harness recorded no reason for the unconfirmed stop')
+        : null,
+  });
+
   /** Ends the run: the timeline records the status, then the report is written. */
   const endRun = async (parts: {
     readonly status: RunStatus;
     readonly reason: string;
     readonly baseline: CheckRoundResult | null;
     readonly attempts: readonly AttemptEvidence[];
+    readonly timeout: TimeoutEvidence | null;
   }): Promise<RunTaskResult> => {
     await dependencies.appendRunLog(
       timeline,
@@ -339,42 +492,160 @@ export async function runTask(
       reason: parts.reason,
       baseline: parts.baseline,
       attempts: parts.attempts,
+      timeout: parts.timeout,
     });
     return {
       run,
       workspace,
       status: parts.status,
       reason: parts.reason,
+      timeout: parts.timeout,
       reportPath,
     };
   };
 
+  /**
+   * Ends the run because its time ran out: the timeline records the limit, then
+   * the run is finalized from the evidence it already has. Every timeout leaves
+   * the loop here, so nothing else is started after one, and the status is always
+   * `failed` — an expired limit is not a red check round, and it is not a pass.
+   */
+  const endTimedOut = async (parts: {
+    readonly reason: string;
+    readonly baseline: CheckRoundResult | null;
+    readonly attempts: readonly AttemptEvidence[];
+    readonly evidence: TimeoutEvidence;
+  }): Promise<RunTaskResult> => {
+    const { evidence } = parts;
+    await dependencies.appendRunLog(
+      timeline,
+      `timeout: ${describeTimeoutLimit(evidence)} expired during ${evidence.phase}` +
+        (evidence.termination === 'confirmed'
+          ? ''
+          : `; termination unconfirmed: ${evidence.problem ?? 'no reason was recorded'}`),
+    );
+    return endRun({
+      status: 'failed',
+      reason: parts.reason,
+      baseline: parts.baseline,
+      attempts: parts.attempts,
+      timeout: evidence,
+    });
+  };
+
   if (workspace === null) {
+    if (remainingMs() <= 0) {
+      // Preparation stopped because the run's own deadline had passed, not
+      // because Git failed. The report keeps the preparation problem it has,
+      // and the timeout says which limit was responsible.
+      const evidence = timedOut({
+        limit: 'task',
+        phase: 'preparation of the working copy',
+        limitMs: taskLimitMs,
+      });
+      return endTimedOut({
+        reason:
+          "the run's task deadline expired while the working copy was being prepared, so no check and no coding turn was started",
+        baseline: null,
+        attempts: [],
+        evidence,
+      });
+    }
     return endRun({
       status: 'failed',
       reason: 'preparing the working copy failed, so no check and no coding turn was started',
       baseline: null,
       attempts: [],
+      timeout: null,
     });
   }
 
+  // Everything below works in the prepared working copy, and keeps it.
+  const workspacePath = workspace.workspacePath;
+
+  /**
+   * One round of the configured plan in the working copy. Every invocation it
+   * starts is bounded by the same deadline the run was given, and the round
+   * reads what is left of the task time before each one.
+   */
+  const runRound = (name: string): Promise<CheckRoundResult> =>
+    dependencies.runCheckRound({
+      setup: config.setup,
+      checks: config.checks,
+      cwd: workspacePath,
+      logsDir: run.logsDir,
+      name,
+      commandTimeoutMs: commandLimitMs,
+      deadlineMs,
+      now: dependencies.now,
+    });
+
+  /**
+   * What stopped a round because the run's time ran out, if that is what
+   * happened. An expired limit reaches the runner as an execution error, so it
+   * is recognized here, before that outcome can be read as an infrastructure
+   * problem — and long before it could be mistaken for repair feedback.
+   */
+  const roundStop = (round: CheckRoundResult, phase: string): TimeoutEvidence | null => {
+    const stopped = [...round.setup, ...round.checks].find(
+      (result) => result.outcome === 'timed-out',
+    );
+    if (stopped !== undefined) {
+      // A command that ran under less than its configured limit was bounded by
+      // the task time that was left: that is the limit which expired.
+      const termination = stopped.termination ?? 'unconfirmed';
+      return timedOut({
+        limit: stopped.timeoutMs < commandLimitMs ? 'task' : 'command',
+        phase,
+        limitMs: stopped.timeoutMs,
+        termination,
+        problem: stopped.terminationProblem,
+      });
+    }
+    if (round.outcome === 'execution-error' && remainingMs() <= 0) {
+      // The round spent the run's time before it could start the command it was
+      // about to start, and stopped there rather than starting it late.
+      return timedOut({ limit: 'task', phase, limitMs: taskLimitMs });
+    }
+    return null;
+  };
+
   // The baseline: the configured plan, run in the working copy before any coding
   // turn. Only a completed green round lets the run continue.
+  if (remainingMs() <= 0) {
+    const evidence = timedOut({
+      limit: 'task',
+      phase: 'the baseline checks',
+      limitMs: taskLimitMs,
+    });
+    return endTimedOut({
+      reason:
+        "the run's task deadline expired before the baseline checks started, so neither they nor any coding turn was started",
+      baseline: null,
+      attempts: [],
+      evidence,
+    });
+  }
+
   await dependencies.appendRunLog(
     timeline,
     `baseline check-round started: ${describePlan(config)}`,
   );
-  const baseline = await dependencies.runCheckRound({
-    setup: config.setup,
-    checks: config.checks,
-    cwd: workspace.workspacePath,
-    logsDir: run.logsDir,
-    name: 'baseline',
-  });
+  const baseline = await runRound('baseline');
   await dependencies.appendRunLog(
     timeline,
     `baseline check-round result: ${describeRound(baseline)}`,
   );
+
+  const baselineStop = roundStop(baseline, 'the baseline checks');
+  if (baselineStop !== null) {
+    return endTimedOut({
+      reason: describeRoundTimeout('the baseline checks', baselineStop),
+      baseline,
+      attempts: [],
+      evidence: baselineStop,
+    });
+  }
 
   if (baseline.outcome === 'execution-error') {
     return endRun({
@@ -382,6 +653,7 @@ export async function runTask(
       reason: `the baseline could not be executed: ${oneLine(baseline.problem ?? 'no explanation was recorded')}`,
       baseline,
       attempts: [],
+      timeout: null,
     });
   }
   if (baseline.outcome === 'failed') {
@@ -390,6 +662,7 @@ export async function runTask(
       reason: 'the baseline checks did not pass, so no coding turn was started',
       baseline,
       attempts: [],
+      timeout: null,
     });
   }
 
@@ -403,8 +676,27 @@ export async function runTask(
   let repair: RepairFeedback | null = null;
 
   for (;;) {
+    // The task deadline is read before every coding turn, so a repair turn is
+    // started only with time left to run it and to check the result.
+    const left = remainingMs();
+    if (left <= 0) {
+      const evidence = timedOut({
+        limit: 'task',
+        phase: nameTurn(kind, turn),
+        limitMs: taskLimitMs,
+      });
+      return endTimedOut({
+        reason: `the run's task deadline expired before ${describeTurn(kind, turn)} was started, so no further turn and no check was run`,
+        baseline,
+        attempts,
+        evidence,
+      });
+    }
+
     // The coding turn, awaited to completion: the checks that follow it must
-    // observe a working copy nothing else is writing to.
+    // observe a working copy nothing else is writing to. The turn is also given
+    // the run's own remaining time as a stop request, so work that would run
+    // past the deadline is asked to stop rather than left to.
     await dependencies.appendRunLog(
       timeline,
       kind === 'implementation'
@@ -412,6 +704,7 @@ export async function runTask(
         : `${nameTurn(kind, turn)} started: repair ${String(turn - 1)} of ${String(config.maxRepairs)} allowed`,
     );
     const agentLog = await dependencies.openAgentLog(run.logsDir, turn);
+    const stop = deadlineSignal(left);
     let completed: AgentTurnResult | null = null;
     let turnProblem: string | null = null;
     try {
@@ -419,14 +712,19 @@ export async function runTask(
         kind,
         turn,
         task,
-        workspacePath: workspace.workspacePath,
+        workspacePath,
         sourceRoot: workspace.sourceRoot,
         baseCommit: workspace.baseCommit,
         agentLog,
         repair,
+        stop: stop.signal,
       });
     } catch (cause) {
       turnProblem = messageOf(cause);
+    } finally {
+      // The turn has returned, so its stop request is released rather than left
+      // armed for a turn that is no longer running.
+      stop.cancel();
     }
     // The log is closed either way: a turn that failed keeps whatever it wrote
     // before the failure, and a log that cannot be flushed is a reporting failure.
@@ -438,6 +736,31 @@ export async function runTask(
         : `${nameTurn(kind, turn)} result: completed`,
     );
 
+    if (stop.signal.aborted) {
+      // The run's time ran out while the turn was working. What the turn
+      // reported is not a check result and nothing follows it: no round runs,
+      // no repair is spent, and a turn that failed at the same moment does not
+      // replace the reason the run actually stopped for.
+      attempts.push({
+        turn,
+        kind,
+        agentLog: agentLog.path,
+        agentSummary: completed?.summary ?? null,
+        checks: null,
+      });
+      const evidence = timedOut({
+        limit: 'task',
+        phase: nameTurn(kind, turn),
+        limitMs: taskLimitMs,
+      });
+      return endTimedOut({
+        reason: `${describeTurn(kind, turn)} was stopped when the run's remaining task time ran out, so no check was run after it and no further turn was started`,
+        baseline,
+        attempts,
+        evidence,
+      });
+    }
+
     if (completed === null) {
       // A turn that could not finish is terminal: no round was observed after it,
       // none is invented, and the failure is not something another coding turn is
@@ -448,6 +771,7 @@ export async function runTask(
         reason: `${describeTurn(kind, turn)} failed, so no check was run after it: ${oneLine(turnProblem ?? 'no explanation was recorded')}`,
         baseline,
         attempts,
+        timeout: null,
       });
     }
 
@@ -457,13 +781,7 @@ export async function runTask(
       timeline,
       `post-agent check-round started: ${describePlan(config)}`,
     );
-    const observed = await dependencies.runCheckRound({
-      setup: config.setup,
-      checks: config.checks,
-      cwd: workspace.workspacePath,
-      logsDir: run.logsDir,
-      name: `attempt-${String(turn)}`,
-    });
+    const observed = await runRound(`attempt-${String(turn)}`);
     await dependencies.appendRunLog(
       timeline,
       `post-agent check-round result: ${describeRound(observed)}`,
@@ -476,12 +794,24 @@ export async function runTask(
       checks: observed,
     });
 
+    const phase = `the checks after ${describeTurn(kind, turn)}`;
+    const roundTimeout = roundStop(observed, phase);
+    if (roundTimeout !== null) {
+      return endTimedOut({
+        reason: describeRoundTimeout(phase, roundTimeout),
+        baseline,
+        attempts,
+        evidence: roundTimeout,
+      });
+    }
+
     if (observed.outcome === 'passed') {
       return endRun({
         status: 'passed',
         reason: describePassed(kind, turn, repairsSpent(attempts), config.maxRepairs),
         baseline,
         attempts,
+        timeout: null,
       });
     }
 
@@ -493,6 +823,7 @@ export async function runTask(
         reason: `the checks after ${describeTurn(kind, turn)} could not be executed: ${oneLine(observed.problem ?? 'no explanation was recorded')}`,
         baseline,
         attempts,
+        timeout: null,
       });
     }
 
@@ -513,6 +844,7 @@ export async function runTask(
           describeFailedChecks(observed),
         baseline,
         attempts,
+        timeout: null,
       });
     }
 

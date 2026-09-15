@@ -49,7 +49,7 @@ Dependencies are task IDs. The normal execution order is top to bottom.
 | [x] | T05 | Final report and attempt evidence | T02, T04 |
 | [x] | T06 | Baseline and implementation loop with a fake agent | T04, T05 |
 | [x] | T07 | Bounded repair loop and honest outcomes | T06 |
-| [ ] | T08 | Total deadline, command limits, and timeout shutdown | T07 |
+| [x] | T08 | Total deadline, command limits, and timeout shutdown | T07 |
 | [ ] | T09 | Cancellation and confirmed process shutdown | T08 |
 | [ ] | T10 | Final diff inspection and review warnings | T07, T09 |
 | [ ] | T11 | Offline local-loop milestone | T10 |
@@ -698,4 +698,73 @@ Limitations: the coding runtime is still absent, so runAgentTurn has no producti
   stopped here. Verified on Windows 11 / Node 24.14 only; no live LLM, network, or
   credentials were used.
 Next ready task: T08
+```
+
+```text
+Task: T08 — Total deadline, command limits, and timeout shutdown
+Result: complete
+Changed: src/runner.ts — runTask establishes the run's one deadline (now() +
+  taskTimeoutMinutes*60_000) before preflight and never recomputes it: preparation, setup, coding
+  turns, and checks all spend that budget, a repair turn is not given a fresh one, and every phase
+  reads what is left before it starts anything. Each round is handed the configured
+  commandTimeoutMs, the absolute deadlineMs, and the same injected clock, so a repair can never
+  hand the run time it already spent. roundStop() reads an expired limit out of a round that came
+  back as an execution error — naming the task limit when the stopped command ran under less than
+  its configured limit — before that outcome could be mistaken for an infrastructure failure or a
+  red round be mistaken for repair feedback. Every stop leaves through endTimedOut(), which records
+  one TimeoutEvidence and finalizes as `failed`; nothing is started after one. A run whose time is
+  gone before a run directory exists throws RunTimeoutError rather than inventing a report.
+  AgentTurnRequest.stop is the AbortSignal for the turn's remaining budget, released when the turn
+  returns; a turn stopped that way keeps its own summary and is recorded with checks: null.
+  src/checks.ts — each invocation runs under the smaller of its configured limit and the task time
+  left, re-read before every command (a round whose time is gone stops without starting a late
+  command), and a command at its limit is stopped as an owned process tree: taskkill /PID <pid> /T
+  /F on Windows, a group SIGKILL addressed by the negated PID on POSIX. Only a PID this module
+  recorded is ever named. The stop is `confirmed` only when the request succeeded and the close
+  event was seen within 5000 ms; otherwise `unconfirmed` with the reason. Commands are detached
+  only off Windows: a detached cmd.exe gets its own console, and a `.cmd` command then records
+  empty output. src/types.ts — CommandOutcome gains 'timed-out', CommandResult gains
+  timeoutMs/termination/terminationProblem, TimeoutEvidence (limit, phase, limitMs, elapsedMs,
+  termination, problem) is what RunReport.timeout carries. src/workspace.ts — prepareWorkspace
+  takes the run's bounds and checks the deadline before each of its five steps, failing as an
+  incomplete run that must not be reused instead of killing Git mid-write. src/report.ts —
+  refuses a timeout that is not `failed`, and refuses an unconfirmed stop that does not say what
+  could not be confirmed.
+Verification: npm ci exit 0 (137 packages, 0 vulnerabilities); npm test --
+  tests/runner.test.ts tests/checks.test.ts tests/workspace.test.ts exit 0 (3 files, 95 passed /
+  1 skipped); npm run validate exit 0 (format:check, lint, typecheck, test 174 passed / 1 skipped,
+  build).
+Evidence: tests/runner.test.ts +8 cases, tests/checks.test.ts +5, tests/workspace.test.ts +2.
+  Runner: one deadline handed to preparation and to baseline/attempt-1/attempt-2 with the left
+  falling 60 → 35 → 10 minutes (a repair turn for a red round really running inside it); a baseline
+  stopped by the task time left, recorded as limit 'task' at 240000 ms with no turn and no second
+  round; a post-agent check stopped at its own 600000 ms limit and unconfirmed, with no second
+  round, no repair turn, the red round kept as the attempt's evidence, and the reason saying the
+  working copy must not be reused; an unconfirmed stop with no reason given explained by the
+  runner and still written; an implementation turn that is still running stopped and awaited, with
+  checks null, the agent's own summary kept and its log closed; the same for repair turn 2, which
+  had already been given the repairs of the red round it was repairing; preparation stopped by the
+  real workspace on the run's deadline, with the run directory and the problem kept; a run refused
+  with RunTimeoutError, no run directory made. Checks: the real hang fixture stopped with the child
+  it started, both PIDs gone and its heartbeats frozen; the task-time-left and command-limit
+  orderings named separately; nothing started once the deadline has passed; and an empty PATH
+  making the stop unconfirmable. Workspace: a stepping clock stopping the real clone on the
+  deadline, and an already-passed deadline stopping it at the destination check.
+  Regression probes confirmed the cases bite: a fresh full budget per phase (remainingMs returning
+  the limit) failed 4 runner cases; a fresh deadline per round (now() + limit) failed the budget
+  carry-through case; a bare single-process kill instead of the tree stop failed the unconfirmed
+  case in checks.test.ts. All three were reverted, suite back to 174 passed / 1 skipped, and no
+  fixture process was left behind after the runs.
+Limitations: a timeout is not cancellation — a user-initiated stop, its own evidence, and the
+  `cancelled` status are T09, which reuses this stop path (no caller can ask a run to stop yet).
+  The stop's confirmation is bounded by a 5000 ms grace window, so a stop that lands but is not
+  observed in time is reported as unconfirmed rather than assumed. A timeout is only reachable in
+  tests through the injected clock, so the real end-to-end path over minutes is exercised on a
+  small scale (milliseconds) only. On this host a single-PID kill also ends a Node-spawned
+  grandchild (Windows job inheritance), so the grandchild assertion records the behaviour this
+  platform really has; the empty-PATH case is what separates the tree stop from a bare kill. The
+  coding runtime is still absent, so runAgentTurn has no production implementation and the public
+  `run` command stays unavailable (T13). Verified on Windows 11 / Node 24.14 only; the POSIX group
+  signal is unexercised here, and no live LLM, network, or credentials were used.
+Next ready task: T09
 ```

@@ -36,6 +36,26 @@
  * shim. On every platform the executable is resolved from `PATH` (and, on
  * Windows, `PATHEXT`); the working directory is never searched implicitly.
  *
+ * ## Limits, and stopping what a command started
+ *
+ * Every invocation is bounded. It runs under the smaller of the configured
+ * command limit and the run's remaining task time, and when that limit expires
+ * the harness stops the invocation — and everything the invocation started —
+ * rather than waiting for it (docs/spec.md §3). The invocation is recorded as
+ * `timed-out`, with the limit it ran under and whether the stop was confirmed.
+ *
+ * A command that runs `npm test` is a tree, not a process: the interpreter, the
+ * shim, and whatever they spawn all have to end, or the working copy stays
+ * open and the next round reads a half-written checkout. On Windows the tree is
+ * ended by PID with `taskkill /PID <pid> /T /F`: `/T` is what reaches the
+ * children the invocation started, and a bare `child.kill()` ends only the
+ * direct process and leaves them running. Elsewhere the invocation is started as
+ * its own process-group leader, so the whole group is signalled at once. Only a
+ * PID this module recorded for an invocation it started is ever named, so no
+ * other process on the host can be selected by a stop. Termination is confirmed
+ * only when the stop request reached the operating system *and* the invocation
+ * was seen to end; anything else is recorded as unconfirmed rather than assumed.
+ *
  * {@link runCheckRound} composes this helper into one reusable setup/check
  * round: the configured setup commands run first, in order, and only when every
  * one of them succeeded do all configured checks run, in order, one at a time.
@@ -45,15 +65,27 @@
  * an execution error. The result says which of the two happened, and a check
  * that never ran has no result at all.
  *
- * Timeouts and cancellation are not implemented here yet: they belong to the
- * deadline and cancellation tasks, which wrap these helpers.
+ * A limit that expires is one of those endings, and never a red round: the
+ * command that was stopped did not fail a check, so the round stops as an
+ * execution error and reports what was stopped and what could not be confirmed.
+ * The round recomputes what is left of the task time before every command it
+ * starts, so a round that has used up the run's time starts nothing at all.
+ *
+ * Cancellation is not implemented here: it belongs to T09, which reuses this
+ * same stop path.
  */
 
 import { spawn } from 'node:child_process';
 import { statSync } from 'node:fs';
 import path from 'node:path';
 import { openCommandLog } from './report.js';
-import type { CheckRoundResult, Command, CommandOutcome, CommandResult } from './types.js';
+import type {
+  CheckRoundResult,
+  Command,
+  CommandOutcome,
+  CommandResult,
+  TerminationOutcome,
+} from './types.js';
 
 /** What one command invocation is asked to do. */
 export interface RunCommandRequest {
@@ -65,6 +97,14 @@ export interface RunCommandRequest {
   readonly logsDir: string;
   /** Names this invocation's two log files, for example `check-2`. */
   readonly label: string;
+  /**
+   * The limit this invocation runs under, in milliseconds, as a positive
+   * number: the smaller of the configured command limit and the remaining task
+   * time. The harness stops the invocation and its process tree when the limit
+   * expires — it never leaves an invocation running past it — and the result is
+   * then recorded as `timed-out`.
+   */
+  readonly timeoutMs: number;
 }
 
 /** What one setup/check round is asked to do. */
@@ -84,6 +124,99 @@ export interface CheckRoundRequest {
    * an earlier round is never overwritten.
    */
   readonly name: string;
+  /**
+   * The configured per-command limit, in milliseconds. An invocation runs under
+   * the smaller of this and the task time that is left when it starts.
+   */
+  readonly commandTimeoutMs: number;
+  /**
+   * The run's task deadline, in epoch milliseconds: established once, before
+   * preparation, and carried through every phase. It is compared against the
+   * remaining time here and never recomputed from a new limit, so a round — and
+   * with it a repair — cannot hand the run time it has already spent.
+   */
+  readonly deadlineMs: number;
+  /**
+   * The clock the deadline was taken from, and the one the remaining task time
+   * is read with. The same clock the run itself uses: there is deliberately no
+   * second notion of time in the harness.
+   */
+  readonly now: () => Date;
+}
+
+/**
+ * How long the harness waits for an invocation it stopped to actually end
+ * before recording the stop as unconfirmed. `taskkill /F` and a group `SIGKILL`
+ * both end what they name before returning, so this only elapses when the stop
+ * did not reach it — and an invocation that ends by itself in that window is
+ * still confirmed, so the wait is never skipped.
+ */
+const STOP_GRACE_MS = 5000;
+
+/** Waits for `work`, but no longer than `ms`; says whether it finished in time. */
+function within(work: Promise<void>, ms: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(false), ms);
+    void work.then(() => {
+      clearTimeout(timer);
+      resolve(true);
+    });
+  });
+}
+
+/** Runs one host utility to completion and reports why it failed, if it did. */
+function runHostUtility(executable: string, args: readonly string[]): Promise<string | null> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (problem: string | null): void => {
+      if (!settled) {
+        settled = true;
+        resolve(problem);
+      }
+    };
+
+    let utility;
+    try {
+      utility = spawn(executable, [...args], { stdio: 'ignore', windowsHide: true });
+    } catch (cause) {
+      done(`"${executable}" could not be run: ${messageOf(cause)}`);
+      return;
+    }
+
+    // A utility that cannot even be started — no `taskkill` on this host's
+    // PATH, say — is a failed stop, never a silent one.
+    utility.on('error', (cause) => done(`"${executable}" could not be run: ${messageOf(cause)}`));
+    utility.on('close', (code) => {
+      done(code === 0 ? null : `"${executable}" exited with code ${String(code)}`);
+    });
+  });
+}
+
+/**
+ * Asks the operating system to end one process tree this module started, and
+ * says what the request itself did: `null` when it succeeded, otherwise why it
+ * did not. Only the recorded PID of an owned invocation is ever named, so no
+ * other process on the host can be selected here.
+ */
+async function requestTreeStop(pid: number): Promise<string | null> {
+  if (process.platform !== 'win32') {
+    // Every invocation is started as its own process-group leader, so the group
+    // is addressed by the negated PID and its members go with it.
+    try {
+      process.kill(-pid, 'SIGKILL');
+      return null;
+    } catch (cause) {
+      // Nothing left in the group is the outcome this asked for.
+      const code = (cause as NodeJS.ErrnoException).code;
+      return code === 'ESRCH'
+        ? null
+        : `the process group of ${String(pid)} could not be signalled: ${messageOf(cause)}`;
+    }
+  }
+
+  // `/T` reaches the children the invocation started, and `/F` ends them
+  // instead of asking a window that may never answer.
+  return runHostUtility('taskkill', ['/PID', String(pid), '/T', '/F']);
 }
 
 /** Extensions a Windows command interpreter has to start for the harness. */
@@ -263,9 +396,13 @@ export function commandSucceeded(result: CommandResult): boolean {
  * error to their own log files under `logsDir`, and returns what happened. A
  * failure to start the command is part of that result, not an exception; a
  * failure to persist its output is a {@link ReportError}.
+ *
+ * The invocation is started in its own process group, so the whole tree it
+ * becomes can be stopped as one, and it is stopped when `timeoutMs` expires.
+ * The result then says it timed out, and whether that stop was confirmed.
  */
 export async function runCommand(request: RunCommandRequest): Promise<CommandResult> {
-  const { command, cwd, logsDir, label } = request;
+  const { command, cwd, logsDir, label, timeoutMs } = request;
   const executable = command[0] ?? '';
   const args = command.slice(1);
 
@@ -281,6 +418,9 @@ export async function runCommand(request: RunCommandRequest): Promise<CommandRes
     exitCode: null,
     signal: null,
     launchError: problem,
+    timeoutMs,
+    termination: null,
+    terminationProblem: null,
     stdoutPath: log.stdoutPath,
     stderrPath: log.stderrPath,
   });
@@ -302,18 +442,35 @@ export async function runCommand(request: RunCommandRequest): Promise<CommandRes
   const result = await new Promise<CommandResult>((resolve) => {
     let launchError: string | null = null;
     let settled = false;
+    let timedOut = false;
+    let termination: TerminationOutcome | null = null;
+    let terminationProblem: string | null = null;
+    let lastCode: number | null = null;
+    let lastSignal: string | null = null;
+    let markEnded: () => void = () => undefined;
+    const endedOnce = new Promise<void>((settleEnded) => {
+      markEnded = settleEnded;
+    });
+    let timer: NodeJS.Timeout | null = null;
 
     const finish = (code: number | null, signal: string | null): void => {
       if (settled) {
         return;
       }
       settled = true;
+      if (timer !== null) {
+        clearTimeout(timer);
+      }
       // A command that never started still reports a nonzero close code on
       // Windows, so the recorded launch error decides the outcome, never the code.
       const started = launchError === null;
       let outcome: CommandOutcome = 'failed-to-launch';
       if (started) {
-        outcome = signal === null ? 'exited' : 'signalled';
+        if (timedOut) {
+          outcome = 'timed-out';
+        } else {
+          outcome = signal === null ? 'exited' : 'signalled';
+        }
       }
       resolve({
         command: [...command],
@@ -324,6 +481,9 @@ export async function runCommand(request: RunCommandRequest): Promise<CommandRes
         exitCode: started ? code : null,
         signal: started ? signal : null,
         launchError,
+        timeoutMs,
+        termination,
+        terminationProblem,
         stdoutPath: log.stdoutPath,
         stderrPath: log.stderrPath,
       });
@@ -335,6 +495,14 @@ export async function runCommand(request: RunCommandRequest): Promise<CommandRes
         cwd,
         // No interactive input: configured commands must not wait for a terminal.
         stdio: ['ignore', 'pipe', 'pipe'],
+        // On Windows the invocation is deliberately *not* detached: a detached
+        // `cmd.exe` gets a console of its own, and everything the shim then runs
+        // writes to that console instead of the pipes this harness captures, so
+        // a `.cmd` command would be recorded with an empty output and a zero
+        // exit code. The tree is stopped by PID there instead, which needs no
+        // process group. Elsewhere the invocation leads its own group, which is
+        // what lets the whole tree be signalled at once.
+        detached: process.platform !== 'win32',
         windowsVerbatimArguments: verbatim,
         windowsHide: true,
       });
@@ -343,6 +511,40 @@ export async function runCommand(request: RunCommandRequest): Promise<CommandRes
       finish(null, null);
       return;
     }
+
+    /**
+     * Ends the invocation and everything it started, once the limit has
+     * expired. Confirmed means the stop request reached the operating system
+     * *and* the invocation was seen to end: either half missing is recorded as
+     * unconfirmed, because a tree that may still be running must never be
+     * reported as stopped.
+     */
+    const stopAtLimit = async (): Promise<void> => {
+      if (settled) {
+        // It ended by itself just as its limit expired: there is nothing left
+        // to stop, and its own ending is the result.
+        return;
+      }
+      timedOut = true;
+      const { pid } = child;
+      if (pid === undefined) {
+        // Nothing of this invocation ever started, so no tree of ours exists to
+        // stop; the launch failure is the result, exactly as it would be
+        // without a limit.
+        finish(null, null);
+        return;
+      }
+
+      const stopProblem = await requestTreeStop(pid);
+      const endedInTime = await within(endedOnce, STOP_GRACE_MS);
+      termination = stopProblem === null && endedInTime ? 'confirmed' : 'unconfirmed';
+      terminationProblem =
+        termination === 'confirmed'
+          ? null
+          : (stopProblem ??
+            `the invocation had not ended ${String(STOP_GRACE_MS)} ms after it was stopped`);
+      finish(lastCode, lastSignal);
+    };
 
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
@@ -358,7 +560,23 @@ export async function runCommand(request: RunCommandRequest): Promise<CommandRes
       }
     });
 
-    child.on('close', (code, signal) => finish(code, signal));
+    child.on('close', (code, signal) => {
+      lastCode = code;
+      lastSignal = signal;
+      markEnded();
+      if (timedOut) {
+        // The stop path is waiting for exactly this end, and owns the result:
+        // the invocation is recorded as timed out, with how it was stopped.
+        return;
+      }
+      finish(code, signal);
+    });
+
+    if (!settled) {
+      timer = setTimeout(() => {
+        void stopAtLimit();
+      }, timeoutMs);
+    }
   });
 
   await log.close();
@@ -375,8 +593,14 @@ function describeInvocation(
   return `${kind} ${position} of ${total} (${JSON.stringify(command)})`;
 }
 
-/** Why a command stopped a round, for a command that did not simply exit `0`. */
-function describeStop(where: string, result: CommandResult): string {
+/**
+ * Why a command stopped a round, for a command that did not simply exit `0`.
+ *
+ * `taskBounded` says the invocation was given less than its configured limit
+ * because the run was running out of task time: the two limits are different
+ * facts about the same stop, and the one that expired is the useful one.
+ */
+function describeStop(where: string, result: CommandResult, taskBounded: boolean): string {
   if (result.outcome === 'failed-to-launch') {
     return `${where} could not be started: ${result.launchError ?? 'no launch error was recorded'}`;
   }
@@ -384,6 +608,17 @@ function describeStop(where: string, result: CommandResult): string {
     return (
       `${where} was killed by ${result.signal ?? 'a signal'}: a command that does not run to ` +
       'completion is an execution failure, not a failed check'
+    );
+  }
+  if (result.outcome === 'timed-out') {
+    const limit = taskBounded
+      ? `the ${String(result.timeoutMs)} ms of task time that was left`
+      : `its ${String(result.timeoutMs)} ms command limit`;
+    return (
+      `${where} was stopped because ${limit} expired, and ` +
+      (result.termination === 'confirmed'
+        ? 'the invocation and the process tree it started were stopped'
+        : `that stop could not be confirmed: ${result.terminationProblem ?? 'no reason was recorded'}`)
     );
   }
   return `${where} exited with code ${String(result.exitCode)}`;
@@ -396,6 +631,27 @@ const SETUP_STOPPED =
 const EXECUTION_STOPPED =
   'The round stopped there: no later check was run. A command that could not be executed is ' +
   'not a failed check to repair.';
+const TIMEOUT_STOPPED =
+  'The round stopped there: no later command was run. An expired limit is not a failed check ' +
+  'to repair, and nothing else was started.';
+const UNCONFIRMED_TERMINATION = [
+  'The harness could not confirm that everything the stopped command started has ended, so the',
+  'working copy may still be written to: it must not be reused, and nothing further was run.',
+].join('\n');
+
+/**
+ * What a stopped command costs the rest of the round. A limit that expired adds
+ * the unconfirmed-stop limitation when the harness has one: an unconfirmed stop
+ * is a fact the run's report has to carry, not a detail this round can round
+ * down (docs/spec.md §3).
+ */
+function stopSuffix(result: CommandResult, ordinary: string): string {
+  if (result.outcome !== 'timed-out') {
+    return ordinary;
+  }
+  const unconfirmed = result.termination === 'confirmed' ? '' : `\n${UNCONFIRMED_TERMINATION}`;
+  return `${TIMEOUT_STOPPED}${unconfirmed}`;
+}
 
 /** The result of a round that stopped before it had attempted every check. */
 function incompleteRound(
@@ -404,6 +660,19 @@ function incompleteRound(
   problem: string,
 ): CheckRoundResult {
   return { outcome: 'execution-error', setup, checks, problem };
+}
+
+/**
+ * Why a round stopped without starting the command it was about to run: the
+ * run's own task deadline had already passed. This is the task's limit, not the
+ * command's, and the round hands the decision back rather than inventing time.
+ */
+function expiredDeadline(where: string, overdueMs: number): string {
+  return [
+    `the run's task deadline passed ${String(overdueMs)} ms before ${where} could start, so it was ` +
+      'not started.',
+    TIMEOUT_STOPPED,
+  ].join('\n');
 }
 
 /**
@@ -416,55 +685,76 @@ function incompleteRound(
  * and red (`'failed'`), which is what a repair turn is for.
  *
  * A setup command that does not exit `0`, and any command that cannot be
- * executed at all — one that never started, or one killed by a signal — ends the
- * round immediately as `'execution-error'` with a `problem` explaining it. The
- * commands after it did not run, so they have no result: an unexecuted check is
- * absent from `checks`, never reported as a success.
+ * executed at all — one that never started, one killed by a signal, one stopped
+ * because a limit expired — ends the round immediately as `'execution-error'`
+ * with a `problem` explaining it. The commands after it did not run, so they
+ * have no result: an unexecuted check is absent from `checks`, never reported as
+ * a success.
  *
- * A failure to create or write an invocation's log files is a
+ * Each invocation runs under the smaller of `commandTimeoutMs` and what is left
+ * of the task time, and both are read again before every command: a round that
+ * has spent the run's time starts nothing, and no command ever runs past the
+ * task deadline. A failure to create or write an invocation's log files is a
  * {@link ReportError}: the round stops with that error rather than returning a
  * result whose evidence was lost.
  */
 export async function runCheckRound(request: CheckRoundRequest): Promise<CheckRoundResult> {
-  const { setup, checks, cwd, logsDir, name } = request;
+  const { setup, checks, cwd, logsDir, name, commandTimeoutMs, deadlineMs, now } = request;
   const setupResults: CommandResult[] = [];
   const checkResults: CommandResult[] = [];
 
+  /**
+   * What the next invocation runs under: the smaller of its configured command
+   * limit and the task time this run has left. A limit of at least one
+   * millisecond is always handed to `runCommand`, so a command that is started
+   * is always bounded.
+   */
+  const nextLimit = (): { readonly remaining: number; readonly limitMs: number } => {
+    const remaining = deadlineMs - now().getTime();
+    return { remaining, limitMs: Math.max(1, Math.min(commandTimeoutMs, remaining)) };
+  };
+
   for (const [index, command] of setup.entries()) {
+    const where = describeInvocation('setup command', index + 1, setup.length, command);
+    const { remaining, limitMs } = nextLimit();
+    if (remaining <= 0) {
+      return incompleteRound(setupResults, checkResults, expiredDeadline(where, -remaining));
+    }
+
     const result = await runCommand({
       command,
       cwd,
       logsDir,
       label: `${name}-setup-${index + 1}`,
+      timeoutMs: limitMs,
     });
     setupResults.push(result);
     if (!commandSucceeded(result)) {
-      const where = describeInvocation('setup command', index + 1, setup.length, command);
-      return incompleteRound(
-        setupResults,
-        checkResults,
-        `${describeStop(where, result)}.\n${SETUP_STOPPED}`,
-      );
+      const problem = `${describeStop(where, result, limitMs < commandTimeoutMs)}.\n${stopSuffix(result, SETUP_STOPPED)}`;
+      return incompleteRound(setupResults, checkResults, problem);
     }
   }
 
   for (const [index, command] of checks.entries()) {
+    const where = describeInvocation('check', index + 1, checks.length, command);
+    const { remaining, limitMs } = nextLimit();
+    if (remaining <= 0) {
+      return incompleteRound(setupResults, checkResults, expiredDeadline(where, -remaining));
+    }
+
     const result = await runCommand({
       command,
       cwd,
       logsDir,
       label: `${name}-check-${index + 1}`,
+      timeoutMs: limitMs,
     });
     checkResults.push(result);
     // A check that exited nonzero is a result like any other, and the remaining
     // checks still run. A check that could not run has no result to keep.
     if (result.outcome !== 'exited') {
-      const where = describeInvocation('check', index + 1, checks.length, command);
-      return incompleteRound(
-        setupResults,
-        checkResults,
-        `${describeStop(where, result)}.\n${EXECUTION_STOPPED}`,
-      );
+      const problem = `${describeStop(where, result, limitMs < commandTimeoutMs)}.\n${stopSuffix(result, EXECUTION_STOPPED)}`;
+      return incompleteRound(setupResults, checkResults, problem);
     }
   }
 

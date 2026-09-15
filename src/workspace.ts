@@ -623,24 +623,67 @@ async function assertRecordedWorkspace(
   }
 }
 
+/** How the run's task deadline bounds preparation. */
+export interface PrepareWorkspaceBounds {
+  /**
+   * The run's task deadline, in epoch milliseconds: established once, before
+   * preparation, and carried through every phase afterwards. Preparation spends
+   * that one budget; it is never given a limit of its own.
+   */
+  readonly deadlineMs: number;
+  /**
+   * The clock the deadline was taken from, and the one the remaining task time
+   * is read with — the same clock the run itself uses.
+   */
+  readonly now: () => Date;
+}
+
 /**
  * Fills an allocated run directory with a separate local clone of the recorded
  * base, on a dedicated local branch. Only committed content is inherited:
  * ignored local files stay in the source checkout, and the clone keeps no remote
  * pointing back at it. Every failure leaves the run directory in place and
  * names it, so a partial preparation can be inspected instead of reused.
+ *
+ * Preparation is bounded by the run's remaining task time: the deadline is read
+ * again before each step, and a step is not started once it has passed. Git is
+ * owned here, so a step that is already running is left to finish rather than
+ * killed mid-write — a Git process stopped while it holds a lock can damage the
+ * checkout it is writing. The bounded cost of that is one Git command's run time
+ * after the deadline, which the run's later phases and its report both see.
  */
 export async function prepareWorkspace(
   run: RunDirectory,
   source: SourcePreflight,
+  bounds: PrepareWorkspaceBounds,
 ): Promise<PreparedWorkspace> {
   const branch = `${RUN_BRANCH_PREFIX}${run.runId}`;
 
+  /** Why preparation stopped, when the run's own deadline had passed. */
+  const assertTimeLeft = (step: string): void => {
+    const overdue = bounds.now().getTime() - bounds.deadlineMs;
+    if (overdue <= 0) {
+      return;
+    }
+    throw new WorkspaceError(
+      [
+        `the run's task deadline passed ${String(overdue)} ms before ${step}, so preparation stopped there.`,
+        'What preparation had already written is kept in the run directory, but it is not a usable ' +
+          'working copy and must not be reused.',
+      ].join('\n'),
+    );
+  };
+
   try {
+    assertTimeLeft('the destination check');
     await assertWorkspaceDestinationEmpty(run);
+    assertTimeLeft('reading the source repository');
     await assertSourceAtRecordedBase(source);
+    assertTimeLeft('cloning the committed objects');
     await cloneCommittedObjects(run, source);
+    assertTimeLeft('creating the run branch');
     await createRunBranch(run, branch, source.baseCommit);
+    assertTimeLeft('verifying the working copy');
     await assertRecordedWorkspace(run, source, branch);
   } catch (cause) {
     throw incompleteRunError(run, messageOf(cause), cause);

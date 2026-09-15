@@ -8,8 +8,9 @@
  * "the checks run after the turn" is asserted from what the processes observed
  * rather than from what the runner intended. There is no network, no provider,
  * and no credentials, and nothing outside the temporary directories is touched.
- * See docs/tasks.md T06 for the baseline and implementation path, and T07 for the
- * bounded repair loop.
+ * See docs/tasks.md T06 for the baseline and implementation path, T07 for the
+ * bounded repair loop, and T08 for the run's one deadline and the timeout
+ * shutdown.
  */
 
 import { spawn } from 'node:child_process';
@@ -21,7 +22,7 @@ import { runCheckRound } from '../src/checks.js';
 import type { CheckRoundRequest } from '../src/checks.js';
 import { agentLogPath, appendRunLog, openAgentLog, writeRunReport } from '../src/report.js';
 import type { RunReportRequest } from '../src/report.js';
-import { runTask } from '../src/runner.js';
+import { RunTimeoutError, runTask } from '../src/runner.js';
 import type { AgentTurnRequest, AgentTurnResult, RunnerDependencies } from '../src/runner.js';
 import {
   WorkspaceError,
@@ -35,7 +36,16 @@ import type {
   RunDirectory,
   SourcePreflight,
 } from '../src/workspace.js';
-import type { CheckRoundResult, Command, HarnessConfig, RunReport, Task } from '../src/types.js';
+import type {
+  CheckRoundResult,
+  Command,
+  CommandOutcome,
+  CommandResult,
+  HarnessConfig,
+  RunReport,
+  Task,
+  TerminationOutcome,
+} from '../src/types.js';
 import { cleanupTempDirectories, createTempDir } from './support.js';
 
 afterEach(cleanupTempDirectories);
@@ -1272,6 +1282,607 @@ describe('the bounded repair loop', () => {
     expect(
       timeline.filter((message) => message.startsWith('post-agent check-round result')).at(-1),
     ).toMatch(/^post-agent check-round result: execution-error, setup command 1 of 1 /);
+  }, 60_000);
+});
+
+/**
+ * A clock a test moves by hand. The run reads the time from it, so its one
+ * deadline is fixed the moment the run starts and a stand-in for a phase that
+ * takes time moves the clock forward by the time it would have taken. Nothing in
+ * this block waits for a configured limit: an hour of budget is spent by saying so.
+ */
+interface TestClock {
+  /** The current time, as the runner reads it. */
+  readonly now: () => Date;
+  /** Moves the clock forward by what the phase that just ran would have taken. */
+  advance(ms: number): void;
+}
+
+/** The moment every run in this block starts at. */
+const CLOCK_START = new Date('2026-03-01T00:00:00.000Z');
+
+function testClock(): TestClock {
+  let offset = 0;
+  return {
+    now: () => new Date(CLOCK_START.getTime() + offset),
+    advance: (ms: number): void => {
+      offset += ms;
+    },
+  };
+}
+
+/** A configured limit, in the unit the configuration names it in. */
+function minutes(count: number): number {
+  return count * 60_000;
+}
+
+/** How long a stand-in turn that was never asked to stop is waited for, in total. */
+const STOP_FALLBACK_MS = 15_000;
+
+/** What a stand-in round reports about one command of it. */
+interface StandInCommand {
+  /** Named in its command and in the files its output was written to. */
+  readonly label: string;
+  /** How it ended; `exited`, which is the default, is how a check passes or fails. */
+  readonly outcome?: CommandOutcome;
+  /** The exit code of a command that ran, defaulting to the one its outcome implies. */
+  readonly exitCode?: number | null;
+  /** The limit it ran under: the smaller of its configured limit and the task time left. */
+  readonly timeoutMs?: number;
+  /** How anything it started was stopped; `null` when nothing was stopped. */
+  readonly termination?: TerminationOutcome | null;
+  /** What could not be confirmed about that stop, if anything. */
+  readonly terminationProblem?: string | null;
+}
+
+/**
+ * One command's result, with the output files it points at really written: a red
+ * round's failures are read back from disk for the repair turn, so a stand-in
+ * round that is red has to leave the output it claims behind.
+ */
+async function standInCommand(
+  where: { readonly cwd: string; readonly logsDir: string },
+  parts: StandInCommand,
+): Promise<CommandResult> {
+  const stdoutPath = path.join(where.logsDir, `${parts.label}.stdout.log`);
+  const stderrPath = path.join(where.logsDir, `${parts.label}.stderr.log`);
+  await writeFile(stdoutPath, `${parts.label} wrote this\n`, 'utf8');
+  await writeFile(stderrPath, '', 'utf8');
+  const outcome = parts.outcome ?? 'exited';
+  return {
+    command: ['a-stand-in-command', parts.label],
+    cwd: where.cwd,
+    startedAt: CLOCK_START.toISOString(),
+    endedAt: CLOCK_START.toISOString(),
+    outcome,
+    exitCode: parts.exitCode ?? (outcome === 'exited' ? 0 : null),
+    signal: null,
+    launchError: null,
+    timeoutMs: parts.timeoutMs ?? minutes(10),
+    termination: parts.termination ?? null,
+    terminationProblem: parts.terminationProblem ?? null,
+    stdoutPath,
+    stderrPath,
+  };
+}
+
+/** A round that ran every configured check and passed. */
+function passedRound(): CheckRoundResult {
+  return { outcome: 'passed', setup: [], checks: [], problem: null };
+}
+
+/** A completed red round: one check that exited nonzero, which is repair feedback. */
+function redRound(failed: CommandResult): CheckRoundResult {
+  return { outcome: 'failed', setup: [], checks: [failed], problem: null };
+}
+
+/** A round that stopped early because one of its commands was stopped at its limit. */
+function stoppedRound(
+  stopped: CommandResult,
+  parts: { readonly as: 'setup' | 'check'; readonly problem: string },
+): CheckRoundResult {
+  return {
+    outcome: 'execution-error',
+    setup: parts.as === 'setup' ? [stopped] : [],
+    checks: parts.as === 'check' ? [stopped] : [],
+    problem: parts.problem,
+  };
+}
+
+/** A stand-in for the configured plan: it records what it was asked, and answers. */
+function standInRounds(
+  answer: (request: CheckRoundRequest) => Promise<CheckRoundResult> | CheckRoundResult,
+): { readonly requests: CheckRoundRequest[]; readonly run: RunnerDependencies['runCheckRound'] } {
+  const requests: CheckRoundRequest[] = [];
+  return {
+    requests,
+    run: async (asked) => {
+      requests.push(asked);
+      return answer(asked);
+    },
+  };
+}
+
+/** A stand-in for the coding turn: it records what it was told, and answers. */
+function standInTurns(
+  answer: (request: AgentTurnRequest) => Promise<AgentTurnResult> | AgentTurnResult,
+): { readonly requests: AgentTurnRequest[]; readonly run: RunnerDependencies['runAgentTurn'] } {
+  const requests: AgentTurnRequest[] = [];
+  return {
+    requests,
+    run: async (asked) => {
+      requests.push(asked);
+      return answer(asked);
+    },
+  };
+}
+
+/**
+ * Waits for the runner's stop request, and for nothing else: a turn that only
+ * stops when it is asked to. The fallback bounds the test rather than the run, so
+ * a stop request that never arrives fails the assertions instead of hanging.
+ */
+function awaitStop(request: AgentTurnRequest): Promise<void> {
+  return new Promise((resolve) => {
+    if (request.stop.aborted) {
+      resolve();
+      return;
+    }
+    request.stop.addEventListener('abort', () => resolve(), { once: true });
+    setTimeout(resolve, STOP_FALLBACK_MS).unref();
+  });
+}
+
+describe('a run that runs out of task time', () => {
+  it('spends one budget from preparation through the repair turns', async () => {
+    const fixture = await createFixture();
+    const clock = testClock();
+    const config = configuration(fixture, { taskTimeoutMinutes: 60, maxRepairs: 2 });
+
+    // What the run's one hour is spent on: ten minutes of baseline, fifteen of
+    // implementation, ten more of checks that come back red, fifteen of repair,
+    // and five of the checks that then pass.
+    const leftAt: number[] = [];
+    const rounds = standInRounds(async (asked) => {
+      leftAt.push(asked.deadlineMs - asked.now().getTime());
+      clock.advance(minutes(asked.name === 'attempt-2' ? 5 : 10));
+      return asked.name === 'attempt-1'
+        ? redRound(
+            await standInCommand(
+              { cwd: asked.cwd, logsDir: asked.logsDir },
+              { label: 'stand-in-check', exitCode: 1 },
+            ),
+          )
+        : passedRound();
+    });
+    const turns = standInTurns((asked) => {
+      clock.advance(minutes(15));
+      return { summary: `turn ${String(asked.turn)} did its work` };
+    });
+    const bounds: number[] = [];
+
+    const result = await runTask(
+      request(fixture, config),
+      dependencies(turns.run, {
+        now: clock.now,
+        runCheckRound: rounds.run,
+        prepareWorkspace: async (run, source, given) => {
+          bounds.push(given.deadlineMs);
+          return prepareWorkspace(run, source, given);
+        },
+      }),
+    );
+
+    expect(result.status).toBe('passed');
+    expect(result.timeout).toBeNull();
+
+    // One deadline, established before preparation and handed to every phase
+    // afterwards — the repair turn included.
+    const deadline = CLOCK_START.getTime() + minutes(60);
+    expect(bounds).toEqual([deadline]);
+    expect(rounds.requests.map((round) => round.name)).toEqual([
+      'baseline',
+      'attempt-1',
+      'attempt-2',
+    ]);
+    expect(rounds.requests.map((round) => round.deadlineMs)).toEqual([
+      deadline,
+      deadline,
+      deadline,
+    ]);
+    expect(rounds.requests.map((round) => round.commandTimeoutMs)).toEqual([
+      minutes(10),
+      minutes(10),
+      minutes(10),
+    ]);
+    for (const round of rounds.requests) {
+      expect(round.now).toBe(clock.now);
+    }
+
+    // What each round had left of that budget: less every time, because what
+    // preparation and the turns spent is not handed back to a later round.
+    expect(leftAt).toEqual([minutes(60), minutes(35), minutes(10)]);
+    // No turn was stopped: everything fitted in the budget it was given.
+    expect(turns.requests.map((turn) => turn.stop.aborted)).toEqual([false, false]);
+    expect(turns.requests[1]?.kind).toBe('repair');
+
+    const report = await readReport(result.reportPath);
+    expect(report.status).toBe('passed');
+    expect(report.timeout).toBeNull();
+    expect(report.repairsUsed).toBe(1);
+    expect(report.attempts.map((attempt) => attempt.checks?.outcome)).toEqual(['failed', 'passed']);
+    expect(existsSync(path.join(result.run.workspacePath, '.git'))).toBe(true);
+    expect(timelineMessages(await readText(report.runLog))).toContain(
+      `task deadline set for ${new Date(deadline).toISOString()}: 3600000 ms of total task time, 600000 ms per configured command`,
+    );
+  }, 60_000);
+
+  it('stops the baseline when the task time that was left is the smaller limit', async () => {
+    const fixture = await createFixture();
+    const clock = testClock();
+    const config = configuration(fixture, { taskTimeoutMinutes: 60 });
+    const turns = standInTurns(() => ({ summary: 'never reached' }));
+    const rounds = standInRounds(async (asked) =>
+      stoppedRound(
+        await standInCommand(
+          { cwd: asked.cwd, logsDir: asked.logsDir },
+          {
+            label: 'stand-in-setup',
+            outcome: 'timed-out',
+            timeoutMs: minutes(4),
+            termination: 'confirmed',
+          },
+        ),
+        { as: 'setup', problem: 'the setup command was stopped at the 4 minutes it was given' },
+      ),
+    );
+
+    const result = await runTask(
+      request(fixture, config),
+      dependencies(turns.run, { now: clock.now, runCheckRound: rounds.run }),
+    );
+
+    expect(result.status).toBe('failed');
+    // Four minutes is less than the configured ten, so the task time that was
+    // left is the limit that expired — and the record names that, not the command's.
+    expect(result.timeout).toEqual({
+      limit: 'task',
+      phase: 'the baseline checks',
+      limitMs: minutes(4),
+      elapsedMs: 0,
+      termination: 'confirmed',
+      problem: null,
+    });
+    expect(result.reason).toMatch(
+      /task deadline expired during the baseline checks: nothing further was started/,
+    );
+    // A stopped command is an execution failure, not a red round to repair, and
+    // nothing at all follows it.
+    expect(turns.requests).toEqual([]);
+    expect(rounds.requests.map((round) => round.name)).toEqual(['baseline']);
+
+    const report = await readReport(result.reportPath);
+    expect(report.status).toBe('failed');
+    expect(report.timeout).toEqual(result.timeout);
+    expect(report.baseline?.outcome).toBe('execution-error');
+    expect(report.baseline?.setup[0]?.outcome).toBe('timed-out');
+    expect(report.attempts).toEqual([]);
+    // The evidence is kept: the stopped command's own output file is still there.
+    expect(existsSync(report.baseline?.setup[0]?.stdoutPath ?? '')).toBe(true);
+    const timeline = timelineMessages(await readText(report.runLog));
+    expect(timeline).toContain(
+      "timeout: the run's task deadline (240000 ms) expired during the baseline checks",
+    );
+    expect(timeline.at(-1)).toMatch(/^final status: failed, the run's task deadline expired/);
+  }, 60_000);
+
+  it('stops the run at a command limit without confirming the stop, and starts nothing further', async () => {
+    const fixture = await createFixture();
+    const clock = testClock();
+    const config = configuration(fixture, { maxRepairs: 2 });
+    const agent = fakeAgent(fixture);
+    const rounds = standInRounds(async (asked) =>
+      asked.name === 'baseline'
+        ? passedRound()
+        : stoppedRound(
+            await standInCommand(
+              { cwd: asked.cwd, logsDir: asked.logsDir },
+              {
+                label: 'stand-in-check',
+                outcome: 'timed-out',
+                timeoutMs: minutes(10),
+                termination: 'unconfirmed',
+                terminationProblem: 'the invocation was still running 5000 ms after it was stopped',
+              },
+            ),
+            {
+              as: 'check',
+              problem: 'the check was stopped at its limit and could not be confirmed',
+            },
+          ),
+    );
+
+    const result = await runTask(
+      request(fixture, config),
+      dependencies(agent.turn, { now: clock.now, runCheckRound: rounds.run }),
+    );
+
+    expect(result.status).toBe('failed');
+    // Ten minutes is exactly the configured limit, so that is the limit that
+    // expired — the task time left was not the smaller of the two.
+    expect(result.timeout).toEqual({
+      limit: 'command',
+      phase: 'the checks after the implementation turn',
+      limitMs: minutes(10),
+      elapsedMs: 0,
+      termination: 'unconfirmed',
+      problem: 'the invocation was still running 5000 ms after it was stopped',
+    });
+    expect(result.reason).toMatch(
+      /a configured command was stopped at its limit during the checks after the implementation turn/,
+    );
+    expect(result.reason).toMatch(
+      /the stop could not be confirmed, so the working copy must not be reused/,
+    );
+
+    // No second round and no repair turn: a working copy something may still be
+    // writing to is not checked again, and the red round is not handed to anyone.
+    expect(rounds.requests.map((round) => round.name)).toEqual(['baseline', 'attempt-1']);
+    expect(agent.requests.map((turn) => turn.turn)).toEqual([1]);
+
+    const report = await readReport(result.reportPath);
+    expect(report.status).toBe('failed');
+    expect(report.timeout).toEqual(result.timeout);
+    expect(report.attempts).toHaveLength(1);
+    expect(report.attempts[0]?.checks?.checks[0]?.termination).toBe('unconfirmed');
+    expect(report.attempts[0]?.agentSummary).toBe('the implementation turn edited app.txt');
+    // The working copy and the evidence it holds are retained, and the reason
+    // above is what keeps them from being read as safe to reuse.
+    expect(existsSync(path.join(result.run.workspacePath, '.git'))).toBe(true);
+    expect(existsSync(report.attempts[0]?.agentLog ?? '')).toBe(true);
+    expect(timelineMessages(await readText(report.runLog))).toContain(
+      'timeout: a configured command limit (600000 ms) expired during the checks after the implementation turn' +
+        '; termination unconfirmed: the invocation was still running 5000 ms after it was stopped',
+    );
+  }, 60_000);
+
+  it('explains an unconfirmed stop it was given no reason for', async () => {
+    const fixture = await createFixture();
+    const clock = testClock();
+    const config = configuration(fixture, { maxRepairs: 2 });
+    const agent = fakeAgent(fixture);
+    const rounds = standInRounds(async (asked) =>
+      asked.name === 'baseline'
+        ? passedRound()
+        : stoppedRound(
+            await standInCommand(
+              { cwd: asked.cwd, logsDir: asked.logsDir },
+              {
+                label: 'stand-in-check',
+                outcome: 'timed-out',
+                timeoutMs: minutes(10),
+                termination: 'unconfirmed',
+              },
+            ),
+            { as: 'check', problem: 'the check was stopped at its limit' },
+          ),
+    );
+
+    const result = await runTask(
+      request(fixture, config),
+      dependencies(agent.turn, { now: clock.now, runCheckRound: rounds.run }),
+    );
+
+    // An unconfirmed stop is stated rather than left bare: the report cannot hold
+    // one without a reason, so the runner supplies the one it has.
+    expect(result.timeout?.termination).toBe('unconfirmed');
+    expect(result.timeout?.problem).toBe('the harness recorded no reason for the unconfirmed stop');
+    const report = await readReport(result.reportPath);
+    expect(report.timeout).toEqual(result.timeout);
+  }, 60_000);
+
+  it('stops and awaits an implementation turn that is still running when the run is out of time', async () => {
+    const fixture = await createFixture();
+    const clock = testClock();
+    const config = configuration(fixture, { taskTimeoutMinutes: 1, maxRepairs: 2 });
+    let returned = false;
+    const rounds = standInRounds(() => {
+      // The baseline spends all of the run's one minute but a moment.
+      clock.advance(minutes(1) - 300);
+      return passedRound();
+    });
+    const turns = standInTurns(async (asked) => {
+      await awaitStop(asked);
+      asked.agentLog.write('the turn was asked to stop and stopped\n');
+      returned = true;
+      return { summary: 'stopped when the run ran out of time' };
+    });
+
+    const result = await runTask(
+      request(fixture, config),
+      dependencies(turns.run, { now: clock.now, runCheckRound: rounds.run }),
+    );
+
+    expect(result.status).toBe('failed');
+    expect(turns.requests).toHaveLength(1);
+    expect(turns.requests[0]?.stop.aborted).toBe(true);
+    // The turn was awaited to its own return before the run was finalized, and
+    // what it said about the stopped turn is kept as its evidence.
+    expect(returned).toBe(true);
+
+    expect(result.timeout).toEqual({
+      limit: 'task',
+      phase: 'implementation turn',
+      limitMs: minutes(1),
+      elapsedMs: minutes(1) - 300,
+      termination: 'confirmed',
+      problem: null,
+    });
+    expect(result.reason).toMatch(
+      /implementation turn was stopped when the run's remaining task time ran out, so no check was run after it and no further turn was started/,
+    );
+
+    const report = await readReport(result.reportPath);
+    expect(report.timeout).toEqual(result.timeout);
+    expect(report.attempts).toHaveLength(1);
+    expect(report.attempts[0]?.checks).toBeNull();
+    expect(report.attempts[0]?.agentSummary).toBe('stopped when the run ran out of time');
+    // Neither a check round after the stopped turn nor a repair turn was started.
+    expect(rounds.requests.map((round) => round.name)).toEqual(['baseline']);
+    const timeline = timelineMessages(await readText(report.runLog));
+    expect(timeline.join('\n')).not.toContain('post-agent check-round');
+    expect(timeline.at(-1)).toMatch(/^final status: failed, the implementation turn was stopped/);
+    // The turn's log is closed rather than lost, and keeps what it wrote.
+    expect(await readText(report.attempts[0]?.agentLog ?? '')).toContain(
+      'the turn was asked to stop and stopped',
+    );
+  }, 60_000);
+
+  it('stops and awaits a repair turn that is still running when the run is out of time', async () => {
+    const fixture = await createFixture();
+    const clock = testClock();
+    const config = configuration(fixture, { taskTimeoutMinutes: 1, maxRepairs: 2 });
+    const rounds = standInRounds(async (asked) => {
+      if (asked.name === 'baseline') {
+        clock.advance(minutes(1) - 20_000);
+        return passedRound();
+      }
+      // The round after the implementation is red, and leaves a moment of the run.
+      clock.advance(19_750);
+      return redRound(
+        await standInCommand(
+          { cwd: asked.cwd, logsDir: asked.logsDir },
+          { label: 'stand-in-check', exitCode: 1 },
+        ),
+      );
+    });
+    const turns = standInTurns(async (asked) => {
+      if (asked.turn === 1) {
+        return { summary: 'the implementation turn did its work' };
+      }
+      await awaitStop(asked);
+      return { summary: 'the repair turn stopped when the run ran out of time' };
+    });
+
+    const result = await runTask(
+      request(fixture, config),
+      dependencies(turns.run, { now: clock.now, runCheckRound: rounds.run }),
+    );
+
+    expect(result.status).toBe('failed');
+    expect(turns.requests.map((turn) => [turn.turn, turn.kind])).toEqual([
+      [1, 'implementation'],
+      [2, 'repair'],
+    ]);
+    // The repair turn was given the red round it repairs, and was stopped by the
+    // same deadline every other phase spends.
+    expect(turns.requests[1]?.repair?.repairedTurn).toBe(1);
+    expect(turns.requests[1]?.repair?.failures[0]?.output).toContain('stand-in-check wrote this');
+    expect(turns.requests[0]?.stop.aborted).toBe(false);
+    expect(turns.requests[1]?.stop.aborted).toBe(true);
+
+    expect(result.timeout?.limit).toBe('task');
+    expect(result.timeout?.phase).toBe('repair turn 2');
+    expect(result.timeout?.limitMs).toBe(minutes(1));
+    expect(result.reason).toMatch(
+      /repair turn 2 was stopped when the run's remaining task time ran out, so no check was run after it and no further turn was started/,
+    );
+    // The red round the repair turn was repairing is kept as that turn's evidence,
+    // even though no round was observed after it.
+    const report = await readReport(result.reportPath);
+    expect(report.repairsUsed).toBe(1);
+    expect(report.attempts.map((attempt) => [attempt.turn, attempt.checks === null])).toEqual([
+      [1, false],
+      [2, true],
+    ]);
+    expect(report.attempts[0]?.checks?.outcome).toBe('failed');
+    expect(rounds.requests.map((round) => round.name)).toEqual(['baseline', 'attempt-1']);
+    expect(report.timeout).toEqual(result.timeout);
+  }, 60_000);
+
+  it('stops a run whose preparation runs past the deadline, and keeps what was made', async () => {
+    const fixture = await createFixture();
+    const clock = testClock();
+    const config = configuration(fixture, { taskTimeoutMinutes: 1 });
+    const agent = fakeAgent(fixture);
+
+    const result = await runTask(
+      request(fixture, config),
+      dependencies(agent.turn, {
+        now: clock.now,
+        prepareWorkspace: async (run, source, given) => {
+          // The run's time is gone from the moment preparation starts, as if Git
+          // had taken the whole budget: the real preparation stops itself on the
+          // deadline the runner handed it, and the runner records why.
+          clock.advance(minutes(1) + 5_000);
+          return prepareWorkspace(run, source, given);
+        },
+      }),
+    );
+
+    expect(result.status).toBe('failed');
+    expect(result.workspace).toBeNull();
+    expect(result.timeout).toEqual({
+      limit: 'task',
+      phase: 'preparation of the working copy',
+      limitMs: minutes(1),
+      elapsedMs: minutes(1) + 5_000,
+      termination: 'confirmed',
+      problem: null,
+    });
+    expect(result.reason).toMatch(
+      /task deadline expired while the working copy was being prepared, so no check and no coding turn was started/,
+    );
+    expect(agent.requests).toEqual([]);
+
+    // The run directory that was made is kept, with the evidence of what stopped
+    // preparation in it — and no working copy is claimed.
+    const report = await readReport(result.reportPath);
+    expect(report.status).toBe('failed');
+    expect(report.timeout).toEqual(result.timeout);
+    expect(report.workspace.prepared).toBe(false);
+    expect(report.workspace.branch).toBeNull();
+    expect(report.workspace.problem).toMatch(
+      /task deadline passed 5000 ms before the destination check/,
+    );
+    expect(existsSync(result.run.runDir)).toBe(true);
+    expect(existsSync(result.run.logsDir)).toBe(true);
+    expect(await readText(report.runLog)).toMatch(
+      /workspace preparation failed: .*task deadline passed 5000 ms before the destination check/,
+    );
+  }, 60_000);
+
+  it('refuses a run whose task time is gone before a run directory exists', async () => {
+    const fixture = await createFixture();
+    const clock = testClock();
+    const config = configuration(fixture, { taskTimeoutMinutes: 1 });
+    const agent = fakeAgent(fixture);
+    const preflights: PreflightRequest[] = [];
+
+    const attempt = runTask(
+      request(fixture, config),
+      dependencies(agent.turn, {
+        // Checking the source is what takes the whole minute. Nothing of the run
+        // exists yet, so there is nothing to report and nothing to keep.
+        preflight: async (asked) => {
+          preflights.push(asked);
+          clock.advance(minutes(1));
+          return preflightSource(asked);
+        },
+        now: clock.now,
+      }),
+    );
+
+    await expect(attempt).rejects.toThrow(RunTimeoutError);
+    await expect(attempt).rejects.toThrow(/before any run directory was allocated/);
+    await expect(attempt).rejects.toThrow(
+      /No run directory, no working copy, and no report were created/,
+    );
+    expect(preflights).toEqual([{ repoPath: fixture.repo, workDir: fixture.workDir }]);
+    expect(agent.requests).toEqual([]);
+    // Refused rather than reported: no run directory was made, so no report was
+    // invented for a run that never started.
+    expect(existsSync(fixture.workDir)).toBe(false);
   }, 60_000);
 });
 

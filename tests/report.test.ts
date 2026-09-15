@@ -115,6 +115,11 @@ function runRound(
     cwd: fixture.run.workspacePath,
     logsDir: fixture.run.logsDir,
     name,
+    // These tests are about what a report keeps, not about the run's budget:
+    // the round is given a limit it will not reach.
+    commandTimeoutMs: 10 * 60_000,
+    deadlineMs: Date.now() + 60 * 60_000,
+    now: () => new Date(),
   });
 }
 
@@ -163,6 +168,7 @@ function reportRequest(
     reason: 'the baseline checks did not pass, so no coding turn was started',
     baseline: null,
     attempts: [],
+    timeout: null,
     ...parts,
   };
 }
@@ -211,6 +217,9 @@ async function recordedCommand(
     exitCode: 1,
     signal: null,
     launchError: null,
+    timeoutMs: 10 * 60_000,
+    termination: null,
+    terminationProblem: null,
     stdoutPath,
     stderrPath,
   };
@@ -698,7 +707,14 @@ describe('a run whose preparation failed', () => {
     const retained = path.join(run.workspacePath, 'partial.txt');
     await writeFile(retained, 'kept for inspection\n', 'utf8');
 
-    const failure = await prepareWorkspace(run, { sourceRoot: repo, baseCommit }).then(
+    const failure = await prepareWorkspace(
+      run,
+      { sourceRoot: repo, baseCommit },
+      {
+        deadlineMs: Date.now() + 10 * 60_000,
+        now: () => new Date(),
+      },
+    ).then(
       () => undefined,
       (error: unknown) => error,
     );

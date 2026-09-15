@@ -9,6 +9,7 @@
  * intended to send. See docs/tasks.md T03 and T04 for the acceptance criteria.
  */
 
+import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -18,7 +19,75 @@ import { ReportError, appendRunLog, openCommandLog, runLogPath } from '../src/re
 import type { CheckRoundResult, Command, CommandResult } from '../src/types.js';
 import { cleanupTempDirectories, createTempDir } from './support.js';
 
-afterEach(cleanupTempDirectories);
+/**
+ * The fixture processes of the timeout tests, by PID: a stop that a test means
+ * to prove is stopped here too, so a test that fails half-way cannot leave a
+ * hanging fixture behind for the rest of the run. See {@link registerFixture}.
+ */
+const fixtureProcesses = new Set<number>();
+
+/**
+ * Ends the recorded fixture processes, by PID and with the host's own utility
+ * named by absolute path, so the cleanup does not depend on the PATH a test left
+ * behind. Only PIDs the fixtures recorded for themselves are ever named.
+ */
+function stopFixtureProcesses(): void {
+  for (const pid of fixtureProcesses) {
+    if (process.platform === 'win32') {
+      const taskkill = path.join(
+        process.env.SystemRoot ?? 'C:\\Windows',
+        'System32',
+        'taskkill.exe',
+      );
+      if (existsSync(taskkill)) {
+        spawnSync(taskkill, ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore' });
+        continue;
+      }
+    }
+    try {
+      process.kill(pid, 'SIGKILL');
+    } catch {
+      // Already gone: nothing to clean up.
+    }
+  }
+  fixtureProcesses.clear();
+}
+
+afterEach(async () => {
+  stopFixtureProcesses();
+  // Awaited, so the removal really finishes before the next test starts and
+  // nothing is left in the temporary directory at the end of a run.
+  await cleanupTempDirectories();
+});
+
+/**
+ * Remembers fixture PIDs for the end of the test. Called as soon as a fixture
+ * has recorded them, before any assertion, so an assertion that fails still
+ * leaves nothing running.
+ */
+function registerFixture(parts: { readonly pid: number; readonly child: number | null }): void {
+  fixtureProcesses.add(parts.pid);
+  if (parts.child !== null) {
+    fixtureProcesses.add(parts.child);
+  }
+}
+
+/**
+ * The limit an ordinary command test runs its fixture under: ten minutes, so it
+ * never expires during an assertion. Every invocation in this file is bounded by
+ * something, exactly as a configured command is, and the tests about the limit
+ * itself supply their own short one instead.
+ */
+const TEST_LIMIT_MS = 10 * 60_000;
+
+/** The task deadline the ordinary round tests hand `runCheckRound`. */
+function roundBounds(): { commandTimeoutMs: number; deadlineMs: number; now: () => Date } {
+  return {
+    commandTimeoutMs: TEST_LIMIT_MS,
+    deadlineMs: Date.now() + 60 * 60_000,
+    now: () => new Date(),
+  };
+}
 
 /**
  * The fixture program: it prints what it received, so a test can tell the
@@ -97,6 +166,7 @@ function runFixture(
     cwd: fixture.workspace,
     logsDir: fixture.logsDir,
     label,
+    timeoutMs: TEST_LIMIT_MS,
   });
 }
 
@@ -203,6 +273,7 @@ function runRound(
     cwd: fixture.workspace,
     logsDir: fixture.logsDir,
     name: parts.name,
+    ...roundBounds(),
   });
 }
 
@@ -263,6 +334,7 @@ describe('a configured command', () => {
       cwd: fixture.workspace,
       logsDir: fixture.logsDir,
       label: 'check-1',
+      timeoutMs: TEST_LIMIT_MS,
     });
 
     expect(result.outcome).toBe('exited');
@@ -299,6 +371,7 @@ describe('a configured command', () => {
       cwd: fixture.workspace,
       logsDir: fixture.logsDir,
       label: 'check-3',
+      timeoutMs: TEST_LIMIT_MS,
     });
 
     expect(result.command).toEqual(command);
@@ -334,6 +407,7 @@ describe('how a command ended', () => {
       cwd: fixture.workspace,
       logsDir: fixture.logsDir,
       label: 'check-1',
+      timeoutMs: TEST_LIMIT_MS,
     });
 
     expect(result.outcome).toBe('exited');
@@ -352,6 +426,7 @@ describe('how a command ended', () => {
       cwd: fixture.workspace,
       logsDir: fixture.logsDir,
       label: 'check-1',
+      timeoutMs: TEST_LIMIT_MS,
     });
 
     expect(result.outcome).toBe('failed-to-launch');
@@ -374,6 +449,7 @@ describe('how a command ended', () => {
       cwd: fixture.workspace,
       logsDir: fixture.logsDir,
       label: 'check-1',
+      timeoutMs: TEST_LIMIT_MS,
     });
 
     expect(result.outcome).toBe('failed-to-launch');
@@ -391,6 +467,7 @@ describe('how a command ended', () => {
       cwd: absent,
       logsDir: fixture.logsDir,
       label: 'check-1',
+      timeoutMs: TEST_LIMIT_MS,
     });
 
     expect(result.outcome).toBe('failed-to-launch');
@@ -737,6 +814,288 @@ describe('a setup/check round', () => {
 });
 
 /**
+ * A fixture command that never finishes by itself, and starts a child of its own
+ * that does not either: the two processes a stop has to reach are the one the
+ * harness started and the one that process started. Both record their own PID
+ * and a heartbeat, so a test proves they were running before the stop and that
+ * neither is running afterwards — from what the fixture processes did, not from
+ * what the harness says it did.
+ */
+const HANG_SOURCE = [
+  "import { appendFileSync, writeFileSync } from 'node:fs';",
+  "import { spawn } from 'node:child_process';",
+  '',
+  'const [, , id, pidFile, beatsFile, holdsForMs] = process.argv;',
+  "const record = (line) => appendFileSync(beatsFile, `${line}\\n`, 'utf8');",
+  '',
+  '// The command starts one more process, which is what makes the difference',
+  '// between stopping a process and stopping the tree it became visible: a stop',
+  '// that reaches only the direct process leaves this one running and writing.',
+  "const child = id.endsWith('-child')",
+  '  ? null',
+  '  : spawn(process.execPath, [process.argv[1], `${id}-child`, pidFile, beatsFile, holdsForMs], {',
+  "      stdio: 'ignore',",
+  '    });',
+  '',
+  "writeFileSync(`${pidFile}.${id}`, JSON.stringify({ pid: process.pid, child: child?.pid ?? null }), 'utf8');",
+  'record(`${id} started`);',
+  'setInterval(() => record(`${id} beating`), 100);',
+  '',
+  '// A backstop: a fixture that outlives its test still ends on its own.',
+  'setTimeout(() => process.exit(0), Number(holdsForMs));',
+  '',
+].join('\n');
+
+/** How long a hang fixture waits before it gives up and exits by itself. */
+const HANG_HOLD_MS = 20_000;
+
+interface HangFixture extends RoundFixture {
+  /** The program that hangs, and starts a child that hangs. */
+  readonly hang: string;
+  /** Where every invocation writes its own PID and its child's. */
+  readonly pidFile: string;
+  /** One line per heartbeat, appended while a process is running. */
+  readonly beatsFile: string;
+}
+
+/** A fixture with the hanging program and the recording one, over the same layout. */
+async function createHangFixture(): Promise<HangFixture> {
+  const fixture = await createRoundFixture();
+  const hang = path.join(fixture.base, 'hang.mjs');
+  await writeFile(hang, HANG_SOURCE, 'utf8');
+  return {
+    ...fixture,
+    hang,
+    pidFile: path.join(fixture.base, 'pids'),
+    beatsFile: path.join(fixture.base, 'beats.txt'),
+  };
+}
+
+/** One hanging invocation, as a configured command. */
+function hangCommand(fixture: HangFixture, id: string): Command {
+  return [
+    process.execPath,
+    fixture.hang,
+    id,
+    fixture.pidFile,
+    fixture.beatsFile,
+    String(HANG_HOLD_MS),
+  ];
+}
+
+/** The PIDs one hanging invocation recorded for itself and for its child. */
+async function hangPids(
+  fixture: HangFixture,
+  id: string,
+): Promise<{ readonly pid: number; readonly child: number | null }> {
+  const record = JSON.parse(await readText(`${fixture.pidFile}.${id}`)) as {
+    pid: number;
+    child: number | null;
+  };
+  return record;
+}
+
+/** Every heartbeat recorded so far, in the order the fixture processes wrote them. */
+async function heartbeats(fixture: HangFixture): Promise<string[]> {
+  if (!existsSync(fixture.beatsFile)) {
+    return [];
+  }
+  return (await readText(fixture.beatsFile)).split('\n').filter((line) => line !== '');
+}
+
+/** True while this host still reports a process with that PID. */
+function stillRunning(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Waits, bounded, for a fixture process to be gone, then insists that it is. */
+async function expectGone(pid: number): Promise<void> {
+  const deadline = Date.now() + 5000;
+  while (stillRunning(pid) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  expect(stillRunning(pid)).toBe(false);
+}
+
+function pause(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+describe('a command that runs out of time', () => {
+  it('is stopped with the child it started, and is not waited for', async () => {
+    const fixture = await createHangFixture();
+    const started = Date.now();
+
+    const result = await runCommand({
+      command: hangCommand(fixture, 'slow'),
+      cwd: fixture.workspace,
+      logsDir: fixture.logsDir,
+      label: 'check-1',
+      timeoutMs: 500,
+    });
+    const recorded = await hangPids(fixture, 'slow');
+    registerFixture(recorded);
+
+    // Both processes really were running: each wrote its own start, and the
+    // direct one recorded the PID of the child it started.
+    expect(await heartbeats(fixture)).toContain('slow started');
+    expect(await heartbeats(fixture)).toContain('slow-child started');
+    expect(recorded.child).not.toBeNull();
+
+    expect(result.outcome).toBe('timed-out');
+    expect(result.timeoutMs).toBe(500);
+    expect(result.termination).toBe('confirmed');
+    expect(result.terminationProblem).toBeNull();
+    expect(Date.now() - started).toBeLessThan(10_000);
+
+    // The command is gone, and so is the child it started: what was stopped is
+    // the tree, not the one process the harness happened to spawn.
+    await expectGone(recorded.pid);
+    await expectGone(recorded.child ?? 0);
+
+    const beat = (await heartbeats(fixture)).length;
+    await pause(600);
+    expect((await heartbeats(fixture)).length).toBe(beat);
+  }, 30_000);
+
+  it('runs under the task time that is left when that is the smaller limit', async () => {
+    const fixture = await createHangFixture();
+    // A frozen clock: the run has exactly 400 ms of task time left, whatever
+    // the ten minutes each command is configured with.
+    const now = Date.now();
+    const started = Date.now();
+
+    const round = await runCheckRound({
+      setup: [],
+      checks: [hangCommand(fixture, 'slow'), recorded(fixture, 'never-reached')],
+      cwd: fixture.workspace,
+      logsDir: fixture.logsDir,
+      name: 'baseline',
+      commandTimeoutMs: 10 * 60_000,
+      deadlineMs: now + 400,
+      now: () => new Date(now),
+    });
+    registerFixture(await hangPids(fixture, 'slow'));
+
+    expect(round.outcome).toBe('execution-error');
+    expect(round.checks).toHaveLength(1);
+    expect(round.checks[0]?.outcome).toBe('timed-out');
+    expect(round.checks[0]?.timeoutMs).toBe(400);
+    expect(round.checks[0]?.termination).toBe('confirmed');
+    expect(round.problem).toContain('the 400 ms of task time that was left');
+    // The check after it was never started: no result, no events, no logs.
+    expect(await recordedEvents(fixture)).toEqual([]);
+    expect(existsSync(path.join(fixture.logsDir, 'baseline-check-2.stdout.log'))).toBe(false);
+    expect(Date.now() - started).toBeLessThan(10_000);
+  }, 30_000);
+
+  it('runs under its own command limit when that is the smaller one', async () => {
+    const fixture = await createHangFixture();
+
+    const round = await runCheckRound({
+      setup: [hangCommand(fixture, 'slow')],
+      checks: [recorded(fixture, 'never-reached')],
+      cwd: fixture.workspace,
+      logsDir: fixture.logsDir,
+      name: 'baseline',
+      commandTimeoutMs: 400,
+      // An hour of task time: here the command's own limit is what expires.
+      deadlineMs: Date.now() + 60 * 60_000,
+      now: () => new Date(),
+    });
+    registerFixture(await hangPids(fixture, 'slow'));
+
+    expect(round.outcome).toBe('execution-error');
+    expect(round.setup).toHaveLength(1);
+    expect(round.setup[0]?.outcome).toBe('timed-out');
+    expect(round.setup[0]?.timeoutMs).toBe(400);
+    expect(round.problem).toContain('its 400 ms command limit');
+    expect(round.checks).toEqual([]);
+    expect(await recordedEvents(fixture)).toEqual([]);
+  }, 30_000);
+
+  it('starts nothing at all once the task deadline has passed', async () => {
+    const fixture = await createRoundFixture();
+    const now = Date.now();
+
+    const round = await runCheckRound({
+      setup: [recorded(fixture, 'setup-one')],
+      checks: [recorded(fixture, 'check-one')],
+      cwd: fixture.workspace,
+      logsDir: fixture.logsDir,
+      name: 'baseline',
+      commandTimeoutMs: 10 * 60_000,
+      deadlineMs: now - 250,
+      now: () => new Date(now),
+    });
+
+    expect(round.outcome).toBe('execution-error');
+    expect(round.problem).toContain('task deadline passed 250 ms');
+    expect(round.problem).toContain('not a failed check');
+    // Nothing was started, so nothing has a result, an event, or a log file.
+    expect(round.setup).toEqual([]);
+    expect(round.checks).toEqual([]);
+    expect(await recordedEvents(fixture)).toEqual([]);
+    expect(await readdir(fixture.logsDir)).toEqual([]);
+  });
+
+  it('reports a stop it could not confirm, and calls the copy unsafe to reuse', async () => {
+    const fixture = await createHangFixture();
+    const path = process.env.PATH;
+    // The fixture is named by absolute path and still starts; the harness cannot
+    // find the utility it stops a tree with, so the stop does not happen at all.
+    process.env.PATH = '';
+    let result: CommandResult;
+    let round: CheckRoundResult;
+    try {
+      result = await runCommand({
+        command: hangCommand(fixture, 'slow'),
+        cwd: fixture.workspace,
+        logsDir: fixture.logsDir,
+        label: 'check-1',
+        timeoutMs: 400,
+      });
+      registerFixture(await hangPids(fixture, 'slow'));
+
+      // The round turns that into the limitation a reader has to act on.
+      round = await runCheckRound({
+        setup: [],
+        checks: [hangCommand(fixture, 'second')],
+        cwd: fixture.workspace,
+        logsDir: fixture.logsDir,
+        name: 'attempt-1',
+        commandTimeoutMs: 400,
+        deadlineMs: Date.now() + 60 * 60_000,
+        now: () => new Date(),
+      });
+      registerFixture(await hangPids(fixture, 'second'));
+    } finally {
+      process.env.PATH = path;
+    }
+
+    expect(result.outcome).toBe('timed-out');
+    expect(result.termination).toBe('unconfirmed');
+    expect(result.terminationProblem).not.toBeNull();
+
+    expect(round.outcome).toBe('execution-error');
+    expect(round.problem).toContain('could not be confirmed');
+    expect(round.problem).toContain('must not be reused');
+
+    // Both commands really are still running: that is why nothing may be reused.
+    const first = await hangPids(fixture, 'slow');
+    const second = await hangPids(fixture, 'second');
+    expect(stillRunning(first.pid)).toBe(true);
+    expect(stillRunning(first.child ?? 0)).toBe(true);
+    expect(stillRunning(second.pid)).toBe(true);
+  }, 60_000);
+});
+
+/**
  * The Windows launcher. `npm` and other installed commands are `.cmd` shims:
  * `spawn` cannot start them without a shell, so the harness starts them through
  * the command interpreter instead. See "Supported platforms and launchers" in
@@ -759,6 +1118,7 @@ describe.skipIf(process.platform !== 'win32')('the native Windows launcher', () 
       cwd: fixture.workspace,
       logsDir: fixture.logsDir,
       label: 'check-1',
+      timeoutMs: TEST_LIMIT_MS,
     });
 
     expect(result.outcome).toBe('exited');
@@ -789,6 +1149,7 @@ describe.skipIf(process.platform !== 'win32')('the native Windows launcher', () 
         cwd: fixture.workspace,
         logsDir: fixture.logsDir,
         label: 'check-1',
+        timeoutMs: TEST_LIMIT_MS,
       });
 
       expect(result.exitCode).toBe(0);
@@ -817,6 +1178,7 @@ describe.skipIf(process.platform !== 'win32')('the native Windows launcher', () 
         cwd: fixture.workspace,
         logsDir: fixture.logsDir,
         label: `check-${String(invocation)}`,
+        timeoutMs: TEST_LIMIT_MS,
       });
 
       expect(result.outcome).toBe('failed-to-launch');
@@ -840,6 +1202,7 @@ describe.skipIf(process.platform !== 'win32')('the native Windows launcher', () 
       cwd: fixture.workspace,
       logsDir: fixture.logsDir,
       label: 'check-1',
+      timeoutMs: TEST_LIMIT_MS,
     });
 
     expect(result.exitCode).toBe(0);

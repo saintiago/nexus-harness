@@ -26,9 +26,12 @@
  * was, what every attempt did, and how it ended. It carries the evidence in the
  * same shape the run observed it in, and it points at the log files rather than
  * copying their contents, so a report stays small enough to read and the bulk of
- * the output stays in the files that hold it. It is written once, and only for a
- * run that got as far as a run directory: an invocation refused before that has
- * nothing to report and is a CLI error instead. See docs/spec.md §§3–5.
+ * the output stays in the files that hold it. A run that ran out of time carries
+ * one timeout record beside that evidence: which limit expired, in which phase,
+ * and whether the harness could confirm that the execution it stopped really
+ * ended. It is written once, and only for a run that got as far as a run
+ * directory: an invocation refused before that has nothing to report and is a
+ * CLI error instead. See docs/spec.md §§3–5.
  */
 
 import { createWriteStream } from 'node:fs';
@@ -42,6 +45,7 @@ import type {
   CommandResult,
   RunReport,
   RunStatus,
+  TimeoutEvidence,
   WorkspaceReport,
 } from './types.js';
 import type { PreparedWorkspace, RunDirectory, SourcePreflight } from './workspace.js';
@@ -381,6 +385,12 @@ export interface RunReportRequest {
   readonly baseline: CheckRoundResult | null;
   /** One entry per top-level coding turn, oldest first. */
   readonly attempts: readonly AttemptEvidence[];
+  /**
+   * What stopped the run when its time ran out: which limit expired, in which
+   * phase, and whether the harness confirmed that the execution it stopped
+   * really ended. `null` for a run that ended for any other reason.
+   */
+  readonly timeout: TimeoutEvidence | null;
 }
 
 /** Refuses a request that would describe a run other than the one that happened. */
@@ -424,6 +434,27 @@ function assertReportable(request: RunReportRequest): void {
       throw new ReportError(
         `coding turn ${String(turn)} has no agent log: every turn keeps its useful output in its ` +
           'own file, and the report points at it rather than copying it in.',
+      );
+    }
+  }
+
+  if (request.timeout !== null) {
+    const { timeout } = request;
+    if (request.status !== 'failed') {
+      throw new ReportError(
+        `a timeout is reported as "failed", not as "${request.status}": an expired limit is not a red ` +
+          'check round to repair, and it is certainly not a pass (docs/spec.md §3).',
+      );
+    }
+    const unconfirmed = timeout.termination !== 'confirmed';
+    if (unconfirmed === (timeout.problem === null)) {
+      throw new ReportError(
+        unconfirmed
+          ? 'a timeout whose termination is unconfirmed has to say what could not be confirmed: the ' +
+              "limitation belongs in the report rather than in a reader's assumptions about what is " +
+              'still running.'
+          : 'a timeout with a confirmed termination has nothing left to explain, so it cannot also ' +
+              'carry a problem: the report would describe a stop that both did and did not happen.',
       );
     }
   }
@@ -511,6 +542,7 @@ function buildReport(request: RunReportRequest): RunReport {
     repairsUsed: request.attempts.filter((attempt) => attempt.kind === 'repair').length,
     baseline: request.baseline,
     attempts: request.attempts,
+    timeout: request.timeout,
     runLog: runLogPath(request.run.logsDir),
   };
 }

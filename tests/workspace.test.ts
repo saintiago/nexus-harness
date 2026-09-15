@@ -2,7 +2,7 @@
  * Preflight, run-directory, and working-copy tests. Fixtures are real local Git
  * repositories in temporary directories, inspected through real child
  * processes: no network, no credentials, and nothing outside those temporary
- * directories is written or removed. See docs/tasks.md T01 and T02 for the
+ * directories is written or removed. See docs/tasks.md T01, T02, and T08 for the
  * acceptance criteria.
  */
 
@@ -20,7 +20,12 @@ import {
   prepareWorkspace,
   preflightSource,
 } from '../src/workspace.js';
-import type { PreparedWorkspace, PreflightRequest, SourcePreflight } from '../src/workspace.js';
+import type {
+  PreparedWorkspace,
+  PreflightRequest,
+  PrepareWorkspaceBounds,
+  SourcePreflight,
+} from '../src/workspace.js';
 import { cleanupTempDirectories, createTempDir, repoRoot } from './support.js';
 
 afterEach(cleanupTempDirectories);
@@ -223,10 +228,20 @@ async function readCheckedOutTree(directory: string): Promise<Record<string, str
   );
 }
 
+/**
+ * The task-time bounds an ordinary preparation test runs under: a fresh,
+ * generous deadline read from the real clock. These tests are about Git and the
+ * run layout, not about the run's budget, so it never expires in them; the T08
+ * tests below hand preparation a clock of their own when expiry is the subject.
+ */
+function taskBounds(): PrepareWorkspaceBounds {
+  return { deadlineMs: Date.now() + 10 * 60_000, now: () => new Date() };
+}
+
 /** Preflights a fixture, allocates a run, and prepares its working copy. */
 async function prepareRun(fixture: Fixture): Promise<PreparedWorkspace> {
   const source = await preflightSource({ repoPath: fixture.repo, workDir: fixture.workDir });
-  return prepareWorkspace(await allocateRunDirectory(fixture.workDir), source);
+  return prepareWorkspace(await allocateRunDirectory(fixture.workDir), source, taskBounds());
 }
 
 describe('a clean source repository', () => {
@@ -687,8 +702,16 @@ describe('a prepared working copy', () => {
     const fixture = await createRepository();
     const source = await preflightSource({ repoPath: fixture.repo, workDir: fixture.workDir });
 
-    const first = await prepareWorkspace(await allocateRunDirectory(fixture.workDir), source);
-    const second = await prepareWorkspace(await allocateRunDirectory(fixture.workDir), source);
+    const first = await prepareWorkspace(
+      await allocateRunDirectory(fixture.workDir),
+      source,
+      taskBounds(),
+    );
+    const second = await prepareWorkspace(
+      await allocateRunDirectory(fixture.workDir),
+      source,
+      taskBounds(),
+    );
 
     expect(second.runId).not.toBe(first.runId);
     expect(second.branch).not.toBe(first.branch);
@@ -739,8 +762,16 @@ describe('a prepared working copy', () => {
   it('keeps edits and local commits inside the clone they were made in', async () => {
     const fixture = await createRepository();
     const source = await preflightSource({ repoPath: fixture.repo, workDir: fixture.workDir });
-    const first = await prepareWorkspace(await allocateRunDirectory(fixture.workDir), source);
-    const second = await prepareWorkspace(await allocateRunDirectory(fixture.workDir), source);
+    const first = await prepareWorkspace(
+      await allocateRunDirectory(fixture.workDir),
+      source,
+      taskBounds(),
+    );
+    const second = await prepareWorkspace(
+      await allocateRunDirectory(fixture.workDir),
+      source,
+      taskBounds(),
+    );
     const sourceBefore = await snapshotRepository(fixture.repo);
     const secondBefore = await snapshotRepository(second.workspacePath);
 
@@ -761,13 +792,17 @@ describe('preparation that cannot finish', () => {
   it('refuses a destination that already holds work, and keeps it', async () => {
     const fixture = await createRepository();
     const source = await preflightSource({ repoPath: fixture.repo, workDir: fixture.workDir });
-    const prepared = await prepareWorkspace(await allocateRunDirectory(fixture.workDir), source);
+    const prepared = await prepareWorkspace(
+      await allocateRunDirectory(fixture.workDir),
+      source,
+      taskBounds(),
+    );
     await writeFile(path.join(prepared.workspacePath, 'notes.txt'), 'earlier work\n', 'utf8');
     const before = await readCheckedOutTree(prepared.workspacePath);
     const headBefore = await headOf(prepared.workspacePath);
 
     const error = await expectWorkspaceError(
-      () => prepareWorkspace(prepared, source),
+      () => prepareWorkspace(prepared, source, taskBounds()),
       /already holds work/,
       /never resumed or overwritten/,
     );
@@ -789,7 +824,7 @@ describe('preparation that cannot finish', () => {
     await rm(path.join(fixture.repo, '.git', 'objects', blob.slice(0, 2), blob.slice(2)));
 
     const error = await expectWorkspaceError(
-      () => prepareWorkspace(run, source),
+      () => prepareWorkspace(run, source, taskBounds()),
       /could not be cloned|does not reproduce the recorded base/,
     );
 
@@ -811,7 +846,7 @@ describe('preparation that cannot finish', () => {
     expect(moved).not.toBe(source.baseCommit);
 
     const error = await expectWorkspaceError(
-      () => prepareWorkspace(run, source),
+      () => prepareWorkspace(run, source, taskBounds()),
       /has moved since preflight/,
       /never rebased onto a commit it did not record/,
     );
@@ -822,6 +857,62 @@ describe('preparation that cannot finish', () => {
     // No working copy was produced, and the recorded base was not replaced.
     expect(existsSync(path.join(run.workspacePath, '.git'))).toBe(false);
     expect(await headOf(fixture.repo)).toBe(moved);
+  });
+});
+
+describe('preparation that runs out of time', () => {
+  it('stops at the run deadline and keeps what it had already written', async () => {
+    const fixture = await createRepository();
+    const source = await preflightSource({ repoPath: fixture.repo, workDir: fixture.workDir });
+    const run = await allocateRunDirectory(fixture.workDir);
+    const sourceBefore = await snapshotRepository(fixture.repo);
+
+    // The run's deadline is spent as preparation works: the first steps are
+    // given the time that is left, and by the fourth there is none, so the step
+    // is not started. The clock is the run's own, read the same way the runner
+    // reads it.
+    const start = Date.now();
+    let reads = 0;
+    const error = await expectWorkspaceError(
+      () =>
+        prepareWorkspace(run, source, {
+          deadlineMs: start + 5000,
+          now: () => new Date(start + (reads++ < 3 ? 0 : 60_000)),
+        }),
+      /task deadline passed 55000 ms/,
+      /must not be reused/,
+    );
+
+    // The failure names the run it belongs to, and the working copy it left is
+    // not one: the clone exists, but it is not on the run's own branch.
+    expect(error.message).toContain(run.runId);
+    expect(error.message).toContain(run.runDir);
+    expect(existsSync(path.join(run.workspacePath, '.git'))).toBe(true);
+    const branch = await gitOrFail(
+      ['symbolic-ref', '--quiet', '--short', 'HEAD'],
+      run.workspacePath,
+    );
+    expect(branch.trim()).not.toBe(`harness/${run.runId}`);
+    // The source checkout is untouched: preparation stopped, it did not retry.
+    expect(await snapshotRepository(fixture.repo)).toEqual(sourceBefore);
+  }, 30_000);
+
+  it('refuses to start a step with no task time left, and clones nothing', async () => {
+    const fixture = await createRepository();
+    const source = await preflightSource({ repoPath: fixture.repo, workDir: fixture.workDir });
+    const run = await allocateRunDirectory(fixture.workDir);
+    const now = Date.now();
+
+    const error = await expectWorkspaceError(
+      () => prepareWorkspace(run, source, { deadlineMs: now - 120, now: () => new Date(now) }),
+      /task deadline passed 120 ms before the destination check/,
+      /not a usable working copy/,
+    );
+
+    expect(error.message).toContain(run.runDir);
+    // Nothing of the clone was made, and the run directory is still there.
+    expect(existsSync(path.join(run.workspacePath, '.git'))).toBe(false);
+    expect(existsSync(run.logsDir)).toBe(true);
   });
 });
 
@@ -855,7 +946,11 @@ describe('task IDs as labels', () => {
         }).id,
       ).toBe(id);
 
-      const prepared = await prepareWorkspace(await allocateRunDirectory(fixture.workDir), source);
+      const prepared = await prepareWorkspace(
+        await allocateRunDirectory(fixture.workDir),
+        source,
+        taskBounds(),
+      );
       runs.push(prepared);
 
       expect(prepared.runId).toMatch(/^[A-Za-z0-9][A-Za-z0-9_-]*$/);
