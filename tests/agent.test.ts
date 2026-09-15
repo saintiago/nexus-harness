@@ -35,11 +35,17 @@ import type { CommandResult, HarnessConfig, RunReport, Task } from '../src/types
 import { cleanupTempDirectories, createTempDir } from './support.js';
 
 /**
- * The stand-in runtime processes this file has started, by PID. A test that hangs
- * one of them registers it here, so a failed test cannot leave it behind; only a
- * PID a stand-in recorded for itself is ever stopped.
+ * The stand-in runtime processes this file has started, by the PID a stand-in
+ * recorded for itself, and the release file that asks each of them to end. A
+ * test that leaves one running (because stopping it is what the test is about)
+ * registers it here, so a failed test cannot leave it behind.
  */
-const standInProcesses = new Set<number>();
+const standInProcesses = new Map<number, string>();
+
+/** The file whose appearance asks this fixture's stand-in runtimes to end. */
+function releasePathFor(fixture: Fixture): string {
+  return path.join(fixture.parent, 'release');
+}
 
 /** Whether the process with this PID is still there, as the host reports it. */
 function isAlive(pid: number): boolean {
@@ -64,14 +70,35 @@ async function waitUntilGone(pid: number, timeoutMs = 10_000): Promise<boolean> 
 }
 
 /**
- * Every stand-in runtime that is still running is stopped the way a real one is,
- * and waited for, before the temporary directories are removed: a process that
- * still holds its working directory open would keep the directory from being
- * removed, and would outlive the test that started it.
+ * Every stand-in runtime still running is asked to end by itself, and waited
+ * for, before the temporary directories are removed: a process that still holds
+ * its working directory open would keep the directory from being removed, and
+ * would outlive the test that started it.
+ *
+ * A recorded PID is released rather than stopped, and a stop is only the last
+ * resort for one that did not answer. The operating system hands PID numbers
+ * out again once they are free, and by this point in a run many of them are
+ * already dead — a stand-in the harness itself stopped, or one that ended by
+ * itself — so stopping them again would risk ending whatever process holds the
+ * number now, in this file or in another suite running beside it.
  */
 afterEach(async () => {
-  for (const pid of standInProcesses) {
-    standInProcesses.delete(pid);
+  const registered = [...standInProcesses];
+  standInProcesses.clear();
+
+  for (const [, release] of registered) {
+    try {
+      await writeFile(release, 'release\n', 'utf8');
+    } catch {
+      // The fixture's own directory is gone already: there is nothing left to
+      // release, and the waits below decide what is still running.
+    }
+  }
+
+  for (const [pid] of registered) {
+    if (await waitUntilGone(pid, 5_000)) {
+      continue;
+    }
     await requestTreeStop(pid);
     await waitUntilGone(pid);
   }
@@ -174,7 +201,7 @@ interface StandInConfig {
  * on the way out.
  */
 const STAND_IN_SOURCE = [
-  "import { appendFileSync, writeFileSync } from 'node:fs';",
+  "import { appendFileSync, existsSync, writeFileSync } from 'node:fs';",
   "import path from 'node:path';",
   '',
   "const config = JSON.parse(process.env.FAKE_CODEX ?? '{}');",
@@ -212,16 +239,24 @@ const STAND_IN_SOURCE = [
   '  const holdMs = Number(config.holdMs ?? 0);',
   '  if (holdMs > 0) {',
   '    // A runtime that takes its time: it reports a message, keeps working, and',
-  '    // ends when its own timer says so — or when something stops it first.',
+  '    // ends when its own timer says so, when the test that started it asks it to',
+  '    // end, or when something stops it first.',
   '    event({',
   "      type: 'item.completed',",
   "      item: { id: 'item-1', type: 'agent_message', text: config.summary ?? 'still working' },",
   '    });',
-  '    setTimeout(() => {',
+  '    const until = Date.now() + holdMs;',
+  '    const finish = () => {',
   "      record('end');",
   "      event({ type: 'turn.completed', usage: {} });",
   '      process.exitCode = 0;',
-  '    }, holdMs);',
+  '    };',
+  '    const waiting = setInterval(() => {',
+  '      if (Date.now() >= until || (config.release && existsSync(config.release))) {',
+  '        clearInterval(waiting);',
+  '        finish();',
+  '      }',
+  '    }, 25);',
   '    return;',
   '  }',
   '',
@@ -447,7 +482,7 @@ async function waitForStart(fixture: Fixture, timeoutMs = 10_000): Promise<Recor
     const start = (await recordsOf(fixture)).find((record) => record.event === 'start');
     if (start !== undefined) {
       if (start.pid !== undefined) {
-        standInProcesses.add(start.pid);
+        standInProcesses.set(start.pid, releasePathFor(fixture));
       }
       return start;
     }
@@ -473,7 +508,11 @@ function standInRuntime(
     executable: fixture.executable,
     env: {
       ...process.env,
-      FAKE_CODEX: JSON.stringify({ events: fixture.recordsFile, ...config }),
+      FAKE_CODEX: JSON.stringify({
+        events: fixture.recordsFile,
+        release: releasePathFor(fixture),
+        ...config,
+      }),
       ...env,
     },
     ...rest,
@@ -802,9 +841,9 @@ describe('stopping what a turn started', () => {
       {
         // A stop the host cannot carry out is what this test is about, so it
         // does not happen here — and the tree the harness asked about is the one
-        // this test's own teardown stops for real.
+        // this test's own teardown asks to end.
         stopTree: async (pid) => {
-          standInProcesses.add(pid);
+          standInProcesses.set(pid, releasePathFor(fixture));
           return 'the host could not reach the process tree';
         },
         stopGraceMs: 60,
@@ -1032,9 +1071,9 @@ describe('the runner, the real checks, and the real adapter together', () => {
       {
         // The stop the harness cannot confirm is the whole point here, so it
         // does not kill anything: the tree it asked about is what this test's
-        // own teardown stops, with the same supported stop.
+        // own teardown asks to end.
         stopTree: async (pid) => {
-          standInProcesses.add(pid);
+          standInProcesses.set(pid, releasePathFor(fixture));
           return 'the host could not reach the process tree';
         },
         stopGraceMs: 60,

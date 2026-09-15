@@ -997,9 +997,12 @@ Changed: src/agent.ts (new) — the only module that knows the vendor: codexRunt
   cancellation evidence; an unconfirmed stop ends the run as failed and bars further checks and
   workspace reuse), and src/checks.ts now exports within/planLaunch/requestTreeStop/Launcher.
   tests/agent.test.ts (new, 18 tests) fakes the runtime process itself — a real .mjs stand-in
-  spawned through a codex/.cmd shim at the same boundary T14 will substitute. No dependency was
-  added: package.json is unchanged, and the CLI interface needs none in this repository. The public
-  `run` command was not added (T13).
+  spawned through a codex/.cmd shim at the same boundary T14 will substitute. A stand-in a test
+  deliberately leaves running is ended by a release file its own teardown writes, and a recorded PID
+  is stopped only if it is still alive once that wait is over: stopping a PID the host has already
+  freed risks ending whatever process holds the number now — in this suite, or in one running beside
+  it. No dependency was added: package.json is unchanged, and the CLI interface needs none in this
+  repository. The public `run` command was not added (T13).
 Verification: npm ci — exit 0, 0 vulnerabilities. npm test -- tests/agent.test.ts
   tests/runner.test.ts — exit 0, 2 files passed, 50 passed (50). npm run validate with
   OPENAI_API_KEY/CODEX_API_KEY/ANTHROPIC_API_KEY unset — exit 0: format:check clean, lint clean,
@@ -1021,13 +1024,32 @@ Evidence: tests/agent.test.ts proves, at the faked process boundary, that argv i
   Regression probes: making the runner accept a runtime's "tests pass" summary as a passing round
   failed the claim-vs-evidence test (report.ts refused to write a passed report over red checks);
   writing a boundary credential into the agent log failed the credential test at the persisted-file
-  assertion. Both probes were reverted and the suite returned to 2 files / 50 passed.
+  assertion. Both probes were reverted and the suite returned to 2 files / 50 passed. The release
+  handshake was checked with a single lingering-runtime test: 477 ms wall clock for a stand-in whose
+  own hold is 30 000 ms, which is only possible if the release ended it. Temp directories under the
+  system temp root: 10 before a full suite run and 10 after.
 Limitations: no live Codex call was made, so nothing here proves the real CLI's behavior, its real
   event stream, or a real account (that is T16) — the adapter's contract is proven against a stand-in
   process, not the vendor binary. codex exec's exit codes are undocumented, so the adapter reads the
   event stream rather than an exit code; AGENTS.md discovery for exec is not explicitly documented
   and the harness does not depend on it; Windows packaging for the win32-x64 optional dependency has
   reported breakage. The POSIX launcher path and the POSIX process-group stop are unexercised on
-  this Windows 11 / Node 24.14 host. Verified on Windows 11 / Node 24.14 only.
+  this Windows 11 / Node 24.14 host. Verified on Windows 11 / Node 24.14 only. Three intermittent
+  failures of the wider suite appeared while this task was being verified, once in
+  tests/runner.test.ts and twice in tests/lifecycle.test.ts, against 28 clean full-suite runs (8 of
+  those taken with this suite removed, and clean too). The lifecycle one was diagnosed rather than
+  guessed: the "stops a baseline command and the tree behind it" test failed on
+  `beatsOf(fixture, 'setup-one')` not containing the `hanging` beat, while the assertion just above
+  it — that the fixture process is still running — passed. That fixture writes its readiness file
+  (the pid file these tests poll for) before it records the `hanging` beat, so the assertion can run
+  before the beat exists, and a loaded machine widens the gap. Nothing this task changed is on that
+  path, and the EBUSY on the working copy and the unhandled ENOENT appending to a timeline that
+  accompany it are consequences, not separate faults: the test never reaches its own stop, so the run
+  outlives it and then writes into a directory that has been removed. It was left unrepaired — that
+  test is not this task's to change — and the fix there is to wait, bounded, for the beat it asserts
+  instead of asserting at once. The runner.test.ts one, `git add --all` exiting 1 with empty standard
+  error, is what a force-ended child looks like, and is what this suite's own teardown could once
+  have done, since it stopped recorded PIDs a second time even when the harness or the runtime itself
+  had already ended them; the release handshake above removes that from this suite.
 Next ready task: T13
 ```
