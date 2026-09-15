@@ -33,12 +33,15 @@ export interface HarnessConfig {
  * success: a command that could not be started is never reported as an exit,
  * and a signalled command is an execution failure, not repair feedback.
  *
- * `timed-out` is the harness's own doing: the invocation was still running when
- * the limit it was given expired, so the harness stopped it. It is an execution
- * failure — never a failed check to repair — and it says nothing about whether
- * the command would have passed given more time.
+ * `timed-out` and `stopped` are the harness's own doing: the invocation was
+ * still running when its limit expired, or when the run was stopped by its
+ * caller, and the harness stopped it. Both are execution failures — never a
+ * failed check to repair — and neither says anything about whether the command
+ * would have passed given more time. They stay apart because a reader of the
+ * report has to be able to tell a limit that expired from a run that was
+ * stopped, and an exit code the harness cut short means nothing either way.
  */
-export type CommandOutcome = 'exited' | 'signalled' | 'timed-out' | 'failed-to-launch';
+export type CommandOutcome = 'exited' | 'signalled' | 'timed-out' | 'stopped' | 'failed-to-launch';
 
 /**
  * Whether the harness established that a process tree it stopped really ended.
@@ -78,9 +81,10 @@ export interface CommandResult {
   readonly timeoutMs: number;
   /**
    * How the process tree this invocation started was stopped when its limit
-   * expired; `null` when the harness stopped nothing, because the invocation had
-   * ended by itself. A stop this harness cannot confirm is recorded as
-   * `unconfirmed` together with {@link CommandResult.terminationProblem}.
+   * expired or when the run was stopped; `null` when the harness stopped
+   * nothing, because the invocation had ended by itself. A stop this harness
+   * cannot confirm is recorded as `unconfirmed` together with
+   * {@link CommandResult.terminationProblem}.
    */
   readonly termination: TerminationOutcome | null;
   /** What could not be confirmed about the stop; `null` when it was confirmed. */
@@ -252,6 +256,34 @@ export interface TimeoutEvidence {
   readonly problem: string | null;
 }
 
+/**
+ * What a run that its caller stopped has to say about it: where it was stopped,
+ * and whether the harness was able to confirm that the execution it stopped
+ * really ended.
+ *
+ * A stopped run is a `cancelled` run, which is a status of its own and not a
+ * timeout: no limit expired, and a report must not read as if one had. Like a
+ * timeout, it keeps exactly one of these, and an unconfirmed stop is stated
+ * rather than rounded down — a working copy that may still be written to must
+ * not be declared safe to reuse.
+ */
+export interface CancellationEvidence {
+  /** The part of the run that was in progress, in a few words. */
+  readonly phase: string;
+  /** How much of the run's total task time had been used, in milliseconds. */
+  readonly elapsedMs: number;
+  /**
+   * Whether owned execution was confirmed to have stopped. `confirmed` when
+   * nothing was left to stop, or when the harness stopped it and saw it end.
+   */
+  readonly termination: TerminationOutcome;
+  /**
+   * What could not be confirmed, when {@link CancellationEvidence.termination}
+   * is `unconfirmed`; `null` when termination was confirmed.
+   */
+  readonly problem: string | null;
+}
+
 /** The final report of one run: the contents of `<runDir>/result.json`. */
 export interface RunReport {
   /** Generated run ID: the run's name in logs, reports, and its branch. */
@@ -284,6 +316,12 @@ export interface RunReport {
    * Present exactly when the run stopped because a limit expired.
    */
   readonly timeout: TimeoutEvidence | null;
+  /**
+   * What stopped a run its caller cancelled, and whether that stop could be
+   * confirmed; `null` for a run that ended for another reason. Present exactly
+   * when the run stopped because it was cancelled.
+   */
+  readonly cancellation: CancellationEvidence | null;
   /** The run's compact lifecycle timeline: `<runDir>/logs/run.log`. */
   readonly runLog: string;
 }

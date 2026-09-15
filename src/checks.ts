@@ -71,8 +71,18 @@
  * The round recomputes what is left of the task time before every command it
  * starts, so a round that has used up the run's time starts nothing at all.
  *
- * Cancellation is not implemented here: it belongs to T09, which reuses this
- * same stop path.
+ * ## The run's own stop request
+ *
+ * A run can also be stopped by its caller, and that reaches an invocation
+ * through the same path its limit does: the request carries one abort signal,
+ * the invocation and everything it started are stopped as the one process tree
+ * they are, and the result records the stop and whether it was confirmed. The
+ * two triggers are not the same fact and are not reported as one — an invocation
+ * stopped by a request is `stopped`, an invocation that ran out of time is
+ * `timed-out` — and the first of them to arrive is the one the result keeps, so
+ * a command that exits `0` after it was stopped does not become a passing check.
+ * A request that arrives before the invocation starts stops it from starting:
+ * work is never begun after the run it belongs to has been stopped.
  */
 
 import { spawn } from 'node:child_process';
@@ -105,6 +115,15 @@ export interface RunCommandRequest {
    * then recorded as `timed-out`.
    */
   readonly timeoutMs: number;
+  /**
+   * Asked to stop the invocation, and everything it started, when the run is
+   * stopped by its caller. The invocation is stopped through the same path its
+   * limit uses — the whole tree, named by a PID this module recorded — and the
+   * result is recorded as `stopped`, with whether that stop was confirmed. A
+   * request that has already arrived before the invocation starts stops it from
+   * starting at all.
+   */
+  readonly stop?: AbortSignal;
 }
 
 /** What one setup/check round is asked to do. */
@@ -142,6 +161,13 @@ export interface CheckRoundRequest {
    * second notion of time in the harness.
    */
   readonly now: () => Date;
+  /**
+   * Asked to stop the round when the run is stopped by its caller. Every
+   * invocation of the round runs with it, so a command that is running is
+   * stopped with the tree it started, and a round that is already stopped —
+   * between two commands — starts nothing further.
+   */
+  readonly stop?: AbortSignal;
 }
 
 /**
@@ -402,7 +428,7 @@ export function commandSucceeded(result: CommandResult): boolean {
  * The result then says it timed out, and whether that stop was confirmed.
  */
 export async function runCommand(request: RunCommandRequest): Promise<CommandResult> {
-  const { command, cwd, logsDir, label, timeoutMs } = request;
+  const { command, cwd, logsDir, label, timeoutMs, stop } = request;
   const executable = command[0] ?? '';
   const args = command.slice(1);
 
@@ -425,6 +451,27 @@ export async function runCommand(request: RunCommandRequest): Promise<CommandRes
     stderrPath: log.stderrPath,
   });
 
+  /**
+   * The run was stopped before this invocation started. Nothing of it ran, so
+   * nothing of it is left running: the omission is recorded as the stop it is,
+   * never as a launch failure or as an exit.
+   */
+  const stoppedBeforeStart = (): CommandResult => ({
+    command: [...command],
+    cwd,
+    startedAt,
+    endedAt: new Date().toISOString(),
+    outcome: 'stopped',
+    exitCode: null,
+    signal: null,
+    launchError: null,
+    timeoutMs,
+    termination: 'confirmed',
+    terminationProblem: null,
+    stdoutPath: log.stdoutPath,
+    stderrPath: log.stderrPath,
+  });
+
   const directoryProblem = workingDirectoryProblem(cwd);
   if (directoryProblem !== undefined) {
     await log.close();
@@ -437,12 +484,21 @@ export async function runCommand(request: RunCommandRequest): Promise<CommandRes
     return notStarted(plan.problem);
   }
 
+  if (stop?.aborted === true) {
+    // Creating this invocation's log files took a moment, and the run was
+    // stopped in it: starting the command now would be starting work after the
+    // run that asked for it was already over.
+    await log.close();
+    return stoppedBeforeStart();
+  }
+
   const { file, args: launcherArgs, verbatim } = plan.launcher;
 
   const result = await new Promise<CommandResult>((resolve) => {
     let launchError: string | null = null;
     let settled = false;
-    let timedOut = false;
+    /** Why the harness is stopping this invocation: its limit, or the run's stop. */
+    let stopping: 'limit' | 'stop' | null = null;
     let termination: TerminationOutcome | null = null;
     let terminationProblem: string | null = null;
     let lastCode: number | null = null;
@@ -452,6 +508,8 @@ export async function runCommand(request: RunCommandRequest): Promise<CommandRes
       markEnded = settleEnded;
     });
     let timer: NodeJS.Timeout | null = null;
+    /** Held by the run's stop request for exactly as long as this invocation runs. */
+    let onStop: (() => void) | null = null;
 
     const finish = (code: number | null, signal: string | null): void => {
       if (settled) {
@@ -461,13 +519,20 @@ export async function runCommand(request: RunCommandRequest): Promise<CommandRes
       if (timer !== null) {
         clearTimeout(timer);
       }
+      if (onStop !== null) {
+        // The run's stop request outlives this invocation, so this invocation's
+        // listener is released rather than left on it.
+        stop?.removeEventListener('abort', onStop);
+      }
       // A command that never started still reports a nonzero close code on
       // Windows, so the recorded launch error decides the outcome, never the code.
       const started = launchError === null;
       let outcome: CommandOutcome = 'failed-to-launch';
       if (started) {
-        if (timedOut) {
+        if (stopping === 'limit') {
           outcome = 'timed-out';
+        } else if (stopping === 'stop') {
+          outcome = 'stopped';
         } else {
           outcome = signal === null ? 'exited' : 'signalled';
         }
@@ -513,27 +578,30 @@ export async function runCommand(request: RunCommandRequest): Promise<CommandRes
     }
 
     /**
-     * Ends the invocation and everything it started, once the limit has
-     * expired. Confirmed means the stop request reached the operating system
+     * Ends the invocation and everything it started, once the harness has to:
+     * the limit expired, or the run was stopped. The first of those to arrive is
+     * the one the result records, and a close event that lands afterwards cannot
+     * replace it. Confirmed means the stop request reached the operating system
      * *and* the invocation was seen to end: either half missing is recorded as
      * unconfirmed, because a tree that may still be running must never be
      * reported as stopped.
      */
-    const stopAtLimit = async (): Promise<void> => {
-      if (settled) {
-        // It ended by itself just as its limit expired: there is nothing left
-        // to stop, and its own ending is the result.
+    const stopOwnedTree = async (why: 'limit' | 'stop'): Promise<void> => {
+      if (settled || stopping !== null) {
+        // It ended by itself just as the harness stopped it — its own ending is
+        // the result — or it is already being stopped for the reason that
+        // arrived first.
         return;
       }
-      timedOut = true;
       const { pid } = child;
       if (pid === undefined) {
         // Nothing of this invocation ever started, so no tree of ours exists to
-        // stop; the launch failure is the result, exactly as it would be
-        // without a limit.
+        // stop; the launch failure is the result, exactly as it would be without
+        // a limit and without a stop request.
         finish(null, null);
         return;
       }
+      stopping = why;
 
       const stopProblem = await requestTreeStop(pid);
       const endedInTime = await within(endedOnce, STOP_GRACE_MS);
@@ -564,9 +632,9 @@ export async function runCommand(request: RunCommandRequest): Promise<CommandRes
       lastCode = code;
       lastSignal = signal;
       markEnded();
-      if (timedOut) {
+      if (stopping !== null) {
         // The stop path is waiting for exactly this end, and owns the result:
-        // the invocation is recorded as timed out, with how it was stopped.
+        // the invocation is recorded as stopped, with how it was stopped.
         return;
       }
       finish(code, signal);
@@ -574,8 +642,20 @@ export async function runCommand(request: RunCommandRequest): Promise<CommandRes
 
     if (!settled) {
       timer = setTimeout(() => {
-        void stopAtLimit();
+        void stopOwnedTree('limit');
       }, timeoutMs);
+    }
+
+    if (stop !== undefined) {
+      onStop = () => {
+        void stopOwnedTree('stop');
+      };
+      stop.addEventListener('abort', onStop, { once: true });
+      if (stop.aborted) {
+        // It arrived between the check above and this listener: the invocation
+        // is stopped the same way, rather than left running past the run.
+        onStop();
+      }
     }
   });
 
@@ -621,6 +701,14 @@ function describeStop(where: string, result: CommandResult, taskBounded: boolean
         : `that stop could not be confirmed: ${result.terminationProblem ?? 'no reason was recorded'}`)
     );
   }
+  if (result.outcome === 'stopped') {
+    return (
+      `${where} was stopped because the run was stopped by its caller, and ` +
+      (result.termination === 'confirmed'
+        ? 'nothing of it was left running'
+        : `that stop could not be confirmed: ${result.terminationProblem ?? 'no reason was recorded'}`)
+    );
+  }
   return `${where} exited with code ${String(result.exitCode)}`;
 }
 
@@ -634,23 +722,40 @@ const EXECUTION_STOPPED =
 const TIMEOUT_STOPPED =
   'The round stopped there: no later command was run. An expired limit is not a failed check ' +
   'to repair, and nothing else was started.';
+const CANCELLED_STOPPED =
+  'The round stopped there: no later command was run. The run was stopped by its caller, and a ' +
+  'stopped run is not a failed check to repair.';
 const UNCONFIRMED_TERMINATION = [
   'The harness could not confirm that everything the stopped command started has ended, so the',
   'working copy may still be written to: it must not be reused, and nothing further was run.',
 ].join('\n');
 
 /**
- * What a stopped command costs the rest of the round. A limit that expired adds
- * the unconfirmed-stop limitation when the harness has one: an unconfirmed stop
- * is a fact the run's report has to carry, not a detail this round can round
- * down (docs/spec.md §3).
+ * What a stopped command costs the rest of the round. Either stop adds the
+ * unconfirmed-stop limitation when the harness has one: an unconfirmed stop is a
+ * fact the run's report has to carry, not a detail this round can round down
+ * (docs/spec.md §3).
  */
 function stopSuffix(result: CommandResult, ordinary: string): string {
-  if (result.outcome !== 'timed-out') {
+  if (result.outcome !== 'timed-out' && result.outcome !== 'stopped') {
     return ordinary;
   }
+  const stopped = result.outcome === 'timed-out' ? TIMEOUT_STOPPED : CANCELLED_STOPPED;
   const unconfirmed = result.termination === 'confirmed' ? '' : `\n${UNCONFIRMED_TERMINATION}`;
-  return `${TIMEOUT_STOPPED}${unconfirmed}`;
+  return `${stopped}${unconfirmed}`;
+}
+
+/**
+ * Why a round stopped without starting the command it was about to run: the run
+ * it belongs to was stopped by its caller. This is the run's own stop request,
+ * not a limit, and the round hands the decision back rather than starting work
+ * the run no longer wants.
+ */
+function stoppedBeforeNext(where: string): string {
+  return [
+    `the run was stopped by its caller before ${where} could start, so it was not started.`,
+    CANCELLED_STOPPED,
+  ].join('\n');
 }
 
 /** The result of a round that stopped before it had attempted every check. */
@@ -699,9 +804,12 @@ function expiredDeadline(where: string, overdueMs: number): string {
  * result whose evidence was lost.
  */
 export async function runCheckRound(request: CheckRoundRequest): Promise<CheckRoundResult> {
-  const { setup, checks, cwd, logsDir, name, commandTimeoutMs, deadlineMs, now } = request;
+  const { setup, checks, cwd, logsDir, name, commandTimeoutMs, deadlineMs, now, stop } = request;
   const setupResults: CommandResult[] = [];
   const checkResults: CommandResult[] = [];
+
+  /** Whether the run this round belongs to has been stopped by its caller. */
+  const stopped = (): boolean => stop?.aborted === true;
 
   /**
    * What the next invocation runs under: the smaller of its configured command
@@ -716,6 +824,11 @@ export async function runCheckRound(request: CheckRoundRequest): Promise<CheckRo
 
   for (const [index, command] of setup.entries()) {
     const where = describeInvocation('setup command', index + 1, setup.length, command);
+    if (stopped()) {
+      // The run was stopped while the round was between two commands: this one
+      // is not started, and neither is anything after it.
+      return incompleteRound(setupResults, checkResults, stoppedBeforeNext(where));
+    }
     const { remaining, limitMs } = nextLimit();
     if (remaining <= 0) {
       return incompleteRound(setupResults, checkResults, expiredDeadline(where, -remaining));
@@ -727,6 +840,7 @@ export async function runCheckRound(request: CheckRoundRequest): Promise<CheckRo
       logsDir,
       label: `${name}-setup-${index + 1}`,
       timeoutMs: limitMs,
+      stop,
     });
     setupResults.push(result);
     if (!commandSucceeded(result)) {
@@ -737,6 +851,9 @@ export async function runCheckRound(request: CheckRoundRequest): Promise<CheckRo
 
   for (const [index, command] of checks.entries()) {
     const where = describeInvocation('check', index + 1, checks.length, command);
+    if (stopped()) {
+      return incompleteRound(setupResults, checkResults, stoppedBeforeNext(where));
+    }
     const { remaining, limitMs } = nextLimit();
     if (remaining <= 0) {
       return incompleteRound(setupResults, checkResults, expiredDeadline(where, -remaining));
@@ -748,6 +865,7 @@ export async function runCheckRound(request: CheckRoundRequest): Promise<CheckRo
       logsDir,
       label: `${name}-check-${index + 1}`,
       timeoutMs: limitMs,
+      stop,
     });
     checkResults.push(result);
     // A check that exited nonzero is a result like any other, and the remaining

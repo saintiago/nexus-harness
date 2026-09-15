@@ -50,7 +50,7 @@ Dependencies are task IDs. The normal execution order is top to bottom.
 | [x] | T06 | Baseline and implementation loop with a fake agent | T04, T05 |
 | [x] | T07 | Bounded repair loop and honest outcomes | T06 |
 | [x] | T08 | Total deadline, command limits, and timeout shutdown | T07 |
-| [ ] | T09 | Cancellation and confirmed process shutdown | T08 |
+| [x] | T09 | Cancellation and confirmed process shutdown | T08 |
 | [ ] | T10 | Final diff inspection and review warnings | T07, T09 |
 | [ ] | T11 | Offline local-loop milestone | T10 |
 | [ ] | T12 | Real Codex adapter with offline contract tests | T11 |
@@ -767,4 +767,90 @@ Limitations: a timeout is not cancellation — a user-initiated stop, its own ev
   `run` command stays unavailable (T13). Verified on Windows 11 / Node 24.14 only; the POSIX group
   signal is unexercised here, and no live LLM, network, or credentials were used.
 Next ready task: T09
+```
+
+```text
+Task: T09 — Cancellation and confirmed process shutdown
+Result: complete
+Changed: src/runner.ts — a run accepts one stop request, RunTaskRequest.stop, and cancellation
+  has no second pathway: the same abort signal a phase's own limit uses is the one the caller
+  sets off. It is read before preflight and after it (a stop that arrives before a run directory
+  exists is refused with RunCancelledError rather than reported as a run that happened), handed to
+  prepareWorkspace, given to every round, and composed per coding turn by phaseStop(). phaseStop
+  owns one AbortController with two triggers — the phase's remaining task time and the caller's
+  stop — each aborting it with a RunStopReason naming which one it was. AbortController keeps the
+  first reason it was given, so a trigger that arrives second changes nothing, and stop.kind()
+  reads back which one arrived first. stop.cancel() clears the timer and removes the caller
+  listener when the phase returns, so a finished phase leaves nothing armed. roundStop() reads a
+  stop out of a round that came back as an execution error: a command whose outcome is 'stopped'
+  becomes a cancelled run carrying that command's own termination evidence, a stop observed
+  between two commands becomes cancelled with the round's own explanation, and an expired limit
+  stays a timeout. Every stop leaves through endStopped()/endCancelled(), which record one
+  CancellationEvidence, finalize as `cancelled` with timeout: null, and start nothing after it.
+  First observed reason wins: the turn's own stop signal is read (stop.kind()) immediately after
+  the turn returns and its log is closed, before the turn's failure is read, so an agent that
+  answers after it was asked to stop — including one that fails on its way out — cannot replace
+  the reason the run ended for; then a quiescent boundary reads the caller's signal again once the
+  turn's stop request has been released, so a successfully completed turn gets no check round
+  unless the working copy is really nobody else's to write to; a stop that arrives in that window
+  ends the run as cancelled instead of starting a round. src/checks.ts — RunCommandRequest.stop and
+  CheckRoundRequest.stop; a command already running is stopped through the tree stop its own limit
+  uses and recorded as 'stopped' (never as an exit, whatever code it reports on the way out), a
+  command not yet started by a stopped round is not started at all (stoppedBeforeStart, and the
+  round's stoppedBeforeNext between two commands), and both carry the existing unconfirmed-stop
+  limitation rather than rounding it down. src/types.ts — CommandOutcome gains 'stopped';
+  CancellationEvidence { phase, elapsedMs, termination, problem } is what RunReport.cancellation
+  carries, exactly when the run was cancelled. src/workspace.ts — PrepareWorkspaceBounds.stop
+  makes preparation check the caller's stop before the deadline at each of its five steps; a Git
+  step already running is left to finish and the next step refuses to start. src/report.ts —
+  refuses a cancellation record that is not on a `cancelled` run, and refuses an unconfirmed stop
+  that does not say what could not be confirmed. No signal handler is installed anywhere: wiring
+  the host's signals to the request is T13's work, and cancellation is verified through the
+  request's own signal.
+Verification: npm ci exit 0 (137 packages, 0 vulnerabilities); npm test --
+  tests/lifecycle.test.ts tests/runner.test.ts exit 0 (2 files, 37 passed); npm run validate exit
+  0 (format:check, lint, typecheck, test 188 passed / 1 skipped, build); after a full suite run,
+  0 fixture processes still running and 0 new temporary directories left behind.
+Evidence: tests/lifecycle.test.ts (new, 7 real-process cases) and tests/runner.test.ts (22 → 30
+  cases); the suite went from 174 passing to 188. Lifecycle: a baseline setup command stopped with
+  the child it started, both PIDs gone, its beats frozen, no check and no turn after it, the
+  stopped round's own output still on disk and the report `cancelled`; a post-agent check the
+  implementation made hang stopped with its child, its last beat preceding the report's mtime, and
+  no second round or repair turn; an implementation turn stopped while it worked, its runtime
+  stopping and awaiting the tree it managed before returning, the run finalizing only afterwards
+  with the turn's own log and summary kept; a repair turn stopped after a real red round, with
+  what both turns wrote kept and the source checkout unchanged (HEAD and status compared before and
+  after every run); a deliberately uncooperative host (no taskkill findable) reporting
+  termination: 'unconfirmed' with the fixture processes still running, status `cancelled` and never
+  `passed`, the reason saying the stop could not be confirmed and the copy must not be reused; a
+  round handed an already-aborted signal starting nothing at all (no process, no beat, no log
+  file); and a single command stopped mid-flight. Runner: a pre-stopped run refused with
+  RunCancelledError and nothing allocated; a stopped repair turn with no round after it and a
+  consistent timeline; a stop landing exactly as a turn returns (the quiescent boundary); a round
+  stopped between two commands; a caller stop racing an expired deadline (the timeout observed
+  first is the one reported, with cancellation null); one finalization with one reason under
+  repeated aborts, with no abort listener left on the caller's signal and no timer left armed;
+  a phase that finished inside its budget releasing its deadline; and a turn that failed after
+  being stopped, whose stop is still the reason. Regression probes confirmed the cases bite: a
+  cancelled run allowed to continue to its next check round reported `passed` (failed the runner
+  boundary case); letting a turn that failed while being stopped become the run's reason failed 8
+  cases across both files — that probe exposed a gap, so the race case above was added; all probes
+  were reverted, the suite returned to 37 passed for these two files, and no fixture process was
+  left behind.
+Limitations: only process trees the harness started itself are ever stopped, and only PIDs it
+  recorded; no claim is made about a detached or unrelated host process, which is left alone. A
+  stop is confirmed only when the request reached the operating system and the invocation was seen
+  to end within the existing 5000 ms grace window, so a stop that lands but is not observed in
+  time is reported as unconfirmed. The unconfirmed case is induced by making the tree-stop utility
+  unfindable, which is the Windows path (taskkill on PATH); off Windows the stop is a group
+  SIGKILL that needs no PATH lookup, so that particular case is Windows-only, as the T08 checks
+  test already is. Cancellation is verified through the request's abort signal only: wiring the
+  host's own signals to it is T13, and no import-time handler exists in any module. The coding
+  runtime is still absent, so runAgentTurn has no production implementation and the public `run`
+  command stays unavailable (T13); a turn is stopped through the signal a runtime would honour,
+  exercised with real processes in the tests. Six temporary directories from earlier interrupted
+  runs were already in %TEMP% before this task's suite runs; the suite creates and removes all of
+  its own, leaving none. Verified on Windows 11 / Node 24.14 only; the POSIX group-signal path is
+  unexercised here, and no live LLM, network, or credentials were used.
+Next ready task: T10
 ```

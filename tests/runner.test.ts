@@ -14,6 +14,7 @@
  */
 
 import { spawn } from 'node:child_process';
+import { getEventListeners } from 'node:events';
 import { existsSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -22,7 +23,7 @@ import { runCheckRound } from '../src/checks.js';
 import type { CheckRoundRequest } from '../src/checks.js';
 import { agentLogPath, appendRunLog, openAgentLog, writeRunReport } from '../src/report.js';
 import type { RunReportRequest } from '../src/report.js';
-import { RunTimeoutError, runTask } from '../src/runner.js';
+import { RunCancelledError, RunTimeoutError, runTask } from '../src/runner.js';
 import type { AgentTurnRequest, AgentTurnResult, RunnerDependencies } from '../src/runner.js';
 import {
   WorkspaceError,
@@ -1883,6 +1884,507 @@ describe('a run that runs out of task time', () => {
     // Refused rather than reported: no run directory was made, so no report was
     // invented for a run that never started.
     expect(existsSync(fixture.workDir)).toBe(false);
+  }, 60_000);
+});
+
+/**
+ * A spy on the host's timers, installed for the length of one run: every timer
+ * created while it is installed is remembered, and every one cleared is struck
+ * off again. A run that arms a timer and does not release it leaves something in
+ * {@link TimerSpy.pending} — which is the leak these tests are about.
+ */
+interface TimerSpy {
+  /** The timers created while the spy was installed that were not cleared. */
+  pending(): NodeJS.Timeout[];
+  /** Puts the host's own timers back. */
+  restore(): void;
+}
+
+function spyTimers(): TimerSpy {
+  const created = new Set<NodeJS.Timeout>();
+  const cleared = new Set<NodeJS.Timeout>();
+  const realSetTimeout = globalThis.setTimeout;
+  const realClearTimeout = globalThis.clearTimeout;
+
+  const spiedSetTimeout = ((...args: unknown[]): NodeJS.Timeout => {
+    const timer = (realSetTimeout as (...rest: unknown[]) => NodeJS.Timeout)(...args);
+    created.add(timer);
+    return timer;
+  }) as typeof setTimeout;
+  const spiedClearTimeout = ((timer?: NodeJS.Timeout): void => {
+    if (timer !== undefined) {
+      cleared.add(timer);
+    }
+    realClearTimeout(timer);
+  }) as typeof clearTimeout;
+
+  globalThis.setTimeout = spiedSetTimeout;
+  globalThis.clearTimeout = spiedClearTimeout;
+
+  return {
+    pending: () => [...created].filter((timer) => !cleared.has(timer)),
+    restore: () => {
+      globalThis.setTimeout = realSetTimeout;
+      globalThis.clearTimeout = realClearTimeout;
+    },
+  };
+}
+
+/** Waits, bounded, for everything the run armed to have been released. */
+async function expectNoPendingTimers(timers: TimerSpy): Promise<void> {
+  const deadline = Date.now() + 2000;
+  while (timers.pending().length > 0 && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  expect(timers.pending()).toEqual([]);
+}
+
+/**
+ * The run's own stop request. A caller stops a run by aborting the signal it
+ * handed it — the one mechanism the run accepts — and these tests read what the
+ * run then did: which work it stopped, what it awaited, which status it recorded
+ * once, and what it refused to start afterwards. The real processes behind these
+ * phases are covered in tests/lifecycle.test.ts; here the phases are stand-ins,
+ * so a stop can be delivered at exactly the moment under test. See docs/tasks.md
+ * T09.
+ */
+describe('a run the caller stops', () => {
+  it('refuses a run that was stopped before it started, and allocates nothing', async () => {
+    const fixture = await createFixture();
+    const config = configuration(fixture);
+    const controller = new AbortController();
+    const agent = fakeAgent(fixture);
+    controller.abort();
+
+    const allocations: string[] = [];
+    const attempt = runTask(
+      { ...request(fixture, config), stop: controller.signal },
+      dependencies(agent.turn, {
+        // Nothing is left to read: the run was over before it was asked for.
+        preflight: async () => {
+          throw new Error('the source repository must not be read for a stopped run');
+        },
+        allocateRunDirectory: async (workDir) => {
+          allocations.push(workDir);
+          return allocateRunDirectory(workDir);
+        },
+      }),
+    );
+
+    // Refused rather than reported, exactly as an expired task time is: there is
+    // no run directory to keep and no report to write.
+    await expect(attempt).rejects.toThrow(RunCancelledError);
+    await expect(attempt).rejects.toThrow(/before the source repository was checked/);
+    await expect(attempt).rejects.toThrow(/no command and no coding turn was started/);
+    expect(allocations).toEqual([]);
+    expect(agent.requests).toEqual([]);
+    expect(existsSync(fixture.workDir)).toBe(false);
+  }, 60_000);
+
+  it('stops the repair turn the run was in, and runs no check round after it', async () => {
+    const fixture = await createFixture();
+    const clock = testClock();
+    const config = configuration(fixture, { maxRepairs: 2 });
+    const controller = new AbortController();
+    const rounds = standInRounds(async (asked) =>
+      asked.name === 'baseline'
+        ? passedRound()
+        : redRound(
+            await standInCommand(
+              { cwd: asked.cwd, logsDir: asked.logsDir },
+              { label: 'stand-in-check', exitCode: 1 },
+            ),
+          ),
+    );
+    let stoppedByRequest = false;
+    const turns = standInTurns(async (asked) => {
+      if (asked.turn === 1) {
+        return { summary: 'the implementation turn did its work' };
+      }
+      await new Promise<void>((resolve) => {
+        if (asked.stop.aborted) {
+          resolve();
+          return;
+        }
+        asked.stop.addEventListener('abort', () => resolve(), { once: true });
+        // The caller stops the run while the repair turn is working.
+        controller.abort();
+      });
+      asked.agentLog.write('the repair turn was asked to stop and stopped\n');
+      stoppedByRequest = true;
+      return { summary: 'the repair turn stopped when the run was stopped' };
+    });
+
+    const result = await runTask(
+      { ...request(fixture, config), stop: controller.signal },
+      dependencies(turns.run, { now: clock.now, runCheckRound: rounds.run }),
+    );
+
+    expect(stoppedByRequest).toBe(true);
+    // The turn the run was in was asked to stop; the turn that had already
+    // returned was not.
+    expect(turns.requests.map((turn) => turn.stop.aborted)).toEqual([false, true]);
+    expect(turns.requests[1]?.repair?.repairedTurn).toBe(1);
+
+    expect(result.status).toBe('cancelled');
+    expect(result.timeout).toBeNull();
+    expect(result.cancellation).toEqual({
+      phase: 'repair turn 2',
+      elapsedMs: 0,
+      termination: 'confirmed',
+      problem: null,
+    });
+    expect(result.reason).toMatch(
+      /repair turn 2 was stopped because the run was stopped by its caller, so no check was run after it and no further turn was started/,
+    );
+
+    // No later check round and no later turn: nothing was started after the stop.
+    expect(rounds.requests.map((round) => round.name)).toEqual(['baseline', 'attempt-1']);
+    expect(turns.requests).toHaveLength(2);
+
+    const report = await readReport(result.reportPath);
+    expect(report.status).toBe('cancelled');
+    expect(report.timeout).toBeNull();
+    expect(report.cancellation).toEqual(result.cancellation);
+    expect(report.attempts.map((attempt) => [attempt.turn, attempt.checks === null])).toEqual([
+      [1, false],
+      [2, true],
+    ]);
+    expect(report.attempts[1]?.agentSummary).toBe(
+      'the repair turn stopped when the run was stopped',
+    );
+    expect(report.repairsUsed).toBe(1);
+    // The stopped turn's own log keeps what it wrote, and the timeline stops there.
+    expect(await readText(report.attempts[1]?.agentLog ?? '')).toContain(
+      'the repair turn was asked to stop and stopped',
+    );
+    const timeline = timelineMessages(await readText(report.runLog));
+    expect(lifecyclePhases(timeline)).toEqual([
+      'baseline check-round started',
+      'baseline check-round result',
+      'implementation turn started',
+      'implementation turn result',
+      'post-agent check-round started',
+      'post-agent check-round result',
+      'repair turn 2 started',
+      'repair turn 2 result',
+      'final status',
+    ]);
+    expect(timeline).toContain('cancelled: the run was stopped by its caller during repair turn 2');
+    expect(timeline.at(-1)).toMatch(/^final status: cancelled, repair turn 2 was stopped/);
+    // The working copy is kept for inspection, as it is for every other ending.
+    expect(existsSync(path.join(result.run.workspacePath, '.git'))).toBe(true);
+  }, 60_000);
+
+  it('stops at the boundary when the caller stops the run as a turn returns', async () => {
+    const fixture = await createFixture();
+    const clock = testClock();
+    const config = configuration(fixture);
+    const controller = new AbortController();
+    const rounds = standInRounds(() => passedRound());
+    const turns = standInTurns((asked) => {
+      asked.agentLog.write('the turn finished just as the run was stopped\n');
+      return { summary: 'the implementation turn finished as the run was stopped' };
+    });
+
+    const result = await runTask(
+      { ...request(fixture, config), stop: controller.signal },
+      dependencies(turns.run, {
+        now: clock.now,
+        runCheckRound: rounds.run,
+        // The turn has returned and its result is recorded; the caller stops the
+        // run in that window — after the turn's own stop request was released,
+        // and before anything could be observed after it.
+        appendRunLog: async (runLog, message) => {
+          if (message.startsWith('implementation turn result')) {
+            controller.abort();
+          }
+          return appendRunLog(runLog, message);
+        },
+      }),
+    );
+
+    expect(result.status).toBe('cancelled');
+    expect(result.cancellation).toEqual({
+      phase: 'implementation turn',
+      elapsedMs: 0,
+      termination: 'confirmed',
+      problem: null,
+    });
+    expect(result.reason).toMatch(
+      /the implementation turn returned, and the run was stopped by its caller before any check could run after it, so no check and no further turn was started/,
+    );
+
+    // Nothing ran after the turn — not even the round that was about to start —
+    // and what the turn said about itself is kept as agent text, not as evidence.
+    expect(rounds.requests.map((round) => round.name)).toEqual(['baseline']);
+    const report = await readReport(result.reportPath);
+    expect(report.status).toBe('cancelled');
+    expect(report.attempts).toHaveLength(1);
+    expect(report.attempts[0]?.checks).toBeNull();
+    expect(report.attempts[0]?.agentSummary).toBe(
+      'the implementation turn finished as the run was stopped',
+    );
+    expect(await readText(report.attempts[0]?.agentLog ?? '')).toContain(
+      'the turn finished just as the run was stopped',
+    );
+  }, 60_000);
+
+  it('keeps the stop it observed when the turn that was stopped then failed', async () => {
+    const fixture = await createFixture();
+    const clock = testClock();
+    const config = configuration(fixture, { maxRepairs: 2 });
+    const controller = new AbortController();
+    // The baseline passes, the implementation turn leaves a red round behind, and
+    // the repair turn is the one the caller stops.
+    const rounds = standInRounds(async (asked) =>
+      asked.name === 'baseline'
+        ? passedRound()
+        : redRound(
+            await standInCommand(
+              { cwd: asked.cwd, logsDir: asked.logsDir },
+              { label: 'stand-in-check', exitCode: 1 },
+            ),
+          ),
+    );
+    const turns = standInTurns(async (asked) => {
+      if (asked.turn === 1) {
+        return { summary: 'the implementation turn did its work' };
+      }
+      // The turn is stopped, and then fails on its way out: a late failure of a
+      // turn the run has already stopped for is not what the run ended for.
+      await new Promise<void>((resolve) => {
+        if (asked.stop.aborted) {
+          resolve();
+          return;
+        }
+        asked.stop.addEventListener('abort', () => resolve(), { once: true });
+        controller.abort();
+      });
+      asked.agentLog.write('the repair turn was stopped and then failed on its way out\n');
+      throw new Error('the runtime lost its connection while stopping the turn');
+    });
+
+    const result = await runTask(
+      { ...request(fixture, config), stop: controller.signal },
+      dependencies(turns.run, { now: clock.now, runCheckRound: rounds.run }),
+    );
+
+    // The stop is the reason, not the failure: `cancelled` rather than `failed`,
+    // and the sentence names the stop the run observed first.
+    expect(result.status).toBe('cancelled');
+    expect(result.timeout).toBeNull();
+    expect(result.cancellation?.phase).toBe('repair turn 2');
+    expect(result.cancellation?.termination).toBe('confirmed');
+    expect(result.reason).toMatch(
+      /repair turn 2 was stopped because the run was stopped by its caller, so no check was run after it and no further turn was started/,
+    );
+    expect(result.reason).not.toMatch(/lost its connection/);
+
+    // Nothing was started after the stop, and the turn's failure is kept where it
+    // belongs: in the timeline and in the turn's own log, as a turn that failed,
+    // not as the run's reason.
+    expect(rounds.requests.map((round) => round.name)).toEqual(['baseline', 'attempt-1']);
+    expect(turns.requests).toHaveLength(2);
+    const report = await readReport(result.reportPath);
+    expect(report.status).toBe('cancelled');
+    expect(report.attempts.map((attempt) => [attempt.turn, attempt.checks === null])).toEqual([
+      [1, false],
+      [2, true],
+    ]);
+    expect(report.attempts[1]?.agentSummary).toBeNull();
+    expect(await readText(report.attempts[1]?.agentLog ?? '')).toContain(
+      'the repair turn was stopped and then failed on its way out',
+    );
+    const timeline = timelineMessages(await readText(report.runLog));
+    expect(timeline).toContain(
+      'repair turn 2 result: failed, the runtime lost its connection while stopping the turn',
+    );
+    expect(timeline.at(-1)).toMatch(/^final status: cancelled, repair turn 2 was stopped/);
+  }, 60_000);
+
+  it('ends the run when a round stopped between two commands because the run was stopped', async () => {
+    const fixture = await createFixture();
+    const clock = testClock();
+    const config = configuration(fixture);
+    const controller = new AbortController();
+    const turns = standInTurns(() => ({ summary: 'the implementation turn did its work' }));
+    const rounds = standInRounds((asked) => {
+      if (asked.name === 'baseline') {
+        return passedRound();
+      }
+      // The round was stopped between two commands: nothing was left running,
+      // and the command it was about to start was never started.
+      controller.abort();
+      return {
+        outcome: 'execution-error',
+        setup: [],
+        checks: [],
+        problem:
+          'the run was stopped by its caller before check 1 could start, so it was not started.',
+      };
+    });
+
+    const result = await runTask(
+      { ...request(fixture, config), stop: controller.signal },
+      dependencies(turns.run, { now: clock.now, runCheckRound: rounds.run }),
+    );
+
+    expect(result.status).toBe('cancelled');
+    expect(result.cancellation).toEqual({
+      phase: 'the checks after the implementation turn',
+      elapsedMs: 0,
+      termination: 'confirmed',
+      problem: null,
+    });
+    expect(result.reason).toBe(
+      'the run was stopped by its caller during the checks after the implementation turn: nothing further was started',
+    );
+
+    // The round that could not be run is kept as that turn's evidence, and no
+    // further round and no repair turn followed it.
+    expect(rounds.requests.map((round) => round.name)).toEqual(['baseline', 'attempt-1']);
+    expect(turns.requests).toHaveLength(1);
+    const report = await readReport(result.reportPath);
+    expect(report.attempts[0]?.checks?.outcome).toBe('execution-error');
+    expect(report.attempts[0]?.checks?.problem).toContain('stopped by its caller');
+    expect(report.cancellation).toEqual(result.cancellation);
+  }, 60_000);
+
+  it('keeps the timeout it observed first when the caller stops the run as well', async () => {
+    const fixture = await createFixture();
+    const clock = testClock();
+    const config = configuration(fixture, { taskTimeoutMinutes: 1, maxRepairs: 2 });
+    const controller = new AbortController();
+    const rounds = standInRounds(() => {
+      // The baseline spends all of the run's one minute but a moment.
+      clock.advance(minutes(1) - 300);
+      return passedRound();
+    });
+    const turns = standInTurns(async (asked) => {
+      // The turn is asked to stop when the run's time runs out, and answers late:
+      // by the time it returns, the caller has stopped the run too. The reason the
+      // run recorded is the one it observed first, and neither of these replaces it.
+      await awaitStop(asked);
+      controller.abort();
+      asked.agentLog.write('the turn answered after it was stopped\n');
+      return { summary: 'the turn answered after it was stopped' };
+    });
+
+    const result = await runTask(
+      { ...request(fixture, config), stop: controller.signal },
+      dependencies(turns.run, { now: clock.now, runCheckRound: rounds.run }),
+    );
+
+    expect(result.status).toBe('failed');
+    expect(result.timeout?.limit).toBe('task');
+    expect(result.timeout?.phase).toBe('implementation turn');
+    // A stop that arrives afterwards does not turn a recorded timeout into a
+    // cancellation, and the late turn does not add a check round either.
+    expect(result.cancellation).toBeNull();
+    expect(result.reason).toMatch(
+      /the implementation turn was stopped when the run's remaining task time ran out/,
+    );
+    expect(rounds.requests.map((round) => round.name)).toEqual(['baseline']);
+    expect(turns.requests).toHaveLength(1);
+
+    const report = await readReport(result.reportPath);
+    expect(report.status).toBe('failed');
+    expect(report.timeout).toEqual(result.timeout);
+    expect(report.cancellation).toBeNull();
+    expect(report.attempts[0]?.checks).toBeNull();
+    expect(report.attempts[0]?.agentSummary).toBe('the turn answered after it was stopped');
+    expect(timelineMessages(await readText(report.runLog)).join('\n')).not.toContain('cancelled:');
+  }, 60_000);
+
+  it('finalizes a cancelled run once, with one reason, and leaves no listener or timer armed', async () => {
+    const fixture = await createFixture();
+    const config = configuration(fixture, { maxRepairs: 2 });
+    const controller = new AbortController();
+    const projects: RunReportRequest[] = [];
+    const rounds = standInRounds(async (asked) =>
+      asked.name === 'baseline'
+        ? passedRound()
+        : redRound(
+            await standInCommand(
+              { cwd: asked.cwd, logsDir: asked.logsDir },
+              { label: 'stand-in-check', exitCode: 1 },
+            ),
+          ),
+    );
+    const turns = standInTurns((asked) => {
+      if (asked.turn === 1) {
+        return { summary: 'the implementation turn did its work' };
+      }
+      controller.abort();
+      return { summary: 'the repair turn stopped when the run was stopped' };
+    });
+
+    const timers = spyTimers();
+    let result;
+    try {
+      result = await runTask(
+        { ...request(fixture, config), stop: controller.signal },
+        dependencies(turns.run, {
+          runCheckRound: rounds.run,
+          writeRunReport: async (asked) => {
+            projects.push(asked);
+            return writeRunReport(asked);
+          },
+        }),
+      );
+    } finally {
+      timers.restore();
+    }
+
+    // The caller asks again, twice, after the run has ended: a run finalizes once,
+    // and a stop that arrives afterwards has nothing left to stop.
+    controller.abort();
+    controller.abort();
+
+    expect(result.status).toBe('cancelled');
+    expect(projects).toHaveLength(1);
+    const report = await readReport(result.reportPath);
+    expect(report.status).toBe('cancelled');
+    expect(report.reason).toBe(result.reason);
+    expect(report.cancellation).toEqual(result.cancellation);
+    const finals = timelineMessages(await readText(report.runLog)).filter((message) =>
+      message.startsWith('final status:'),
+    );
+    expect(finals).toHaveLength(1);
+
+    // Nothing of the run is still listening for the caller's stop, and nothing it
+    // armed for itself is still pending.
+    expect(getEventListeners(controller.signal, 'abort')).toEqual([]);
+    await expectNoPendingTimers(timers);
+    expect(rounds.requests.map((round) => round.name)).toEqual(['baseline', 'attempt-1']);
+  }, 60_000);
+
+  it('releases the deadline of a phase that finished inside its budget', async () => {
+    const fixture = await createFixture();
+    const clock = testClock();
+    const config = configuration(fixture, { taskTimeoutMinutes: 1 });
+    const rounds = standInRounds((asked) => {
+      // The baseline leaves the run 400 ms of its minute; the turn then returns
+      // at once, well inside what is left.
+      if (asked.name === 'baseline') {
+        clock.advance(minutes(1) - 400);
+      }
+      return passedRound();
+    });
+    const turns = standInTurns(() => ({ summary: 'the implementation turn did its work' }));
+
+    const result = await runTask(
+      request(fixture, config),
+      dependencies(turns.run, { now: clock.now, runCheckRound: rounds.run }),
+    );
+
+    expect(result.status).toBe('passed');
+    expect(turns.requests[0]?.stop.aborted).toBe(false);
+    // Long enough for the 400 ms that were left: a deadline the run no longer
+    // needs is released rather than left armed for a turn that has returned.
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    expect(turns.requests[0]?.stop.aborted).toBe(false);
   }, 60_000);
 });
 

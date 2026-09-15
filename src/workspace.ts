@@ -623,7 +623,7 @@ async function assertRecordedWorkspace(
   }
 }
 
-/** How the run's task deadline bounds preparation. */
+/** How the run's task deadline and stop request bound preparation. */
 export interface PrepareWorkspaceBounds {
   /**
    * The run's task deadline, in epoch milliseconds: established once, before
@@ -636,6 +636,14 @@ export interface PrepareWorkspaceBounds {
    * is read with — the same clock the run itself uses.
    */
   readonly now: () => Date;
+  /**
+   * The run's own stop request, when it has one: the caller's request is read
+   * between preparation steps exactly as the deadline is, and no further step is
+   * started once it has arrived. A step already running is left to finish, for
+   * the reason below, and omitted bounds mean nothing can stop preparation
+   * early but the deadline.
+   */
+  readonly stop?: AbortSignal;
 }
 
 /**
@@ -645,12 +653,13 @@ export interface PrepareWorkspaceBounds {
  * pointing back at it. Every failure leaves the run directory in place and
  * names it, so a partial preparation can be inspected instead of reused.
  *
- * Preparation is bounded by the run's remaining task time: the deadline is read
- * again before each step, and a step is not started once it has passed. Git is
- * owned here, so a step that is already running is left to finish rather than
- * killed mid-write — a Git process stopped while it holds a lock can damage the
- * checkout it is writing. The bounded cost of that is one Git command's run time
- * after the deadline, which the run's later phases and its report both see.
+ * Preparation is bounded by the run's remaining task time, and by the run's own
+ * stop request when it has one: both are read again before each step, and a step
+ * is not started once either has arrived. Git is owned here, so a step that is
+ * already running is left to finish rather than killed mid-write — a Git process
+ * stopped while it holds a lock can damage the checkout it is writing. The
+ * bounded cost of that is one Git command's run time after the deadline or the
+ * stop request, which the run's later phases and its report both see.
  */
 export async function prepareWorkspace(
   run: RunDirectory,
@@ -659,8 +668,21 @@ export async function prepareWorkspace(
 ): Promise<PreparedWorkspace> {
   const branch = `${RUN_BRANCH_PREFIX}${run.runId}`;
 
-  /** Why preparation stopped, when the run's own deadline had passed. */
-  const assertTimeLeft = (step: string): void => {
+  /**
+   * Why preparation stopped, when it was stopped before it could start a step.
+   * The run's own stop request is read first: a caller who stopped the run is
+   * told that, rather than told about a deadline in the same window.
+   */
+  const assertMayStart = (step: string): void => {
+    if (bounds.stop?.aborted === true) {
+      throw new WorkspaceError(
+        [
+          `the run was stopped by its caller before ${step}, so preparation stopped there.`,
+          'What preparation had already written is kept in the run directory, but it is not a usable ' +
+            'working copy and must not be reused.',
+        ].join('\n'),
+      );
+    }
     const overdue = bounds.now().getTime() - bounds.deadlineMs;
     if (overdue <= 0) {
       return;
@@ -675,15 +697,15 @@ export async function prepareWorkspace(
   };
 
   try {
-    assertTimeLeft('the destination check');
+    assertMayStart('the destination check');
     await assertWorkspaceDestinationEmpty(run);
-    assertTimeLeft('reading the source repository');
+    assertMayStart('reading the source repository');
     await assertSourceAtRecordedBase(source);
-    assertTimeLeft('cloning the committed objects');
+    assertMayStart('cloning the committed objects');
     await cloneCommittedObjects(run, source);
-    assertTimeLeft('creating the run branch');
+    assertMayStart('creating the run branch');
     await createRunBranch(run, branch, source.baseCommit);
-    assertTimeLeft('verifying the working copy');
+    assertMayStart('verifying the working copy');
     await assertRecordedWorkspace(run, source, branch);
   } catch (cause) {
     throw incompleteRunError(run, messageOf(cause), cause);

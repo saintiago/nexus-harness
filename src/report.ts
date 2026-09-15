@@ -29,9 +29,13 @@
  * the output stays in the files that hold it. A run that ran out of time carries
  * one timeout record beside that evidence: which limit expired, in which phase,
  * and whether the harness could confirm that the execution it stopped really
- * ended. It is written once, and only for a run that got as far as a run
- * directory: an invocation refused before that has nothing to report and is a
- * CLI error instead. See docs/spec.md §§3–5.
+ * ended. A run stopped by its caller carries one cancellation record of its own
+ * instead, in the same shape and with the same limitation stated: a stop that
+ * could not be confirmed leaves a working copy that may still be written to, and
+ * a report that did not say so would invite reusing it. It is written once, and
+ * only for a run that got as far as a run directory: an invocation refused
+ * before that has nothing to report and is a CLI error instead. See
+ * docs/spec.md §§3–5.
  */
 
 import { createWriteStream } from 'node:fs';
@@ -41,6 +45,7 @@ import type { WriteStream } from 'node:fs';
 import type {
   AttemptEvidence,
   AttemptKind,
+  CancellationEvidence,
   CheckRoundResult,
   CommandResult,
   RunReport,
@@ -391,6 +396,14 @@ export interface RunReportRequest {
    * really ended. `null` for a run that ended for any other reason.
    */
   readonly timeout: TimeoutEvidence | null;
+  /**
+   * What stopped a run its caller cancelled: in which phase it was stopped, and
+   * whether the harness confirmed that the execution it stopped really ended.
+   * `null` for a run that ended for any other reason — including a run that
+   * ends as `cancelled` without a stop to describe, which is why this is
+   * optional rather than required of that status.
+   */
+  readonly cancellation?: CancellationEvidence | null;
 }
 
 /** Refuses a request that would describe a run other than the one that happened. */
@@ -455,6 +468,29 @@ function assertReportable(request: RunReportRequest): void {
               'still running.'
           : 'a timeout with a confirmed termination has nothing left to explain, so it cannot also ' +
               'carry a problem: the report would describe a stop that both did and did not happen.',
+      );
+    }
+  }
+
+  const cancellation = request.cancellation ?? null;
+  if (cancellation !== null) {
+    if (request.status !== 'cancelled') {
+      throw new ReportError(
+        `a run that its caller stopped is reported as "cancelled", not as "${request.status}": a ` +
+          'stop that came from outside the run is not a red check round to repair, and it is ' +
+          'certainly not a pass (docs/spec.md §3).',
+      );
+    }
+    const unconfirmed = cancellation.termination !== 'confirmed';
+    if (unconfirmed === (cancellation.problem === null)) {
+      throw new ReportError(
+        unconfirmed
+          ? 'a cancellation whose termination is unconfirmed has to say what could not be confirmed: ' +
+              'the limitation belongs in the report rather than in an assumption that the working ' +
+              'copy it was writing to is safe to reuse.'
+          : 'a cancellation with a confirmed termination has nothing left to explain, so it cannot ' +
+              'also carry a problem: the report would describe a stop that both did and did not ' +
+              'happen.',
       );
     }
   }
@@ -543,6 +579,7 @@ function buildReport(request: RunReportRequest): RunReport {
     baseline: request.baseline,
     attempts: request.attempts,
     timeout: request.timeout,
+    cancellation: request.cancellation ?? null,
     runLog: runLogPath(request.run.logsDir),
   };
 }
