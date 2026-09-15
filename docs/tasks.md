@@ -43,7 +43,7 @@ Dependencies are task IDs. The normal execution order is top to bottom.
 | Done | ID | Task | Depends on |
 | --- | --- | --- | --- |
 | [x] | T01 | Read-only repository and output-path preflight | Scaffold |
-| [ ] | T02 | Unique run directory and dedicated local clone | T01 |
+| [x] | T02 | Unique run directory and dedicated local clone | T01 |
 | [ ] | T03 | Literal-argument command execution and logs | T02 |
 | [ ] | T04 | Sequential setup and complete check rounds | T03 |
 | [ ] | T05 | Final report and attempt evidence | T02, T04 |
@@ -490,4 +490,36 @@ Limitations: the directory-symlink alias case skips on this Windows host — cre
   directory symlink needs elevation or Developer Mode (EPERM). The junction alias cases
   do run and assert here; POSIX runs the symlink case. No run/CLI wiring yet (T13).
 Next ready task: T02
+```
+
+```text
+Task: T02 — Unique run directory and dedicated local clone
+Result: complete
+Changed: src/workspace.ts exports allocateRunDirectory() and prepareWorkspace() with the
+  RunDirectory/PreparedWorkspace data. Allocation creates <workDir>/<runId>/workspace and
+  <runDir>/logs by exclusive mkdir, from a generated timestamp+random ID that must match a
+  name pattern; task text is not an input, and a taken ID is skipped, never reused. The run
+  ID is also the branch name (harness/<runId>). prepareWorkspace() clones the recorded base
+  with `git clone --no-checkout --no-hardlinks --origin source`, removes that remote so the
+  copy is a snapshot rather than a second checkout, creates the branch at the recorded
+  commit, and then verifies what it actually got: the source is still at that commit, the
+  clone's HEAD equals it, the branch is current, and the checkout reproduces the recorded
+  contents. Any failure keeps the run directory and names it in the error; WorkspaceError
+  gained an optional `cause`.
+Verification: npm ci exit 0 (137 packages, 0 vulnerabilities); npm test -- tests/workspace.test.ts
+  exit 0 (37 passed, 1 skipped — the pre-existing Developer Mode symlink case);
+  npm run validate exit 0 (format:check, lint, typecheck, 99 passed / 1 skipped, build).
+Evidence: 11 new cases in tests/workspace.test.ts over temporary sibling directories and real
+  Git child processes: allocation layout and uniqueness, no-clobber with a taken ID, unusable
+  generated names, recorded-base/branch/contents checks, ignored files left behind, clone
+  isolation from the source and from a sibling clone, non-empty destination refused,
+  incomplete source object store detected, moved source HEAD refused, and hostile task IDs.
+Limitations: verified on Windows 11 with Git 2.53 and Node 24.14 only; POSIX clone/branch
+  paths are not exercised here. The incomplete-object fixture relies on that Git version
+  exiting 0 from a checkout it cannot complete; the read-back verification is what catches it,
+  and a Git that fails the clone instead is accepted by the same test. Whether a checkout
+  looks clean to `git status` depends on the host's line-ending settings, so the harness
+  checks it in the environment that wrote the checkout. Removing the clone's remote means
+  later phases cannot fetch from the source (intentional). No CLI wiring yet (T13).
+Next ready task: T03
 ```

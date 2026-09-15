@@ -1,19 +1,26 @@
 /**
- * Preflight tests. Fixtures are real local Git repositories in temporary
- * directories, inspected through real child processes: no network, no
- * credentials, and nothing outside those temporary directories is written or
- * removed. See docs/tasks.md T01 for the acceptance criteria.
+ * Preflight, run-directory, and working-copy tests. Fixtures are real local Git
+ * repositories in temporary directories, inspected through real child
+ * processes: no network, no credentials, and nothing outside those temporary
+ * directories is written or removed. See docs/tasks.md T01 and T02 for the
+ * acceptance criteria.
  */
 
 import { spawn } from 'node:child_process';
-import { existsSync, realpathSync } from 'node:fs';
-import { mkdir, readFile, readdir, symlink, writeFile } from 'node:fs/promises';
+import { existsSync, realpathSync, statSync } from 'node:fs';
+import { mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { WorkspaceError, preflightSource } from '../src/workspace.js';
-import type { PreflightRequest, SourcePreflight } from '../src/workspace.js';
+import { taskSchema } from '../src/config.js';
+import {
+  WorkspaceError,
+  allocateRunDirectory,
+  prepareWorkspace,
+  preflightSource,
+} from '../src/workspace.js';
+import type { PreparedWorkspace, PreflightRequest, SourcePreflight } from '../src/workspace.js';
 import { cleanupTempDirectories, createTempDir, repoRoot } from './support.js';
 
 afterEach(cleanupTempDirectories);
@@ -150,12 +157,12 @@ async function snapshotRepository(repo: string): Promise<RepositorySnapshot> {
   };
 }
 
-/** Runs preflight expecting a {@link WorkspaceError}, and returns it. */
-async function expectRejected(
-  request: PreflightRequest,
+/** Runs `operation` expecting a {@link WorkspaceError}, and returns it. */
+async function expectWorkspaceError(
+  operation: () => Promise<unknown>,
   ...problems: RegExp[]
 ): Promise<WorkspaceError> {
-  const cause = await preflightSource(request).then(
+  const cause = await operation().then(
     () => undefined,
     (error: unknown) => error,
   );
@@ -166,6 +173,11 @@ async function expectRejected(
     expect(cause.message).toMatch(problem);
   }
   return cause;
+}
+
+/** Runs preflight expecting a {@link WorkspaceError}, and returns it. */
+function expectRejected(request: PreflightRequest, ...problems: RegExp[]): Promise<WorkspaceError> {
+  return expectWorkspaceError(() => preflightSource(request), ...problems);
 }
 
 /** Asserts that a rejected preflight left the output location untouched. */
@@ -198,6 +210,23 @@ async function createAlias(
 /** The `tsx` loader, resolved here so the child's own directory need not have it. */
 function tsxLoader(): string {
   return pathToFileURL(createRequire(import.meta.url).resolve('tsx')).href;
+}
+
+/** Contents of every checked-out file below `directory`, excluding `.git`. */
+async function readCheckedOutTree(directory: string): Promise<Record<string, string>> {
+  const files = await readTree(directory);
+  return Object.fromEntries(
+    // A host whose Git rewrites line endings on checkout would otherwise make
+    // two identical trees look different; the commit they came from is what
+    // these tests are about.
+    Object.entries(files).map(([name, contents]) => [name, contents.replace(/\r\n/g, '\n')]),
+  );
+}
+
+/** Preflights a fixture, allocates a run, and prepares its working copy. */
+async function prepareRun(fixture: Fixture): Promise<PreparedWorkspace> {
+  const source = await preflightSource({ repoPath: fixture.repo, workDir: fixture.workDir });
+  return prepareWorkspace(await allocateRunDirectory(fixture.workDir), source);
 }
 
 describe('a clean source repository', () => {
@@ -565,4 +594,282 @@ describe('read-only preflight', () => {
 
     expect(await snapshotRepository(fixture.repo)).toEqual(before);
   });
+});
+
+describe('an allocated run directory', () => {
+  it('is new for every run and holds a workspace and a logs directory', async () => {
+    const fixture = await createRepository();
+
+    const first = await allocateRunDirectory(fixture.workDir);
+    const second = await allocateRunDirectory(fixture.workDir);
+
+    expect(first.runId).toMatch(/^[A-Za-z0-9][A-Za-z0-9_-]*$/);
+    expect(second.runId).not.toBe(first.runId);
+    expect(second.runDir).not.toBe(first.runDir);
+    for (const run of [first, second]) {
+      expect(path.relative(fixture.workDir, run.runDir)).toBe(run.runId);
+      expect(run.workspacePath).toBe(path.join(run.runDir, 'workspace'));
+      expect(run.logsDir).toBe(path.join(run.runDir, 'logs'));
+      expect(existsSync(run.logsDir)).toBe(true);
+      // Allocating a directory clones nothing: that is the next step.
+      expect(await readdir(run.workspacePath)).toEqual([]);
+    }
+    expect((await readdir(fixture.workDir)).sort()).toEqual([first.runId, second.runId].sort());
+  });
+
+  it('leaves a run directory that already exists alone', async () => {
+    const fixture = await createRepository();
+    const taken = await prepareRun(fixture);
+    const before = await snapshotRepository(taken.workspacePath);
+
+    let generated = 0;
+    const next = await allocateRunDirectory(fixture.workDir, () => {
+      generated += 1;
+      return generated === 1 ? taken.runId : 'run-00000000000000-00000000';
+    });
+
+    expect(generated).toBe(2);
+    expect(next.runId).toBe('run-00000000000000-00000000');
+    expect(await snapshotRepository(taken.workspacePath)).toEqual(before);
+  });
+
+  it('gives up without touching anything when every generated ID is taken', async () => {
+    const fixture = await createRepository();
+    const taken = await prepareRun(fixture);
+    const before = await snapshotRepository(taken.workspacePath);
+
+    const error = await expectWorkspaceError(
+      () => allocateRunDirectory(fixture.workDir, () => taken.runId),
+      /no free run directory/,
+      /never reused, resumed, or overwritten/,
+    );
+
+    expect(error.message).toContain(path.join(fixture.workDir, taken.runId));
+    expect(await snapshotRepository(taken.workspacePath)).toEqual(before);
+    expect((await readdir(fixture.workDir)).sort()).toEqual([taken.runId]);
+  });
+
+  it('refuses a generated name that is not a run ID, and creates nothing', async () => {
+    const fixture = await createRepository();
+    const sentinel = path.join(fixture.parent, 'sentinel.txt');
+    await writeFile(sentinel, 'untouched\n', 'utf8');
+    const before = (await readdir(fixture.parent)).sort();
+
+    const unusable = [
+      '../evil',
+      'a/b',
+      'a\\b',
+      '$(rm -rf)',
+      '"quoted"',
+      'run id',
+      '..',
+      '.',
+      '',
+      'C:\\evil',
+      'run.lock',
+      'x'.repeat(65),
+    ];
+    for (const runId of unusable) {
+      await expectWorkspaceError(
+        () => allocateRunDirectory(fixture.workDir, () => runId),
+        /not a usable run ID/,
+      );
+    }
+
+    expect(existsSync(fixture.workDir)).toBe(false);
+    expect((await readdir(fixture.parent)).sort()).toEqual(before);
+    expect(await readFile(sentinel, 'utf8')).toBe('untouched\n');
+  });
+});
+
+describe('a prepared working copy', () => {
+  it('starts from the recorded committed contents on its own branch', async () => {
+    const fixture = await createRepository();
+    const source = await preflightSource({ repoPath: fixture.repo, workDir: fixture.workDir });
+
+    const first = await prepareWorkspace(await allocateRunDirectory(fixture.workDir), source);
+    const second = await prepareWorkspace(await allocateRunDirectory(fixture.workDir), source);
+
+    expect(second.runId).not.toBe(first.runId);
+    expect(second.branch).not.toBe(first.branch);
+    for (const prepared of [first, second]) {
+      expect(prepared.sourceRoot).toBe(source.sourceRoot);
+      expect(prepared.baseCommit).toBe(source.baseCommit);
+      expect(prepared.branch).toBe(`harness/${prepared.runId}`);
+      expect(await headOf(prepared.workspacePath)).toBe(source.baseCommit);
+      expect(
+        (
+          await gitOrFail(['symbolic-ref', '--quiet', '--short', 'HEAD'], prepared.workspacePath)
+        ).trim(),
+      ).toBe(prepared.branch);
+      expect(await gitOrFail(['ls-files', '--stage'], prepared.workspacePath)).toBe(
+        await gitOrFail(['ls-files', '--stage'], fixture.repo),
+      );
+      expect(await readCheckedOutTree(prepared.workspacePath)).toEqual(
+        await readCheckedOutTree(fixture.repo),
+      );
+      // Whether the checked-out tree looks clean to `git status` depends on the
+      // line-ending settings of whoever runs it, so this file leaves that check
+      // to prepareWorkspace, which reads the checkout back in the same
+      // environment that wrote it.
+      // A snapshot, not a second checkout of the source: nothing to push to.
+      expect(await gitOrFail(['remote'], prepared.workspacePath)).toBe('');
+      // A separate clone, not a linked worktree: `.git` is a real directory
+      // here, where a worktree would leave a file pointing into the source.
+      expect(statSync(path.join(prepared.workspacePath, '.git')).isDirectory()).toBe(true);
+    }
+  }, 60_000);
+
+  it('leaves ignored local files in the source checkout', async () => {
+    const fixture = await createRepository();
+    await writeFile(path.join(fixture.repo, 'ignored.txt'), 'local noise\n', 'utf8');
+    await mkdir(path.join(fixture.repo, 'ignored-tree'));
+    await writeFile(path.join(fixture.repo, 'ignored-tree', 'cache.bin'), 'noise\n', 'utf8');
+
+    const prepared = await prepareRun(fixture);
+
+    expect(await readCheckedOutTree(prepared.workspacePath)).toEqual({
+      '.gitignore': 'ignored.txt\nignored-tree/\n',
+      'README.md': 'baseline\n',
+    });
+    expect(existsSync(path.join(prepared.workspacePath, 'ignored.txt'))).toBe(false);
+    expect(existsSync(path.join(fixture.repo, 'ignored.txt'))).toBe(true);
+  });
+
+  it('keeps edits and local commits inside the clone they were made in', async () => {
+    const fixture = await createRepository();
+    const source = await preflightSource({ repoPath: fixture.repo, workDir: fixture.workDir });
+    const first = await prepareWorkspace(await allocateRunDirectory(fixture.workDir), source);
+    const second = await prepareWorkspace(await allocateRunDirectory(fixture.workDir), source);
+    const sourceBefore = await snapshotRepository(fixture.repo);
+    const secondBefore = await snapshotRepository(second.workspacePath);
+
+    await writeFile(path.join(first.workspacePath, 'README.md'), 'edited in run one\n', 'utf8');
+    await writeFile(path.join(first.workspacePath, 'added.txt'), 'new file\n', 'utf8');
+    await gitOrFail(['add', '--all'], first.workspacePath);
+    await gitOrFail(['commit', '--quiet', '--message', 'run one work'], first.workspacePath);
+
+    expect(await headOf(first.workspacePath)).not.toBe(source.baseCommit);
+    expect(await snapshotRepository(fixture.repo)).toEqual(sourceBefore);
+    expect(await headOf(second.workspacePath)).toBe(source.baseCommit);
+    expect(await snapshotRepository(second.workspacePath)).toEqual(secondBefore);
+    expect(await gitOrFail(['remote'], first.workspacePath)).toBe('');
+  }, 60_000);
+});
+
+describe('preparation that cannot finish', () => {
+  it('refuses a destination that already holds work, and keeps it', async () => {
+    const fixture = await createRepository();
+    const source = await preflightSource({ repoPath: fixture.repo, workDir: fixture.workDir });
+    const prepared = await prepareWorkspace(await allocateRunDirectory(fixture.workDir), source);
+    await writeFile(path.join(prepared.workspacePath, 'notes.txt'), 'earlier work\n', 'utf8');
+    const before = await readCheckedOutTree(prepared.workspacePath);
+    const headBefore = await headOf(prepared.workspacePath);
+
+    const error = await expectWorkspaceError(
+      () => prepareWorkspace(prepared, source),
+      /already holds work/,
+      /never resumed or overwritten/,
+    );
+
+    expect(error.message).toContain(prepared.workspacePath);
+    expect(error.message).toContain(prepared.runDir);
+    expect(await headOf(prepared.workspacePath)).toBe(headBefore);
+    expect(await readCheckedOutTree(prepared.workspacePath)).toEqual(before);
+  });
+
+  it('keeps the run directory and names it when the clone cannot reproduce the base', async () => {
+    const fixture = await createRepository();
+    const source = await preflightSource({ repoPath: fixture.repo, workDir: fixture.workDir });
+    const run = await allocateRunDirectory(fixture.workDir);
+    // An incomplete source object store: the recorded commit still resolves,
+    // but its contents can no longer be written. Git 2.53 exits 0 from that
+    // checkout, so only checking the result notices that nothing was written.
+    const blob = (await gitOrFail(['rev-parse', 'HEAD:README.md'], fixture.repo)).trim();
+    await rm(path.join(fixture.repo, '.git', 'objects', blob.slice(0, 2), blob.slice(2)));
+
+    const error = await expectWorkspaceError(
+      () => prepareWorkspace(run, source),
+      /could not be cloned|does not reproduce the recorded base/,
+    );
+
+    expect(error.message).toContain(run.runId);
+    expect(error.message).toContain(run.runDir);
+    expect(existsSync(run.workspacePath)).toBe(true);
+    expect(existsSync(run.logsDir)).toBe(true);
+    expect(existsSync(path.join(run.workspacePath, 'README.md'))).toBe(false);
+  });
+
+  it('refuses a source that moved after preflight', async () => {
+    const fixture = await createRepository();
+    const source = await preflightSource({ repoPath: fixture.repo, workDir: fixture.workDir });
+    const run = await allocateRunDirectory(fixture.workDir);
+    await writeFile(path.join(fixture.repo, 'later.txt'), 'later work\n', 'utf8');
+    await gitOrFail(['add', '--all'], fixture.repo);
+    await gitOrFail(['commit', '--quiet', '--message', 'moved on'], fixture.repo);
+    const moved = await headOf(fixture.repo);
+    expect(moved).not.toBe(source.baseCommit);
+
+    const error = await expectWorkspaceError(
+      () => prepareWorkspace(run, source),
+      /has moved since preflight/,
+      /never rebased onto a commit it did not record/,
+    );
+
+    expect(error.message).toContain(source.baseCommit);
+    expect(error.message).toContain(moved);
+    expect(error.message).toContain(run.runDir);
+    // No working copy was produced, and the recorded base was not replaced.
+    expect(existsSync(path.join(run.workspacePath, '.git'))).toBe(false);
+    expect(await headOf(fixture.repo)).toBe(moved);
+  });
+});
+
+describe('task IDs as labels', () => {
+  const taskIds = [
+    '../evil',
+    'a/b',
+    '$(rm -rf)',
+    '"; rm -rf /',
+    'C:\\Windows\\system32',
+    'run-../../escape',
+    'task with spaces',
+  ];
+
+  it('cannot decide where a run writes or what its branch is called', async () => {
+    const fixture = await createRepository();
+    const sentinel = path.join(fixture.parent, 'sentinel.txt');
+    await writeFile(sentinel, 'untouched\n', 'utf8');
+    const before = (await readdir(fixture.parent)).sort();
+    const source = await preflightSource({ repoPath: fixture.repo, workDir: fixture.workDir });
+
+    const runs: PreparedWorkspace[] = [];
+    for (const id of taskIds) {
+      // Every one of these is accepted task input; it stays a label.
+      expect(
+        taskSchema.parse({
+          id,
+          title: 'Title',
+          description: 'Description',
+          acceptanceCriteria: ['A criterion'],
+        }).id,
+      ).toBe(id);
+
+      const prepared = await prepareWorkspace(await allocateRunDirectory(fixture.workDir), source);
+      runs.push(prepared);
+
+      expect(prepared.runId).toMatch(/^[A-Za-z0-9][A-Za-z0-9_-]*$/);
+      expect(path.dirname(prepared.runDir)).toBe(path.resolve(fixture.workDir));
+      expect(prepared.branch).toBe(`harness/${prepared.runId}`);
+      expect(prepared.runDir).not.toContain('evil');
+      expect(await headOf(prepared.workspacePath)).toBe(source.baseCommit);
+    }
+
+    expect((await readdir(fixture.workDir)).sort()).toEqual(
+      runs.map((prepared) => prepared.runId).sort(),
+    );
+    expect((await readdir(fixture.parent)).sort()).toEqual([...before, 'runs'].sort());
+    expect(existsSync(path.join(fixture.parent, 'evil'))).toBe(false);
+    expect(await readFile(sentinel, 'utf8')).toBe('untouched\n');
+  }, 60_000);
 });
