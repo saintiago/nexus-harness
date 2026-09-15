@@ -54,7 +54,7 @@ Dependencies are task IDs. The normal execution order is top to bottom.
 | [x] | T10 | Final diff inspection and review warnings | T07, T09 |
 | [x] | T11 | Offline local-loop milestone | T10 |
 | [x] | T12 | Real Codex adapter with offline contract tests | T11 |
-| [ ] | T13 | Public `run` command and terminal UX | T12 |
+| [x] | T13 | Public `run` command and terminal UX | T12 |
 | [ ] | T14 | Built-CLI end-to-end regression gate | T13 |
 | [ ] | T15 | Operating docs, live-test entrypoint, and offline validation | T14 |
 | [ ] | T16 | Opt-in live Codex implementation and repair exercise | T15 |
@@ -1052,4 +1052,59 @@ Limitations: no live Codex call was made, so nothing here proves the real CLI's 
   have done, since it stopped recorded PIDs a second time even when the harness or the runtime itself
   had already ended them; the release handshake above removes that from this suite.
 Next ready task: T13
+```
+
+```text
+Task: T13 — Public `run` command and terminal UX
+Result: complete
+Changed: src/cli.ts now implements `run` beside `check-config`, and composes the loop's real
+  collaborators (preflightSource, allocateRunDirectory, prepareWorkspace, runCheckRound,
+  runCodexTurn, openAgentLog, appendRunLog, writeRunReport) into one runTask call; it implements no
+  part of the loop and no vendor protocol. Both commands take their own option set, so `--repo` is
+  a run option and nothing else. CLI paths resolve from the invocation directory and workDir
+  resolves from the config file's directory (resolveWorkDir), and both files are loaded and
+  validated before anything runs and then stay fixed for the whole run. Progress is the run's own
+  timeline, echoed as the runner appends it, minus its `final status:` line; the outcome block
+  (status, reason, repairs used, run dir, working copy, report) is printed only after runTask
+  returns, i.e. only once result.json exists. The host's SIGINT/SIGTERM are installed for the
+  duration of a run behind an injectable InterruptSignals seam, abort the run's own stop request
+  (T09), and are released in a finally block; the CLI waits for the run to finalize rather than
+  exiting over it. Exit codes: 0 passed; 1 failed, or an input/preflight/reporting error; 2 usage;
+  130 user-cancelled (finalized first). A report that cannot be written is printed as an error with
+  the retained run directory and exits 1, and nothing prints a completion or names a report that
+  does not exist. src/runner.ts adds `repairsUsed` to RunTaskResult (counted from its own attempts),
+  so the terminal prints the runner's own count. README.md and the package.json description no
+  longer describe `run` as unimplemented. tests/cli.test.ts was extended, and its old
+  "run is not implemented" test replaced; the rest of the CLI validation coverage is kept.
+Verification: npm ci — exit 0 (137 packages, 0 vulnerabilities). npm test -- tests/cli.test.ts —
+  exit 0, 1 file passed, 47 passed (47). npm run build — exit 0. npm start -- --help — exit 0, prints
+  both commands and the four exit codes. npm run validate — exit 0: format:check clean, lint clean,
+  typecheck clean, 10 files passed, 248 passed | 1 skipped (249), build ok. The skip is the
+  pre-existing platform-conditional symlink case in tests/workspace.test.ts. No live provider call
+  was made and no account was authenticated against.
+Evidence: tests/cli.test.ts runs real runs against temporary Git repositories with only
+  dependencies.runAgentTurn substituted (the same boundary T14 will use): a passed run reaching the
+  runner with resolved paths and recorded progress + outcome; a repair-then-pass run (3 real check
+  invocations, repair feedback carrying exit code 1); a red run with no allowance left; a
+  preparation failure; a report-write failure (no result.json, no outcome block, exit 1); refusals
+  for invalid JSON, invalid config, a dirty source, an output directory inside the source, and a
+  non-repository, each proved to have created nothing and started no command or turn by a probe
+  file that would have recorded it; the same three-directory path-rule checks from a different
+  invocation, config, and target directory; an interrupt through the CLI's own signals seam that
+  cancels the run, waits for it, exits 130, and leaves a result.json that says `cancelled` for
+  "implementation turn" with the handler released once; a stop before allocation that exits 130 and
+  creates nothing; and a run that installs exactly one SIGINT and one SIGTERM listener during the
+  turn and none after, while help and check-config install none at all. Regression probes: returning
+  0 for a cancelled run failed the interrupt test (expected 130, received 0), and printing a
+  completion plus a report path when the report write failed failed the report-write test (expected
+  1, received 0). Both probes were reverted and the file returned to 47 passed.
+Limitations: no live Codex call was made, so nothing here proves the adapter's behavior against the
+  real runtime (T16). Real OS signal delivery to a `run` process is not exercised: Windows cannot
+  deliver SIGINT to a child, and emitting one in-process would trip the test runner's own listeners,
+  so the interrupt path is proven through the CLI's signals seam and the real listeners are only
+  counted. POSIX signal delivery and the POSIX launcher path remain unverified on this Windows 11 /
+  Node 24.14 host. The built `dist/cli.js` is exercised for `--help` only; the full built-CLI gate is
+  T14. Pre-existing intermittent failures of the wider suite under artificial parallel load (noted
+  in T12) are unchanged and were not reproduced during this task's verification.
+Next ready task: T14
 ```

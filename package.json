@@ -2,7 +2,7 @@
   "name": "nexus-harness",
   "version": "0.1.0",
   "private": true,
-  "description": "Local-first development harness. The scaffold validates task/config input; the code/check/repair loop comes next.",
+  "description": "Local-first development harness: one CLI invocation runs a task through the workspace, check, and bounded repair loop.",
   "license": "UNLICENSED",
   "type": "module",
   "engines": {

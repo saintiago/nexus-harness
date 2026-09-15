@@ -343,6 +343,12 @@ export interface RunTaskResult {
   /** Why it ended that way, in one sentence. */
   readonly reason: string;
   /**
+   * Additional top-level coding turns the run spent, counted from its own
+   * attempts — the same number its report records, so a caller prints the run's
+   * own count rather than its own tally of what it watched happen.
+   */
+  readonly repairsUsed: number;
+  /**
    * What stopped the run when its time ran out, as the report records it;
    * `null` for a run that ended for any other reason.
    */
@@ -898,6 +904,7 @@ export async function runTask(
       workspace,
       status: parts.status,
       reason: parts.reason,
+      repairsUsed: repairsSpent(parts.attempts),
       timeout: parts.timeout,
       cancellation: parts.cancellation,
       changes,

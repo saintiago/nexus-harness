@@ -4,12 +4,12 @@ A small, local-first coding harness: one CLI invocation takes an explicit develo
 prepares a working copy, asks a coding agent to implement it, runs the project's own checks,
 and saves a local report.
 
-**The loop exists; the public command that runs it does not.** Configuration and task validation
-work end to end, the working copy, the configured check rounds, the bounded repair loop, the
-report and its logs, and the Codex CLI adapter are implemented and covered by offline tests, and
-`run` is refused rather than faked until T13 wires them into one CLI invocation. See
-[docs/tasks.md](docs/tasks.md) for the ordered backlog, and [docs/spec.md](docs/spec.md) §6 for the
-increment plan.
+**The loop is wired to the command line.** `check-config` validates input, and `run` prepares a
+working copy, runs the configured checks, asks the coding agent to implement the task, reruns the
+checks, repairs within `maxRepairs`, and keeps the working copy and the report. The loop, the
+working copy, the check rounds, the report and its logs, and the Codex CLI adapter are all covered
+by offline tests. See [docs/tasks.md](docs/tasks.md) for the ordered backlog, and
+[docs/spec.md](docs/spec.md) §6 for the increment plan.
 
 ## Requirements
 
@@ -53,24 +53,43 @@ credentials. Inputs are rejected rather than repaired: unknown keys, wrong types
 invalid limits, and malformed command arrays all fail with the file and field named. No value
 is coerced and no environment variable is interpolated.
 
-Exit codes: `0` success, `1` input error (unreadable file, invalid JSON, failed validation),
-`2` usage error (unknown command or option, missing value, unimplemented command). No arguments
-and `--help` print help and exit `0`.
+`run` loads the same two files through the same loader and hands the loop its own collaborators:
+
+```sh
+npm run dev -- run --repo ../target-project --config harness.config.json --task examples/task.json
+```
+
+Paths on the command line resolve from the directory the command was invoked in; `workDir` resolves
+from the configuration file's own directory, so a config names the same output wherever it is run
+from. Everything the run needs is loaded and validated before anything is started, and the loaded
+configuration and task stay fixed for the whole run: nothing the working copy or the target project
+writes can change which commands decide the result. The run prints its progress as it goes and ends
+with the status, the reason, the repair turns used, and the run directory, working copy, and report
+it kept. An interrupt (Ctrl+C) asks the run to stop through its own stop request and waits for it to
+finalize before exiting, so the report is written and any stop that could not be confirmed is
+recorded.
+
+Exit codes: `0` the run passed, `1` the run failed or an input, preflight, or reporting error
+stopped the CLI, `2` usage error (unknown command or option, missing value), `130` the run was
+stopped by the user and was finalized first. No arguments and `--help` print help and exit `0`. A
+report that could not be written is reported with a nonzero code and the run directory that was
+kept — the CLI never prints a successful completion, and never names a report that does not exist.
 
 `harness.config.json` and `examples/task.json` are the working examples; their format is defined
 in [docs/WORKFLOW.md](docs/WORKFLOW.md) §1–2.
 
-Everything else the loop does is exercised through the modules themselves rather than through the
-CLI: `tests/local-run.integration.test.ts` runs real tasks end to end against a temporary target
-project with only the coding turn substituted, and `tests/runner.test.ts`, `tests/lifecycle.test.ts`
-and `tests/agent.test.ts` cover the runner, the check rounds, and the runtime adapter.
+What the CLI does not exercise is a real coding runtime: `tests/cli.test.ts` runs the whole command
+against a temporary target project with only the coding turn substituted, and
+`tests/local-run.integration.test.ts`, `tests/runner.test.ts`, `tests/lifecycle.test.ts` and
+`tests/agent.test.ts` cover the runner, the check rounds, and the runtime adapter the same way.
 
 ## What does not work yet
 
-`npm run dev -- run ...` is rejected with a "not implemented" error (T13): the CLI has no `run`
-command, so nothing in `src/` composes the loop for a real invocation and no OS signal reaches the
-runner's stop request. No Jira intake and no PR publication exists either, and the harness never
-commits, pushes, or publishes anything on your behalf.
+The built CLI is not yet covered end to end (T14), and the operating docs and the opt-in live
+Codex exercise are still open (T15, T16). Real OS signal delivery to a running `run` command is
+exercised only through the CLI's own interrupt seam in tests, so its behaviour on a platform that
+delivers signals differently from Windows remains unverified. No Jira intake and no PR publication
+exists either, and the harness never commits, pushes, or publishes anything on your behalf.
 
 ## Module ownership
 
@@ -161,7 +180,6 @@ Setup and checks run project code — they are not harmless data processing.
 
 ## Next task
 
-Implement the public `run` command: parse its options, compose the loop's real collaborators
-(`preflightSource`, `allocateRunDirectory`, `prepareWorkspace`, `runCheckRound`, `runCodexTurn`,
-the report functions), forward the host's signals as the run's stop request, and print the result
-and the report path. T14 then covers the built CLI end to end.
+T14: a built-CLI end-to-end regression gate — build `dist/`, exercise `run` through the built entry
+point against a temporary target project, and keep that path covered so the shipped artifact, not
+only the TypeScript sources, is what the gate proves.
