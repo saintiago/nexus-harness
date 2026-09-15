@@ -56,7 +56,7 @@ Dependencies are task IDs. The normal execution order is top to bottom.
 | [x] | T12 | Real Codex adapter with offline contract tests | T11 |
 | [x] | T13 | Public `run` command and terminal UX | T12 |
 | [x] | T14 | Built-CLI end-to-end regression gate | T13 |
-| [ ] | T15 | Operating docs, live-test entrypoint, and offline validation | T14 |
+| [x] | T15 | Operating docs, live-test entrypoint, and offline validation | T14 |
 | [ ] | T16 | Opt-in live Codex implementation and repair exercise | T15 |
 
 T01–T11 deliver the local workspace/check/report loop using a test fake. T12–T15 deliver the integrated application and its offline verification. T16 records live-runtime evidence separately; missing credentials must not break normal CI or be disguised as a completed live test.
@@ -1163,4 +1163,66 @@ Limitations: the OS interrupt was verified on Windows only, and only as a consol
   harness starts its runtime without a console on Windows and in its own process group elsewhere — so
   the harness's own stop is what ends it, which is what the scenario asserts.
 Next ready task: T15
+```
+
+```text
+Task: T15 — Operating docs, live-test entrypoint, and offline validation
+Result: complete
+Changed: README.md rewritten as the operating document (433+/101-): requirements and platform
+  support; installation; a commands table including `npm run test:live`; `check-config` with its real
+  output; `run` (flow, repair counting, deadlines and interrupts, exit codes, the on-disk layout with
+  the real log names, inspection commands); "Try it on a disposable project" (a four-file target
+  project with a green committed baseline, inputs outside it, the run command, the outcome it prints,
+  and how to delete it); "Safety, limits, and what a run does to your machine" (configured commands
+  execute target-project code, a clone is not a sandbox, do not use production or publishing
+  credentials, a passed run still needs human diff review, no automatic resume, nothing is cleaned up,
+  incomplete crash directories, leftover processes before reuse, one run per repository, what is not
+  implemented); "What is verified, and what is not"; the T12 "Coding runtime" section with its
+  official references; module ownership; toolchain and CI; documentation. The supplied documents stay
+  authoritative and are linked, not restated, and every recorded output block is a real run's output
+  with the checkout written as `/home/you/project`.
+  tests/live/codex-live-check.ts (new) is the opt-in live verifier: it checks its prerequisites first
+  (built CLI, a runtime it can start, account evidence — a non-empty CODEX_API_KEY or an
+  authentication file that is never opened), reports every missing prerequisite, and exits 2 with
+  "Nothing was verified … This is not a pass." The exercises then prepare two disposable projects and
+  drive the built CLI against them with the real runtime. tests/live-verifier.test.ts (new, 18
+  offline tests) covers the prerequisite gate, the entry point as a process, default discovery, the
+  disposable project's green baseline, the injected repair failure, and both exercises end to end
+  through the T14 stand-in runtime. tests/readme.test.ts (new, 9 tests) reads README.md itself: it
+  writes the documented example's files from the document's own blocks, commits them, runs the
+  documented command through dist/cli.js, and checks the printed run dir/workspace/report against the
+  real layout and result.json — plus command names, help and usage behavior, links and anchors, the
+  example inputs, and CI. package.json: `test:live` = `npm run build && tsx
+  tests/live/codex-live-check.ts`, deliberately not part of `test`, `validate`, or CI.
+Verification: npm ci — exit 0 (137 packages, 0 vulnerabilities). npm run validate — exit 0:
+  format:check, lint, typecheck and build clean; 13 files passed, 285 passed | 1 skipped (286); the
+  skip is the pre-existing platform-conditional symlink case. npm start -- --help — exit 0, usage
+  text. The documented check-config command — exit 0, its output identical to the README's block, and
+  no side effects: a recursive listing hash before and after is unchanged and no `.harness` or run
+  directory appears. A clean temporary tree (a copy with no node_modules/, dist/, .git/ or .harness/)
+  also ran npm ci (0), npm run build (0), npm start -- --help (0), the documented check-config (0,
+  paths resolved from that tree) and the full npm run validate (0, 285 passed | 1 skipped), so the
+  documented steps work from a fresh checkout at a different absolute path. npx vitest list — 13
+  files, none under tests/live/. The verifier with no runtime and no account (isolated environment and
+  fixtures) — exit 2, both prerequisites named with how to fix them, nothing invoked, nothing
+  created.
+Evidence: the README's example is executed from the document, not from a copy of it, and the run's
+  own artifacts are read back: result.json, logs/run.log, logs/baseline-check-1.stdout.log (feature
+  missing) and logs/attempt-1-check-1.stdout.log (feature ok), the retained workspace, and the
+  stand-in runtime's record of the invocation. The suite is path-portable by construction: it first
+  failed in the clean tree because the recorded block carried the authoring checkout's paths, which is
+  a real defect for CI and any other clone; the README block now uses a placeholder and the test
+  normalizes both sides, and it then passed in both checkouts. Regression probes, each reverted and
+  re-run green: breaking the live verifier's prerequisite gate so it passed without a runtime failed 3
+  tests; changing the documented run command's `--task` to `--tasks` failed the disposable-example
+  test. No live provider call was made in this task.
+Limitations: no live coding turn, and no `npm run test:live` execution, happened here — that is T16's
+  independent gate, and this host does have a `codex` on PATH and an authentication file, which is
+  precisely why the live entry point was not run; its missing-prerequisite path was exercised with an
+  isolated environment and fixtures instead. Everything new was verified on Windows 11 (10.0.26200)
+  with Node 24.14.1 only: Linux and macOS behaviour of the two new suites is unverified here, and
+  because the branch was not pushed, no CI run has exercised them on ubuntu-latest; macOS remains
+  unverified altogether. The runtime version this adapter was written against (0.154.0) is recorded
+  from documentation and the installed CLI, not from a live turn.
+Next ready task: T16
 ```
