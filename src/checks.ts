@@ -175,12 +175,13 @@ export interface CheckRoundRequest {
  * before recording the stop as unconfirmed. `taskkill /F` and a group `SIGKILL`
  * both end what they name before returning, so this only elapses when the stop
  * did not reach it — and an invocation that ends by itself in that window is
- * still confirmed, so the wait is never skipped.
+ * still confirmed, so the wait is never skipped. The coding runtime adapter
+ * gives a stopped runtime the same wait, so both stops are confirmed the same way.
  */
-const STOP_GRACE_MS = 5000;
+export const STOP_GRACE_MS = 5000;
 
 /** Waits for `work`, but no longer than `ms`; says whether it finished in time. */
-function within(work: Promise<void>, ms: number): Promise<boolean> {
+export function within(work: Promise<void>, ms: number): Promise<boolean> {
   return new Promise((resolve) => {
     const timer = setTimeout(() => resolve(false), ms);
     void work.then(() => {
@@ -223,8 +224,12 @@ function runHostUtility(executable: string, args: readonly string[]): Promise<st
  * says what the request itself did: `null` when it succeeded, otherwise why it
  * did not. Only the recorded PID of an owned invocation is ever named, so no
  * other process on the host can be selected here.
+ *
+ * The coding runtime adapter stops what it started the same way, so this is the
+ * host's one supported stop for both (docs/architecture.md §2: the adapter owns
+ * the runtime's calls, and the host's process plumbing is not a runtime's).
  */
-async function requestTreeStop(pid: number): Promise<string | null> {
+export async function requestTreeStop(pid: number): Promise<string | null> {
   if (process.platform !== 'win32') {
     // Every invocation is started as its own process-group leader, so the group
     // is addressed by the negated PID and its members go with it.
@@ -262,7 +267,7 @@ const UNSUPPORTED_IN_COMMAND_LINE: ReadonlyArray<readonly [RegExp, string]> = [
 ];
 
 /** How one command will actually be started. */
-interface Launcher {
+export interface Launcher {
   /** Executable handed to `spawn`. On Windows, a resolved absolute path. */
   readonly file: string;
   /** Complete argument list for `spawn`, including any interpreter switches. */
@@ -271,7 +276,7 @@ interface Launcher {
   readonly verbatim: boolean;
 }
 
-type LaunchPlan =
+export type LaunchPlan =
   | { readonly ok: true; readonly launcher: Launcher }
   | { readonly ok: false; readonly problem: string };
 
@@ -345,8 +350,11 @@ function unsupportedArgument(argument: string): string | undefined {
  * Decides how the configured command is started. A `.cmd`/`.bat` executable on
  * Windows is the only case that needs an interpreter; everything else is
  * started directly, so its arguments are passed through untouched.
+ *
+ * The coding runtime adapter starts the runtime through this too, so a `codex`
+ * that is an installed `.cmd` shim is launched exactly as an installed `npm` is.
  */
-function planLaunch(executable: string, args: readonly string[], cwd: string): LaunchPlan {
+export function planLaunch(executable: string, args: readonly string[], cwd: string): LaunchPlan {
   if (executable.trim() === '') {
     return { ok: false, problem: 'the command has no executable as its first item' };
   }

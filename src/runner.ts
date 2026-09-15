@@ -112,9 +112,12 @@
  * modules keep their own responsibilities (docs/architecture.md §§2, 3, 5), and
  * the runner does not parse arguments, build commands, or talk to a runtime.
  *
- * The coding runtime is still absent, so `runAgentTurn` has no production
- * implementation and the public `run` command stays unavailable; wiring the
- * host's own signals to the request is the CLI's work, not this module's.
+ * The coding turn is provided by `src/agent.ts`, which runs the host's own Codex
+ * CLI in the working copy and reports back a summary and, when it stopped what
+ * it had started, how that stop went. Everything else about a runtime is that
+ * module's business: this one knows nothing about a vendor, an executable, or a
+ * flag. Wiring the adapter to a `run` command is the CLI's work, and the runner
+ * does not parse arguments, build commands, or talk to a runtime itself.
  */
 
 import { commandSucceeded } from './checks.js';
@@ -251,6 +254,24 @@ export interface AgentTurnRequest {
 }
 
 /**
+ * What a coding turn has to say about the execution it started and stopped,
+ * when it stopped one: whether everything it started was seen to end.
+ *
+ * It is the turn's own record, in the same two parts a configured command's stop
+ * is recorded in: `confirmed` only when the stop reached the operating system
+ * *and* the execution was seen to end, and `unconfirmed` with what could not be
+ * confirmed otherwise. A stop the harness cannot confirm is never rounded down
+ * to a confirmed one: a working copy something may still be writing to must not
+ * be declared safe to reuse (docs/spec.md §3).
+ */
+export interface AgentTurnShutdown {
+  /** Whether everything the turn started was seen to end. */
+  readonly termination: TerminationOutcome;
+  /** What could not be confirmed, when {@link termination} is `unconfirmed`. */
+  readonly problem: string | null;
+}
+
+/**
  * What a completed coding turn reports back. A turn that could not finish
  * rejects instead, and the runner then treats the run as failed: a turn that did
  * not complete has no checks observed after it, and none are invented.
@@ -258,6 +279,14 @@ export interface AgentTurnRequest {
 export interface AgentTurnResult {
   /** The agent's own short summary of the turn, or `null` when it gave none. */
   readonly summary: string | null;
+  /**
+   * How the turn's own stop of the execution it started went, or nothing at all
+   * when the turn stopped nothing — a turn that started nothing, or one whose
+   * runtime ended by itself, has no stop to report. Present with an
+   * `unconfirmed` termination, the run does not go on to read the working copy:
+   * it may still be written to.
+   */
+  readonly shutdown?: AgentTurnShutdown | null;
 }
 
 /**
@@ -267,8 +296,9 @@ export interface AgentTurnResult {
  * coding turn, the report files, or the clock (docs/architecture.md §3).
  *
  * There is no default and no fake in this module: a run uses exactly the
- * functions its caller handed it. `runAgentTurn` is the one with no production
- * implementation yet; the coding runtime arrives with its own task.
+ * functions its caller handed it. `runAgentTurn` is `src/agent.ts`, which runs
+ * the host's own Codex CLI in the run's working copy; a run composes it like any
+ * other of these, and a test hands it its own instead.
  */
 export interface RunnerDependencies {
   /** Reads the source repository and the output location; allocates nothing. */
@@ -286,7 +316,11 @@ export interface RunnerDependencies {
   ) => Promise<PreparedWorkspace>;
   /** Runs one setup/check round in the working copy. */
   readonly runCheckRound: (request: CheckRoundRequest) => Promise<CheckRoundResult>;
-  /** Runs one top-level coding turn and awaits its completion. */
+  /**
+   * Runs one top-level coding turn and awaits its completion. The production
+   * one is `runCodexTurn` from `src/agent.ts`; it is the only collaborator that
+   * talks to a coding runtime, so it is the one a fake stands in for.
+   */
   readonly runAgentTurn: (request: AgentTurnRequest) => Promise<AgentTurnResult>;
   /** Creates one coding turn's own log file. */
   readonly openAgentLog: (logsDir: string, turn: number) => Promise<AgentLog>;
@@ -536,6 +570,28 @@ function describeRoundCancelled(evidence: CancellationEvidence): string {
 const NO_TERMINATION_REASON = 'the harness recorded no reason for the unconfirmed stop';
 
 /**
+ * Why a coding turn's own stop of the execution it started cannot be read as a
+ * clean one, or `null` when that stop was confirmed or nothing was stopped.
+ *
+ * A turn that stopped what it had started and could not confirm the end of it
+ * leaves a working copy that may still be written to. That is never rounded down
+ * to a confirmed stop, in a report or in the reason a run ends with
+ * (docs/spec.md §3).
+ */
+function unconfirmedShutdownProblem(shutdown: AgentTurnShutdown | null): string | null {
+  return shutdown?.termination === 'unconfirmed'
+    ? (shutdown.problem ?? NO_TERMINATION_REASON)
+    : null;
+}
+
+/** The clause a reason carries for a turn whose own stop could not be confirmed. */
+function shutdownNote(problem: string | null): string {
+  return problem === null
+    ? ''
+    : `; the harness could not confirm that everything the coding runtime started had ended (${oneLine(problem)}), so the working copy may still be written to`;
+}
+
+/**
  * One changed path, as the run timeline lists it: what happened to it, where the
  * difference was seen, and — for the three categories a reviewer has to look at
  * first — why it is worth a look. The path is squeezed onto one line, because the
@@ -721,12 +777,26 @@ export async function runTask(
   const finalChanges = async (parts: {
     readonly timeout: TimeoutEvidence | null;
     readonly cancellation: CancellationEvidence | null;
+    /**
+     * Why the working copy cannot be read as a final record at all, when the run
+     * already knows: a stop it could not confirm, recorded as a failure rather
+     * than as a timeout or a cancellation. It is checked before anything else,
+     * because such a copy may still be written to.
+     */
+    readonly changesProblem?: string | null;
   }): Promise<ChangeSummary> => {
     if (workspace === null) {
       return summarizeChanges({
         baseCommit: source.baseCommit,
         problem:
           'no working copy was prepared, so there was nothing to compare with the recorded base',
+      });
+    }
+
+    if (parts.changesProblem !== undefined && parts.changesProblem !== null) {
+      return summarizeChanges({
+        baseCommit: workspace.baseCommit,
+        problem: parts.changesProblem,
       });
     }
 
@@ -789,6 +859,12 @@ export async function runTask(
     readonly attempts: readonly AttemptEvidence[];
     readonly timeout: TimeoutEvidence | null;
     readonly cancellation: CancellationEvidence | null;
+    /**
+     * Why the run's working copy cannot be summarized, for a run that ended for
+     * something other than an expired limit or a stop by its caller; see
+     * {@link finalChanges}. Left out, the working copy is read as usual.
+     */
+    readonly changesProblem?: string | null;
   }): Promise<RunTaskResult> => {
     // The run has stopped writing to its working copy, so this is the moment its
     // changes are read — before the status is recorded, so the timeline reads as
@@ -1205,6 +1281,13 @@ export async function runTask(
         : `${nameTurn(kind, turn)} result: completed`,
     );
 
+    // What the turn reported about the stop of its own runtime, when it made
+    // one: nothing at all for a turn that stopped nothing, and for a turn that
+    // stopped something, whether that stop was confirmed. A stop it could not
+    // confirm is a limitation the run carries, not a detail to round down.
+    const shutdown = completed?.shutdown ?? null;
+    const shutdownProblem = unconfirmedShutdownProblem(shutdown);
+
     // Why the turn's stop request was set off, if it was: the first of the run's
     // deadline and the caller's stop to reach it. A turn that returned late — an
     // agent that answered after it was asked to stop — is read here, and what it
@@ -1222,17 +1305,32 @@ export async function runTask(
         checks: null,
       });
       const phase = nameTurn(kind, turn);
+      // How the turn stopped the runtime it owned is the turn's own record, and
+      // it goes into the run's timeout or cancellation evidence as it stands. A
+      // turn that was stopped without saying anything about that stop reports
+      // nothing, and there is then nothing to record beyond the stop itself.
+      const reported = shutdown === null ? undefined : shutdown;
       return endStopped({
         cause:
           endedBy === 'timeout'
             ? {
                 kind: 'timeout',
-                reason: `${describeTurn(kind, turn)} was stopped when the run's remaining task time ran out, so no check was run after it and no further turn was started`,
-                evidence: timedOut({ limit: 'task', phase, limitMs: taskLimitMs }),
+                reason:
+                  `${describeTurn(kind, turn)} was stopped when the run's remaining task time ran out, so no check was run after it and no further turn was started` +
+                  shutdownNote(shutdownProblem),
+                evidence: timedOut({
+                  limit: 'task',
+                  phase,
+                  limitMs: taskLimitMs,
+                  termination: reported?.termination,
+                  problem: reported?.problem,
+                }),
               }
             : callerStopped(
                 phase,
-                `${describeTurn(kind, turn)} was stopped because the run was stopped by its caller, so no check was run after it and no further turn was started`,
+                `${describeTurn(kind, turn)} was stopped because the run was stopped by its caller, so no check was run after it and no further turn was started` +
+                  shutdownNote(shutdownProblem),
+                reported,
               ),
         baseline,
         attempts,
@@ -1256,10 +1354,42 @@ export async function runTask(
       return endStopped({
         cause: callerStopped(
           nameTurn(kind, turn),
-          `${describeTurn(kind, turn)} returned, and the run was stopped by its caller before any check could run after it, so no check and no further turn was started`,
+          `${describeTurn(kind, turn)} returned, and the run was stopped by its caller before any check could run after it, so no check and no further turn was started` +
+            shutdownNote(shutdownProblem),
+          shutdown === null ? undefined : shutdown,
         ),
         baseline,
         attempts,
+      });
+    }
+
+    if (shutdownProblem !== null) {
+      // The turn returned, and it reported that it stopped something without
+      // seeing it end. Nothing reads the working copy after that: a check round
+      // would be reading a copy something may still be writing to, and no later
+      // turn may reuse it. The run ends here, as a failure — nothing about it
+      // was decided by a check, and an unconfirmed stop is not a clean one — and
+      // what it leaves is kept without being summarized as a final record.
+      attempts.push({
+        turn,
+        kind,
+        agentLog: agentLog.path,
+        agentSummary: completed?.summary ?? null,
+        checks: null,
+      });
+      return endRun({
+        status: 'failed',
+        reason:
+          `${describeTurn(kind, turn)} stopped the coding runtime it started and could not confirm that it had ended ` +
+          `(${oneLine(shutdownProblem)}), so no check was run on a working copy that may still be written to`,
+        baseline,
+        attempts,
+        timeout: null,
+        cancellation: null,
+        changesProblem:
+          `the run ended without confirming that everything the coding runtime of ${describeTurn(kind, turn)} ` +
+          `had started had stopped (${oneLine(shutdownProblem)}), so the working copy may still be written to ` +
+          'and is not a final record of what this run left behind',
       });
     }
 

@@ -53,7 +53,7 @@ Dependencies are task IDs. The normal execution order is top to bottom.
 | [x] | T09 | Cancellation and confirmed process shutdown | T08 |
 | [x] | T10 | Final diff inspection and review warnings | T07, T09 |
 | [x] | T11 | Offline local-loop milestone | T10 |
-| [ ] | T12 | Real Codex adapter with offline contract tests | T11 |
+| [x] | T12 | Real Codex adapter with offline contract tests | T11 |
 | [ ] | T13 | Public `run` command and terminal UX | T12 |
 | [ ] | T14 | Built-CLI end-to-end regression gate | T13 |
 | [ ] | T15 | Operating docs, live-test entrypoint, and offline validation | T14 |
@@ -970,4 +970,64 @@ Limitations: the fake agent is controlled by the test, so the run loop can only 
   on Windows 11 / Node 24.14 only; the POSIX process-group stop is unexercised here, and no live
   LLM, network, or credentials were used.
 Next ready task: T12
+```
+
+```text
+Task: T12 — Real Codex adapter with offline contract tests
+Result: complete
+Changed: src/agent.ts (new) — the only module that knows the vendor: codexRuntime() and
+  runCodexTurn(), one turn per invocation of the host's own Codex CLI. Interface established before
+  any code was written, and recorded in README.md §"Coding runtime": codex exec (@openai/codex
+  0.154.0), invoked as exactly `codex exec --sandbox workspace-write --json -` in the working copy
+  with the prompt on standard input, one JSON event per line on stdout and progress on stderr;
+  official references are the Codex non-interactive, CLI-command and AGENTS.md pages plus the
+  openai/codex documentation through Context7. The CLI was selected over the SDK, and no vendor
+  method was invented. The task text, every acceptance criterion, the working-copy path, the source
+  root and the repository instructions (AGENTS.md, named only when the copy has one) go through the
+  prompt; the prompt also states that tests and tooling must not be weakened or deleted to
+  manufacture a pass, that the source checkout and the command plan are not to be edited, and that
+  nothing is to be published. Repair turns carry the failed command, its exit code, the log path and
+  the observed output. One fresh invocation per top-level turn (no `resume`), so a session can never
+  quietly buy extra turns; a turn's own claim that tests passed is returned as text only. Auth stays
+  outside task and config JSON: the environment is passed to the runtime untouched and nothing read
+  from it is persisted. A launch, auth or protocol failure is a thrown AgentError — a stop, with no
+  outer retry. Deadline and cancellation go through the same planLaunch/requestTreeStop/STOP_GRACE_MS
+  machinery the checks use, and the adapter waits for the process tree it started to end before
+  returning; src/runner.ts was wired narrowly (AgentTurnShutdown folded into the timeout and
+  cancellation evidence; an unconfirmed stop ends the run as failed and bars further checks and
+  workspace reuse), and src/checks.ts now exports within/planLaunch/requestTreeStop/Launcher.
+  tests/agent.test.ts (new, 18 tests) fakes the runtime process itself — a real .mjs stand-in
+  spawned through a codex/.cmd shim at the same boundary T14 will substitute. No dependency was
+  added: package.json is unchanged, and the CLI interface needs none in this repository. The public
+  `run` command was not added (T13).
+Verification: npm ci — exit 0, 0 vulnerabilities. npm test -- tests/agent.test.ts
+  tests/runner.test.ts — exit 0, 2 files passed, 50 passed (50). npm run validate with
+  OPENAI_API_KEY/CODEX_API_KEY/ANTHROPIC_API_KEY unset — exit 0: format:check clean, lint clean,
+  typecheck clean, 10 files passed, 227 passed | 1 skipped (228), build ok. The skip is the
+  pre-existing platform-conditional one in tests/workspace.test.ts, not this suite. No live call was
+  made and no account was authenticated against.
+Evidence: tests/agent.test.ts proves, at the faked process boundary, that argv is exactly
+  ['exec','--sandbox','workspace-write','--json','-'], the runtime's cwd is the working copy, and the
+  prompt carries the task heading, each acceptance criterion, the workspace path, the source root
+  and AGENTS.md, with the repair prompt carrying the failed command, its exit code, its log path and
+  the observed output; successful, failed, auth, launch-failure, malformed, contradictory and
+  incomplete endings normalize to a summary or to a named error, with partial output retained; a
+  completed round is turned back into a `failed` run even while the agent says "All tests pass", and
+  the claim is kept as agentSummary beside the red round in result.json; cancellation and timeout
+  stop the tree through the injected stop boundary and the adapter awaits its own end; an
+  unconfirmed stop ends the run with no post-agent round and no change inspection; session reuse
+  never adds a top-level turn; and a sentinel credential reaches the runtime's environment but
+  appears in neither the agent log, nor logs/run.log, nor result.json, nor a failure message.
+  Regression probes: making the runner accept a runtime's "tests pass" summary as a passing round
+  failed the claim-vs-evidence test (report.ts refused to write a passed report over red checks);
+  writing a boundary credential into the agent log failed the credential test at the persisted-file
+  assertion. Both probes were reverted and the suite returned to 2 files / 50 passed.
+Limitations: no live Codex call was made, so nothing here proves the real CLI's behavior, its real
+  event stream, or a real account (that is T16) — the adapter's contract is proven against a stand-in
+  process, not the vendor binary. codex exec's exit codes are undocumented, so the adapter reads the
+  event stream rather than an exit code; AGENTS.md discovery for exec is not explicitly documented
+  and the harness does not depend on it; Windows packaging for the win32-x64 optional dependency has
+  reported breakage. The POSIX launcher path and the POSIX process-group stop are unexercised on
+  this Windows 11 / Node 24.14 host. Verified on Windows 11 / Node 24.14 only.
+Next ready task: T13
 ```
