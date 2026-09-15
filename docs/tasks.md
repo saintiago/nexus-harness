@@ -47,7 +47,7 @@ Dependencies are task IDs. The normal execution order is top to bottom.
 | [x] | T03 | Literal-argument command execution and logs | T02 |
 | [x] | T04 | Sequential setup and complete check rounds | T03 |
 | [x] | T05 | Final report and attempt evidence | T02, T04 |
-| [ ] | T06 | Baseline and implementation loop with a fake agent | T04, T05 |
+| [x] | T06 | Baseline and implementation loop with a fake agent | T04, T05 |
 | [ ] | T07 | Bounded repair loop and honest outcomes | T06 |
 | [ ] | T08 | Total deadline, command limits, and timeout shutdown | T07 |
 | [ ] | T09 | Cancellation and confirmed process shutdown | T08 |
@@ -611,4 +611,45 @@ Limitations: timeout evidence is not in the report yet — T08 owns the timeout 
   volume. The writer records the log paths the run produced; it does not re-verify that
   each referenced file still exists. No CLI wiring yet (T13).
 Next ready task: T06
+```
+
+```text
+Task: T06 — Baseline and implementation loop with a fake agent
+Result: complete
+Changed: src/runner.ts (new) exports runTask(), RunTaskRequest, AgentTurnRequest,
+  AgentTurnResult, RunnerDependencies, and RunTaskResult. runTask is an ordinary async
+  function over the first vertical path — preflight and run-directory allocation, then
+  baseline check-round, implementation turn, post-agent check-round, final report — and
+  every collaborator is a concrete function in one plain argument object (preflight,
+  allocateRunDirectory, prepareWorkspace, runCheckRound, runAgentTurn, openAgentLog,
+  appendRunLog, writeRunReport, now), all required, with no default and no fake in src/.
+  The loaded task and command plan are passed to the rounds from memory and are never
+  re-read, so nothing the working copy writes can change which commands decide the run.
+  A baseline that is not a completed green round ends the run as failed before any
+  coding turn; a failed turn ends it as failed with no invented post-agent round; only a
+  completed green post-agent round reports `passed`. The lifecycle goes to logs/run.log
+  (plan counts and round descriptions only, never command output) and the turn's own
+  output to logs/agent-implementation.log. No repair loop and no CLI wiring yet.
+Verification: npm ci exit 0 (137 packages, 0 vulnerabilities); npm test --
+  tests/runner.test.ts exit 0 (10 passed); npm run validate exit 0 (format:check, lint,
+  typecheck, test 152 passed / 1 skipped, build).
+Evidence: tests/runner.test.ts (new), 10 cases over temporary sibling directories, real
+  Git fixtures, and a real stand-in coding child process. Covering: red baseline failed
+  with the agent called zero times; baseline setup launch error as execution-error with
+  no checks; failed preparation reported without a working copy; a dirty source refused
+  before allocation; a green baseline running exactly one turn then setup and both checks
+  as an exact 14-event order; a post-agent command never starting while the agent is
+  active (a lock file the stand-in takes before its first await, plus turn-start/turn-end
+  brackets around a 600 ms held turn); a failed turn keeping its agent log and its
+  checks as absent rather than invented; a turn writing harness.config.json and task.json
+  traps not changing the loaded plan; and a fully substituted collaborator set showing the
+  requests each helper received. Regression probes confirmed the new cases bite: starting
+  the post-agent round before awaiting the turn failed 4 cases, and letting a red baseline
+  continue into the coding turn failed the baseline case; both were reverted, suite back
+  to 10/10.
+Limitations: the coding runtime is still absent, so runAgentTurn has no production
+  implementation and the public `run` command stays unavailable (T13); the no-repair path
+  only. Cancellation and the total deadline are T08/T09. Verified on Windows 11 /
+  Node 24.14 only; no live LLM, network, or credentials were used.
+Next ready task: T07
 ```
