@@ -1,0 +1,13 @@
+# Generated or installed content.
+node_modules/
+dist/
+coverage/
+.harness/
+
+# Generated lockfile.
+package-lock.json
+
+# Supplied design documents are preserved verbatim: the markdown formatter
+# re-pads their tables and is not worth a diff in documents we did not write.
+AGENTS.md
+docs/

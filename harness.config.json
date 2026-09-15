@@ -1,0 +1,11 @@
+{
+  "workDir": "./.harness",
+  "maxRepairs": 2,
+  "taskTimeoutMinutes": 60,
+  "commandTimeoutMinutes": 10,
+  "setup": [["npm", "ci"]],
+  "checks": [
+    ["npm", "run", "typecheck"],
+    ["npm", "test"]
+  ]
+}

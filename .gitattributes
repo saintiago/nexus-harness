@@ -1,0 +1,8 @@
+# Keep line endings identical on every platform: Prettier is configured for LF,
+# so a CRLF checkout would fail `npm run format:check`.
+* text=auto eol=lf
+
+# Binary assets are left untouched.
+*.png binary
+*.jpg binary
+*.ico binary
