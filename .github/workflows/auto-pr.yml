@@ -1,0 +1,62 @@
+name: Task branch
+
+# One task, one `task/<name>` branch, merged into `main` through a pull request â€” the
+# loop docs/GIT-WORKFLOW.md describes, run without a person: open the pull request,
+# run the gate, and merge only when the gate passed.
+#
+# Branch protection is not available for this repository, so no check can be made
+# *required* and `gh pr merge --auto` would have nothing to wait for. This workflow
+# is the gate instead: the merge step runs only after `npm run validate` passed.
+
+on:
+  push:
+    branches:
+      - 'task/**'
+
+# The repository's default for GITHUB_TOKEN is read-only, so the permissions this
+# needs are asked for here, and nowhere else: writes to merge and to delete the
+# branch, and pull-request writes to open the pull request.
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  # One run per branch: a second push waits for the first rather than merging
+  # beside it.
+  group: task-branch-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  merge:
+    name: validate and merge
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
+
+      - name: Use the declared Node version
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # A red gate ends the run here, before anything is merged: the branch stays
+      # pushed, the pull request stays open, and `main` is untouched.
+      - name: Format, lint, typecheck, test, and build
+        run: npm run validate
+
+      - name: Open the pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ -z "$(gh pr list --head "$GITHUB_REF_NAME" --state open --json number --jq '.[].number')" ]; then
+            gh pr create --fill --base main --head "$GITHUB_REF_NAME"
+          fi
+
+      - name: Merge it into main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh pr merge "$GITHUB_REF_NAME" --squash --delete-branch
