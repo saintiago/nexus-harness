@@ -505,7 +505,7 @@ function standInRuntime(
 ): CodexRuntime {
   const { env, ...rest } = parts;
   return codexRuntime({
-    executable: fixture.executable,
+    command: [fixture.executable],
     env: {
       ...process.env,
       FAKE_CODEX: JSON.stringify({
@@ -586,9 +586,18 @@ describe('what one turn is told, and where it works', () => {
     await turn.close();
 
     const start = await startRecord(fixture);
-    // The invocation is the documented one: `exec`, the sandbox the harness
-    // relies on, the event stream it reads, and the prompt on standard input.
-    expect(start.argv).toEqual(['exec', '--sandbox', 'workspace-write', '--json', '-']);
+    // The invocation is the documented one: no approval prompt (a run is
+    // unattended), `exec`, the sandbox the harness relies on, the event stream it
+    // reads, and the prompt on standard input.
+    expect(start.argv).toEqual([
+      '--ask-for-approval',
+      'never',
+      'exec',
+      '--sandbox',
+      'workspace-write',
+      '--json',
+      '-',
+    ]);
     // The working root is the working copy, which the harness never leaves: the
     // runtime is started *in* it rather than pointed at it from outside.
     expect(realpathSync(start.cwd ?? '')).toBe(realpathSync(turn.request.workspacePath));
@@ -612,6 +621,52 @@ describe('what one turn is told, and where it works', () => {
     expect(result.summary).toBe('I changed the file.');
     // Nothing was stopped, so there is no stop to report at all.
     expect(result.shutdown).toBeUndefined();
+  }, 60_000);
+
+  it('prepends the configured launch prefix to its own arguments, literally', async () => {
+    const fixture = await createFixture();
+    const turn = await openTurn(fixture);
+    // A prefix like the documented one: the executable, then the native profile
+    // and the model it selects. The empty and space-bearing arguments are there
+    // because they are the ones a shortcut through a shell string would lose.
+    const prefix = [fixture.executable, '--profile', 'deepseek', 'value with spaces', ''];
+
+    await runCodexTurn(turn.request, standInRuntime(fixture, {}, { command: prefix }));
+    await turn.close();
+
+    const start = await startRecord(fixture);
+    // The prefix, unchanged and in order, then the adapter's own arguments: a
+    // configured launch never replaces or reorders the turn's interface.
+    expect(start.argv).toEqual([
+      '--profile',
+      'deepseek',
+      'value with spaces',
+      '',
+      '--ask-for-approval',
+      'never',
+      'exec',
+      '--sandbox',
+      'workspace-write',
+      '--json',
+      '-',
+    ]);
+    expect(realpathSync(start.cwd ?? '')).toBe(realpathSync(turn.request.workspacePath));
+    // The task is still only on standard input, never an argument.
+    expect(start.prompt).toContain(`## Task ${TASK.id}: ${TASK.title}`);
+    expect(start.argv?.some((argument) => argument.includes('## Task'))).toBe(false);
+  }, 60_000);
+
+  it('reports a prefix that names no executable as a launch failure', async () => {
+    const fixture = await createFixture();
+    const turn = await openTurn(fixture);
+
+    await expect(
+      runCodexTurn(turn.request, standInRuntime(fixture, {}, { command: [] })),
+    ).rejects.toThrow(/could not be started/);
+    await turn.close();
+
+    expect(await recordsOf(fixture)).toEqual([]);
+    expect(await readTurnLog(turn)).toContain('could not be started');
   }, 60_000);
 
   it('names the project instructions it can really see in the working copy', async () => {
@@ -726,7 +781,7 @@ describe('how a turn ends, and what it reports', () => {
     const missing = path.join(fixture.parent, 'no-such-codex');
 
     await expect(
-      runCodexTurn(turn.request, standInRuntime(fixture, {}, { executable: missing })),
+      runCodexTurn(turn.request, standInRuntime(fixture, {}, { command: [missing] })),
     ).rejects.toThrow(/could not be started/);
     await turn.close();
 
@@ -917,6 +972,7 @@ describe('the runner, the real checks, and the real adapter together', () => {
       commandTimeoutMinutes: 10,
       setup: [],
       checks: [[process.execPath, fixture.check, 'app.txt', BASELINE_TEXT.trim()]],
+      agent: { runtime: 'codex', command: ['codex'] },
       ...parts,
     };
   }
@@ -987,6 +1043,65 @@ describe('the runner, the real checks, and the real adapter together', () => {
     // The turn's transcript is in its own file, referenced by the report rather
     // than copied into it.
     expect(await readFile(report.attempts[0]?.agentLog ?? '', 'utf8')).toContain('turn.completed');
+  }, 60_000);
+
+  it('starts the implementation and every repair with the one configured prefix', async () => {
+    const fixture = await createFixture();
+    const prefix = [
+      fixture.executable,
+      '--profile',
+      'deepseek',
+      '--model',
+      'deepseek-flash',
+    ] as const;
+    const result = await runTask(
+      request(
+        fixture,
+        configuration(fixture, { maxRepairs: 1, agent: { runtime: 'codex', command: prefix } }),
+      ),
+      dependencies(async (asked: AgentTurnRequest) =>
+        runCodexTurn(
+          asked,
+          standInRuntime(
+            fixture,
+            asked.turn === 1
+              ? { file: 'app.txt', text: REWRITTEN_TEXT, write: 'replace' }
+              : { file: 'app.txt', text: BASELINE_TEXT, write: 'replace' },
+            {
+              command: prefix,
+            },
+          ),
+        ),
+      ),
+    );
+
+    expect(result.status).toBe('passed');
+    expect(result.repairsUsed).toBe(1);
+    // Both turns went through the configured launch, and neither fell back to a
+    // default: there is no second selection to fall back to.
+    const starts = (await recordsOf(fixture)).filter((record) => record.event === 'start');
+    expect(starts).toHaveLength(2);
+    for (const start of starts) {
+      expect(start.argv).toEqual([
+        '--profile',
+        'deepseek',
+        '--model',
+        'deepseek-flash',
+        '--ask-for-approval',
+        'never',
+        'exec',
+        '--sandbox',
+        'workspace-write',
+        '--json',
+        '-',
+      ]);
+    }
+    // The report names the launch the run really used, once, for the whole run.
+    const report = await reportOf(result);
+    expect(report.agent).toEqual({ runtime: 'codex', command: prefix });
+    const timeline = await readFile(report.runLog, 'utf8');
+    expect(timeline.match(/agent selected:/g)).toHaveLength(1);
+    expect(timeline).toContain(JSON.stringify(prefix));
   }, 60_000);
 
   it('runs one invocation per top-level turn, and never continues a session', async () => {

@@ -15,7 +15,7 @@
  */
 
 import { existsSync } from 'node:fs';
-import { readdir, readFile } from 'node:fs/promises';
+import { readdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
@@ -203,7 +203,15 @@ describe('the built CLI, end to end', () => {
       const turns = await fakeTurns(target.state);
       expect(turns).toHaveLength(1);
       const [turn] = turns;
-      expect(turn?.argv).toEqual(['exec', '--sandbox', 'workspace-write', '--json', '-']);
+      expect(turn?.argv).toEqual([
+        '--ask-for-approval',
+        'never',
+        'exec',
+        '--sandbox',
+        'workspace-write',
+        '--json',
+        '-',
+      ]);
       expect(turn?.cwd).toBe(path.join(runDir, 'workspace'));
       expect(turn?.prompt).toContain('## Task greet-all: Add a greetAll helper to tiny-target');
       expect(turn?.prompt).toContain("- greetAll([]) is 'Hello, nobody!'.");
@@ -259,6 +267,68 @@ describe('the built CLI, end to end', () => {
 
       // The source repository is exactly as it was.
       expect(checkoutState(target.repo)).toEqual(before);
+    },
+    RUN_TIMEOUT_MS,
+  );
+
+  it(
+    'launches the configured prefix, literally, and records it in the report and timeline',
+    async () => {
+      const target = await track(createLocalTarget());
+      const prefix = [target.runtimePath, '--profile', 'deepseek', '--model', 'deepseek-flash'];
+      // A second configuration file for the same disposable project: only the
+      // agent selection differs from the fixture's own, and it names the
+      // stand-in runtime by path, as an operator names an installed CLI.
+      const configPath = await writeJsonFile(target.configDir, 'selected.config.json', {
+        workDir: './runs-selected',
+        maxRepairs: 0,
+        taskTimeoutMinutes: 60,
+        commandTimeoutMinutes: 10,
+        setup: [[process.execPath, 'tools/prepare.mjs']],
+        checks: [[process.execPath, 'tools/run-checks.mjs']],
+        agent: { runtime: 'codex', command: prefix },
+      });
+
+      const result = await runCli({
+        target,
+        argv: ['run', '--repo', target.repo, '--config', configPath, '--task', target.taskPath],
+        plans: [
+          {
+            edits: [{ file: 'src/greet-all.mjs', text: GREET_ALL_SOURCE }],
+            summary: 'implemented greetAll',
+          },
+        ],
+      });
+
+      expect(result.stderr).toBe('');
+      expect(result.code).toBe(0);
+      const runDir = outcomeLine(result.stdout, 'run dir');
+      const report = await readReport(runDir);
+
+      // The report names the launch the run used, and the timeline names it once.
+      expect(report.agent).toEqual({ runtime: 'codex', command: prefix });
+      const timeline = await readText(path.join(runDir, 'logs', 'run.log'));
+      expect(timeline.match(/agent selected:/g)).toHaveLength(1);
+      expect(timeline).toContain(JSON.stringify(prefix));
+
+      // What really started is the configured prefix and then the adapter's own
+      // arguments: the selection is not decorative, and nothing is reordered.
+      const turns = await fakeTurns(target.state);
+      expect(turns).toHaveLength(1);
+      expect(turns[0]?.argv).toEqual([
+        '--profile',
+        'deepseek',
+        '--model',
+        'deepseek-flash',
+        '--ask-for-approval',
+        'never',
+        'exec',
+        '--sandbox',
+        'workspace-write',
+        '--json',
+        '-',
+      ]);
+      expect(turns[0]?.cwd).toBe(path.join(runDir, 'workspace'));
     },
     RUN_TIMEOUT_MS,
   );
@@ -675,6 +745,27 @@ describe('the built CLI, end to end', () => {
       expect(await fakeTurns(target.state)).toEqual([]);
       expect(existsSync(path.join(target.repo, 'build'))).toBe(false);
       expect(checkoutState(target.repo)).toEqual(before);
+
+      // And it reads no native Codex configuration and no credential file:
+      // `CODEX_HOME` points at a file rather than a directory, and both
+      // credential variables hold a sentinel. A `check-config` that consulted
+      // either would fail on the first or print the second.
+      const notADirectory = path.join(target.parent, 'a-file-called-codex-home');
+      await writeFile(notADirectory, 'not a directory, and never read\n', 'utf8');
+      const sentinel = 'sentinel-credential-6c1f9a-never-read';
+      const poisoned = await runCli({
+        target,
+        argv: ['check-config', '--config', target.configPath, '--task', target.taskPath],
+        env: {
+          CODEX_HOME: notADirectory,
+          CODEX_API_KEY: sentinel,
+          DEEPSEEK_API_KEY: sentinel,
+        },
+      });
+      expect(poisoned.code).toBe(0);
+      expect(`${poisoned.stdout}${poisoned.stderr}`).not.toContain(sentinel);
+      expect(await readText(notADirectory)).toBe('not a directory, and never read\n');
+      expect(await runDirectories(target)).toEqual([]);
     },
     RUN_TIMEOUT_MS,
   );

@@ -4,9 +4,20 @@
  * `npm run test:live` runs this file. It is the only thing in this repository
  * that contacts a coding runtime, it is deliberately outside `npm test`,
  * `npm run validate`, and CI, and it is not evidence that the harness works in
- * general — it is evidence that the built CLI, the real Codex CLI, a real
- * repository, and the project's own checks work together on this host, once,
- * with the account this machine is using.
+ * general — it is evidence that the built CLI, the selected Codex invocation, a
+ * real repository, and the project's own checks work together on this host, once,
+ * with the account and configuration this machine is using.
+ *
+ * ## Selecting the runtime
+ *
+ * `npm run test:live -- --config harness.config.json` runs the exercises with the
+ * agent, repair allowance, and numeric limits that file selects, loaded through
+ * the harness's own schema and path rules. The fixture keeps the repository, the
+ * output directory, the task, the setup, and the checks its own: a supplied
+ * configuration's real-project commands are never run and its `workDir` is never
+ * written to. Without `--config` the documented defaults are used, including the
+ * ordinary Codex launch. A configuration that allows no repair turn is refused
+ * before any paid work, because this verifier has to exercise a real repair.
  *
  * ## What it does
  *
@@ -37,12 +48,13 @@
  * ## Prerequisites, and why they are checked first
  *
  * A live check that cannot run must not look like one that passed. The
- * prerequisite gate below stops with its own exit code when the runtime cannot
- * be started or no account evidence can be found, and it says plainly that
- * nothing was verified. See `docs/WORKFLOW.md` and README "Coding runtime" for
- * the runtime's own setup and authentication. Nothing here reads, prints, or
- * writes a credential: the environment is passed to the runtime untouched, and
- * the account check only looks at whether a credential *source* is present.
+ * prerequisite gate below stops with its own exit code when the selected launcher
+ * cannot be started, and it says plainly that nothing was verified. See
+ * `docs/WORKFLOW.md` and README "Coding runtime" for the runtime's own setup and
+ * authentication. Nothing here reads, prints, or writes a credential, and no
+ * credential *source* is required: whether the selected runtime can really
+ * authenticate and speak its protocol is what the bounded invocation inside each
+ * exercise establishes, and a failure there is a failed check, never a pass.
  *
  * Exit codes: `0` every assertion held; `1` the check ran and something it
  * asserts did not hold; `2` a prerequisite was missing, so nothing ran at all.
@@ -66,7 +78,9 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { CODEX_EXECUTABLE } from '../../src/agent.js';
 import { planLaunch } from '../../src/checks.js';
+import { ConfigError, loadHarnessConfig } from '../../src/config.js';
 import type {
+  AgentSelection,
   AttemptEvidence,
   CheckRoundResult,
   CommandResult,
@@ -127,15 +141,21 @@ function excerpt(text: string, max = 400): string {
 
 export interface PrerequisiteOptions {
   /**
-   * The runtime to look for. `codex` on `PATH` by default, which is what the
-   * production adapter starts; a caller may name a path instead.
+   * The launch prefix to look for: the executable, then any literal prefix
+   * arguments, exactly as the configuration selected them. `['codex']` by
+   * default, which is what an ordinary run starts.
    */
-  readonly executable?: string;
+  readonly command?: readonly string[];
   /**
-   * The environment the runtime is *started* with, and the one the account check
-   * looks in. This process's own by default. The runtime's name is resolved the
-   * way the harness resolves any command — from this process's `PATH`, with
-   * `PATHEXT` on Windows — so an injected `env` does not redirect that lookup.
+   * The built artifact the exercises drive. The repository's own `dist/cli.js`
+   * by default; a caller may name another file to exercise the gate itself.
+   */
+  readonly cli?: string;
+  /**
+   * The environment the runtime is *started* with. This process's own by
+   * default. The runtime's name is resolved the way the harness resolves any
+   * command — from this process's `PATH`, with `PATHEXT` on Windows — so an
+   * injected `env` does not redirect that lookup.
    */
   readonly env?: NodeJS.ProcessEnv;
 }
@@ -149,18 +169,19 @@ export interface PrerequisiteReport {
   readonly problems: readonly string[];
 }
 
-/** Where a runtime's own credential store is expected to be. */
-function authFileCandidate(env: NodeJS.ProcessEnv): string {
-  const codexHome = env.CODEX_HOME?.trim() ?? '';
-  return path.join(codexHome === '' ? path.join(os.homedir(), '.codex') : codexHome, 'auth.json');
-}
-
-/** Starts the runtime once, to see whether this host can start it at all. */
+/**
+ * Starts the selected launcher once, to see whether this host can start it at
+ * all. It is the only prerequisite this check can establish for itself: whether
+ * the selected profile, key, endpoint, and protocol really work is what the
+ * bounded invocation inside each exercise establishes, and no reading of a
+ * credential store is offered instead of it.
+ */
 function runtimeVersion(
-  executable: string,
+  command: readonly string[],
   env: NodeJS.ProcessEnv,
 ): { readonly text: string | null; readonly problem: string | null } {
-  const plan = planLaunch(executable, ['--version'], process.cwd());
+  const [executable = '', ...prefix] = command;
+  const plan = planLaunch(executable, [...prefix, '--version'], process.cwd());
   if (!plan.ok) {
     return { text: null, problem: plan.problem };
   }
@@ -190,7 +211,7 @@ function runtimeVersion(
     return {
       text: null,
       problem:
-        `"${executable} --version" exited with code ${String(result.status)}` +
+        `"${[...command, '--version'].join(' ')}" exited with code ${String(result.status)}` +
         (said === '' ? '' : `: ${said}`),
     };
   }
@@ -201,51 +222,24 @@ function runtimeVersion(
 }
 
 /**
- * Whether a credential *source* is present. This is evidence, not proof: only a
- * live turn can show that an account works, and this function reads no
- * credential, prints none, and writes none.
- */
-function accountEvidence(env: NodeJS.ProcessEnv): {
-  readonly text: string | null;
-  readonly problem: string | null;
-} {
-  if ((env.CODEX_API_KEY ?? '').trim() !== '') {
-    return {
-      text: 'CODEX_API_KEY is set in this environment (its value is never read, printed, or written)',
-      problem: null,
-    };
-  }
-
-  const candidate = authFileCandidate(env);
-  if (existsSync(candidate)) {
-    return {
-      text: `an authentication file is present at ${candidate} (it is not opened)`,
-      problem: null,
-    };
-  }
-
-  return {
-    text: null,
-    problem:
-      `no account evidence was found: CODEX_API_KEY is not set and there is no authentication ` +
-      `file at ${candidate}. Authenticate the runtime first — \`codex login\`, \`codex login ` +
-      '--with-api-key`, or CODEX_API_KEY — as README "Coding runtime" describes.',
-  };
-}
-
-/**
- * Everything a live check needs before it may start one: a runtime this host can
- * start, an account it might be able to use, and the built CLI the check drives.
- * Every problem is reported, not just the first, so a machine that is missing
- * two things says so once.
+ * Everything a live check needs before it may start one: a launcher this host
+ * can start, and the built CLI the check drives. Every problem is reported, not
+ * just the first, so a machine that is missing two things says so once.
+ *
+ * There is deliberately no account prerequisite. A runtime can authenticate in
+ * ways that looking at a file cannot see — a variable the child process gets, a
+ * helper, a gateway, or an account the CLI keeps elsewhere — and requiring one
+ * particular credential source would refuse a selection that works. Whether the
+ * selected runtime really can do the work is established by the bounded
+ * invocation each exercise makes, which either works or reports its own failure.
  */
 export function checkPrerequisites(options: PrerequisiteOptions = {}): PrerequisiteReport {
   const env = options.env ?? process.env;
-  const executable = options.executable ?? CODEX_EXECUTABLE;
+  const command = options.command ?? [CODEX_EXECUTABLE];
   const evidence: string[] = [];
   const problems: string[] = [];
 
-  const cli = builtCli();
+  const cli = options.cli ?? builtCli();
   if (existsSync(cli)) {
     evidence.push(`built CLI  ${cli}`);
   } else {
@@ -254,20 +248,18 @@ export function checkPrerequisites(options: PrerequisiteOptions = {}): Prerequis
     );
   }
 
-  const version = runtimeVersion(executable, env);
+  const version = runtimeVersion(command, env);
   if (version.problem === null) {
-    evidence.push(`runtime    ${executable}: ${version.text ?? 'reported no version'}`);
+    evidence.push(
+      `runtime    ${command.join(' ')}: ${version.text ?? 'reported no version'} ` +
+        '(whether its selection works is established by the exercises)',
+    );
   } else {
     problems.push(
-      `${version.problem} Install the runtime (\`npm install --global @openai/codex\`) and make sure \`${executable}\` is on PATH; README "Coding runtime" records the interface this was written against.`,
+      `${version.problem} Install or select a runtime this host can start; README "Coding ` +
+        'runtime" records the interface this was written against and how a native profile is ' +
+        'selected.',
     );
-  }
-
-  const account = accountEvidence(env);
-  if (account.problem === null) {
-    evidence.push(`account    ${account.text ?? 'evidence found'}`);
-  } else {
-    problems.push(account.problem);
   }
 
   return { ok: problems.length === 0, evidence, problems };
@@ -513,6 +505,13 @@ export interface LiveTargetOptions {
   readonly maxRepairs?: number;
   /** The run's total task-time limit, in minutes. */
   readonly taskTimeoutMinutes?: number;
+  /** The per-command limit, in minutes. */
+  readonly commandTimeoutMinutes?: number;
+  /**
+   * The launch the run selects. Left out, the fixture's configuration omits the
+   * optional `agent` object, which is the documented ordinary Codex launch.
+   */
+  readonly agent?: AgentSelection;
 }
 
 /** A private Git environment: this machine's own Git settings decide nothing here. */
@@ -598,9 +597,10 @@ export async function createLiveTarget(options: LiveTargetOptions = {}): Promise
         workDir: './.harness-runs',
         maxRepairs: options.maxRepairs ?? 2,
         taskTimeoutMinutes: options.taskTimeoutMinutes ?? 15,
-        commandTimeoutMinutes: 5,
+        commandTimeoutMinutes: options.commandTimeoutMinutes ?? 5,
         setup: [[process.execPath, 'tools/prepare.mjs']],
         checks: [[process.execPath, 'tools/run-checks.mjs']],
+        ...(options.agent === undefined ? {} : { agent: options.agent }),
       },
       null,
       2,
@@ -873,6 +873,12 @@ export async function verifyImplementationExercise(
   expectEqual(problems, 'the cancellation record', report.cancellation, null);
   expectEqual(problems, 'the recorded source repository', report.source.path, target.repo);
   expectEqual(problems, 'the recorded base commit', report.source.baseCommit, target.baseCommit);
+  expectEqual(problems, 'the selected agent runtime', report.agent.runtime, 'codex');
+  expectTrue(
+    problems,
+    'the report records a nonempty launch prefix',
+    report.agent.command.length > 0 && (report.agent.command[0] ?? '').trim() !== '',
+  );
   expectTrue(problems, 'a working copy was prepared', report.workspace.prepared);
   expectTrue(problems, 'the run timeline exists', existsSync(report.runLog));
 
@@ -894,10 +900,17 @@ export async function verifyImplementationExercise(
     );
     if (existsSync(attempt.agentLog)) {
       const log = await readText(attempt.agentLog);
+      // What the report says was launched, and then the adapter's own interface:
+      // the log is the record of what really started, not of what was intended.
       expectTrue(
         problems,
-        'the agent log names the interface the adapter used (codex exec --sandbox workspace-write --json -)',
-        log.includes('codex exec --sandbox workspace-write --json -'),
+        'the agent log names the launch prefix the report records',
+        log.includes(`${report.agent.command.join(' ')} `),
+      );
+      expectTrue(
+        problems,
+        'the agent log names the interface the adapter used (--ask-for-approval never exec --sandbox workspace-write --json -)',
+        log.includes('--ask-for-approval never exec --sandbox workspace-write --json -'),
       );
     }
 
@@ -978,6 +991,7 @@ export async function verifyRepairExercise(
   expectEqual(problems, 'the timeout record', report.timeout, null);
   expectEqual(problems, 'the cancellation record', report.cancellation, null);
   expectEqual(problems, 'the recorded source repository', report.source.path, target.repo);
+  expectEqual(problems, 'the selected agent runtime', report.agent.runtime, 'codex');
 
   // The first post-agent round really was red, and it was red because of the
   // injected failure — not because a command could not be executed.
@@ -1128,15 +1142,163 @@ function describeRun(run: ExerciseRun, report: RunReport | null): readonly strin
   return lines;
 }
 
+/** How this check is told which configuration to select a runtime with. */
+export type VerifierArguments =
+  | { readonly ok: true; readonly configPath: string | null }
+  | { readonly ok: false; readonly message: string };
+
+const VERIFIER_USAGE = [
+  'usage: npm run test:live [-- --config harness.config.json]',
+  '',
+  'Without --config the exercises use the documented default: the ordinary Codex launch',
+  "(`codex`), 2 repair turns, and the fixture's own task and command limits.",
+  "With --config they use that file's selected agent, repair allowance, and numeric limits;",
+  "the repository, output directory, task, setup, and checks stay the fixture's own, and the",
+  "configured project's commands are never run.",
+].join('\n');
+
+/**
+ * Reads this check's own arguments. It is not the CLI's parser: the live check has
+ * one optional option, and everything it reads from a configuration file goes
+ * through the harness's own loader afterwards.
+ */
+export function parseVerifierArguments(argv: readonly string[]): VerifierArguments {
+  let configPath: string | null = null;
+
+  for (let index = 0; index < argv.length; index += 1) {
+    const argument = argv[index] ?? '';
+    if (argument !== '--config') {
+      return { ok: false, message: `unknown option "${argument}"` };
+    }
+    if (configPath !== null) {
+      return { ok: false, message: 'option "--config" was given more than once' };
+    }
+    const value = argv[index + 1];
+    if (value === undefined || value.trim() === '' || value.startsWith('-')) {
+      return { ok: false, message: 'option "--config" requires a path value' };
+    }
+    configPath = value;
+    index += 1;
+  }
+
+  return { ok: true, configPath };
+}
+
+/** The launch, limits, and repair allowance one verification run uses. */
+interface VerificationSelection {
+  readonly agent: AgentSelection;
+  readonly maxRepairs: number;
+  readonly taskTimeoutMinutes: number;
+  readonly commandTimeoutMinutes: number;
+}
+
+/** The documented defaults of a live check that was given no configuration. */
+const DEFAULT_SELECTION: VerificationSelection = {
+  agent: { runtime: 'codex', command: [CODEX_EXECUTABLE] },
+  maxRepairs: 2,
+  taskTimeoutMinutes: 15,
+  commandTimeoutMinutes: 5,
+};
+
+/**
+ * What the check runs with: the selected configuration's agent, repair
+ * allowance, and limits, or the documented defaults. The loaded configuration's
+ * project fields are deliberately not returned: the exercises supply their own
+ * repository, output directory, task, setup, and checks, and a verifier that ran
+ * the configured project's commands would be a different, quieter thing than the
+ * one this file documents (docs/WORKFLOW.md §3, "Opt-in live verification").
+ */
+async function selectionFrom(
+  configPath: string | null,
+): Promise<
+  | { readonly ok: true; readonly selection: VerificationSelection }
+  | { readonly ok: false; readonly problems: readonly string[] }
+> {
+  if (configPath === null) {
+    return { ok: true, selection: DEFAULT_SELECTION };
+  }
+
+  let config;
+  try {
+    config = await loadHarnessConfig(path.resolve(configPath));
+  } catch (cause) {
+    const said = cause instanceof ConfigError ? cause.message : messageOf(cause);
+    return {
+      ok: false,
+      problems: [
+        `the configuration "${configPath}" could not be used: ${said}`,
+        'Correct the file, or run without --config to use the documented defaults.',
+      ],
+    };
+  }
+
+  if (config.maxRepairs < 1) {
+    return {
+      ok: false,
+      problems: [
+        `the configuration allows ${String(config.maxRepairs)} repair turns, and this verifier has ` +
+          'to exercise a real repair.',
+        'Raise maxRepairs to at least 1 — it is not raised for you, because a verification that ' +
+          'silently widened its own allowance would not be checking what the file says — or run ' +
+          'without --config.',
+      ],
+    };
+  }
+
+  return {
+    ok: true,
+    selection: {
+      agent: config.agent,
+      maxRepairs: config.maxRepairs,
+      taskTimeoutMinutes: config.taskTimeoutMinutes,
+      commandTimeoutMinutes: config.commandTimeoutMinutes,
+    },
+  };
+}
+
 /** Runs the check and returns its exit code. */
-export async function main(io: LiveIo = consoleIo()): Promise<number> {
+export async function main(
+  argv: readonly string[] = process.argv.slice(2),
+  io: LiveIo = consoleIo(),
+): Promise<number> {
   io.out('== nexus live check ==');
   io.out('This makes real coding-runtime calls to the installed Codex CLI, in disposable');
   io.out('repositories under the system temporary directory. It is not part of `npm test`,');
   io.out('`npm run validate`, or CI, and it is not evidence that a change is safe to ship.');
   io.out('');
 
-  const prerequisites = checkPrerequisites();
+  const arguments_ = parseVerifierArguments(argv);
+  if (!arguments_.ok) {
+    io.err(`error: ${arguments_.message}`);
+    io.err('');
+    io.err(VERIFIER_USAGE);
+    io.err('');
+    io.err('Nothing was verified: no coding runtime was invoked and no run was attempted.');
+    io.err('This is not a pass.');
+    return EXIT_PREREQUISITES;
+  }
+
+  const selected = await selectionFrom(arguments_.configPath);
+  if (!selected.ok) {
+    io.err('');
+    for (const problem of selected.problems) {
+      io.err(`prerequisite: ${problem}`);
+    }
+    io.err('');
+    io.err('Nothing was verified: no coding runtime was invoked and no run was attempted.');
+    io.err('This is not a pass.');
+    return EXIT_PREREQUISITES;
+  }
+  const { selection } = selected;
+  if (arguments_.configPath !== null) {
+    io.out(
+      `configuration ${arguments_.configPath}: agent ${selection.agent.runtime.toLowerCase()} ` +
+        `${selection.agent.command.join(' ')}, ${String(selection.maxRepairs)} repair turn(s)`,
+    );
+    io.out('');
+  }
+
+  const prerequisites = checkPrerequisites({ command: selection.agent.command });
   for (const line of prerequisites.evidence) {
     io.out(`  ${line}`);
   }
@@ -1171,7 +1333,13 @@ export async function main(io: LiveIo = consoleIo()): Promise<number> {
     io.out('');
     io.out(`== live exercise: ${exercise.name} ==`);
     try {
-      const target = await createLiveTarget({ repairFixture: exercise.repairFixture });
+      const target = await createLiveTarget({
+        repairFixture: exercise.repairFixture,
+        agent: selection.agent,
+        maxRepairs: selection.maxRepairs,
+        taskTimeoutMinutes: selection.taskTimeoutMinutes,
+        commandTimeoutMinutes: selection.commandTimeoutMinutes,
+      });
       kept.push(target.parent);
       io.out(`  repository   ${target.repo}`);
       io.out(`  output       ${target.workDir}`);

@@ -400,7 +400,15 @@ describe('the documented disposable example', () => {
       // The turn really went through the production adapter, in the run's clone.
       const turns = await fakeTurns(document.state);
       expect(turns).toHaveLength(1);
-      expect(turns[0]?.argv).toEqual(['exec', '--sandbox', 'workspace-write', '--json', '-']);
+      expect(turns[0]?.argv).toEqual([
+        '--ask-for-approval',
+        'never',
+        'exec',
+        '--sandbox',
+        'workspace-write',
+        '--json',
+        '-',
+      ]);
       expect(turns[0]?.cwd).toBe(path.join(runDir, 'workspace'));
 
       // And the round after the turn is the one the document's own check command

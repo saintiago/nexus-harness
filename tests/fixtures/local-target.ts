@@ -11,13 +11,14 @@
  *    should have to change when the other does.
  * 2. The coding runtime: an executable named `codex` in a directory this module
  *    puts first on the `PATH` of the CLI it starts. The production adapter
- *    resolves `codex` from `PATH` and starts it as `codex exec --sandbox
- *    workspace-write --json -`, so the only thing that is not the real runtime is
- *    the program that name resolves to — a real process that reads the real
- *    prompt from standard input, works in the real working copy, and writes the
- *    documented event stream. Nothing in `src/` knows it exists: there is no flag
- *    to reach it, and a CLI invocation that would not have run a runtime runs
- *    nothing.
+ *    resolves `codex` from `PATH` and starts it as `codex --ask-for-approval
+ *    never exec --sandbox workspace-write --json -` (or with the target's own
+ *    configured prefix in place of the bare `codex`), so the only thing that is
+ *    not the real runtime is the program that name resolves to — a real process
+ *    that reads the real prompt from standard input, works in the real working
+ *    copy, and writes the documented event stream. Nothing in `src/` knows it
+ *    exists: there is no flag to reach it, and a CLI invocation that would not
+ *    have run a runtime runs nothing.
  * 3. The built CLI, as a process: `node dist/cli.js`, the file `npm start` runs,
  *    started with its own environment and working directory.
  */
@@ -203,26 +204,25 @@ export interface FakeState {
  */
 export async function installFakeRuntime(
   parent: string,
-): Promise<{ readonly bin: string; readonly state: FakeState }> {
+): Promise<{ readonly bin: string; readonly shim: string; readonly state: FakeState }> {
   const bin = path.join(parent, 'fake-runtime-bin');
   const stateDir = path.join(parent, 'fake-runtime-state');
   await mkdir(bin, { recursive: true });
   await mkdir(stateDir, { recursive: true });
 
+  let shim: string;
   if (process.platform === 'win32') {
-    await writeFile(
-      path.join(bin, 'codex.cmd'),
-      `@echo off\r\n"${process.execPath}" "${FAKE_RUNTIME}" %*\r\n`,
-      'utf8',
-    );
+    shim = path.join(bin, 'codex.cmd');
+    await writeFile(shim, `@echo off\r\n"${process.execPath}" "${FAKE_RUNTIME}" %*\r\n`, 'utf8');
   } else {
-    const shim = path.join(bin, 'codex');
+    shim = path.join(bin, 'codex');
     await writeFile(shim, `#!/bin/sh\nexec "${process.execPath}" "${FAKE_RUNTIME}" "$@"\n`, 'utf8');
     await chmod(shim, 0o755);
   }
 
   return {
     bin,
+    shim,
     state: {
       dir: stateDir,
       turnsFile: path.join(stateDir, 'turns.jsonl'),
@@ -314,6 +314,8 @@ export interface LocalTarget {
   readonly workDir: string;
   /** The `codex` the CLI will resolve from its `PATH`. */
   readonly bin: string;
+  /** The stand-in runtime itself, for a configuration that names it directly. */
+  readonly runtimePath: string;
   /** Where the stand-in runtime records what it was asked to do. */
   readonly state: FakeState;
 }
@@ -367,7 +369,7 @@ export async function createLocalTarget(options: LocalTargetOptions = {}): Promi
   git(repo, 'add', '--all');
   git(repo, 'commit', '--quiet', '--message', 'tiny-target: baseline');
 
-  const { bin, state } = await installFakeRuntime(parent);
+  const { bin, shim, state } = await installFakeRuntime(parent);
 
   const configDir = path.join(parent, options.configDirName ?? 'inputs');
   const workDirName = options.workDirName ?? 'runs';
@@ -405,6 +407,7 @@ export async function createLocalTarget(options: LocalTargetOptions = {}): Promi
     taskPath,
     workDir: path.join(configDir, workDirName),
     bin,
+    runtimePath: shim,
     state,
   };
 }
@@ -518,6 +521,12 @@ export interface CliInvocation {
   readonly plans?: readonly FakePlan[];
   /** Directory the CLI is started in; the target's parent by default. */
   readonly cwd?: string;
+  /**
+   * Environment entries this invocation adds to the fixture's own. A test that
+   * is about what the CLI must not read (a native configuration, a credential)
+   * points those at something it can prove was never opened.
+   */
+  readonly env?: NodeJS.ProcessEnv;
 }
 
 /** What one invocation of the built CLI did. */
@@ -540,6 +549,7 @@ export function cliEnvironment(invocation: CliInvocation): NodeJS.ProcessEnv {
     ...process.env,
     PATH: `${target.bin}${path.delimiter}${process.env.PATH ?? ''}`,
     FAKE_CODEX: JSON.stringify({ stateDir: target.state.dir, plans: invocation.plans ?? [] }),
+    ...invocation.env,
   };
 }
 

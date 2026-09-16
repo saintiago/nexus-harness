@@ -118,11 +118,21 @@
  * module's business: this one knows nothing about a vendor, an executable, or a
  * flag. Wiring the adapter to a `run` command is the CLI's work, and the runner
  * does not parse arguments, build commands, or talk to a runtime itself.
+ *
+ * The loaded configuration carries the run's agent selection, and the runner
+ * records it — in the report and once in the timeline — without interpreting it:
+ * it is launch information, and the runner is not the place that decides what a
+ * profile or a model ID means (docs/architecture.md §2).
  */
 
 import { commandSucceeded } from './checks.js';
 import type { CheckRoundRequest } from './checks.js';
-import { readCommandOutput, runLogPath, summarizeChanges } from './report.js';
+import {
+  readCommandOutput,
+  runLogPath,
+  summarizeChanges,
+  writeSourceTaskSnapshot,
+} from './report.js';
 import type { AgentLog, RunReportRequest } from './report.js';
 import type {
   AttemptEvidence,
@@ -135,6 +145,7 @@ import type {
   HarnessConfig,
   RepairFeedback,
   RunStatus,
+  SourceRef,
   Task,
   TerminationOutcome,
   TimeoutEvidence,
@@ -202,6 +213,14 @@ export interface RunTaskRequest {
    * nothing but its own deadline.
    */
   readonly stop?: AbortSignal;
+  /**
+   * Where a source-triggered run took its task from, or nothing for a run whose
+   * task came from a task file. It is provenance: the runner writes it beside
+   * the task before any configured command executes, records it once in the
+   * timeline, and carries it into the report. The runner interprets none of it
+   * and imports no connector (docs/architecture.md §7).
+   */
+  readonly sourceRef?: SourceRef;
 }
 
 /**
@@ -342,6 +361,15 @@ export interface RunTaskResult {
   readonly status: RunStatus;
   /** Why it ended that way, in one sentence. */
   readonly reason: string;
+  /**
+   * The check evidence the report carries: the baseline round, or `null` when
+   * none was observed. A caller that has to summarize the checks for something
+   * outside the run — a source command publishing a result comment — reads it
+   * here rather than re-reading a report file.
+   */
+  readonly baseline: CheckRoundResult | null;
+  /** One entry per top-level coding turn, oldest first: the report's own list. */
+  readonly attempts: readonly AttemptEvidence[];
   /**
    * Additional top-level coding turns the run spent, counted from its own
    * attempts — the same number its report records, so a caller prints the run's
@@ -713,6 +741,26 @@ export async function runTask(
     timeline,
     `task deadline set for ${new Date(deadlineMs).toISOString()}: ${String(taskLimitMs)} ms of total task time, ${String(commandLimitMs)} ms per configured command`,
   );
+  // The selected launch, recorded once for the whole run: what the harness
+  // starts, and nothing about the provider behind it. It is not rewritten per
+  // turn, because the selection is fixed before the run begins and every turn
+  // uses it (docs/spec.md §4).
+  await dependencies.appendRunLog(
+    timeline,
+    `agent selected: runtime ${config.agent.runtime}, launch prefix ${JSON.stringify(config.agent.command)}`,
+  );
+  // A source-triggered run records what it took from its source before any
+  // configured command executes: the normalized task snapshot in the run
+  // directory, and one line of provenance in the timeline. A file-task run has
+  // nothing here and writes neither (docs/architecture.md §5).
+  if (request.sourceRef !== undefined) {
+    const sourceRef = request.sourceRef;
+    await writeSourceTaskSnapshot(run, task, sourceRef);
+    await dependencies.appendRunLog(
+      timeline,
+      `source task: ${sourceRef.type} ${sourceRef.key} ${sourceRef.url} (immutable id ${sourceRef.id}, revision ${sourceRef.updatedAt})`,
+    );
+  }
 
   let workspace: PreparedWorkspace | null = null;
   let preparationProblem: string | null = null;
@@ -886,6 +934,7 @@ export async function runTask(
     const reportPath = await dependencies.writeRunReport({
       run,
       task: { id: task.id, title: task.title },
+      agent: config.agent,
       source,
       workspace,
       preparationProblem,
@@ -898,12 +947,15 @@ export async function runTask(
       timeout: parts.timeout,
       cancellation: parts.cancellation,
       changes,
+      ...(request.sourceRef === undefined ? {} : { sourceRef: request.sourceRef }),
     });
     return {
       run,
       workspace,
       status: parts.status,
       reason: parts.reason,
+      baseline: parts.baseline,
+      attempts: parts.attempts,
       repairsUsed: repairsSpent(parts.attempts),
       timeout: parts.timeout,
       cancellation: parts.cancellation,

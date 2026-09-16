@@ -12,6 +12,21 @@
  * `--json` is given, writes its progress to standard error, and exits when the
  * turn is over.
  *
+ * ## The launch prefix
+ *
+ * How the runtime is started is configuration: one executable followed by
+ * literal prefix arguments, which is what lets an operator select the installed
+ * Codex, a compatible wrapper, a native profile, or a model without the runner
+ * knowing anything about it (docs/spec.md §2). The prefix is not a complete
+ * command: this adapter appends its own arguments
+ * (`exec --sandbox workspace-write --json -`), starts the process in the run's
+ * working copy, and writes the prompt to standard input. Nothing is joined into
+ * a shell string, and no prefix argument is expanded, reordered, or interpreted.
+ * A prefix that redirects the working directory, replaces the structured output,
+ * or overrides the adapter's permission controls is outside this contract; so is
+ * a credential in an argument, because the launch is recorded in the run's report
+ * and timeline (docs/spec.md §5).
+ *
  * Nothing vendor-specific leaves this module. The runner is handed a summary and
  * — when the turn stopped something — how that stop went (see
  * {@link AgentTurnResult}); no Codex flag, event, or type reaches it.
@@ -77,19 +92,45 @@ import path from 'node:path';
 import type { Readable, Writable } from 'node:stream';
 import { STOP_GRACE_MS, planLaunch, requestTreeStop, within } from './checks.js';
 import type { AgentTurnRequest, AgentTurnResult } from './runner.js';
-import type { FailedCommand, TerminationOutcome } from './types.js';
+import type { AgentSelection, FailedCommand, TerminationOutcome } from './types.js';
 
 /** The runtime the harness runs when its caller names none: the installed CLI. */
 export const CODEX_EXECUTABLE = 'codex';
 
 /**
- * How the runtime is invoked, as the documented `codex exec` form: write events
- * to standard output as JSON Lines, keep writes inside the working copy, and
- * read the prompt from standard input. The working root is the directory the
- * process is started in, so it is not named here — it would be a path on a
- * command line, and only a Windows `.cmd` shim would have to refuse it.
+ * How the runtime is invoked, as the documented `codex exec` form: never ask a
+ * human for approval, write events to standard output as JSON Lines, keep writes
+ * inside the working copy, and read the prompt from standard input. The working
+ * root is the directory the process is started in, so it is not named here — it
+ * would be a path on a command line, and only a Windows `.cmd` shim would have
+ * to refuse it.
+ *
+ * These are the adapter's own arguments and are not configurable: a configured
+ * launch prefix is prepended to them and cannot replace them
+ * (docs/WORKFLOW.md §1, "Agent contract"). A run is unattended, so an action
+ * outside the `workspace-write` sandbox has to fail the turn instead of waiting
+ * for an approval nobody is there to give; nothing here bypasses the sandbox or
+ * retries with a weaker one.
+ *
+ * `--ask-for-approval never` is the CLI's global option and, on the installed
+ * CLI (0.154.0), it is only accepted *before* the `exec` subcommand: the same
+ * flag after `exec` is refused with `unexpected argument '--ask-for-approval'`.
+ * It therefore sits at the front of the adapter's own arguments rather than
+ * beside `--sandbox`, and the launch prefix is still used exactly as configured,
+ * with everything here appended to it.
  */
-const EXEC_ARGUMENTS: readonly string[] = ['exec', '--sandbox', 'workspace-write', '--json', '-'];
+export const CODEX_EXEC_ARGUMENTS: readonly string[] = [
+  '--ask-for-approval',
+  'never',
+  'exec',
+  '--sandbox',
+  'workspace-write',
+  '--json',
+  '-',
+];
+
+/** The launch prefix an ordinary run uses: the installed CLI, no extra arguments. */
+export const DEFAULT_CODEX_COMMAND: readonly string[] = [CODEX_EXECUTABLE];
 
 /** The instruction file a working copy may hold, named in a prompt when it has one. */
 const INSTRUCTION_FILE = 'AGENTS.md';
@@ -120,11 +161,13 @@ export class AgentError extends Error {
  */
 export interface CodexRuntime {
   /**
-   * The runtime to start: `codex` resolved from `PATH`, or a path to an
-   * executable. A `.cmd`/`.bat` on Windows is started through the command
-   * interpreter, exactly as a configured command is (see `checks.ts`).
+   * The launch prefix to start: the executable, then literal prefix arguments,
+   * exactly as the configuration selected them. `codex` on its own is resolved
+   * from `PATH`; a path starts that executable. A `.cmd`/`.bat` on Windows is
+   * started through the command interpreter, exactly as a configured command is
+   * (see `checks.ts`).
    */
-  readonly executable: string;
+  readonly command: readonly string[];
   /**
    * The environment the runtime process inherits. This is where the runtime's
    * own authentication lives; it is passed on as it is, and never copied into a
@@ -150,12 +193,23 @@ export interface CodexRuntime {
  */
 export function codexRuntime(parts: Partial<CodexRuntime> = {}): CodexRuntime {
   return {
-    executable: CODEX_EXECUTABLE,
+    command: DEFAULT_CODEX_COMMAND,
     env: process.env,
     stopTree: requestTreeStop,
     stopGraceMs: STOP_GRACE_MS,
     ...parts,
   };
+}
+
+/**
+ * The runtime one turn of a run uses: the selection the configuration made,
+ * through the host's own launcher.
+ */
+export function selectedCodexRuntime(
+  agent: AgentSelection,
+  parts: Partial<CodexRuntime> = {},
+): CodexRuntime {
+  return codexRuntime({ command: agent.command, ...parts });
 }
 
 function messageOf(cause: unknown): string {
@@ -376,9 +430,12 @@ export async function runCodexTurn(
 ): Promise<AgentTurnResult> {
   const { agentLog: log, workspacePath, stop, kind, turn } = request;
   const prompt = promptFor(request);
-  log.write(
-    `# ${runtime.executable} ${EXEC_ARGUMENTS.join(' ')} — ${kind} turn ${String(turn)}, working root ${workspacePath}\n`,
-  );
+  const [executable = '', ...prefix] = runtime.command;
+  // The prefix, then the adapter's own arguments: the configured launch and the
+  // fixed interface, in that order and never joined into one string.
+  const execArguments = [...prefix, ...CODEX_EXEC_ARGUMENTS];
+  const invocation = [...runtime.command, ...CODEX_EXEC_ARGUMENTS].join(' ');
+  log.write(`# ${invocation} — ${kind} turn ${String(turn)}, working root ${workspacePath}\n`);
 
   if (stop.aborted) {
     // The run was stopped before this turn started anything, and work is never
@@ -389,7 +446,7 @@ export async function runCodexTurn(
     return { summary: null, shutdown: { termination: 'confirmed', problem: null } };
   }
 
-  const plan = planLaunch(runtime.executable, EXEC_ARGUMENTS, workspacePath);
+  const plan = planLaunch(executable, execArguments, workspacePath);
   if (!plan.ok) {
     log.write(`# the runtime could not be started: ${plan.problem}\n`);
     throw new AgentError(`the coding runtime could not be started: ${plan.problem}`);

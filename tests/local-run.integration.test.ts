@@ -759,6 +759,9 @@ function configuration(target: Target, overrides: Partial<HarnessConfig> = {}): 
     commandTimeoutMinutes: 10,
     setup: [[process.execPath, 'tools/prepare.mjs']],
     checks: [[process.execPath, 'tools/run-checks.mjs']],
+    // The coding turn is a fixture in this suite; the selection is the
+    // documented default, recorded by the runner and never started.
+    agent: { runtime: 'codex', command: ['codex'] },
     ...overrides,
   };
 }

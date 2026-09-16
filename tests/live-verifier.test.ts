@@ -33,6 +33,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { loadHarnessConfig, loadTask, resolveWorkDir } from '../src/config.js';
 import {
   EXIT_FAILED,
+  EXIT_OK,
   EXIT_PREREQUISITES,
   GREET_SOURCE,
   INJECTED_FAILURE_LABEL,
@@ -57,7 +58,7 @@ import {
   removeDirectory,
 } from './fixtures/local-target.js';
 import type { FakePlan, FakeState } from './fixtures/local-target.js';
-import { cleanupTempDirectories, createTempDir, repoRoot } from './support.js';
+import { cleanupTempDirectories, createTempDir, repoRoot, writeJsonFile } from './support.js';
 
 /** The opt-in entry point, as `npm run test:live` runs it. */
 const LIVE_ENTRY = path.join(repoRoot, 'tests', 'live', 'codex-live-check.ts');
@@ -73,6 +74,12 @@ async function track(created: Promise<LiveTarget>): Promise<LiveTarget> {
   targets.push(target);
   return target;
 }
+
+beforeAll(() => {
+  // The live entry point drives `dist/cli.js`, the artifact `npm start` runs, and
+  // a check that verified an older build would be verifying another harness.
+  ensureBuiltCli();
+});
 
 afterAll(async () => {
   for (const target of targets.splice(0)) {
@@ -131,71 +138,78 @@ async function installStandInRuntime(
 describe('the prerequisite gate', () => {
   it('refuses when nothing named like a coding runtime can be started', async () => {
     const report = checkPrerequisites({
-      executable: 'nexus-no-such-runtime-9f3c',
+      command: ['nexus-no-such-runtime-9f3c'],
       env: await isolatedEnvironment(),
     });
 
     expect(report.ok).toBe(false);
     expect(joined(report.problems)).toContain('nexus-no-such-runtime-9f3c');
     // The guidance a user needs, and no claim that anything was verified.
-    expect(joined(report.problems)).toContain('Install the runtime');
+    expect(joined(report.problems)).toContain('Install or select a runtime');
     expect(joined(report.evidence)).not.toContain('runtime    ');
     expect(joined(report.evidence)).not.toContain('nexus-no-such-runtime-9f3c');
   });
 
-  it('refuses when the runtime starts but no account evidence is present', async () => {
-    // `node --version` stands in for the runtime's own version call: the gate is
-    // about whether the runtime can be started at all, and a program that starts
-    // and reports a version is exactly that case.
-    const env = await isolatedEnvironment();
-    const report = checkPrerequisites({ executable: process.execPath, env });
+  it('accepts a launcher this host can start, with no credential source at all', async () => {
+    // The environment has no CODEX_API_KEY, no DEEPSEEK_API_KEY, and no
+    // authentication file anywhere it could look: what the gate is about is a
+    // launcher that starts, and a runtime can authenticate in ways a file check
+    // cannot see. Whether it really can is what the exercises establish.
+    const report = checkPrerequisites({
+      command: [process.execPath],
+      env: await isolatedEnvironment(),
+    });
 
-    expect(report.ok).toBe(false);
+    expect(report.ok).toBe(true);
+    expect(joined(report.problems)).toBe('');
     expect(joined(report.evidence)).toContain(`runtime    ${process.execPath}`);
     expect(joined(report.evidence)).toContain(builtCli());
-    expect(joined(report.problems)).toContain('no account evidence was found');
-    expect(joined(report.problems)).toContain('codex login');
-    expect(joined(report.problems)).toContain(String(env.CODEX_HOME));
+    expect(joined(report.evidence)).toContain('established by the exercises');
   });
 
-  it('accepts an API key as account evidence without ever reading its value', async () => {
+  it('probes the selected launch prefix, not an executable on its own', async () => {
+    const parent = await createTempDir();
+    const { bin, shim, state } = await installFakeRuntime(parent);
+    // The stand-in answers `--version` without running a turn, so the probe
+    // really does ask the selected launcher to start.
+    const report = checkPrerequisites({
+      command: [shim, '--profile', 'deepseek'],
+      env: {
+        ...(await isolatedEnvironment()),
+        PATH: `${bin}${path.delimiter}${process.env.PATH ?? ''}`,
+        FAKE_CODEX: JSON.stringify({ stateDir: state.dir, plans: [] }),
+      },
+    });
+
+    expect(report.ok).toBe(true);
+    expect(joined(report.evidence)).toContain(`${shim} --profile deepseek`);
+    // The probe consumed no turn: nothing was recorded, so no plan index moved.
+    expect(existsSync(state.turnsFile)).toBe(false);
+  });
+
+  it('accepts any credential source a runtime may use, and reads none of them', async () => {
     const secret = 'not-a-real-credential-nor-a-secret';
     const report = checkPrerequisites({
-      executable: process.execPath,
-      env: await isolatedEnvironment({ CODEX_API_KEY: secret }),
+      command: [process.execPath],
+      env: await isolatedEnvironment({ DEEPSEEK_API_KEY: secret }),
     });
 
     expect(report.ok).toBe(true);
-    expect(joined(report.evidence)).toContain('CODEX_API_KEY is set');
     expect(joined(report.evidence)).not.toContain(secret);
-  });
-
-  it('accepts a runtime-owned auth file without opening it', async () => {
-    // The file is deliberately not JSON: account evidence is whether a credential
-    // source is there, and a gate that parsed the file would fail on this one.
-    const authDir = path.join(await createTempDir(), '.codex');
-    await mkdir(authDir, { recursive: true });
-    await writeFile(path.join(authDir, 'auth.json'), 'not json, and never read\n', 'utf8');
-
-    const report = checkPrerequisites({
-      executable: process.execPath,
-      env: await isolatedEnvironment({ CODEX_HOME: authDir }),
-    });
-
-    expect(report.ok).toBe(true);
-    expect(joined(report.evidence)).toContain(path.join(authDir, 'auth.json'));
-    expect(joined(report.evidence)).toContain('not opened');
+    expect(joined(report.evidence)).not.toContain('DEEPSEEK_API_KEY');
   });
 
   it('reports every missing prerequisite, not just the first', async () => {
+    const absentCli = path.join(await createTempDir(), 'dist', 'cli.js');
     const report = checkPrerequisites({
-      executable: 'nexus-no-such-runtime-9f3c',
+      command: ['nexus-no-such-runtime-9f3c'],
+      cli: absentCli,
       env: await isolatedEnvironment(),
     });
 
     expect(report.problems.length).toBeGreaterThanOrEqual(2);
     expect(joined(report.problems)).toContain('nexus-no-such-runtime-9f3c');
-    expect(joined(report.problems)).toContain('no account evidence was found');
+    expect(joined(report.problems)).toContain(absentCli);
   });
 });
 
@@ -219,19 +233,19 @@ describe('the entry point, as a process', () => {
   );
 
   it(
-    'refuses on the runtime alone: an account with no runtime to use it is not enough',
+    'refuses on the launcher alone, even when a runtime name and a key are both present',
     async () => {
-      // Everything is present except a runtime this host can start — and the
-      // account evidence is there, so the only thing that can refuse is the
-      // runtime. If this ever passed the gate, it would go on to start a live
-      // exercise, which is exactly what must not happen on a host without one.
+      // A credential source is present, so nothing here is about an account: the
+      // only thing missing is a runtime this host can start. If this ever passed
+      // the gate, it would go on to start a live exercise, which is exactly what
+      // must not happen on a host without a usable launcher.
       const result = await spawnLiveEntry(
         await isolatedEnvironment({ CODEX_API_KEY: 'not-a-real-credential' }),
       );
 
       expect(result.status).toBe(EXIT_PREREQUISITES);
       expect(result.stderr).toContain('prerequisite:');
-      expect(result.stderr).toContain('Install the runtime');
+      expect(result.stderr).toContain('Install or select a runtime');
       expect(result.stderr).toContain('Nothing was verified');
       expect(result.stdout).not.toContain('live exercise');
     },
@@ -239,30 +253,127 @@ describe('the entry point, as a process', () => {
   );
 
   it(
-    'refuses on the account alone: a runtime with nothing to authenticate it is not enough',
+    'refuses a configuration that cannot be used, before any paid work',
     async () => {
-      // Here the runtime is one this host can start: the same stand-in the
-      // end-to-end suite puts first on the CLI's `PATH`, so nothing real is
-      // reached even if this gate were wrong. Only the account is missing, and
-      // the rest of the `PATH` is left alone so that the runtime can be started
-      // at all — a shim that cannot be started would make this case about the
-      // runtime instead of about the account.
-      const parent = await createTempDir();
-      const { bin, state } = await installFakeRuntime(parent);
-      const result = await spawnLiveEntry({
-        ...(await isolatedEnvironment()),
-        PATH: `${bin}${path.delimiter}${process.env.PATH ?? ''}`,
-        FAKE_CODEX: JSON.stringify({ stateDir: state.dir, plans: [] }),
+      // A missing file is refused before anything is started, and it is refused
+      // as a prerequisite: nothing was verified, so this is not a pass.
+      const absent = await spawnLiveEntry(await isolatedEnvironment(), [
+        '--config',
+        path.join(await createTempDir(), 'nowhere.json'),
+      ]);
+
+      expect(absent.status).toBe(EXIT_PREREQUISITES);
+      expect(absent.stderr).toContain('could not be used');
+      expect(absent.stderr).toContain('Nothing was verified');
+      expect(absent.stdout).not.toContain('live exercise');
+
+      // An option this check does not have is a refusal too, never a run with
+      // different defaults than the caller asked for.
+      const unknown = await spawnLiveEntry(await isolatedEnvironment(), ['--profile', 'deepseek']);
+      expect(unknown.status).toBe(EXIT_PREREQUISITES);
+      expect(unknown.stderr).toContain('unknown option "--profile"');
+      expect(unknown.stdout).not.toContain('live exercise');
+    },
+    RUN_TIMEOUT_MS,
+  );
+
+  it(
+    'refuses a configuration that allows no repair turn, before any paid work',
+    async () => {
+      const configPath = await writeJsonFile(await createTempDir(), 'harness.config.json', {
+        workDir: './runs',
+        maxRepairs: 0,
+        taskTimeoutMinutes: 60,
+        commandTimeoutMinutes: 10,
+        setup: [],
+        checks: [[process.execPath, '-e', 'process.exit(97)']],
       });
 
+      const result = await spawnLiveEntry(await isolatedEnvironment(), ['--config', configPath]);
+
       expect(result.status).toBe(EXIT_PREREQUISITES);
-      expect(result.stderr).toContain('no account evidence was found');
-      expect(result.stderr).toContain('codex login');
+      // The refusal names the allowance and the fixture's own requirement, and
+      // the configured project's own check was never run.
+      expect(result.stderr).toContain('0 repair turns');
+      expect(result.stderr).toContain('real repair');
+      expect(result.stderr).toContain('not raised for you');
       expect(result.stderr).toContain('Nothing was verified');
-      expect(result.stdout).toContain('runtime    codex');
       expect(result.stdout).not.toContain('live exercise');
     },
     RUN_TIMEOUT_MS,
+  );
+
+  it(
+    'runs both exercises through the configured selection, against the fixture',
+    async () => {
+      const parent = await createTempDir();
+      const { bin, shim, state } = await installFakeRuntime(parent);
+      const prefix = [shim, '--profile', 'deepseek', '--model', 'deepseek-flash'];
+      const configPath = await writeJsonFile(parent, 'harness.config.json', {
+        // The configured project's own fields are traps rather than targets: the
+        // verifier must run the fixture's commands, in the fixture's directories.
+        workDir: path.join(parent, 'a-project-that-must-not-be-touched'),
+        maxRepairs: 2,
+        taskTimeoutMinutes: 15,
+        commandTimeoutMinutes: 5,
+        setup: [[process.execPath, '-e', 'process.exit(97)']],
+        checks: [[process.execPath, '-e', 'process.exit(97)']],
+        agent: { runtime: 'codex', command: prefix },
+      });
+
+      const result = await spawnLiveEntry(
+        {
+          ...process.env,
+          PATH: `${bin}${path.delimiter}${process.env.PATH ?? ''}`,
+          FAKE_CODEX: JSON.stringify({
+            stateDir: state.dir,
+            plans: [
+              {
+                edits: [{ file: 'src/greet-all.mjs', text: GREET_ALL_SOURCE }],
+                summary: 'implemented greetAll',
+              },
+              {
+                edits: [{ file: 'src/greet-all.mjs', text: GREET_ALL_SOURCE }],
+                summary: 'implemented greetAll',
+              },
+              {
+                edits: [{ file: 'src/greet.mjs', text: GREET_SOURCE }],
+                summary: 'restored the committed greeting',
+              },
+            ],
+          }),
+        },
+        ['--config', configPath],
+      );
+
+      expect(result.stderr).toBe('');
+      expect(result.status).toBe(EXIT_OK);
+      expect(result.stdout).toContain(`configuration ${configPath}`);
+      expect(result.stdout).toContain(prefix.join(' '));
+      expect(result.stdout).toContain('implementation');
+      expect(result.stdout).toContain('repair (one injected failure at the fixture boundary)');
+      expect(result.stdout).toContain('== live check passed ==');
+
+      // The real adapter boundary was reached with the configured prefix, and the
+      // repair exercise really was a repair: the injected failure appears in the
+      // second exercise's repair turn and in no turn before it.
+      const turns = await fakeTurns(state);
+      expect(turns).toHaveLength(3);
+      for (const turn of turns) {
+        expect(turn.argv.slice(0, 4)).toEqual([
+          '--profile',
+          'deepseek',
+          '--model',
+          'deepseek-flash',
+        ]);
+      }
+      expect(turns[1]?.prompt).not.toContain(INJECTED_FAILURE_LABEL);
+      expect(turns[2]?.prompt).toContain(INJECTED_FAILURE_LABEL);
+
+      // The supplied configuration's own output directory was never written to.
+      expect(existsSync(path.join(parent, 'a-project-that-must-not-be-touched'))).toBe(false);
+    },
+    RUN_TIMEOUT_MS * 2,
   );
 
   it('is not named like a test, so default discovery cannot pick it up', () => {
@@ -488,7 +599,15 @@ describe('the exercises, through the stand-in runtime boundary', () => {
       // The turn the verifier asserted on was the adapter's own invocation, with
       // the documented arguments, in the working copy — the stand-in is only what
       // the name `codex` resolved to.
-      expect(turns[0]?.argv).toEqual(['exec', '--sandbox', 'workspace-write', '--json', '-']);
+      expect(turns[0]?.argv).toEqual([
+        '--ask-for-approval',
+        'never',
+        'exec',
+        '--sandbox',
+        'workspace-write',
+        '--json',
+        '-',
+      ]);
     },
     RUN_TIMEOUT_MS,
   );
@@ -560,16 +679,19 @@ describe('the exercises, through the stand-in runtime boundary', () => {
  * exercised with it: a run that got past the gate would be a live run, which
  * these tests never make.
  */
-async function spawnLiveEntry(env: NodeJS.ProcessEnv): Promise<{
+async function spawnLiveEntry(
+  env: NodeJS.ProcessEnv,
+  argv: readonly string[] = [],
+): Promise<{
   readonly status: number | null;
   readonly stdout: string;
   readonly stderr: string;
 }> {
-  return spawnSync(process.execPath, ['--import', 'tsx', LIVE_ENTRY], {
+  return spawnSync(process.execPath, ['--import', 'tsx', LIVE_ENTRY, ...argv], {
     cwd: repoRoot,
     env,
     encoding: 'utf8',
-    timeout: 60_000,
+    timeout: 180_000,
     windowsHide: true,
   });
 }

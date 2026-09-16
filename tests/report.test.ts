@@ -161,6 +161,8 @@ function reportRequest(
   return {
     run: context.run,
     task: { id: 'example-001', title: 'Add a greeting function' },
+    // An ordinary run with no configured selection: the documented default.
+    agent: { runtime: 'codex', command: ['codex'] },
     source: context.source,
     workspace: context.workspace,
     preparationProblem: null,
@@ -295,6 +297,7 @@ describe('a final report', () => {
 
     expect(report.runId).toBe(fixture.run.runId);
     expect(report.task).toEqual({ id: 'example-001', title: 'Add a greeting function' });
+    expect(report.agent).toEqual({ runtime: 'codex', command: ['codex'] });
     expect(report.source).toEqual({ path: fixture.source.sourceRoot, baseCommit: BASE_COMMIT });
     expect(report.workspace).toEqual({
       path: fixture.run.workspacePath,
@@ -1113,5 +1116,34 @@ describe('what a report says about the changes a run left', () => {
     expect(report.changes.inspected).toBe(false);
     expect(report.changes.problem).toContain('may still be written to');
     expect(report.changes.paths).toEqual([]);
+  }, 60_000);
+
+  it('records the selected launch prefix, and refuses a report that names nothing to launch', async () => {
+    const fixture = await createFixture();
+    const selection = ['codex', '--profile', 'deepseek', '--model', 'deepseek-flash'];
+
+    const file = await writeRunReport(
+      reportRequest(fixture, { agent: { runtime: 'codex', command: selection } }),
+    );
+    const { report } = await readReport(file);
+    // What the harness launched, exactly as it was configured: a profile name is
+    // not an observed model identity, and no report claims one.
+    expect(report.agent).toEqual({ runtime: 'codex', command: selection });
+
+    const unsupportedRuntime = await expectReportError(() =>
+      writeRunReport(
+        reportRequest(fixture, {
+          agent: { runtime: 'claude' as unknown as 'codex', command: ['claude'] },
+        }),
+      ),
+    );
+    expect(unsupportedRuntime.message).toMatch(/not an implemented coding runtime/);
+
+    for (const command of [[], ['  ', '--profile', 'deepseek']]) {
+      const refused = await expectReportError(() =>
+        writeRunReport(reportRequest(fixture, { agent: { runtime: 'codex', command } })),
+      );
+      expect(refused.message).toMatch(/needs an executable as its first item/);
+    }
   }, 60_000);
 });

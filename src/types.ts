@@ -12,6 +12,38 @@
  */
 export type Command = readonly string[];
 
+/**
+ * The coding runtime the harness runs. One is implemented: the Codex CLI. A
+ * different coding program with its own CLI and event stream would be another
+ * one, added with its own adapter and tests (docs/architecture.md §4).
+ */
+export type AgentRuntime = 'codex';
+
+/**
+ * How the harness launches its coding runtime, as the configuration selected it:
+ * the adapter to run, and the launch prefix to start it with.
+ *
+ * The prefix is an executable plus literal arguments — not a complete command
+ * and not a shell string. The adapter appends its own fixed arguments and writes
+ * the prompt to standard input, so a prefix chooses a Codex executable, a native
+ * profile, or a model, and nothing about what a turn is
+ * (docs/WORKFLOW.md §1, "Agent contract").
+ */
+export interface AgentSelection {
+  /** The adapter the harness runs. Selecting a provider is not what this is. */
+  readonly runtime: AgentRuntime;
+  /**
+   * Executable followed by literal prefix arguments, used exactly as configured:
+   * the first item is the executable to start, and the rest are passed to it
+   * unchanged. A relative path-valued executable is resolved against the
+   * configuration file's directory, once, before the run; a bare name is left
+   * for the host's own `PATH` resolution (docs/WORKFLOW.md §1, "Agent launch and
+   * path rules"). The prefix is launch information, so it is recorded in the
+   * report and the timeline, and it must not carry a credential.
+   */
+  readonly command: readonly string[];
+}
+
 /** Validated contents of a harness configuration file. */
 export interface HarnessConfig {
   /** Output directory for run directories, resolved relative to the config file. */
@@ -26,6 +58,78 @@ export interface HarnessConfig {
   readonly setup: readonly Command[];
   /** Commands that decide the run status. Never empty. */
   readonly checks: readonly Command[];
+  /**
+   * The coding runtime and launch prefix, normalized: an omitted `agent` object
+   * means `{ runtime: 'codex', command: ['codex'] }`, and a relative path-valued
+   * executable is already resolved against the configuration file's directory.
+   */
+  readonly agent: AgentSelection;
+  /**
+   * The optional task-input source, normalized: the only implemented type is
+   * `"jira"`, and its documented defaults are already applied. Absent means the
+   * configuration describes file-task runs only, which is why a file-task
+   * command never constructs a connector, reads a credential, or contacts a
+   * remote service (docs/WORKFLOW.md §5).
+   */
+  readonly source?: JiraSourceConfig;
+}
+
+/**
+ * Validated `source` object for the one implemented connector, Jira Cloud.
+ *
+ * It carries no credential: {@link JiraSourceConfig.tokenEnv} names the
+ * environment variable the service-account API token is read from, and only a
+ * source command resolves it. Every REST call goes through the Atlassian API
+ * gateway, which is why `cloudId` is required and there is no site-host
+ * fallback (docs/WORKFLOW.md §5).
+ */
+export interface JiraSourceConfig {
+  /** The only implemented source type. */
+  readonly type: 'jira';
+  /** Canonical HTTPS Jira Cloud origin, without a trailing slash. */
+  readonly siteUrl: string;
+  /** Atlassian cloud ID: the gateway route is keyed by it. */
+  readonly cloudId: string;
+  /** Queue boundary: the project whose issues may be taken. */
+  readonly projectKey: string;
+  /** Queue boundary: the issue type the queue admits. */
+  readonly issueType: string;
+  /** Queue boundary: the single label the queue admits. */
+  readonly label: string;
+  /** Status an issue must be in to be eligible. */
+  readonly readyStatus: string;
+  /** Status a claimed issue is moved to while the harness runs it. */
+  readonly runningStatus: string;
+  /** Status a finished attempt is moved to, for human review. */
+  readonly reviewStatus: string;
+  /** Delay after a completed scan/batch in watch mode, in seconds. */
+  readonly pollIntervalSeconds: number;
+  /** Name of the environment variable holding the API token. Never the value. */
+  readonly tokenEnv: string;
+}
+
+/**
+ * Where one task came from, as a run records it: enough to find the external
+ * item again by its immutable ID and to link to it, and nothing that can change
+ * under the run.
+ *
+ * Identity for duplicate prevention is the type, the canonical site, and the
+ * immutable external ID. The revision is captured before claiming and is a
+ * freshness check, not part of the identity (docs/architecture.md §8).
+ */
+export interface SourceRef {
+  /** Connector type, for example `"jira"`. */
+  readonly type: string;
+  /** Canonical source site: for Jira, the browser origin. */
+  readonly scope: string;
+  /** Immutable external ID. Never the mutable human-facing key. */
+  readonly id: string;
+  /** Human-facing key, for example `SAM1-11`. Display only. */
+  readonly key: string;
+  /** Browser link a person can open. Never an API URL. */
+  readonly url: string;
+  /** Captured external revision, as the source reports it. */
+  readonly updatedAt: string;
 }
 
 /**
@@ -385,8 +489,22 @@ export interface RunReport {
   readonly runId: string;
   /** The task the run was asked to complete, as a label. */
   readonly task: { readonly id: string; readonly title: string };
+  /**
+   * The coding runtime and the non-secret launch prefix this run used, as the
+   * configuration selected them: what the harness launched, and nothing more. A
+   * profile name is not an observed model identity, and no report is enriched
+   * from native configuration or credentials (docs/spec.md §4).
+   */
+  readonly agent: AgentSelection;
   /** The repository the run started from, and the committed base it recorded. */
   readonly source: { readonly path: string; readonly baseCommit: string };
+  /**
+   * Where a source-triggered run took its task from; absent for a run that was
+   * given a task file. It is provenance for correlation with the intake
+   * receipts, not a second description of the task, and it names no credential
+   * (docs/architecture.md §5).
+   */
+  readonly sourceRef?: SourceRef;
   /** The working copy of this run; see {@link WorkspaceReport}. */
   readonly workspace: WorkspaceReport;
   /** Start of the run, as an ISO timestamp. */

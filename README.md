@@ -20,7 +20,8 @@ how to run it, what it does to your machine, and what is not proven yet.
   what everything here has been run on. npm 11.
 - **A coding runtime: the Codex CLI** (`@openai/codex`, version **0.154.0** when this was written).
   It is not an npm dependency of this repository: you install it globally and authenticate it
-  yourself. See [Coding runtime](#coding-runtime).
+  yourself. The harness starts it with a launch you configure — `codex` on `PATH` by default, or a
+  path and a native profile of your choosing. See [Coding runtime](#coding-runtime).
 - **Git** on `PATH`. The harness runs real `git` commands: it records a base commit, clones the
   repository into the run directory, and creates a branch there.
 - **Platform support, stated as it is.** Development, the full offline gate, and every recorded
@@ -88,14 +89,49 @@ check-config: /home/you/project/examples/task.json is valid
 Every path it prints is the one it really read: `/home/you/project` stands for the checkout you run
 this in, and the resolved `workDir` is spelled out so you can see where a run would write before you
 start one. `check-config` is **static**. It creates no directory, runs no configured command,
-contacts no provider, and needs no credentials. Inputs are rejected rather than repaired: unknown
-keys, wrong types, blank text, invalid limits, and malformed command arrays all fail with the file
-and field named, and no value is coerced or interpolated. Exit codes: `0` both files are valid, `1` a
-file could not be read or is invalid, `2` a missing or unknown option.
+contacts no provider, needs no credentials, and reads no native profile or authentication file.
+Inputs are rejected rather than repaired: unknown keys, wrong types, blank text, invalid limits,
+malformed command arrays, an unsupported `agent` runtime, and an empty or blank `agent` command all
+fail with the file and field named, and no value is coerced or interpolated. The path rules for an
+`agent` executable are applied exactly as a run would apply them, though the resolved prefix is not
+printed. Exit codes: `0` both files are valid, `1` a file could not be read or is invalid, `2` a
+missing or unknown option. `--task` is optional: without it, the configuration alone is validated —
+which is what a `source` command needs, and what you run before pointing the harness at a Jira queue.
 
 `harness.config.json` and `examples/task.json` are the working examples; their format is defined in
 [docs/WORKFLOW.md](docs/WORKFLOW.md) §1–2. That document is the contract — this README does not
 restate it.
+
+### Selecting the launch
+
+The six required fields describe the task and the commands that decide it. The optional `agent`
+object selects what the coding turns are started with:
+
+```json
+{
+  "agent": {
+    "runtime": "codex",
+    "command": ["codex", "--profile", "deepseek", "--model", "deepseek-flash"]
+  }
+}
+```
+
+`runtime` names the adapter; `codex` is the only one implemented, and another value is rejected
+rather than run through the Codex adapter. `command` is a **launch prefix**, not a command line: the
+first item is the executable, the rest are literal arguments passed to it unchanged, and the harness
+appends its own arguments and writes the prompt to standard input. So a prefix can select an
+installed Codex, a compatible wrapper, a native profile, or a model — and it cannot change what a
+turn is. The prefix is recorded in `result.json` and once in `logs/run.log`, so **do not put a
+credential in it**: keys belong in the environment the runtime inherits (for the example above,
+`DEEPSEEK_API_KEY`), never in a task file, a configuration file, or a launch argument (docs/spec.md
+§5).
+
+Path rules for the executable: a bare name (`codex`) is resolved from `PATH` by the host launcher; a
+relative path **containing a separator** resolves against the configuration file's own directory,
+once, before anything runs; an absolute path is used as supplied. The remaining arguments are opaque
+— the harness does not guess which are paths, expand `~`, `$HOME`, or `%VARIABLE%`, or join the
+prefix into a shell string. Omitting `agent` entirely means `{"runtime": "codex", "command":
+["codex"]}`, which uses your ordinary Codex defaults.
 
 ## `run`: the workspace, check, and repair loop
 
@@ -116,9 +152,10 @@ target project writes can change which commands decide the result. Then:
 4. **The baseline round**: every `setup` command, then every `checks` command, in the order the
    configuration lists them. A red baseline stops the run before any coding turn — the task is not
    attempted on a project that is already failing.
-5. **Coding turns**: one fresh `codex exec` invocation per top-level turn, started in the working
-   copy. The implementation turn is given the task; each repair turn is given the failures the
-   harness observed for itself.
+5. **Coding turns**: one fresh invocation of the configured launch per top-level turn, started in
+   the working copy and never asking for approval. The implementation turn is given the task; each
+   repair turn is given the failures the harness observed for itself. Every turn of the run uses the
+   same selection.
 6. **A post-agent round** after every turn: `setup` again, then every check.
 7. **The final report**, written once, plus the change summary of the retained working copy.
 
@@ -158,6 +195,10 @@ caller supplies.
 | `1`   | The run failed, or an input, preflight, or reporting error stopped the CLI. |
 | `2`   | Usage error: an unknown command or option, or a missing value.              |
 | `130` | The run was stopped by the user, and was finalized first.                   |
+
+The `source` commands use the same codes. A `source run` that processed only handled failures,
+invalid task descriptions, or a failed publication exits `1`; a watch stopped with Ctrl+C exits
+`130`.
 
 No arguments and `--help` print help and exit `0`. A report that could not be written is reported
 with a nonzero code and the run directory that was kept: the CLI never prints a successful
@@ -211,6 +252,102 @@ git status && git diff <baseCommit>   # uncommitted work is left uncommitted
 `changes.highlighted` picks out the ones that touch **tests, tooling, or configuration**, because a
 change to those can change what the checks that decided the run actually did. `changes.warnings`
 records, in the report itself, what the run's status does and does not prove.
+
+## `source`: tasks from a Jira queue
+
+A source command takes work from outside and hands it to the **same** loop. It finds eligible
+issues, maps each one onto the existing four-field `Task`, claims it, runs it exactly as `run` would,
+and posts a compact result back. Only the intake is new: the working copy, the checks, the coding
+turns, the repairs, the deadline, the logs, and the report are the ones described above.
+
+```sh
+# Static: validates the configuration, the source object included. No credential, no network.
+npm start -- check-config --config harness.jira.config.json
+
+# Read-only preview: contacts Jira, claims nothing, starts no run, costs no coding turns.
+npm start -- source list --config harness.jira.config.json
+
+# One finite batch, run sequentially. --limit bounds fresh attempts, not the whole queue.
+npm start -- source run --repo ../target-project --config harness.jira.config.json --limit 1
+
+# Scan, run the batch, wait, and scan again until you stop it (Ctrl+C).
+npm start -- source watch --repo ../target-project --config harness.jira.config.json
+```
+
+`source list` needs only `--config`. `source run` and `source watch` also need `--repo`, which is
+the one repository every fetched issue is bound to, and they reject `--task`: a source task comes
+from Jira, not from a file. The whole batch is discovered **before** any issue is claimed, and the
+runs are strictly sequential.
+
+The queue is the configuration's `source` object, and nothing else:
+
+```json
+{
+  "source": {
+    "type": "jira",
+    "siteUrl": "https://your-site.atlassian.net",
+    "cloudId": "9337c4da-7d33-4c1d-b03c-db207e537f88",
+    "projectKey": "SAM1",
+    "label": "harness-task",
+    "pollIntervalSeconds": 30
+  }
+}
+```
+
+`issueType` (`Task`), `label` (`harness-task`), `readyStatus` (`To Do`), `runningStatus`
+(`In Progress`), `reviewStatus` (`In Review`), `pollIntervalSeconds` (`30`, at least `5`), and
+`tokenEnv` (`JIRA_API_TOKEN`) have the documented defaults, so the minimum is `type`, `siteUrl`,
+`cloudId`, and `projectKey`. `docs/WORKFLOW.md` §5 is the contract; `docs/harness.jira.example.json`
+is a credential-free example, and `examples/jira-description.md` shows the description format an
+issue must use.
+
+**Authentication is a service account, not your account.** Create a Jira service account, give it
+access to the project, and create an **API token** with the classic scopes `read:jira-work` and
+`write:jira-work`. The harness sends it as `Authorization: Bearer <token>` to the Atlassian gateway,
+`https://api.atlassian.com/ex/jira/<cloudId>/rest/api/3/...` — there is no direct
+`*.atlassian.net/rest/api` route, no Basic authentication, and no email address. Put the token in
+the environment variable the configuration names (`JIRA_API_TOKEN` by default) for the command, and
+never in a file:
+
+```powershell
+$secure = Read-Host "Jira service-account API token" -AsSecureString
+$env:JIRA_API_TOKEN = [System.Net.NetworkCredential]::new("", $secure).Password
+Remove-Variable secure
+```
+
+The token is read only for a `source` command, is never written to a report, a log, or a receipt,
+and is **removed from the environment** of the workspace's setup commands, checks, and coding turns.
+A `run --task` invocation, and `check-config`, never resolve it and never contact Jira.
+
+**What one issue becomes.** `Task.id` is the issue key, `Task.title` the summary, `Task.description`
+the description rendered as readable text, and `Task.acceptanceCriteria` the items listed under the
+`Acceptance criteria` heading. Everything else in the description — `Goal`, `Verification`,
+`Constraints` — is context for the agent and for your review: **no Jira text becomes a command, a
+repository, an agent argument, or a limit**, and the harness still runs the checks from its own
+configuration. An issue whose description does not fit the documented format is reported and
+skipped; it is never guessed at and never launched.
+
+**What Jira sees.** On a confirmed claim the issue moves from the ready status to the running
+status. When the run ends — `passed`, `failed`, or `cancelled` alike — one compact comment carries
+the run ID, the exact outcome and reason, the check summary, the repairs used, and the local
+artifact paths, and the issue moves to the review status. `In Review` means "a local attempt
+finished and needs a human", not success. **Nothing here moves an issue to Done**, and nothing
+commits, merges, or publishes anything.
+
+**Nothing runs twice.** `.intake/receipts/<hash>.json` under `workDir` records each attempted issue
+by its immutable ID, and a receipt is created **before** the issue is claimed. A receipt survives a
+restart, and editing or reopening the issue does not clear it. A single `.intake/lock/` directory
+makes sure only one consumer uses an output directory; it is never broken automatically. To
+deliberately retry one issue: stop the watcher, inspect and stop prior processes, keep the run
+artifacts, delete only that issue's printed receipt file, and put the issue back to the ready
+status. Never remove the whole `.intake` directory to fix one task.
+
+Scans are periodic and pause during a batch, so a new issue is picked up on the next scan rather
+than instantly. `source list` and `source run` report a failed read and exit nonzero; `source watch`
+retries one with a bounded backoff that respects the server's `Retry-After`. An authentication,
+workflow, uncertain-write, or delivery failure stops intake for a human instead of being retried
+behind your back. Each run still clones the source checkout's committed `HEAD` **as it is then**:
+separate runs do not inherit each other's uncommitted work.
 
 ## Try it on a disposable project
 
@@ -350,9 +487,11 @@ Read this before pointing a run at anything you care about.
 
 - **Configured commands execute target-project code.** `setup` and `checks` are started as real
   processes, in the working copy, with your user's privileges and no sandbox. The runtime's own
-  `--sandbox workspace-write` constrains the _runtime's_ file writes; it does not constrain your
-  configured commands. Treat a target project's configuration the way you would treat a script you
-  are about to run.
+  `--sandbox workspace-write` constrains the _runtime's_ file writes, and the harness always adds
+  `--ask-for-approval never`: an unattended run never waits for a prompt, so an action outside that
+  sandbox fails the turn instead of pausing for you. Neither setting constrains your configured
+  commands. Treat a target project's configuration the way you would treat a script you are about
+  to run.
 - **A clone is not a sandbox.** The working copy is a separate directory and a separate branch, so
   your source checkout is not where the work happens — but the code in it runs as you, and it can
   write anywhere your user can.
@@ -384,9 +523,21 @@ Read this before pointing a run at anything you care about.
 - **One run at a time per source repository.** The harness takes no lock: two runs over the same
   repository, with the same output directory or the same working tree, can interfere with each
   other's work.
-- **Not implemented, and not planned here:** Jira or any other intake, pull-request publication, a
-  provider registry, workflow engines, and background services. There is exactly one runtime
-  interface (the Codex CLI) and exactly one loop.
+- **`source` commands add one small lock, and it only covers one output directory.** A
+  `.intake/lock/` under `workDir` keeps two consumers out of the _same_ output directory; it is not
+  a distributed lock, and two watchers with different `workDir`s against the same Jira queue are
+  unsupported. Jira statuses are not a lease either: there is no exactly-once guarantee across
+  machines, and the receipts only protect the directory they live in.
+- **A ready issue is an authorization to spend agent capacity.** The configured project, issue
+  type, label, and ready status are the queue boundary, and the harness does not ask again: put
+  only work you would run yourself behind that label, in a project whose issues are trusted input.
+  Issue text is context for the coding turn and for review; it can never choose a repository,
+  a command, an environment variable, or a limit — but the turn still reads it and can act on its
+  content inside the working copy.
+- **Not implemented, and not planned here:** pull-request publication, a provider registry,
+  workflow engines, background services, webhooks, parallel consumers, and a second coding runtime.
+  There is exactly one runtime interface (the Codex CLI), exactly one loop, and exactly one
+  implemented task source (Jira).
 
 ## What is verified, and what is not
 
@@ -402,26 +553,63 @@ Read this before pointing a run at anything you care about.
 - the input contract, the module boundaries, the check rounds, the process-tree stop, the reporting,
   and the runtime adapter's own contract — including that a repair turn is handed the failures the
   harness observed.
+- the Jira intake path, against a fake Jira REST API v3 boundary: the gateway route and Bearer
+  header, the queue JQL and its pagination, the description format and the mapping onto the existing
+  `Task`, transition selection by target status, the result comment, the per-issue receipt and the
+  one-consumer lock, a finite `source run`, a watch cycle that picks up a later issue, and the
+  behaviour of a stop, a failed feedback, and a corrupt receipt. Nothing in that suite needs a Jira
+  site, a token, or a network.
 
-**Verified live (`npm run test:live`), and therefore not verified here:** that the same code works
-against a real Codex account, a real model, and real repository changes. That is T16's job, and it
-is recorded separately. `npm run test:live` builds `dist/` and then runs
-`tests/live/codex-live-check.ts`: it prepares two disposable repositories, drives the built CLI
-against them with the real runtime, and reads back what the runs left behind.
+**Verified live (`npm run test:live`) on 2026-09-16, through the DeepSeek launch this checkout
+selects:** Codex CLI 0.154.0 answered a read-only connectivity probe, and both exercises then passed
+against disposable repositories — a real implementation whose post-agent round was green
+(`run-20260916192927-5fdfa140`, one turn, zero repairs), and a real repair after the fixture's
+injected failure (`run-20260916192944-72e7e822`, two turns, one repair), with the reports, timelines,
+per-turn agent logs, and retained working copies read back. That evidence is recorded in
+the live check's own output, which this document does not restate. A deliberately out-of-bounds action was exercised the same
+way (`run-20260916194015-9fce84bf`): a disposable task asking the turn to write
+`C:\Users\User\nexus-sandbox-probe.txt` produced three refused attempts
+(`System.UnauthorizedAccessException`, access denied), no file on disk, and a turn that reported the
+refusal and ended normally — nothing hung waiting for an approval nobody was there to give. It is a
+Codex CLI + DeepSeek result: not OpenAI-backed inference, and not Claude Code.
 
-Its **prerequisite gate runs first and fails loudly**: with no runtime it can start, or no account
-evidence (`CODEX_API_KEY`, or an authentication file where `CODEX_HOME` points), it prints every
-missing prerequisite and exits `2` without invoking anything, saying in as many words that nothing
-was verified and that this is not a pass. An unexecuted live check is never a passing one. The gate
-is verified offline in `tests/live-verifier.test.ts`, including that `npm test`, `npm run validate`,
-and CI never reach the live entry point at all.
+`npm run test:live` builds `dist/` and then runs `tests/live/codex-live-check.ts`: it prepares two
+disposable repositories, drives the built CLI against them with the selected runtime, and reads back
+what the runs left behind.
+
+```sh
+npm run test:live                                    # the ordinary Codex launch, documented defaults
+npm run test:live -- --config harness.config.json    # the agent, limits, and allowance that file selects
+```
+
+With `--config`, the verifier loads the file through the harness's own schema and path rules and
+uses its `agent`, `maxRepairs`, `taskTimeoutMinutes`, and `commandTimeoutMinutes`. Its disposable
+repository, output directory, task, setup, and checks stay its own: your configured project's
+commands are never run and its `workDir` is never written to. A configuration that allows no repair
+turn is refused before any paid work, because this verifier exists to exercise a real repair.
+
+Its **prerequisite gate runs first and fails loudly**: when the selected launcher cannot be started,
+or a supplied configuration cannot be used, it prints every problem and exits `2` without invoking
+anything, saying in as many words that nothing was verified and that this is not a pass. An
+unexecuted live check is never a passing one. There is no account prerequisite: a runtime can
+authenticate in ways a file check cannot see, so the bounded invocation inside each exercise — and
+not the presence of a key file — is what establishes that the selected runtime really works. The
+gate is verified offline in `tests/live-verifier.test.ts`, including that `npm test`,
+`npm run validate`, and CI never reach the live entry point at all.
 
 **Not verified anywhere yet:**
 
 - any live coding turn on Linux or macOS, and any macOS behaviour at all;
-- live runs against a real account (T16): the reports, turn counts, and repair evidence a live run
-  produces have not been observed on this machine;
-- behaviour on a runtime version other than the 0.154.0 interface this adapter was written against.
+- live runs through a provider other than the one configured on this machine, and any profile or
+  gateway the operator has not installed;
+- **any live Jira call.** The connector is verified against mocked HTTP responses only: no
+  service-account token has been used, no real issue has been read, claimed, commented on, or
+  transitioned, and the opt-in live exercise in
+  [docs/implement-task-source-connectors.md](docs/implement-task-source-connectors.md) §S07 has not
+  been run. Mocked tests are not evidence that the live path works;
+- behaviour on a runtime version other than the 0.154.0 interface this adapter was written against,
+  and any runtime-reported model identity: a profile or model name in a report is launch
+  information, not proof of which upstream model served a response.
 
 ## Coding runtime
 
@@ -431,10 +619,20 @@ single non-interactive turn on this platform and needs no extra client library i
 
 - **Interface:** `codex exec` (`@openai/codex`, version **0.154.0** when this was written, which
   publishes a `win32-x64` build). The adapter invokes exactly
-  `codex exec --sandbox workspace-write --json -`, started **in the working copy**, with the prompt
-  written to standard input. `--json` makes the runtime write one JSON event per line to standard
-  output; its progress goes to standard error; the turn ends when the runtime exits. Nothing is
-  interpolated and no shell is involved beyond what a Windows `.cmd` shim already requires.
+  `<your launch prefix> --ask-for-approval never exec --sandbox workspace-write --json -`, started
+  **in the working copy**, with the prompt written to standard input. `--json` makes the runtime
+  write one JSON event per line to standard output; its progress goes to standard error; the turn
+  ends when the runtime exits. Nothing is interpolated and no shell is involved beyond what a
+  Windows `.cmd` shim already requires.
+- **Non-interactive by construction.** `--ask-for-approval never` is the adapter's own argument, not
+  a profile setting and not a configuration field, so a run never waits for a human: an action the
+  `workspace-write` sandbox does not allow fails the turn and stops the run. There is no
+  `--dangerously-bypass-approvals-and-sandbox`, no fallback to a weaker sandbox, and no retry with
+  one. On the installed CLI the approval option is accepted **before** the `exec` subcommand and
+  rejected after it (`unexpected argument '--ask-for-approval'`), which is why it leads the
+  adapter's own arguments rather than sitting beside `--sandbox`; the tracked documents
+  [docs/WORKFLOW.md](docs/WORKFLOW.md) and [docs/architecture.md](docs/architecture.md) still spell
+  the suffix without it.
 - **Official references consulted:** [Non-interactive mode](https://learn.chatgpt.com/docs/non-interactive-mode),
   [CLI commands and flags](https://learn.chatgpt.com/docs/developer-commands?surface=cli) (`exec`,
   `--json`, `--sandbox`, `-o/--output-last-message`, `resume`), [AGENTS.md](https://learn.chatgpt.com/docs/agent-configuration/agents-md),
@@ -443,12 +641,22 @@ single non-interactive turn on this platform and needs no extra client library i
   invocation, so continuing a session can never quietly buy extra turns.
 - **Local setup and authentication (yours to do, outside this repository):**
   `npm install --global @openai/codex`, then `codex login` (or `codex login --with-api-key`, or set
-  `CODEX_API_KEY`). Credentials live where the CLI keeps them — the ambient environment and
-  `CODEX_HOME` — and the adapter passes that environment to the runtime untouched. **Authentication
-  is never part of a task file, a configuration file, or this repository's code**, and nothing the
-  adapter reads is copied into a log, a timeline, or a report: no key, no token, and no environment
-  dump is persisted anywhere. The live check's prerequisite gate looks only at whether a credential
-  _source_ is present, and never opens one.
+  `CODEX_API_KEY`) for the ordinary OpenAI-backed defaults. Credentials live where the CLI keeps
+  them — the ambient environment and `CODEX_HOME` — and the adapter passes that environment to the
+  runtime untouched. **Authentication is never part of a task file, a configuration file, or this
+  repository's code**, and nothing the adapter reads is copied into a log, a timeline, or a report:
+  no key, no token, and no environment dump is persisted anywhere.
+- **Selecting another Codex-backed provider**, as the checked-in `harness.config.json` does for
+  DeepSeek on this machine: keep your ordinary Codex defaults for `codex` and add a native profile
+  for the other provider, so nothing has to be restored afterwards. The profile is
+  `<Codex home>/deepseek.config.toml` (`model`, `model_provider`, `model_catalog_json`, and a
+  `[model_providers.deepseek]` table with `base_url`, `wire_api`, and `env_key`), the catalog is
+  `<Codex home>/deepseek-models.json`, and the credential is the variable the profile names — here
+  `DEEPSEEK_API_KEY`, set in the environment the harness itself is started in. The harness never
+  writes native configuration, downloads a catalog, logs in, or reads a profile or credential file:
+  it starts the prefix you configured and records that prefix. A profile is a layer over your
+  ordinary settings, not a second installation, and a profile name in a report is not an observed
+  model identity.
 - **Observed limitations, stated rather than smoothed over:**
   - `codex exec`'s **exit codes are not documented**. The adapter therefore does not read an exit
     code as meaning anything by itself: it reads the event stream, and every other ending — a
@@ -468,21 +676,29 @@ single non-interactive turn on this platform and needs no extra client library i
 
 ## Module ownership
 
-| File               | Responsibility                                                                           |
-| ------------------ | ---------------------------------------------------------------------------------------- |
-| `src/cli.ts`       | Arguments, help, exit codes, top-level wiring. Owns all presentation.                    |
-| `src/config.ts`    | Reads and validates the two JSON inputs; resolves `workDir`.                             |
-| `src/types.ts`     | The data contracts. Data only: no imports, no runtime I/O.                               |
-| `src/workspace.ts` | Preflight, run directory allocation, the working copy, and the final change summary.     |
-| `src/checks.ts`    | Setup/check command execution, process-tree stop, output capture.                        |
-| `src/agent.ts`     | The coding runtime: one turn through the Codex CLI, normalized for the runner.           |
-| `src/runner.ts`    | The order the work happens in: baseline, turns, checks, repair, deadlines, cancellation. |
-| `src/report.ts`    | `result.json` and the logs under `<runDir>/logs`; reads back command output for repair.  |
+| File                 | Responsibility                                                                           |
+| -------------------- | ---------------------------------------------------------------------------------------- |
+| `src/cli.ts`         | Arguments, help, exit codes, top-level wiring. Owns all presentation.                    |
+| `src/config.ts`      | Reads and validates the two JSON inputs; resolves `workDir`.                             |
+| `src/types.ts`       | The data contracts. Data only: no imports, no runtime I/O.                               |
+| `src/workspace.ts`   | Preflight, run directory allocation, the working copy, and the final change summary.     |
+| `src/checks.ts`      | Setup/check command execution, process-tree stop, output capture.                        |
+| `src/agent.ts`       | The coding runtime: one turn through the Codex CLI, normalized for the runner.           |
+| `src/runner.ts`      | The order the work happens in: baseline, turns, checks, repair, deadlines, cancellation. |
+| `src/report.ts`      | `result.json` and the logs under `<runDir>/logs`; reads back command output for repair.  |
+| `src/source.ts`      | The task-source contract and the one serial coordinator: batch, watch, lock, receipts.   |
+| `src/jira.ts`        | The Jira Cloud connector: search, reads, transitions, comments, service-account auth.    |
+| `src/jira-format.ts` | The small ADF reader and the plain-text result comment builder.                          |
 
 `src/cli.ts` depends on `config.ts` and `types.ts`; nothing depends on `cli.ts`. That boundary and
 the "`types.ts` is data only" rule are enforced by `no-restricted-imports` entries in
 `eslint.config.js`, and `tests/boundaries.test.ts` demonstrates one permitted and one rejected
 import against fixtures in `tests/fixtures/boundaries/`.
+
+The intake boundary is the `TaskSource` contract in `src/source.ts`. The coordinator knows ordinary
+data and functions, the runner never imports Jira, and `cli.ts` selects the connector with one
+explicit branch on `source.type`: a second source would be a concrete adapter plus configuration and
+CLI wiring, not a change to `Task` or to the loop.
 
 `.prettierignore` excludes the supplied `AGENTS.md` and `docs/` so those design documents stay
 byte-for-byte as written.
@@ -507,13 +723,23 @@ offline suite. It needs no credentials, and `npm run test:live` is deliberately 
 - [docs/WORKFLOW.md](docs/WORKFLOW.md) — the loop and the JSON input contract. **Authoritative**;
   this is documentation for people. The runtime reads plain JSON, with no Markdown parsing and no
   workflow language.
-- [docs/tasks.md](docs/tasks.md) — the ordered backlog and the completion notes, including what
-  each task verified and what it could not.
-- [docs/scaffold-request.md](docs/scaffold-request.md) — the task that produced this scaffold.
+- [docs/implement-task-source-connectors.md](docs/implement-task-source-connectors.md) — the
+  assignment that added Jira intake, including the opt-in live exercise that has **not** been run.
+- [docs/harness.jira.example.json](docs/harness.jira.example.json) — a credential-free source
+  configuration to copy.
+- [docs/GIT-WORKFLOW.md](docs/GIT-WORKFLOW.md) — how changes to this repository are made: one
+  `task/<name>` branch per task, merged into `main` through a pull request. It is about this
+  repository only; a harness run never commits or pushes anything in a target repository.
 
 ## Next task
 
-T16: the opt-in live Codex implementation and repair exercise — run `npm run test:live` against an
-approved account and a disposable repository, and record its exit code, runtime version, run IDs,
-report locations, turn counts, and observed results. Without a usable runtime or account it stays
-unchecked, and the missing prerequisite is reported instead.
+The 2026-09-16 extension added the optional `agent` selection, the selected-launch reporting, the
+explicit no-approval policy, and now the Jira task source with `source list`, `source run`, and
+`source watch`. What remains is listed under
+[What is verified, and what is not](#what-is-verified-and-what-is-not) rather than promised here. The
+first real piece of work is the **supervised live Jira exercise**, which has not been run: it needs a
+service-account token, a disposable target repository, and an operator who has inspected the queue
+before the first paid call. After that, a second coding adapter (Claude Code, with its own invocation
+and event parser and its own tests — a Claude launcher behind the Codex parser would be a bug), live
+turns on POSIX hosts, and stronger isolation before unattended runs of untrusted repositories.
+Nothing here builds them ahead of a task that needs them.

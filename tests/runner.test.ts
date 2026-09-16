@@ -289,6 +289,9 @@ function configuration(fixture: Fixture, parts: Partial<HarnessConfig> = {}): Ha
     commandTimeoutMinutes: 10,
     setup: [command(fixture, 'setup-1')],
     checks: [command(fixture, 'check-1', 'need', 'app.txt', 'committed baseline')],
+    // These runs stand in for the coding turn, so the launch the configuration
+    // selected is the documented default: recorded, never started here.
+    agent: { runtime: 'codex', command: ['codex'] },
     ...parts,
   };
 }
@@ -2420,6 +2423,7 @@ describe('the collaborators a run is given', () => {
       commandTimeoutMinutes: 10,
       setup: [['a-setup-command']],
       checks: [['a-check-command']],
+      agent: { runtime: 'codex', command: ['codex'] },
     };
     const repoPath = path.join('somewhere', 'repo');
     const clock = new Date('2026-01-01T00:00:00.000Z');

@@ -401,6 +401,37 @@ describe('check-config', () => {
     expect(result.out).toContain('example-001');
   });
 
+  it('validates a configuration on its own, without --task', async () => {
+    const result = await run(['check-config', '--config', 'harness.config.json']);
+
+    expect(result.err).toBe('');
+    expect(result.code).toBe(EXIT_OK);
+    expect(result.out).toContain(path.join(repoRoot, '.harness'));
+    expect(result.out).not.toContain('acceptanceCriteria');
+  });
+
+  it('validates a source configuration without contacting it', async () => {
+    const { configPath } = await writeInputs({
+      ...documentedConfig,
+      source: {
+        type: 'jira',
+        siteUrl: 'https://example.atlassian.net',
+        cloudId: '9337c4da-7d33-4c1d-b03c-db207e537f88',
+        projectKey: 'SAM1',
+        // A source command would refuse this unset variable; check-config must
+        // never look for it, so the name is one nothing sets in practice.
+        tokenEnv: 'NEXUS_CHECK_CONFIG_MUST_NOT_RESOLVE_THIS',
+      },
+    });
+
+    const result = await run(['check-config', '--config', configPath]);
+
+    expect(result.err).toBe('');
+    expect(result.code).toBe(EXIT_OK);
+    expect(result.out).toContain('example.atlassian.net');
+    expect(result.out).toContain('NEXUS_CHECK_CONFIG_MUST_NOT_RESOLVE_THIS');
+  });
+
   it('accepts the --option=value form', async () => {
     const { configPath, taskPath } = await writeInputs();
 
@@ -491,10 +522,10 @@ describe('check-config', () => {
 
 describe('usage errors', () => {
   const rejections: Array<[name: string, argv: string[], problem: RegExp]> = [
-    ['a missing --task', ['check-config', '--config', 'harness.config.json'], /--task/],
-    ['a missing --config and --task', ['check-config'], /--config and --task/],
+    ['a check-config with no --config', ['check-config'], /--config/],
     ['an unknown command', ['deploy'], /unknown command "deploy"/],
     ['an unknown option', ['check-config', '--repo', '.'], /unknown option "--repo"/],
+    ['a --limit on check-config', ['check-config', '--limit', '1'], /unknown option "--limit"/],
     ['a leading option instead of a command', ['--config', 'x'], /unknown option "--config"/],
     [
       'a repeated option',
@@ -521,6 +552,31 @@ describe('usage errors', () => {
       /unknown option "--json"/,
     ],
     ['a run option with no value', ['run', '--repo'], /requires a path value/],
+    ['a source with no subcommand', ['source'], /source requires one of: list, run, watch/],
+    ['an unknown source subcommand', ['source', 'deploy'], /unknown source command "deploy"/],
+    ['a source list without --config', ['source', 'list'], /--config/],
+    ['a source run without --repo', ['source', 'run', '--config', 'a.json'], /--repo/],
+    ['a source watch without --repo', ['source', 'watch', '--config', 'a.json'], /--repo/],
+    [
+      'a --task on a source command',
+      ['source', 'list', '--config', 'a.json', '--task', 'b.json'],
+      /unknown option "--task"/,
+    ],
+    [
+      'a --limit outside source run',
+      ['source', 'watch', '--repo', '.', '--config', 'a.json', '--limit', '1'],
+      /unknown option "--limit"/,
+    ],
+    [
+      'a zero --limit',
+      ['source', 'run', '--repo', '.', '--config', 'a.json', '--limit', '0'],
+      /positive integer/,
+    ],
+    [
+      'a non-numeric --limit',
+      ['source', 'run', '--repo', '.', '--config', 'a.json', '--limit', 'many'],
+      /positive integer/,
+    ],
   ];
 
   for (const [name, argv, problem] of rejections) {
@@ -676,6 +732,34 @@ describe('run', () => {
     expect(fixture.calls[0]?.task).toEqual(documentedTask);
     expect(fixture.calls[0]?.workspacePath).toBe(path.join(runDir, 'workspace'));
     expect(fixture.calls[0]?.sourceRoot).toBe(fixture.source);
+  });
+
+  it('ignores a configured source: no credential, no intake state, no provenance', async () => {
+    const fixture = await createRunFixture({
+      config: {
+        source: {
+          type: 'jira',
+          siteUrl: 'https://example.atlassian.net',
+          cloudId: '9337c4da-7d33-4c1d-b03c-db207e537f88',
+          projectKey: 'SAM1',
+          // A name nothing sets: a file-task run must not look for it at all.
+          tokenEnv: 'NEXUS_FILE_RUN_MUST_NOT_READ_THIS',
+        },
+      },
+    });
+
+    const result = await run(
+      runArgv({ repo: 'target-project', config: 'harness.config.json', task: 'task.json' }),
+      { cwd: fixture.parent, dependencies: fixture.dependencies },
+    );
+
+    expect(result.err).toBe('');
+    expect(result.code).toBe(EXIT_OK);
+    const { report } = await readRun(fixture.outDir);
+    expect(report.status).toBe('passed');
+    expect('sourceRef' in report).toBe(false);
+    expect(existsSync(path.join(fixture.outDir, '.intake'))).toBe(false);
+    expect(fixture.calls).toHaveLength(1);
   });
 
   it('repairs a red round and reports the repair it used', async () => {

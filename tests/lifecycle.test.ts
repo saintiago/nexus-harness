@@ -373,6 +373,9 @@ function configuration(fixture: Fixture, parts: Partial<HarnessConfig> = {}): Ha
     commandTimeoutMinutes: 10,
     setup: [],
     checks: [checkCommand(fixture, 'check-one')],
+    // The coding turn is stood in for in this suite, so the selection is the
+    // documented default: the runner records it and never starts it.
+    agent: { runtime: 'codex', command: ['codex'] },
     ...parts,
   };
 }

@@ -3,10 +3,11 @@
  *
  * It is a real program that a real `codex` name resolves to, on the `PATH` of the
  * CLI the suite starts. The production adapter starts it exactly as it starts the
- * real runtime — `codex exec --sandbox workspace-write --json -`, prompt on
- * standard input — so nothing in `src/` knows this file exists and no flag
- * reaches it. Everything above this boundary is real: the CLI process, its
- * argument parsing, Git, the target's own commands, the filesystem, the reports.
+ * real runtime — `codex --ask-for-approval never exec --sandbox workspace-write
+ * --json -`, prompt on standard input — so nothing in `src/` knows this file
+ * exists and no flag reaches it. Everything above this boundary is real: the CLI
+ * process, its argument parsing, Git, the target's own commands, the filesystem,
+ * the reports.
  *
  * It works in the working copy it was started in and speaks the documented event
  * stream on standard output. Two records are kept for the suite to read back:
@@ -54,6 +55,14 @@ const emit = (one) => process.stdout.write(`${JSON.stringify(one)}\n`);
 
 for (const signal of ['SIGINT', 'SIGTERM', 'SIGBREAK']) {
   process.on(signal, () => record('signal', { signal, pid: process.pid }));
+}
+
+if (process.argv.includes('--version')) {
+  // The prerequisite probe the live verifier makes before it spends a call: it
+  // asks whether the selected launcher starts at all, and a turn is not a turn.
+  // Nothing is recorded, so no plan is consumed by it.
+  process.stdout.write('codex-cli stand-in\n');
+  process.exit(0);
 }
 
 if (process.argv.includes('--hold')) {

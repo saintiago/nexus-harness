@@ -7,5 +7,15 @@
   "checks": [
     ["npm", "run", "typecheck"],
     ["npm", "test"]
-  ]
+  ],
+  "agent": {
+    "runtime": "codex",
+    "command": [
+      "C:/Users/User/.codex/packages/standalone/current/bin/codex.exe",
+      "--profile",
+      "deepseek",
+      "--model",
+      "deepseek-flash"
+    ]
+  }
 }

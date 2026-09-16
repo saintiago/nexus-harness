@@ -124,6 +124,14 @@ export interface RunCommandRequest {
    * starting at all.
    */
   readonly stop?: AbortSignal;
+  /**
+   * The environment the invocation is started with. Omitted means this
+   * process's own environment, which is what a file-task run uses. A source run
+   * passes a copy of it with the Jira credential variable removed, so target
+   * commands inherit everything they need and not the token (docs/WORKFLOW.md
+   * §7). The environment is never logged, and it is only read here to pass on.
+   */
+  readonly env?: NodeJS.ProcessEnv;
 }
 
 /** What one setup/check round is asked to do. */
@@ -168,6 +176,13 @@ export interface CheckRoundRequest {
    * between two commands — starts nothing further.
    */
   readonly stop?: AbortSignal;
+  /**
+   * The environment every invocation of the round is started with. Omitted
+   * means this process's own environment; a source run passes a copy without
+   * the Jira credential variable (docs/WORKFLOW.md §7). It is passed on as it
+   * is and never recorded.
+   */
+  readonly env?: NodeJS.ProcessEnv;
 }
 
 /**
@@ -436,7 +451,7 @@ export function commandSucceeded(result: CommandResult): boolean {
  * The result then says it timed out, and whether that stop was confirmed.
  */
 export async function runCommand(request: RunCommandRequest): Promise<CommandResult> {
-  const { command, cwd, logsDir, label, timeoutMs, stop } = request;
+  const { command, cwd, logsDir, label, timeoutMs, stop, env } = request;
   const executable = command[0] ?? '';
   const args = command.slice(1);
 
@@ -566,6 +581,9 @@ export async function runCommand(request: RunCommandRequest): Promise<CommandRes
     try {
       child = spawn(file, [...launcherArgs], {
         cwd,
+        // The invocation inherits this process's environment unless the caller
+        // supplied one; a source run supplies a copy without the Jira token.
+        ...(env === undefined ? {} : { env }),
         // No interactive input: configured commands must not wait for a terminal.
         stdio: ['ignore', 'pipe', 'pipe'],
         // On Windows the invocation is deliberately *not* detached: a detached
@@ -812,7 +830,8 @@ function expiredDeadline(where: string, overdueMs: number): string {
  * result whose evidence was lost.
  */
 export async function runCheckRound(request: CheckRoundRequest): Promise<CheckRoundResult> {
-  const { setup, checks, cwd, logsDir, name, commandTimeoutMs, deadlineMs, now, stop } = request;
+  const { setup, checks, cwd, logsDir, name, commandTimeoutMs, deadlineMs, now, stop, env } =
+    request;
   const setupResults: CommandResult[] = [];
   const checkResults: CommandResult[] = [];
 
@@ -849,6 +868,7 @@ export async function runCheckRound(request: CheckRoundRequest): Promise<CheckRo
       label: `${name}-setup-${index + 1}`,
       timeoutMs: limitMs,
       stop,
+      ...(env === undefined ? {} : { env }),
     });
     setupResults.push(result);
     if (!commandSucceeded(result)) {
@@ -874,6 +894,7 @@ export async function runCheckRound(request: CheckRoundRequest): Promise<CheckRo
       label: `${name}-check-${index + 1}`,
       timeoutMs: limitMs,
       stop,
+      ...(env === undefined ? {} : { env }),
     });
     checkResults.push(result);
     // A check that exited nonzero is a result like any other, and the remaining
