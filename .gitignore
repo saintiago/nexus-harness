@@ -11,6 +11,11 @@ coverage/
 # Harness runtime data (generated run directories)
 .harness/
 
+# Local operator configuration. It sits in the repository because the harness is
+# invoked from here, so it must be ignored: an untracked file would make this
+# checkout dirty for a run that targets the harness itself.
+harness.jira.config.json
+
 # Local secrets and environment
 .env
 .env.*

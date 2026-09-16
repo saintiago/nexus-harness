@@ -301,6 +301,12 @@ The queue is the configuration's `source` object, and nothing else:
 is a credential-free example, and `examples/jira-description.md` shows the description format an
 issue must use.
 
+**Running the harness on this repository itself** works, as long as the checkout is clean and the
+output stays outside it: the operator's live config sits at the repository root as
+`harness.jira.config.json`, is gitignored (an untracked file would make this checkout dirty for
+preflight), and points `workDir` at a sibling directory — `../nexus-jira-runs` — so no run
+directory is ever created inside the source.
+
 **Authentication is a service account, not your account.** Create a Jira service account, give it
 access to the project, and create an **API token** with the classic scopes `read:jira-work` and
 `write:jira-work`. The harness sends it as `Authorization: Bearer <token>` to the Atlassian gateway,
