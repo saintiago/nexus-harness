@@ -603,16 +603,26 @@ not the presence of a key file — is what establishes that the selected runtime
 gate is verified offline in `tests/live-verifier.test.ts`, including that `npm test`,
 `npm run validate`, and CI never reach the live entry point at all.
 
+**Verified live for Jira reads on 2026-09-17**, against the operator's own queue (`HARN`, on a site
+whose default language is not English): `npm run dev -- source list --config harness.jira.config.json`
+read the real queue through the scoped service-account token and listed `HARN-1`. The first run
+reported it `stale`: the queue's JQL matched the canonical names (`To Do`, `Task`) while the site
+answered with translated ones (`待办`, `任务`), because the client left the language to `fetch`, which
+sends `accept-language: *` and so received the site's default language. With the connector asking
+for one language explicitly, the same live command reports the issue `valid and unattempted`.
+Nothing was claimed, no run directory was created, and no coding turn was started: that is a read,
+and only a read.
+
 **Not verified anywhere yet:**
 
 - any live coding turn on Linux or macOS, and any macOS behaviour at all;
 - live runs through a provider other than the one configured on this machine, and any profile or
   gateway the operator has not installed;
-- **any live Jira call.** The connector is verified against mocked HTTP responses only: no
-  service-account token has been used, no real issue has been read, claimed, commented on, or
-  transitioned, and the opt-in live exercise in
+- **any live Jira write.** The read half has been exercised live (below); no issue has been claimed,
+  commented on, or transitioned, no `source run` or `source watch` has run against a live site, and
+  the supervised exercise in
   [docs/implement-task-source-connectors.md](docs/implement-task-source-connectors.md) §S07 has not
-  been run. Mocked tests are not evidence that the live path works;
+  been run. Mocked tests are not evidence that the live write path works;
 - behaviour on a runtime version other than the 0.154.0 interface this adapter was written against,
   and any runtime-reported model identity: a profile or model name in a report is launch
   information, not proof of which upstream model served a response.
