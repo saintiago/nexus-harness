@@ -1044,55 +1044,64 @@ describe('a command that runs out of time', () => {
     expect(await readdir(fixture.logsDir)).toEqual([]);
   });
 
-  it('reports a stop it could not confirm, and calls the copy unsafe to reuse', async () => {
-    const fixture = await createHangFixture();
-    const path = process.env.PATH;
-    // The fixture is named by absolute path and still starts; the harness cannot
-    // find the utility it stops a tree with, so the stop does not happen at all.
-    process.env.PATH = '';
-    let result: CommandResult;
-    let round: CheckRoundResult;
-    try {
-      result = await runCommand({
-        command: hangCommand(fixture, 'slow'),
-        cwd: fixture.workspace,
-        logsDir: fixture.logsDir,
-        label: 'check-1',
-        timeoutMs: 400,
-      });
-      registerFixture(await hangPids(fixture, 'slow'));
+  // Windows-only by construction: this scenario defeats the stop by emptying
+  // PATH, so the harness cannot find `taskkill` — the utility Windows stops a
+  // tree with. On POSIX the harness signals the invocation's process group
+  // directly (`process.kill(-pid)`), which needs no utility to be found, so the
+  // stop succeeds and there is no unconfirmed stop to report.
+  it.skipIf(process.platform !== 'win32')(
+    'reports a stop it could not confirm, and calls the copy unsafe to reuse',
+    async () => {
+      const fixture = await createHangFixture();
+      const path = process.env.PATH;
+      // The fixture is named by absolute path and still starts; the harness cannot
+      // find the utility it stops a tree with, so the stop does not happen at all.
+      process.env.PATH = '';
+      let result: CommandResult;
+      let round: CheckRoundResult;
+      try {
+        result = await runCommand({
+          command: hangCommand(fixture, 'slow'),
+          cwd: fixture.workspace,
+          logsDir: fixture.logsDir,
+          label: 'check-1',
+          timeoutMs: 400,
+        });
+        registerFixture(await hangPids(fixture, 'slow'));
 
-      // The round turns that into the limitation a reader has to act on.
-      round = await runCheckRound({
-        setup: [],
-        checks: [hangCommand(fixture, 'second')],
-        cwd: fixture.workspace,
-        logsDir: fixture.logsDir,
-        name: 'attempt-1',
-        commandTimeoutMs: 400,
-        deadlineMs: Date.now() + 60 * 60_000,
-        now: () => new Date(),
-      });
-      registerFixture(await hangPids(fixture, 'second'));
-    } finally {
-      process.env.PATH = path;
-    }
+        // The round turns that into the limitation a reader has to act on.
+        round = await runCheckRound({
+          setup: [],
+          checks: [hangCommand(fixture, 'second')],
+          cwd: fixture.workspace,
+          logsDir: fixture.logsDir,
+          name: 'attempt-1',
+          commandTimeoutMs: 400,
+          deadlineMs: Date.now() + 60 * 60_000,
+          now: () => new Date(),
+        });
+        registerFixture(await hangPids(fixture, 'second'));
+      } finally {
+        process.env.PATH = path;
+      }
 
-    expect(result.outcome).toBe('timed-out');
-    expect(result.termination).toBe('unconfirmed');
-    expect(result.terminationProblem).not.toBeNull();
+      expect(result.outcome).toBe('timed-out');
+      expect(result.termination).toBe('unconfirmed');
+      expect(result.terminationProblem).not.toBeNull();
 
-    expect(round.outcome).toBe('execution-error');
-    expect(round.problem).toContain('could not be confirmed');
-    expect(round.problem).toContain('must not be reused');
+      expect(round.outcome).toBe('execution-error');
+      expect(round.problem).toContain('could not be confirmed');
+      expect(round.problem).toContain('must not be reused');
 
-    // Both commands really are still running: that is why nothing may be reused.
-    const first = await hangPids(fixture, 'slow');
-    const second = await hangPids(fixture, 'second');
-    expect(stillRunning(first.pid)).toBe(true);
-    expect(stillRunning(first.child ?? 0)).toBe(true);
-    expect(stillRunning(second.pid)).toBe(true);
-  }, 60_000);
+      // Both commands really are still running: that is why nothing may be reused.
+      const first = await hangPids(fixture, 'slow');
+      const second = await hangPids(fixture, 'second');
+      expect(stillRunning(first.pid)).toBe(true);
+      expect(stillRunning(first.child ?? 0)).toBe(true);
+      expect(stillRunning(second.pid)).toBe(true);
+    },
+    60_000,
+  );
 });
 
 /**

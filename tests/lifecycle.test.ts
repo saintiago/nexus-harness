@@ -117,6 +117,11 @@ function runProcess(
       cwd: options.cwd,
       env: options.env ?? process.env,
       windowsHide: true,
+      // Each fixture process leads its own process group on POSIX, exactly as
+      // the harness's own commands do, so a test can stop the whole tree by
+      // addressing the negated PID. Without this the group does not exist and
+      // the stop in these tests would silently reach nothing.
+      detached: process.platform !== 'win32',
     });
     let stdout = '';
     child.stdout?.setEncoding('utf8');
@@ -918,78 +923,88 @@ describe('a run its caller stops, for real', () => {
     expect(await sourceState(fixture.repo)).toEqual(before);
   }, 90_000);
 
-  it('reports a stop it could not confirm, and never calls the copy safe to reuse', async () => {
-    const fixture = await createFixture();
-    const controller = new AbortController();
-    const hostPath = process.env.PATH;
+  // Windows-only by construction: this scenario defeats the stop by emptying
+  // PATH, so the harness cannot find `taskkill` â€” the utility Windows stops a
+  // tree with. On POSIX the harness signals the invocation's process group
+  // directly (`process.kill(-pid)`), which needs no utility to be found, so the
+  // stop succeeds and there is nothing unconfirmed to report. The confirmed
+  // stop every platform can reach is covered by the tests above.
+  it.skipIf(process.platform !== 'win32')(
+    'reports a stop it could not confirm, and never calls the copy safe to reuse',
+    async () => {
+      const fixture = await createFixture();
+      const controller = new AbortController();
+      const hostPath = process.env.PATH;
 
-    const running = runTask(
-      {
-        task: fixture.task,
-        config: configuration(fixture),
-        repoPath: fixture.repo,
-        workDir: fixture.workDir,
-        stop: controller.signal,
-      },
-      dependencies(async (asked) => {
-        // The implementation returns at once and leaves a host behind on which the
-        // harness can no longer find the utility it stops a process tree with: the
-        // stop is attempted, and cannot be carried out.
-        await writeFile(
-          path.join(asked.workspacePath, HANG_FLAG),
-          'the checks will hang\n',
-          'utf8',
-        );
-        process.env.PATH = '';
-        return { summary: 'the implementation turn made the checks hang' };
-      }),
-    );
+      const running = runTask(
+        {
+          task: fixture.task,
+          config: configuration(fixture),
+          repoPath: fixture.repo,
+          workDir: fixture.workDir,
+          stop: controller.signal,
+        },
+        dependencies(async (asked) => {
+          // The implementation returns at once and leaves a host behind on which the
+          // harness can no longer find the utility it stops a process tree with: the
+          // stop is attempted, and cannot be carried out.
+          await writeFile(
+            path.join(asked.workspacePath, HANG_FLAG),
+            'the checks will hang\n',
+            'utf8',
+          );
+          process.env.PATH = '';
+          return { summary: 'the implementation turn made the checks hang' };
+        }),
+      );
 
-    let result: Awaited<typeof running>;
-    try {
-      const check = await fixtureRecorded(fixture, 'check-one');
-      expect(stillRunning(check.pid)).toBe(true);
-      controller.abort();
-      result = await running;
+      let result: Awaited<typeof running>;
+      try {
+        const check = await fixtureRecorded(fixture, 'check-one');
+        expect(stillRunning(check.pid)).toBe(true);
+        controller.abort();
+        result = await running;
 
-      // The invocation and its child are still running: that is exactly why the
-      // stop is unconfirmed, and why nothing may reuse the working copy.
-      expect(stillRunning(check.pid)).toBe(true);
-      if (check.child !== null) {
-        expect(stillRunning(check.child)).toBe(true);
+        // The invocation and its child are still running: that is exactly why the
+        // stop is unconfirmed, and why nothing may reuse the working copy.
+        expect(stillRunning(check.pid)).toBe(true);
+        if (check.child !== null) {
+          expect(stillRunning(check.child)).toBe(true);
+        }
+      } finally {
+        process.env.PATH = hostPath;
       }
-    } finally {
-      process.env.PATH = hostPath;
-    }
 
-    // The run did not pass, and did not claim a clean stop either.
-    expect(result.status).toBe('cancelled');
-    expect(result.status).not.toBe('passed');
-    expect(result.timeout).toBeNull();
-    expect(result.cancellation?.phase).toBe('the checks after the implementation turn');
-    expect(result.cancellation?.termination).toBe('unconfirmed');
-    expect(result.cancellation?.problem).not.toBeNull();
-    expect(result.reason).toContain('the stop could not be confirmed');
-    expect(result.reason).toContain('must not be reused');
-    expect(result.reason).toContain('nothing further was started');
+      // The run did not pass, and did not claim a clean stop either.
+      expect(result.status).toBe('cancelled');
+      expect(result.status).not.toBe('passed');
+      expect(result.timeout).toBeNull();
+      expect(result.cancellation?.phase).toBe('the checks after the implementation turn');
+      expect(result.cancellation?.termination).toBe('unconfirmed');
+      expect(result.cancellation?.problem).not.toBeNull();
+      expect(result.reason).toContain('the stop could not be confirmed');
+      expect(result.reason).toContain('must not be reused');
+      expect(result.reason).toContain('nothing further was started');
 
-    const report = await readReport(result.reportPath);
-    expect(report.status).toBe('cancelled');
-    expect(report.cancellation).toEqual(result.cancellation);
-    expect(report.cancellation?.problem).not.toBeNull();
-    // The limitation is carried by the evidence as well as by the reason, and no
-    // later round and no repair turn was started on a copy that may still be
-    // written to.
-    expect(report.attempts).toHaveLength(1);
-    expect(report.attempts[0]?.checks?.outcome).toBe('execution-error');
-    expect(report.attempts[0]?.checks?.checks[0]?.outcome).toBe('stopped');
-    expect(report.attempts[0]?.checks?.checks[0]?.termination).toBe('unconfirmed');
-    expect(report.attempts[0]?.checks?.problem).toContain('could not confirm');
-    const timeline = timelineMessages(await readText(report.runLog));
-    expect(timeline.join('\n')).toContain('termination unconfirmed');
-    expect(timeline.filter((line) => line.startsWith('post-agent check-round'))).toHaveLength(2);
-    expect(timeline.join('\n')).not.toContain('final status: passed');
-  }, 90_000);
+      const report = await readReport(result.reportPath);
+      expect(report.status).toBe('cancelled');
+      expect(report.cancellation).toEqual(result.cancellation);
+      expect(report.cancellation?.problem).not.toBeNull();
+      // The limitation is carried by the evidence as well as by the reason, and no
+      // later round and no repair turn was started on a copy that may still be
+      // written to.
+      expect(report.attempts).toHaveLength(1);
+      expect(report.attempts[0]?.checks?.outcome).toBe('execution-error');
+      expect(report.attempts[0]?.checks?.checks[0]?.outcome).toBe('stopped');
+      expect(report.attempts[0]?.checks?.checks[0]?.termination).toBe('unconfirmed');
+      expect(report.attempts[0]?.checks?.problem).toContain('could not confirm');
+      const timeline = timelineMessages(await readText(report.runLog));
+      expect(timeline.join('\n')).toContain('termination unconfirmed');
+      expect(timeline.filter((line) => line.startsWith('post-agent check-round'))).toHaveLength(2);
+      expect(timeline.join('\n')).not.toContain('final status: passed');
+    },
+    90_000,
+  );
 
   it('starts nothing at all when a round is handed a stop request that already arrived', async () => {
     const fixture = await createFixture({ hangFromBase: true });

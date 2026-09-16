@@ -370,6 +370,9 @@ function runProcess(
       cwd: options.cwd,
       env: options.env ?? process.env,
       windowsHide: true,
+      // As in the other lifecycle fixtures: its own process group on POSIX, so
+      // the test can stop the tree it started the way the harness stops one.
+      detached: process.platform !== 'win32',
     });
     let stdout = '';
     let stderr = '';
@@ -863,7 +866,15 @@ function dependencies(
       const child = spawn(
         process.execPath,
         [target.runtime, '--turn', planFile, turn.workspacePath, eventsFile],
-        { cwd: turn.workspacePath, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] },
+        {
+          cwd: turn.workspacePath,
+          windowsHide: true,
+          stdio: ['ignore', 'pipe', 'pipe'],
+          // A process group of its own on POSIX, as the harness starts a runtime:
+          // a holding turn is stopped by killing that group, and a child left in
+          // the test's own group could not be stopped by killing it.
+          detached: process.platform !== 'win32',
+        },
       );
       child.stdout?.setEncoding('utf8');
       child.stdout?.on('data', (chunk: string) => turn.agentLog.write(chunk));
