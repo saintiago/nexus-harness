@@ -58,7 +58,20 @@ async function expectRejected(load: () => Promise<unknown>, ...problems: RegExp[
 describe('the checked-in examples', () => {
   it('accepts harness.config.json and examples/task.json unchanged', async () => {
     const config = await loadHarnessConfig(path.join(repoRoot, 'harness.config.json'));
-    expect(config).toEqual(documentedConfig);
+    // The six required fields are the documented example's own values; the
+    // optional agent object is this checkout's local launch, which is a Codex
+    // invocation that names the native profile and the model it selects.
+    const { agent, ...fields } = config;
+    expect(fields).toEqual(documentedConfig);
+    expect(agent).toEqual(config.agent);
+    expect(config.agent.runtime).toBe('codex');
+    expect(config.agent.command.slice(1)).toEqual([
+      '--profile',
+      'deepseek',
+      '--model',
+      'deepseek-flash',
+    ]);
+    expect(config.agent.command[0] ?? '').not.toBe('');
 
     const task = await loadTask(path.join(repoRoot, 'examples', 'task.json'));
     expect(task).toEqual(documentedTask);
@@ -136,6 +149,44 @@ describe('configuration validation', () => {
       configWith({ setup: [{ cmd: 'npm' }] }),
       [/setup\[0\]: must be an array of string arguments/],
     ],
+    ['an agent that is not an object', configWith({ agent: 'codex' }), [/agent:/]],
+    ['a null agent', configWith({ agent: null }), [/agent:/]],
+    [
+      'an agent without a runtime',
+      configWith({ agent: { command: ['codex'] } }),
+      [/agent\.runtime/],
+    ],
+    ['an agent without a command', configWith({ agent: { runtime: 'codex' } }), [/agent\.command/]],
+    [
+      'an agent with an unknown field',
+      configWith({ agent: { runtime: 'codex', command: ['codex'], provider: 'deepseek' } }),
+      [/agent: Unrecognized key: "provider"/],
+    ],
+    [
+      'an unsupported runtime',
+      configWith({ agent: { runtime: 'claude', command: ['claude'] } }),
+      [/agent\.runtime: must be "codex"/],
+    ],
+    [
+      'a runtime that is not the implemented one spelled differently',
+      configWith({ agent: { runtime: 'DeepSeek', command: ['codex'] } }),
+      [/agent\.runtime/],
+    ],
+    [
+      'an empty agent command',
+      configWith({ agent: { runtime: 'codex', command: [] } }),
+      [/agent\.command: must not be empty/],
+    ],
+    [
+      'a blank agent executable',
+      configWith({ agent: { runtime: 'codex', command: ['  ', '--profile', 'deepseek'] } }),
+      [/agent\.command\[0\]: the first item must be a nonblank executable/],
+    ],
+    [
+      'a non-string agent argument',
+      configWith({ agent: { runtime: 'codex', command: ['codex', 7] } }),
+      [/agent\.command\[1\]/],
+    ],
   ];
 
   for (const [name, value, problems] of rejections) {
@@ -162,6 +213,77 @@ describe('configuration validation', () => {
   it('keeps literal empty arguments rather than dropping them', async () => {
     const config = await loadConfig(configWith({ checks: [['npm', 'run', '--', '']] }));
     expect(config.checks).toEqual([['npm', 'run', '--', '']]);
+  });
+});
+
+describe('the optional agent selection', () => {
+  it('normalizes an omitted agent to the documented ordinary Codex launch', async () => {
+    const config = await loadConfig(documentedConfig);
+
+    // The default launch is a value like any other; it is not a fallback for a
+    // selection that failed, and nothing else in the file can change it.
+    expect(config.agent).toEqual({ runtime: 'codex', command: ['codex'] });
+  });
+
+  it('keeps an explicit profile and model prefix exactly as it was written', async () => {
+    const command = [
+      'codex',
+      '--profile',
+      'deepseek',
+      '--model',
+      'deepseek-v4-pro',
+      '',
+      'a literal argument with spaces',
+    ];
+
+    const config = await loadConfig(configWith({ agent: { runtime: 'codex', command } }));
+
+    // Nothing is joined, reordered, expanded, or dropped: the harness does not
+    // know which of these arguments are paths, and it does not guess.
+    expect(config.agent).toEqual({ runtime: 'codex', command });
+  });
+
+  it('resolves a relative path-valued executable from the configuration file directory', async () => {
+    const directory = await createTempDir();
+    const nested = path.join(directory, 'inputs');
+    const configPath = await writeJsonFile(
+      nested,
+      'harness.config.json',
+      configWith({
+        agent: {
+          runtime: 'codex',
+          command: [path.join('.', 'tools', 'codex-launcher.cmd'), '--profile', 'deepseek'],
+        },
+      }),
+    );
+
+    const config = await loadHarnessConfig(configPath);
+
+    // Resolved once, against the file that named it, and the rest of the prefix
+    // is left alone: its arguments are interpreted by the launched program.
+    expect(config.agent.command).toEqual([
+      path.join(nested, 'tools', 'codex-launcher.cmd'),
+      '--profile',
+      'deepseek',
+    ]);
+    expect(process.cwd()).not.toBe(nested);
+  });
+
+  it('keeps an absolute executable and a bare name as they were written', async () => {
+    const directory = await createTempDir();
+    const absolute = path.join(directory, 'elsewhere', 'codex.exe');
+
+    const absoluteConfig = await loadConfig(
+      configWith({ agent: { runtime: 'codex', command: [absolute, '--model', 'x'] } }),
+    );
+    expect(absoluteConfig.agent.command).toEqual([absolute, '--model', 'x']);
+
+    // A bare name is not a path: the host launcher resolves it from PATH, as it
+    // resolves the executable of any other configured command.
+    const bareConfig = await loadConfig(
+      configWith({ agent: { runtime: 'codex', command: ['codex', '--model', 'x'] } }),
+    );
+    expect(bareConfig.agent.command).toEqual(['codex', '--model', 'x']);
   });
 });
 
