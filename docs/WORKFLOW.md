@@ -217,6 +217,8 @@ This example selects the native profile's default model. Preserve your existing 
 
 Status names must be distinct. `tokenEnv` must match `[A-Za-z_][A-Za-z0-9_]*`. Reject unknown fields, explicit nulls, whitespace-only names, and coercions. Only URL normalization/defaults are automatic; never silently choose another site or project. Static validation cannot prove remote access, workflow transitions, or issue visibility.
 
+These are the **canonical** Jira names (`Task`, `To Do`, `In Progress`, `In Review`), not the translations a site's language may display. The queue's JQL resolves the canonical names, and the connector asks Jira to answer in one language explicitly (`Accept-Language: en`) instead of leaving the choice to its HTTP client — JavaScript's `fetch` sends `accept-language: *`, which resolves to the site's default language and can make the answer disagree with the queue that produced it. Names the operator authored (a project, a label, a custom status) are returned as authored in every language.
+
 ### Credentials and endpoint routing
 
 Use a dedicated Atlassian **service account** with a scoped Jira API token. Resolve only `tokenEnv` for source commands; reject a missing or blank token. Send it as `Authorization: Bearer <token>`. Do not require or store a service-account email. Do not print the token, write it to configuration, or pass it to target commands/Codex. The harness is a direct Jira REST client, not a consumer of ChatGPT's Rovo login. [W1]

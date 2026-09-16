@@ -93,11 +93,17 @@ function fakeHttp(
         (headerValue(init.headers, 'authorization') === null
           ? []
           : [['authorization', headerValue(init.headers, 'authorization') ?? '']]
-        ).concat(
-          headerValue(init.headers, 'accept') === null
-            ? []
-            : [['accept', headerValue(init.headers, 'accept') ?? '']],
-        ),
+        )
+          .concat(
+            headerValue(init.headers, 'accept') === null
+              ? []
+              : [['accept', headerValue(init.headers, 'accept') ?? '']],
+          )
+          .concat(
+            headerValue(init.headers, 'accept-language') === null
+              ? []
+              : [['accept-language', headerValue(init.headers, 'accept-language') ?? '']],
+          ),
       ),
       body,
       signal: init.signal,
@@ -366,6 +372,50 @@ describe('the gateway route and the queue', () => {
       maxResults: 100,
       fields: ['summary', 'status', 'updated', 'labels', 'project', 'issuetype'],
     });
+  });
+
+  it('asks Jira for one language in every request, reads and writes alike', async () => {
+    // Live evidence, 2026-09-17: on a site whose default language is not English
+    // the queue matched an issue by its canonical names (`To Do`, `Task`) and the
+    // connector then refused it as stale, because the answer carried the site's
+    // own names (`待办`, `任务`). The language was never chosen here: JavaScript's
+    // `fetch` sends `accept-language: *`, which resolves to the site's default. So
+    // the connector asks explicitly, and this pins that it keeps doing so.
+    let moves = 0;
+    const http = fakeHttp((call) => {
+      if (call.url.includes('/search/jql')) {
+        return json({ issues: [issue()], isLast: true });
+      }
+      if (call.url.includes('/transitions') && call.method === 'GET') {
+        return json(moves === 0 ? TRANSITIONS_TO_PROGRESS : TRANSITIONS_TO_REVIEW);
+      }
+      if (call.url.includes('/transitions')) {
+        moves += 1;
+        return new Response(null, { status: 204 });
+      }
+      if (call.url.includes('/comment')) {
+        return json({ id: '50001' }, 201);
+      }
+      return json(issue({ status: moves === 0 ? 'To Do' : 'In Progress' }));
+    });
+    const source = createJiraSource(jiraConfig(), TOKEN, { fetch: http.fetch });
+    const stop = new AbortController().signal;
+
+    const [candidate] = await source.listEligible(stop);
+    if (candidate === undefined) {
+      throw new Error('the fixture queue was empty, and this test needs one issue');
+    }
+    const prepared = await preparedFor(source, candidate);
+    await expect(source.claim(prepared, stop)).resolves.toBe(true);
+    await source.complete(prepared, outcome(), stop);
+
+    // The whole cycle really ran: a search, an issue read, a transition, a
+    // comment, and the two transitions the connector uses to claim and to finish.
+    expect(http.calls.filter((call) => call.method === 'POST').length).toBeGreaterThanOrEqual(3);
+    expect(http.calls.every((call) => call.method === 'GET')).toBe(false);
+    expect(http.calls.map((call) => call.headers['accept-language'])).toEqual(
+      http.calls.map(() => 'en'),
+    );
   });
 
   it('consumes every page and de-duplicates immutable IDs', async () => {

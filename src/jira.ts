@@ -65,6 +65,21 @@ const ISSUE_FIELDS = 'summary,description,status,labels,project,issuetype,update
 /** The fields the enhanced search needs to build a candidate. */
 const SEARCH_FIELDS = ['summary', 'status', 'updated', 'labels', 'project', 'issuetype'];
 
+/**
+ * The language every request asks Jira to answer in.
+ *
+ * Jira renders the names of its built-in statuses and issue types in the language
+ * a request negotiates, while the queue's JQL resolves those same entities by
+ * their canonical names. A client that leaves the choice to its HTTP library gets
+ * neither reliably: JavaScript's `fetch` sends `accept-language: *`, which
+ * resolves to the site's default language, so on a site whose default is not
+ * English the connector would list an issue and then refuse it as no longer
+ * eligible — the names it read back are not the names the queue matched. Asking
+ * for one language explicitly makes both halves agree whatever the site's default
+ * is, and names the operator authored are returned as authored in every language.
+ */
+const ACCEPT_LANGUAGE = 'en';
+
 /** The gateway route of one configured site: where every call below is made. */
 export function jiraApiBaseUrl(config: JiraSourceConfig): string {
   return `${GATEWAY_ORIGIN}/${config.cloudId}`;
@@ -220,6 +235,8 @@ function createHttpClient(
       const headers: Record<string, string> = {
         Authorization: `Bearer ${token}`,
         Accept: 'application/json',
+        // Never `*`, and never nothing: see {@link ACCEPT_LANGUAGE}.
+        'Accept-Language': ACCEPT_LANGUAGE,
       };
       if (request.body !== undefined) {
         headers['Content-Type'] = 'application/json';
