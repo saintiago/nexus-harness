@@ -91,6 +91,8 @@ Two consequences for how a task is pushed:
 - Anything pushed as `task/<name>` is merged as soon as it is green. A change that should be read
   before it lands belongs on a branch named something else, with the pull request opened by hand.
 - `ci.yml` also runs on the branch push, so the same gate is visible twice for a task branch: once
-  as CI on the branch, once inside the workflow that merges it. The pull request's own
-  `pull_request` run does not happen — a pull request opened with `GITHUB_TOKEN` does not start
-  other workflows — so the check shown on it is the branch-push run.
+  as CI on the branch, once inside the workflow that merges it. The pull request itself also gets a
+  `pull_request` run of `ci.yml`, and that one is not worth reading: the workflow merges and deletes
+  its branch moments later, and the run then ends as a failure with no jobs at all — observed on
+  every merge the workflow has made so far (2026-09-17). The branch-push run is the one that ran the
+  gate.
