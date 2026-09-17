@@ -746,6 +746,9 @@ automation does and does not prove is written down in [docs/GIT-WORKFLOW.md](doc
   workflow language.
 - [docs/implement-task-source-connectors.md](docs/implement-task-source-connectors.md) — the
   assignment that added Jira intake, including the opt-in live exercise that has **not** been run.
+- [docs/implement-workspace-continuation.md](docs/implement-workspace-continuation.md) — the
+  contract for workspaces that outlive runs, the workspace pointer label, and the escalation ladder.
+  Its increments are not implemented yet.
 - [docs/harness.jira.example.json](docs/harness.jira.example.json) — a credential-free source
   configuration to copy.
 - [docs/GIT-WORKFLOW.md](docs/GIT-WORKFLOW.md) — how changes to this repository are made: one

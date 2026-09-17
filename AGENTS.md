@@ -8,6 +8,9 @@ Build and maintain a small, local-first coding harness. The documents in `docs/`
 - [architecture.md](docs/architecture.md): code ownership and extension points.
 - [WORKFLOW.md](docs/WORKFLOW.md): the loop, the JSON input contract, and the source CLI.
 - [implement-task-source-connectors.md](docs/implement-task-source-connectors.md): the Jira intake assignment, including the opt-in live exercise that has not been run.
+- [implement-workspace-continuation.md](docs/implement-workspace-continuation.md): the contract for
+  workspaces that outlive runs, the pointer label, and the escalation ladder. Increments 1-3 there
+  are not implemented yet.
 - [GIT-WORKFLOW.md](docs/GIT-WORKFLOW.md): how changes to this repository are made.
 - [README.md](README.md): the operating document for the person running the harness.
 
