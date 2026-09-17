@@ -11,6 +11,9 @@ Build and maintain a small, local-first coding harness. The documents in `docs/`
 - [implement-workspace-continuation.md](docs/implement-workspace-continuation.md): the contract for
   workspaces that outlive runs, the pointer label, and the escalation ladder. Increments 1-3 there
   are not implemented yet.
+- [LONG_TERM_VISION.md](docs/LONG_TERM_VISION.md): the direction the harness is meant to grow into.
+  It defines no behaviour: the spec stays authoritative, and every change to behaviour still needs a
+  task.
 - [GIT-WORKFLOW.md](docs/GIT-WORKFLOW.md): how changes to this repository are made.
 - [README.md](README.md): the operating document for the person running the harness.
 

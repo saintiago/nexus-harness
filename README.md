@@ -754,6 +754,9 @@ automation does and does not prove is written down in [docs/GIT-WORKFLOW.md](doc
 - [docs/implement-workspace-continuation.md](docs/implement-workspace-continuation.md) — the
   contract for workspaces that outlive runs, the workspace pointer label, and the escalation ladder.
   Its increments are not implemented yet.
+- [docs/LONG_TERM_VISION.md](docs/LONG_TERM_VISION.md) — the direction the harness is meant to grow
+  into. It defines no behaviour: [docs/spec.md](docs/spec.md) stays authoritative, and every change
+  still needs a task.
 - [docs/harness.jira.example.json](docs/harness.jira.example.json) — a credential-free source
   configuration to copy.
 - [docs/GIT-WORKFLOW.md](docs/GIT-WORKFLOW.md) — how changes to this repository are made: one
