@@ -699,9 +699,9 @@ async function armWhenImplementationTurnEnds(target: LiveTarget, stop: AbortSign
 /** The first run directory under the target's output directory, if one exists yet. */
 async function anyRunDirectory(target: LiveTarget): Promise<string | null> {
   try {
-    const entries = await readdir(target.workDir, { withFileTypes: true });
+    const entries = await readdir(path.join(target.workDir, 'runs'), { withFileTypes: true });
     const directory = entries.find((entry) => entry.isDirectory());
-    return directory === undefined ? null : path.join(target.workDir, directory.name);
+    return directory === undefined ? null : path.join(target.workDir, 'runs', directory.name);
   } catch {
     return null;
   }
@@ -942,7 +942,7 @@ export async function verifyImplementationExercise(
     }
   }
 
-  const workspace = path.join(runDir, 'workspace');
+  const workspace = report.workspace.path;
   expectTrue(
     problems,
     'the change is in the retained working copy (workspace/src/greet-all.mjs exists)',
@@ -1074,7 +1074,11 @@ export async function verifyRepairExercise(
 
   // The repair was a repair of the code, not of the check: the project's own
   // test is exactly as it was committed, and the injected defect is gone.
-  const workspace = path.join(runDir, 'workspace');
+  const workspace = path.join(
+    path.dirname(path.dirname(runDir)),
+    'workspaces',
+    path.basename(runDir),
+  );
   const testText = await readText(path.join(workspace, 'test', 'greet.test.mjs'));
   expectEqual(
     problems,

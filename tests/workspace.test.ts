@@ -623,14 +623,16 @@ describe('an allocated run directory', () => {
     expect(second.runId).not.toBe(first.runId);
     expect(second.runDir).not.toBe(first.runDir);
     for (const run of [first, second]) {
-      expect(path.relative(fixture.workDir, run.runDir)).toBe(run.runId);
-      expect(run.workspacePath).toBe(path.join(run.runDir, 'workspace'));
+      expect(path.relative(fixture.workDir, run.runDir)).toBe(path.join('runs', run.runId));
+      expect(run.workspacePath).toBe(path.join(fixture.workDir, 'workspaces', run.runId));
       expect(run.logsDir).toBe(path.join(run.runDir, 'logs'));
       expect(existsSync(run.logsDir)).toBe(true);
       // Allocating a directory clones nothing: that is the next step.
       expect(await readdir(run.workspacePath)).toEqual([]);
     }
-    expect((await readdir(fixture.workDir)).sort()).toEqual([first.runId, second.runId].sort());
+    // The evidence and the work it came from are siblings, so a later attempt can
+    // continue the workspace without moving or rewriting this run's report.
+    expect((await readdir(fixture.workDir)).sort()).toEqual(['runs', 'workspaces']);
   });
 
   it('leaves a run directory that already exists alone', async () => {
@@ -660,9 +662,9 @@ describe('an allocated run directory', () => {
       /never reused, resumed, or overwritten/,
     );
 
-    expect(error.message).toContain(path.join(fixture.workDir, taken.runId));
+    expect(error.message).toContain(path.join(fixture.workDir, 'runs', taken.runId));
     expect(await snapshotRepository(taken.workspacePath)).toEqual(before);
-    expect((await readdir(fixture.workDir)).sort()).toEqual([taken.runId]);
+    expect((await readdir(fixture.workDir)).sort()).toEqual(['runs', 'workspaces']);
   });
 
   it('refuses a generated name that is not a run ID, and creates nothing', async () => {
@@ -955,13 +957,16 @@ describe('task IDs as labels', () => {
       runs.push(prepared);
 
       expect(prepared.runId).toMatch(/^[A-Za-z0-9][A-Za-z0-9_-]*$/);
-      expect(path.dirname(prepared.runDir)).toBe(path.resolve(fixture.workDir));
+      expect(path.dirname(prepared.runDir)).toBe(path.join(path.resolve(fixture.workDir), 'runs'));
       expect(prepared.branch).toBe(`harness/${prepared.runId}`);
       expect(prepared.runDir).not.toContain('evil');
       expect(await headOf(prepared.workspacePath)).toBe(source.baseCommit);
     }
 
-    expect((await readdir(fixture.workDir)).sort()).toEqual(
+    expect((await readdir(path.join(fixture.workDir, 'runs'))).sort()).toEqual(
+      runs.map((prepared) => prepared.runId).sort(),
+    );
+    expect((await readdir(path.join(fixture.workDir, 'workspaces'))).sort()).toEqual(
       runs.map((prepared) => prepared.runId).sort(),
     );
     expect((await readdir(fixture.parent)).sort()).toEqual([...before, 'runs'].sort());

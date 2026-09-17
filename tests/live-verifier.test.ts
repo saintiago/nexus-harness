@@ -595,7 +595,10 @@ describe('the exercises, through the stand-in runtime boundary', () => {
 
       const turns = await fakeTurns(state);
       expect(turns).toHaveLength(1);
-      expect(turns[0]?.cwd).toBe(path.join(run.runDir ?? '', 'workspace'));
+      const runDir = run.runDir ?? '';
+      expect(turns[0]?.cwd).toBe(
+        path.join(path.dirname(path.dirname(runDir)), 'workspaces', path.basename(runDir)),
+      );
       // The turn the verifier asserted on was the adapter's own invocation, with
       // the documented arguments, in the working copy — the stand-in is only what
       // the name `codex` resolved to.

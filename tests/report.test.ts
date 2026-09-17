@@ -796,11 +796,7 @@ describe('what writing a report leaves alone', () => {
     expect(file).toBe(runReportPath(fixture.run.runDir));
     expect(await readTree(fixture.run.workspacePath)).toEqual(workspaceBefore);
     expect(await readTree(other.runDir)).toEqual(otherBefore);
-    expect((await readdir(fixture.run.runDir)).sort()).toEqual([
-      'logs',
-      'result.json',
-      'workspace',
-    ]);
+    expect((await readdir(fixture.run.runDir)).sort()).toEqual(['logs', 'result.json']);
     expect(await readText(path.join(other.runDir, 'result.json'))).toBe(
       '{"runId":"an earlier run"}\n',
     );
@@ -830,7 +826,7 @@ describe('a report that cannot be written', () => {
     expect(existsSync(path.join(blocked, 'result.json'))).toBe(false);
     expect(await readText(blocked)).toBe('a file, not a run directory\n');
     // The real run directory is untouched: no half-written report was left in it.
-    expect((await readdir(fixture.run.runDir)).sort()).toEqual(['logs', 'workspace']);
+    expect((await readdir(fixture.run.runDir)).sort()).toEqual(['logs']);
   }, 60_000);
 
   it('refuses to overwrite a report that is already there', async () => {
