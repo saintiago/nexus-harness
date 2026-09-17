@@ -1,9 +1,35 @@
 # Windows fixture flakes, recorded for later investigation
 
-**Status: open.** Observed twice, not diagnosed, and deliberately not worked around. No test was
-weakened, skipped, or reordered to hide this. Both failures happened during full `npm run validate` /
-`npx vitest run` runs on Windows on 2026-09-16 and 2026-09-17, and never in an isolated run of the
-file involved.
+**Status: failure 2 addressed, failure 1 still open.** No test was weakened, skipped, or reordered to
+hide either. Failures 1 and 2 happened during full `npm run validate` / `npx vitest run` runs on
+Windows on 2026-09-16 and 2026-09-17, and never in an isolated run of the file involved.
+
+Since this note was written, failure 2 fired in a real harness run (HARN-1,
+`run-20260916225121-f3d4a6e4`): the post-agent `npm run validate` reported exactly this assertion
+after a 36-minute implementation turn, the repair turn then spent the remaining budget on it, and the
+run's task deadline (60 minutes) cut that repair off. The run was reported as failed, with a reason
+about the deadline rather than about its checks. The leftover was named this time:
+
+```
+AssertionError: fixture processes still running after the suite: expected [ Array(1) ] to deeply equal []
+  pid 15616 of a fixture runtime recorded in C:\Users\User\AppData\Local\Temp\nexus-harness-Uwgvde\fake-runtime-state\turns.jsonl
+```
+
+## Failure 2: the check now asks a beacon, not a PID
+
+The teardown decided liveness from a recorded PID, and on Windows a PID is handed to a new process
+within seconds of the process that held it ending — so the answer could be about the wrong process in
+either direction. Each fixture invocation now answers, while it runs, on a liveness beacon
+(`tests/fixtures/fake-codex.mjs`) named by a random token it records in `turns.jsonl` once its
+listener is up; the suite asks that token instead (`fixtureProcessGone`,
+`tests/fixtures/local-target.ts`), and `tests/fixture-beacon.test.ts` pins the contract: it answers
+while the process runs, falls silent when that process is gone, answers for its own token alone, and a
+probe never ends the process it asks about. A record that carries no token is still checked by PID
+rather than skipped.
+
+What this does and does not establish: a leftover reported from here on is a real surviving process,
+not a recycled PID — the message says which question was asked. It does not prove the flake is gone;
+the evidence is the mechanism and repeated full-suite runs, not a reproduction that no longer happens.
 
 ## What failed
 
@@ -13,7 +39,7 @@ and is not waited for`. The failing assertion was `expect(result.outcome).toBe('
    value was not captured: the console output was truncated before vitest printed the failure block,
    and a re-run did not reproduce it.
 
-2. `tests/cli.integration.test.ts` teardown, twice:
+2. `tests/cli.integration.test.ts` teardown, three times:
 
    ```
    AssertionError: fixture processes still running after the suite:
@@ -22,13 +48,14 @@ and is not waited for`. The failing assertion was `expect(result.outcome).toBe('
    ```
 
    Every test in the file passed (the whole gate showed 424 passed, 1 skipped) and only the
-   after-all cleanup assertion failed: one fixture process that the harness should have stopped was
-   still alive when the suite ended.
+   after-all cleanup assertion failed: one process recorded as a fixture runtime was still reported
+   at teardown. Whether that process really was the fixture, or the PID had been reused by something
+   else, was exactly what could not be told apart — see below.
 
 ## How often, and under what conditions
 
-- Six full-suite runs on Windows: two failures (one of each kind), four green, including a green
-  re-run immediately after each failure.
+- Seven full-suite runs on Windows: three failures (two of failure 2, one of failure 1), four green,
+  including a green re-run immediately after each failure.
 - `npx vitest run tests/checks.test.ts` six times in a row: six green.
 - Both failures happened while vitest ran several test files in parallel, which is the only condition
   they have been seen in.
@@ -64,8 +91,9 @@ race under load, but nothing below has been established yet.
 - A fixture process starts but dies or wedges before recording its `start` event, so the surrounding
   test classifies the command through a different path than the one it expects (candidate for
   failure 1).
-- Teardown samples leftovers too early rather than a stop that never happened (candidate for
-  failure 2).
+- Teardown samples leftovers too early rather than a stop that never happened: for failure 2 this is
+  now answered by the beacon above, and it was the reading of a bare PID that could not tell the two
+  apart in the first place.
 
 Each is checkable from the captures above. None is established, and none should be fixed by relaxing
 an assertion: the assertions are the only thing that noticed.

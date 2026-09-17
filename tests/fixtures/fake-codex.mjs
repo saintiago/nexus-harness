@@ -13,7 +13,8 @@
  * stream on standard output. Two records are kept for the suite to read back:
  *
  *   turns.jsonl          one line per invocation: the arguments the adapter used,
- *                        the working directory, and the prompt in full
+ *                        the working directory, the prompt in full, and the
+ *                        beacon tokens of this process and of its own child
  *   runtime-events.jsonl one line per event: what the turn did, and which
  *                        interrupts arrived, and when
  *
@@ -29,6 +30,10 @@
  * is not saved by these handlers in practice — measured, not assumed: the harness
  * starts its runtime without a console on Windows, and in a process group of its
  * own elsewhere, so the interrupt never reaches this process at all.
+ *
+ * While it runs, every invocation answers on a liveness beacon named by a token
+ * only that process recorded. The suite asks the beacon, never a bare PID,
+ * whether the process a turn recorded is still there.
  */
 
 import {
@@ -40,6 +45,8 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { spawn } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
+import { connect, createServer } from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -53,6 +60,69 @@ const record = (event, extra = {}) =>
   appendFileSync(eventsFile, `${JSON.stringify({ event, at: Date.now(), ...extra })}\n`, 'utf8');
 const emit = (one) => process.stdout.write(`${JSON.stringify(one)}\n`);
 
+/** A fresh token, unique to one fixture process. */
+const randomToken = () => randomBytes(8).toString('hex');
+
+/** Where one process's beacon answers: a named pipe on Windows, a socket elsewhere. */
+const beaconAddress = (token) =>
+  process.platform === 'win32'
+    ? `\\\\.\\pipe\\nexus-fixture-${token}`
+    : path.join(stateDir, 'beacons', `${token}.sock`);
+
+/**
+ * Answers while this process runs, at an address named by a token only this
+ * process records. The suite asks the beacon, never a bare PID, whether the
+ * process a turn recorded is still there: on Windows a PID is reused within
+ * seconds of the process that held it ending, so a PID that looks alive is not
+ * evidence that this process is. The server never keeps this process alive and
+ * never ends a turn.
+ */
+function startBeacon(token) {
+  if (process.platform !== 'win32') {
+    mkdirSync(path.dirname(beaconAddress(token)), { recursive: true });
+  }
+  const server = createServer((socket) => {
+    // A client that has already gone — which is exactly what a liveness check
+    // does the moment it has its answer — must never end this process: a write
+    // failure here would turn a check into a kill.
+    socket.on('error', () => undefined);
+    socket.end(`${token}\n`);
+  });
+  // A beacon that could not be created is not a failed turn either.
+  server.on('error', () => undefined);
+  // The listener is not a reason for this process to stay alive.
+  server.unref();
+  const ready = new Promise((resolve) => {
+    server.once('listening', resolve);
+    server.once('error', resolve);
+  });
+  server.listen(beaconAddress(token));
+  return ready;
+}
+
+/** Connects to one beacon until it answers, or gives up: does it answer at all? */
+function beaconAnswers(token, timeoutMs) {
+  return new Promise((resolve) => {
+    const deadline = Date.now() + timeoutMs;
+    const attempt = () => {
+      const socket = connect(beaconAddress(token));
+      socket.on('error', () => {
+        socket.destroy();
+        if (Date.now() >= deadline) {
+          resolve(false);
+          return;
+        }
+        setTimeout(attempt, 25);
+      });
+      socket.once('connect', () => {
+        socket.destroy();
+        resolve(true);
+      });
+    };
+    attempt();
+  });
+}
+
 for (const signal of ['SIGINT', 'SIGTERM', 'SIGBREAK']) {
   process.on(signal, () => record('signal', { signal, pid: process.pid }));
 }
@@ -65,10 +135,19 @@ if (process.argv.includes('--version')) {
   process.exit(0);
 }
 
-if (process.argv.includes('--hold')) {
+// This process's own token, and the token its holding child is given: both are
+// recorded in turns.jsonl, so the suite can ask each process itself whether it
+// is gone rather than asking a PID that may now belong to something else.
+const holdFlag = process.argv.indexOf('--hold');
+const beaconToken = holdFlag >= 0 ? (process.argv[holdFlag + 1] ?? randomToken()) : randomToken();
+const beaconReady = startBeacon(beaconToken);
+
+if (holdFlag >= 0) {
   // The process a holding turn manages. It never ends on its own, so a stop that
   // did not reach it stays visible as a live PID after the run has ended.
-  record('hold-start', { pid: process.pid });
+  void beaconReady.then(() => {
+    record('hold-start', { pid: process.pid, token: beaconToken });
+  });
   setInterval(() => {}, 250);
 } else {
   let prompt = '';
@@ -77,11 +156,11 @@ if (process.argv.includes('--hold')) {
     prompt += chunk;
   });
   process.stdin.on('end', () => {
-    run(prompt);
+    void run(prompt);
   });
 }
 
-function run(prompt) {
+async function run(prompt) {
   const seen = existsSync(turnsFile)
     ? readFileSync(turnsFile, 'utf8')
         .split('\n')
@@ -89,14 +168,25 @@ function run(prompt) {
     : 0;
   const plan = (config.plans ?? [])[seen] ?? {};
   const holdMs = Number(plan.holdMs ?? 0);
-  const hold = holdMs > 0 ? spawn(process.execPath, [self, '--hold'], { stdio: 'ignore' }) : null;
+  const holdToken = holdMs > 0 ? randomToken() : null;
+  const hold =
+    holdToken === null
+      ? null
+      : spawn(process.execPath, [self, '--hold', holdToken], { stdio: 'ignore' });
+  // The record names the child's beacon only once that beacon answers, so a
+  // recorded token always names a listener that exists.
+  const childAnswers = holdToken === null ? false : await beaconAnswers(holdToken, 10_000);
+  // This process's own beacon, before the record that names it.
+  await beaconReady;
 
   appendFileSync(
     turnsFile,
     `${JSON.stringify({
       index: seen,
       pid: process.pid,
+      pidToken: beaconToken,
       child: hold === null ? null : hold.pid,
+      childToken: childAnswers ? holdToken : null,
       cwd: process.cwd(),
       argv: process.argv.slice(2),
       prompt,
