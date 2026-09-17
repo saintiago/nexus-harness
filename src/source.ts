@@ -41,7 +41,7 @@ import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { RunCancelledError } from './runner.js';
 import type { RunTaskResult } from './runner.js';
-import type { RunStatus, SourceRef, Task } from './types.js';
+import type { AttemptEvidence, RunStatus, SourceRef, Task } from './types.js';
 import type { PreflightRequest, SourcePreflight } from './workspace.js';
 
 /** How a source failed, in the few categories the coordinator acts on. */
@@ -464,16 +464,40 @@ function runOutcome(result: RunTaskResult): SourceRunOutcome {
   };
 }
 
-/** One line about the checks that decided a run, or that none were observed. */
+/**
+ * One line about the checks that decided a run, or that none were observed.
+ *
+ * A stopped run's last turn carries no round: it was stopped before any check
+ * could run after it. Falling back to the baseline there describes the round the
+ * run started with as if it were the one that decided it — a live run over HARN-1
+ * (`run-20260916225121-f3d4a6e4`) reported `round: passed` for a run whose
+ * post-agent round was red, because the stopped repair turn had no checks to
+ * report — so this line names the last round that really ran, and says that
+ * nothing ran after the turn that was stopped.
+ */
 function checkSummary(result: RunTaskResult): string {
-  const round = result.attempts.at(-1)?.checks ?? result.baseline;
-  if (round === null || round === undefined) {
-    return 'no check round was completed for this run';
+  const lastTurn = result.attempts.at(-1);
+  const observed =
+    [...result.attempts].reverse().find((attempt) => attempt.checks !== null)?.checks ??
+    result.baseline;
+  const line =
+    observed === null
+      ? 'no check round was completed for this run'
+      : `${String(
+          observed.checks.filter((entry) => entry.outcome === 'exited' && entry.exitCode === 0)
+            .length,
+        )} of ${String(observed.checks.length)} configured checks exited 0 (round: ${observed.outcome})`;
+  if (lastTurn === undefined || lastTurn.checks !== null) {
+    return line;
   }
-  const passed = round.checks.filter(
-    (entry) => entry.outcome === 'exited' && entry.exitCode === 0,
-  ).length;
-  return `${String(passed)} of ${String(round.checks.length)} configured checks exited 0 (round: ${round.outcome})`;
+  return `${line}; no check round was observed after ${nameTurn(lastTurn)}`;
+}
+
+/** How the feedback names one top-level coding turn, as the run's reasons name it. */
+function nameTurn(attempt: AttemptEvidence): string {
+  return attempt.kind === 'implementation'
+    ? 'the implementation turn'
+    : `repair turn ${String(attempt.turn)}`;
 }
 
 /** The receipt as a one-line summary for the terminal. */

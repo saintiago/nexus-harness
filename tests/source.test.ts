@@ -44,7 +44,17 @@ import type {
   TaskSource,
 } from '../src/source.js';
 import type { RunDirectory } from '../src/workspace.js';
-import type { RunStatus, SourceRef, Task } from '../src/types.js';
+import type {
+  AttemptEvidence,
+  AttemptKind,
+  CheckRoundResult,
+  CommandOutcome,
+  CommandResult,
+  RoundOutcome,
+  RunStatus,
+  SourceRef,
+  Task,
+} from '../src/types.js';
 import {
   cleanupTempDirectories,
   createTempDir,
@@ -86,6 +96,45 @@ function runDirectoryAt(runDir: string): RunDirectory {
     runDir,
     workspacePath: path.join(runDir, 'workspace'),
     logsDir: path.join(runDir, 'logs'),
+  };
+}
+
+/** One command result, as far as the checks line reads it. */
+function commandFor(outcome: CommandOutcome, exitCode: number | null): CommandResult {
+  return {
+    command: ['npm', 'run', 'validate'],
+    cwd: '/repo',
+    startedAt: '2026-09-16T22:00:00.000Z',
+    endedAt: '2026-09-16T22:01:00.000Z',
+    outcome,
+    exitCode,
+    signal: null,
+    launchError: null,
+    timeoutMs: 600_000,
+    termination: null,
+    terminationProblem: null,
+    stdoutPath: '/repo/logs/check.stdout.log',
+    stderrPath: '/repo/logs/check.stderr.log',
+  };
+}
+
+/** One completed round with a single check, as the checks line reads it. */
+function roundFor(outcome: RoundOutcome, exitCode: number | null): CheckRoundResult {
+  return { outcome, setup: [], checks: [commandFor('exited', exitCode)], problem: null };
+}
+
+/** One coding turn's evidence, as the runner records it. */
+function attemptFor(
+  turn: number,
+  kind: AttemptKind,
+  checks: CheckRoundResult | null,
+): AttemptEvidence {
+  return {
+    turn,
+    kind,
+    agentLog: `/repo/logs/agent-${String(turn)}.log`,
+    agentSummary: null,
+    checks,
   };
 }
 
@@ -467,6 +516,47 @@ describe('a finite source run', () => {
     expect(fixture.completions).toHaveLength(1);
     expect(feedbackSignals[0]?.aborted).toBe(false);
     expect(fixture.log).not.toContain('run:SAM1-2');
+  });
+
+  it('describes the last round that ran, not the baseline, when the final turn was stopped', async () => {
+    // A live run over HARN-1 (run-20260916225121-f3d4a6e4) had its repair turn cut
+    // off by the task deadline, and its published feedback reported the round the
+    // run had started with: the stopped turn carried no checks, and the line fell
+    // back to the baseline. A reader of a failed run needs the opposite.
+    const workDir = await createTempDir();
+    const fixture = createFixture({
+      workDir,
+      scans: [[candidateFor('1')]],
+      run: (_task, _call, runDir) =>
+        Promise.resolve({
+          ...resultFor(
+            runDir,
+            'failed',
+            "repair turn 2 was stopped when the run's remaining task time ran out",
+          ),
+          baseline: roundFor('passed', 0),
+          attempts: [
+            attemptFor(1, 'implementation', roundFor('failed', 1)),
+            attemptFor(2, 'repair', null),
+          ],
+          repairsUsed: 1,
+          timeout: {
+            limit: 'task',
+            phase: 'repair turn 2',
+            limitMs: 3_600_000,
+            elapsedMs: 3_600_113,
+            termination: 'confirmed',
+            problem: null,
+          },
+        }),
+    });
+
+    await runSource(fixture.context, null);
+
+    expect(fixture.completions).toHaveLength(1);
+    expect(fixture.completions[0]?.outcome.checks).toBe(
+      '0 of 1 configured checks exited 0 (round: failed); no check round was observed after repair turn 2',
+    );
   });
 
   it('posts nothing when a stopped run could not confirm its own termination', async () => {

@@ -337,8 +337,10 @@ skipped; it is never guessed at and never launched.
 status. When the run ends — `passed`, `failed`, or `cancelled` alike — one compact comment carries
 the run ID, the exact outcome and reason, the check summary, the repairs used, and the local
 artifact paths, and the issue moves to the review status. `In Review` means "a local attempt
-finished and needs a human", not success. **Nothing here moves an issue to Done**, and nothing
-commits, merges, or publishes anything.
+finished and needs a human", not success. The check summary names the last round that ran, and says
+so in as many words when the run was stopped before any round followed its last turn: a stopped turn
+has no checks to report, and the round the run started with is not one. **Nothing here moves an
+issue to Done**, and nothing commits, merges, or publishes anything.
 
 **Nothing runs twice.** `.intake/receipts/<hash>.json` under `workDir` records each attempted issue
 by its immutable ID, and a receipt is created **before** the issue is claimed. A receipt survives a
