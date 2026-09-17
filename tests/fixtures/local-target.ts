@@ -28,6 +28,7 @@ import type { ChildProcess } from 'node:child_process';
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import { chmod, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
+import { connect } from 'node:net';
 import path from 'node:path';
 import { createTempDir, repoRoot, writeJsonFile } from '../support.js';
 
@@ -249,7 +250,11 @@ export interface FakePlan {
 export interface FakeTurn {
   readonly index: number;
   readonly pid: number;
+  /** The beacon token of the process itself: see {@link fixtureProcessGone}. */
+  readonly pidToken: string | null;
   readonly child: number | null;
+  /** The beacon token of the child the turn started, if it started one. */
+  readonly childToken: string | null;
   readonly cwd: string;
   readonly argv: readonly string[];
   readonly prompt: string;
@@ -621,6 +626,53 @@ export function stillRunning(pid: number): boolean {
 /** Whether a process is gone. A PID that cannot be signalled is not running. */
 export function processGone(pid: number): boolean {
   return !stillRunning(pid);
+}
+
+/** Where a fixture process's beacon answers, named by the token it recorded. */
+function beaconAddress(state: FakeState, token: string): string {
+  return process.platform === 'win32'
+    ? `\\\\.\\pipe\\nexus-fixture-${token}`
+    : path.join(state.dir, 'beacons', `${token}.sock`);
+}
+
+/**
+ * Whether the fixture process that recorded this beacon token is gone.
+ *
+ * A recorded PID cannot answer that on this platform: Windows hands a PID to a
+ * new process within seconds of the process that held it ending, so a PID that
+ * looks alive is not evidence that the process a turn recorded still is. The
+ * beacon is named by a token only that one process recorded, and the fixture
+ * writes the token down only once its listener answers, so a recorded token
+ * always names a listener that exists. A beacon that neither answers nor refuses
+ * within the grace below counts as still there — a process that is there but not
+ * answering is still there — so nothing is quietly reported as stopped.
+ */
+export async function fixtureProcessGone(state: FakeState, token: string): Promise<boolean> {
+  return await new Promise<boolean>((resolve) => {
+    const socket = connect(beaconAddress(state, token));
+    let settled = false;
+    const finish = (gone: boolean): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      socket.destroy();
+      resolve(gone);
+    };
+    const timer = setTimeout(() => {
+      finish(false);
+    }, 5000);
+    socket.once('connect', () => {
+      finish(false);
+    });
+    socket.once('error', (cause) => {
+      const code = (cause as NodeJS.ErrnoException).code;
+      // Nothing is listening there any more. Any other failure is not an answer
+      // that the process is gone, and is not read as one.
+      finish(code === 'ENOENT' || code === 'ECONNREFUSED');
+    });
+  });
 }
 
 /** Removes a fixture directory, tolerating a file another process still holds. */

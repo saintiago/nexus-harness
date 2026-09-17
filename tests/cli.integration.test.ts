@@ -30,6 +30,7 @@ import {
   fakeEvents,
   fakeRuntimeUsed,
   fakeTurns,
+  fixtureProcessGone,
   git,
   interruptCli,
   processGone,
@@ -136,16 +137,38 @@ beforeAll(() => {
   expect(existsSync(BUILT_CLI), BUILT_CLI).toBe(true);
 });
 
+/**
+ * A fixture's recorded beacon token, or `null` when the record carries none — a
+ * record written before the beacon existed, say. A process without a token is
+ * still checked, by PID, rather than skipped.
+ */
+function recordedBeaconToken(value: string | null | undefined): string | null {
+  return typeof value === 'string' && value !== '' ? value : null;
+}
+
 afterAll(async () => {
   // A run stops what it started; a fixture process still alive here is a defect
-  // worth failing for, not something to clean up quietly.
+  // worth failing for, not something to clean up quietly. Each process is asked
+  // itself, through the beacon it recorded, rather than asked for by PID: a PID
+  // is reused long before a suite this size ends. A record whose beacon never
+  // answered is still checked by PID.
   const leftovers: string[] = [];
   for (const target of targets) {
     for (const turn of await fakeTurns(target.state)) {
-      for (const pid of [turn.pid, turn.child]) {
-        if (pid !== null && !processGone(pid)) {
+      const recorded: readonly (readonly [number | null, string | null])[] = [
+        [turn.pid, recordedBeaconToken(turn.pidToken)],
+        [turn.child, recordedBeaconToken(turn.childToken)],
+      ];
+      for (const [pid, token] of recorded) {
+        if (pid === null) {
+          continue;
+        }
+        const gone =
+          token === null ? processGone(pid) : await fixtureProcessGone(target.state, token);
+        if (!gone) {
           leftovers.push(
-            `pid ${String(pid)} of a fixture runtime recorded in ${target.state.turnsFile}`,
+            `pid ${String(pid)} of a fixture runtime recorded in ${target.state.turnsFile} ` +
+              `(asked at ${token === null ? 'its PID' : 'its beacon'})`,
           );
         }
       }
@@ -636,9 +659,16 @@ describe('the built CLI, end to end', () => {
       expect(turns).toHaveLength(1);
       const turn = turns[0];
       expect(turn?.child).not.toBeNull();
-      expect(processGone(turn?.pid ?? 0), `the runtime process ${String(turn?.pid)}`).toBe(true);
+      // Each process is asked itself, through the token it recorded: the answer
+      // must be about these processes, not about whatever holds their PIDs now.
+      expect(turn?.pidToken).toBeTruthy();
+      expect(turn?.childToken).toBeTruthy();
       expect(
-        processGone(turn?.child ?? 0),
+        await fixtureProcessGone(target.state, turn?.pidToken ?? ''),
+        `the runtime process ${String(turn?.pid)}`,
+      ).toBe(true);
+      expect(
+        await fixtureProcessGone(target.state, turn?.childToken ?? ''),
         `the runtime's own process ${String(turn?.child)}`,
       ).toBe(true);
 
