@@ -52,9 +52,13 @@ export interface SourcePreflight {
 export interface RunDirectory {
   /** Generated run ID: the run's name in logs, reports, and its branch. Never task text. */
   readonly runId: string;
-  /** `<workDir>/<runId>`: everything this run produces. */
+  /** `<workDir>/runs/<runId>`: the evidence this attempt produces. */
   readonly runDir: string;
-  /** `<runDir>/workspace`: the clone the task is implemented in. */
+  /**
+   * `<workDir>/workspaces/<runId>`: the clone this run creates, beside its own
+   * evidence rather than inside it, so a later attempt can continue it while this
+   * attempt's report stays where it was written.
+   */
   readonly workspacePath: string;
   /** `<runDir>/logs`: command output and the run timeline. */
   readonly logsDir: string;
@@ -431,31 +435,49 @@ function incompleteRunError(run: RunDirectory, problem: string, cause?: unknown)
   );
 }
 
+/** Where one attempt's evidence lives: `<workDir>/runs/<runId>`. */
+export function runDirPathFor(workDir: string, runId: string): string {
+  return path.join(path.resolve(workDir), 'runs', runId);
+}
+
+/** Where one workspace lives: `<workDir>/workspaces/<workspaceId>`. */
+export function workspacePathFor(workDir: string, workspaceId: string): string {
+  return path.join(path.resolve(workDir), 'workspaces', workspaceId);
+}
+
 /**
- * Allocates `<workDir>/<runId>`, `<runDir>/workspace`, and `<runDir>/logs`. The
- * run ID is generated, so no part of the layout comes from task text, and the
- * run directory is created exclusively: an existing one is never reused or
- * overwritten, a different ID is generated instead. Allocation itself clones
- * nothing.
+ * Allocates `<workDir>/runs/<runId>`, `<workDir>/workspaces/<runId>`, and
+ * `<runDir>/logs`. The run ID is generated, so no part of the layout comes from
+ * task text, and both directories named after it are created exclusively: an
+ * existing run directory or workspace is never reused, resumed, or overwritten,
+ * and a different ID is generated instead. Allocation itself clones nothing.
+ *
+ * The workspace sits beside the evidence rather than inside it, so a later
+ * attempt can continue it once there is a reason to
+ * (docs/implement-workspace-continuation.md); this run's own report and logs stay
+ * where they were written either way.
  */
 export async function allocateRunDirectory(
   workDir: string,
   generateRunId: () => string = newRunId,
 ): Promise<RunDirectory> {
   const outputDir = path.resolve(workDir);
+  const runsRoot = path.join(outputDir, 'runs');
+  const workspacesRoot = path.join(outputDir, 'workspaces');
   let attempted = outputDir;
 
   for (let attempt = 1; attempt <= MAX_RUN_ID_ATTEMPTS; attempt += 1) {
     const runId = generateRunId();
     assertUsableRunId(runId);
 
-    const runDir = path.join(outputDir, runId);
-    const workspacePath = path.join(runDir, 'workspace');
+    const runDir = path.join(runsRoot, runId);
+    const workspacePath = path.join(workspacesRoot, runId);
     const logsDir = path.join(runDir, 'logs');
     attempted = runDir;
 
     try {
-      await mkdir(outputDir, { recursive: true });
+      await mkdir(runsRoot, { recursive: true });
+      await mkdir(workspacesRoot, { recursive: true });
     } catch (cause) {
       throw new WorkspaceError(
         `the output directory "${outputDir}" cannot be created: ${messageOf(cause)}`,
@@ -463,10 +485,14 @@ export async function allocateRunDirectory(
     }
 
     try {
+      // The workspace first: a name that is already taken leaves nothing behind.
+      await mkdir(workspacePath);
       await mkdir(runDir);
     } catch (cause) {
       // The only expected failure is a name that is already taken, which is
-      // another run's directory: leave it alone and try a different ID.
+      // another run's directory or its workspace: leave it alone and try a
+      // different ID. A name taken between the two calls above leaves one empty
+      // directory behind, which is never reused either.
       if ((cause as NodeJS.ErrnoException).code === 'EEXIST') {
         continue;
       }
@@ -477,7 +503,6 @@ export async function allocateRunDirectory(
 
     const run: RunDirectory = { runId, runDir, workspacePath, logsDir };
     try {
-      await mkdir(workspacePath);
       await mkdir(logsDir);
     } catch (cause) {
       throw incompleteRunError(

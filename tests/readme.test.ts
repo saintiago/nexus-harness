@@ -242,7 +242,7 @@ async function followTheDocument(plans: readonly FakePlan[] = []): Promise<Docum
     project,
     configPath: path.join(parent, 'harness', 'harness.config.json'),
     taskPath: path.join(parent, 'harness', 'task.json'),
-    workDir: path.join(parent, 'harness', 'runs'),
+    workDir: path.join(parent, 'harness'),
     argv: documentedArguments(demo, 'run').map((argument) => withRoots(argument, parent)),
     state,
     env: {
@@ -296,9 +296,11 @@ describe('the documented disposable example', () => {
 
     // And the output directory the document chose is outside the source, which
     // is what makes the example safe to follow.
-    expect(document.workDir).toBe(path.join(document.parent, 'harness', 'runs'));
+    expect(document.workDir).toBe(path.join(document.parent, 'harness'));
     expect(document.workDir.startsWith(`${document.project}${path.sep}`)).toBe(false);
-    expect(existsSync(document.workDir)).toBe(false);
+    // The configuration lives there; the run's own directories do not exist yet.
+    expect(existsSync(path.join(document.workDir, 'runs'))).toBe(false);
+    expect(existsSync(path.join(document.workDir, 'workspaces'))).toBe(false);
   });
 
   it(
@@ -332,33 +334,31 @@ describe('the documented disposable example', () => {
       expect(outcomeLine(run.stdout, 'repairs')).toContain('0 of 2 repair turns used');
 
       // The shown block is internally the layout the document describes: a run ID
-      // of the documented shape, and the working copy and report inside that run's
-      // own directory. A hand-edited or stale block fails here.
+      // of the documented shape, the report inside that run's own directory, and
+      // the working copy beside it. A hand-edited or stale block fails here.
       const shown = documentedOutcomeBlock(demo);
       const shownId = /^run (\S+): \S+$/m.exec(shown)?.[1] ?? '';
       expect(shownId).toMatch(/^run-\d{14}-[0-9a-f]{8}$/);
       const shownDir = `${DOCUMENTED_ROOT}/harness/runs/${shownId}`;
+      const shownWorkspace = `${DOCUMENTED_ROOT}/harness/workspaces/${shownId}`;
       expect(outcomeLine(shown, 'run dir')).toBe(shownDir);
-      expect(outcomeLine(shown, 'workspace')).toBe(
-        `${shownDir}/workspace (branch harness/${shownId})`,
-      );
+      expect(outcomeLine(shown, 'workspace')).toBe(`${shownWorkspace} (branch harness/${shownId})`);
       expect(outcomeLine(shown, 'report')).toBe(`${shownDir}/result.json`);
       expect(outcomeLine(shown, 'reason')).toBe(outcomeLine(run.stdout, 'reason'));
       expect(outcomeLine(shown, 'repairs')).toBe(outcomeLine(run.stdout, 'repairs'));
 
-      // The layout: `<workDir>/<runId>`, with the working copy, the logs, and the
-      // report inside it, and the working copy on a branch of its own.
+      // The layout: `<workDir>/runs/<runId>` for the logs and the report, and the
+      // working copy beside them in `<workDir>/workspaces/<runId>`, on a branch of
+      // its own.
       const runDir = outcomeLine(run.stdout, 'run dir') ?? '';
       const runId = path.basename(runDir);
-      expect(path.dirname(runDir)).toBe(document.workDir);
+      const workspace = path.join(document.workDir, 'workspaces', runId);
+      expect(path.dirname(runDir)).toBe(path.join(document.workDir, 'runs'));
       expect(runId).toMatch(/^run-\d{14}-[0-9a-f]{8}$/);
-      expect(outcomeLine(run.stdout, 'workspace')).toBe(
-        `${path.join(runDir, 'workspace')} (branch harness/${runId})`,
-      );
+      expect(outcomeLine(run.stdout, 'workspace')).toBe(`${workspace} (branch harness/${runId})`);
       expect(outcomeLine(run.stdout, 'report')).toBe(path.join(runDir, 'result.json'));
 
       for (const kept of [
-        ['workspace'],
         ['result.json'],
         ['logs', 'run.log'],
         ['logs', 'agent-implementation.log'],
@@ -368,6 +368,7 @@ describe('the documented disposable example', () => {
       ]) {
         expect(existsSync(path.join(runDir, ...kept)), kept.join('/')).toBe(true);
       }
+      expect(existsSync(workspace)).toBe(true);
 
       // The report agrees with what was printed, and with the document's inputs.
       const report = await readReport(runDir);
@@ -379,7 +380,7 @@ describe('the documented disposable example', () => {
       expect(report.task.id).toBe('greet-all');
       expect(report.source.path).toBe(document.project);
       expect(report.source.baseCommit).toBe(git(document.project, 'rev-parse', 'HEAD').trim());
-      expect(report.workspace.path).toBe(path.join(runDir, 'workspace'));
+      expect(report.workspace.path).toBe(workspace);
       expect(report.workspace.branch).toBe(`harness/${runId}`);
       expect(report.workspace.prepared).toBe(true);
       expect(report.runLog).toBe(path.join(runDir, 'logs', 'run.log'));
@@ -392,7 +393,7 @@ describe('the documented disposable example', () => {
 
       // The work is in the retained working copy, the change summary is an
       // inspection of it, and the source repository was not touched.
-      expect(existsSync(path.join(runDir, 'workspace', 'src', 'greet-all.mjs'))).toBe(true);
+      expect(existsSync(path.join(workspace, 'src', 'greet-all.mjs'))).toBe(true);
       expect(report.changes.inspected).toBe(true);
       expect(report.changes.paths.map((changed) => changed.path)).toEqual(['src/greet-all.mjs']);
       expect(git(document.project, 'status', '--porcelain').trim()).toBe('');
@@ -409,7 +410,7 @@ describe('the documented disposable example', () => {
         '--json',
         '-',
       ]);
-      expect(turns[0]?.cwd).toBe(path.join(runDir, 'workspace'));
+      expect(turns[0]?.cwd).toBe(workspace);
 
       // And the round after the turn is the one the document's own check command
       // takes from red to green: the retained logs hold what the check really said.

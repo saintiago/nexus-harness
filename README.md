@@ -23,7 +23,7 @@ how to run it, what it does to your machine, and what is not proven yet.
   yourself. The harness starts it with a launch you configure — `codex` on `PATH` by default, or a
   path and a native profile of your choosing. See [Coding runtime](#coding-runtime).
 - **Git** on `PATH`. The harness runs real `git` commands: it records a base commit, clones the
-  repository into the run directory, and creates a branch there.
+  repository into a workspace of its own, and creates a branch there.
 - **Platform support, stated as it is.** Development, the full offline gate, and every recorded
   verification have run on **Windows 11 with Node 24.14.1** (PowerShell and Git Bash), which is the
   only platform verified by hand. CI runs the same offline gate on `ubuntu-latest`, so the suite is
@@ -145,10 +145,11 @@ target project writes can change which commands decide the result. Then:
 
 1. **Preflight.** The source repository must be a clean Git checkout with a commit; the output
    directory must not be inside it.
-2. **A run directory**, `<workDir>/<runId>`, holding the working copy, the logs, and (last) the
-   report. `workDir` comes from the configuration file and resolves from that file's own directory.
-3. **A working copy**: a clone of the source at its recorded base commit, on a dedicated branch
-   `harness/<runId>`. Only committed content is inherited.
+2. **A run directory**, `<workDir>/runs/<runId>`, holding the logs and (last) the report, and a
+   **workspace**, `<workDir>/workspaces/<runId>`, holding the working copy beside it. `workDir`
+   comes from the configuration file and resolves from that file's own directory.
+3. **A working copy**: a clone of the source at its recorded base commit, in that workspace, on a
+   dedicated branch `harness/<runId>`. Only committed content is inherited.
 4. **The baseline round**: every `setup` command, then every `checks` command, in the order the
    configuration lists them. A red baseline stops the run before any coding turn — the task is not
    attempted on a project that is already failing.
@@ -207,19 +208,20 @@ completion, and never names a report that does not exist.
 ### What a run leaves on disk
 
 ```
-<workDir>/<runId>/
-  workspace/                     the working copy: a clone, on branch harness/<runId>
-  result.json                    the final report, written last
-  logs/
-    run.log                      the run's timeline, one line per state change
-    agent-implementation.log     the useful output of the implementation turn
-    agent-repair-1.log           …one file per repair turn, never overwritten
-    baseline-setup-1.stdout.log  per command invocation, both streams, kept complete
-    baseline-check-1.stdout.log
-    attempt-1-setup-1.stdout.log
-    attempt-1-check-1.stdout.log
-    attempt-2-check-1.stdout.log
-    …                            .stderr.log beside each, and one pair per configured command
+<workDir>/
+  runs/<runId>/
+    result.json                  the final report, written last
+    logs/
+      run.log                    the run's timeline, one line per state change
+      agent-implementation.log   the useful output of the implementation turn
+      agent-repair-1.log         …one file per repair turn, never overwritten
+      baseline-setup-1.stdout.log  per command invocation, both streams, kept complete
+      baseline-check-1.stdout.log
+      attempt-1-setup-1.stdout.log
+      attempt-1-check-1.stdout.log
+      attempt-2-check-1.stdout.log
+      …                          .stderr.log beside each, and one pair per configured command
+  workspaces/<runId>/            the working copy: a clone, on branch harness/<runId>
 ```
 
 A run ID is generated (`run-<UTC timestamp>-<8 hex>`) and never comes from task text, so no task can
@@ -244,7 +246,7 @@ cat <runDir>/result.json              # status, reason, repairsUsed, attempts, c
 cat <runDir>/logs/run.log             # what happened, in order
 
 # The work itself: a real clone, on its own branch, still checked out
-cd <runDir>/workspace
+cd <workDir>/workspaces/<runId>
 git status && git diff <baseCommit>   # uncommitted work is left uncommitted
 ```
 
@@ -432,7 +434,7 @@ own directory, which is exactly why the output can be kept out of the source rep
 mkdir -p /tmp/nexus-demo/harness && cd /tmp/nexus-demo/harness
 cat > harness.config.json <<'EOF'
 {
-  "workDir": "./runs",
+  "workDir": ".",
   "maxRepairs": 2,
   "taskTimeoutMinutes": 30,
   "commandTimeoutMinutes": 5,
@@ -470,12 +472,15 @@ run run-20260101000000-1a2b3c4d: passed
   reason     every configured check passed after the implementation turn
   repairs    0 of 2 repair turns used
   run dir    /tmp/nexus-demo/harness/runs/run-20260101000000-1a2b3c4d
-  workspace  /tmp/nexus-demo/harness/runs/run-20260101000000-1a2b3c4d/workspace (branch harness/run-20260101000000-1a2b3c4d)
+  workspace  /tmp/nexus-demo/harness/workspaces/run-20260101000000-1a2b3c4d (branch harness/run-20260101000000-1a2b3c4d)
   report     /tmp/nexus-demo/harness/runs/run-20260101000000-1a2b3c4d/result.json
 ```
 
-That layout is the real one — `<workDir>/<runId>` with `workspace/`, `result.json`, and `logs/`
-inside it — and it sits outside `/tmp/nexus-demo/tiny-project`. The run above was produced and
+That layout is the real one — `<workDir>/runs/<runId>` for the evidence, `<workDir>/workspaces/<runId>`
+for the working copy beside it — and it sits outside `/tmp/nexus-demo/tiny-project`. A later attempt
+could continue that working copy instead of cloning again; that is specified in
+[docs/implement-workspace-continuation.md](docs/implement-workspace-continuation.md) and not built
+yet. The run above was produced and
 checked **offline**, with the runtime boundary substituted by a stand-in `codex` on the CLI's
 `PATH` (the same boundary the end-to-end suite uses). It is not a live Codex result; a live run
 needs your own account, and the printed paths are always derived from the run directory the CLI
@@ -485,7 +490,7 @@ really allocated.
 
 ```sh
 cat /tmp/nexus-demo/harness/runs/*/result.json
-git -C /tmp/nexus-demo/harness/runs/*/workspace log --stat   # the turn's commits, if it made any
+git -C /tmp/nexus-demo/harness/workspaces/* log --stat   # the turn's commits, if it made any
 rm -rf /tmp/nexus-demo                                        # nothing was cleaned up for you
 ```
 
@@ -517,8 +522,8 @@ Read this before pointing a run at anything you care about.
 - **The harness never commits, pushes, or publishes anything.** What a coding turn commits inside
   the working copy is that turn's own doing, and it stays in the working copy. No remote is added,
   and no pull request is opened.
-- **Run directories are kept, not cleaned up.** They accumulate: each holds a full clone plus logs.
-  Remove them by hand when you have read them.
+- **Run directories and workspaces are kept, not cleaned up.** They accumulate: a run holds its logs
+  and its report, and a workspace holds a full clone. Remove them by hand when you have read them.
 - **An interrupted or crashed run can leave an incomplete run directory.** A run directory can exist
   without `result.json` — the process was killed, the machine went down, or the report itself could
   not be written. That directory is not evidence of a status: read `logs/run.log` (it is flushed as

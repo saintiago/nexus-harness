@@ -313,10 +313,11 @@ function runArgv(parts: {
 
 /** The one run directory under an output directory, and the report it holds. */
 async function readRun(outDir: string): Promise<{ runDir: string; report: RunReport }> {
-  const entries = (await readdir(outDir)).sort();
+  const runsRoot = path.join(outDir, 'runs');
+  const entries = (await readdir(runsRoot)).sort();
   expect(entries, `${outDir} holds exactly one run directory`).toHaveLength(1);
   const [only = ''] = entries;
-  const runDir = path.join(outDir, only);
+  const runDir = path.join(runsRoot, only);
   const report = JSON.parse(await readFile(path.join(runDir, 'result.json'), 'utf8')) as RunReport;
   return { runDir, report };
 }
@@ -720,7 +721,9 @@ describe('run', () => {
     expect(result.out).toContain('reason     every configured check passed');
     expect(result.out).toContain('repairs    0 of 2 repair turns used');
     expect(result.out).toContain(`run dir    ${runDir}`);
-    expect(result.out).toContain(`workspace  ${path.join(runDir, 'workspace')}`);
+    expect(result.out).toContain(
+      `workspace  ${path.join(path.dirname(path.dirname(runDir)), 'workspaces', path.basename(runDir))}`,
+    );
     expect(result.out).toContain(`report     ${path.join(runDir, 'result.json')}`);
     expect(result.out).toMatch(/^review warning: /m);
 
@@ -730,7 +733,9 @@ describe('run', () => {
     expect(fixture.calls[0]?.kind).toBe('implementation');
     expect(fixture.calls[0]?.turn).toBe(1);
     expect(fixture.calls[0]?.task).toEqual(documentedTask);
-    expect(fixture.calls[0]?.workspacePath).toBe(path.join(runDir, 'workspace'));
+    expect(fixture.calls[0]?.workspacePath).toBe(
+      path.join(path.dirname(path.dirname(runDir)), 'workspaces', path.basename(runDir)),
+    );
     expect(fixture.calls[0]?.sourceRoot).toBe(fixture.source);
   });
 
@@ -905,9 +910,10 @@ describe('run', () => {
     );
 
     expect(result.code).toBe(EXIT_INPUT_ERROR);
-    const entries = await readdir(fixture.outDir);
+    const runsRoot = path.join(fixture.outDir, 'runs');
+    const entries = await readdir(runsRoot);
     expect(entries).toHaveLength(1);
-    const runDir = path.join(fixture.outDir, entries[0] ?? '');
+    const runDir = path.join(runsRoot, entries[0] ?? '');
 
     // The failure is named, with the location the run was kept in...
     expect(result.err).toMatch(/could not be reported/);

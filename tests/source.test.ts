@@ -94,7 +94,9 @@ function runDirectoryAt(runDir: string): RunDirectory {
   return {
     runId: path.basename(runDir),
     runDir,
-    workspacePath: path.join(runDir, 'workspace'),
+    // The real layout keeps a workspace beside its run's evidence; a fake run
+    // directory keeps the same relationship for the code that reads it.
+    workspacePath: path.join(path.dirname(runDir), 'workspaces', path.basename(runDir)),
     logsDir: path.join(runDir, 'logs'),
   };
 }
@@ -1415,8 +1417,12 @@ describe('the source commands through the CLI', () => {
       expect(jira.comments).toHaveLength(1);
       expect(jira.comments[0]).toContain('finished: passed');
 
-      const runs = await readdir(target.workDir);
-      const runDir = path.join(target.workDir, runs.find((name) => name.startsWith('run-')) ?? '');
+      const runs = await readdir(path.join(target.workDir, 'runs'));
+      const runDir = path.join(
+        target.workDir,
+        'runs',
+        runs.find((name) => name.startsWith('run-')) ?? '',
+      );
       expect(runs.filter((name) => name.startsWith('run-'))).toHaveLength(1);
       const report = JSON.parse(await readFile(path.join(runDir, 'result.json'), 'utf8')) as {
         status: string;
@@ -1450,7 +1456,9 @@ describe('the source commands through the CLI', () => {
       expect(second.code).toBe(EXIT_OK);
       expect(second.out).toContain('already attempted');
       expect(
-        (await readdir(target.workDir)).filter((name) => name.startsWith('run-')),
+        (await readdir(path.join(target.workDir, 'runs'))).filter((name) =>
+          name.startsWith('run-'),
+        ),
       ).toHaveLength(1);
     } finally {
       if (previous === undefined) {
@@ -1556,7 +1564,9 @@ describe('the source commands through the CLI', () => {
         expect(
           jira.calls.filter((call) => call.url.endsWith('/search/jql')).length,
         ).toBeGreaterThanOrEqual(2);
-        const runs = (await readdir(target.workDir)).filter((name) => name.startsWith('run-'));
+        const runs = (await readdir(path.join(target.workDir, 'runs'))).filter((name) =>
+          name.startsWith('run-'),
+        );
         expect(runs).toHaveLength(1);
         expect(signals.registered()).toBe(0);
       } finally {

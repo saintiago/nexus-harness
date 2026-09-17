@@ -70,13 +70,22 @@ function outcomeLine(stdout: string, label: string): string {
 
 /** Every run directory under a target's configured output directory. */
 async function runDirectories(target: LocalTarget): Promise<readonly string[]> {
-  if (!existsSync(target.workDir)) {
+  const runsRoot = path.join(target.workDir, 'runs');
+  if (!existsSync(runsRoot)) {
     return [];
   }
-  const entries = await readdir(target.workDir, { withFileTypes: true });
+  const entries = await readdir(runsRoot, { withFileTypes: true });
   return entries
     .filter((entry) => entry.isDirectory())
-    .map((entry) => path.join(target.workDir, entry.name));
+    .map((entry) => path.join(runsRoot, entry.name));
+}
+
+/**
+ * Where a run's workspace lives, derived from the run's own evidence path: the
+ * two are siblings under whichever output directory the configuration selected.
+ */
+function workspaceOf(runDir: string): string {
+  return path.join(path.dirname(path.dirname(runDir)), 'workspaces', path.basename(runDir));
 }
 
 /** The one run directory a single-run test left behind. */
@@ -235,13 +244,13 @@ describe('the built CLI, end to end', () => {
         '--json',
         '-',
       ]);
-      expect(turn?.cwd).toBe(path.join(runDir, 'workspace'));
+      expect(turn?.cwd).toBe(workspaceOf(runDir));
       expect(turn?.prompt).toContain('## Task greet-all: Add a greetAll helper to tiny-target');
       expect(turn?.prompt).toContain("- greetAll([]) is 'Hello, nobody!'.");
       expect(turn?.prompt).not.toContain('## Why this turn exists');
 
       // The change is real: it is in the retained working copy, on disk.
-      const workspace = path.join(runDir, 'workspace');
+      const workspace = workspaceOf(runDir);
       expect(await readText(path.join(workspace, 'src', 'greet-all.mjs'))).toBe(GREET_ALL_SOURCE);
       expect(git(workspace, 'status', '--porcelain')).toContain('src/greet-all.mjs');
 
@@ -351,7 +360,7 @@ describe('the built CLI, end to end', () => {
         '--json',
         '-',
       ]);
-      expect(turns[0]?.cwd).toBe(path.join(runDir, 'workspace'));
+      expect(turns[0]?.cwd).toBe(workspaceOf(runDir));
     },
     RUN_TIMEOUT_MS,
   );
@@ -416,7 +425,7 @@ describe('the built CLI, end to end', () => {
       expect(existsSync(attemptOf(report, 0).agentLog)).toBe(true);
       expect(existsSync(repaired.agentLog)).toBe(true);
       expect(attemptOf(report, 0).agentLog).not.toBe(repaired.agentLog);
-      expect(await readText(path.join(runDir, 'workspace', 'src', 'greet-all.mjs'))).toBe(
+      expect(await readText(path.join(workspaceOf(runDir), 'src', 'greet-all.mjs'))).toBe(
         GREET_ALL_SOURCE,
       );
 
@@ -683,7 +692,7 @@ describe('the built CLI, end to end', () => {
       expect(signals).toEqual([]);
 
       // The working copy and the evidence are retained, as they are for any run.
-      expect(existsSync(path.join(runDir, 'workspace'))).toBe(true);
+      expect(existsSync(workspaceOf(runDir))).toBe(true);
       expect(existsSync(attemptOf(report, 0).agentLog)).toBe(true);
     },
     RUN_TIMEOUT_MS,
@@ -724,7 +733,7 @@ describe('the built CLI, end to end', () => {
         expect(artifact).toContain(' ');
         expect(existsSync(artifact), artifact).toBe(true);
       }
-      expect(runDir).toBe(path.join(target.workDir, path.basename(runDir)));
+      expect(runDir).toBe(path.join(target.workDir, 'runs', path.basename(runDir)));
 
       const report = await readReport(runDir);
       expect(report.status).toBe('passed');
