@@ -491,6 +491,7 @@ describe('mapping an issue onto the existing four-field Task', () => {
         url: `${SITE}/browse/${String(raw['key'])}`,
         updatedAt: '2026-09-16T11:00:00.000Z',
       },
+      pointers: [],
       title: 'Create the smoke-test marker',
     };
     return source.prepare(candidate, new AbortController().signal);
@@ -747,6 +748,7 @@ describe('mapping an issue onto the existing four-field Task', () => {
         updatedAt: '2026-09-16T11:00:00.000Z',
       },
       title: 'gone',
+      pointers: [],
     };
 
     await expect(source.prepare(candidate, new AbortController().signal)).resolves.toBeNull();
@@ -780,7 +782,10 @@ describe('mapping an issue onto the existing four-field Task', () => {
 // Claiming and feedback
 // ---------------------------------------------------------------------------
 
-function candidateFor(updatedAt = '2026-09-16T11:00:00.000Z'): SourceCandidate {
+function candidateFor(
+  updatedAt = '2026-09-16T11:00:00.000Z',
+  pointers: readonly string[] = [],
+): SourceCandidate {
   return {
     ref: {
       type: 'jira',
@@ -791,6 +796,7 @@ function candidateFor(updatedAt = '2026-09-16T11:00:00.000Z'): SourceCandidate {
       updatedAt,
     },
     title: 'Create the smoke-test marker',
+    pointers,
   };
 }
 
@@ -959,6 +965,72 @@ describe('claiming an issue', () => {
     }
     expect((thrown as SourceError).kind).toBe('uncertain-write');
     expect(http.calls.filter((call) => call.method === 'POST')).toHaveLength(1);
+  });
+});
+
+describe('a workspace pointer and a refusal', () => {
+  it('reads the pointer labels an issue carries, and nothing else', async () => {
+    const http = fakeHttp(() =>
+      json({
+        issues: [
+          issue({
+            labels: ['harness-task', 'harness-ws-run-a', 'harness-test', 'harness-ws-run-b'],
+          }),
+        ],
+        isLast: true,
+      }),
+    );
+    const source = createJiraSource(jiraConfig(), TOKEN, { fetch: http.fetch });
+
+    const candidates = await source.listEligible(new AbortController().signal);
+
+    expect(candidates[0]?.pointers).toEqual(['run-a', 'run-b']);
+  });
+
+  it('records a workspace by adding its pointer label to the issue', async () => {
+    const http = fakeHttp((call) =>
+      call.method === 'PUT' ? new Response(null, { status: 204 }) : json(issue()),
+    );
+    const source = createJiraSource(jiraConfig(), TOKEN, { fetch: http.fetch });
+    const prepared = await preparedFor(source, candidateFor());
+    const workspaceId = 'run-20260916100000-aaaaaaaa';
+
+    await source.recordWorkspace(prepared, workspaceId, new AbortController().signal);
+
+    const write = http.calls.at(-1);
+    expect(write?.method).toBe('PUT');
+    expect(write?.url).toBe(`${GATEWAY}/rest/api/3/issue/10011`);
+    expect(write?.body).toEqual({
+      update: { labels: [{ add: `harness-ws-${workspaceId}` }] },
+    });
+  });
+
+  it('publishes why it refused, and takes the issue out of the queue', async () => {
+    const http = fakeHttp((call) => {
+      if (call.url.includes('/comment')) {
+        return json({ id: '50001' }, 201);
+      }
+      if (call.url.includes('/transitions') && call.method === 'GET') {
+        return json(TRANSITIONS_TO_REVIEW);
+      }
+      return json(issue());
+    });
+    const source = createJiraSource(jiraConfig(), TOKEN, { fetch: http.fetch });
+    const prepared = await preparedFor(source, candidateFor());
+
+    await source.refuse(
+      prepared,
+      'it names two workspaces, and which one to continue cannot be guessed',
+      new AbortController().signal,
+    );
+
+    const comment = http.calls.find((call) => call.url.includes('/comment'));
+    expect(JSON.stringify(comment?.body)).toContain('it did not run');
+    expect(JSON.stringify(comment?.body)).toContain('names two workspaces');
+    const write = http.calls.at(-1);
+    expect(write?.method).toBe('POST');
+    expect(write?.url).toBe(`${GATEWAY}/rest/api/3/issue/10011/transitions`);
+    expect(write?.body).toEqual({ transition: { id: '31' } });
   });
 });
 

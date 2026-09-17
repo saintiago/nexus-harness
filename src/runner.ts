@@ -153,11 +153,13 @@ import type {
 } from './types.js';
 import { inspectWorkspaceChanges } from './workspace.js';
 import type {
+  ContinuedWorkspace,
   PreparedWorkspace,
   PrepareWorkspaceBounds,
   PreflightRequest,
   RunDirectory,
   SourcePreflight,
+  WorkspaceAttempt,
 } from './workspace.js';
 
 /**
@@ -221,6 +223,22 @@ export interface RunTaskRequest {
    * and imports no connector (docs/architecture.md §7).
    */
   readonly sourceRef?: SourceRef;
+  /**
+   * A workspace to continue instead of creating one, already resolved and
+   * verified by the caller (`reopenWorkspace`, `src/workspace.ts`). A continued
+   * attempt works in the same clone, on the same branch, from the same recorded
+   * base as the attempts before it, and its baseline round is allowed to be red:
+   * continuing failed work is the point (docs/implement-workspace-continuation.md).
+   */
+  readonly continuedWorkspace?: ContinuedWorkspace;
+  /**
+   * Called once, after a run's own workspace exists and before any configured
+   * command or coding turn runs, with where the work will live. A source uses it
+   * to record the workspace on the issue it came from. A failure here is thrown
+   * and ends the run before any paid work: the run directory and the working copy
+   * are kept, and the caller decides what the failed record means.
+   */
+  readonly onWorkspaceReady?: (workspace: PreparedWorkspace) => Promise<void>;
 }
 
 /**
@@ -347,6 +365,16 @@ export interface RunnerDependencies {
   readonly appendRunLog: (runLog: string, message: string) => Promise<void>;
   /** Writes the final report and returns the file it wrote. */
   readonly writeRunReport: (request: RunReportRequest) => Promise<string>;
+  /**
+   * Records one finished attempt against the workspace it ran in, in that
+   * workspace's ledger (`src/workspace.ts`). It is derived state: a run's own
+   * report stays the authority on what the run did.
+   */
+  readonly recordWorkspaceAttempt: (
+    workDir: string,
+    workspaceId: string,
+    attempt: WorkspaceAttempt,
+  ) => Promise<void>;
   /** The current time, as the report's start and end of run. */
   readonly now: () => Date;
 }
@@ -764,25 +792,56 @@ export async function runTask(
 
   let workspace: PreparedWorkspace | null = null;
   let preparationProblem: string | null = null;
-  try {
-    workspace = await dependencies.prepareWorkspace(run, source, {
-      deadlineMs,
-      now: dependencies.now,
-      stop: callerStop,
-    });
+  const continued = request.continuedWorkspace;
+  if (continued !== undefined) {
+    // A continued attempt works in the workspace that already exists: the same
+    // clone, on the same branch, from the same recorded base. Only the run
+    // directory and its logs are this attempt's own.
+    workspace = {
+      ...run,
+      workspaceId: continued.workspaceId,
+      workspacePath: continued.workspacePath,
+      branch: continued.branch,
+      baseCommit: continued.baseCommit,
+      sourceRoot: source.sourceRoot,
+      continued: true,
+      attempt: continued.attempt,
+    };
     await dependencies.appendRunLog(
       timeline,
-      `workspace prepared at ${oneLine(workspace.workspacePath)} on branch ${workspace.branch} at ${source.baseCommit}`,
+      `continuing workspace ${continued.workspaceId} (attempt ${String(continued.attempt)}` +
+        `${continued.legacy ? ', legacy layout' : ''}) at ${oneLine(continued.workspacePath)} ` +
+        `on branch ${continued.branch} at ${continued.baseCommit}`,
     );
-  } catch (cause) {
-    // Preparation can fail after the run directory exists. The run is over, but
-    // what was created is kept, and the report records the facts it has instead
-    // of describing a working copy that was never made.
-    preparationProblem = messageOf(cause);
-    await dependencies.appendRunLog(
-      timeline,
-      `workspace preparation failed: ${oneLine(preparationProblem)}`,
-    );
+  } else {
+    try {
+      workspace = await dependencies.prepareWorkspace(run, source, {
+        deadlineMs,
+        now: dependencies.now,
+        stop: callerStop,
+      });
+      await dependencies.appendRunLog(
+        timeline,
+        `workspace prepared at ${oneLine(workspace.workspacePath)} on branch ${workspace.branch} at ${source.baseCommit}`,
+      );
+    } catch (cause) {
+      // Preparation can fail after the run directory exists. The run is over, but
+      // what was created is kept, and the report records the facts it has instead
+      // of describing a working copy that was never made.
+      preparationProblem = messageOf(cause);
+      await dependencies.appendRunLog(
+        timeline,
+        `workspace preparation failed: ${oneLine(preparationProblem)}`,
+      );
+    }
+  }
+  if (workspace !== null && request.onWorkspaceReady !== undefined) {
+    // The workspace exists, so the caller can record where the work lives before
+    // anything paid happens in it. Deliberately outside the preparation catch: a
+    // record that could not be written is not a preparation failure, and it is
+    // thrown so its caller treats it as the failed write it is. The run
+    // directory and the working copy are kept either way.
+    await request.onWorkspaceReady(workspace);
   }
 
   /** The record of a limit that expired, as the report keeps it. */
@@ -949,6 +1008,25 @@ export async function runTask(
       changes,
       ...(request.sourceRef === undefined ? {} : { sourceRef: request.sourceRef }),
     });
+    if (workspace !== null) {
+      // The attempt is recorded against the workspace it happened in, so the next
+      // attempt knows how many there have been and which tier comes next. The
+      // report above stays the authority; this is derived state, and a failure to
+      // record it is said out loud in the timeline rather than swallowed.
+      try {
+        await dependencies.recordWorkspaceAttempt(request.workDir, workspace.workspaceId, {
+          runId: run.runId,
+          outcome: parts.status,
+          endedAt: dependencies.now().toISOString(),
+          reportPath,
+        });
+      } catch (cause) {
+        await dependencies.appendRunLog(
+          timeline,
+          `workspace ledger: this attempt could not be recorded (${oneLine(messageOf(cause))})`,
+        );
+      }
+    }
     return {
       run,
       workspace,
@@ -1249,14 +1327,24 @@ export async function runTask(
     });
   }
   if (baseline.outcome === 'failed') {
-    return endRun({
-      status: 'failed',
-      reason: 'the baseline checks did not pass, so no coding turn was started',
-      baseline,
-      attempts: [],
-      timeout: null,
-      cancellation: null,
-    });
+    if (workspace?.continued !== true) {
+      return endRun({
+        status: 'failed',
+        reason: 'the baseline checks did not pass, so no coding turn was started',
+        baseline,
+        attempts: [],
+        timeout: null,
+        cancellation: null,
+      });
+    }
+    // A continuation of failed work starts red by definition. Refusing to start
+    // would make continuation useless; what decides the attempt is still the
+    // round after its coding turns. Recorded, so nobody reads the red baseline as
+    // an ordinary failed attempt (docs/implement-workspace-continuation.md).
+    await dependencies.appendRunLog(
+      timeline,
+      'baseline: red, and this attempt continues a workspace that was already red, so it proceeds',
+    );
   }
 
   // The coding turns: the implementation first, then one repair turn per

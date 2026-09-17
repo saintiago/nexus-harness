@@ -96,7 +96,15 @@ async function createFixture(): Promise<RunFixture> {
     run,
     program,
     source: { sourceRoot, baseCommit: BASE_COMMIT },
-    workspace: { ...run, sourceRoot, baseCommit: BASE_COMMIT, branch: `harness/${run.runId}` },
+    workspace: {
+      ...run,
+      workspaceId: run.runId,
+      continued: false,
+      attempt: 1,
+      sourceRoot,
+      baseCommit: BASE_COMMIT,
+      branch: `harness/${run.runId}`,
+    },
   };
 }
 
@@ -303,6 +311,9 @@ describe('a final report', () => {
       path: fixture.run.workspacePath,
       prepared: true,
       branch: `harness/${fixture.run.runId}`,
+      workspaceId: fixture.run.runId,
+      continued: false,
+      attempt: 1,
       problem: null,
     });
     expect(report.startedAt).toBe(RUN_STARTED_AT);

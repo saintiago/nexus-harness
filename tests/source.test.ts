@@ -17,6 +17,7 @@
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { EXIT_CANCELLED, EXIT_INPUT_ERROR, EXIT_OK, runCli } from '../src/cli.js';
@@ -43,6 +44,12 @@ import type {
   SourceTask,
   TaskSource,
 } from '../src/source.js';
+import {
+  allocateRunDirectory,
+  prepareWorkspace,
+  preflightSource,
+  workspaceStatePath,
+} from '../src/workspace.js';
 import type { RunDirectory } from '../src/workspace.js';
 import type {
   AttemptEvidence,
@@ -77,8 +84,12 @@ function refFor(id: string, key = `SAM1-${id}`, updatedAt = '2026-09-16T11:00:00
   };
 }
 
-function candidateFor(id: string, key = `SAM1-${id}`): SourceCandidate {
-  return { ref: refFor(id, key), title: `Task ${key}` };
+function candidateFor(
+  id: string,
+  key = `SAM1-${id}`,
+  pointers: readonly string[] = [],
+): SourceCandidate {
+  return { ref: refFor(id, key), title: `Task ${key}`, pointers };
 }
 
 function taskFor(candidate: SourceCandidate): Task {
@@ -92,6 +103,7 @@ function taskFor(candidate: SourceCandidate): Task {
 
 function runDirectoryAt(runDir: string): RunDirectory {
   return {
+    workDir: path.dirname(path.dirname(runDir)),
     runId: path.basename(runDir),
     runDir,
     // The real layout keeps a workspace beside its run's evidence; a fake run
@@ -189,6 +201,8 @@ interface FixtureOptions {
     call: number,
   ) => Promise<void> | void;
   readonly run?: (task: Task, call: number, runDir: string) => Promise<RunTaskResult>;
+  readonly recordWorkspace?: (item: SourceTask, workspaceId: string) => Promise<void> | void;
+  readonly refuse?: (item: SourceTask, reason: string) => Promise<void> | void;
   readonly preflight?: (call: number) => Promise<{ sourceRoot: string; baseCommit: string }>;
   readonly sleep?: (ms: number, stop: AbortSignal) => Promise<void>;
 }
@@ -197,6 +211,12 @@ interface Fixture {
   readonly context: SourceContext;
   readonly log: string[];
   readonly completions: Array<{ key: string; outcome: SourceRunOutcome }>;
+  readonly refusals: Array<{ key: string; reason: string }>;
+  readonly requests: Array<{
+    readonly task: Task;
+    readonly continuedWorkspace?: { readonly workspaceId: string; readonly attempt: number };
+    readonly continued: boolean;
+  }>;
   readonly output: string[];
   readonly errors: string[];
   readonly stop: AbortController;
@@ -207,6 +227,8 @@ interface Fixture {
 function createFixture(options: FixtureOptions): Fixture {
   const log: string[] = [];
   const completions: Fixture['completions'] = [];
+  const refusals: Fixture['refusals'] = [];
+  const requests: Fixture['requests'] = [];
   const output: string[] = [];
   const errors: string[] = [];
   const stop = new AbortController();
@@ -247,6 +269,15 @@ function createFixture(options: FixtureOptions): Fixture {
       completions.push({ key: item.ref.key, outcome });
       await options.complete?.(item, outcome, completeCount);
     },
+    recordWorkspace: async (item, workspaceId) => {
+      log.push(`workspace:${item.ref.key}:${workspaceId}`);
+      await options.recordWorkspace?.(item, workspaceId);
+    },
+    refuse: async (item, reason) => {
+      log.push(`refuse:${item.ref.key}`);
+      refusals.push({ key: item.ref.key, reason });
+      await options.refuse?.(item, reason);
+    },
   };
 
   const context: SourceContext = {
@@ -260,11 +291,22 @@ function createFixture(options: FixtureOptions): Fixture {
       log.push(`preflight:${String(preflightCount)}`);
       return options.preflight?.(preflightCount) ?? { sourceRoot: '/repo', baseCommit: 'base' };
     },
-    run: async ({ task }) => {
+    run: async (asked) => {
       runCount += 1;
       const runDir = path.join(options.workDir, `run-${String(runCount)}`);
-      log.push(`run:${task.id}`);
-      return options.run?.(task, runCount, runDir) ?? resultFor(runDir, 'passed');
+      log.push(`run:${asked.task.id}`);
+      requests.push({
+        task: asked.task,
+        continuedWorkspace: asked.continuedWorkspace,
+        continued: asked.continuedWorkspace !== undefined,
+      });
+      // The production runner records where a fresh workspace lives before any
+      // paid work; a fake that skipped it would hide the coordinator's own half
+      // of that contract.
+      if (asked.continuedWorkspace === undefined) {
+        await asked.onWorkspaceReady?.({ workspaceId: path.basename(runDir) });
+      }
+      return options.run?.(asked.task, runCount, runDir) ?? resultFor(runDir, 'passed');
     },
     now: () => new Date('2026-09-16T12:00:00.000Z'),
     sleep:
@@ -279,6 +321,8 @@ function createFixture(options: FixtureOptions): Fixture {
     context,
     log,
     completions,
+    refusals,
+    requests,
     output,
     errors,
     stop,
@@ -312,16 +356,19 @@ describe('a finite source run', () => {
       'prepare:SAM1-1',
       'claim:SAM1-1',
       'run:SAM1-1',
+      'workspace:SAM1-1:run-1',
       'complete:SAM1-1:passed',
       'preflight:3',
       'prepare:SAM1-2',
       'claim:SAM1-2',
       'run:SAM1-2',
+      'workspace:SAM1-2:run-2',
       'complete:SAM1-2:passed',
       'preflight:4',
       'prepare:SAM1-3',
       'claim:SAM1-3',
       'run:SAM1-3',
+      'workspace:SAM1-3:run-3',
       'complete:SAM1-3:passed',
     ]);
   });
@@ -346,7 +393,11 @@ describe('a finite source run', () => {
     // The receipted issue is skipped without counting against the limit; the
     // next unattempted issue is the one that runs.
     expect(again.attempted).toBe(1);
-    expect(again.skipped).toBe(1);
+    // An attempted issue with nothing pointing at a workspace to continue is
+    // refused and told so, rather than skipped in silence
+    // (docs/implement-workspace-continuation.md).
+    expect(again.refused).toBe(1);
+    expect(again.skipped).toBe(0);
     expect(second.log.filter((entry) => entry.startsWith('run:'))).toEqual(['run:SAM1-2']);
   });
 
@@ -674,9 +725,10 @@ describe('the local receipt', () => {
     const second = createFixture({ workDir, scans: [[candidateFor('1')]] });
     const summary = await runSource(second.context, null);
 
-    expect(summary).toMatchObject({ outcome: 'completed', attempted: 0, skipped: 1 });
+    expect(summary).toMatchObject({ outcome: 'completed', attempted: 0, refused: 1 });
     expect(second.log).not.toContain('run:SAM1-1');
-    expect(second.output.join('\n')).toContain('already attempted');
+    expect(second.errors.join('\n')).toContain('already attempted');
+    expect(second.refusals[0]?.reason).toContain('already attempted');
   });
 
   it('does not make a merely edited or reopened issue runnable again', async () => {
@@ -687,12 +739,18 @@ describe('the local receipt', () => {
     const edited: SourceCandidate = {
       ref: refFor('1', 'SAM1-1', '2030-01-01T00:00:00.000Z'),
       title: 'A completely different issue body',
+      pointers: [],
     };
     const second = createFixture({ workDir, scans: [[edited]] });
     const summary = await runSource(second.context, null);
 
     expect(summary.attempted).toBe(0);
-    expect(second.log).not.toContain('prepare:SAM1-1');
+    expect(summary.refused).toBe(1);
+    // It is re-read to say why, and then left alone: no claim, no run, and no
+    // receipt of its own.
+    expect(second.log).toContain('prepare:SAM1-1');
+    expect(second.log).not.toContain('claim:SAM1-1');
+    expect(second.log).not.toContain('run:SAM1-1');
   });
 
   it('fails closed on a receipt it cannot trust', async () => {
@@ -790,11 +848,87 @@ describe('the intake lock', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Continuation
+// ---------------------------------------------------------------------------
+
+/** A real workspace on disk, prepared the way a first attempt prepares one. */
+async function preparedWorkspaceOnDisk(workDir: string): Promise<{ workspaceId: string }> {
+  const repo = await createTempDir();
+  const runGit = (...args: readonly string[]): void => {
+    const result = spawnSync('git', [...args], {
+      cwd: repo,
+      stdio: 'ignore',
+      env: {
+        ...process.env,
+        GIT_CONFIG_NOSYSTEM: '1',
+        GIT_AUTHOR_NAME: 'Source Test',
+        GIT_AUTHOR_EMAIL: 'source@example.test',
+        GIT_COMMITTER_NAME: 'Source Test',
+        GIT_COMMITTER_EMAIL: 'source@example.test',
+      },
+    });
+    if (result.status !== 0) {
+      throw new Error(`git ${args.join(' ')} failed`);
+    }
+  };
+  runGit('init', '--quiet', '--initial-branch=main');
+  await writeFile(path.join(repo, 'app.txt'), 'baseline\n', 'utf8');
+  runGit('add', '--all');
+  runGit('commit', '--quiet', '--message', 'baseline');
+
+  const source = await preflightSource({ repoPath: repo, workDir });
+  const prepared = await prepareWorkspace(await allocateRunDirectory(workDir), source, {
+    deadlineMs: Date.now() + 60_000,
+    now: () => new Date(),
+    stop: undefined,
+  });
+  return { workspaceId: prepared.workspaceId };
+}
+
+describe('an issue that points at a workspace', () => {
+  it('records a fresh workspace on the issue, and the run is told to do it', async () => {
+    const workDir = await createTempDir();
+    const fixture = createFixture({ workDir, scans: [[candidateFor('1')]] });
+
+    const summary = await runSource(fixture.context, null);
+
+    expect(summary.passed).toBe(1);
+    expect(fixture.requests[0]?.continued).toBe(false);
+    // The coordinator's half of the contract: a fresh run is handed the hook that
+    // records where its workspace lives, and the issue learns the id.
+    expect(fixture.log.filter((entry) => entry.startsWith('workspace:'))).toEqual([
+      'workspace:SAM1-1:run-1',
+    ]);
+  });
+
+  it('continues that workspace instead of creating one, and never writes a second pointer', async () => {
+    const workDir = await createTempDir();
+    const { workspaceId } = await preparedWorkspaceOnDisk(workDir);
+    const fixture = createFixture({
+      workDir,
+      scans: [[candidateFor('2', 'SAM1-2', [workspaceId])]],
+    });
+
+    const summary = await runSource(fixture.context, null);
+
+    expect(summary.attempted).toBe(1);
+    expect(summary.passed).toBe(1);
+    expect(fixture.requests[0]?.continued).toBe(true);
+    expect(fixture.requests[0]?.continuedWorkspace).toMatchObject({ workspaceId, attempt: 1 });
+    // A continuation reads the pointer and leaves it alone.
+    expect(fixture.log.filter((entry) => entry.startsWith('workspace:'))).toEqual([]);
+    // It still has a receipt: this attempt's outcome has to live somewhere.
+    const receipt = await readReceipt(receiptFilePath(workDir, refFor('2', 'SAM1-2')));
+    expect(receipt?.outcome).toBe('passed');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // The preview
 // ---------------------------------------------------------------------------
 
 describe('source list', () => {
-  it('shows valid, attempted, invalid, and stale issues without changing anything', async () => {
+  it('shows valid, refused, continuable, invalid, and stale issues without changing anything', async () => {
     const workDir = await createTempDir();
     const attempted = candidateFor('9');
     await reserveReceipt(receiptFilePath(workDir, attempted.ref), {
@@ -805,9 +939,34 @@ describe('source list', () => {
       outcome: 'failed',
       feedback: 'sent',
     });
+    // A workspace this machine has, named by an issue's pointer label: what a
+    // continuation needs, and what the preview reports as continuable.
+    const workspaceId = 'run-20260916100000-bbbbbbbb';
+    const continued = candidateFor('4', 'SAM1-4', [workspaceId]);
+    await mkdir(path.join(workDir, 'workspaces', workspaceId), { recursive: true });
+    await writeFile(
+      workspaceStatePath(workDir, workspaceId),
+      `${JSON.stringify({
+        version: 1,
+        workspaceId,
+        sourceRoot: '/repo',
+        baseCommit: 'base',
+        branch: `harness/${workspaceId}`,
+        createdAt: '2026-09-16T10:00:00.000Z',
+        attempts: [
+          {
+            runId: workspaceId,
+            outcome: 'failed',
+            endedAt: '2026-09-16T10:30:00.000Z',
+            reportPath: `/runs/${workspaceId}/result.json`,
+          },
+        ],
+      })}\n`,
+      'utf8',
+    );
     const fixture = createFixture({
       workDir,
-      scans: [[candidateFor('1'), attempted, candidateFor('2'), candidateFor('3')]],
+      scans: [[candidateFor('1'), attempted, continued, candidateFor('2'), candidateFor('3')]],
       prepare: (candidate) => {
         if (candidate.ref.id === '2') {
           throw new SourceError('invalid-task', 'SAM1-2: the description has no criteria heading');
@@ -826,13 +985,15 @@ describe('source list', () => {
 
     expect(entries.map((entry) => [entry.ref.key, entry.disposition])).toEqual([
       ['SAM1-1', 'valid'],
-      ['SAM1-9', 'attempted'],
+      ['SAM1-9', 'refused'],
+      ['SAM1-4', 'continuable'],
       ['SAM1-2', 'invalid'],
       ['SAM1-3', 'stale'],
     ]);
-    expect(entries[1]?.detail).toContain('failed');
-    expect(entries[1]?.detail).toContain('feedback sent');
-    expect(entries[2]?.detail).toMatch(/no criteria heading/);
+    expect(entries[1]?.detail).toContain('already attempted');
+    expect(entries[2]?.detail).toContain(`continues workspace ${workspaceId}`);
+    expect(entries[2]?.detail).toContain('attempt 2');
+    expect(entries[3]?.detail).toMatch(/no criteria heading/);
 
     // A preview claims nothing, runs nothing, and writes nothing.
     expect(fixture.log.filter((entry) => entry !== 'list' && !entry.startsWith('prepare'))).toEqual(

@@ -43,7 +43,12 @@ import {
   parseDescription,
   renderDescription,
 } from './jira-format.js';
-import { SourceError, SourceFeedbackError } from './source.js';
+import {
+  SourceError,
+  SourceFeedbackError,
+  parseWorkspacePointers,
+  workspacePointerLabel,
+} from './source.js';
 import type { SourceCandidate, SourceRunOutcome, SourceTask, TaskSource } from './source.js';
 import type { JiraSourceConfig, SourceRef, Task } from './types.js';
 
@@ -162,7 +167,7 @@ function retryAfterMs(header: string | null, now: () => Date): number | null {
 
 /** One JSON request to the gateway, already classified for the coordinator. */
 interface JiraRequest {
-  readonly method: 'GET' | 'POST';
+  readonly method: 'GET' | 'POST' | 'PUT';
   /** The path after the gateway prefix, for example `/rest/api/3/search/jql`. */
   readonly path: string;
   readonly body?: unknown;
@@ -451,7 +456,13 @@ async function listEligible(
         continue;
       }
       seen.add(issue.id);
-      candidates.push({ ref: refFor(config, issue), title: issue.fields.summary });
+      candidates.push({
+        ref: refFor(config, issue),
+        title: issue.fields.summary,
+        // The workspace pointers the issue carries now. A run only ever reads
+        // them; the one that creates a workspace writes its own.
+        pointers: parseWorkspacePointers(issue.fields.labels),
+      });
     }
 
     if (answer['isLast'] === true) {
@@ -793,5 +804,82 @@ export function createJiraSource(
         );
       }
     },
+
+    // Where this attempt's work lives, written on the issue itself. One call,
+    // never replayed: a write whose outcome is unknown is an uncertain-write and
+    // stops intake rather than being sent again
+    // (docs/implement-workspace-continuation.md).
+    recordWorkspace: async (item, workspaceId, stop) => {
+      await http.request({
+        method: 'PUT',
+        path: `/rest/api/3/issue/${encodeURIComponent(item.ref.id)}`,
+        body: { update: { labels: [{ add: workspacePointerLabel(workspaceId) }] } },
+        signal: stop,
+        mutation: true,
+      });
+    },
+
+    // A refusal is not a run: nothing was claimed and nothing ran. It still moves
+    // the issue out of the queue, so the next scan does not read it again and
+    // again, and it moves only while the issue is still in the queue it was found
+    // in â€” a later decision by anyone else stands.
+    refuse: async (item, reason, stop) => {
+      let commentId: string;
+      try {
+        commentId = await postComment(http, item.ref.id, refusalParagraphs(item.ref, reason), stop);
+      } catch (cause) {
+        if (cause instanceof SourceFeedbackError) {
+          throw cause;
+        }
+        throw new SourceFeedbackError('comment', messageOf(cause, token));
+      }
+
+      let current: JiraIssue | null;
+      try {
+        current = await readIssue(http, item.ref.id, stop);
+      } catch (cause) {
+        throw new SourceFeedbackError(
+          'transition',
+          `issue ${item.ref.key}: the refusal comment ${commentId} was posted, but the issue could ` +
+            `not be re-read to take it out of the queue (${messageOf(cause, token)})`,
+          commentId,
+        );
+      }
+      if (current === null) {
+        return;
+      }
+      const stillQueued =
+        sameName(current.fields.status, config.readyStatus) ||
+        sameName(current.fields.status, config.runningStatus);
+      if (!stillQueued) {
+        return;
+      }
+
+      try {
+        const chosen = selectTransition(
+          await readTransitions(http, item.ref.id, stop),
+          config.reviewStatus,
+          `issue ${item.ref.key}: taking it out of the queue after a refusal`,
+        );
+        await postTransition(http, item.ref.id, chosen.id, stop);
+      } catch (cause) {
+        throw new SourceFeedbackError(
+          'transition',
+          `issue ${item.ref.key}: the refusal comment ${commentId} was posted, but moving the issue ` +
+            `to "${config.reviewStatus}" failed (${messageOf(cause, token)})`,
+          commentId,
+        );
+      }
+    },
   };
+}
+
+/** What a refusal says: why the harness will not act, and what would change that. */
+function refusalParagraphs(ref: SourceRef, reason: string): readonly string[] {
+  return [
+    `Harness refused ${ref.key}: it did not run.`,
+    `Reason: ${oneLine(reason)}`,
+    'Nothing was claimed and no coding turn was started. The issue was moved out of the queue so ' +
+      'a later scan does not read it again and again.',
+  ];
 }

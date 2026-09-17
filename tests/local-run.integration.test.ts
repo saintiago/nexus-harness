@@ -92,7 +92,12 @@ import type {
   RunReport,
   Task,
 } from '../src/types.js';
-import { allocateRunDirectory, preflightSource, prepareWorkspace } from '../src/workspace.js';
+import {
+  allocateRunDirectory,
+  prepareWorkspace,
+  preflightSource,
+  recordWorkspaceAttempt,
+} from '../src/workspace.js';
 import type { PreparedWorkspace } from '../src/workspace.js';
 import { cleanupTempDirectories, createTempDir, writeJsonFile } from './support.js';
 
@@ -826,6 +831,7 @@ function dependencies(
     preflight: preflightSource,
     allocateRunDirectory,
     prepareWorkspace,
+    recordWorkspaceAttempt,
     runCheckRound,
     appendRunLog,
     writeRunReport,
