@@ -57,6 +57,7 @@ import {
   allocateRunDirectory,
   prepareWorkspace,
   preflightSource,
+  recordWorkspaceAttempt,
 } from './workspace.js';
 import type { RunDirectory } from './workspace.js';
 
@@ -391,6 +392,7 @@ function realDependencies(
     openAgentLog,
     appendRunLog,
     writeRunReport,
+    recordWorkspaceAttempt,
     now: () => new Date(),
   };
 }
@@ -446,6 +448,7 @@ function composeDependencies(
       }
     },
     writeRunReport: replaced.writeRunReport ?? real.writeRunReport,
+    recordWorkspaceAttempt: replaced.recordWorkspaceAttempt ?? real.recordWorkspaceAttempt,
     now: replaced.now ?? real.now,
   };
 }
@@ -712,7 +715,8 @@ function describeSourceSummary(summary: SourceSummary): string {
     `  attempts   ${String(summary.attempted)} reserved: ${String(summary.passed)} passed, ` +
       `${String(summary.failed)} failed, ${String(summary.cancelled)} cancelled`,
     `  skipped    ${String(summary.skipped)} already attempted or no longer eligible, ` +
-      `${String(summary.invalid)} invalid task description(s)`,
+      `${String(summary.invalid)} invalid task description(s), ` +
+      `${String(summary.refused)} refused and told why`,
   ];
   if (summary.problem !== null) {
     lines.push(`  problem    ${summary.problem}`);
@@ -865,8 +869,20 @@ async function sourceCommand(
       io,
       stop: stop.signal,
       preflight: preflightSource,
-      run: ({ task, sourceRef, stop: runStop }) =>
-        runTask({ task, config, repoPath, workDir, stop: runStop, sourceRef }, dependencies),
+      run: ({ task, sourceRef, stop: runStop, continuedWorkspace, onWorkspaceReady }) =>
+        runTask(
+          {
+            task,
+            config,
+            repoPath,
+            workDir,
+            stop: runStop,
+            sourceRef,
+            ...(continuedWorkspace === undefined ? {} : { continuedWorkspace }),
+            ...(onWorkspaceReady === undefined ? {} : { onWorkspaceReady }),
+          },
+          dependencies,
+        ),
       now: () => new Date(),
       sleep: abortableSleep,
     };

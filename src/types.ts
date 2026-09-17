@@ -316,12 +316,29 @@ export interface RepairFeedback {
  * never made.
  */
 export interface WorkspaceReport {
-  /** `<runDir>/workspace`: where the working copy is, or would have been. */
+  /**
+   * Where the working copy is, or would have been: `<workDir>/workspaces/<workspaceId>`
+   * for a workspace this run creates, and the workspace it continues otherwise.
+   */
   readonly path: string;
   /** True only for a working copy that was really prepared and verified. */
   readonly prepared: boolean;
   /** The run's dedicated branch; `null` when no working copy was prepared. */
   readonly branch: string | null;
+  /**
+   * The workspace's own id: the run that created it, or the one this run
+   * continues. `null` when no working copy exists to name.
+   */
+  readonly workspaceId: string | null;
+  /**
+   * Whether this run continued a workspace that already existed instead of
+   * creating one. A continued attempt works from the same recorded base, and its
+   * baseline round is allowed to be red
+   * (docs/implement-workspace-continuation.md).
+   */
+  readonly continued: boolean;
+  /** Which attempt this is for the workspace, counting this one; `null` with no copy. */
+  readonly attempt: number | null;
   /** Why there is no usable working copy; `null` when there is one. */
   readonly problem: string | null;
 }

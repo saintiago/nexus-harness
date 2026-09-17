@@ -30,6 +30,9 @@ import {
   allocateRunDirectory,
   prepareWorkspace,
   preflightSource,
+  recordWorkspaceAttempt,
+  readWorkspaceState,
+  reopenWorkspace,
 } from '../src/workspace.js';
 import type {
   PreparedWorkspace,
@@ -313,6 +316,7 @@ function dependencies(
     preflight: preflightSource,
     allocateRunDirectory,
     prepareWorkspace,
+    recordWorkspaceAttempt,
     runCheckRound,
     openAgentLog,
     appendRunLog,
@@ -614,6 +618,71 @@ describe('a run that stops before any coding turn', () => {
     expect(existsSync(fixture.eventsFile)).toBe(false);
     expect(agent.requests).toEqual([]);
   }, 60_000);
+});
+
+describe('a run that continues a workspace', () => {
+  it('starts from the red working copy it was pointed at, reaches its turn, and records the attempt', async () => {
+    const fixture = await createFixture();
+
+    // The first attempt: a fresh workspace whose baseline is green, and whose turn
+    // leaves something behind that only this clone has.
+    const firstAgent = fakeAgent(fixture, {
+      file: 'first-only.txt',
+      text: 'from the first attempt\n',
+    });
+    const first = await runTask(
+      request(fixture, configuration(fixture)),
+      dependencies(firstAgent.turn),
+    );
+    const workspaceId = first.workspace?.workspaceId ?? '';
+    expect(workspaceId).not.toBe('');
+    expect(first.workspace?.continued).toBe(false);
+    expect(first.status).toBe('passed');
+
+    // The second attempt is pointed at that workspace, and its own check is red
+    // against the working copy as it stands: a continuation may start red.
+    const agent = fakeAgent(fixture);
+    const config = configuration(fixture, {
+      checks: [command(fixture, 'check-1', 'need', 'app.txt', IMPLEMENTED_TEXT)],
+    });
+    const result = await runTask(
+      {
+        ...request(fixture, config),
+        continuedWorkspace: await reopenWorkspace(fixture.workDir, workspaceId),
+      },
+      dependencies(agent.turn),
+    );
+
+    // It ran: the red baseline did not stop the coding turn, and the round after
+    // that turn is what decided the attempt.
+    expect(result.status).toBe('passed');
+    expect(firstAgent.requests).toHaveLength(1);
+    expect(agent.requests).toHaveLength(1);
+    expect(agent.requests[0]?.workspacePath).toBe(first.workspace?.workspacePath);
+    expect(await readText(path.join(result.workspace?.workspacePath ?? '', 'app.txt'))).toBe(
+      `${BASELINE_TEXT}${IMPLEMENTED_TEXT}`,
+    );
+    // The work of the earlier attempt is still there: the same clone, not a copy.
+    expect(await readText(path.join(result.workspace?.workspacePath ?? '', 'first-only.txt'))).toBe(
+      'from the first attempt\n',
+    );
+
+    const report = await readReport(result.reportPath);
+    expect(report.workspace.continued).toBe(true);
+    expect(report.workspace.attempt).toBe(2);
+    expect(report.workspace.workspaceId).toBe(workspaceId);
+    expect(report.workspace.path).toBe(first.workspace?.workspacePath);
+    expect(report.baseline?.outcome).toBe('failed');
+    const timelineText = await readText(report.runLog);
+    expect(timelineText).toContain(`continuing workspace ${workspaceId} (attempt 2)`);
+    expect(timelineText).toContain('this attempt continues a workspace that was already red');
+
+    // Both attempts are recorded against the workspace, oldest first, so the next
+    // one knows which attempt it is.
+    const ledger = await readWorkspaceState(fixture.workDir, workspaceId);
+    expect(ledger?.attempts.map((attempt) => attempt.outcome)).toEqual(['passed', 'passed']);
+    expect(ledger?.attempts[1]?.runId).toBe(result.run.runId);
+  }, 120_000);
 });
 
 describe('a run whose baseline passes', () => {
@@ -2395,6 +2464,7 @@ describe('the collaborators a run is given', () => {
   it('runs the loaded plan through the functions it was handed', async () => {
     const workDir = path.join(await createTempDir(), 'runs');
     const run: RunDirectory = {
+      workDir,
       runId: 'run-0001',
       runDir: path.join(workDir, 'run-0001'),
       workspacePath: path.join(workDir, 'run-0001', 'workspace'),
@@ -2406,6 +2476,9 @@ describe('the collaborators a run is given', () => {
     };
     const workspace: PreparedWorkspace = {
       ...run,
+      workspaceId: run.runId,
+      continued: false,
+      attempt: 1,
       sourceRoot: source.sourceRoot,
       baseCommit: source.baseCommit,
       branch: `harness/${run.runId}`,
@@ -2447,6 +2520,7 @@ describe('the collaborators a run is given', () => {
           return run;
         },
         prepareWorkspace: async () => workspace,
+        recordWorkspaceAttempt: async () => undefined,
         runCheckRound: async (asked) => {
           rounds.push(asked);
           return baseline;

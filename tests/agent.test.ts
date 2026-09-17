@@ -30,7 +30,12 @@ import { requestTreeStop, runCheckRound } from '../src/checks.js';
 import { appendRunLog, openAgentLog, writeRunReport } from '../src/report.js';
 import { runTask } from '../src/runner.js';
 import type { AgentTurnRequest, RunnerDependencies } from '../src/runner.js';
-import { allocateRunDirectory, prepareWorkspace, preflightSource } from '../src/workspace.js';
+import {
+  allocateRunDirectory,
+  prepareWorkspace,
+  preflightSource,
+  recordWorkspaceAttempt,
+} from '../src/workspace.js';
 import type { CommandResult, HarnessConfig, RunReport, Task } from '../src/types.js';
 import { cleanupTempDirectories, createTempDir } from './support.js';
 
@@ -948,6 +953,7 @@ describe('the runner, the real checks, and the real adapter together', () => {
       preflight: preflightSource,
       allocateRunDirectory,
       prepareWorkspace,
+      recordWorkspaceAttempt,
       runCheckRound,
       openAgentLog,
       appendRunLog,

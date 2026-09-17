@@ -42,7 +42,8 @@ import path from 'node:path';
 import { RunCancelledError } from './runner.js';
 import type { RunTaskResult } from './runner.js';
 import type { AttemptEvidence, RunStatus, SourceRef, Task } from './types.js';
-import type { PreflightRequest, SourcePreflight } from './workspace.js';
+import { resolveWorkspace, reopenWorkspace } from './workspace.js';
+import type { ContinuedWorkspace, PreflightRequest, SourcePreflight } from './workspace.js';
 
 /** How a source failed, in the few categories the coordinator acts on. */
 export type SourceProblemKind =
@@ -102,6 +103,33 @@ export interface SourceCandidate {
   readonly ref: SourceRef;
   /** The item's title as the source lists it; a preview, not the task. */
   readonly title: string;
+  /**
+   * The workspace ids the item's pointer labels name, in the order they were
+   * read. Empty for an item that names no workspace: that is a first attempt,
+   * unless a receipt says it was attempted before
+   * (docs/implement-workspace-continuation.md).
+   */
+  readonly pointers: readonly string[];
+}
+
+/**
+ * The label that names where an issue's work lives: `harness-ws-<workspaceId>`.
+ * It is written exactly once, by the run that creates the workspace, and a later
+ * attempt only ever reads it.
+ */
+export const WORKSPACE_POINTER_PREFIX = 'harness-ws-';
+
+/** The pointer label for one workspace. */
+export function workspacePointerLabel(workspaceId: string): string {
+  return `${WORKSPACE_POINTER_PREFIX}${workspaceId}`;
+}
+
+/** The workspace ids a set of labels names, in the order the labels came. */
+export function parseWorkspacePointers(labels: readonly string[]): readonly string[] {
+  return labels
+    .filter((label) => label.startsWith(WORKSPACE_POINTER_PREFIX))
+    .map((label) => label.slice(WORKSPACE_POINTER_PREFIX.length))
+    .filter((id) => id !== '');
 }
 
 /** One external item, prepared as exactly the existing `Task`. */
@@ -148,6 +176,18 @@ export interface TaskSource {
   prepare(candidate: SourceCandidate, stop: AbortSignal): Promise<SourceTask | null>;
   claim(item: SourceTask, stop: AbortSignal): Promise<boolean>;
   complete(item: SourceTask, outcome: SourceRunOutcome, stop: AbortSignal): Promise<void>;
+  /**
+   * Records where the item's work lives, as the pointer label naming its
+   * workspace. Called once, for the run that creates a workspace, after that
+   * workspace exists and before any coding turn runs.
+   */
+  recordWorkspace(item: SourceTask, workspaceId: string, stop: AbortSignal): Promise<void>;
+  /**
+   * Publishes a refusal: one comment naming why the harness will not act on the
+   * item, and the item taken out of the queue. Nothing was claimed and nothing
+   * ran. Throws {@link SourceFeedbackError} when delivery fails.
+   */
+  refuse(item: SourceTask, reason: string, stop: AbortSignal): Promise<void>;
 }
 
 /** Where the coordinator writes progress. Tests pass a recorder. */
@@ -161,6 +201,16 @@ export interface SourceRunRequest {
   readonly task: Task;
   readonly sourceRef: SourceRef;
   readonly stop: AbortSignal;
+  /**
+   * A workspace this run continues, resolved and verified by the coordinator, or
+   * nothing for a run that creates one.
+   */
+  readonly continuedWorkspace?: ContinuedWorkspace;
+  /**
+   * Called once, after a fresh workspace exists and before any coding turn: where
+   * the work lives, so the source can record it on the item it came from.
+   */
+  readonly onWorkspaceReady?: (workspace: { readonly workspaceId: string }) => Promise<void>;
 }
 
 /**
@@ -212,6 +262,12 @@ export interface SourceSummary {
   readonly cancelled: number;
   /** Issues skipped because their description is not a usable task. */
   readonly invalid: number;
+  /**
+   * Issues the harness would not act on and said so: a pointer that resolves
+   * nowhere here, two pointers, or an attempted issue with nothing saying what to
+   * continue (docs/implement-workspace-continuation.md).
+   */
+  readonly refused: number;
   /** Issues skipped because a receipt existed or they were no longer eligible. */
   readonly skipped: number;
   /** Why intake stopped, when it did; `null` for a batch that ran to its end. */
@@ -543,10 +599,10 @@ function reportOnce(
 
 /** One entry of a read-only preview. */
 export interface SourceListEntry {
-  readonly disposition: 'valid' | 'attempted' | 'invalid' | 'stale';
+  readonly disposition: 'valid' | 'continuable' | 'invalid' | 'stale' | 'refused';
   readonly ref: SourceRef;
   readonly title: string;
-  /** The receipt path, the receipt's known result, or why the item was refused. */
+  /** What the harness would do with the item, or why it will not act on it. */
   readonly detail: string;
 }
 
@@ -561,14 +617,14 @@ export async function listSource(preview: SourcePreview): Promise<readonly Sourc
   const entries: SourceListEntry[] = [];
 
   for (const candidate of candidates) {
-    const file = receiptFilePath(preview.workDir, candidate.ref);
-    const receipt = await readReceipt(file);
-    if (receipt !== null) {
+    const receipt = await readReceipt(receiptFilePath(preview.workDir, candidate.ref));
+    const decision = await decideAttempt(preview.workDir, candidate, receipt);
+    if (decision.kind === 'refuse') {
       entries.push({
-        disposition: 'attempted',
+        disposition: 'refused',
         ref: candidate.ref,
         title: candidate.title,
-        detail: `${describeReceipt(receipt)} (${file})`,
+        detail: decision.reason,
       });
       continue;
     }
@@ -583,12 +639,22 @@ export async function listSource(preview: SourcePreview): Promise<readonly Sourc
               title: candidate.title,
               detail: 'no longer eligible at the time of the preview',
             }
-          : {
-              disposition: 'valid',
-              ref: prepared.ref,
-              title: prepared.task.title,
-              detail: 'valid and unattempted',
-            },
+          : decision.kind === 'continue'
+            ? {
+                disposition: 'continuable',
+                ref: prepared.ref,
+                title: prepared.task.title,
+                detail:
+                  `continues workspace ${decision.workspace.workspaceId} ` +
+                  `(attempt ${String(decision.workspace.attempt)}` +
+                  `${decision.workspace.legacy ? ', legacy layout' : ''})`,
+              }
+            : {
+                disposition: 'valid',
+                ref: prepared.ref,
+                title: prepared.task.title,
+                detail: 'valid and unattempted: this run would create its workspace',
+              },
       );
     } catch (cause) {
       if (cause instanceof SourceError && cause.kind === 'invalid-task') {
@@ -613,6 +679,7 @@ interface BatchState {
   failed: number;
   cancelled: number;
   invalid: number;
+  refused: number;
   skipped: number;
   problem: string | null;
   cleanupConfirmed: boolean;
@@ -625,6 +692,7 @@ function emptyState(): BatchState {
     failed: 0,
     cancelled: 0,
     invalid: 0,
+    refused: 0,
     skipped: 0,
     problem: null,
     cleanupConfirmed: true,
@@ -639,6 +707,7 @@ function summarize(outcome: SourceOutcome, state: BatchState): SourceSummary {
     failed: state.failed,
     cancelled: state.cancelled,
     invalid: state.invalid,
+    refused: state.refused,
     skipped: state.skipped,
     problem: state.problem,
     cleanupConfirmed: state.cleanupConfirmed,
@@ -654,6 +723,121 @@ function stopWith(state: BatchState, problem: string, confirmed = true): 'stop' 
 
 /** What handling one candidate did, and whether the batch should go on. */
 type Step = 'next' | 'stop' | 'cancelled';
+
+/** What the coordinator will do with one discovered item, and why. */
+type AttemptDecision =
+  /** No pointer and no receipt: a first attempt, which creates its workspace. */
+  | { readonly kind: 'fresh' }
+  /** One pointer that resolves here: continue that workspace. */
+  | { readonly kind: 'continue'; readonly workspace: ContinuedWorkspace }
+  /** Something the harness will not act on, published as a refusal. */
+  | { readonly kind: 'refuse'; readonly reason: string };
+
+/**
+ * Which of the three this item is (docs/implement-workspace-continuation.md).
+ * Nothing is created here: this only reads the item's pointer labels, its
+ * receipt, and what exists on this machine.
+ */
+async function decideAttempt(
+  workDir: string,
+  candidate: SourceCandidate,
+  receipt: SourceReceipt | null,
+): Promise<AttemptDecision> {
+  const pointers = candidate.pointers;
+  if (pointers.length > 1) {
+    return {
+      kind: 'refuse',
+      reason:
+        `it names ${String(pointers.length)} workspaces (${pointers.join(', ')}) and which one to ` +
+        'continue cannot be guessed: leave exactly one pointer label on it',
+    };
+  }
+  const [workspaceId] = pointers;
+  if (workspaceId !== undefined) {
+    const resolution = await resolveWorkspace(workDir, workspaceId);
+    if (!resolution.ok) {
+      return { kind: 'refuse', reason: resolution.problem };
+    }
+    // Reading the checkout itself is the attempt's job, not the preview's: this
+    // decides from what exists on disk, and a workspace whose branch or `HEAD`
+    // moved is refused when the attempt opens it.
+    return { kind: 'continue', workspace: resolution.workspace };
+  }
+  if (receipt !== null) {
+    return {
+      kind: 'refuse',
+      reason:
+        `it was already attempted (${describeReceipt(receipt)}), and nothing names a workspace to ` +
+        `continue: add a ${WORKSPACE_POINTER_PREFIX}<workspaceId> label to work in its workspace ` +
+        'again, or create a new issue',
+    };
+  }
+  return { kind: 'fresh' };
+}
+
+/**
+ * Publishes a refusal and takes the item out of the queue, so a later scan does
+ * not read it again and again. Nothing is claimed, nothing runs, and nothing
+ * local is created: the item is re-read first, so a refusal is about the item as
+ * it is now, and one that changed or left the queue is left alone.
+ */
+async function refuse(
+  context: SourceContext,
+  candidate: SourceCandidate,
+  reason: string,
+  state: BatchState,
+  diagnostics: Map<string, string> | null,
+): Promise<Step> {
+  const { source, io, stop } = context;
+  const identity = receiptIdentity(candidate.ref);
+
+  let prepared: SourceTask | null;
+  try {
+    prepared = await source.prepare(candidate, stop);
+  } catch (cause) {
+    if (cause instanceof SourceError && cause.kind === 'invalid-task') {
+      state.invalid += 1;
+      reportOnce(
+        diagnostics,
+        identity,
+        `invalid:${candidate.ref.updatedAt}:${cause.message}`,
+        () => {
+          io.err(
+            `${candidate.ref.key} (${candidate.title}): skipped, not a usable task: ${cause.message}`,
+          );
+        },
+      );
+      return 'next';
+    }
+    if (stop.aborted) {
+      return 'cancelled';
+    }
+    throw cause;
+  }
+  if (prepared === null) {
+    state.skipped += 1;
+    reportOnce(diagnostics, identity, `stale:${candidate.ref.updatedAt}`, () => {
+      io.out(`${candidate.ref.key}: no longer eligible, so it was skipped without a claim`);
+    });
+    return 'next';
+  }
+
+  const item = prepared;
+  io.err(`${item.ref.key}: refused, and the issue is told why: ${reason}`);
+  const feedbackStop = stop.aborted ? AbortSignal.timeout(FEEDBACK_DEADLINE_MS) : stop;
+  try {
+    await source.refuse(item, reason, feedbackStop);
+  } catch (cause) {
+    return stopWith(
+      state,
+      `${item.ref.key}: the issue was refused, but publishing that refusal failed, so intake stops ` +
+        `for inspection: ${messageOf(cause)}`,
+    );
+  }
+  state.refused += 1;
+  io.out(`${item.ref.key}: refusal published and the issue taken out of the queue`);
+  return 'next';
+}
 
 /**
  * One item, through the documented reservation sequence: receipt first,
@@ -671,22 +855,25 @@ async function attempt(
   const identity = receiptIdentity(candidate.ref);
 
   const existing = await readReceipt(file);
-  if (existing !== null) {
-    state.skipped += 1;
-    reportOnce(
-      diagnostics,
-      identity,
-      `attempted:${existing.source.updatedAt}:${describeReceipt(existing)}`,
-      () => {
-        io.out(`${candidate.ref.key}: already attempted, so it was not run again (${file})`);
-        io.out(`${candidate.ref.key}: ${describeReceipt(existing)}`);
-      },
-    );
-    return 'next';
+  const decision = await decideAttempt(workDir, candidate, existing);
+  if (decision.kind === 'refuse') {
+    return await refuse(context, candidate, decision.reason, state, diagnostics);
   }
 
   if (stop.aborted) {
     return 'cancelled';
+  }
+
+  // A continuation's checkout is read before anything is reserved: a branch or a
+  // `HEAD` that moved is refused while nothing has been claimed and nothing has
+  // been created.
+  let continuedWorkspace: ContinuedWorkspace | undefined;
+  if (decision.kind === 'continue') {
+    try {
+      continuedWorkspace = await reopenWorkspace(workDir, decision.workspace.workspaceId);
+    } catch (cause) {
+      return await refuse(context, candidate, messageOf(cause), state, diagnostics);
+    }
   }
 
   // The source checkout is rechecked before the reservation, not after it: a
@@ -735,24 +922,40 @@ async function attempt(
     return 'next';
   }
 
-  const receipt: SourceReceipt = {
-    version: 1,
-    source: prepared.ref,
-    reservedAt: now().toISOString(),
-  };
-  if (!(await reserveReceipt(file, receipt))) {
-    state.skipped += 1;
-    io.out(
-      `${candidate.ref.key}: another reservation already existed, so it was not attempted (${file})`,
-    );
-    return 'next';
+  const item = prepared;
+  // A first attempt reserves its own receipt. A continuation has one from the
+  // attempt it continues; one whose pointer a person added by hand does not, and
+  // it needs one all the same, because this attempt's outcome is recorded there.
+  if (existing === null) {
+    const receipt: SourceReceipt = {
+      version: 1,
+      source: item.ref,
+      reservedAt: now().toISOString(),
+    };
+    if (!(await reserveReceipt(file, receipt))) {
+      state.skipped += 1;
+      io.out(
+        `${candidate.ref.key}: another reservation already existed, so it was not attempted (${file})`,
+      );
+      return 'next';
+    }
+  } else if (existing.problem !== undefined) {
+    // What went wrong last time is not what this attempt is doing: cleared here,
+    // and anything this attempt observes is written again below.
+    await updateReceipt(file, { problem: undefined });
   }
   state.attempted += 1;
-  io.out(`${prepared.ref.key}: reserved (${file}); claiming ${prepared.ref.id}`);
+  io.out(
+    continuedWorkspace !== undefined
+      ? `${item.ref.key}: reserved (${file}); continuing workspace ` +
+          `${continuedWorkspace.workspaceId} (attempt ${String(continuedWorkspace.attempt)}` +
+          `${continuedWorkspace.legacy ? ', legacy layout' : ''}); claiming ${item.ref.id}`
+      : `${item.ref.key}: reserved (${file}); claiming ${item.ref.id}`,
+  );
 
   let claimed: boolean;
   try {
-    claimed = await source.claim(prepared, stop);
+    claimed = await source.claim(item, stop);
   } catch (cause) {
     const problem = messageOf(cause);
     await updateReceipt(file, { problem: `claim: ${problem}` });
@@ -765,10 +968,12 @@ async function attempt(
   if (!claimed) {
     // No mutation request was sent, so only this process's own new reservation
     // is released; the issue is skipped and a later scan may try again.
-    await rm(file, { force: true });
+    if (existing === null) {
+      await rm(file, { force: true });
+    }
     state.skipped += 1;
     io.out(
-      `${prepared.ref.key}: no longer eligible or its revision changed before any claim was sent, ` +
+      `${item.ref.key}: no longer eligible or its revision changed before any claim was sent, ` +
         'so the reservation was released',
     );
     return 'next';
@@ -776,7 +981,23 @@ async function attempt(
 
   let result: RunTaskResult;
   try {
-    result = await context.run({ task: prepared.task, sourceRef: prepared.ref, stop });
+    result = await context.run({
+      task: item.task,
+      sourceRef: item.ref,
+      stop,
+      ...(continuedWorkspace === undefined ? {} : { continuedWorkspace }),
+      ...(decision.kind === 'fresh'
+        ? {
+            // Where this attempt's work lives is recorded on the issue before any
+            // coding turn runs, so a later attempt can find the workspace even if
+            // this one dies. A write that fails throws, and the caller treats the
+            // attempt as producing no local result: the receipt is kept and
+            // intake stops for inspection.
+            onWorkspaceReady: (workspace: { readonly workspaceId: string }) =>
+              source.recordWorkspace(item, workspace.workspaceId, stop),
+          }
+        : {}),
+    });
   } catch (cause) {
     const problem = messageOf(cause);
     await updateReceipt(file, { problem: `run: ${problem}` });
@@ -785,7 +1006,7 @@ async function attempt(
     }
     return stopWith(
       state,
-      `${prepared.ref.key}: the run ending this attempt produced no local result, so its receipt is ` +
+      `${item.ref.key}: the run ending this attempt produced no local result, so its receipt is ` +
         `kept and intake stops for inspection: ${problem}`,
     );
   }

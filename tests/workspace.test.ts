@@ -8,7 +8,7 @@
 
 import { spawn } from 'node:child_process';
 import { existsSync, realpathSync, statSync } from 'node:fs';
-import { mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -18,8 +18,13 @@ import {
   WorkspaceError,
   allocateRunDirectory,
   inspectWorkspaceChanges,
+  legacyWorkspacePath,
   prepareWorkspace,
   preflightSource,
+  readWorkspaceState,
+  reopenWorkspace,
+  resolveWorkspace,
+  workspaceStatePath,
 } from '../src/workspace.js';
 import type {
   PreparedWorkspace,
@@ -244,6 +249,87 @@ async function prepareRun(fixture: Fixture): Promise<PreparedWorkspace> {
   const source = await preflightSource({ repoPath: fixture.repo, workDir: fixture.workDir });
   return prepareWorkspace(await allocateRunDirectory(fixture.workDir), source, taskBounds());
 }
+
+describe('a workspace that outlives its run', () => {
+  it('is recorded in a ledger beside the clone, and reopens by its id', async () => {
+    const fixture = await createRepository();
+    const prepared = await prepareRun(fixture);
+
+    // The ledger says what the clone is, and holds no attempts yet.
+    const ledger = await readWorkspaceState(fixture.workDir, prepared.workspaceId);
+    expect(ledger).toMatchObject({
+      version: 1,
+      workspaceId: prepared.workspaceId,
+      branch: `harness/${prepared.runId}`,
+      baseCommit: prepared.baseCommit,
+      attempts: [],
+    });
+    expect(existsSync(workspaceStatePath(fixture.workDir, prepared.workspaceId))).toBe(true);
+
+    // Resolving is a read: the clone, the ledger, and which attempt comes next.
+    const resolved = await resolveWorkspace(fixture.workDir, prepared.workspaceId);
+    expect(resolved.ok).toBe(true);
+    if (resolved.ok) {
+      expect(resolved.workspace.workspacePath).toBe(prepared.workspacePath);
+      expect(resolved.workspace.attempt).toBe(1);
+      expect(resolved.workspace.legacy).toBe(false);
+    }
+
+    // Reopening reads the checkout and returns it for the next attempt.
+    const reopened = await reopenWorkspace(fixture.workDir, prepared.workspaceId);
+    expect(reopened.workspacePath).toBe(prepared.workspacePath);
+    expect(reopened.branch).toBe(prepared.branch);
+    expect(reopened.attempt).toBe(1);
+  });
+
+  it('refuses a workspace something else committed in', async () => {
+    const fixture = await createRepository();
+    const prepared = await prepareRun(fixture);
+    // The harness never commits in a workspace, so a moved HEAD is a change it
+    // cannot account for and will not build on.
+    await gitOrFail(
+      ['commit', '--quiet', '--allow-empty', '--message', 'a commit the harness did not make'],
+      prepared.workspacePath,
+    );
+
+    await expect(reopenWorkspace(fixture.workDir, prepared.workspaceId)).rejects.toThrow(
+      /something committed in it/,
+    );
+  });
+
+  it('resolves a workspace that predates the split at its legacy path', async () => {
+    // The layout before workspaces were split out: <workDir>/<id>/workspace, with
+    // this increment's ledger beside the workspaces. Nothing is moved to adopt it.
+    const fixture = await createRepository();
+    const prepared = await prepareRun(fixture);
+    const legacyId = 'run-20260101000000-1e9ac001';
+    const legacyPath = legacyWorkspacePath(fixture.workDir, legacyId);
+    await mkdir(path.dirname(legacyPath), { recursive: true });
+    await rename(prepared.workspacePath, legacyPath);
+    await writeFile(
+      workspaceStatePath(fixture.workDir, legacyId),
+      `${JSON.stringify({
+        version: 1,
+        workspaceId: legacyId,
+        sourceRoot: prepared.sourceRoot,
+        baseCommit: prepared.baseCommit,
+        branch: prepared.branch,
+        createdAt: '2026-01-01T00:00:00.000Z',
+        attempts: [],
+      })}\n`,
+      'utf8',
+    );
+
+    const resolved = await resolveWorkspace(fixture.workDir, legacyId);
+    expect(resolved.ok).toBe(true);
+    if (resolved.ok) {
+      expect(resolved.workspace.legacy).toBe(true);
+      expect(resolved.workspace.workspacePath).toBe(legacyPath);
+    }
+    const reopened = await reopenWorkspace(fixture.workDir, legacyId);
+    expect(reopened.legacy).toBe(true);
+  });
+});
 
 describe('a clean source repository', () => {
   it('returns the real repository root and the exact committed HEAD', async () => {
@@ -966,8 +1052,10 @@ describe('task IDs as labels', () => {
     expect((await readdir(path.join(fixture.workDir, 'runs'))).sort()).toEqual(
       runs.map((prepared) => prepared.runId).sort(),
     );
+    // One clone and one ledger per workspace: the clone is what a later attempt
+    // reopens, the ledger is what says what it was cloned from.
     expect((await readdir(path.join(fixture.workDir, 'workspaces'))).sort()).toEqual(
-      runs.map((prepared) => prepared.runId).sort(),
+      runs.flatMap((prepared) => [prepared.runId, `${prepared.runId}.json`]).sort(),
     );
     expect((await readdir(fixture.parent)).sort()).toEqual([...before, 'runs'].sort());
     expect(existsSync(path.join(fixture.parent, 'evil'))).toBe(false);

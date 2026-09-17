@@ -123,6 +123,11 @@ context for the turn. None of it becomes a command, an argument, a path, or a li
 3. **Continuation guidance** — comments since the previous attempt and the previous attempts'
    evidence, rendered into the turn's context.
 
+**Status.** Increment 1 is implemented: the split layout, the ledger beside each clone, the pointer
+label written once, the eligibility table with its refusals, reopening with the red-baseline
+exception, and the report's workspace fields. Increments 2 and 3 are not: the ladder is still one
+configured agent per attempt, and a continued attempt is told the current description only.
+
 ## Verification
 
 - Offline: workspace allocation and resolution (new and legacy), reopen refusal when `HEAD` moved,

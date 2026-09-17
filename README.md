@@ -344,13 +344,26 @@ so in as many words when the run was stopped before any round followed its last 
 has no checks to report, and the round the run started with is not one. **Nothing here moves an
 issue to Done**, and nothing commits, merges, or publishes anything.
 
-**Nothing runs twice.** `.intake/receipts/<hash>.json` under `workDir` records each attempted issue
-by its immutable ID, and a receipt is created **before** the issue is claimed. A receipt survives a
-restart, and editing or reopening the issue does not clear it. A single `.intake/lock/` directory
-makes sure only one consumer uses an output directory; it is never broken automatically. To
-deliberately retry one issue: stop the watcher, inspect and stop prior processes, keep the run
-artifacts, delete only that issue's printed receipt file, and put the issue back to the ready
-status. Never remove the whole `.intake` directory to fix one task.
+**Nothing runs twice by accident.** `.intake/receipts/<hash>.json` under `workDir` records each
+attempted issue by its immutable ID, and a receipt is created **before** the issue is claimed. A
+receipt survives a restart, and editing or reopening the issue does not clear it. A single
+`.intake/lock/` directory makes sure only one consumer uses an output directory; it is never broken
+automatically.
+
+**Where an issue's work lives is written on the issue.** The run that creates a workspace adds one
+`harness-ws-<workspaceId>` label, before any coding turn, and a later attempt only ever reads it.
+That is what makes a rework possible: move an attempted issue back to the ready status and the
+harness **continues its workspace** â€” the same clone, on the same branch, with the work of the
+earlier attempt still in it, and a baseline that is allowed to be red, because continuing failed
+work is the point. An attempted issue with no such label is not run again: the harness refuses it,
+says why in a comment, and moves it out of the queue, so a stale ticket cannot quietly burn more
+attempts. A pointer this machine cannot resolve, and an issue carrying two pointers, are refused
+the same way. The receipt stays as the audit trail behind all of it.
+
+To retry without that machinery â€” a first attempt again, in a new workspace â€” stop the watcher,
+inspect and stop prior processes, keep the run artifacts, delete only that issue's printed receipt
+file, and put the issue back to the ready status. Never remove the whole `.intake` directory to fix
+one task.
 
 Scans are periodic and pause during a batch, so a new issue is picked up on the next scan rather
 than instantly. `source list` and `source run` report a failed read and exit nonzero; `source watch`
@@ -754,6 +767,9 @@ automation does and does not prove is written down in [docs/GIT-WORKFLOW.md](doc
 - [docs/implement-workspace-continuation.md](docs/implement-workspace-continuation.md) — the
   contract for workspaces that outlive runs, the workspace pointer label, and the escalation ladder.
   Its increments are not implemented yet.
+- [docs/LONG_TERM_VISION.md](docs/LONG_TERM_VISION.md) — the direction the harness is meant to grow
+  into. It defines no behaviour: [docs/spec.md](docs/spec.md) stays authoritative, and every change
+  still needs a task.
 - [docs/harness.jira.example.json](docs/harness.jira.example.json) — a credential-free source
   configuration to copy.
 - [docs/GIT-WORKFLOW.md](docs/GIT-WORKFLOW.md) — how changes to this repository are made: one

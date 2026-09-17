@@ -20,9 +20,9 @@
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { realpathSync, statSync } from 'node:fs';
-import { mkdir, readdir } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import type { ChangeCategory, ChangeKind, ChangeState, ChangedPath } from './types.js';
+import type { ChangeCategory, ChangeKind, ChangeState, ChangedPath, RunStatus } from './types.js';
 
 /** A source repository or output location that cannot be used for a run. */
 export class WorkspaceError extends Error {
@@ -50,6 +50,8 @@ export interface SourcePreflight {
 
 /** A run directory allocated for one invocation, before any work is placed in it. */
 export interface RunDirectory {
+  /** The output directory this run was allocated under. */
+  readonly workDir: string;
   /** Generated run ID: the run's name in logs, reports, and its branch. Never task text. */
   readonly runId: string;
   /** `<workDir>/runs/<runId>`: the evidence this attempt produces. */
@@ -66,6 +68,15 @@ export interface RunDirectory {
 
 /** An allocated run directory whose working copy is ready for a task. */
 export interface PreparedWorkspace extends RunDirectory {
+  /**
+   * The workspace's own id: the id of the run that created it, which is also what
+   * an issue's pointer label names (docs/implement-workspace-continuation.md).
+   */
+  readonly workspaceId: string;
+  /** Whether this run continues a workspace that already existed. */
+  readonly continued: boolean;
+  /** Which attempt this is for the workspace, counting this one. */
+  readonly attempt: number;
   /** Real repository root the working copy was cloned from. */
   readonly sourceRoot: string;
   /** Recorded base commit: the commit the working copy is checked out at. */
@@ -73,6 +84,47 @@ export interface PreparedWorkspace extends RunDirectory {
   /** Dedicated local branch created for this run. */
   readonly branch: string;
 }
+
+/** One attempt recorded against a workspace. */
+export interface WorkspaceAttempt {
+  readonly runId: string;
+  readonly outcome: RunStatus;
+  readonly endedAt: string;
+  readonly reportPath: string;
+}
+
+/**
+ * One workspace's local state: what it was cloned from, and the attempts made in
+ * it. It lives beside the clone (`<workDir>/workspaces/<workspaceId>.json`) rather
+ * than inside it, so it never shows up as a change in the working copy, and it is
+ * derived state: a run's own report stays the authority on what that run did.
+ */
+export interface WorkspaceState {
+  readonly version: 1;
+  readonly workspaceId: string;
+  readonly sourceRoot: string;
+  readonly baseCommit: string;
+  readonly branch: string;
+  readonly createdAt: string;
+  readonly attempts: readonly WorkspaceAttempt[];
+}
+
+/** A workspace a run may continue, resolved and ready to be reopened. */
+export interface ContinuedWorkspace {
+  readonly workspaceId: string;
+  readonly workspacePath: string;
+  readonly branch: string;
+  readonly baseCommit: string;
+  /** Which attempt this run is for the workspace, counting this one. */
+  readonly attempt: number;
+  /** Whether this workspace still lives in the layout that predates the split. */
+  readonly legacy: boolean;
+}
+
+/** Whether an issue's pointer names a workspace this machine can continue. */
+export type WorkspaceResolution =
+  | { readonly ok: true; readonly workspace: ContinuedWorkspace }
+  | { readonly ok: false; readonly problem: string };
 
 /**
  * Inherited Git variables are dropped so that a `GIT_DIR`, `GIT_WORK_TREE`, or
@@ -501,7 +553,7 @@ export async function allocateRunDirectory(
       );
     }
 
-    const run: RunDirectory = { runId, runDir, workspacePath, logsDir };
+    const run: RunDirectory = { workDir: outputDir, runId, runDir, workspacePath, logsDir };
     try {
       await mkdir(logsDir);
     } catch (cause) {
@@ -759,7 +811,226 @@ export async function prepareWorkspace(
     throw incompleteRunError(run, messageOf(cause), cause);
   }
 
-  return { ...run, sourceRoot: source.sourceRoot, baseCommit: source.baseCommit, branch };
+  // The ledger is written before anything can run in the workspace, so a
+  // workspace always has one from the moment it exists: a later attempt resolves
+  // it through this file, and a run that dies before its report leaves a
+  // workspace that can be continued rather than an orphaned directory.
+  await writeWorkspaceState(run.workDir, {
+    version: 1,
+    workspaceId: run.runId,
+    sourceRoot: source.sourceRoot,
+    baseCommit: source.baseCommit,
+    branch,
+    createdAt: new Date().toISOString(),
+    attempts: [],
+  });
+
+  return {
+    ...run,
+    workspaceId: run.runId,
+    continued: false,
+    attempt: 1,
+    sourceRoot: source.sourceRoot,
+    baseCommit: source.baseCommit,
+    branch,
+  };
+}
+
+/** Where one workspace's ledger lives: `<workDir>/workspaces/<workspaceId>.json`. */
+export function workspaceStatePath(workDir: string, workspaceId: string): string {
+  return path.join(path.resolve(workDir), 'workspaces', `${workspaceId}.json`);
+}
+
+/** Where a workspace's clone lives in the layout that predates the split. */
+export function legacyWorkspacePath(workDir: string, workspaceId: string): string {
+  return path.join(path.resolve(workDir), workspaceId, 'workspace');
+}
+
+/** One ledger, validated: a file that is not one is reported, never guessed at. */
+function parseWorkspaceState(value: unknown, where: string): WorkspaceState {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new WorkspaceError(`"${where}" is not a workspace ledger object`);
+  }
+  const fields = value as Record<string, unknown>;
+  const text = (name: string): string => {
+    const field = fields[name];
+    if (typeof field !== 'string' || field.trim() === '') {
+      throw new WorkspaceError(`"${where}" has no usable "${name}"`);
+    }
+    return field;
+  };
+  const attempts = fields['attempts'];
+  if (!Array.isArray(attempts)) {
+    throw new WorkspaceError(`"${where}" has no attempts array`);
+  }
+  return {
+    version: 1,
+    workspaceId: text('workspaceId'),
+    sourceRoot: text('sourceRoot'),
+    baseCommit: text('baseCommit'),
+    branch: text('branch'),
+    createdAt: text('createdAt'),
+    attempts: attempts as readonly WorkspaceAttempt[],
+  };
+}
+
+/** Reads one workspace's ledger, or `null` when there is none. */
+export async function readWorkspaceState(
+  workDir: string,
+  workspaceId: string,
+): Promise<WorkspaceState | null> {
+  const file = workspaceStatePath(workDir, workspaceId);
+  let text: string;
+  try {
+    text = await readFile(file, 'utf8');
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code === 'ENOENT') {
+      return null;
+    }
+    throw new WorkspaceError(`"${file}" cannot be read: ${messageOf(cause)}`);
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text) as unknown;
+  } catch (cause) {
+    throw new WorkspaceError(`"${file}" is not valid JSON: ${messageOf(cause)}`);
+  }
+  return parseWorkspaceState(parsed, file);
+}
+
+/** Writes one ledger atomically: a reader sees the old file or the new one. */
+async function writeWorkspaceState(workDir: string, state: WorkspaceState): Promise<void> {
+  const file = workspaceStatePath(workDir, state.workspaceId);
+  const temporary = `${file}.${randomBytes(4).toString('hex')}.tmp`;
+  try {
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(temporary, `${JSON.stringify(state, null, 2)}\n`, 'utf8');
+    await rename(temporary, file);
+  } catch (cause) {
+    await rm(temporary, { force: true }).catch(() => undefined);
+    throw new WorkspaceError(`"${file}" cannot be written: ${messageOf(cause)}`);
+  }
+}
+
+/** Records one finished attempt in a workspace's ledger. */
+export async function recordWorkspaceAttempt(
+  workDir: string,
+  workspaceId: string,
+  attempt: WorkspaceAttempt,
+): Promise<void> {
+  const state = await readWorkspaceState(workDir, workspaceId);
+  if (state === null) {
+    throw new WorkspaceError(
+      `workspace ${workspaceId} has no ledger at "${workspaceStatePath(workDir, workspaceId)}", ` +
+        'so this attempt cannot be recorded against it',
+    );
+  }
+  await writeWorkspaceState(workDir, { ...state, attempts: [...state.attempts, attempt] });
+}
+
+/**
+ * Resolves the workspace an issue's pointer names, without touching it: the clone
+ * (in the current layout, or the one that predates the split) and the ledger that
+ * says what it was cloned from. Whether the checkout is still usable is decided
+ * by {@link reopenWorkspace}, which reads it.
+ */
+export async function resolveWorkspace(
+  workDir: string,
+  workspaceId: string,
+): Promise<WorkspaceResolution> {
+  const current = workspacePathFor(workDir, workspaceId);
+  const legacy = legacyWorkspacePath(workDir, workspaceId);
+  const workspacePath = isDirectory(current) ? current : isDirectory(legacy) ? legacy : null;
+  if (workspacePath === null) {
+    return {
+      ok: false,
+      problem:
+        `its workspace pointer names ${workspaceId}, and this machine has no workspace there ` +
+        `(looked for "${current}" and "${legacy}")`,
+    };
+  }
+
+  let state: WorkspaceState | null;
+  try {
+    state = await readWorkspaceState(workDir, workspaceId);
+  } catch (cause) {
+    return { ok: false, problem: `its workspace ledger cannot be read: ${messageOf(cause)}` };
+  }
+  if (state === null) {
+    return {
+      ok: false,
+      problem:
+        `its workspace exists at "${workspacePath}" but has no ledger at ` +
+        `"${workspaceStatePath(workDir, workspaceId)}", so there is no record of what it was ` +
+        'cloned from and the harness will not continue it',
+    };
+  }
+  if (state.workspaceId !== workspaceId) {
+    return {
+      ok: false,
+      problem: `its workspace ledger names ${state.workspaceId}, not ${workspaceId}`,
+    };
+  }
+
+  return {
+    ok: true,
+    workspace: {
+      workspaceId,
+      workspacePath,
+      branch: state.branch,
+      baseCommit: state.baseCommit,
+      attempt: state.attempts.length + 1,
+      legacy: workspacePath === legacy,
+    },
+  };
+}
+
+/**
+ * Resolves and verifies a workspace's checkout for a run that continues it. The
+ * harness never commits in a workspace, so a branch that is not the recorded one,
+ * or a `HEAD` that moved, means something else changed it: the attempt refuses
+ * rather than building on a state it cannot account for.
+ */
+export async function reopenWorkspace(
+  workDir: string,
+  workspaceId: string,
+): Promise<ContinuedWorkspace> {
+  const resolution = await resolveWorkspace(workDir, workspaceId);
+  if (!resolution.ok) {
+    throw new WorkspaceError(`workspace ${workspaceId} cannot be continued: ${resolution.problem}`);
+  }
+  const workspace = resolution.workspace;
+
+  const head = await runGit(['rev-parse', '--verify', 'HEAD^{commit}'], workspace.workspacePath);
+  const commit = head.stdout.trim();
+  if (head.code !== 0 || commit !== workspace.baseCommit) {
+    throw new WorkspaceError(
+      `workspace ${workspaceId} is at ${commit === '' ? 'no commit' : commit}, not the base commit ` +
+        `${workspace.baseCommit} it was cloned at: something committed in it, and the harness never ` +
+        'does that, so it will not continue it',
+    );
+  }
+  const symbolic = await runGit(
+    ['symbolic-ref', '--quiet', '--short', 'HEAD'],
+    workspace.workspacePath,
+  );
+  const branch = symbolic.stdout.trim();
+  if (symbolic.code !== 0 || branch !== workspace.branch) {
+    throw new WorkspaceError(
+      `workspace ${workspaceId} is on ${branch === '' ? 'no branch' : `branch "${branch}"`}, not ` +
+        `its recorded "${workspace.branch}", so the harness will not continue it`,
+    );
+  }
+  return workspace;
+}
+
+/** Whether a path is an existing directory. */
+function isDirectory(candidate: string): boolean {
+  try {
+    return statSync(candidate).isDirectory();
+  } catch {
+    return false;
+  }
 }
 
 /**

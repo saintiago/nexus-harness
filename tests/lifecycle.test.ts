@@ -32,7 +32,12 @@ import { runCheckRound, runCommand } from '../src/checks.js';
 import { appendRunLog, openAgentLog, writeRunReport } from '../src/report.js';
 import { runTask } from '../src/runner.js';
 import type { AgentTurnResult, RunnerDependencies } from '../src/runner.js';
-import { allocateRunDirectory, prepareWorkspace, preflightSource } from '../src/workspace.js';
+import {
+  allocateRunDirectory,
+  prepareWorkspace,
+  preflightSource,
+  recordWorkspaceAttempt,
+} from '../src/workspace.js';
 import type { Command, HarnessConfig, RunReport, Task } from '../src/types.js';
 import { cleanupTempDirectories, createTempDir } from './support.js';
 
@@ -394,6 +399,7 @@ function dependencies(
     preflight: preflightSource,
     allocateRunDirectory,
     prepareWorkspace,
+    recordWorkspaceAttempt,
     runCheckRound,
     openAgentLog,
     appendRunLog,

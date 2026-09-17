@@ -677,6 +677,9 @@ function workspaceReport(request: RunReportRequest): WorkspaceReport {
       path: request.run.workspacePath,
       prepared: false,
       branch: null,
+      workspaceId: null,
+      continued: false,
+      attempt: null,
       problem: request.preparationProblem,
     };
   }
@@ -684,6 +687,9 @@ function workspaceReport(request: RunReportRequest): WorkspaceReport {
     path: workspace.workspacePath,
     prepared: true,
     branch: workspace.branch,
+    workspaceId: workspace.workspaceId,
+    continued: workspace.continued,
+    attempt: workspace.attempt,
     problem: null,
   };
 }
