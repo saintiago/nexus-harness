@@ -878,7 +878,15 @@ async function sourceCommand(
       io,
       stop: stop.signal,
       preflight: preflightSource,
-      run: ({ task, sourceRef, stop: runStop, tier, continuedWorkspace, onWorkspaceReady }) =>
+      run: ({
+        task,
+        sourceRef,
+        stop: runStop,
+        tier,
+        continuedWorkspace,
+        onWorkspaceReady,
+        guidance,
+      }) =>
         runTask(
           {
             task,
@@ -892,6 +900,8 @@ async function sourceCommand(
             workDir,
             stop: runStop,
             sourceRef,
+            ...(tier === undefined ? {} : { tierName: tier.name }),
+            ...(guidance === undefined ? {} : { guidance }),
             ...(continuedWorkspace === undefined ? {} : { continuedWorkspace }),
             ...(onWorkspaceReady === undefined ? {} : { onWorkspaceReady }),
           },

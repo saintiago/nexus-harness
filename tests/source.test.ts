@@ -39,6 +39,7 @@ import {
 } from '../src/source.js';
 import type {
   SourceCandidate,
+  SourceComment,
   SourceContext,
   SourceRunOutcome,
   SourceTask,
@@ -206,6 +207,10 @@ interface FixtureOptions {
   readonly run?: (task: Task, call: number, runDir: string) => Promise<RunTaskResult>;
   readonly recordWorkspace?: (item: SourceTask, workspaceId: string) => Promise<void> | void;
   readonly refuse?: (item: SourceTask, reason: string) => Promise<void> | void;
+  readonly commentsSince?: (
+    item: SourceTask,
+    since: string,
+  ) => Promise<readonly SourceComment[]> | readonly SourceComment[];
   readonly preflight?: (call: number) => Promise<{ sourceRoot: string; baseCommit: string }>;
   readonly sleep?: (ms: number, stop: AbortSignal) => Promise<void>;
 }
@@ -218,6 +223,7 @@ interface Fixture {
   readonly requests: Array<{
     readonly task: Task;
     readonly tier: string | null;
+    readonly guidance: readonly string[];
     readonly continuedWorkspace?: { readonly workspaceId: string; readonly attempt: number };
     readonly continued: boolean;
   }>;
@@ -282,6 +288,10 @@ function createFixture(options: FixtureOptions): Fixture {
       refusals.push({ key: item.ref.key, reason });
       await options.refuse?.(item, reason);
     },
+    commentsSince: async (item, since) => {
+      log.push(`comments:${item.ref.key}`);
+      return options.commentsSince?.(item, since) ?? [];
+    },
   };
 
   const context: SourceContext = {
@@ -309,6 +319,7 @@ function createFixture(options: FixtureOptions): Fixture {
       requests.push({
         task: asked.task,
         tier: asked.tier?.name ?? null,
+        guidance: asked.guidance ?? [],
         continuedWorkspace: asked.continuedWorkspace,
         continued: asked.continuedWorkspace !== undefined,
       });
@@ -864,7 +875,14 @@ describe('the intake lock', () => {
 // ---------------------------------------------------------------------------
 
 /** A real workspace on disk, prepared the way a first attempt prepares one. */
-async function preparedWorkspaceOnDisk(workDir: string): Promise<{ workspaceId: string }> {
+async function preparedWorkspaceOnDisk(
+  workDir: string,
+  attempts: readonly {
+    readonly outcome: RunStatus;
+    readonly reason: string;
+    readonly tier?: string;
+  }[] = [],
+): Promise<{ workspaceId: string }> {
   const repo = await createTempDir();
   const runGit = (...args: readonly string[]): void => {
     const result = spawnSync('git', [...args], {
@@ -894,6 +912,30 @@ async function preparedWorkspaceOnDisk(workDir: string): Promise<{ workspaceId: 
     now: () => new Date(),
     stop: undefined,
   });
+  if (attempts.length > 0) {
+    // The ledger the runner writes as each attempt finishes, as this continuation
+    // will read it.
+    await writeFile(
+      workspaceStatePath(workDir, prepared.workspaceId),
+      `${JSON.stringify({
+        version: 1,
+        workspaceId: prepared.workspaceId,
+        sourceRoot: repo,
+        baseCommit: prepared.baseCommit,
+        branch: prepared.branch,
+        createdAt: '2026-01-01T00:00:00.000Z',
+        attempts: attempts.map((attempt, index) => ({
+          runId: `run-${String(index + 1)}`,
+          outcome: attempt.outcome,
+          reason: attempt.reason,
+          ...(attempt.tier === undefined ? {} : { tier: attempt.tier }),
+          endedAt: `2026-01-0${String(index + 1)}T00:00:00.000Z`,
+          reportPath: `/runs/run-${String(index + 1)}/result.json`,
+        })),
+      })}\n`,
+      'utf8',
+    );
+  }
   return { workspaceId: prepared.workspaceId };
 }
 
@@ -1030,6 +1072,43 @@ describe('an issue that points at a workspace', () => {
     // It still has a receipt: this attempt's outcome has to live somewhere.
     const receipt = await readReceipt(receiptFilePath(workDir, refFor('2', 'SAM1-2')));
     expect(receipt?.outcome).toBe('passed');
+  });
+
+  it('tells a continued attempt what the earlier ones did, and what was said since', async () => {
+    const workDir = await createTempDir();
+    const { workspaceId } = await preparedWorkspaceOnDisk(workDir, [
+      {
+        outcome: 'failed',
+        reason: 'the baseline was red and the turn did not fix it',
+        tier: 'flash',
+      },
+    ]);
+    const asked: string[] = [];
+    const fixture = createFixture({
+      workDir,
+      scans: [[candidateFor('2', 'SAM1-2', [workspaceId])]],
+      commentsSince: (_item, since) => {
+        asked.push(since);
+        return [
+          {
+            author: 'An Investigator',
+            createdAt: '2026-01-02T09:00:00.000Z',
+            text: 'the task cannot pass the checks without a valid email address',
+          },
+        ];
+      },
+    });
+
+    const summary = await runSource(fixture.context, null);
+
+    expect(summary.passed).toBe(1);
+    // Only what the previous attempt's own end says is new enough to matter.
+    expect(asked).toEqual(['2026-01-01T00:00:00.000Z']);
+    expect(fixture.requests[0]?.guidance).toEqual([
+      'attempt 1 (tier flash) failed: the baseline was red and the turn did not fix it',
+      'comment by An Investigator at 2026-01-02T09:00:00.000Z: ' +
+        'the task cannot pass the checks without a valid email address',
+    ]);
   });
 });
 

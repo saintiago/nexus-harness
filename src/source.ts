@@ -42,8 +42,13 @@ import path from 'node:path';
 import { RunCancelledError } from './runner.js';
 import type { RunTaskResult } from './runner.js';
 import type { AttemptEvidence, EscalationTier, RunStatus, SourceRef, Task } from './types.js';
-import { resolveWorkspace, reopenWorkspace } from './workspace.js';
-import type { ContinuedWorkspace, PreflightRequest, SourcePreflight } from './workspace.js';
+import { readWorkspaceState, resolveWorkspace, reopenWorkspace } from './workspace.js';
+import type {
+  ContinuedWorkspace,
+  PreflightRequest,
+  SourcePreflight,
+  WorkspaceAttempt,
+} from './workspace.js';
 
 /** How a source failed, in the few categories the coordinator acts on. */
 export type SourceProblemKind =
@@ -166,6 +171,20 @@ export interface SourceRunOutcome {
 }
 
 /**
+ * One comment on a source item, rendered and attributed: what a person or
+ * another agent added since the attempt that is being continued. It is context
+ * for a turn, never a command, a path, or a limit.
+ */
+export interface SourceComment {
+  /** Who wrote it, as the source names them. */
+  readonly author: string;
+  /** When it was written, as an ISO timestamp. */
+  readonly createdAt: string;
+  /** Its text, rendered as readable plain text. */
+  readonly text: string;
+}
+
+/**
  * A concrete task source. Four ordinary async functions:
  *
  * - `listEligible` consumes every page and returns a finite, ordered,
@@ -198,6 +217,16 @@ export interface TaskSource {
    * ran. Throws {@link SourceFeedbackError} when delivery fails.
    */
   refuse(item: SourceTask, reason: string, stop: AbortSignal): Promise<void>;
+  /**
+   * The comments added after one instant, oldest first: what the item's own
+   * thread says since the attempt being continued. A source that has no such
+   * thread returns none.
+   */
+  commentsSince(
+    item: SourceTask,
+    since: string,
+    stop: AbortSignal,
+  ): Promise<readonly SourceComment[]>;
 }
 
 /** Where the coordinator writes progress. Tests pass a recorder. */
@@ -213,6 +242,12 @@ export interface SourceRunRequest {
   readonly stop: AbortSignal;
   /** The rung this attempt runs, or nothing when no ladder was read. */
   readonly tier?: EscalationTier;
+  /**
+   * Context for a continued attempt: what earlier attempts in this workspace did
+   * and what the item's thread said since. Bounded, and context only
+   * (docs/implement-workspace-continuation.md).
+   */
+  readonly guidance?: readonly string[];
   /**
    * A workspace this run continues, resolved and verified by the coordinator, or
    * nothing for a run that creates one.
@@ -569,6 +604,56 @@ function checkSummary(result: RunTaskResult): string {
     return line;
   }
   return `${line}; no check round was observed after ${nameTurn(lastTurn)}`;
+}
+
+/** How much context a continued attempt is given, and how much of one line. */
+const GUIDANCE_MAX_LINES = 12;
+const GUIDANCE_MAX_CHARS = 4000;
+const GUIDANCE_LINE_CHARS = 600;
+
+/** One line of context, collapsed and bounded: a comment cannot grow a prompt. */
+function guidanceLine(text: string): string {
+  const collapsed = text.replace(/\s+/g, ' ').trim();
+  return collapsed.length <= GUIDANCE_LINE_CHARS
+    ? collapsed
+    : `${collapsed.slice(0, GUIDANCE_LINE_CHARS - 1)}…`;
+}
+
+/**
+ * What a continued attempt is told about the attempts before it and what was
+ * said since: oldest of the kept lines first, bounded so a long conversation or
+ * a long failure cannot grow a prompt without limit
+ * (docs/implement-workspace-continuation.md). All of it is context for the turn:
+ * none of it becomes a command, an argument, a path, or a limit.
+ */
+function guidanceFrom(
+  attempts: readonly WorkspaceAttempt[],
+  comments: readonly SourceComment[],
+): readonly string[] {
+  const lines: string[] = [];
+  attempts.forEach((attempt, index) => {
+    lines.push(
+      `attempt ${String(index + 1)}` +
+        `${attempt.tier === undefined ? '' : ` (tier ${attempt.tier})`} ${attempt.outcome}: ` +
+        guidanceLine(attempt.reason ?? 'no reason was recorded'),
+    );
+  });
+  for (const comment of comments) {
+    lines.push(
+      `comment by ${comment.author} at ${comment.createdAt}: ${guidanceLine(comment.text)}`,
+    );
+  }
+
+  const kept: string[] = [];
+  let used = 0;
+  for (const line of [...lines].reverse()) {
+    if (kept.length >= GUIDANCE_MAX_LINES || used + line.length > GUIDANCE_MAX_CHARS) {
+      break;
+    }
+    kept.push(line);
+    used += line.length;
+  }
+  return kept.reverse();
 }
 
 /** How the feedback names one top-level coding turn, as the run's reasons name it. */
@@ -944,6 +1029,28 @@ async function attempt(
   }
 
   const item = prepared;
+  // What a continued attempt is told: the attempts already made in its
+  // workspace, and what the issue's own thread said since the last of them. A
+  // comment read that fails is said out loud and does not stop the attempt: it
+  // is context, and the run's own evidence is not.
+  let comments: readonly SourceComment[] = [];
+  if (decision.kind === 'continue') {
+    const ledger = await readWorkspaceState(workDir, decision.workspace.workspaceId);
+    const previous = ledger?.attempts.at(-1);
+    try {
+      comments = await source.commentsSince(
+        item,
+        previous?.endedAt ?? ledger?.createdAt ?? new Date(0).toISOString(),
+        stop,
+      );
+    } catch (cause) {
+      io.err(
+        `${item.ref.key}: its comments could not be read, so this attempt runs without them: ` +
+          messageOf(cause),
+      );
+    }
+  }
+
   // A first attempt reserves its own receipt. A continuation has one from the
   // attempt it continues; one whose pointer a person added by hand does not, and
   // it needs one all the same, because this attempt's outcome is recorded there.
@@ -1022,12 +1129,23 @@ async function attempt(
     }
 
     let run: RunTaskResult;
+    // The rung's own brief: what the earlier attempts in this workspace did
+    // (recorded as they finished) and the comments read before this intake. A
+    // first attempt of a first workspace has neither.
+    const workspaceId =
+      resume?.workspaceId ??
+      (decision.kind === 'continue' ? decision.workspace.workspaceId : undefined);
+    const guidance =
+      workspaceId === undefined
+        ? []
+        : guidanceFrom((await readWorkspaceState(workDir, workspaceId))?.attempts ?? [], comments);
     try {
       run = await context.run({
         task: item.task,
         sourceRef: item.ref,
         stop,
         tier,
+        ...(guidance.length === 0 ? {} : { guidance }),
         ...(resume === undefined ? {} : { continuedWorkspace: resume }),
         ...(decision.kind === 'fresh' && attempt === 1
           ? {

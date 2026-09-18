@@ -239,6 +239,17 @@ export interface RunTaskRequest {
    * are kept, and the caller decides what the failed record means.
    */
   readonly onWorkspaceReady?: (workspace: PreparedWorkspace) => Promise<void>;
+  /**
+   * Context for a continued attempt, passed to every coding turn of this run and
+   * recorded nowhere else: what a source learned from the issue and from the
+   * harness's own earlier attempts (docs/implement-workspace-continuation.md).
+   */
+  readonly guidance?: readonly string[];
+  /**
+   * The name of the escalation tier this attempt runs, for the workspace ledger:
+   * a label the runner records and never interprets, like `sourceRef`.
+   */
+  readonly tierName?: string;
 }
 
 /**
@@ -276,6 +287,13 @@ export interface AgentTurnRequest {
    * the original task and what was observed to go wrong.
    */
   readonly repair: RepairFeedback | null;
+  /**
+   * Context a source collected for a continued attempt: the comments added since
+   * the previous attempt, and what the harness's own earlier attempts did. It is
+   * context for the work, never a command, a path, a repository, or a limit
+   * (docs/implement-workspace-continuation.md).
+   */
+  readonly guidance?: readonly string[];
   /**
    * Asked to abort when the run's remaining task time is used up, and when the
    * run's caller stops it: the same deadline every other phase carries, and the
@@ -1016,6 +1034,8 @@ export async function runTask(
         await dependencies.recordWorkspaceAttempt(request.workDir, workspace.workspaceId, {
           runId: run.runId,
           outcome: parts.status,
+          reason: parts.reason,
+          ...(request.tierName === undefined ? {} : { tier: request.tierName }),
           endedAt: dependencies.now().toISOString(),
           reportPath,
         });
@@ -1408,6 +1428,7 @@ export async function runTask(
         baseCommit: workspace.baseCommit,
         agentLog,
         repair,
+        ...(request.guidance === undefined ? {} : { guidance: request.guidance }),
         stop: stop.signal,
       });
     } catch (cause) {

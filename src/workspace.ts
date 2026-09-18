@@ -89,6 +89,10 @@ export interface PreparedWorkspace extends RunDirectory {
 export interface WorkspaceAttempt {
   readonly runId: string;
   readonly outcome: RunStatus;
+  /** The escalation tier that ran it, when a source named one. */
+  readonly tier?: string;
+  /** Why the run ended as it did, in one sentence, as its report records it. */
+  readonly reason?: string;
   readonly endedAt: string;
   readonly reportPath: string;
 }
