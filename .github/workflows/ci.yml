@@ -1,7 +1,12 @@
 name: CI
 
 on:
+  # A `task/**` push is validated by the task-branch workflow's own gate, and by
+  # the `pull_request` run this workflow makes for the pull request it opens; a
+  # third full validation of the same commit costs time and adds nothing.
   push:
+    branches-ignore:
+      - 'task/**'
   pull_request:
 
 permissions:

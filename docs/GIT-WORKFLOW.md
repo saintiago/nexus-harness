@@ -41,10 +41,10 @@ gh pr merge --squash --delete-branch      # only once the gate is green
 
 ## What a pull request needs
 
-- **Green CI.** Two workflows run `npm ci` and `npm run validate`: `ci.yml` on every push and pull
-  request, and `auto-pr.yml` on a push to a `task/**` branch, as the gate in front of its own
-  merge. A red gate means the PR is not ready. Do not disable checks, weaken assertions, or hide
-  files from validation to get a green run.
+- **Green CI.** Two workflows run `npm ci` and `npm run validate`: `ci.yml` on a pull request and on
+  a push outside `task/**`, and `auto-pr.yml` on a push to a `task/**` branch, as the gate in front
+  of its own merge. A red gate means the PR is not ready. Do not disable checks, weaken assertions,
+  or hide files from validation to get a green run.
 - **A description a reviewer can act on:** what changed, why, what you ran, and what you could not
   verify. `notes/` and `README.md` record the honest gaps; the PR should point at them rather than
   restate them.
@@ -74,6 +74,12 @@ refuses it for this repository with `403 Upgrade to GitHub Pro or make this repo
 no required check there is nothing for `--auto` to wait for, so the workflow validates and merges
 in the same run.
 
+When the pull request conflicts with `main` — a branch cut before an earlier task merged, which is
+what happens when the same files are touched twice — the workflow rebases the branch onto `main`,
+pushes it, and stops there: that push starts the next run, which validates the rebased commit and
+merges *that* one. A rebase that conflicts is left to a person, and the run says so. Nothing is
+merged that a run did not validate.
+
 What it does not do, and must not be read as doing:
 
 - **It does not re-verify `main` after the merge.** A merge made with the workflow's
@@ -90,9 +96,9 @@ Two consequences for how a task is pushed:
 
 - Anything pushed as `task/<name>` is merged as soon as it is green. A change that should be read
   before it lands belongs on a branch named something else, with the pull request opened by hand.
-- `ci.yml` also runs on the branch push, so the same gate is visible twice for a task branch: once
-  as CI on the branch, once inside the workflow that merges it. The pull request itself also gets a
-  `pull_request` run of `ci.yml`, and that one is not worth reading: the workflow merges and deletes
-  its branch moments later, and the run then ends as a failure with no jobs at all — observed on
-  every merge the workflow has made so far (2026-09-17). The branch-push run is the one that ran the
-  gate.
+- A task branch is validated by the workflow that merges it, and — once its pull request exists —
+  by `ci.yml`'s `pull_request` run as well, so a later push runs the gate twice. That is deliberate:
+  the check a reader sees is the general one, and the workflow still validates the commit it merges,
+  because no check can be made *required* here. A third run used to exist — `ci.yml` fired on the
+  branch push too — and it was removed on 2026-09-18: it validated the same commit as the workflow's
+  own gate and added nothing.
