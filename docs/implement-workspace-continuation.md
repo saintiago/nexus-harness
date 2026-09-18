@@ -37,8 +37,27 @@ limit.
   comment. Its report is never rewritten.
 - `workspaceId` is the id of the run that created the workspace (`run-<timestamp>-<hash>`), so the
   pointer below and the directory names speak the same string.
-- Legacy layout: a workspace created before this change lives at `<workDir>/<workspaceId>/workspace`
-  and its run's evidence at `<workDir>/<workspaceId>/`. Resolution accepts both; nothing is moved.
+- One layout, and only this one. A `workDir` written before this change is upgraded once, by hand
+  (see below); the code never looks in the old place, so nothing half-migrated can be continued by
+  accident.
+
+## Upgrading a workDir from the old layout
+
+Old shape: `<workDir>/<runId>/workspace` for the clone and `<workDir>/<runId>/` for the run's
+evidence. New shape: `<workDir>/workspaces/<workspaceId>/` for the clone,
+`<workDir>/workspaces/<workspaceId>.json` for its ledger, and `<workDir>/runs/<runId>/` for each
+attempt's evidence, where `workspaceId` is the id of the run that created the workspace.
+
+1. Move the clone: `<workDir>/<workspaceId>/workspace` → `<workDir>/workspaces/<workspaceId>/`.
+2. Move the first attempt's evidence: everything else under `<workDir>/<workspaceId>/` →
+   `<workDir>/runs/<workspaceId>/`.
+3. Write the ledger, from that attempt's own report (`result.json`): `workspaceId`, `sourceRoot`,
+   `baseCommit`, `branch`, `createdAt`, and one `attempts` entry with its `runId`, `outcome`,
+   `endedAt`, and the report's new path.
+
+The report keeps the path it recorded when it was written — evidence is not rewritten — so an
+upgraded run's `workspace.path` points at where the clone used to be. The ledger is where the
+current location lives, and `docs/WORKFLOW.md` §6 tells an operator which of the two to believe.
 
 ## The pointer
 
@@ -116,7 +135,7 @@ context for the turn. None of it becomes a command, an argument, a path, or a li
 
 ## Increments
 
-1. **Workspaces outlive runs** — layout, resolution (including the legacy shape), reopen rules, the
+1. **Workspaces outlive runs** — layout, resolution, reopen rules, the
    pointer label, the eligibility table, the red-baseline exception, and the report/state fields.
 2. **Escalation tiers** — the `escalation` config, the tier loop inside one intake, per-attempt
    comments, and the attempt budget.
@@ -130,7 +149,7 @@ configured agent per attempt, and a continued attempt is told the current descri
 
 ## Verification
 
-- Offline: workspace allocation and resolution (new and legacy), reopen refusal when `HEAD` moved,
+- Offline: workspace allocation and resolution, reopen refusal when `HEAD` moved,
   the eligibility table, the red-baseline exception, the tier loop, and the guidance rendering, all
   against fakes; `npm run validate` green, on Linux as well as Windows for anything that touches
   process or path handling.

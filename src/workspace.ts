@@ -117,8 +117,6 @@ export interface ContinuedWorkspace {
   readonly baseCommit: string;
   /** Which attempt this run is for the workspace, counting this one. */
   readonly attempt: number;
-  /** Whether this workspace still lives in the layout that predates the split. */
-  readonly legacy: boolean;
 }
 
 /** Whether an issue's pointer names a workspace this machine can continue. */
@@ -841,11 +839,6 @@ export function workspaceStatePath(workDir: string, workspaceId: string): string
   return path.join(path.resolve(workDir), 'workspaces', `${workspaceId}.json`);
 }
 
-/** Where a workspace's clone lives in the layout that predates the split. */
-export function legacyWorkspacePath(workDir: string, workspaceId: string): string {
-  return path.join(path.resolve(workDir), workspaceId, 'workspace');
-}
-
 /** One ledger, validated: a file that is not one is reported, never guessed at. */
 function parseWorkspaceState(value: unknown, where: string): WorkspaceState {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
@@ -930,23 +923,21 @@ export async function recordWorkspaceAttempt(
 
 /**
  * Resolves the workspace an issue's pointer names, without touching it: the clone
- * (in the current layout, or the one that predates the split) and the ledger that
- * says what it was cloned from. Whether the checkout is still usable is decided
- * by {@link reopenWorkspace}, which reads it.
+ * where the layout puts it, and the ledger that says what it was cloned from.
+ * Whether the checkout is still usable is decided by {@link reopenWorkspace},
+ * which reads it.
  */
 export async function resolveWorkspace(
   workDir: string,
   workspaceId: string,
 ): Promise<WorkspaceResolution> {
-  const current = workspacePathFor(workDir, workspaceId);
-  const legacy = legacyWorkspacePath(workDir, workspaceId);
-  const workspacePath = isDirectory(current) ? current : isDirectory(legacy) ? legacy : null;
-  if (workspacePath === null) {
+  const workspacePath = workspacePathFor(workDir, workspaceId);
+  if (!isDirectory(workspacePath)) {
     return {
       ok: false,
       problem:
-        `its workspace pointer names ${workspaceId}, and this machine has no workspace there ` +
-        `(looked for "${current}" and "${legacy}")`,
+        `its workspace pointer names ${workspaceId}, and this machine has no workspace at ` +
+        `"${workspacePath}"`,
     };
   }
 
@@ -980,7 +971,6 @@ export async function resolveWorkspace(
       branch: state.branch,
       baseCommit: state.baseCommit,
       attempt: state.attempts.length + 1,
-      legacy: workspacePath === legacy,
     },
   };
 }
