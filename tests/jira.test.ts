@@ -1005,6 +1005,43 @@ describe('a workspace pointer and a refusal', () => {
     });
   });
 
+  it('reads only the comments added since an attempt ended, rendered and attributed', async () => {
+    const said = (author: string, created: string, words: string): Record<string, unknown> => ({
+      id: words,
+      author: { displayName: author },
+      created,
+      body: document(paragraph(text(words))),
+    });
+    const http = fakeHttp((call) =>
+      call.url.includes('/comment')
+        ? json({
+            comments: [
+              said('Older Reader', '2026-09-16T10:00:00.000+0000', 'before the attempt'),
+              said('Newer Reader', '2026-09-16T12:00:00.000+0000', 'after the attempt'),
+            ],
+            total: 2,
+          })
+        : json(issue()),
+    );
+    const source = createJiraSource(jiraConfig(), TOKEN, { fetch: http.fetch });
+    const prepared = await preparedFor(source, candidateFor());
+
+    const comments = await source.commentsSince(
+      prepared,
+      '2026-09-16T11:00:00.000Z',
+      new AbortController().signal,
+    );
+
+    expect(comments).toEqual([
+      {
+        author: 'Newer Reader',
+        createdAt: '2026-09-16T12:00:00.000+0000',
+        text: 'after the attempt',
+      },
+    ]);
+    expect(http.calls.at(-1)?.url).toContain('/comment?startAt=0&maxResults=100');
+  });
+
   it('publishes why it refused, and takes the issue out of the queue', async () => {
     const http = fakeHttp((call) => {
       if (call.url.includes('/comment')) {

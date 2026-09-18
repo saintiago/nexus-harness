@@ -49,7 +49,13 @@ import {
   parseWorkspacePointers,
   workspacePointerLabel,
 } from './source.js';
-import type { SourceCandidate, SourceRunOutcome, SourceTask, TaskSource } from './source.js';
+import type {
+  SourceCandidate,
+  SourceComment,
+  SourceRunOutcome,
+  SourceTask,
+  TaskSource,
+} from './source.js';
 import type { JiraSourceConfig, SourceRef, Task } from './types.js';
 
 /** The Atlassian API gateway prefix every service-account call goes through. */
@@ -60,6 +66,10 @@ export const JIRA_REQUEST_TIMEOUT_MS = 30_000;
 
 /** The most issues one search page may return. */
 const SEARCH_PAGE_SIZE = 100;
+
+/** How many comments one request may return, and how many pages are followed. */
+const COMMENT_PAGE_SIZE = 100;
+const COMMENT_PAGE_LIMIT = 10;
 
 /** How much of a diagnostic this connector repeats; the rest is truncated. */
 const MAX_DIAGNOSTIC_CHARS = 400;
@@ -875,7 +885,63 @@ export function createJiraSource(
         );
       }
     },
+
+    // What the issue's own thread says since an attempt ended. Read-only, and
+    // bounded: the coordinator decides how much of it a turn is given.
+    commentsSince: async (item, since, stop) => {
+      const moment = Date.parse(since);
+      const comments: SourceComment[] = [];
+      let startAt = 0;
+
+      for (let page = 0; page < COMMENT_PAGE_LIMIT; page += 1) {
+        const answer = await http.request({
+          method: 'GET',
+          path:
+            `/rest/api/3/issue/${encodeURIComponent(item.ref.id)}/comment` +
+            `?startAt=${String(startAt)}&maxResults=${String(COMMENT_PAGE_SIZE)}`,
+          signal: stop,
+        });
+        if (!isRecord(answer) || !Array.isArray(answer['comments'])) {
+          throw malformed(`the comments of issue ${item.ref.id}`, 'no comments array');
+        }
+        for (const raw of answer['comments']) {
+          if (!isRecord(raw)) {
+            throw malformed(`the comments of issue ${item.ref.id}`, 'a comment is not an object');
+          }
+          const created = stringField(raw, 'created');
+          if (created === null || Date.parse(created) <= moment) {
+            continue;
+          }
+          const author = nested(raw, 'author');
+          comments.push({
+            author: (author === null ? null : stringField(author, 'displayName')) ?? 'unknown',
+            createdAt: created,
+            text: renderCommentBody(raw['body'], item.ref.key, token),
+          });
+        }
+
+        const total = typeof answer['total'] === 'number' ? answer['total'] : comments.length;
+        startAt += Array.isArray(answer['comments']) ? answer['comments'].length : 0;
+        if (startAt >= total) {
+          break;
+        }
+      }
+
+      return comments;
+    },
   };
+}
+
+/** One comment's body, rendered as text: an empty body is an empty comment. */
+function renderCommentBody(value: unknown, key: string, token: string): string {
+  if (value === undefined || value === null) {
+    return '';
+  }
+  try {
+    return renderDescription(parseDescription(value));
+  } catch (cause) {
+    throw malformed(`a comment on ${key}`, messageOf(cause, token));
+  }
 }
 
 /** What a refusal says: why the harness will not act, and what would change that. */

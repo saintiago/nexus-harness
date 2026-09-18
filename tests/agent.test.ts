@@ -628,6 +628,30 @@ describe('what one turn is told, and where it works', () => {
     expect(result.shutdown).toBeUndefined();
   }, 60_000);
 
+  it('gives a continued turn the guidance it was handed, as context', async () => {
+    const fixture = await createFixture();
+    const turn = await openTurn(fixture, {
+      guidance: [
+        'attempt 1 (tier flash) failed: the checks after the implementation turn did not pass',
+        'comment by An Investigator at 2026-09-17T09:00:00.000Z: keep the public API stable',
+      ],
+    });
+
+    await runCodexTurn(turn.request, standInRuntime(fixture));
+    await turn.close();
+
+    const prompt = (await startRecord(fixture)).prompt ?? '';
+    expect(prompt).toContain('## Guidance for this attempt');
+    expect(prompt).toContain(
+      '- attempt 1 (tier flash) failed: the checks after the implementation turn did not pass',
+    );
+    expect(prompt).toContain('- comment by An Investigator at 2026-09-17T09:00:00.000Z:');
+    // Context, and nothing more: it does not become an acceptance criterion, and
+    // the configured checks still decide the turn.
+    expect(prompt).toContain('they do not change the acceptance criteria above');
+    expect(prompt).toContain('the same configured checks still decide whether this turn passed');
+  }, 60_000);
+
   it('prepends the configured launch prefix to its own arguments, literally', async () => {
     const fixture = await createFixture();
     const turn = await openTurn(fixture);
