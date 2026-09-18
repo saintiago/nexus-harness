@@ -18,13 +18,13 @@ import {
   WorkspaceError,
   allocateRunDirectory,
   inspectWorkspaceChanges,
-  legacyWorkspacePath,
   prepareWorkspace,
   preflightSource,
   readWorkspaceState,
   reopenWorkspace,
   resolveWorkspace,
   workspaceStatePath,
+  workspacePathFor,
 } from '../src/workspace.js';
 import type {
   PreparedWorkspace,
@@ -272,7 +272,6 @@ describe('a workspace that outlives its run', () => {
     if (resolved.ok) {
       expect(resolved.workspace.workspacePath).toBe(prepared.workspacePath);
       expect(resolved.workspace.attempt).toBe(1);
-      expect(resolved.workspace.legacy).toBe(false);
     }
 
     // Reopening reads the checkout and returns it for the next attempt.
@@ -297,37 +296,22 @@ describe('a workspace that outlives its run', () => {
     );
   });
 
-  it('resolves a workspace that predates the split at its legacy path', async () => {
-    // The layout before workspaces were split out: <workDir>/<id>/workspace, with
-    // this increment's ledger beside the workspaces. Nothing is moved to adopt it.
+  it('refuses a workspace that is not where the layout puts it', async () => {
     const fixture = await createRepository();
     const prepared = await prepareRun(fixture);
-    const legacyId = 'run-20260101000000-1e9ac001';
-    const legacyPath = legacyWorkspacePath(fixture.workDir, legacyId);
-    await mkdir(path.dirname(legacyPath), { recursive: true });
-    await rename(prepared.workspacePath, legacyPath);
-    await writeFile(
-      workspaceStatePath(fixture.workDir, legacyId),
-      `${JSON.stringify({
-        version: 1,
-        workspaceId: legacyId,
-        sourceRoot: prepared.sourceRoot,
-        baseCommit: prepared.baseCommit,
-        branch: prepared.branch,
-        createdAt: '2026-01-01T00:00:00.000Z',
-        attempts: [],
-      })}\n`,
-      'utf8',
-    );
+    // One layout, and nothing else: a clone left in the pre-split location, with
+    // its ledger beside the workspaces, is not adopted silently. A workDir from an
+    // older harness is upgraded by moving its workspaces and runs into place
+    // (docs/implement-workspace-continuation.md).
+    const preSplit = path.join(fixture.workDir, prepared.workspaceId, 'workspace');
+    await mkdir(path.dirname(preSplit), { recursive: true });
+    await rename(prepared.workspacePath, preSplit);
 
-    const resolved = await resolveWorkspace(fixture.workDir, legacyId);
-    expect(resolved.ok).toBe(true);
-    if (resolved.ok) {
-      expect(resolved.workspace.legacy).toBe(true);
-      expect(resolved.workspace.workspacePath).toBe(legacyPath);
+    const resolved = await resolveWorkspace(fixture.workDir, prepared.workspaceId);
+    expect(resolved.ok).toBe(false);
+    if (!resolved.ok) {
+      expect(resolved.problem).toContain(workspacePathFor(fixture.workDir, prepared.workspaceId));
     }
-    const reopened = await reopenWorkspace(fixture.workDir, legacyId);
-    expect(reopened.legacy).toBe(true);
   });
 });
 

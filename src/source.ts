@@ -646,8 +646,7 @@ export async function listSource(preview: SourcePreview): Promise<readonly Sourc
                 title: prepared.task.title,
                 detail:
                   `continues workspace ${decision.workspace.workspaceId} ` +
-                  `(attempt ${String(decision.workspace.attempt)}` +
-                  `${decision.workspace.legacy ? ', legacy layout' : ''})`,
+                  `(attempt ${String(decision.workspace.attempt)})`,
               }
             : {
                 disposition: 'valid',
@@ -948,8 +947,8 @@ async function attempt(
   io.out(
     continuedWorkspace !== undefined
       ? `${item.ref.key}: reserved (${file}); continuing workspace ` +
-          `${continuedWorkspace.workspaceId} (attempt ${String(continuedWorkspace.attempt)}` +
-          `${continuedWorkspace.legacy ? ', legacy layout' : ''}); claiming ${item.ref.id}`
+          `${continuedWorkspace.workspaceId} (attempt ${String(continuedWorkspace.attempt)}); ` +
+          `claiming ${item.ref.id}`
       : `${item.ref.key}: reserved (${file}); claiming ${item.ref.id}`,
   );
 

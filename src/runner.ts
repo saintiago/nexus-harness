@@ -809,9 +809,8 @@ export async function runTask(
     };
     await dependencies.appendRunLog(
       timeline,
-      `continuing workspace ${continued.workspaceId} (attempt ${String(continued.attempt)}` +
-        `${continued.legacy ? ', legacy layout' : ''}) at ${oneLine(continued.workspacePath)} ` +
-        `on branch ${continued.branch} at ${continued.baseCommit}`,
+      `continuing workspace ${continued.workspaceId} (attempt ${String(continued.attempt)}) at ` +
+        `${oneLine(continued.workspacePath)} on branch ${continued.branch} at ${continued.baseCommit}`,
     );
   } else {
     try {
