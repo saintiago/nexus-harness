@@ -935,7 +935,7 @@ describe('a run its caller stops, for real', () => {
   }, 90_000);
 
   // Windows-only by construction: this scenario defeats the stop by emptying
-  // PATH, so the harness cannot find `taskkill` â€” the utility Windows stops a
+  // PATH, so the harness cannot find `taskkill` — the utility Windows stops a
   // tree with. On POSIX the harness signals the invocation's process group
   // directly (`process.kill(-pid)`), which needs no utility to be found, so the
   // stop succeeds and there is nothing unconfirmed to report. The confirmed
