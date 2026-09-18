@@ -25,7 +25,7 @@
 
 import { spawn, spawnSync } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
-import { existsSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { chmod, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { connect } from 'node:net';
@@ -476,14 +476,85 @@ export const BUILT_CLI = path.join(repoRoot, 'dist', 'cli.js');
  * quietly tested a stale one would be worse than one that failed: this runs the
  * same compiler the build script runs, directly, and fails loudly if the artifact
  * is still not there.
+ *
+ * Several test files run in parallel, and each of them may find the artifact
+ * stale at the same moment; a compiler per worker writing into the same `dist/`
+ * produces half-written files that the next worker spawns. One lock, taken
+ * exclusively and re-checked once it is held, keeps exactly one build running.
  */
 export function ensureBuiltCli(): void {
-  const newest = newestSourceMtime();
-  const built = existsSync(BUILT_CLI) ? statSync(BUILT_CLI).mtimeMs : -1;
-  if (built >= newest) {
+  if (builtCliIsCurrent()) {
     return;
   }
 
+  const lock = acquireBuildLock();
+  if (lock === null) {
+    // Another worker's build produced the artifact while this one waited.
+    return;
+  }
+  try {
+    // Re-checked under the lock: a worker that built it while this one waited
+    // leaves nothing to do.
+    if (builtCliIsCurrent()) {
+      return;
+    }
+    buildCli();
+  } finally {
+    rmSync(lock, { force: true });
+  }
+}
+
+/** Whether the built artifact exists and is at least as new as the sources. */
+function builtCliIsCurrent(): boolean {
+  const built = existsSync(BUILT_CLI) ? statSync(BUILT_CLI).mtimeMs : -1;
+  return built >= newestSourceMtime();
+}
+
+/** The lock one worker holds while it builds; `dist/` is shared by all of them. */
+const BUILD_LOCK = path.join(repoRoot, 'dist', '.build.lock');
+
+/** How long a worker waits for another worker's build before giving up. */
+const BUILD_LOCK_TIMEOUT_MS = 120_000;
+
+/** Sleeps without yielding the event loop: callers of this are synchronous. */
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/**
+ * Takes the build lock, waiting while another worker holds it, or returns `null`
+ * when that worker's build made the artifact current. Only a caller that gets a
+ * path owns the lock, and only it removes it.
+ */
+function acquireBuildLock(): string | null {
+  const deadline = Date.now() + BUILD_LOCK_TIMEOUT_MS;
+  for (;;) {
+    try {
+      mkdirSync(path.dirname(BUILD_LOCK), { recursive: true });
+      writeFileSync(BUILD_LOCK, `${String(process.pid)}\n`, { flag: 'wx' });
+      return BUILD_LOCK;
+    } catch (cause) {
+      if ((cause as NodeJS.ErrnoException).code !== 'EEXIST') {
+        throw cause;
+      }
+    }
+    // The holder is building the artifact this caller needs, so waiting is
+    // enough; if its build finished, there is nothing left to do.
+    if (builtCliIsCurrent()) {
+      return null;
+    }
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `the built CLI is still being produced after ${String(BUILD_LOCK_TIMEOUT_MS)} ms ` +
+          `(lock "${BUILD_LOCK}"); if no build is running, remove the lock and try again`,
+      );
+    }
+    sleepSync(100);
+  }
+}
+
+/** Runs the same compiler the build script runs, directly. */
+function buildCli(): void {
   const require = createRequire(import.meta.url);
   const typescript = path.dirname(require.resolve('typescript/package.json'));
   const result = spawnSync(

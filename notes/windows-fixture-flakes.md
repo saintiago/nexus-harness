@@ -1,8 +1,11 @@
-# Windows fixture flakes, recorded for later investigation
+# Fixture flakes, recorded as they are found and fixed
 
-**Status: failure 2 addressed, failure 1 still open.** No test was weakened, skipped, or reordered to
-hide either. Failures 1 and 2 happened during full `npm run validate` / `npx vitest run` runs on
-Windows on 2026-09-16 and 2026-09-17, and never in an isolated run of the file involved.
+**Status: all three known races addressed; none of the assertions were weakened, skipped, or
+reordered.** The name of this file is narrower than its content: the first flakes were seen on
+Windows, and the lifecycle one was seen on Ubuntu.
+
+Failures 1 and 2 happened during full `npm run validate` / `npx vitest run` runs on Windows on
+2026-09-16 and 2026-09-17, and never in an isolated run of the file involved.
 
 Since this note was written, failure 2 fired in a real harness run (HARN-1,
 `run-20260916225121-f3d4a6e4`): the post-agent `npm run validate` reported exactly this assertion
@@ -30,6 +33,32 @@ rather than skipped.
 What this does and does not establish: a leftover reported from here on is a real surviving process,
 not a recycled PID — the message says which question was asked. It does not prove the flake is gone;
 the evidence is the mechanism and repeated full-suite runs, not a reproduction that no longer happens.
+
+## The 2026-09-18 pass: three races, one of them reproduced
+
+**The lifecycle fixture published its pid before its mark.** The Ubuntu failure that blocked a merge
+was `tests/lifecycle.test.ts` > `stops the repair turn of a red run...`: `HANG_FLAG` was missing from
+the retained working copy. The fixture wrote its pid record, and only then the mark it leaves in the
+workspace — while the test stops the process as soon as it sees the record. Under load the stop won.
+The fixture now writes the mark first, then its beat, then the record, so a recorded pid means the
+mark is already on disk. Evidence: 5/5 Linux runs of that suite, the whole suite green on Linux, and
+four consecutive full suites plus two concurrent ones green on Windows.
+
+**A fixture's child could kill the fixture.** All three fixtures spawn a helper process with no
+`error` handler, so a fork a loaded host refuses ends the fixture as an unhandled error — which the
+harness reads as the command _exiting_, not as the timeout under test. That is the shape of the
+`tests/checks.test.ts` failure recorded above. The handlers now record nothing and let the fixture
+keep running; the test that timed out a 500 ms command now allows 2000 ms so a loaded host can start
+it, and its assertions print the whole result when they fail. Honest limit: this one was **not**
+reproduced, so the mechanism is plausible rather than proven — the next occurrence will say which.
+
+**Several workers built the CLI into the same `dist/`.** Running two suites at once (the load that
+reproduces these flakes) made `tests/live-verifier.test.ts` fail with `result failed to run: ENOENT`
+against the built CLI: each test file checks whether `dist/` is current and compiles it if not, and
+parallel workers found it stale together. `ensureBuiltCli` now takes an exclusive lock (`dist/.build.lock`),
+re-checks under it, and only the worker that holds the lock removes it. Evidence: reproduced before the
+fix (one of two concurrent suites failed, the other passed), and after it two concurrent processes
+rebuilt from a stale `dist/` and passed 40/40 each, with two concurrent full suites green.
 
 ## What failed
 
