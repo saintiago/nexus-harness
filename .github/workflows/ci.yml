@@ -1,12 +1,11 @@
 name: CI
 
+# The gate, and nothing more: this workflow holds `contents: read`, so it cannot
+# push, open a pull request, approve one, or merge one. A task branch is merged by
+# the operator, or by an agent using the operator's authenticated `gh`, once this
+# check is green (docs/GIT-WORKFLOW.md).
 on:
-  # A `task/**` push is validated by the task-branch workflow's own gate, and by
-  # the `pull_request` run this workflow makes for the pull request it opens; a
-  # third full validation of the same commit costs time and adds nothing.
   push:
-    branches-ignore:
-      - 'task/**'
   pull_request:
 
 permissions:
