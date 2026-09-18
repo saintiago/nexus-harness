@@ -96,8 +96,9 @@ Two consequences for how a task is pushed:
 
 - Anything pushed as `task/<name>` is merged as soon as it is green. A change that should be read
   before it lands belongs on a branch named something else, with the pull request opened by hand.
-- A task-branch push runs the gate twice, deliberately: `ci.yml` validates the pull request, so the
-  check a reader sees is the general one, and the task-branch workflow validates the commit it
-  merges, because no check can be made *required* here. A third run used to exist — `ci.yml` fired
-  on the branch push as well — and it was removed on 2026-09-18: it validated the same commit as the
-  workflow's own gate and added nothing.
+- A task branch is validated by the workflow that merges it, and — once its pull request exists —
+  by `ci.yml`'s `pull_request` run as well, so a later push runs the gate twice. That is deliberate:
+  the check a reader sees is the general one, and the workflow still validates the commit it merges,
+  because no check can be made *required* here. A third run used to exist — `ci.yml` fired on the
+  branch push too — and it was removed on 2026-09-18: it validated the same commit as the workflow's
+  own gate and added nothing.
