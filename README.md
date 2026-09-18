@@ -748,9 +748,10 @@ TypeScript is pinned to the 6.0 line on purpose: TypeScript 7 is newer, but `typ
 8.70 still declares `typescript >=4.8.4 <6.1.0`, so 6.0.3 is the newest release the whole
 toolchain supports. Dependencies are pinned by `package-lock.json`; use `npm ci`.
 
-CI (`.github/workflows/ci.yml`) runs on `ubuntu-latest` with the Node version `.nvmrc` records,
-installs with `npm ci`, and runs `npm run validate` — format, lint, typecheck, build, and the
-offline suite. It needs no credentials, and `npm run test:live` is deliberately not part of it.
+CI (`.github/workflows/ci.yml`) runs on every pull request and on every push to `main`, on
+`ubuntu-latest`, with the Node version `.nvmrc` records: it installs with `npm ci` and runs
+`npm run validate` — format, lint, typecheck, build, and the offline suite. It needs no
+credentials, and `npm run test:live` is deliberately not part of it.
 It is the only workflow, and it holds `contents: read`: nothing in this repository pushes, opens a
 pull request, or merges one. A task branch is merged by the operator, or by an agent using the
 operator's own `gh` credentials, once the check is green —
