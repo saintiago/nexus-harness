@@ -353,14 +353,14 @@ automatically.
 **Where an issue's work lives is written on the issue.** The run that creates a workspace adds one
 `harness-ws-<workspaceId>` label, before any coding turn, and a later attempt only ever reads it.
 That is what makes a rework possible: move an attempted issue back to the ready status and the
-harness **continues its workspace** â€” the same clone, on the same branch, with the work of the
+harness **continues its workspace** — the same clone, on the same branch, with the work of the
 earlier attempt still in it, and a baseline that is allowed to be red, because continuing failed
 work is the point. An attempted issue with no such label is not run again: the harness refuses it,
 says why in a comment, and moves it out of the queue, so a stale ticket cannot quietly burn more
 attempts. A pointer this machine cannot resolve, and an issue carrying two pointers, are refused
 the same way. The receipt stays as the audit trail behind all of it.
 
-To retry without that machinery â€” a first attempt again, in a new workspace â€” stop the watcher,
+To retry without that machinery — a first attempt again, in a new workspace — stop the watcher,
 inspect and stop prior processes, keep the run artifacts, delete only that issue's printed receipt
 file, remove its `harness-ws-*` pointer label if it has one (otherwise the harness would continue
 the old workspace instead of creating one), and put the issue back to the ready status. Never remove

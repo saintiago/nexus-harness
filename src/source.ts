@@ -8,8 +8,8 @@
  * here is ordinary coordination code around the unchanged runner:
  *
  * ```text
- * discover (all pages) â†’ per item: receipt? â†’ prepare â†’ reserve â†’ claim
- *                                            â†’ existing runTask â†’ publish
+ * discover (all pages) → per item: receipt? → prepare → reserve → claim
+ *                                            → existing runTask → publish
  * ```
 
  * The coordinator knows ordinary data and functions. It imports no connector, no
@@ -23,7 +23,7 @@
  *   status changes, and items are handled one at a time, strictly sequentially.
  * - A local receipt, keyed by the external item's immutable identity, is created
  *   exclusively before any remote mutation or agent work, so the same item is
- *   not attempted twice by this consumer â€” across repeated scans, a restart, a
+ *   not attempted twice by this consumer — across repeated scans, a restart, a
  *   reopened issue, or an edited description.
  * - A claim that was rejected before any mutation request was sent releases only
  *   the receipt this process just created. After a mutation was attempted, an
@@ -33,7 +33,7 @@
  *
  * It does not promise exactly-once execution, and it is not a distributed lock:
  * Jira status transitions are not a lease, and consumers using different output
- * directories or machines are unsupported (docs/spec.md Â§6).
+ * directories or machines are unsupported (docs/spec.md §6).
  */
 
 import { createHash, randomUUID } from 'node:crypto';
@@ -87,7 +87,7 @@ export class SourceError extends Error {
 /**
  * A result that could not be published. It says how far delivery got, so a
  * receipt can record an acknowledged comment even when the status change after
- * it failed (docs/spec.md Â§6, "Jira feedback and completion").
+ * it failed (docs/spec.md §6, "Jira feedback and completion").
  */
 export class SourceFeedbackError extends Error {
   /** Which step failed. */
@@ -328,7 +328,7 @@ export interface SourceSummary {
   /**
    * Whether everything this batch started was confirmed stopped. `false` means
    * the working copies may still be written to: the caller leaves the intake
-   * lock for manual inspection instead of releasing it (docs/spec.md Â§6).
+   * lock for manual inspection instead of releasing it (docs/spec.md §6).
    */
   readonly cleanupConfirmed: boolean;
 }
@@ -360,9 +360,9 @@ export function intakeReceiptsDir(workDir: string): string {
  * The receipt identity: a hash of the connector type, the canonical site, and
  * the immutable external ID.
  *
- * Nothing mutable takes part in it â€” not the issue key, the summary, the status,
- * or the update timestamp â€” so renaming, relabelling, or reopening an external
- * item can never make it look like new work (docs/architecture.md Â§8).
+ * Nothing mutable takes part in it — not the issue key, the summary, the status,
+ * or the update timestamp — so renaming, relabelling, or reopening an external
+ * item can never make it look like new work (docs/architecture.md §8).
  */
 export function receiptIdentity(ref: SourceRef): string {
   return createHash('sha256')
@@ -387,7 +387,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * Reads one receipt. A missing file is an absence (`null`); a file that is not a
  * receipt this harness wrote is an error, never an absence: treating corruption
  * as "not attempted yet" is exactly how an issue gets run twice
- * (docs/spec.md Â§6).
+ * (docs/spec.md §6).
  */
 export async function readReceipt(file: string): Promise<SourceReceipt | null> {
   let text: string;
@@ -432,8 +432,8 @@ export async function readReceipt(file: string): Promise<SourceReceipt | null> {
 
 /**
  * Creates a receipt exclusively. `false` means another reservation already
- * exists â€” this process's own earlier attempt, a crashed one, or another
- * consumer using the same output directory â€” and the item is not attempted.
+ * exists — this process's own earlier attempt, a crashed one, or another
+ * consumer using the same output directory — and the item is not attempted.
  */
 export async function reserveReceipt(file: string, receipt: SourceReceipt): Promise<boolean> {
   await mkdir(path.dirname(file), { recursive: true });
@@ -494,7 +494,7 @@ export interface IntakeLock {
  * Takes the exclusive per-`workDir` lock by creating its directory. It is taken
  * after the source/output preflight and before discovery intended for execution,
  * and it is never broken automatically: an existing lock is reported with its
- * owner's recorded details so a human can look at it (docs/spec.md Â§6).
+ * owner's recorded details so a human can look at it (docs/spec.md §6).
  */
 export async function acquireIntakeLock(workDir: string, now: () => Date): Promise<IntakeLock> {
   const dir = intakeLockPath(workDir);
@@ -717,7 +717,7 @@ export interface SourceListEntry {
  * The read-only preview: eligible items, their disposition, and nothing else. It
  * reads existing receipts, but it does not create a directory, take a lock,
  * claim anything, or start a run, so an item it shows as valid is still waiting
- * (docs/WORKFLOW.md Â§7).
+ * (docs/WORKFLOW.md §7).
  */
 export async function listSource(preview: SourcePreview): Promise<readonly SourceListEntry[]> {
   const candidates = await preview.source.listEligible(preview.stop);
@@ -1398,7 +1398,7 @@ export interface SourceWatchOptions extends SourceContext {
  * `source watch`: scan immediately, process that finite batch, wait, and repeat
  * until the caller stops it. New work waits in the source until the next scan,
  * and a scan never overlaps a batch: detection latency includes the active run
- * (docs/spec.md Â§6).
+ * (docs/spec.md §6).
  *
  * Only read failures are retried, after an abortable wait that respects a
  * server-directed minimum. Authentication, authorization, malformed answers,

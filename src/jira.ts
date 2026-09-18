@@ -836,7 +836,7 @@ export function createJiraSource(
     // A refusal is not a run: nothing was claimed and nothing ran. It still moves
     // the issue out of the queue, so the next scan does not read it again and
     // again, and it moves only while the issue is still in the queue it was found
-    // in â€” a later decision by anyone else stands.
+    // in — a later decision by anyone else stands.
     refuse: async (item, reason, stop) => {
       let commentId: string;
       try {
