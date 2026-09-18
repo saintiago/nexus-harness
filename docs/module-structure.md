@@ -34,7 +34,7 @@ src/
     dependencies.ts           the loop's real collaborators, and the wrapped set a test gets
     signals.ts                host SIGINT/SIGTERM/SIGBREAK handling
   config/
-    schema.ts                 zod schemas and the documented defaults, including Jira's
+    schema.ts                 zod schemas and the documented defaults, including Jira's and the escalation ladder's
     load.ts                   file reading, validation, workDir and agent-executable paths
   shared/
     types.ts                  the data contracts; data only, no imports, no runtime I/O
@@ -55,20 +55,24 @@ src/
     git.ts                    git invocation (never a shell) and small path helpers
     status.ts                 reading `git status --porcelain`
     preflight.ts              preflightSource: a usable source checkout, a safe output path
-    run-directory.ts          allocateRunDirectory: `<workDir>/<runId>/…`
-    prepare.ts                prepareWorkspace: the clone, its branch, and its verification
+    run-directory.ts          allocateRunDirectory: `<workDir>/runs/<runId>`, and the logs beside the report
+    prepare.ts                prepareWorkspace: the clone at `<workDir>/workspaces/<workspaceId>`, its branch, the ledger it writes
+    state.ts                  the workspace ledger: what a clone is, and every attempt made in it
+    reopen.ts                 resolveWorkspace/reopenWorkspace: the pointer, the checkout, the refusal
     changes.ts                inspectWorkspaceChanges: what the copy differs from its base by
   runs/
     contracts.ts              run and turn requests/results, RunnerDependencies, the two errors
-    runner.ts                 runTask: the loop (prepare -> baseline -> turns -> checks)
+    runner.ts                 runTask: the loop (prepare or continue -> baseline -> turns -> checks)
     finalize.ts               how a run ends: stop evidence, change summary, report
     stops.ts                  the stop request one phase works under, and the stop cause
     progress.ts               timeline lines, reasons, and the counts they carry
     feedback.ts               the failed commands one repair turn is given
   sources/
-    contract.ts               TaskSource and the ordinary source data and errors
+    contract.ts               TaskSource, the source data and errors, and the workspace pointer label
     receipts.ts               the intake lock and one receipt per attempted item
-    coordinator.ts            runSource and watchSource: discovery, reservation, publication
+    eligibility.ts            what an item is: a first attempt, a continuation, or a refusal
+    guidance.ts               what an attempt is told, bounded: the item's thread and its earlier attempts
+    coordinator.ts            runSource and watchSource: discovery, the ladder, publication
     list.ts                   the read-only `source list` preview
     jira/
       connector.ts            createJiraSource: the four TaskSource functions
@@ -77,7 +81,8 @@ src/
       issue.ts                issue reads, eligibility, and the source reference
       tasks.ts                one issue mapped onto the existing four-field Task
       transitions.ts          transition discovery, selection by target status, posting
-      comments.ts             the result comment and its one POST
+      comments.ts             the thread read, the result comment, and the refusal comment
+      labels.ts               the workspace pointer label: what it says, and adding it once
       json.ts                 the narrow readers every Jira answer goes through
       adf.ts                  the supported ADF description parser
       adf-text.ts             rendering that description and extracting the criteria
@@ -85,14 +90,16 @@ src/
     codex/
       runtime.ts              the launch prefix, the environment, and the stop contract
       adapter.ts              runCodexTurn: one turn, normalized for the runner
-      prompt.ts               what one turn is told
+      prompt.ts               what one turn is told, the bounded guidance included
       events.ts               reading the runtime's JSON event stream
 ```
 
-Every file is a module with one job. Three files are deliberately larger than the rest:
-`runs/runner.ts` (~780 lines, the loop itself), `shared/types.ts` (~550 lines, every data
-contract in one declaration-only module) and `sources/coordinator.ts` (~540 lines, the finite
-batch and the watch loop over the same per-item sequence). Nothing else reaches 450 lines.
+Every file is a module with one job. Today four files are far larger than the rest — `runner.ts`
+(~1,650 lines), `source.ts` (~1,490), `workspace.ts` (~1,310) and `cli.ts` (~1,050) — and splitting
+them is the point of this refactor. The target keeps three deliberately larger modules:
+`runs/runner.ts` (the loop itself), `shared/types.ts` (every data contract in one declaration-only
+module) and `sources/coordinator.ts` (the finite batch, the ladder, and the watch loop over the
+same per-item sequence). Nothing else is meant to reach 450 lines.
 
 ## 2. Module responsibilities
 
@@ -170,24 +177,30 @@ batch and the watch loop over the same per-item sequence). Nothing else reaches 
 
 ### `workspace/`
 
-- **Owns:** the source checkout and the working copy, and Git is invoked nowhere else.
-  `preflight.ts` records the committed base and refuses a dirty checkout or an output path
-  that overlaps the source; `run-directory.ts` allocates `<workDir>/<runId>`; `prepare.ts`
-  clones the base, branches, and verifies what it got; `changes.ts` reads what the copy
-  differs from its base by; `git.ts` and `status.ts` are the plumbing they share.
-- **Does not own:** the coding turns, the checks, or the report.
-- **Entry points:** `preflightSource` (`workspace/preflight.ts`), `allocateRunDirectory`
-  (`workspace/run-directory.ts`), `prepareWorkspace` (`workspace/prepare.ts`),
-  `inspectWorkspaceChanges` (`workspace/changes.ts`), `WorkspaceError`.
+- **Owns:** the source checkout and the working copies, and Git is invoked nowhere else.
+  `preflight.ts` records the committed base and refuses a dirty checkout or an output path that
+  overlaps the source; `run-directory.ts` allocates `<workDir>/runs/<runId>` for one attempt's
+  evidence; `prepare.ts` clones the base into `<workDir>/workspaces/<workspaceId>`, branches, and
+  writes the ledger `state.ts` owns; `reopen.ts` resolves a pointer to a workspace, reads the
+  checkout, and refuses one whose branch or `HEAD` moved; `changes.ts` reads what the copy differs
+  from its base by; `git.ts` and `status.ts` are the plumbing they share.
+- **Does not own:** the coding turns, the checks, the report, or the policy that decides whether an
+  item continues a workspace (that is `sources/eligibility.ts`). The ledger is derived state: a
+  run's own report stays the authority on what that run did.
+- **Entry points:** `preflightSource`, `workspacePathFor`, `runDirPathFor`,
+  `allocateRunDirectory`, `prepareWorkspace`, `workspaceStatePath`, `readWorkspaceState`,
+  `recordWorkspaceAttempt`, `resolveWorkspace`, `reopenWorkspace`, `inspectWorkspaceChanges`,
+  `WorkspaceError`.
 
 ### `runs/`
 
-- **Owns:** one run's order of work. `contracts.ts` states what a run is asked to do, what
-  a coding turn is told and reports back, and which functions a run composes; `runner.ts`
-  runs the loop; `finalize.ts` turns an ending into evidence, a change summary, and the
-  report; `stops.ts` is the one stop request a phase honours; `progress.ts` is the wording
-  the timeline and the reasons use; `feedback.ts` collects the failed commands a repair
-  turn is given.
+- **Owns:** one run's order of work. `contracts.ts` states what a run is asked to do, including a
+  workspace to continue instead of one to create, the tier name it records, and the guidance every
+  turn is given; `runner.ts` runs the loop, allows a red baseline only for a continuation, and
+  records the finished attempt in the workspace ledger; `finalize.ts` turns an ending into evidence,
+  a change summary, and the report; `stops.ts` is the one stop request a phase honours;
+  `progress.ts` is the wording the timeline and the reasons use; `feedback.ts` collects the failed
+  commands a repair turn is given.
 - **Does not own:** the working copy, the checks, the runtime, the report files, or any
   connector. It never imports `sources/` or `agents/`: the CLI hands it ordinary functions.
 - **Entry points:** `runTask` (`runs/runner.ts`); `RunTaskRequest`, `RunTaskResult`,
@@ -196,18 +209,23 @@ batch and the watch loop over the same per-item sequence). Nothing else reaches 
 
 ### `sources/`
 
-- **Owns:** the task-input boundary and the one serial coordinator. `contract.ts` is the
-  `TaskSource` contract and the ordinary source data (`SourceRef`, `SourceCandidate`,
-  `SourceTask`, `SourceRunOutcome`, `SourceSummary`, `SourceError`). `receipts.ts` is the
-  only retained intake state: one exclusive lock and one receipt per attempted item, keyed
-  by the item's immutable identity. `coordinator.ts` discovers a finite batch, reserves,
-  claims, calls the existing runner, and publishes the result; `list.ts` is the read-only
-  preview.
-- **Does not own:** Jira. The coordinator imports no connector, no JQL, and no credential.
-  It also does not implement the run: it calls the runner it was handed.
-- **Entry points:** `TaskSource` (`sources/contract.ts`), `runSource`, `watchSource`
-  (`sources/coordinator.ts`), `listSource` (`sources/list.ts`), `acquireIntakeLock`,
-  `readReceipt`, `reserveReceipt`, `updateReceipt`, `receiptFilePath` (`sources/receipts.ts`).
+- **Owns:** the task-input boundary and the one serial coordinator. `contract.ts` is the `TaskSource`
+  contract and the ordinary source data (`SourceRef`, `SourceCandidate`, `SourceTask`,
+  `SourceComment`, `SourceRunOutcome`, `SourceSummary`, `SourceError`), plus the pointer label
+  helpers (`WORKSPACE_POINTER_PREFIX`, `workspacePointerLabel`, `parseWorkspacePointers`).
+  `receipts.ts` is the only retained intake state: one exclusive lock and one receipt per attempted
+  item, keyed by the item's immutable identity. `eligibility.ts` decides what an item is - a first
+  attempt, a continuation of the workspace its pointer names, or a refusal - and `guidance.ts`
+  renders what an attempt is told from the item's own thread and its earlier attempts, bounded.
+  `coordinator.ts` discovers a finite batch, reserves, claims, climbs the configured escalation
+  ladder one rung per attempt inside that claim, and publishes each attempt's result; `list.ts` is
+  the read-only preview.
+- **Does not own:** Jira. The coordinator imports no connector, no JQL, and no credential. It also
+  does not implement the run: it calls the runner it was handed.
+- **Entry points:** `TaskSource`, `SourceComment`, `workspacePointerLabel`,
+  `parseWorkspacePointers` (`sources/contract.ts`), `runSource`, `watchSource`
+  (`sources/coordinator.ts`), `listSource` (`sources/list.ts`), `acquireIntakeLock`, `readReceipt`,
+  `reserveReceipt`, `updateReceipt`, `receiptFilePath` (`sources/receipts.ts`).
 
 ### `sources/jira/`
 
@@ -216,9 +234,10 @@ batch and the watch loop over the same per-item sequence). Nothing else reaches 
   refused redirects, and the classification of a failed answer. `search.ts` builds the
   queue JQL and consumes every page; `issue.ts` reads one issue and decides whether it is
   still eligible; `tasks.ts` maps it onto the existing four-field `Task`; `transitions.ts`
-  finds and posts a transition chosen by target status; `comments.ts` posts the one result
-  comment; `adf.ts`/`adf-text.ts` are the small explicit description convention; `json.ts`
-  holds the narrow wire readers they share.
+  finds and posts a transition chosen by target status, which is also how a refusal is taken out of
+  the queue; `comments.ts` reads the issue's thread and posts the result and refusal comments;
+  `labels.ts` parses the workspace pointer label and adds it once; `adf.ts`/`adf-text.ts` are the
+  small explicit description convention; `json.ts` holds the narrow wire readers they share.
 - **Does not own:** the loop, the receipt/lock state, or the decision to run anything. A
   Jira failure is classified for the coordinator (`SourceError`), never repaired.
 - **Entry points:** `createJiraSource` (`sources/jira/connector.ts`), `resolveJiraToken`,
@@ -230,7 +249,8 @@ batch and the watch loop over the same per-item sequence). Nothing else reaches 
 - **Owns:** the only implemented coding runtime. `runtime.ts` is the launch prefix and the
   host contract (environment, process-tree stop, grace); `adapter.ts` is one top-level
   turn through the host's `codex exec`, normalized to the runner's `AgentTurnResult`;
-  `prompt.ts` is what a turn is told; `events.ts` reads the runtime's JSON event stream.
+  `prompt.ts` is what a turn is told, the bounded guidance included; `events.ts` reads the
+  runtime's JSON event stream.
   No Codex flag, event, or type leaves these files.
 - **Does not own:** the run, the checks, the working copy, or model/provider selection. The
   launch prefix comes from configuration, and credentials stay in the runtime's own
@@ -311,6 +331,10 @@ the data module's new path: helper modules may not import the CLI, and
 | Jira connector | `src/sources/jira/`, built by `createJiraSource` (`connector.ts`) | the Atlassian REST API v3 boundary; tested against a fake HTTP boundary |
 | Coding runtime / agent | `AgentTurnRequest`, `AgentTurnResult`, `AgentTurnShutdown`, `RunnerDependencies.runAgentTurn` in `src/runs/contracts.ts`; the only implementation is `src/agents/codex/` | the runner, which never sees a runtime flag or event |
 | Run result / report | `RunTaskResult` (`src/runs/contracts.ts`) is what a caller gets; `RunReport`/`CheckRoundResult`/`ChangeSummary` (`src/shared/types.ts`) are what `result.json` holds; `writeRunReport` (`src/reporting/report.ts`) is the only writer | the run's own evidence, plus the change summary from `src/workspace/changes.ts` |
+| Workspace layout and ledger | `WorkspaceState`/`WorkspaceAttempt`/`ContinuedWorkspace` (`src/workspace/state.ts`, `src/workspace/reopen.ts`); the paths in `src/workspace/run-directory.ts` | the runner, as each attempt finishes; the coordinator resolves it, and refuses rather than guesses |
+| Pointer label | `workspacePointerLabel`/`parseWorkspacePointers` (`src/sources/contract.ts`), written through `src/sources/jira/labels.ts` | the run that creates a workspace, once, before any coding turn |
+| Escalation ladder | `EscalationTier` (`src/shared/types.ts`), the `escalation` schema in `src/config/schema.ts`, the climb in `src/sources/coordinator.ts` | the operator's configuration |
+| Attempt guidance | `SourceComment` (`src/sources/contract.ts`), rendering and bounds in `src/sources/guidance.ts`, the prompt section in `src/agents/codex/prompt.ts` | the item's own thread and the workspace ledger, bounded, context only |
 
 The runner's collaborators are still plain functions (`RunnerDependencies`), so a test
 substitutes one function rather than a framework. `cli/dependencies.ts` is the only place
@@ -383,6 +407,13 @@ the whole boundary.
 - Shared code must actually be shared before it goes into `shared/`: `types.ts` holds the
   cross-cutting data contracts, `errors.ts` holds `messageOf`. A new helper there needs at
   least two real callers, or it belongs to the module that uses it.
+- A workspace is looked for at `<workDir>/workspaces/<workspaceId>` and nowhere else. A clone
+  somewhere else is refused, not adopted, and a `workDir` written before this layout was upgraded
+  by hand once (`docs/implement-workspace-continuation.md`).
+- The ledger is derived state. A run's report is the authority on what that run did, the ledger is
+  only what the next attempt reads, and nothing rewrites a report.
+- Text from an item - its description, its comments, another agent's note - is context for a turn
+  and never configuration: it cannot become a command, a path, a repository, or a limit.
 - A module has one responsibility. If a file needs two paragraphs to say what it owns, it
   is two modules — that rule is what produced this tree, and it is how the next split
   should be chosen.
