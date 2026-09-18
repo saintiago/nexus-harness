@@ -37,7 +37,7 @@ npm run validate             # format, lint, typecheck, build, tests — the gat
 
 git push -u origin task/short-name
 gh pr create --fill --base main
-gh pr checks --watch         # CI runs on the branch push and on the pull request
+gh pr checks --watch         # the pull request's own run is the gate
 gh pr merge --squash --delete-branch
 
 git switch main
@@ -55,7 +55,8 @@ run again on the result. There is no automation here to rebase or to guess.
 ## What a pull request needs
 
 - **Green CI.** `.github/workflows/ci.yml` runs `npm ci` and `npm run validate` on `ubuntu-latest`,
-  on the branch push and on the pull request. A red gate means the PR is not ready. Do not disable
+  once on the pull request and once more on the push of the merged commit to `main`. A red gate
+  means the PR is not ready. Do not disable
   checks, weaken assertions, or hide files from validation to get a green run.
 - **A description a reviewer can act on:** what changed, why, what you ran, and what you could not
   verify. `notes/` and `README.md` record the honest gaps; the PR should point at them rather than
