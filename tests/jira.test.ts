@@ -1076,6 +1076,32 @@ describe('publishing the result', () => {
     expect(transition?.body).toEqual({ transition: { id: '31' } });
   });
 
+  it('says which attempt of the ladder a result came from', async () => {
+    const http = fakeHttp((call) => {
+      if (call.url.includes('/comment')) {
+        return json({ id: '9002' });
+      }
+      if (call.url.includes('/transitions')) {
+        return json(TRANSITIONS_TO_REVIEW);
+      }
+      return json(issue({ status: 'In Progress' }));
+    });
+    const source = createJiraSource(jiraConfig(), TOKEN, { fetch: http.fetch });
+    const ladders = outcome({ attempt: { number: 2, of: 3, tier: 'pro' } });
+
+    await source.complete(PREPARED, ladders, new AbortController().signal);
+
+    const comment = http.calls.find((call) => call.url.includes('/comment'));
+    const body = comment?.body as {
+      body: { content: Array<{ content?: Array<{ text: string }> }> };
+    };
+    const paragraphs = body.body.content.map((node) => node.content?.[0]?.text ?? '');
+    expect(paragraphs[0]).toBe(
+      'Harness run run-20260916120000-abcdef01 for SAM1-11 finished: failed. ' +
+        'Attempt 2 of 3 (tier pro).',
+    );
+  });
+
   it('never moves an issue to Done and never rewrites its description', async () => {
     const http = fakeHttp((call) => {
       if (call.url.includes('/comment')) {

@@ -32,7 +32,13 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { runCodexTurn, selectedCodexRuntime } from './agent.js';
 import { runCheckRound } from './checks.js';
-import { ConfigError, loadHarnessConfig, loadTask, resolveWorkDir } from './config.js';
+import {
+  ConfigError,
+  escalationTiers,
+  loadHarnessConfig,
+  loadTask,
+  resolveWorkDir,
+} from './config.js';
 import { createJiraSource, resolveJiraToken } from './jira.js';
 import { ReportError, appendRunLog, openAgentLog, writeRunReport } from './report.js';
 import { RunCancelledError, RunTimeoutError, runTask } from './runner.js';
@@ -865,15 +871,23 @@ async function sourceCommand(
     const intake: SourceContext = {
       source: connector,
       workDir,
+      // The ladder the coordinator climbs: what the configuration declares, or
+      // the single ordinary rung built from `agent` and `maxRepairs`.
+      tiers: escalationTiers(config),
       repoPath,
       io,
       stop: stop.signal,
       preflight: preflightSource,
-      run: ({ task, sourceRef, stop: runStop, continuedWorkspace, onWorkspaceReady }) =>
+      run: ({ task, sourceRef, stop: runStop, tier, continuedWorkspace, onWorkspaceReady }) =>
         runTask(
           {
             task,
-            config,
+            // A rung runs the launch and the repair allowance it names; the rest
+            // of the configuration is the run's own.
+            config:
+              tier === undefined
+                ? config
+                : { ...config, agent: tier.agent, maxRepairs: tier.maxRepairs },
             repoPath,
             workDir,
             stop: runStop,

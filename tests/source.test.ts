@@ -57,6 +57,7 @@ import type {
   CheckRoundResult,
   CommandOutcome,
   CommandResult,
+  EscalationTier,
   RoundOutcome,
   RunStatus,
   SourceRef,
@@ -188,6 +189,8 @@ function resultFor(
 
 interface FixtureOptions {
   readonly workDir: string;
+  /** The ladder this fixture's coordinator climbs; one rung by default. */
+  readonly tiers?: readonly EscalationTier[];
   /** What each scan returns; the last entry is reused once the list runs out. */
   readonly scans?: ReadonlyArray<readonly SourceCandidate[] | Error>;
   readonly prepare?: (
@@ -214,6 +217,7 @@ interface Fixture {
   readonly refusals: Array<{ key: string; reason: string }>;
   readonly requests: Array<{
     readonly task: Task;
+    readonly tier: string | null;
     readonly continuedWorkspace?: { readonly workspaceId: string; readonly attempt: number };
     readonly continued: boolean;
   }>;
@@ -283,6 +287,13 @@ function createFixture(options: FixtureOptions): Fixture {
   const context: SourceContext = {
     source,
     workDir: options.workDir,
+    tiers: options.tiers ?? [
+      {
+        name: 'default',
+        agent: { runtime: 'codex', command: ['codex'] },
+        maxRepairs: 2,
+      },
+    ],
     repoPath: '/repo',
     io: { out: (text) => output.push(text), err: (text) => errors.push(text) },
     stop: stop.signal,
@@ -297,6 +308,7 @@ function createFixture(options: FixtureOptions): Fixture {
       log.push(`run:${asked.task.id}`);
       requests.push({
         task: asked.task,
+        tier: asked.tier?.name ?? null,
         continuedWorkspace: asked.continuedWorkspace,
         continued: asked.continuedWorkspace !== undefined,
       });
@@ -884,6 +896,104 @@ async function preparedWorkspaceOnDisk(workDir: string): Promise<{ workspaceId: 
   });
   return { workspaceId: prepared.workspaceId };
 }
+
+/**
+ * A run result that carries the workspace it worked in, the way the runner's
+ * does: the ladder reads the next attempt number from it.
+ */
+function resultContinuing(
+  runDir: string,
+  workspace: { readonly workspaceId: string; readonly attempt: number },
+  status: RunStatus,
+): RunTaskResult {
+  const workDir = path.dirname(runDir);
+  return {
+    ...resultFor(runDir, status, `attempt ${String(workspace.attempt)}`),
+    workspace: {
+      workDir,
+      runId: path.basename(runDir),
+      runDir,
+      workspacePath: path.join(workDir, 'workspaces', workspace.workspaceId),
+      logsDir: path.join(runDir, 'logs'),
+      workspaceId: workspace.workspaceId,
+      continued: workspace.attempt > 1,
+      attempt: workspace.attempt,
+      sourceRoot: '/repo',
+      baseCommit: 'base',
+      branch: `harness/${workspace.workspaceId}`,
+    },
+  };
+}
+
+describe('the escalation ladder', () => {
+  const TIERS: readonly EscalationTier[] = [
+    {
+      name: 'flash',
+      agent: { runtime: 'codex', command: ['codex', '--model', 'deepseek-flash'] },
+      maxRepairs: 1,
+    },
+    {
+      name: 'pro',
+      agent: { runtime: 'codex', command: ['codex', '--model', 'deepseek-pro'] },
+      maxRepairs: 2,
+    },
+  ];
+
+  it('climbs to the next tier in the same workspace when an attempt fails', async () => {
+    const workDir = await createTempDir();
+    const fixture = createFixture({
+      workDir,
+      tiers: TIERS,
+      scans: [[candidateFor('1')]],
+      run: (_task, call, runDir) =>
+        Promise.resolve(
+          resultContinuing(
+            runDir,
+            { workspaceId: 'run-1', attempt: call },
+            call === 1 ? 'failed' : 'passed',
+          ),
+        ),
+    });
+
+    const summary = await runSource(fixture.context, null);
+
+    // One issue, two attempts, one entry in the counters, and the second attempt
+    // ran the stronger tier in the workspace the first one made.
+    expect(summary.outcome).toBe('completed');
+    expect(summary.attempted).toBe(1);
+    expect(summary.passed).toBe(1);
+    expect(summary.failed).toBe(0);
+    expect(fixture.requests.map((request) => request.tier)).toEqual(['flash', 'pro']);
+    expect(fixture.requests[0]?.continued).toBe(false);
+    expect(fixture.requests[1]?.continued).toBe(true);
+    expect(fixture.requests[1]?.continuedWorkspace).toEqual({
+      workspaceId: 'run-1',
+      workspacePath: path.join(workDir, 'workspaces', 'run-1'),
+      branch: 'harness/run-1',
+      baseCommit: 'base',
+      attempt: 2,
+    });
+    // Two runs, two comments, each saying which attempt it was.
+    expect(fixture.completions.map((completion) => completion.outcome.attempt)).toEqual([
+      { number: 1, of: 2, tier: 'flash' },
+      { number: 2, of: 2, tier: 'pro' },
+    ]);
+    expect(fixture.output.join('\n')).toContain('escalating to tier pro (attempt 2 of 2)');
+    // The pointer was written once, by the first attempt.
+    expect(fixture.log.filter((entry) => entry.startsWith('workspace:'))).toHaveLength(1);
+  });
+
+  it('does not climb when the first tier passes', async () => {
+    const workDir = await createTempDir();
+    const fixture = createFixture({ workDir, tiers: TIERS, scans: [[candidateFor('1')]] });
+
+    const summary = await runSource(fixture.context, null);
+
+    expect(summary.passed).toBe(1);
+    expect(fixture.requests.map((request) => request.tier)).toEqual(['flash']);
+    expect(fixture.completions).toHaveLength(1);
+  });
+});
 
 describe('an issue that points at a workspace', () => {
   it('records a fresh workspace on the issue, and the run is told to do it', async () => {

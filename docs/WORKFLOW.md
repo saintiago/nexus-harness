@@ -34,6 +34,7 @@ All six original fields are required. `agent` and `source` are independently opt
 | `setup` | Array of command argument arrays; may be empty. Run before baseline and before each post-agent check round. |
 | `checks` | Nonempty array of command argument arrays; every check is required. |
 | `agent` | Optional strict object with required `runtime` and `command` fields when present. No `null` or partial objects. |
+| `escalation` | Optional nonempty array of tiers: `{ "name", "agent"?, "maxRepairs"? }` with distinct names. Attempt N of one issue runs tier N, clamped to the last, in the same workspace; a tier that names no `agent` or `maxRepairs` inherits the top-level one. Absent means a single `default` tier built from `agent` and `maxRepairs` (docs/implement-workspace-continuation.md). |
 | `source` | Optional strict Jira object defined in section 5. No `null`; unsupported source types are errors. |
 
 Setup/check commands remain nonempty string arrays with a nonblank executable first. Remaining arguments are literal strings, including intentional empty strings. Never concatenate task text into commands or implicitly interpolate environment variables. Use the tested platform launcher and retain its documented restrictions.

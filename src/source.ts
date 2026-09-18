@@ -41,7 +41,7 @@ import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { RunCancelledError } from './runner.js';
 import type { RunTaskResult } from './runner.js';
-import type { AttemptEvidence, RunStatus, SourceRef, Task } from './types.js';
+import type { AttemptEvidence, EscalationTier, RunStatus, SourceRef, Task } from './types.js';
 import { resolveWorkspace, reopenWorkspace } from './workspace.js';
 import type { ContinuedWorkspace, PreflightRequest, SourcePreflight } from './workspace.js';
 
@@ -153,6 +153,16 @@ export interface SourceRunOutcome {
   readonly runDir: string;
   /** The run's own `result.json`. */
   readonly reportPath: string;
+  /**
+   * Which attempt of how many this run was, and the tier that ran it: present
+   * when more than one attempt is possible, so the published result says so
+   * (docs/implement-workspace-continuation.md).
+   */
+  readonly attempt?: {
+    readonly number: number;
+    readonly of: number;
+    readonly tier: string;
+  };
 }
 
 /**
@@ -201,6 +211,8 @@ export interface SourceRunRequest {
   readonly task: Task;
   readonly sourceRef: SourceRef;
   readonly stop: AbortSignal;
+  /** The rung this attempt runs, or nothing when no ladder was read. */
+  readonly tier?: EscalationTier;
   /**
    * A workspace this run continues, resolved and verified by the coordinator, or
    * nothing for a run that creates one.
@@ -222,6 +234,12 @@ export interface SourceContext {
   readonly source: TaskSource;
   /** The retained output directory the receipts and runs live under. */
   readonly workDir: string;
+  /**
+   * The escalation ladder, at least one rung: attempt N of a workspace runs
+   * rung N, clamped to the last. `escalationTiers(config)` is how the CLI reads
+   * it (docs/implement-workspace-continuation.md).
+   */
+  readonly tiers: readonly EscalationTier[];
   /** The target repository every fetched task is bound to. */
   readonly repoPath: string;
   readonly io: SourceIo;
@@ -508,7 +526,10 @@ export async function acquireIntakeLock(workDir: string, now: () => Date): Promi
 }
 
 /** What a source command needs to know about how one run ended. */
-function runOutcome(result: RunTaskResult): SourceRunOutcome {
+function runOutcome(
+  result: RunTaskResult,
+  attempt?: SourceRunOutcome['attempt'],
+): SourceRunOutcome {
   return {
     runId: result.run.runId,
     status: result.status,
@@ -517,6 +538,7 @@ function runOutcome(result: RunTaskResult): SourceRunOutcome {
     checks: checkSummary(result),
     runDir: result.run.runDir,
     reportPath: result.reportPath,
+    ...(attempt === undefined ? {} : { attempt }),
   };
 }
 
@@ -978,111 +1000,171 @@ async function attempt(
     return 'next';
   }
 
-  let result: RunTaskResult;
-  try {
-    result = await context.run({
-      task: item.task,
-      sourceRef: item.ref,
-      stop,
-      ...(continuedWorkspace === undefined ? {} : { continuedWorkspace }),
-      ...(decision.kind === 'fresh'
-        ? {
-            // Where this attempt's work lives is recorded on the issue before any
-            // coding turn runs, so a later attempt can find the workspace even if
-            // this one dies. A write that fails throws, and the caller treats the
-            // attempt as producing no local result: the receipt is kept and
-            // intake stops for inspection.
-            onWorkspaceReady: (workspace: { readonly workspaceId: string }) =>
-              source.recordWorkspace(item, workspace.workspaceId, stop),
-          }
-        : {}),
-    });
-  } catch (cause) {
-    const problem = messageOf(cause);
-    await updateReceipt(file, { problem: `run: ${problem}` });
-    if (cause instanceof RunCancelledError) {
-      return 'cancelled';
+  // The ladder: one attempt per rung, starting from the rung the workspace's own
+  // attempt count has reached. A re-armed issue whose earlier attempts already
+  // spent the ladder climbs at its top rung; a green attempt, or one the caller
+  // stopped, ends the climb. Every attempt is its own run — its own directory,
+  // report, comment, and repair allowance
+  // (docs/implement-workspace-continuation.md).
+  const ladder = context.tiers;
+  const lastAttempt = Math.max(ladder.length, continuedWorkspace?.attempt ?? 1);
+  let resume = continuedWorkspace;
+  let result: RunTaskResult | undefined;
+
+  for (;;) {
+    const attempt = resume?.attempt ?? 1;
+    const tier = ladder[Math.min(attempt, ladder.length) - 1];
+    if (tier === undefined) {
+      return stopWith(
+        state,
+        `${item.ref.key}: the configuration declares no agent tier, so no attempt was started`,
+      );
     }
-    return stopWith(
-      state,
-      `${item.ref.key}: the run ending this attempt produced no local result, so its receipt is ` +
-        `kept and intake stops for inspection: ${problem}`,
+
+    let run: RunTaskResult;
+    try {
+      run = await context.run({
+        task: item.task,
+        sourceRef: item.ref,
+        stop,
+        tier,
+        ...(resume === undefined ? {} : { continuedWorkspace: resume }),
+        ...(decision.kind === 'fresh' && attempt === 1
+          ? {
+              // Where this attempt's work lives is recorded on the issue before
+              // any coding turn runs, so a later attempt can find the workspace
+              // even if this one dies. A write that fails throws, and the caller
+              // treats the attempt as producing no local result: the receipt is
+              // kept and intake stops for inspection.
+              onWorkspaceReady: (workspace: { readonly workspaceId: string }) =>
+                source.recordWorkspace(item, workspace.workspaceId, stop),
+            }
+          : {}),
+      });
+    } catch (cause) {
+      const problem = messageOf(cause);
+      await updateReceipt(file, { problem: `run: ${problem}` });
+      if (cause instanceof RunCancelledError) {
+        return 'cancelled';
+      }
+      return stopWith(
+        state,
+        `${item.ref.key}: the run ending this attempt produced no local result, so its receipt is ` +
+          `kept and intake stops for inspection: ${problem}`,
+      );
+    }
+    result = run;
+
+    await updateReceipt(file, {
+      runId: run.run.runId,
+      resultPath: run.reportPath,
+      outcome: run.status,
+      feedback: 'pending',
+    });
+    io.out(
+      `run ${run.run.runId}: ${run.status} for ${item.ref.key} (${run.reason}), ` +
+        `report ${run.reportPath}` +
+        ` (attempt ${String(attempt)} of ${String(ladder.length)}, tier ${tier.name})`,
+    );
+
+    const outcome = runOutcome(run, { number: attempt, of: ladder.length, tier: tier.name });
+    // Whether the run's own execution was confirmed stopped: an expired limit and
+    // a stop by the caller both record it, and only `confirmed` lets the next
+    // issue run. A handled failed run may be followed by the next issue, but only
+    // while the harness knows nothing of the run's own is still running
+    // (docs/spec.md §6).
+    const stopEvidence = run.timeout ?? run.cancellation;
+    const stoppedCleanly = stopEvidence === null || stopEvidence.termination === 'confirmed';
+    if (!stoppedCleanly) {
+      // Something the run started may still be writing. A result is not published
+      // from that position, the next issue is not taken, and the lock is left for
+      // a human to inspect.
+      await updateReceipt(file, {
+        feedback: 'pending',
+        problem:
+          `feedback: not attempted, because the run's termination was not confirmed (` +
+          `${stopEvidence.problem ?? 'no reason was recorded'})`,
+      });
+      state.cleanupConfirmed = false;
+      io.err(
+        `${item.ref.key}: the run was stopped without a confirmed termination, so no result was ` +
+          'posted and the intake lock is kept for inspection',
+      );
+      return run.status === 'cancelled'
+        ? 'cancelled'
+        : stopWith(
+            state,
+            `${item.ref.key}: the run ended without confirming that everything it started had ` +
+              'stopped, so intake stops and the lock is kept for inspection',
+          );
+    }
+
+    // A run the caller stopped still gets one bounded, best-effort feedback
+    // sequence of its own, so the issue does not sit in the running status.
+    const feedbackStop =
+      run.status === 'cancelled' ? AbortSignal.timeout(FEEDBACK_DEADLINE_MS) : stop;
+    try {
+      await source.complete(item, outcome, feedbackStop);
+      await updateReceipt(file, { feedback: 'sent' });
+      io.out(`${item.ref.key}: result published and moved to review`);
+    } catch (cause) {
+      const failure =
+        cause instanceof SourceFeedbackError
+          ? { problem: cause.message, commentId: cause.commentId }
+          : { problem: messageOf(cause), commentId: null };
+      await updateReceipt(file, {
+        feedback: 'failed',
+        problem: `feedback: ${failure.problem}`,
+        ...(failure.commentId === null ? {} : { commentId: failure.commentId }),
+      });
+      return stopWith(
+        state,
+        `${item.ref.key}: the local run is kept, but publishing its result failed, so intake ` +
+          `stops for inspection: ${failure.problem}`,
+      );
+    }
+
+    // Only a failed attempt climbs: a green one ends the issue's intake, and one
+    // the caller stopped is over. When the ladder has no rung left, the climb
+    // stops here and the last comment already says how it ended.
+    if (run.status !== 'failed' || attempt >= lastAttempt) {
+      break;
+    }
+
+    // The next rung works in the workspace this attempt just used: the run's own
+    // record of it, so nothing is resolved twice, and its next attempt number.
+    const workspace = run.workspace;
+    if (workspace === null) {
+      return stopWith(
+        state,
+        `${item.ref.key}: the run left no workspace to continue, so no further tier was started`,
+      );
+    }
+    resume = {
+      workspaceId: workspace.workspaceId,
+      workspacePath: workspace.workspacePath,
+      branch: workspace.branch,
+      baseCommit: workspace.baseCommit,
+      attempt: workspace.attempt + 1,
+    };
+    const next = ladder[Math.min(resume.attempt, ladder.length) - 1];
+    io.out(
+      `${item.ref.key}: escalating to tier ${next?.name ?? 'unknown'} ` +
+        `(attempt ${String(resume.attempt)} of ${String(ladder.length)})`,
     );
   }
 
-  await updateReceipt(file, {
-    runId: result.run.runId,
-    resultPath: result.reportPath,
-    outcome: result.status,
-    feedback: 'pending',
-  });
+  // The counters describe what the issue's intake ended as, one entry per issue:
+  // the attempts it took are in the ledger, and in the comments it published.
+  if (result === undefined) {
+    return stopWith(state, `${item.ref.key}: no attempt was made`);
+  }
   if (result.status === 'passed') {
     state.passed += 1;
   } else if (result.status === 'cancelled') {
     state.cancelled += 1;
   } else {
     state.failed += 1;
-  }
-  io.out(
-    `run ${result.run.runId}: ${result.status} for ${prepared.ref.key} (${result.reason}), ` +
-      `report ${result.reportPath}`,
-  );
-
-  const outcome = runOutcome(result);
-  // Whether the run's own execution was confirmed stopped: an expired limit and
-  // a stop by the caller both record it, and only `confirmed` lets the next
-  // issue run. A handled failed run may be followed by the next issue, but only
-  // while the harness knows nothing of the run's own is still running
-  // (docs/spec.md §6).
-  const stopEvidence = result.timeout ?? result.cancellation;
-  const stoppedCleanly = stopEvidence === null || stopEvidence.termination === 'confirmed';
-  if (!stoppedCleanly) {
-    // Something the run started may still be writing. A result is not published
-    // from that position, the next issue is not taken, and the lock is left for
-    // a human to inspect.
-    await updateReceipt(file, {
-      feedback: 'pending',
-      problem:
-        `feedback: not attempted, because the run's termination was not confirmed (` +
-        `${stopEvidence.problem ?? 'no reason was recorded'})`,
-    });
-    state.cleanupConfirmed = false;
-    io.err(
-      `${prepared.ref.key}: the run was stopped without a confirmed termination, so no result was ` +
-        'posted and the intake lock is kept for inspection',
-    );
-    return result.status === 'cancelled'
-      ? 'cancelled'
-      : stopWith(
-          state,
-          `${prepared.ref.key}: the run ended without confirming that everything it started had ` +
-            'stopped, so intake stops and the lock is kept for inspection',
-        );
-  }
-
-  // A run the caller stopped still gets one bounded, best-effort feedback
-  // sequence of its own, so the issue does not sit in the running status.
-  const feedbackStop =
-    result.status === 'cancelled' ? AbortSignal.timeout(FEEDBACK_DEADLINE_MS) : stop;
-  try {
-    await source.complete(prepared, outcome, feedbackStop);
-    await updateReceipt(file, { feedback: 'sent' });
-    io.out(`${prepared.ref.key}: result published and moved to review`);
-  } catch (cause) {
-    const failure =
-      cause instanceof SourceFeedbackError
-        ? { problem: cause.message, commentId: cause.commentId }
-        : { problem: messageOf(cause), commentId: null };
-    await updateReceipt(file, {
-      feedback: 'failed',
-      problem: `feedback: ${failure.problem}`,
-      ...(failure.commentId === null ? {} : { commentId: failure.commentId }),
-    });
-    return stopWith(
-      state,
-      `${prepared.ref.key}: the local run is kept, but publishing its result failed, so intake ` +
-        `stops for inspection: ${failure.problem}`,
-    );
   }
 
   return result.status === 'cancelled' ? 'cancelled' : 'next';

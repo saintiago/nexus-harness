@@ -692,8 +692,12 @@ function oneLine(text: string): string {
  * never describes a failed attempt as completed (docs/spec.md §6).
  */
 function commentParagraphs(ref: SourceRef, outcome: SourceRunOutcome): readonly string[] {
+  const attempt = outcome.attempt;
   return [
-    `Harness run ${outcome.runId} for ${ref.key} finished: ${outcome.status}.`,
+    `Harness run ${outcome.runId} for ${ref.key} finished: ${outcome.status}.` +
+      (attempt === undefined || attempt.of <= 1
+        ? ''
+        : ` Attempt ${String(attempt.number)} of ${String(attempt.of)} (tier ${attempt.tier}).`),
     `Reason: ${oneLine(outcome.reason)}`,
     `Checks: ${oneLine(outcome.checks)}`,
     `Repairs used: ${String(outcome.repairsUsed)}`,

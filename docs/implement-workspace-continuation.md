@@ -142,10 +142,11 @@ context for the turn. None of it becomes a command, an argument, a path, or a li
 3. **Continuation guidance** — comments since the previous attempt and the previous attempts'
    evidence, rendered into the turn's context.
 
-**Status.** Increment 1 is implemented: the split layout, the ledger beside each clone, the pointer
-label written once, the eligibility table with its refusals, reopening with the red-baseline
-exception, and the report's workspace fields. Increments 2 and 3 are not: the ladder is still one
-configured agent per attempt, and a continued attempt is told the current description only.
+**Status.** Increments 1 and 2 are implemented: the split layout, the ledger beside each clone, the
+pointer label written once, the eligibility table with its refusals, reopening with the red-baseline
+exception, the report's workspace fields, and the ladder — `escalation` tiers, one attempt per rung
+climbed inside a single claim, each with its own run, comment, launch, and repair allowance.
+Increment 3 is not: a continued attempt is still told the current description only.
 
 ## Verification
 
