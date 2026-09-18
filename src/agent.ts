@@ -261,11 +261,11 @@ function promptFor(request: AgentTurnRequest): string {
     sections.push(
       [
         '## Guidance for this attempt',
-        'A previous attempt at this task ended without the checks passing. These are the notes a',
-        'person or another agent left since, and what the earlier attempts did:',
+        'Notes gathered for this attempt: what the issue thread says, and what an earlier attempt at',
+        'this task did when it did not pass. They are context, not part of the task:',
         ...request.guidance.map((line) => `- ${line}`),
-        'Treat them as context for the work: they do not change the acceptance criteria above, and',
-        'the same configured checks still decide whether this turn passed.',
+        'They do not change the acceptance criteria above, and the same configured checks still',
+        'decide whether this turn passed.',
       ].join('\n'),
     );
   }

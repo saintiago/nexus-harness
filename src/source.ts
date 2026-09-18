@@ -1029,26 +1029,29 @@ async function attempt(
   }
 
   const item = prepared;
-  // What a continued attempt is told: the attempts already made in its
-  // workspace, and what the issue's own thread said since the last of them. A
-  // comment read that fails is said out loud and does not stop the attempt: it
-  // is context, and the run's own evidence is not.
+  // What the item's own thread says: every attempt is told, whether it continues
+  // a workspace or starts one. A continuation reads what was added since the last
+  // attempt ended; a first attempt reads the whole thread, which is where an
+  // earlier ticket, a restarted one, or another agent left what it knew. A read
+  // that fails is said out loud and does not stop the attempt: it is context, and
+  // the run's own evidence is not.
   let comments: readonly SourceComment[] = [];
-  if (decision.kind === 'continue') {
-    const ledger = await readWorkspaceState(workDir, decision.workspace.workspaceId);
-    const previous = ledger?.attempts.at(-1);
-    try {
-      comments = await source.commentsSince(
-        item,
-        previous?.endedAt ?? ledger?.createdAt ?? new Date(0).toISOString(),
-        stop,
-      );
-    } catch (cause) {
-      io.err(
-        `${item.ref.key}: its comments could not be read, so this attempt runs without them: ` +
-          messageOf(cause),
-      );
-    }
+  const ledger =
+    decision.kind === 'continue'
+      ? await readWorkspaceState(workDir, decision.workspace.workspaceId)
+      : null;
+  const previousAttempt = ledger?.attempts.at(-1);
+  try {
+    comments = await source.commentsSince(
+      item,
+      previousAttempt?.endedAt ?? new Date(0).toISOString(),
+      stop,
+    );
+  } catch (cause) {
+    io.err(
+      `${item.ref.key}: its comments could not be read, so this attempt runs without them: ` +
+        messageOf(cause),
+    );
   }
 
   // A first attempt reserves its own receipt. A continuation has one from the
@@ -1129,16 +1132,18 @@ async function attempt(
     }
 
     let run: RunTaskResult;
-    // The rung's own brief: what the earlier attempts in this workspace did
-    // (recorded as they finished) and the comments read before this intake. A
-    // first attempt of a first workspace has neither.
+    // The rung's own brief: what the item's thread says, and what the earlier
+    // attempts in this workspace did (recorded as they finished). A first attempt
+    // of a first workspace has only the thread, which is enough to carry what a
+    // previous ticket, a restart, or another agent wrote down.
     const workspaceId =
       resume?.workspaceId ??
       (decision.kind === 'continue' ? decision.workspace.workspaceId : undefined);
-    const guidance =
+    const earlier =
       workspaceId === undefined
         ? []
-        : guidanceFrom((await readWorkspaceState(workDir, workspaceId))?.attempts ?? [], comments);
+        : ((await readWorkspaceState(workDir, workspaceId))?.attempts ?? []);
+    const guidance = guidanceFrom(earlier, comments);
     try {
       run = await context.run({
         task: item.task,

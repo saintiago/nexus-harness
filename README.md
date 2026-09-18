@@ -362,8 +362,9 @@ the same way. The receipt stays as the audit trail behind all of it.
 
 To retry without that machinery â€” a first attempt again, in a new workspace â€” stop the watcher,
 inspect and stop prior processes, keep the run artifacts, delete only that issue's printed receipt
-file, and put the issue back to the ready status. Never remove the whole `.intake` directory to fix
-one task.
+file, remove its `harness-ws-*` pointer label if it has one (otherwise the harness would continue
+the old workspace instead of creating one), and put the issue back to the ready status. Never remove
+the whole `.intake` directory to fix one task.
 
 Scans are periodic and pause during a batch, so a new issue is picked up on the next scan rather
 than instantly. `source list` and `source run` report a failed read and exit nonzero; `source watch`
@@ -770,6 +771,8 @@ automation does and does not prove is written down in [docs/GIT-WORKFLOW.md](doc
 - [docs/LONG_TERM_VISION.md](docs/LONG_TERM_VISION.md) — the direction the harness is meant to grow
   into. It defines no behaviour: [docs/spec.md](docs/spec.md) stays authoritative, and every change
   still needs a task.
+- [docs/module-structure.md](docs/module-structure.md) — the `src/` layout one task aims at, written
+  by an earlier attempt that was stopped. A target, not a description of the tree as it stands.
 - [docs/harness.jira.example.json](docs/harness.jira.example.json) — a credential-free source
   configuration to copy.
 - [docs/GIT-WORKFLOW.md](docs/GIT-WORKFLOW.md) — how changes to this repository are made: one
