@@ -1,7 +1,13 @@
 import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { ConfigError, loadHarnessConfig, loadTask, resolveWorkDir } from '../src/config.js';
+import {
+  ConfigError,
+  escalationTiers,
+  loadHarnessConfig,
+  loadTask,
+  resolveWorkDir,
+} from '../src/config.js';
 import type { HarnessConfig, Task } from '../src/types.js';
 import {
   cleanupTempDirectories,
@@ -284,6 +290,67 @@ describe('the optional agent selection', () => {
       configWith({ agent: { runtime: 'codex', command: ['codex', '--model', 'x'] } }),
     );
     expect(bareConfig.agent.command).toEqual(['codex', '--model', 'x']);
+  });
+});
+
+describe('the optional escalation ladder', () => {
+  it('is one rung built from agent and maxRepairs when none is declared', async () => {
+    const config = await loadConfig(documentedConfig);
+
+    expect(config.escalation).toBeUndefined();
+    expect(escalationTiers(config)).toEqual([
+      {
+        name: 'default',
+        agent: { runtime: 'codex', command: ['codex'] },
+        maxRepairs: config.maxRepairs,
+      },
+    ]);
+  });
+
+  it('keeps a declared ladder in order, and a rung that names nothing inherits', async () => {
+    const config = await loadConfig(
+      configWith({
+        agent: { runtime: 'codex', command: ['codex', '--profile', 'deepseek'] },
+        maxRepairs: 1,
+        escalation: [
+          {
+            name: 'flash',
+            agent: { runtime: 'codex', command: ['codex', '--model', 'deepseek-flash'] },
+            maxRepairs: 2,
+          },
+          { name: 'pro' },
+        ],
+      }),
+    );
+
+    expect(escalationTiers(config)).toEqual([
+      {
+        name: 'flash',
+        agent: { runtime: 'codex', command: ['codex', '--model', 'deepseek-flash'] },
+        maxRepairs: 2,
+      },
+      {
+        name: 'pro',
+        agent: { runtime: 'codex', command: ['codex', '--profile', 'deepseek'] },
+        maxRepairs: 1,
+      },
+    ]);
+  });
+
+  it('rejects a ladder that is empty, unnamed, or ambiguous', async () => {
+    await expectRejected(() => loadConfig(configWith({ escalation: [] })), /at least one tier/);
+    await expectRejected(
+      () => loadConfig(configWith({ escalation: [{ name: '  ' }] })),
+      /escalation\[\]\.name/,
+    );
+    await expectRejected(
+      () => loadConfig(configWith({ escalation: [{ name: 'pro' }, { name: 'pro' }] })),
+      /distinct/,
+    );
+    await expectRejected(
+      () => loadConfig(configWith({ escalation: [{ name: 'pro', maxRepairs: -1 }] })),
+      /maxRepairs/,
+    );
   });
 });
 

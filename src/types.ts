@@ -44,6 +44,21 @@ export interface AgentSelection {
   readonly command: readonly string[];
 }
 
+/**
+ * One rung of the escalation ladder: the launch an attempt uses, and the repair
+ * turns it may spend. The rungs run in order within one intake, so a failed
+ * attempt can be followed by a stronger one without an operator in between
+ * (docs/implement-workspace-continuation.md).
+ */
+export interface EscalationTier {
+  /** How the tier is named in comments and logs. Distinct within one ladder. */
+  readonly name: string;
+  /** The launch this tier runs, resolved like the top-level `agent`. */
+  readonly agent: AgentSelection;
+  /** Repair turns one attempt of this tier may spend. */
+  readonly maxRepairs: number;
+}
+
 /** Validated contents of a harness configuration file. */
 export interface HarnessConfig {
   /** Output directory for run directories, resolved relative to the config file. */
@@ -64,6 +79,13 @@ export interface HarnessConfig {
    * executable is already resolved against the configuration file's directory.
    */
   readonly agent: AgentSelection;
+  /**
+   * The escalation ladder, normalized, when the configuration declares one: each
+   * rung's launch is resolved and every rung carries its own repair allowance
+   * (defaulted from `agent` and `maxRepairs`). Absent means one rung, built from
+   * those two — `escalationTiers(config)` is how a caller reads it either way.
+   */
+  readonly escalation?: readonly EscalationTier[];
   /**
    * The optional task-input source, normalized: the only implemented type is
    * `"jira"`, and its documented defaults are already applied. Absent means the

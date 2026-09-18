@@ -14,7 +14,7 @@
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
-import type { AgentSelection, HarnessConfig, Task } from './types.js';
+import type { AgentSelection, EscalationTier, HarnessConfig, Task } from './types.js';
 
 /**
  * A configuration or task input that could not be read or did not validate.
@@ -195,6 +195,24 @@ export const harnessConfigSchema = z.strictObject({
     .array(commandSchema, { error: 'must be an array of command arrays' })
     .min(1, { error: 'must contain at least one command' }),
   agent: agentSchema.optional(),
+  escalation: z
+    .array(
+      z.strictObject({
+        name: nonBlankString('escalation[].name'),
+        agent: agentSchema.optional(),
+        maxRepairs: boundedInteger(
+          'escalation[].maxRepairs',
+          0,
+          'a nonnegative integer',
+        ).optional(),
+      }),
+      { error: 'escalation must be an array of tiers' },
+    )
+    .min(1, { error: 'escalation must hold at least one tier' })
+    .refine((tiers) => new Set(tiers.map((tier) => tier.name)).size === tiers.length, {
+      error: 'escalation tier names must be distinct: two tiers with one name are one tier',
+    })
+    .optional(),
   source: sourceSchema.optional(),
 });
 
@@ -295,17 +313,42 @@ export async function loadHarnessConfig(configPath: string): Promise<HarnessConf
   if (!result.success) {
     throw new ConfigError(configPath, describeIssues(result.error));
   }
-  const { agent, source, ...rest } = result.data;
+  const { agent, escalation, source, ...rest } = result.data;
+  const selection = resolveAgentSelection(agent ?? DEFAULT_AGENT_SELECTION, configPath);
   return {
     ...rest,
     // An explicit selection is used as it is written, paths resolved; a
     // selection that was omitted is the documented ordinary Codex launch.
-    agent: resolveAgentSelection(agent ?? DEFAULT_AGENT_SELECTION, configPath),
+    agent: selection,
+    // A rung that names no launch of its own runs the top-level one, and one
+    // that names no allowance spends the top-level one: a ladder says what
+    // changes, not everything again.
+    ...(escalation === undefined
+      ? {}
+      : {
+          escalation: escalation.map((tier) => ({
+            name: tier.name,
+            agent: resolveAgentSelection(tier.agent ?? selection, configPath),
+            maxRepairs: tier.maxRepairs ?? rest.maxRepairs,
+          })),
+        }),
     // A configuration without a source stays without one: a file-task command
     // must not acquire a connector, a credential, or intake state because a
     // field it never asked for was given a default (docs/WORKFLOW.md §5).
     ...(source === undefined ? {} : { source }),
   };
+}
+
+/**
+ * The ladder a source run climbs, whether or not the configuration declared one:
+ * a single rung built from `agent` and `maxRepairs` is the ordinary case, and a
+ * declared ladder is used as written. The name of the synthesized rung is
+ * `default`, which is what a comment calls it when nothing named it.
+ */
+export function escalationTiers(config: HarnessConfig): readonly EscalationTier[] {
+  return (
+    config.escalation ?? [{ name: 'default', agent: config.agent, maxRepairs: config.maxRepairs }]
+  );
 }
 
 /** Reads and validates a task file. */
