@@ -377,18 +377,21 @@ describe('a finite source run', () => {
       'list',
       'preflight:2',
       'prepare:SAM1-1',
+      'comments:SAM1-1',
       'claim:SAM1-1',
       'run:SAM1-1',
       'workspace:SAM1-1:run-1',
       'complete:SAM1-1:passed',
       'preflight:3',
       'prepare:SAM1-2',
+      'comments:SAM1-2',
       'claim:SAM1-2',
       'run:SAM1-2',
       'workspace:SAM1-2:run-2',
       'complete:SAM1-2:passed',
       'preflight:4',
       'prepare:SAM1-3',
+      'comments:SAM1-3',
       'claim:SAM1-3',
       'run:SAM1-3',
       'workspace:SAM1-3:run-3',
@@ -1110,6 +1113,37 @@ describe('an issue that points at a workspace', () => {
         'the task cannot pass the checks without a valid email address',
     ]);
   });
+
+  it('tells a first attempt what the ticket thread says, from the beginning', async () => {
+    const workDir = await createTempDir();
+    const asked: string[] = [];
+    const fixture = createFixture({
+      workDir,
+      scans: [[candidateFor('1')]],
+      commentsSince: (_item, since) => {
+        asked.push(since);
+        return [
+          {
+            author: 'An Investigator',
+            createdAt: '2026-01-01T00:00:00.000Z',
+            text: 'read docs/module-structure.md before changing anything',
+          },
+        ];
+      },
+    });
+
+    const summary = await runSource(fixture.context, null);
+
+    expect(summary.passed).toBe(1);
+    // A first attempt has no previous attempt to measure from, so the whole
+    // thread is read: that is where a restarted ticket's own history lives, and
+    // where another agent's reasoning lives.
+    expect(asked).toEqual([new Date(0).toISOString()]);
+    expect(fixture.requests[0]?.guidance).toEqual([
+      'comment by An Investigator at 2026-01-01T00:00:00.000Z: ' +
+        'read docs/module-structure.md before changing anything',
+    ]);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1435,6 +1469,13 @@ interface FakeJira {
   readonly fetch: typeof fetch;
   readonly calls: Array<{ method: string; url: string; body: unknown }>;
   readonly comments: string[];
+  /** The issue thread as the site holds it: what the harness posted, plus seeds. */
+  readonly thread: Array<{
+    readonly id: string;
+    readonly author: { readonly displayName: string };
+    readonly created: string;
+    readonly body: unknown;
+  }>;
   readonly issues: FakeIssue[];
 }
 
@@ -1472,6 +1513,7 @@ function jiraDocument(): Record<string, unknown> {
 function fakeJira(issues: FakeIssue[]): FakeJira {
   const calls: FakeJira['calls'] = [];
   const comments: string[] = [];
+  const thread: FakeJira['thread'] = [];
   const transitionsFrom = (status: string): Array<Record<string, unknown>> => {
     if (status === 'To Do') {
       return [{ id: '11', name: 'Start work', to: { name: 'In Progress' } }];
@@ -1532,8 +1574,20 @@ function fakeJira(issues: FakeIssue[]): FakeJira {
       return jsonResponse({ transitions: transitionsFrom(issue?.status ?? '') });
     }
     if (issueMatch !== null && url.includes('/comment')) {
+      if (method === 'GET') {
+        // The connector reads the issue's thread before every attempt; what this
+        // site holds is what the harness itself posted, in order.
+        return jsonResponse({ comments: thread, total: thread.length });
+      }
       comments.push(JSON.stringify(body?.['body']));
-      return jsonResponse({ id: `comment-${String(comments.length)}` });
+      const id = `comment-${String(comments.length)}`;
+      thread.push({
+        id,
+        author: { displayName: 'Harness' },
+        created: `2026-09-16T12:${String(thread.length).padStart(2, '0')}:00.000+0000`,
+        body: body?.['body'] ?? null,
+      });
+      return jsonResponse({ id });
     }
     if (issue !== undefined) {
       return jsonResponse({
@@ -1553,7 +1607,7 @@ function fakeJira(issues: FakeIssue[]): FakeJira {
     return jsonResponse({ errorMessages: ['not found'] }, 404);
   };
 
-  return { fetch: impl as unknown as typeof fetch, calls, comments, issues };
+  return { fetch: impl as unknown as typeof fetch, calls, comments, thread, issues };
 }
 
 interface CliRun {

@@ -117,12 +117,16 @@ An intake runs one **attempt per configured tier**, in order, without an operato
   publishes the final result and moves the issue to the review status; the next step is another
   agent's or the operator's decision, taken by moving the issue back.
 
-## What a continued attempt is told
+## What an attempt is told
 
-An attempt's task text is the issue's current description, plus the comments added since the
-previous attempt (rendered, attributed, and bounded), plus a compact record of the previous
-attempts the harness itself produced: tier, outcome, and the checks that were red. All of it is
-context for the turn. None of it becomes a command, an argument, a path, or a limit.
+An attempt's task text is the issue's current description — the task — plus the item's own thread:
+every attempt reads it, because that is where a restarted ticket's history, another agent's
+reasoning, and the harness's own result comments live. A continuation reads what was added since the
+previous attempt ended; a first attempt reads the whole thread. A continuation is also told what its
+workspace ledger records of the attempts before it: tier, outcome, and the reason each run ended
+with. All of it is rendered, attributed, bounded (twelve lines, four thousand characters, six
+hundred per line), and context for the turn. None of it becomes a command, an argument, a path, or a
+limit, and none of it changes the acceptance criteria or the checks that decide the run.
 
 ## What does not change
 

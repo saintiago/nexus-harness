@@ -648,8 +648,8 @@ describe('what one turn is told, and where it works', () => {
     expect(prompt).toContain('- comment by An Investigator at 2026-09-17T09:00:00.000Z:');
     // Context, and nothing more: it does not become an acceptance criterion, and
     // the configured checks still decide the turn.
-    expect(prompt).toContain('they do not change the acceptance criteria above');
-    expect(prompt).toContain('the same configured checks still decide whether this turn passed');
+    expect(prompt).toContain('They do not change the acceptance criteria above');
+    expect(prompt).toContain('the same configured checks still');
   }, 60_000);
 
   it('prepends the configured launch prefix to its own arguments, literally', async () => {
