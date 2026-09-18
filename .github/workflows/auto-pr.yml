@@ -54,12 +54,26 @@ jobs:
         run: npm run validate
 
       - name: Open the pull request
+        id: pr
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if [ -z "$(gh pr list --head "$GITHUB_REF_NAME" --state open --json number --jq '.[].number')" ]; then
-            gh pr create --fill --base main --head "$GITHUB_REF_NAME"
+          number="$(gh pr list --head "$GITHUB_REF_NAME" --state open --json number --jq '.[0].number')"
+          if [ -z "$number" ]; then
+            if ! output="$(gh pr create --fill --base main --head "$GITHUB_REF_NAME" 2>&1)"; then
+              # Nothing to open: every commit this branch carries is already in
+              # main, which is what a push behind a merge that landed the same
+              # work looks like. There is nothing to merge either.
+              if printf '%s' "$output" | grep -q 'No commits between'; then
+                echo "no pull request to open: the branch carries no commits main does not have"
+                exit 0
+              fi
+              printf '%s\n' "$output"
+              exit 1
+            fi
+            number="$(gh pr list --head "$GITHUB_REF_NAME" --state open --json number --jq '.[0].number')"
           fi
+          echo "number=${number}" >> "$GITHUB_OUTPUT"
 
       # A branch cut before an earlier task merged changes the same files, and the
       # merge then refuses it. That is the one case this workflow repairs itself:
@@ -68,6 +82,7 @@ jobs:
       # person's job, and the failure says so.
       - name: Rebase when the pull request conflicts with main
         id: rebase
+        if: steps.pr.outputs.number != ''
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -99,7 +114,7 @@ jobs:
       - name: Merge it into main
         # A run that rebased the branch stops here: the push above starts the run
         # that validates the rebased commit and merges that one instead.
-        if: steps.rebase.outputs.rebased != 'true'
+        if: steps.pr.outputs.number != '' && steps.rebase.outputs.rebased != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh pr merge "$GITHUB_REF_NAME" --squash --delete-branch

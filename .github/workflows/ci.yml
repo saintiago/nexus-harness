@@ -1,13 +1,14 @@
 name: CI
 
+# A push outside `task/**`, and nothing else. A `pull_request` trigger does not
+# work in this repository: the pull request is opened by the task-branch
+# workflow's own token, GitHub holds the run that starts for a maintainer's
+# approval, and the merge then deletes the branch and the run expires unapproved
+# — a failed run that never validated anything (docs/GIT-WORKFLOW.md).
 on:
-  # A `task/**` push is validated by the task-branch workflow's own gate, and by
-  # the `pull_request` run this workflow makes for the pull request it opens; a
-  # third full validation of the same commit costs time and adds nothing.
   push:
     branches-ignore:
       - 'task/**'
-  pull_request:
 
 permissions:
   contents: read
