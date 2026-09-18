@@ -751,9 +751,10 @@ toolchain supports. Dependencies are pinned by `package-lock.json`; use `npm ci`
 CI (`.github/workflows/ci.yml`) runs on `ubuntu-latest` with the Node version `.nvmrc` records,
 installs with `npm ci`, and runs `npm run validate` — format, lint, typecheck, build, and the
 offline suite. It needs no credentials, and `npm run test:live` is deliberately not part of it.
-A push to a `task/**` branch also runs `.github/workflows/auto-pr.yml`: it opens the pull request
-into `main`, runs the same gate, and merges the pull request only when the gate passed. What that
-automation does and does not prove is written down in [docs/GIT-WORKFLOW.md](docs/GIT-WORKFLOW.md).
+It is the only workflow, and it holds `contents: read`: nothing in this repository pushes, opens a
+pull request, or merges one. A task branch is merged by the operator, or by an agent using the
+operator's own `gh` credentials, once the check is green —
+[docs/GIT-WORKFLOW.md](docs/GIT-WORKFLOW.md) is the loop and the reason it is not automated.
 
 ## Documentation
 

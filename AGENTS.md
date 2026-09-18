@@ -23,6 +23,8 @@ Read what is relevant to the task. The spec defines behavior; the task defines w
 
 `main` stays green. One task, one `task/<name>` branch, merged into `main` through a pull request: see [docs/GIT-WORKFLOW.md](docs/GIT-WORKFLOW.md). Never commit directly to `main`, and never push, merge, publish, or open pull requests in a *target* repository: a run leaves its work in the retained working copy.
 
+CI is read-only. Nothing under `.github/` writes to this repository, opens a pull request, or merges one: the merge is made by the operator, or by an agent using the operator's credentials, once the gate is green. That is the harness's own process, and it has nothing to do with how a harness *run* treats a target repository.
+
 ## Keep it small
 
 Use TypeScript, npm, ordinary functions, and a few focused modules. Add an abstraction when a real caller or test needs it, not because a future integration might.
