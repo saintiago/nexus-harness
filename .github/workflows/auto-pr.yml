@@ -61,7 +61,45 @@ jobs:
             gh pr create --fill --base main --head "$GITHUB_REF_NAME"
           fi
 
+      # A branch cut before an earlier task merged changes the same files, and the
+      # merge then refuses it. That is the one case this workflow repairs itself:
+      # rebase the branch here and push it, so the push starts the run that
+      # validates the rebased commit and merges it. A rebase that conflicts is a
+      # person's job, and the failure says so.
+      - name: Rebase when the pull request conflicts with main
+        id: rebase
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # The status is computed when the pull request is read, and is unknown
+          # for a moment after one is opened: wait for a real answer.
+          state=""
+          for attempt in 1 2 3 4 5 6; do
+            state="$(gh pr view "$GITHUB_REF_NAME" --json mergeStateStatus --jq .mergeStateStatus)"
+            if [ "$state" != "UNKNOWN" ]; then
+              break
+            fi
+            sleep 10
+          done
+          if [ "$state" != "DIRTY" ]; then
+            echo "the pull request is ${state}: nothing to rebase"
+            exit 0
+          fi
+          git config user.name "nexus-harness"
+          git config user.email "nexus-harness@users.noreply.github.com"
+          git fetch --quiet origin main
+          if ! git rebase origin/main; then
+            git rebase --abort || true
+            echo "::error::this branch conflicts with main and cannot be rebased here; rebase it by hand"
+            exit 1
+          fi
+          git push --force-with-lease origin "HEAD:${GITHUB_REF_NAME}"
+          echo "rebased=true" >> "$GITHUB_OUTPUT"
+
       - name: Merge it into main
+        # A run that rebased the branch stops here: the push above starts the run
+        # that validates the rebased commit and merges that one instead.
+        if: steps.rebase.outputs.rebased != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh pr merge "$GITHUB_REF_NAME" --squash --delete-branch
