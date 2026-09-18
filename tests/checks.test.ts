@@ -836,6 +836,10 @@ const HANG_SOURCE = [
   '  : spawn(process.execPath, [process.argv[1], `${id}-child`, pidFile, beatsFile, holdsForMs], {',
   "      stdio: 'ignore',",
   '    });',
+  '// A child this host refuses to start (a loaded host can refuse a fork) must not',
+  '// take this process down: the fixture is here to keep running until it is',
+  '// stopped, and an unhandled error event would end it as an ordinary exit.',
+  'child?.on("error", () => {});',
   '',
   "writeFileSync(`${pidFile}.${id}`, JSON.stringify({ pid: process.pid, child: child?.pid ?? null }), 'utf8');",
   'record(`${id} started`);',
@@ -936,7 +940,9 @@ describe('a command that runs out of time', () => {
       cwd: fixture.workspace,
       logsDir: fixture.logsDir,
       label: 'check-1',
-      timeoutMs: 500,
+      // Long enough that a loaded host can start the fixture before the limit
+      // expires: the test is about what happens after it has started.
+      timeoutMs: 2000,
     });
     const recorded = await hangPids(fixture, 'slow');
     registerFixture(recorded);
@@ -945,10 +951,11 @@ describe('a command that runs out of time', () => {
     // direct one recorded the PID of the child it started.
     expect(await heartbeats(fixture)).toContain('slow started');
     expect(await heartbeats(fixture)).toContain('slow-child started');
-    expect(recorded.child).not.toBeNull();
+    // A child that never started must fail here rather than pass as `undefined`.
+    expect(recorded.child, JSON.stringify(recorded)).toBeTypeOf('number');
 
-    expect(result.outcome).toBe('timed-out');
-    expect(result.timeoutMs).toBe(500);
+    expect(result.outcome, JSON.stringify(result)).toBe('timed-out');
+    expect(result.timeoutMs).toBe(2000);
     expect(result.termination).toBe('confirmed');
     expect(result.terminationProblem).toBeNull();
     expect(Date.now() - started).toBeLessThan(10_000);
