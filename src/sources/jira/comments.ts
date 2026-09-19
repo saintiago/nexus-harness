@@ -60,8 +60,17 @@ function oneLine(text: string): string {
  * transcript, diff, environment, or credential; it never describes a failed
  * attempt as completed, and never a partial delivery as published
  * (docs/spec.md §6, docs/WORKFLOW.md §8).
+ *
+ * An attempt that another rung of the ladder follows gets the same comment with
+ * a closing paragraph that says so, and the item is not moved: the issue stays in
+ * the running status until the ladder's last attempt
+ * (docs/implement-workspace-continuation.md).
  */
-function commentParagraphs(ref: SourceRef, outcome: SourceRunOutcome): readonly string[] {
+function commentParagraphs(
+  ref: SourceRef,
+  outcome: SourceRunOutcome,
+  climbs: boolean,
+): readonly string[] {
   const attempt = outcome.attempt;
   const pullRequest = outcome.pullRequest;
   const deliveryFailure = outcome.deliveryFailure;
@@ -82,7 +91,7 @@ function commentParagraphs(ref: SourceRef, outcome: SourceRunOutcome): readonly 
     `Repairs used: ${String(outcome.repairsUsed)}`,
     `Local artifacts on the machine that ran this harness (local paths, not Jira attachments): ` +
       `run directory ${oneLine(outcome.runDir)}; report ${oneLine(outcome.reportPath)}`,
-    closingParagraph(pullRequest?.url, deliveryFailure),
+    closingParagraph(pullRequest?.url, deliveryFailure, climbs),
   ];
 }
 
@@ -90,11 +99,23 @@ function commentParagraphs(ref: SourceRef, outcome: SourceRunOutcome): readonly 
  * What the issue is told happens next. A failed delivery is never described as
  * "nothing was published": only the destination can say how far it got, so the
  * comment says to check it rather than claim a state the harness cannot know.
+ * An attempt the ladder still climbs from is not the issue's last word, so its
+ * closing paragraph says that instead of "a human decides what happens next".
  */
 function closingParagraph(
   pullRequestUrl: string | undefined,
   deliveryFailure: string | undefined,
+  climbs: boolean,
 ): string {
+  if (climbs) {
+    return (
+      "This attempt is not the issue's last word: the harness is still climbing its " +
+      'escalation ladder, so the issue stays in the running status and the next tier ' +
+      'continues the same retained workspace — the commits and uncommitted work above ' +
+      'included. A human decides what happens next when the ladder ends; the harness never ' +
+      'marks an issue Done.'
+    );
+  }
   if (pullRequestUrl !== undefined) {
     return (
       "The harness pushed this attempt's branch and opened or updated the pull request above. " +
@@ -140,6 +161,47 @@ function refusalParagraphs(ref: SourceRef, reason: string): readonly string[] {
 }
 
 /**
+ * Posts one run's compact result comment, as the two publication paths below
+ * send it: the ladder's intermediate attempt comments and its final result are
+ * the same comment, and only the closing paragraph and the status move after it
+ * tell them apart. A comment whose answer acknowledged no ID is never reported
+ * as delivered.
+ */
+async function resultComment(
+  http: HttpClient,
+  token: string,
+  item: SourceTask,
+  outcome: SourceRunOutcome,
+  climbs: boolean,
+  stop: AbortSignal,
+): Promise<string> {
+  try {
+    return await postComment(http, item.ref.id, commentParagraphs(item.ref, outcome, climbs), stop);
+  } catch (cause) {
+    if (cause instanceof SourceFeedbackError) {
+      throw cause;
+    }
+    throw new SourceFeedbackError('comment', diagnosticOf(cause, token));
+  }
+}
+
+/**
+ * Publishes one attempt's result comment while the item stays in the running
+ * status: another rung of the ladder follows, so the issue is not moved to
+ * review yet. Only the comment is a remote write here, and a failure is the
+ * feedback failure the caller stops on.
+ */
+export async function progressItem(
+  http: HttpClient,
+  token: string,
+  item: SourceTask,
+  outcome: SourceRunOutcome,
+  stop: AbortSignal,
+): Promise<void> {
+  await resultComment(http, token, item, outcome, true, stop);
+}
+
+/**
  * Publishes one run's result: the compact comment, then the move to review while
  * the issue is still in the running status, so a later human decision stands. A
  * delivery failure says how far it got, so an acknowledged comment is kept even
@@ -153,15 +215,7 @@ export async function completeItem(
   outcome: SourceRunOutcome,
   stop: AbortSignal,
 ): Promise<void> {
-  let commentId: string;
-  try {
-    commentId = await postComment(http, item.ref.id, commentParagraphs(item.ref, outcome), stop);
-  } catch (cause) {
-    if (cause instanceof SourceFeedbackError) {
-      throw cause;
-    }
-    throw new SourceFeedbackError('comment', diagnosticOf(cause, token));
-  }
+  const commentId = await resultComment(http, token, item, outcome, false, stop);
 
   // The result was published; the status change happens only while the issue is
   // still in the running status, so a later human decision stands.

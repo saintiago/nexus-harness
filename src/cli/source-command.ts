@@ -244,13 +244,6 @@ async function sourceCommand(
             ...deliveryParts,
             env: deliveryParts.env ?? childEnvironment,
           });
-    const dependencies = composeDependencies(
-      context,
-      io,
-      () => undefined,
-      config.agent,
-      childEnvironment,
-    );
 
     const intake: SourceContext = {
       source: connector,
@@ -271,16 +264,26 @@ async function sourceCommand(
         continuedWorkspace,
         onWorkspaceReady,
         guidance,
-      }) =>
-        runTask(
+      }) => {
+        // What this attempt really starts is the rung's own launch, and what its
+        // report records is the same selection: composing the turn's runtime from
+        // the tier — not from the top-level `agent` — is what keeps the launched
+        // command and the reported tier the same on a continuation of an earlier
+        // ladder too (docs/implement-workspace-continuation.md).
+        const agent = tier?.agent ?? config.agent;
+        const dependencies = composeDependencies(
+          context,
+          io,
+          () => undefined,
+          agent,
+          childEnvironment,
+        );
+        return runTask(
           {
             task,
             // A rung runs the launch and the repair allowance it names; the rest
             // of the configuration is the run's own.
-            config:
-              tier === undefined
-                ? config
-                : { ...config, agent: tier.agent, maxRepairs: tier.maxRepairs },
+            config: tier === undefined ? config : { ...config, agent, maxRepairs: tier.maxRepairs },
             repoPath,
             workDir,
             stop: runStop,
@@ -291,7 +294,8 @@ async function sourceCommand(
             ...(onWorkspaceReady === undefined ? {} : { onWorkspaceReady }),
           },
           dependencies,
-        ),
+        );
+      },
       now: () => new Date(),
       sleep: abortableSleep,
     };

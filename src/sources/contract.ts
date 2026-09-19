@@ -182,13 +182,26 @@ export interface SourceComment {
  *   requests the transition to the running status. `false` means it sent **no**
  *   mutation request and the coordinator may release the receipt it just
  *   created. Once a request was sent, an error throws and retains the receipt.
- * - `complete` publishes a bounded summary and moves the item to review. It
- *   throws {@link SourceFeedbackError} when delivery fails.
+ * - `progress` publishes one attempt's bounded summary while the item stays in
+ *   the running status: an escalation ladder that has more rungs to climb has
+ *   not finished with the item yet.
+ * - `complete` publishes a bounded summary and moves the item to review: the
+ *   ladder's last word, whether it passed, failed terminally, or ran out of
+ *   rungs. It throws {@link SourceFeedbackError} when delivery fails.
  */
 export interface TaskSource {
   listEligible(stop: AbortSignal): Promise<readonly SourceCandidate[]>;
   prepare(candidate: SourceCandidate, stop: AbortSignal): Promise<SourceTask | null>;
   claim(item: SourceTask, stop: AbortSignal): Promise<boolean>;
+  /**
+   * Publishes one attempt's compact result comment **without** moving the item:
+   * the attempt is over, but the item's intake is not — another rung of the
+   * ladder will run in the same retained workspace — so the item stays in the
+   * running status and this comment is how the item's own thread holds the
+   * attempt's outcome (docs/implement-workspace-continuation.md). Throws
+   * {@link SourceFeedbackError} when the comment cannot be published.
+   */
+  progress(item: SourceTask, outcome: SourceRunOutcome, stop: AbortSignal): Promise<void>;
   complete(item: SourceTask, outcome: SourceRunOutcome, stop: AbortSignal): Promise<void>;
   /**
    * Records where the item's work lives, as the pointer label naming its
