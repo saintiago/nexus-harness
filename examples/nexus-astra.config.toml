@@ -35,18 +35,27 @@ mcp_optional_startup_grace_ms = 0
 [mcp_servers.openaiDeveloperDocs]
 url = "https://developers.openai.com/mcp"
 
-# Context7: current, version-specific library documentation. The API key is optional — without it
-# the server still answers, at lower rate limits. The key itself never belongs in this file: the
-# client reads it from the environment variable named here. https://context7.com/docs/overview
+# Context7: current, version-specific library documentation. Anonymous access is the default: it
+# needs no credential and no environment variable, and answers at lower rate limits.
+# https://context7.com/docs/overview
 [mcp_servers.context7]
 url = "https://mcp.context7.com/mcp"
-bearer_token_env_var = "CONTEXT7_API_KEY"
+# Optional, for an operator who has a personal Context7 key: set CONTEXT7_API_KEY in the environment
+# the harness is started in, then uncomment the line below. The key itself never belongs in this
+# file.
+#bearer_token_env_var = "CONTEXT7_API_KEY"
 
-# Tavily: the one web-search service (search and page extraction). Requires a personal API key in
-# the environment variable named here. https://docs.tavily.com/documentation/mcp
+# Tavily: the one web-search service (search and page extraction). The header below selects Tavily's
+# supported keyless access mode, which needs no account and no key; it is required, because without
+# it the server asks the client to sign in. Keyless use is free and rate-limited.
+# https://docs.tavily.com/documentation/keyless
 [mcp_servers.tavily]
 url = "https://mcp.tavily.com/mcp/"
-bearer_token_env_var = "TAVILY_API_KEY"
+http_headers = { "X-Tavily-Access-Mode" = "keyless" }
+# Optional, for an operator who has a personal Tavily key: set TAVILY_API_KEY in the environment the
+# harness is started in, then uncomment the line below. A valid key takes precedence over the
+# keyless header above and uses the account's limits.
+#bearer_token_env_var = "TAVILY_API_KEY"
 
 # ---------------------------------------------------------------------------------------------
 # Connector apps: GitHub only. Every other app/connector — Gmail, Google Drive, Google Calendar,
