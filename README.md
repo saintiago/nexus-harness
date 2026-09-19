@@ -6,7 +6,8 @@ CLI to implement the task, reruns the checks, gives the runtime the observed fai
 within a bounded allowance, and keeps the working copy, the logs, and a final report on your disk.
 
 Nothing leaves your machine except the coding turns themselves — a clone is made locally, the
-configured commands run locally, and the harness never commits, pushes, or publishes anything.
+configured commands run locally, and the harness never pushes, publishes, or integrates anything: a
+coding turn may make small local commits, and they stay in the retained working copy.
 
 **This README is the operating document.** The supplied documents stay authoritative for the
 contracts they define: [docs/WORKFLOW.md](docs/WORKFLOW.md) for the JSON inputs and the run
@@ -149,14 +150,18 @@ target project writes can change which commands decide the result. Then:
    **workspace**, `<workDir>/workspaces/<runId>`, holding the working copy beside it. `workDir`
    comes from the configuration file and resolves from that file's own directory.
 3. **A working copy**: a clone of the source at its recorded base commit, in that workspace, on a
-   dedicated branch `harness/<runId>`. Only committed content is inherited.
+   dedicated branch `harness/<runId>`. Only committed content is inherited. The clone is given a
+   repository-local Git identity (`Nexus Agent <nexus@local>`, commit signing disabled) before
+   anything runs in it, so the coding turns can commit as they go; nothing is pushed.
 4. **The baseline round**: every `setup` command, then every `checks` command, in the order the
    configuration lists them. A red baseline stops the run before any coding turn — the task is not
    attempted on a project that is already failing.
 5. **Coding turns**: one fresh invocation of the configured launch per top-level turn, started in
    the working copy and never asking for approval. The implementation turn is given the task; each
    repair turn is given the failures the harness observed for itself. Every turn of the run uses the
-   same selection.
+   same selection, and every turn is asked to make small, meaningful local commits and to finish
+   with the relevant work committed where practical. A commit is not a check result: the round below
+   decides.
 6. **A post-agent round** after every turn: `setup` again, then every check.
 7. **The final report**, written once, plus the change summary of the retained working copy.
 
@@ -247,7 +252,9 @@ cat <runDir>/logs/run.log             # what happened, in order
 
 # The work itself: a real clone, on its own branch, still checked out
 cd <workDir>/workspaces/<runId>
-git status && git diff <baseCommit>   # uncommitted work is left uncommitted
+git log --oneline <baseCommit>..HEAD   # what the turns committed, if anything
+git diff <baseCommit>                  # the tracked diff against that base, committed or not
+git status                             # plus untracked and staged state
 ```
 
 `changes.paths` lists every path that differs from the recorded base commit;
@@ -342,7 +349,8 @@ artifact paths, and the issue moves to the review status. `In Review` means "a l
 finished and needs a human", not success. The check summary names the last round that ran, and says
 so in as many words when the run was stopped before any round followed its last turn: a stopped turn
 has no checks to report, and the round the run started with is not one. **Nothing here moves an
-issue to Done**, and nothing commits, merges, or publishes anything.
+issue to Done**, and the harness never pushes, merges, or publishes anything: local commits a
+coding turn makes stay in the retained workspace.
 
 **Nothing runs twice by accident.** `.intake/receipts/<hash>.json` under `workDir` records each
 attempted issue by its immutable ID, and a receipt is created **before** the issue is claimed. A
@@ -370,8 +378,9 @@ Scans are periodic and pause during a batch, so a new issue is picked up on the 
 than instantly. `source list` and `source run` report a failed read and exit nonzero; `source watch`
 retries one with a bounded backoff that respects the server's `Retry-After`. An authentication,
 workflow, uncertain-write, or delivery failure stops intake for a human instead of being retried
-behind your back. Each run still clones the source checkout's committed `HEAD` **as it is then**:
-separate runs do not inherit each other's uncommitted work.
+behind your back. A fresh run still clones the source checkout's committed `HEAD` **as it is then**;
+a continued attempt instead works in the workspace its pointer names, and the commits and
+uncommitted changes the earlier attempts left there are still in it.
 
 ## Try it on a disposable project
 
@@ -533,9 +542,11 @@ Read this before pointing a run at anything you care about.
   no session is continued. A run that stops does not pick up where it left off, and nothing about it
   can be resumed by running the command again: a new invocation is a new run, with a new clone at
   the recorded base of the source repository as it is _then_.
-- **The harness never commits, pushes, or publishes anything.** What a coding turn commits inside
-  the working copy is that turn's own doing, and it stays in the working copy. No remote is added,
-  and no pull request is opened.
+- **The harness never pushes, merges, or publishes anything.** The working copy is given a
+  repository-local commit identity (`Nexus Agent <nexus@local>`, commit signing disabled) and its
+  turns are asked to commit small pieces as they go — but those commits are the turn's own doing,
+  local to the retained workspace. No remote is added, so there is no default push destination, and
+  no pull request is opened or merged. Nothing here integrates the work for you.
 - **Run directories and workspaces are kept, not cleaned up.** They accumulate: a run holds its logs
   and its report, and a workspace holds a full clone. Remove them by hand when you have read them.
 - **An interrupted or crashed run can leave an incomplete run directory.** A run directory can exist
@@ -782,7 +793,8 @@ operator's own `gh` credentials, once the check is green —
   configuration to copy.
 - [docs/GIT-WORKFLOW.md](docs/GIT-WORKFLOW.md) — how changes to this repository are made: one
   `task/<name>` branch per task, merged into `main` through a pull request. It is about this
-  repository only; a harness run never commits or pushes anything in a target repository.
+  repository only; a harness run never pushes, merges, or publishes anything in a target repository,
+  and the commits a coding turn makes there stay in the retained workspace.
 
 ## Next task
 

@@ -70,8 +70,9 @@ function commentParagraphs(ref: SourceRef, outcome: SourceRunOutcome): readonly 
     `Repairs used: ${String(outcome.repairsUsed)}`,
     `Local artifacts on the machine that ran this harness (local paths, not Jira attachments): ` +
       `run directory ${oneLine(outcome.runDir)}; report ${oneLine(outcome.reportPath)}`,
-    'A human decides what happens next; this connector never marks an issue Done and never ' +
-      'publishes, merges, or commits anything.',
+    'A human decides what happens next; this connector never marks an issue Done, and neither it ' +
+      'nor the harness pushes, merges, or publishes anything. Any commits a coding turn made are ' +
+      'local to the retained working copy on this machine.',
   ];
 }
 /** One comment's body, rendered as text: an empty body is an empty comment. */

@@ -2,9 +2,10 @@
  * Resolving a workspace an issue's pointer names, and verifying the checkout of
  * one a run will continue.
  *
- * The harness never commits in a workspace, so a branch that is not the recorded
- * one, or a `HEAD` that moved, means something else changed it: the attempt
- * refuses rather than building on a state it cannot account for.
+ * A coding turn may commit its work locally, so the checkout is expected to move
+ * forward from the recorded base; the branch it is on is the identity that must
+ * still hold, and the attempt refuses a workspace that is not on the branch its
+ * ledger records.
  */
 import { statSync } from 'node:fs';
 import { messageOf } from '../shared/errors.js';
@@ -83,10 +84,12 @@ export async function resolveWorkspace(
 }
 
 /**
- * Resolves and verifies a workspace's checkout for a run that continues it. The
- * harness never commits in a workspace, so a branch that is not the recorded one,
- * or a `HEAD` that moved, means something else changed it: the attempt refuses
- * rather than building on a state it cannot account for.
+ * Resolves and verifies a workspace's checkout for a run that continues it. A
+ * workspace's turns may have committed their work, so a `HEAD` ahead of the
+ * recorded base is ordinary: the branch is what identifies the checkout, and a
+ * workspace that is not on the branch its ledger records is refused rather than
+ * continued. The recorded base travels back with the workspace so every attempt
+ * keeps comparing against it.
  */
 export async function reopenWorkspace(
   workDir: string,
@@ -98,15 +101,6 @@ export async function reopenWorkspace(
   }
   const workspace = resolution.workspace;
 
-  const head = await runGit(['rev-parse', '--verify', 'HEAD^{commit}'], workspace.workspacePath);
-  const commit = head.stdout.trim();
-  if (head.code !== 0 || commit !== workspace.baseCommit) {
-    throw new WorkspaceError(
-      `workspace ${workspaceId} is at ${commit === '' ? 'no commit' : commit}, not the base commit ` +
-        `${workspace.baseCommit} it was cloned at: something committed in it, and the harness never ` +
-        'does that, so it will not continue it',
-    );
-  }
   const symbolic = await runGit(
     ['symbolic-ref', '--quiet', '--short', 'HEAD'],
     workspace.workspacePath,

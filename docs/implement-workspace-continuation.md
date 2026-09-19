@@ -31,8 +31,8 @@ limit.
     lock/
 ```
 
-- A **workspace** is the working copy: cloned once, accumulated over attempts, never pushed,
-  retained while an issue points at it.
+- A **workspace** is the working copy: cloned once, accumulated over attempts, never pushed or
+  integrated elsewhere, retained while an issue points at it.
 - A **run** is one attempt: one deadline, one baseline round, its own turns, one verdict, one
   comment. Its report is never rewritten.
 - `workspaceId` is the id of the run that created the workspace (`run-<timestamp>-<hash>`), so the
@@ -83,8 +83,8 @@ moved to the review status. Nothing local is created for it.
 
 ## Continuation rules
 
-- The workspace is reopened, not re-cloned: same directory, same branch, the changes the earlier
-  attempts left still uncommitted in it.
+- The workspace is reopened, not re-cloned: same directory, same branch, and whatever the earlier
+  attempts left in it — local commits and uncommitted changes alike.
 - Its recorded base commit stays the base, so `changes` in the report is the ticket's whole diff, not
   just this attempt's part. The report also records what the attempt *found* (how many paths already
   differed) so the two are never confused.
@@ -92,8 +92,13 @@ moved to the review status. Nothing local is created for it.
   expected to be red, and refusing to start would make continuation useless. A baseline that could
   not be executed still stops the run, unchanged.
 - Only the post-turn round decides the outcome.
-- The branch was never committed to by the harness. If its `HEAD` moved, the workspace was changed
-  outside the harness and the attempt refuses rather than building on it.
+- Attempts commit locally, so the branch is expected to move forward from the recorded base. The
+  attempt refuses a checkout that is not on the branch the ledger records; the recorded base, not
+  `HEAD`, is what the report compares against.
+- A coding turn is encouraged to commit small, meaningful pieces locally as it works. Every
+  attempt writes the workspace's repository-local commit identity (Nexus Agent \<nexus@local\>,
+  commit signing disabled) before its checks and turns run, so a continuation commits under the same
+  identity as the attempts before it.
 - The workspace must not be deleted while an issue points at it.
 
 ## Attempts and escalation
@@ -130,7 +135,9 @@ limit, and none of it changes the acceptance criteria or the checks that decide 
 
 ## What does not change
 
-- The harness never commits, pushes, merges, or publishes anything in the target repository.
+- The harness itself never pushes, merges, publishes, or integrates anything in the target
+  repository. Local commits are the coding turn's own work: they stay in the retained workspace,
+  and everything there — commits and uncommitted changes together — waits for a human.
 - One consumer per output directory; the lock is never broken automatically.
 - Receipts stay local, and remain the audit trail and the second-consumer guard.
 - `In Review` still means "an attempt finished and needs a decision", never success, and nothing
@@ -155,10 +162,11 @@ comments since the last of them, bounded, and context only.
 
 ## Verification
 
-- Offline: workspace allocation and resolution, reopen refusal when `HEAD` moved,
-  the eligibility table, the red-baseline exception, the tier loop, and the guidance rendering, all
-  against fakes; `npm run validate` green, on Linux as well as Windows for anything that touches
-  process or path handling.
+- Offline: workspace allocation and resolution, reopening a workspace whose attempts committed,
+  refusal when the checkout is not on its recorded branch, the eligibility table, the
+  red-baseline exception, the tier loop, and the guidance rendering, all against fakes;
+  `npm run validate` green, on Linux as well as Windows for anything that touches process or path
+  handling.
 - Live, once the increments are merged: HARN-1's existing workspace is adopted with its first
   attempt recorded, the pointer label is set, the issue is moved back to the ready status, and the
   next attempt continues that workspace rather than cloning a new one.

@@ -34,6 +34,7 @@ import { writeRunReport } from '../src/reporting/report.js';
 import { runTask } from '../src/runs/runner.js';
 import type { AgentTurnRequest, RunnerDependencies } from '../src/runs/contracts.js';
 import type { CommandResult, HarnessConfig, RunReport, Task } from '../src/shared/types.js';
+import { configureWorkspaceIdentity } from '../src/workspace/git.js';
 import { prepareWorkspace } from '../src/workspace/prepare.js';
 import { preflightSource } from '../src/workspace/preflight.js';
 import { allocateRunDirectory } from '../src/workspace/run-directory.js';
@@ -978,6 +979,7 @@ describe('the runner, the real checks, and the real adapter together', () => {
       preflight: preflightSource,
       allocateRunDirectory,
       prepareWorkspace,
+      configureWorkspaceIdentity,
       recordWorkspaceAttempt,
       runCheckRound,
       openAgentLog,

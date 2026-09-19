@@ -14,18 +14,24 @@ Task → working copy → coding agent → checks → result
                           └── repair ─┘
 ```
 
-The coding agent implements and repairs; ordinary application code decides when to check, retry the code change, or stop. The runner produces a retained working copy and a local report, not a PR, merge, or deployment. The new intake layer may report that result to Jira; Jira transport never becomes part of the coding loop.
+The coding agent implements and repairs; ordinary application code decides when to check, retry the code change, or stop. The runner produces a retained working copy and a local report, not a PR, merge, or deployment: a coding turn may make small local commits in the working copy, and the harness never pushes, merges, publishes, or otherwise integrates that work. A commit is the turn's own local arrangement of its work, never evidence that a check passed.
 
 Codex CLI remains the only implemented coding runtime. Allow its launch prefix to be configured so an operator can select a native profile or model without changing the runner. DeepSeek through Codex is the immediate integration target. The coding assistant used to build this repository is a separate choice.
 
 Preserve normal local OpenAI Codex defaults. Selecting DeepSeek for the harness must not require switching the user's global default, deleting authentication, or restoring configuration before ordinary Codex use.
+
+### Rely on Git
+
+Git owns code history, branches, commits, and comparisons. The harness owns task execution, independent verification, and the evidence of what each run observed. Use Git's existing capabilities to show what a task changed and retain its code history.
+
+Keep harness state limited to what execution and reporting need. A report or workspace ledger may record a Git reference or commit SHA for a concrete purpose; that does not require a parallel history model or a continuation gate based on that SHA. Additional checkpoint bookkeeping, per-attempt commit ranges, or history restrictions need an explicit task requirement rather than being defaults.
 
 ## 2. What the working version does
 
 1. Read task/configuration JSON and a local Git repository path. Validate inputs, normalize the optional agent selection, and keep the loaded task/configuration fixed for the run.
 2. Create a unique run directory. Clone the source repository's committed `HEAD` and use a dedicated local branch. Require a clean source checkout so uncommitted work is not silently omitted. Never reset or edit the source checkout.
 3. Run configured setup and checks before the agent. A failing baseline stops the run with a clear explanation.
-4. Ask the selected agent invocation to implement the task in the retained working copy. Supply the task, acceptance criteria, and relevant target-repository instructions.
+4. Ask the selected agent invocation to implement the task in the retained working copy. Supply the task, acceptance criteria, and relevant target-repository instructions. The turn works with a repository-local Git identity and is asked to commit small, meaningful pieces as it goes; those commits stay in the retained copy and are never pushed, merged, or published.
 5. Wait for the agent to finish and stop its managed mutating processes. Run setup again, then all configured checks from the harness. Agent-reported success is not a check result.
 6. After an ordinary completed red check round, send observed failure output back to the same selected agent and repeat step 5 while repairs remain. A setup/launch/authentication/protocol error or timeout stops the run rather than starting a code-repair loop.
 7. Save the report and retain the working copy, whether the run passes or fails. Human review and subsequent delivery happen outside this version.
@@ -75,7 +81,7 @@ Use one generated run ID, unrelated to task text:
     ...                        # distinct command stdout/stderr and later turns
 ```
 
-The report retains task/run IDs, source path and base commit, workspace path, times, repairs used, status/reason, and check results grouped by baseline and implementation/repair attempt. Keep arguments, exit/signal/timeout information, log locations, and final change-review warnings. Never overwrite earlier failure evidence.
+The report retains task/run IDs, source path and base commit, workspace path, times, repairs used, status/reason, and check results grouped by baseline and implementation/repair attempt. Keep arguments, exit/signal/timeout information, log locations, and final change-review warnings. Never overwrite earlier failure evidence. A continued workspace reports the base its own ledger recorded, which stays the comparison base for every attempt even when the source checkout has advanced since; only a fresh run records the base that preflight selected then.
 
 Add the effective `agent` selection (`runtime` and non-secret launch prefix) to new reports and record it once in `run.log`. This identifies what the harness launched. A profile name alone is not an observed model identity. Do not inspect runtime credential/config files in production to enrich the report.
 

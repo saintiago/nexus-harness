@@ -4,8 +4,9 @@ Small, boring, and the same for every task in this repository.
 
 This describes how a **person** (or a coding agent working in this repository) changes the harness
 itself. It is not about target projects. The two disciplines point in opposite directions on
-purpose: a harness *run* never commits, pushes, merges, or opens a pull request in the repository it
-works on, and leaves its work in the retained working copy for a person to integrate
+purpose: a harness *run* never pushes, merges, publishes, or opens a pull request in the repository
+it works on, and leaves its work in the retained working copy for a person to integrate — the local
+commits a coding turn makes there are part of that retained work
 ([docs/spec.md](spec.md), [docs/WORKFLOW.md](WORKFLOW.md) §6). Nothing in this document is a rule
 about that, and nothing about that should shape this. They are separate on purpose; an earlier
 iteration of this file blurred them and produced a workflow that merged its own pull requests.

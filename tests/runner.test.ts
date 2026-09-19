@@ -42,6 +42,7 @@ import type {
   TerminationOutcome,
 } from '../src/shared/types.js';
 import { WorkspaceError } from '../src/workspace/errors.js';
+import { configureWorkspaceIdentity } from '../src/workspace/git.js';
 import { prepareWorkspace } from '../src/workspace/prepare.js';
 import type { PreparedWorkspace } from '../src/workspace/prepare.js';
 import { preflightSource } from '../src/workspace/preflight.js';
@@ -60,10 +61,19 @@ afterEach(cleanupTempDirectories);
  */
 let fixtureEnvironment: NodeJS.ProcessEnv = {};
 
+/**
+ * The fixture's empty global Git configuration, as a file: a commit made inside a
+ * turn runs with this as `GIT_CONFIG_GLOBAL` and no author or committer variables,
+ * so the only identity it can use is the one the run configured in the working
+ * copy.
+ */
+let emptyGlobalConfig = '';
+
 beforeEach(async () => {
   const directory = await createTempDir();
   const emptyConfig = path.join(directory, 'empty.gitconfig');
   await writeFile(emptyConfig, '', 'utf8');
+  emptyGlobalConfig = emptyConfig;
   fixtureEnvironment = {
     ...process.env,
     GIT_CONFIG_NOSYSTEM: '1',
@@ -121,6 +131,34 @@ async function gitOrFail(args: readonly string[], cwd: string): Promise<string> 
     throw new Error(`git ${args.join(' ')} failed in ${cwd}: ${result.stderr.trim()}`);
   }
   return result.stdout;
+}
+
+/**
+ * The environment a commit made inside a fixture coding turn runs with: no
+ * author or committer variables, and no system or global Git configuration. The
+ * only identity such a commit can use is the repository-local one the run
+ * configured in the working copy, so a commit that succeeds here is evidence of
+ * that configuration rather than of this machine's own Git setup.
+ */
+function workspaceCommitEnvironment(): NodeJS.ProcessEnv {
+  const environment: NodeJS.ProcessEnv = {
+    ...process.env,
+    GIT_CONFIG_NOSYSTEM: '1',
+    GIT_CONFIG_GLOBAL: emptyGlobalConfig,
+    GIT_TERMINAL_PROMPT: '0',
+  };
+  for (const name of [
+    'GIT_DIR',
+    'GIT_WORK_TREE',
+    'GIT_INDEX_FILE',
+    'GIT_AUTHOR_NAME',
+    'GIT_AUTHOR_EMAIL',
+    'GIT_COMMITTER_NAME',
+    'GIT_COMMITTER_EMAIL',
+  ]) {
+    delete environment[name];
+  }
+  return environment;
 }
 
 /**
@@ -316,6 +354,7 @@ function dependencies(
     preflight: preflightSource,
     allocateRunDirectory,
     prepareWorkspace,
+    configureWorkspaceIdentity,
     recordWorkspaceAttempt,
     runCheckRound,
     openAgentLog,
@@ -337,6 +376,17 @@ interface FakeTurn {
   readonly mode?: 'append' | 'replace';
   /** Extra files it leaves in the working copy, standing in for its work. */
   readonly extras?: readonly { readonly file: string; readonly text: string }[];
+  /**
+   * Pieces the turn commits in the working copy before it ends: each is written,
+   * staged, and committed with no author/committer variables and no global Git
+   * configuration, so it is a real local commit under the identity the run
+   * configured in the workspace.
+   */
+  readonly commits?: readonly {
+    readonly file: string;
+    readonly text: string;
+    readonly message: string;
+  }[];
   /** Text it writes to its agent log before its process starts. */
   readonly logText?: string;
   /** How long its process stays alive while it works, in milliseconds. */
@@ -381,6 +431,30 @@ function fakeAgent(
       try {
         for (const extra of plan.extras ?? []) {
           await writeFile(path.join(agentRequest.workspacePath, extra.file), extra.text, 'utf8');
+        }
+        for (const checkpoint of plan.commits ?? []) {
+          await writeFile(
+            path.join(agentRequest.workspacePath, checkpoint.file),
+            checkpoint.text,
+            'utf8',
+          );
+          const staged = await runProcess('git', ['add', '--', checkpoint.file], {
+            cwd: agentRequest.workspacePath,
+            env: workspaceCommitEnvironment(),
+          });
+          if (staged.code !== 0) {
+            throw new Error(`the turn could not stage ${checkpoint.file}: ${staged.stderr.trim()}`);
+          }
+          const committed = await runProcess(
+            'git',
+            ['commit', '--quiet', '--message', checkpoint.message],
+            { cwd: agentRequest.workspacePath, env: workspaceCommitEnvironment() },
+          );
+          if (committed.code !== 0) {
+            throw new Error(
+              `the turn could not commit ${checkpoint.file}: ${committed.stderr.trim()}`,
+            );
+          }
         }
         agentRequest.agentLog.write(
           plan.logText ??
@@ -682,6 +756,319 @@ describe('a run that continues a workspace', () => {
     const ledger = await readWorkspaceState(fixture.workDir, workspaceId);
     expect(ledger?.attempts.map((attempt) => attempt.outcome)).toEqual(['passed', 'passed']);
     expect(ledger?.attempts[1]?.runId).toBe(result.run.runId);
+  }, 120_000);
+});
+
+describe('a working copy a coding turn commits in', () => {
+  it('has its repository-local identity before the turn runs, and keeps the commit', async () => {
+    const fixture = await createFixture();
+    const agent = fakeAgent(fixture, {
+      commits: [
+        { file: 'checkpoint.txt', text: 'a completed piece\n', message: 'tiny-001: checkpoint' },
+      ],
+    });
+
+    const result = await runTask(
+      request(fixture, configuration(fixture)),
+      dependencies(agent.turn),
+    );
+
+    expect(result.status).toBe('passed');
+    const workspace = result.workspace?.workspacePath ?? '';
+    // The identity is repository-local: it lives in the working copy's own
+    // configuration, and it was written before the turn ran.
+    expect((await gitOrFail(['config', '--local', 'user.name'], workspace)).trim()).toBe(
+      'Nexus Agent',
+    );
+    expect((await gitOrFail(['config', '--local', 'user.email'], workspace)).trim()).toBe(
+      'nexus@local',
+    );
+    expect((await gitOrFail(['config', '--local', 'commit.gpgsign'], workspace)).trim()).toBe(
+      'false',
+    );
+    // The turn's commit ran with no author or committer variables and no global
+    // Git configuration, so the workspace's own identity is what made it work,
+    // and signing stayed off.
+    expect(
+      (await gitOrFail(['log', '--max-count=1', '--format=%an <%ae>'], workspace)).trim(),
+    ).toBe('Nexus Agent <nexus@local>');
+    expect(await gitOrFail(['cat-file', '-p', 'HEAD'], workspace)).not.toContain('gpgsig');
+    // What the turn committed is recorded against the run's recorded base, like
+    // any other work the run left behind.
+    const report = await readReport(result.reportPath);
+    expect(report.changes.paths.find((entry) => entry.path === 'checkpoint.txt')?.states).toEqual([
+      'committed',
+    ]);
+  }, 60_000);
+
+  it('configures the identity for a continuation that did not go through reopenWorkspace', async () => {
+    const fixture = await createFixture();
+    const first = await runTask(
+      request(fixture, configuration(fixture)),
+      dependencies(fakeAgent(fixture).turn),
+    );
+    const workspace = first.workspace;
+    expect(workspace).not.toBeNull();
+    if (workspace === null) {
+      return;
+    }
+
+    // The escalation ladder hands the next run this record of the workspace it
+    // just used, without reopening it first (sources/coordinator.ts). The
+    // settings this run needs must not depend on the earlier attempt's.
+    for (const key of ['user.name', 'user.email', 'commit.gpgsign']) {
+      await gitOrFail(['config', '--local', '--unset-all', key], workspace.workspacePath);
+    }
+    const agent = fakeAgent(fixture, {
+      commits: [
+        {
+          file: 'escalated.txt',
+          text: 'the next tier committed this\n',
+          message: 'tiny-001: tier two checkpoint',
+        },
+      ],
+    });
+    const second = await runTask(
+      {
+        ...request(
+          fixture,
+          configuration(fixture, {
+            checks: [command(fixture, 'check-1', 'need', 'app.txt', IMPLEMENTED_TEXT)],
+          }),
+        ),
+        continuedWorkspace: {
+          workspaceId: workspace.workspaceId,
+          workspacePath: workspace.workspacePath,
+          branch: workspace.branch,
+          baseCommit: workspace.baseCommit,
+          attempt: workspace.attempt + 1,
+        },
+      },
+      dependencies(agent.turn),
+    );
+
+    expect(second.status).toBe('passed');
+    expect(
+      (await gitOrFail(['config', '--local', 'user.name'], workspace.workspacePath)).trim(),
+    ).toBe('Nexus Agent');
+    expect(
+      (
+        await gitOrFail(['log', '--max-count=1', '--format=%an <%ae>'], workspace.workspacePath)
+      ).trim(),
+    ).toBe('Nexus Agent <nexus@local>');
+  }, 120_000);
+
+  it('ends the run, with a report, when the identity cannot be configured', async () => {
+    const fixture = await createFixture();
+    const agent = fakeAgent(fixture);
+    const rounds: string[] = [];
+
+    const result = await runTask(
+      request(fixture, configuration(fixture)),
+      dependencies(agent.turn, {
+        configureWorkspaceIdentity: async (workspacePath) => {
+          throw new WorkspaceError(
+            `the working copy's local Git setting "user.name" could not be set in ` +
+              `"${workspacePath}": a read-only .git/config`,
+          );
+        },
+        runCheckRound: async (asked) => {
+          rounds.push(asked.name);
+          return { outcome: 'passed', setup: [], checks: [], problem: null };
+        },
+      }),
+    );
+
+    // Nothing runs with an unknown identity: no check round, no coding turn.
+    expect(result.status).toBe('failed');
+    expect(result.reason).toContain('local Git identity could not be configured');
+    expect(rounds).toEqual([]);
+    expect(agent.requests).toEqual([]);
+
+    // The run is still reported, keeps its working copy, and names what could
+    // not be written.
+    const report = await readReport(result.reportPath);
+    expect(report.status).toBe('failed');
+    expect(report.baseline).toBeNull();
+    expect(report.attempts).toEqual([]);
+    expect(report.workspace.prepared).toBe(true);
+    expect(report.reason).toContain('user.name');
+  }, 60_000);
+
+  it('does not start the identity phase for a run stopped while its workspace was recorded', async () => {
+    const fixture = await createFixture();
+    const controller = new AbortController();
+    const identities: string[] = [];
+    const agent = fakeAgent(fixture);
+
+    const result = await runTask(
+      {
+        ...request(fixture, configuration(fixture)),
+        stop: controller.signal,
+        // The caller stops the run in the hook a source uses to record where the
+        // workspace lives: after preparation, before anything else starts.
+        onWorkspaceReady: async () => {
+          controller.abort();
+        },
+      },
+      dependencies(agent.turn, {
+        configureWorkspaceIdentity: async (workspacePath) => {
+          identities.push(workspacePath);
+        },
+      }),
+    );
+
+    // The mutating phase was never started, and the run is reported as the stop
+    // it was rather than as whatever the phase would have failed with.
+    expect(identities).toEqual([]);
+    expect(agent.requests).toEqual([]);
+    expect(result.status).toBe('cancelled');
+    expect(result.cancellation?.phase).toBe("the working copy's Git identity");
+    expect(result.reason).toMatch(
+      /stopped by its caller before the working copy's Git identity was configured/,
+    );
+
+    const report = await readReport(result.reportPath);
+    expect(report.status).toBe('cancelled');
+    expect(report.baseline).toBeNull();
+    expect(report.cancellation?.phase).toBe("the working copy's Git identity");
+  }, 60_000);
+
+  it('does not start the identity phase once preparation has spent the task time', async () => {
+    const fixture = await createFixture();
+    const clock = testClock();
+    const config = configuration(fixture, { taskTimeoutMinutes: 1 });
+    const identities: string[] = [];
+    const agent = fakeAgent(fixture);
+
+    const result = await runTask(
+      request(fixture, config),
+      dependencies(agent.turn, {
+        now: clock.now,
+        // Preparation used up the run's whole minute.
+        prepareWorkspace: async (run, source, bounds) => {
+          const workspace = await prepareWorkspace(run, source, bounds);
+          clock.advance(minutes(1));
+          return workspace;
+        },
+        configureWorkspaceIdentity: async (workspacePath) => {
+          identities.push(workspacePath);
+        },
+      }),
+    );
+
+    expect(identities).toEqual([]);
+    expect(agent.requests).toEqual([]);
+    expect(result.status).toBe('failed');
+    expect(result.timeout).toEqual({
+      limit: 'task',
+      phase: "the working copy's Git identity",
+      limitMs: minutes(1),
+      elapsedMs: minutes(1),
+      termination: 'confirmed',
+      problem: null,
+    });
+    expect(result.reason).toMatch(
+      /task deadline expired before the working copy's Git identity was configured/,
+    );
+
+    const report = await readReport(result.reportPath);
+    expect(report.status).toBe('failed');
+    expect(report.timeout?.phase).toBe("the working copy's Git identity");
+  }, 60_000);
+
+  it('classifies a stop that arrives during a rejecting identity phase as a cancellation', async () => {
+    const fixture = await createFixture();
+    const controller = new AbortController();
+    const agent = fakeAgent(fixture);
+
+    const result = await runTask(
+      { ...request(fixture, configuration(fixture)), stop: controller.signal },
+      dependencies(agent.turn, {
+        // The phase was started, the caller stopped the run while it ran, and it
+        // rejected on the way out: the stop is what the run ended for.
+        configureWorkspaceIdentity: async (workspacePath) => {
+          controller.abort();
+          throw new WorkspaceError(
+            `the working copy's local Git setting "user.name" could not be set in ` +
+              `"${workspacePath}": a read-only .git/config`,
+          );
+        },
+      }),
+    );
+
+    expect(agent.requests).toEqual([]);
+    expect(result.status).toBe('cancelled');
+    expect(result.timeout).toBeNull();
+    expect(result.cancellation?.phase).toBe("the working copy's Git identity");
+    expect(result.reason).toMatch(
+      /stopped by its caller while the working copy's Git identity was being configured/,
+    );
+
+    const report = await readReport(result.reportPath);
+    expect(report.status).toBe('cancelled');
+    expect(report.cancellation?.phase).toBe("the working copy's Git identity");
+    // The rejection is not recorded as an ordinary configuration failure.
+    expect(report.reason).not.toContain('could not be configured');
+  }, 60_000);
+});
+
+describe('a continued run whose source checkout moved on', () => {
+  it('keeps the recorded base for comparisons, with commits and leftovers both visible', async () => {
+    const fixture = await createFixture();
+    const firstAgent = fakeAgent(fixture, {
+      commits: [
+        {
+          file: 'committed.txt',
+          text: 'attempt one committed this\n',
+          message: 'tiny-001: attempt one checkpoint',
+        },
+      ],
+    });
+    const first = await runTask(
+      request(fixture, configuration(fixture)),
+      dependencies(firstAgent.turn),
+    );
+    const workspace = first.workspace;
+    expect(workspace).not.toBeNull();
+    if (workspace === null) {
+      return;
+    }
+
+    // The source checkout moves on the ordinary way. The workspace keeps the
+    // base it was cloned at, and nothing follows the source forward.
+    await writeFile(path.join(fixture.repo, 'later.txt'), 'the source moved on\n', 'utf8');
+    await gitOrFail(['add', '--all'], fixture.repo);
+    await gitOrFail(['commit', '--quiet', '--message', 'the source moves on'], fixture.repo);
+    expect((await gitOrFail(['rev-parse', 'HEAD'], fixture.repo)).trim()).not.toBe(
+      workspace.baseCommit,
+    );
+
+    const agent = fakeAgent(fixture);
+    const second = await runTask(
+      {
+        ...request(
+          fixture,
+          configuration(fixture, {
+            checks: [command(fixture, 'check-1', 'need', 'app.txt', IMPLEMENTED_TEXT)],
+          }),
+        ),
+        continuedWorkspace: await reopenWorkspace(fixture.workDir, workspace.workspaceId),
+      },
+      dependencies(agent.turn),
+    );
+
+    expect(second.status).toBe('passed');
+    const report = await readReport(second.reportPath);
+    // Provenance and comparison both keep the workspace's own recorded base, not
+    // the source checkout's newer HEAD.
+    expect(report.source.baseCommit).toBe(workspace.baseCommit);
+    expect(report.changes.baseCommit).toBe(workspace.baseCommit);
+    // The whole diff against that base: an earlier attempt's commit and a dirty
+    // leftover are both visible.
+    const states = new Map(report.changes.paths.map((entry) => [entry.path, entry.states]));
+    expect(states.get('committed.txt')).toEqual(['committed']);
+    expect(states.get('app.txt')).toEqual(['unstaged']);
   }, 120_000);
 });
 
@@ -2503,6 +2890,7 @@ describe('the collaborators a run is given', () => {
 
     const preflights: PreflightRequest[] = [];
     const allocations: string[] = [];
+    const identities: string[] = [];
     const rounds: CheckRoundRequest[] = [];
     const turns: AgentTurnRequest[] = [];
     const reports: RunReportRequest[] = [];
@@ -2520,6 +2908,9 @@ describe('the collaborators a run is given', () => {
           return run;
         },
         prepareWorkspace: async () => workspace,
+        configureWorkspaceIdentity: async (workspacePath) => {
+          identities.push(workspacePath);
+        },
         recordWorkspaceAttempt: async () => undefined,
         runCheckRound: async (asked) => {
           rounds.push(asked);
@@ -2550,6 +2941,8 @@ describe('the collaborators a run is given', () => {
 
     expect(preflights).toEqual([{ repoPath, workDir }]);
     expect(allocations).toEqual([workDir]);
+    // The working copy was given its commit identity before the baseline ran.
+    expect(identities).toEqual([workspace.workspacePath]);
 
     // Both rounds got the loaded plan itself, in the working copy, with their
     // own log names.
