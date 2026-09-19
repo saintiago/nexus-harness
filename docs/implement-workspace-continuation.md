@@ -90,10 +90,13 @@ from the workspace's own first attempt report (`sourceRef` there records them), 
 
 The ledger is read as the record this harness wrote, not as loose JSON: its version must be 1, an
 identity it records must carry all four of its fields, and every attempt entry must carry the run
-ID, outcome, end, and report path that the guidance and the next attempt's number are read from. A
+ID, outcome, end, and report path that the guidance and the next attempt's number are read from, and
+its recorded end must be a timestamp this harness writes (an ISO 8601 instant such as
+`2026-01-01T00:00:00.000Z`): a continuation parses it as the moment it reads the item's comments
+since, so a value that is not one is refused rather than parsed as `NaN` or into another day. A
 record of another shape — an unsupported version, a partially written identity, an attempt with a
-field missing or of the wrong kind — is refused before anything is read through it, and is never
-repaired, migrated, or read as something it is not.
+field missing, of the wrong kind, or ending at something that is not a timestamp — is refused before
+anything is read through it, and is never repaired, migrated, or read as something it is not.
 
 ## Eligibility
 

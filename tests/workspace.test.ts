@@ -624,6 +624,19 @@ describe('a workspace that outlives its run', () => {
         ledger: { ...written, attempts: [{ runId: prepared.runId }] },
         problem: 'attempts.0.endedAt',
       },
+      {
+        // A nonblank string is not enough for the end of an attempt: it is
+        // parsed as the moment a continuation reads comments since, so a value
+        // that is not an instant is refused rather than read as `NaN`.
+        ledger: { ...written, attempts: [{ ...attempt, endedAt: 'not-a-date' }] },
+        problem: 'attempts.0.endedAt',
+      },
+      {
+        // Nor is a date `Date.parse` would quietly roll over: this harness
+        // refuses a timestamp it did not write instead of coercing it into one.
+        ledger: { ...written, attempts: [{ ...attempt, endedAt: '2026-02-30T00:00:00.000Z' }] },
+        problem: 'attempts.0.endedAt',
+      },
     ];
 
     for (const entry of unreadable) {
@@ -650,14 +663,23 @@ describe('a workspace that outlives its run', () => {
       ).rejects.toThrow(/cannot be continued/);
     }
 
-    // A record this harness did write is read again: refusing the malformed ones
-    // above is a check on their shape, not a refusal of the workspace.
-    await writeFile(ledgerPath, `${JSON.stringify(written)}\n`, 'utf8');
+    // A record this harness did write is read again, with the exact timestamp
+    // form the harness writes: refusing the malformed ones above is a check on
+    // their shape, not a refusal of the workspace.
+    const now = new Date().toISOString();
+    await writeFile(
+      ledgerPath,
+      `${JSON.stringify({ ...written, attempts: [{ ...attempt, endedAt: now }] })}\n`,
+      'utf8',
+    );
     const reopened = await reopenWorkspace(fixture.workDir, prepared.workspaceId, {
       sourceItem: FIXTURE_SOURCE_ITEM,
       sourceRoot: prepared.sourceRoot,
     });
     expect(reopened.attempt).toBe(2);
+    expect((await readWorkspaceState(fixture.workDir, prepared.workspaceId))?.attempts).toEqual([
+      { ...attempt, endedAt: now },
+    ]);
   });
 });
 

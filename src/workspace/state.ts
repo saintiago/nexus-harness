@@ -88,6 +88,28 @@ function ledgerText(field: string): z.ZodString {
 }
 
 /**
+ * A timestamp the ledger records, validated as the instant the field is read
+ * as. `attempts[].endedAt` is handed to the source as the moment a
+ * continuation reads comments since, and that comparison parses it: a string
+ * that is not the ISO 8601 instant this harness writes would be read as `NaN`
+ * (every comment passes) or coerced into another day, so it is refused instead
+ * of parsed. The accepted form is exactly what `Date.prototype.toISOString()`
+ * writes, and nothing here transforms or substitutes a value for the record's
+ * own (docs/implement-workspace-continuation.md).
+ */
+function ledgerTimestamp(field: string): z.ZodType<string> {
+  return z.iso
+    .datetime({
+      error:
+        `${field} must be an ISO 8601 timestamp such as "2026-01-01T00:00:00.000Z": a ` +
+        'continuation parses it as the moment an attempt ended',
+    })
+    .refine((value) => Number.isFinite(Date.parse(value)), {
+      error: `${field} must be a timestamp this harness can compare with another instant`,
+    });
+}
+
+/**
  * The item identity a ledger records, when it has one. The four fields are the
  * identity and the display key a continuation checks; an object missing one of
  * them was not written by this harness, and is refused rather than read as an
@@ -112,7 +134,7 @@ const workspaceAttemptSchema = z.strictObject({
   }),
   tier: ledgerText('tier').optional(),
   reason: ledgerText('reason').optional(),
-  endedAt: ledgerText('endedAt'),
+  endedAt: ledgerTimestamp('endedAt'),
   reportPath: ledgerText('reportPath'),
 });
 
