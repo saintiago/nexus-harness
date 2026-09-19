@@ -364,7 +364,7 @@ Remove-Variable secure, token
 
 This persists the value for future terminals and also sets it in the current PowerShell process. The value is persistent but not an encrypted secret vault; processes running as the same user may be able to read it. [W7]
 
-3. Copy your current config to `harness.jira.config.json`, preserve its effective agent and project commands, and add the `source` object above. Keep `cloudId` and `siteUrl`; only the token value stays outside JSON.
+3. Copy your current config to `harness.jira.config.json`, preserve its effective agent and project commands, and add the `source` object above. Keep `cloudId` and `siteUrl`; only the token value stays outside JSON. A launch that should give its turns the four research capabilities — GitHub for reading, the OpenAI Docs MCP server, Context7, and Tavily — selects a native Codex profile layer instead of a personal one; [nexus-agent-tools.md](nexus-agent-tools.md) is the profile files, the launch-prefix change, the private credentials, and the new-session smoke procedure.
 4. Run static validation, then `source list`. Inspect the queue before the first `source run --limit 1`. Start watch only after that run and Jira feedback have been checked.
 5. Keep the watch process running to receive further work. This increment does not install a service or configure machine startup.
 
