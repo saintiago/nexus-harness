@@ -5,14 +5,16 @@
  * Only committed content is inherited: ignored local files stay in the source
  * checkout, and the clone keeps no remote pointing back at it. Preparation is
  * bounded by the run's remaining task time and by the run's own stop request;
- * Git is owned here, so a step that is already running is left to finish rather
- * than killed mid-write. Every failure leaves the run directory in place and
- * names it, so a partial preparation can be inspected instead of reused.
+ * every Git step runs under both, so a stalled step ends at the deadline or
+ * when the run is stopped, and the run directory it leaves is inspected rather
+ * than reused. Every failure leaves the run directory in place and names it, so
+ * a partial preparation can be inspected instead of reused.
  */
 import { readdir } from 'node:fs/promises';
 import { messageOf } from '../shared/errors.js';
-import { WorkspaceError } from './errors.js';
-import { firstLine, listPaths, runGit } from './git.js';
+import { WorkspaceError, workspaceStopOf } from './errors.js';
+import { firstLine, gitFailure, listPaths, runGit } from './git.js';
+import type { GitRunBounds } from './git.js';
 import type { SourcePreflight } from './preflight.js';
 import { incompleteRunError } from './run-directory.js';
 import type { RunDirectory } from './run-directory.js';
@@ -67,9 +69,15 @@ async function assertWorkspaceDestinationEmpty(run: RunDirectory): Promise<void>
  * moved on is not silently adopted, and not silently ignored either: the run
  * was approved against a base that no longer exists.
  */
-async function assertSourceAtRecordedBase(source: SourcePreflight): Promise<void> {
-  const head = await runGit(['rev-parse', '--verify', 'HEAD^{commit}'], source.sourceRoot);
+async function assertSourceAtRecordedBase(
+  source: SourcePreflight,
+  bounds: GitRunBounds,
+): Promise<void> {
+  const head = await runGit(['rev-parse', '--verify', 'HEAD^{commit}'], source.sourceRoot, bounds);
   const current = head.stdout.trim();
+  if (head.outcome !== 'exited') {
+    throw gitFailure(`the current HEAD of "${source.sourceRoot}" could not be read`, head);
+  }
   if (head.code !== 0) {
     throw new WorkspaceError(
       `the current HEAD of "${source.sourceRoot}" cannot be read: ${firstLine(head.stderr)}`,
@@ -94,7 +102,11 @@ async function assertSourceAtRecordedBase(source: SourcePreflight): Promise<void
  * that the working copy is a snapshot: it cannot fetch from or push into the
  * source repository.
  */
-async function cloneCommittedObjects(run: RunDirectory, source: SourcePreflight): Promise<void> {
+async function cloneCommittedObjects(
+  run: RunDirectory,
+  source: SourcePreflight,
+  bounds: GitRunBounds,
+): Promise<void> {
   const cloned = await runGit(
     [
       'clone',
@@ -108,18 +120,15 @@ async function cloneCommittedObjects(run: RunDirectory, source: SourcePreflight)
       run.workspacePath,
     ],
     run.runDir,
+    bounds,
   );
   if (cloned.code !== 0) {
-    throw new WorkspaceError(
-      `"${source.sourceRoot}" could not be cloned: ${firstLine(cloned.stderr)}`,
-    );
+    throw gitFailure(`"${source.sourceRoot}" could not be cloned`, cloned);
   }
 
-  const detached = await runGit(['remote', 'remove', RUN_REMOTE_NAME], run.workspacePath);
+  const detached = await runGit(['remote', 'remove', RUN_REMOTE_NAME], run.workspacePath, bounds);
   if (detached.code !== 0) {
-    throw new WorkspaceError(
-      `the clone could not be detached from "${source.sourceRoot}": ${firstLine(detached.stderr)}`,
-    );
+    throw gitFailure(`the clone could not be detached from "${source.sourceRoot}"`, detached);
   }
 }
 
@@ -128,17 +137,17 @@ async function createRunBranch(
   run: RunDirectory,
   branch: string,
   baseCommit: string,
+  bounds: GitRunBounds,
 ): Promise<void> {
   // The commit is a validated SHA, so it needs no `--`: a `--` here would make
   // it a path instead.
   const checkedOut = await runGit(
     ['checkout', '--quiet', '-b', branch, baseCommit],
     run.workspacePath,
+    bounds,
   );
   if (checkedOut.code !== 0) {
-    throw new WorkspaceError(
-      `the branch "${branch}" could not be created at ${baseCommit}: ${firstLine(checkedOut.stderr)}`,
-    );
+    throw gitFailure(`the branch "${branch}" could not be created at ${baseCommit}`, checkedOut);
   }
 }
 
@@ -153,17 +162,28 @@ async function assertRecordedWorkspace(
   run: RunDirectory,
   source: SourcePreflight,
   branch: string,
+  bounds: GitRunBounds,
 ): Promise<void> {
-  const head = await runGit(['rev-parse', '--verify', 'HEAD^{commit}'], run.workspacePath);
+  const head = await runGit(['rev-parse', '--verify', 'HEAD^{commit}'], run.workspacePath, bounds);
   const commit = head.stdout.trim();
+  if (head.outcome !== 'exited') {
+    throw gitFailure(`the recorded base of "${run.workspacePath}" could not be read`, head);
+  }
   if (head.code !== 0 || commit !== source.baseCommit) {
     throw new WorkspaceError(
       `the working copy is at ${commit === '' ? 'no commit' : commit}, not at the recorded base ${source.baseCommit}`,
     );
   }
 
-  const symbolic = await runGit(['symbolic-ref', '--quiet', '--short', 'HEAD'], run.workspacePath);
+  const symbolic = await runGit(
+    ['symbolic-ref', '--quiet', '--short', 'HEAD'],
+    run.workspacePath,
+    bounds,
+  );
   const current = symbolic.stdout.trim();
+  if (symbolic.outcome !== 'exited') {
+    throw gitFailure(`the branch of "${run.workspacePath}" could not be read`, symbolic);
+  }
   if (symbolic.code !== 0 || current !== branch) {
     throw new WorkspaceError(
       `the working copy is on ${current === '' ? 'no branch' : `"${current}"`}, not on its dedicated branch "${branch}"`,
@@ -173,11 +193,10 @@ async function assertRecordedWorkspace(
   const status = await runGit(
     ['status', '--porcelain=v1', '-z', '--untracked-files=normal', '--ignored=no', '--no-renames'],
     run.workspacePath,
+    bounds,
   );
   if (status.code !== 0) {
-    throw new WorkspaceError(
-      `the state of "${run.workspacePath}" cannot be read: ${firstLine(status.stderr)}`,
-    );
+    throw gitFailure(`the state of "${run.workspacePath}" cannot be read`, status);
   }
 
   const state = parseStatus(status.stdout);
@@ -208,9 +227,9 @@ export interface PrepareWorkspaceBounds {
   /**
    * The run's own stop request, when it has one: the caller's request is read
    * between preparation steps exactly as the deadline is, and no further step is
-   * started once it has arrived. A step already running is left to finish, for
-   * the reason below, and omitted bounds mean nothing can stop preparation
-   * early but the deadline.
+   * started once it has arrived. It is also handed to the Git invocation of the
+   * step that is running, so a stop does not have to wait for one to finish.
+   * Omitted means nothing can stop preparation early but the deadline.
    */
   readonly stop?: AbortSignal;
 }
@@ -224,11 +243,12 @@ export interface PrepareWorkspaceBounds {
  *
  * Preparation is bounded by the run's remaining task time, and by the run's own
  * stop request when it has one: both are read again before each step, and a step
- * is not started once either has arrived. Git is owned here, so a step that is
- * already running is left to finish rather than killed mid-write — a Git process
- * stopped while it holds a lock can damage the checkout it is writing. The
- * bounded cost of that is one Git command's run time after the deadline or the
- * stop request, which the run's later phases and its report both see.
+ * is not started once either has arrived. Every Git step runs under both, too:
+ * one that is already running is stopped with the tree it started, at the
+ * deadline or when the run is stopped, rather than left to hold the run past
+ * them. A Git stopped mid-write can leave a partial clone, which is why what it
+ * wrote is kept for inspection and never reused — and why the stop it recorded,
+ * confirmed or not, travels back to the caller that reports why the run ended.
  *
  * `sourceItem` is the external item this workspace is being created for, when
  * the run came from a source: the identity every later pointer label is checked
@@ -246,11 +266,14 @@ export async function prepareWorkspace(
   const branch = `${RUN_BRANCH_PREFIX}${run.runId}`;
 
   /**
-   * Why preparation stopped, when it was stopped before it could start a step.
+   * What the step that is about to start is given: what is left of the run's
+   * task time, in milliseconds, or the reason the step must not start at all.
    * The run's own stop request is read first: a caller who stopped the run is
-   * told that, rather than told about a deadline in the same window.
+   * told that, rather than told about a deadline in the same window. The limit
+   * it returns bounds that step's Git invocation, so the step a deadline expires
+   * inside is stopped with the tree it started instead of being left to finish.
    */
-  const assertMayStart = (step: string): void => {
+  const startBudget = (step: string): number => {
     if (bounds.stop?.aborted === true) {
       throw new WorkspaceError(
         [
@@ -260,32 +283,54 @@ export async function prepareWorkspace(
         ].join('\n'),
       );
     }
-    const overdue = bounds.now().getTime() - bounds.deadlineMs;
-    if (overdue <= 0) {
-      return;
+    const remaining = bounds.deadlineMs - bounds.now().getTime();
+    if (remaining > 0) {
+      return Math.max(1, remaining);
     }
     throw new WorkspaceError(
       [
-        `the run's task deadline passed ${String(overdue)} ms before ${step}, so preparation stopped there.`,
+        `the run's task deadline passed ${String(-remaining)} ms before ${step}, so preparation stopped there.`,
         'What preparation had already written is kept in the run directory, but it is not a usable ' +
           'working copy and must not be reused.',
       ].join('\n'),
     );
   };
 
+  /**
+   * The bounds of the step that was just given its budget: that limit, and the
+   * run's own stop request when it has one.
+   */
+  const stepBounds = (timeoutMs: number): GitRunBounds => ({
+    timeoutMs,
+    ...(bounds.stop === undefined ? {} : { stop: bounds.stop }),
+  });
+
   try {
-    assertMayStart('the destination check');
+    startBudget('the destination check');
     await assertWorkspaceDestinationEmpty(run);
-    assertMayStart('reading the source repository');
-    await assertSourceAtRecordedBase(source);
-    assertMayStart('cloning the committed objects');
-    await cloneCommittedObjects(run, source);
-    assertMayStart('creating the run branch');
-    await createRunBranch(run, branch, source.baseCommit);
-    assertMayStart('verifying the working copy');
-    await assertRecordedWorkspace(run, source, branch);
+    await assertSourceAtRecordedBase(
+      source,
+      stepBounds(startBudget('reading the source repository')),
+    );
+    await cloneCommittedObjects(
+      run,
+      source,
+      stepBounds(startBudget('cloning the committed objects')),
+    );
+    await createRunBranch(
+      run,
+      branch,
+      source.baseCommit,
+      stepBounds(startBudget('creating the run branch')),
+    );
+    await assertRecordedWorkspace(
+      run,
+      source,
+      branch,
+      stepBounds(startBudget('verifying the working copy')),
+    );
   } catch (cause) {
-    throw incompleteRunError(run, messageOf(cause), cause);
+    throw incompleteRunError(run, messageOf(cause), cause, workspaceStopOf(cause));
   }
 
   // The ledger is written before anything can run in the workspace, so a

@@ -6,6 +6,11 @@
  * output location that overlaps the source. It never resets, stashes, cleans,
  * checks out, or edits the source, and it allocates nothing, so a rejected
  * preflight leaves no run directory behind.
+ *
+ * Every reading it makes is a bounded Git invocation: a run that is checking
+ * its source before allocating anything passes what is left of its task time
+ * and its own stop request, and a caller outside a run leaves both out so the
+ * readings run under the finite default bound (see `git.ts`).
  */
 import path from 'node:path';
 import { WorkspaceError } from './errors.js';
@@ -13,10 +18,12 @@ import {
   assertExistingDirectory,
   canonicalPath,
   firstLine,
+  gitFailure,
   isSameOrInside,
   listPaths,
   runGit,
 } from './git.js';
+import type { GitRunBounds } from './git.js';
 import { parseStatus } from './status.js';
 
 /** What the caller asks preflight to check. */
@@ -25,6 +32,14 @@ export interface PreflightRequest {
   readonly repoPath: string;
   /** Output directory for run directories, resolved from the configuration file. */
   readonly workDir: string;
+  /**
+   * How the Git readings are bounded. A run that checks its own source passes
+   * what is left of its task time and its stop request; a caller outside a run —
+   * a source command's own check before intake state exists — passes its stop
+   * request alone, or nothing at all, and the readings then run under the finite
+   * default bound.
+   */
+  readonly bounds?: GitRunBounds;
 }
 
 /** The facts that preparing a working copy needs, and nothing more. */
@@ -35,11 +50,14 @@ export interface SourcePreflight {
   readonly baseCommit: string;
 }
 /** Resolves the requested path to the real root of the repository containing it. */
-async function findSourceRoot(requested: string): Promise<string> {
+async function findSourceRoot(requested: string, bounds: GitRunBounds): Promise<string> {
   const resolved = path.resolve(requested);
   assertExistingDirectory(resolved);
 
-  const bare = await runGit(['rev-parse', '--is-bare-repository'], resolved);
+  const bare = await runGit(['rev-parse', '--is-bare-repository'], resolved, bounds);
+  if (bare.outcome !== 'exited') {
+    throw gitFailure(`the repository state of "${resolved}" could not be read`, bare);
+  }
   if (bare.code !== 0) {
     throw new WorkspaceError(
       `"${resolved}" is not inside a Git repository (${firstLine(bare.stderr)}).\n` +
@@ -53,7 +71,10 @@ async function findSourceRoot(requested: string): Promise<string> {
     );
   }
 
-  const top = await runGit(['rev-parse', '--show-toplevel'], resolved);
+  const top = await runGit(['rev-parse', '--show-toplevel'], resolved, bounds);
+  if (top.outcome !== 'exited') {
+    throw gitFailure(`the repository root of "${resolved}" could not be read`, top);
+  }
   if (top.code !== 0 || top.stdout.trim() === '') {
     throw new WorkspaceError(
       `could not find the repository root of "${resolved}": ${firstLine(top.stderr)}`,
@@ -63,9 +84,16 @@ async function findSourceRoot(requested: string): Promise<string> {
 }
 
 /** The committed `HEAD`, rejected when the repository has no commits yet. */
-async function readBaseCommit(sourceRoot: string, requested: string): Promise<string> {
-  const head = await runGit(['rev-parse', '--verify', 'HEAD^{commit}'], sourceRoot);
+async function readBaseCommit(
+  sourceRoot: string,
+  requested: string,
+  bounds: GitRunBounds,
+): Promise<string> {
+  const head = await runGit(['rev-parse', '--verify', 'HEAD^{commit}'], sourceRoot, bounds);
   const commit = head.stdout.trim();
+  if (head.outcome !== 'exited') {
+    throw gitFailure(`the committed HEAD of "${requested}" could not be read`, head);
+  }
   if (head.code !== 0 || !/^[0-9a-f]{40,64}$/.test(commit)) {
     throw new WorkspaceError(
       `"${requested}" has no committed HEAD (${firstLine(head.stderr)}).\n` +
@@ -75,15 +103,18 @@ async function readBaseCommit(sourceRoot: string, requested: string): Promise<st
   return commit;
 }
 /** Refuses staged, unstaged, or non-ignored untracked work. Read-only. */
-async function assertCleanCheckout(sourceRoot: string, requested: string): Promise<void> {
+async function assertCleanCheckout(
+  sourceRoot: string,
+  requested: string,
+  bounds: GitRunBounds,
+): Promise<void> {
   const status = await runGit(
     ['status', '--porcelain=v1', '-z', '--untracked-files=normal', '--ignored=no', '--no-renames'],
     sourceRoot,
+    bounds,
   );
   if (status.code !== 0) {
-    throw new WorkspaceError(
-      `could not read the working tree state of "${sourceRoot}": ${firstLine(status.stderr)}`,
-    );
+    throw gitFailure(`could not read the working tree state of "${sourceRoot}"`, status);
   }
 
   const state = parseStatus(status.stdout);
@@ -145,9 +176,10 @@ function assertSafeOutputLocation(sourceRoot: string, requestedWorkDir: string):
  * {@link WorkspaceError} explaining what the caller must fix.
  */
 export async function preflightSource(request: PreflightRequest): Promise<SourcePreflight> {
-  const sourceRoot = await findSourceRoot(request.repoPath);
-  const baseCommit = await readBaseCommit(sourceRoot, request.repoPath);
-  await assertCleanCheckout(sourceRoot, request.repoPath);
+  const bounds = request.bounds ?? {};
+  const sourceRoot = await findSourceRoot(request.repoPath, bounds);
+  const baseCommit = await readBaseCommit(sourceRoot, request.repoPath, bounds);
+  await assertCleanCheckout(sourceRoot, request.repoPath, bounds);
   assertSafeOutputLocation(sourceRoot, request.workDir);
   return { sourceRoot, baseCommit };
 }

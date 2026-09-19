@@ -1,6 +1,6 @@
 import type { ChangeCategory, ChangeKind, ChangeState, ChangedPath } from '../shared/types.js';
-import { WorkspaceError } from './errors.js';
-import { firstLine, runGit } from './git.js';
+import { gitFailure, runGit } from './git.js';
+import type { GitRunBounds } from './git.js';
 import type { PreparedWorkspace } from './prepare.js';
 import { statusEntries } from './status.js';
 
@@ -256,29 +256,35 @@ function categoriesOf(file: string): readonly ChangeCategory[] {
  *
  * A reading that fails is a {@link WorkspaceError} naming the working copy and
  * what Git said: a caller has to be able to tell a comparison that found nothing
- * from one that could not be made, and must never report the second as the first.
+ * from one that could not be made, and must never report the second as the
+ * first. Both readings are bounded like every other Git invocation, so a
+ * stalled Git ends at the bound and is reported as the stop it was — the run
+ * that asked for this final reading records a diagnostic and finishes its
+ * report either way.
  */
 export async function inspectWorkspaceChanges(
   workspace: PreparedWorkspace,
+  bounds: GitRunBounds = {},
 ): Promise<readonly ChangedPath[]> {
   const committed = await runGit(
     ['diff', '--name-status', '-z', '--no-renames', workspace.baseCommit, 'HEAD'],
     workspace.workspacePath,
+    bounds,
   );
   if (committed.code !== 0) {
-    throw new WorkspaceError(
-      `"${workspace.workspacePath}" could not be compared with its recorded base ${workspace.baseCommit}: ${firstLine(committed.stderr)}`,
+    throw gitFailure(
+      `"${workspace.workspacePath}" could not be compared with its recorded base ${workspace.baseCommit}`,
+      committed,
     );
   }
 
   const status = await runGit(
     ['status', '--porcelain=v1', '-z', '--untracked-files=all', '--ignored=no', '--no-renames'],
     workspace.workspacePath,
+    bounds,
   );
   if (status.code !== 0) {
-    throw new WorkspaceError(
-      `the state of "${workspace.workspacePath}" could not be read: ${firstLine(status.stderr)}`,
-    );
+    throw gitFailure(`the state of "${workspace.workspacePath}" could not be read`, status);
   }
 
   return combineChanges([

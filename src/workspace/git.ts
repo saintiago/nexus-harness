@@ -6,11 +6,22 @@
  * `GIT_INDEX_FILE` in the caller's environment cannot redirect an inspection at
  * a different repository, and optional locks are off so that merely reading the
  * source never rewrites its index. Git is invoked nowhere else.
+ *
+ * Every Git invocation is bounded and stoppable, through the same process
+ * runner the configured commands use (`process/invocation.ts`): a run's phases
+ * give it what is left of the task time and the run's own stop request, and a
+ * reading that happens outside a run — a source preflight, a workspace
+ * verification before a continuation, the final reading of what a run left
+ * behind — gives it {@link GIT_COMMAND_TIMEOUT_MS} and the caller's stop
+ * request when there is one. A stalled Git therefore ends at its applicable
+ * bound rather than holding the harness, and the result says which bound it was
+ * and whether the tree it started was confirmed stopped.
  */
-import { spawn } from 'node:child_process';
 import { realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { messageOf } from '../shared/errors.js';
+import type { CommandOutcome, TerminationOutcome } from '../shared/types.js';
+import { runInvocation } from '../process/invocation.js';
 import { WorkspaceError } from './errors.js';
 
 /**
@@ -29,10 +40,59 @@ const INHERITED_GIT_VARIABLES = [
 
 /** How many offending paths a rejection message lists before counting the rest. */
 const MAX_LISTED_PATHS = 3;
-interface GitResult {
+
+/**
+ * The finite bound one Git invocation runs under when no run deadline covers
+ * it: a source preflight, a workspace verification before a continuation, or
+ * the run's final reading of what its working copy differs from its base by.
+ * A run's own phases pass what is left of its task time instead; this bound is
+ * for the readings that happen without one, so a stalled Git can never hold the
+ * harness indefinitely. It is the same five minutes the delivery step gives its
+ * own Git and `gh` commands.
+ */
+export const GIT_COMMAND_TIMEOUT_MS = 5 * 60_000;
+
+/** How one Git invocation is bounded: a limit, and the run's stop request when there is one. */
+export interface GitRunBounds {
+  /** The limit, in milliseconds; omitted means {@link GIT_COMMAND_TIMEOUT_MS}. */
+  readonly timeoutMs?: number;
+  /**
+   * Asked to stop the invocation, and everything it started, when the run is
+   * stopped by its caller. A request that has already arrived stops the
+   * invocation from starting at all.
+   */
+  readonly stop?: AbortSignal;
+}
+
+/** The stop one Git invocation recorded, for a caller that has to report it. */
+export interface GitStop {
+  readonly termination: TerminationOutcome;
+  /** What could not be confirmed about that stop; `null` when it was confirmed. */
+  readonly problem: string | null;
+}
+
+/** What one Git invocation did, beside the output it wrote. */
+export interface GitResult {
+  /**
+   * Git's exit code, or `-1` when it ended without one. A Git that was stopped
+   * is never a success: its outcome says what the stop was, and a code that is
+   * not `0` keeps it out of the success range on hosts that report one.
+   */
   readonly code: number;
+  /** Everything the invocation wrote to standard output. */
   readonly stdout: string;
+  /** Everything the invocation wrote to standard error. */
   readonly stderr: string;
+  /** How the invocation ended; never `failed-to-launch`, which rejects instead. */
+  readonly outcome: Exclude<CommandOutcome, 'failed-to-launch'>;
+  /** Terminating signal of an invocation that was killed; `null` otherwise. */
+  readonly signal: string | null;
+  /** Whether a stop the harness made was confirmed; `null` when none was made. */
+  readonly termination: TerminationOutcome | null;
+  /** What could not be confirmed about a stop; `null` when there was none. */
+  readonly terminationProblem: string | null;
+  /** The limit this invocation ran under, in milliseconds. */
+  readonly timeoutMs: number;
 }
 
 /** The first nonblank line of Git's error output, for a one-line explanation. */
@@ -55,34 +115,106 @@ export function gitInvocationEnvironment(base: NodeJS.ProcessEnv = process.env):
   return environment;
 }
 
-/** Runs one Git command with literal arguments. Git is never invoked via a shell. */
-export function runGit(args: readonly string[], cwd: string): Promise<GitResult> {
-  return new Promise((resolve, reject) => {
-    const child = spawn('git', [...args], {
-      cwd,
-      env: gitInvocationEnvironment(),
-      windowsHide: true,
-    });
-    let stdout = '';
-    let stderr = '';
-    child.stdout.setEncoding('utf8');
-    child.stderr.setEncoding('utf8');
-    child.stdout.on('data', (chunk: string) => {
+/**
+ * Runs one Git command with literal arguments, bounded by `bounds`. Git is never
+ * invoked via a shell, and a Git that cannot be started at all is a rejection
+ * naming what to install, exactly as it was before this was bounded.
+ */
+export async function runGit(
+  args: readonly string[],
+  cwd: string,
+  bounds: GitRunBounds = {},
+): Promise<GitResult> {
+  let stdout = '';
+  let stderr = '';
+  const timeoutMs = Math.max(1, Math.floor(bounds.timeoutMs ?? GIT_COMMAND_TIMEOUT_MS));
+  const result = await runInvocation({
+    command: ['git', ...args],
+    cwd,
+    timeoutMs,
+    env: gitInvocationEnvironment(),
+    ...(bounds.stop === undefined ? {} : { stop: bounds.stop }),
+    onStdout: (chunk: string) => {
       stdout += chunk;
-    });
-    child.stderr.on('data', (chunk: string) => {
+    },
+    onStderr: (chunk: string) => {
       stderr += chunk;
-    });
-    child.on('error', (cause) => {
-      reject(
-        new WorkspaceError(
-          `could not run "git": ${messageOf(cause)}. Install Git and make it available on PATH.`,
-        ),
-      );
-    });
-    // A signalled Git is a failure; -1 keeps it out of the success range.
-    child.on('close', (code) => resolve({ code: code ?? -1, stdout, stderr }));
+    },
   });
+
+  if (result.outcome === 'failed-to-launch') {
+    throw new WorkspaceError(
+      `could not run "git": ${result.launchError ?? 'no launch error was recorded'}. ` +
+        'Install Git and make it available on PATH.',
+    );
+  }
+
+  return {
+    // A Git killed or stopped before it exited is a failure; -1 keeps it out of
+    // the success range, exactly as the code before this change did.
+    code: result.exitCode ?? -1,
+    stdout,
+    stderr,
+    outcome: result.outcome,
+    signal: result.signal,
+    termination: result.termination,
+    terminationProblem: result.terminationProblem,
+    timeoutMs: result.timeoutMs,
+  };
+}
+
+/**
+ * What one Git step that did not exit `0` has to say for the record: Git's own
+ * first error line for an ordinary failure, and — when the harness had to stop
+ * the invocation — the bound it was stopped at and whether that stop was
+ * confirmed. A stop is never reported as Git's own error, and an unconfirmed
+ * stop is never rounded down to a clean one.
+ */
+export function gitProblem(result: GitResult): string {
+  if (result.outcome === 'timed-out') {
+    return (
+      `it did not finish within the ${String(result.timeoutMs)} ms it was given and was stopped` +
+      stopDetail(result)
+    );
+  }
+  if (result.outcome === 'stopped') {
+    return `it was stopped because the run was stopped by its caller` + stopDetail(result);
+  }
+  if (result.outcome === 'signalled') {
+    return `it was killed by ${result.signal ?? 'a signal'}`;
+  }
+  return firstLine(result.stderr);
+}
+
+/** What to add about a stop: confirmed, or what could not be confirmed about it. */
+function stopDetail(result: GitResult): string {
+  if (result.termination === 'confirmed') {
+    return ', and everything it started was stopped';
+  }
+  return (
+    ', and that stop could not be confirmed: ' +
+    (result.terminationProblem ?? 'no reason was recorded')
+  );
+}
+
+/** The stop a Git invocation recorded, when the harness stopped it; `null` otherwise. */
+export function gitStopOf(result: GitResult): GitStop | null {
+  if (result.outcome !== 'timed-out' && result.outcome !== 'stopped') {
+    return null;
+  }
+  return {
+    termination: result.termination ?? 'unconfirmed',
+    problem: result.terminationProblem,
+  };
+}
+
+/**
+ * The failure of one Git step: what was being done, and why it did not finish,
+ * with the stop attached when the harness stopped it — so a caller that reports
+ * why a run ended can carry an unconfirmed stop instead of rounding it down.
+ */
+export function gitFailure(describe: string, result: GitResult): WorkspaceError {
+  return new WorkspaceError(`${describe}: ${gitProblem(result)}`, { stop: gitStopOf(result) });
 }
 
 /**
@@ -107,13 +239,16 @@ export const WORKSPACE_IDENTITY: readonly (readonly [string, string])[] = [
  * copy and the setting, so an attempt never runs a coding turn with an unknown
  * commit identity.
  */
-export async function configureWorkspaceIdentity(workspacePath: string): Promise<void> {
+export async function configureWorkspaceIdentity(
+  workspacePath: string,
+  bounds: GitRunBounds = {},
+): Promise<void> {
   for (const [key, value] of WORKSPACE_IDENTITY) {
-    const result = await runGit(['config', '--local', key, value], workspacePath);
+    const result = await runGit(['config', '--local', key, value], workspacePath, bounds);
     if (result.code !== 0) {
-      throw new WorkspaceError(
-        `the working copy's local Git setting "${key}" could not be set in ` +
-          `"${workspacePath}": ${firstLine(result.stderr)}`,
+      throw gitFailure(
+        `the working copy's local Git setting "${key}" could not be set in "${workspacePath}"`,
+        result,
       );
     }
   }

@@ -401,8 +401,21 @@ async function attempt(
   // harness would not have been allowed to run.
   let sourceRoot: string;
   try {
-    sourceRoot = (await context.preflight({ repoPath: context.repoPath, workDir })).sourceRoot;
+    sourceRoot = (
+      await context.preflight({
+        repoPath: context.repoPath,
+        workDir,
+        // The check's Git readings are bounded: the finite default, and the
+        // intake's own stop request, so an interrupt ends one that is running.
+        bounds: { stop },
+      })
+    ).sourceRoot;
   } catch (cause) {
+    if (stop.aborted) {
+      // The reading was stopped because the intake was, not because of what the
+      // source checkout is: nothing is claimed and no receipt is touched.
+      return 'cancelled';
+    }
     return stopWith(
       state,
       `${candidate.ref.key}: the source checkout was refused before the issue was reserved: ${messageOf(cause)}`,
@@ -459,11 +472,21 @@ async function attempt(
   let continuedWorkspace: ContinuedWorkspace | undefined;
   if (decision.kind === 'continue') {
     try {
-      continuedWorkspace = await reopenWorkspace(workDir, decision.workspace.workspaceId, {
-        sourceItem: sourceItemFor(item.ref),
-        sourceRoot,
-      });
+      continuedWorkspace = await reopenWorkspace(
+        workDir,
+        decision.workspace.workspaceId,
+        {
+          sourceItem: sourceItemFor(item.ref),
+          sourceRoot,
+        },
+        { stop },
+      );
     } catch (cause) {
+      if (stop.aborted) {
+        // The verification of the checkout was stopped because the intake was:
+        // that is not a refusal of the item, and nothing has been claimed yet.
+        return 'cancelled';
+      }
       return await refuse(context, candidate, messageOf(cause), state, diagnostics);
     }
   }
@@ -862,10 +885,18 @@ export async function runSource(
   const state = emptyState();
   // The existing source/output preflight runs before any intake state exists: a
   // refused source checkout must leave no lock, no receipt, and no directory
-  // (docs/architecture.md §8).
+  // (docs/architecture.md §8). Its Git readings are bounded by the finite
+  // default and stopped when the intake is.
   try {
-    await context.preflight({ repoPath: context.repoPath, workDir: context.workDir });
+    await context.preflight({
+      repoPath: context.repoPath,
+      workDir: context.workDir,
+      bounds: { stop: context.stop },
+    });
   } catch (cause) {
+    if (context.stop.aborted) {
+      return summarize('cancelled', state);
+    }
     return summarize('stopped', {
       ...state,
       problem: `the source checkout was refused: ${messageOf(cause)}`,
@@ -925,10 +956,18 @@ export async function watchSource(options: SourceWatchOptions): Promise<SourceSu
   let backoffMs = WATCH_BACKOFF_BASE_MS;
 
   // As in a finite run, the preflight comes first: a refused source checkout
-  // leaves no intake state behind.
+  // leaves no intake state behind. Its Git readings are bounded by the finite
+  // default and stopped when the intake is.
   try {
-    await options.preflight({ repoPath: options.repoPath, workDir: options.workDir });
+    await options.preflight({
+      repoPath: options.repoPath,
+      workDir: options.workDir,
+      bounds: { stop },
+    });
   } catch (cause) {
+    if (stop.aborted) {
+      return summarize('cancelled', state);
+    }
     return summarize('stopped', {
       ...state,
       problem: `the source checkout was refused: ${messageOf(cause)}`,
