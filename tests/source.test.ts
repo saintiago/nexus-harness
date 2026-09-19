@@ -1591,29 +1591,43 @@ describe('an issue that points at a workspace', () => {
   });
 
   it('refuses a ledger this harness did not write, before any claim', async () => {
-    const workDir = await createTempDir();
-    const { workspaceId, sourceRoot } = await preparedWorkspaceOnDisk(workDir);
-    const ledgerPath = workspaceStatePath(workDir, workspaceId);
-    const written = JSON.parse(await readFile(ledgerPath, 'utf8')) as Record<string, unknown>;
-    // An unsupported version is not read as version 1, and nothing is migrated
-    // into place: the issue is refused with the file and the reason.
-    await writeFile(ledgerPath, `${JSON.stringify({ ...written, version: 2 })}\n`, 'utf8');
-    const fixture = createFixture({
-      workDir,
-      scans: [[candidateFor('2', 'SAM1-2')]],
-      prepare: (candidate) => preparedFor(candidate, [workspaceId]),
-      preflight: () => Promise.resolve({ sourceRoot, baseCommit: 'base' }),
-    });
+    // Neither an unsupported version nor a partially written identity is read
+    // as version 1, as absence, or as anything else it is not, and nothing is
+    // migrated into place: the issue is refused with the file and the reason.
+    const cases: readonly {
+      readonly change: (ledger: Record<string, unknown>) => unknown;
+      readonly problem: string;
+    }[] = [
+      { change: (ledger) => ({ ...ledger, version: 2 }), problem: 'version' },
+      {
+        change: (ledger) => ({ ...ledger, sourceItem: { type: 'jira', scope: SCOPE } }),
+        problem: 'sourceItem.id',
+      },
+    ];
 
-    const summary = await runSource(fixture.context, null);
+    for (const entry of cases) {
+      const workDir = await createTempDir();
+      const { workspaceId, sourceRoot } = await preparedWorkspaceOnDisk(workDir);
+      const ledgerPath = workspaceStatePath(workDir, workspaceId);
+      const written = JSON.parse(await readFile(ledgerPath, 'utf8')) as Record<string, unknown>;
+      await writeFile(ledgerPath, `${JSON.stringify(entry.change(written))}\n`, 'utf8');
+      const fixture = createFixture({
+        workDir,
+        scans: [[candidateFor('2', 'SAM1-2')]],
+        prepare: (candidate) => preparedFor(candidate, [workspaceId]),
+        preflight: () => Promise.resolve({ sourceRoot, baseCommit: 'base' }),
+      });
 
-    expect(summary).toMatchObject({ outcome: 'completed', attempted: 0, refused: 1 });
-    const reason = fixture.refusals[0]?.reason ?? '';
-    expect(reason).toContain('cannot be read');
-    expect(reason).toContain(ledgerPath);
-    expect(reason).toContain('version');
-    expect(fixture.log).not.toContain('claim:SAM1-2');
-    expect(fixture.log).not.toContain('run:SAM1-2');
+      const summary = await runSource(fixture.context, null);
+
+      expect(summary).toMatchObject({ outcome: 'completed', attempted: 0, refused: 1 });
+      const reason = fixture.refusals[0]?.reason ?? '';
+      expect(reason).toContain('cannot be read');
+      expect(reason).toContain(ledgerPath);
+      expect(reason).toContain(entry.problem);
+      expect(fixture.log).not.toContain('claim:SAM1-2');
+      expect(fixture.log).not.toContain('run:SAM1-2');
+    }
   });
 });
 
