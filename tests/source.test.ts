@@ -2611,6 +2611,30 @@ async function onlyRunDirectory(workDir: string): Promise<string> {
   return path.join(workDir, 'runs', runs[0] ?? '');
 }
 
+/**
+ * Every run's report one target's output holds, oldest attempt first. The
+ * report itself says which attempt of its workspace it was, and that is what
+ * orders them: a run ID carries a second-resolution timestamp plus random bits,
+ * so two runs of one intake can share a second and sorting their directory
+ * names is not the order the attempts happened in. The workspace a report names
+ * is likewise read from the report, never guessed from the directories beside
+ * it: a continuation's own run allocates a workspace directory it never uses.
+ */
+async function reportsByAttempt(workDir: string): Promise<readonly RunReport[]> {
+  const runsRoot = path.join(workDir, 'runs');
+  const reports = await Promise.all(
+    (await readdir(runsRoot))
+      .filter((name) => name.startsWith('run-'))
+      .map(
+        async (name) =>
+          JSON.parse(await readFile(path.join(runsRoot, name, 'result.json'), 'utf8')) as RunReport,
+      ),
+  );
+  return reports.sort(
+    (left, right) => (left.workspace.attempt ?? 0) - (right.workspace.attempt ?? 0),
+  );
+}
+
 interface CliOptions {
   readonly fetch: typeof fetch;
   readonly signals?: InterruptSignals;
@@ -2906,7 +2930,10 @@ describe('the source commands through the CLI', () => {
           runtime: 'codex',
           command: ['codex', '--profile', 'nexus-flash', '--model', 'deepseek-flash'],
         },
-        maxRepairs: 1,
+        // The requested Flash allowance: an implementation turn plus two
+        // repairs. The first rung spends all three of its own turns before the
+        // ladder climbs.
+        maxRepairs: 2,
       },
       {
         name: 'astra',
@@ -2914,7 +2941,7 @@ describe('the source commands through the CLI', () => {
           runtime: 'codex',
           command: ['codex', '--profile', 'nexus-astra', '--model', 'gpt-6-astra'],
         },
-        maxRepairs: 1,
+        maxRepairs: 2,
       },
     ];
     const target = await createTarget({ markerCheck: true, escalation: ladder });
@@ -2938,10 +2965,11 @@ describe('the source commands through the CLI', () => {
         runtime.bin,
         runtime.state,
         [
-          // The flash attempt: two checked turns, both wrong, so its allowance is
-          // spent on ordinary red rounds and the ladder climbs. The notes file is
-          // work nothing later touches, so the stronger attempt really inherits
-          // the weaker one's dirty working copy.
+          // The flash attempt: an implementation turn and both repair turns its
+          // allowance allows, every round red, so the allowance is spent on
+          // ordinary failed checks and the ladder climbs. The notes file is work
+          // nothing later touches, so the stronger attempt really inherits the
+          // weaker one's dirty working copy.
           {
             edits: [
               { file: 'MARKER.md', text: 'not yet\n' },
@@ -2951,7 +2979,11 @@ describe('the source commands through the CLI', () => {
           },
           {
             edits: [{ file: 'MARKER.md', text: 'not yet\n' }],
-            summary: 'flash: repaired, still wrong',
+            summary: 'flash: first repair, still wrong',
+          },
+          {
+            edits: [{ file: 'MARKER.md', text: 'not yet\n' }],
+            summary: 'flash: second repair, still wrong',
           },
           // The astra attempt continues the same clone and finishes it.
           { edits: [{ file: 'MARKER.md', text: 'done\n' }], summary: 'astra: finished the marker' },
@@ -2975,19 +3007,25 @@ describe('the source commands through the CLI', () => {
       expect(result.code).toBe(EXIT_OK);
       expect(result.out).toContain('source completed');
       expect(result.out).toContain('1 passed');
+      // The tier each attempt reports is the launch that ran it: flash's
+      // implementation and both repairs, then astra.
+      expect(result.out).toContain('(attempt 1 of 2, tier flash)');
+      expect(result.out).toContain('escalating to tier astra (attempt 2 of 2)');
+      expect(result.out).toContain('(attempt 2 of 2, tier astra)');
 
-      // Three real runtime invocations: flash's implementation and repair, then
-      // astra's implementation. What was really launched is the tier's own
-      // prefix, and it is the prefix each run's report records — every attempt,
-      // the continuation included.
+      // Four real runtime invocations: flash's implementation and its two
+      // allowed repairs, then astra's implementation. What was really launched
+      // is the tier's own prefix, and it is the prefix each run's report records
+      // — every attempt, the continuation included.
       const turns = await fakeTurns(runtime.state);
-      expect(turns).toHaveLength(3);
+      expect(turns).toHaveLength(4);
       const flashPrefix = ['--profile', 'nexus-flash', '--model', 'deepseek-flash'];
       const astraPrefix = ['--profile', 'nexus-astra', '--model', 'gpt-6-astra'];
       expect(turns[0]?.argv.slice(0, flashPrefix.length)).toEqual(flashPrefix);
       expect(turns[1]?.argv.slice(0, flashPrefix.length)).toEqual(flashPrefix);
-      expect(turns[2]?.argv.slice(0, astraPrefix.length)).toEqual(astraPrefix);
-      expect(turns[2]?.argv.slice(astraPrefix.length)).toEqual([
+      expect(turns[2]?.argv.slice(0, flashPrefix.length)).toEqual(flashPrefix);
+      expect(turns[3]?.argv.slice(0, astraPrefix.length)).toEqual(astraPrefix);
+      expect(turns[3]?.argv.slice(astraPrefix.length)).toEqual([
         '--ask-for-approval',
         'never',
         'exec',
@@ -2996,63 +3034,62 @@ describe('the source commands through the CLI', () => {
         '--json',
         '-',
       ]);
-      // Every turn worked in the one workspace the first attempt created.
-      expect(new Set(turns.map((turn) => turn.cwd)).size).toBe(1);
-      const [workspaceId] = (await readdir(path.join(target.workDir, 'workspaces'))).filter(
-        (name) => !name.endsWith('.json'),
-      );
-      expect(turns[2]?.cwd).toBe(path.join(target.workDir, 'workspaces', workspaceId ?? ''));
 
       // Each attempt is its own run with its own report: the launch that ran it,
-      // and the repair turns its own allowance let it spend.
-      const runNames = (
-        await readdir(path.join(target.workDir, 'runs')).then((names) =>
-          names.filter((name) => name.startsWith('run-')),
-        )
-      ).sort();
-      expect(runNames).toHaveLength(2);
-      const reports = await Promise.all(
-        runNames.map(
-          async (name) =>
-            JSON.parse(
-              await readFile(path.join(target.workDir, 'runs', name, 'result.json'), 'utf8'),
-            ) as RunReport,
-        ),
-      );
-      expect(reports[0]?.status).toBe('failed');
-      expect(reports[0]?.repairsUsed).toBe(1);
-      expect(reports[0]?.agent.command).toEqual([
+      // and the repair turns its own allowance let it spend. The reports are
+      // ordered by the attempt each one records, and the workspace is read from
+      // the report rather than from the directory listing: a continuation's own
+      // run allocates a workspace directory the run never uses.
+      const reports = await reportsByAttempt(target.workDir);
+      expect(reports).toHaveLength(2);
+      const [flash, astra] = reports;
+      expect(flash?.status).toBe('failed');
+      expect(flash?.repairsUsed).toBe(2);
+      expect(flash?.agent.command).toEqual([
         'codex',
         '--profile',
         'nexus-flash',
         '--model',
         'deepseek-flash',
       ]);
-      expect(reports[1]?.status).toBe('passed');
-      expect(reports[1]?.repairsUsed).toBe(0);
-      expect(reports[1]?.agent.command).toEqual([
+      expect(astra?.status).toBe('passed');
+      expect(astra?.repairsUsed).toBe(0);
+      expect(astra?.agent.command).toEqual([
         'codex',
         '--profile',
         'nexus-astra',
         '--model',
         'gpt-6-astra',
       ]);
-      expect(reports[1]?.workspace.continued).toBe(true);
-      expect(reports[1]?.workspace.attempt).toBe(2);
+      expect(astra?.workspace.continued).toBe(true);
+      expect(astra?.workspace.attempt).toBe(2);
+      expect(reports.map((report) => report.workspace.attempt)).toEqual([1, 2]);
+      // The continuation's own run allocated a workspace directory it never
+      // used, so two directories sit beside the ledger and the first name means
+      // nothing: the report and the pointer label are what name the clone.
+      expect(
+        (await readdir(path.join(target.workDir, 'workspaces'))).filter(
+          (name) => !name.endsWith('.json'),
+        ),
+      ).toHaveLength(2);
+      // The pointer label records the workspace the reports name, and every turn
+      // really worked in it.
+      const workspaceId = astra?.workspace.workspaceId ?? '';
+      const workspacePath = astra?.workspace.path ?? '';
+      expect(flash?.workspace.workspaceId).toBe(workspaceId);
+      expect(
+        (jira.issues[0]?.labels ?? []).filter((label) => label.startsWith('harness-ws-')),
+      ).toEqual([`harness-ws-${workspaceId}`]);
+      expect(new Set(turns.map((turn) => turn.cwd))).toEqual(new Set([workspacePath]));
       // The workspace the flash attempt left is the one astra worked in: the file
       // nobody touched afterwards is still there, and astra's own report sees it
       // as part of the whole diff against the recorded base.
-      expect(
-        existsSync(path.join(target.workDir, 'workspaces', workspaceId ?? '', 'NOTES.md')),
-      ).toBe(true);
-      expect(reports[1]?.changes.paths.map((entry) => entry.path)).toContain('NOTES.md');
+      expect(existsSync(path.join(workspacePath, 'NOTES.md'))).toBe(true);
+      expect(astra?.changes.paths.map((entry) => entry.path)).toContain('NOTES.md');
       // Both attempts are recorded against that one workspace's ledger, with the
       // tier that ran each of them.
       const ladderLedger = JSON.parse(
-        await readFile(
-          path.join(target.workDir, 'workspaces', `${workspaceId ?? ''}.json`),
-          'utf8',
-        ),
+        await readFile(path.join(target.workDir, 'workspaces', `${workspaceId}.json`), 'utf8'),
       ) as { attempts?: Array<{ tier?: string; outcome?: string }> };
       expect(ladderLedger.attempts?.map((attempt) => [attempt.tier, attempt.outcome])).toEqual([
         ['flash', 'failed'],
@@ -3061,7 +3098,7 @@ describe('the source commands through the CLI', () => {
 
       // The stronger attempt is told what the weaker one did — its ledger line,
       // and the comment the harness published for it before the next rung ran.
-      const strongerPrompt = turns[2]?.prompt ?? '';
+      const strongerPrompt = turns[3]?.prompt ?? '';
       expect(strongerPrompt).toContain('attempt 1 (tier flash) failed');
       expect(strongerPrompt).toContain('comment by Harness');
       expect(strongerPrompt).toContain('finished: failed');
@@ -3073,6 +3110,8 @@ describe('the source commands through the CLI', () => {
       expect(jira.comments).toHaveLength(2);
       expect(jira.comments[0]).toContain('finished: failed');
       expect(jira.comments[0]).toContain('Attempt 1 of 2 (tier flash)');
+      // The flash comment names the repair allowance the first rung really spent.
+      expect(jira.comments[0]).toContain('Repairs used: 2');
       expect(jira.comments[0]).toContain('still climbing its escalation ladder');
       expect(jira.comments[1]).toContain('finished: passed');
       expect(jira.comments[1]).toContain('Attempt 2 of 2 (tier astra)');
@@ -3173,19 +3212,13 @@ describe('the source commands through the CLI', () => {
       const turns = await fakeTurns(runtime.state);
       expect(turns).toHaveLength(5);
       expect(turns[4]?.argv.slice(0, 2)).toEqual(['--profile', 'nexus-astra']);
-      const reports = await Promise.all(
-        (
-          await readdir(path.join(target.workDir, 'runs')).then((names) =>
-            names.filter((name) => name.startsWith('run-')).sort(),
-          )
-        ).map(
-          async (name) =>
-            JSON.parse(
-              await readFile(path.join(target.workDir, 'runs', name, 'result.json'), 'utf8'),
-            ) as RunReport,
-        ),
-      );
+      // The reports are ordered by the attempt each one records, not by their
+      // directory names: run IDs have second resolution, so two runs of one
+      // intake can share a second and sorting the names could reverse them.
+      const reports = await reportsByAttempt(target.workDir);
       expect(reports.map((report) => report.status)).toEqual(['failed', 'failed', 'passed']);
+      expect(reports.map((report) => report.workspace.attempt)).toEqual([1, 2, 3]);
+      expect(new Set(reports.map((report) => report.workspace.workspaceId)).size).toBe(1);
       const continued = reports[2];
       expect(continued?.agent.command).toEqual([
         'codex',
