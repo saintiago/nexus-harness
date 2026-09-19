@@ -226,9 +226,10 @@ further would separate one decision from itself: `runs/runner.ts` (the loop), `s
   one receipt per attempted item, keyed by the item's immutable identity. `eligibility.ts` decides
   what an item is — a first attempt, a continuation of the workspace its pointer names, or a refusal —
   and `guidance.ts` renders what an attempt is told from the item's own thread and its earlier
-  attempts, bounded. `coordinator.ts` discovers a finite batch, reserves, claims, climbs the configured
-  escalation ladder one rung per attempt inside that claim, and publishes each attempt's result;
-  `list.ts` is the read-only preview.
+  attempts, bounded. `coordinator.ts` discovers a finite batch, reserves, claims, climbs the
+  configured escalation ladder one rung per attempt inside that claim — publishing each attempt's
+  own comment while the item stays in the running status, and the final result and review move when
+  the climb ends — and `list.ts` is the read-only preview.
 - **Does not own:** Jira. The coordinator imports no connector, no JQL, and no credential. It also
   does not implement the run: it calls the runner it was handed.
 - **Entry points:** `TaskSource`, `SourceComment`, `SourceContext`, `SourceIo`, `SourceRunOutcome`,
@@ -340,7 +341,7 @@ fixtures: helper modules may not import the CLI, and `src/shared/types.ts` may n
 | --- | --- | --- |
 | `Task` | `src/shared/types.ts`; validated by `taskSchema` in `src/config/schema.ts` | a task file, or a connector's mapping |
 | Harness configuration | `HarnessConfig`, `AgentSelection`, `JiraSourceConfig` in `src/shared/types.ts`; schemas and defaults in `src/config/schema.ts`; reading and path rules in `src/config/load.ts` | the operator's configuration file |
-| `TaskSource` | `src/sources/contract.ts` (`listEligible`, `prepare`, `claim`, `complete`, `recordWorkspace`, `refuse`, `commentsSince`) | the coordinator in `src/sources/coordinator.ts` |
+| `TaskSource` | `src/sources/contract.ts` (`listEligible`, `prepare`, `claim`, `progress`, `complete`, `recordWorkspace`, `refuse`, `commentsSince`) | the coordinator in `src/sources/coordinator.ts` |
 | Jira connector | `src/sources/jira/`, built by `createJiraSource` (`connector.ts`) | the Atlassian REST API v3 boundary; tested against a fake HTTP boundary |
 | Coding runtime / agent | `AgentTurnRequest`, `AgentTurnResult`, `AgentTurnShutdown`, `RunnerDependencies.runAgentTurn` in `src/runs/contracts.ts`; the only implementation is `src/agents/codex/` | the runner, which never sees a runtime flag or event |
 | Run result / report | `RunTaskResult` (`src/runs/contracts.ts`) is what a caller gets; `RunReport`/`CheckRoundResult`/`ChangeSummary` (`src/shared/types.ts`) are what `result.json` holds; `writeRunReport` (`src/reporting/report.ts`) is the only writer | the run's own evidence, plus the change summary from `src/workspace/changes.ts` |
@@ -363,10 +364,10 @@ A second source beside Jira is a new folder plus a few small, named edits:
    `harnessConfigSchema` (today it is the Jira schema alone). Widen `HarnessConfig.source` in
    `src/shared/types.ts` to the union of the source configuration types.
 2. **Implement `TaskSource`** in a new `src/sources/<name>/` folder: an ordinary object with
-   `listEligible`, `prepare`, `claim`, `complete`, `recordWorkspace`, `refuse`, and `commentsSince`,
-   plus one factory that takes the validated configuration and whatever credential it needs, the way
-   `createJiraSource` does. Keep the transport, the wire parsing, and the mapping inside that folder;
-   validate the mapped object with `taskSchema` so a bad item is a per-item
+   `listEligible`, `prepare`, `claim`, `progress`, `complete`, `recordWorkspace`, `refuse`, and
+   `commentsSince`, plus one factory that takes the validated configuration and whatever credential
+   it needs, the way `createJiraSource` does. Keep the transport, the wire parsing, and the mapping
+   inside that folder; validate the mapped object with `taskSchema` so a bad item is a per-item
    `SourceError('invalid-task')` rather than a broken run.
 3. **Select it in the CLI.** `src/cli/source-command.ts` is the one place that constructs a connector
    and resolves a credential: add the branch on `config.source.type` there (and extend the `source`

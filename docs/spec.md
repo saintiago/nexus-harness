@@ -169,6 +169,8 @@ Discover available transitions for the issue and select a unique transition by i
 
 Save local results first. Post one compact result comment with run ID, observed outcome/reason, check summary, repairs used, local artifact locations, and — when the attempt was delivered — its pull request URL; mark paths as local, not downloadable Jira attachments. Exclude transcripts, diffs, environment variables, tokens, and native provider configuration. Then move to review only if the issue is still in the running status; respect subsequent human status changes. Jira comments use ADF. [J3]
 
+While an `escalation` ladder still has a rung to try, that comment is one attempt's own and the issue stays in the running status; only the climb's last attempt moves it to review, and only an exhausted ordinary red check round lets the climb continue ([implement-workspace-continuation.md](implement-workspace-continuation.md)).
+
 A feedback failure keeps the original local run outcome and a separate `feedback: failed` receipt entry. Record whether a comment was acknowledged before a later transition failed. Do not blindly resend comments after an ambiguous response. No automatic outbox/reconciliation loop in this increment.
 
 ### Errors, shutdown, and retries

@@ -164,8 +164,8 @@ function refusalParagraphs(ref: SourceRef, reason: string): readonly string[] {
  * Posts one run's compact result comment, as the two publication paths below
  * send it: the ladder's intermediate attempt comments and its final result are
  * the same comment, and only the closing paragraph and the status move after it
- * tell them apart. A refusal is classified the same way: a comment whose answer
- * acknowledged no ID is never reported as delivered.
+ * tell them apart. A comment whose answer acknowledged no ID is never reported
+ * as delivered.
  */
 async function resultComment(
   http: HttpClient,

@@ -2939,8 +2939,16 @@ describe('the source commands through the CLI', () => {
         runtime.state,
         [
           // The flash attempt: two checked turns, both wrong, so its allowance is
-          // spent on ordinary red rounds and the ladder climbs.
-          { edits: [{ file: 'MARKER.md', text: 'not yet\n' }], summary: 'flash: first try' },
+          // spent on ordinary red rounds and the ladder climbs. The notes file is
+          // work nothing later touches, so the stronger attempt really inherits
+          // the weaker one's dirty working copy.
+          {
+            edits: [
+              { file: 'MARKER.md', text: 'not yet\n' },
+              { file: 'NOTES.md', text: 'flash was here\n' },
+            ],
+            summary: 'flash: first try',
+          },
           {
             edits: [{ file: 'MARKER.md', text: 'not yet\n' }],
             summary: 'flash: repaired, still wrong',
@@ -3031,6 +3039,25 @@ describe('the source commands through the CLI', () => {
       ]);
       expect(reports[1]?.workspace.continued).toBe(true);
       expect(reports[1]?.workspace.attempt).toBe(2);
+      // The workspace the flash attempt left is the one astra worked in: the file
+      // nobody touched afterwards is still there, and astra's own report sees it
+      // as part of the whole diff against the recorded base.
+      expect(
+        existsSync(path.join(target.workDir, 'workspaces', workspaceId ?? '', 'NOTES.md')),
+      ).toBe(true);
+      expect(reports[1]?.changes.paths.map((entry) => entry.path)).toContain('NOTES.md');
+      // Both attempts are recorded against that one workspace's ledger, with the
+      // tier that ran each of them.
+      const ladderLedger = JSON.parse(
+        await readFile(
+          path.join(target.workDir, 'workspaces', `${workspaceId ?? ''}.json`),
+          'utf8',
+        ),
+      ) as { attempts?: Array<{ tier?: string; outcome?: string }> };
+      expect(ladderLedger.attempts?.map((attempt) => [attempt.tier, attempt.outcome])).toEqual([
+        ['flash', 'failed'],
+        ['astra', 'passed'],
+      ]);
 
       // The stronger attempt is told what the weaker one did — its ledger line,
       // and the comment the harness published for it before the next rung ran.

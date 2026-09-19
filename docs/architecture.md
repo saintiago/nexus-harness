@@ -181,6 +181,7 @@ interface TaskSource {
   listEligible(signal: AbortSignal): Promise<SourceCandidate[]>;
   prepare(item: SourceCandidate, signal: AbortSignal): Promise<SourceTask | null>;
   claim(item: SourceTask, signal: AbortSignal): Promise<boolean>;
+  progress(item: SourceTask, result: RunResult, signal: AbortSignal): Promise<void>;
   complete(item: SourceTask, result: RunResult, signal: AbortSignal): Promise<void>;
 }
 ```
@@ -189,7 +190,7 @@ interface TaskSource {
 
 `claim` rechecks the captured revision/eligibility and transitions to running. False means it sent **no mutation request**, so the coordinator can remove its just-created receipt. Once a mutation request was sent, an uncertain/error result throws and retains the receipt. A confirmed claim is required before invoking the runner.
 
-`complete` publishes a bounded summary and attempts the review transition. Give it only needed result data, not process environments or raw transcripts. If useful, project the existing RunResult into a small object at the call site; do not introduce a hierarchy of result interfaces. A failure can carry acknowledged comment ID/stage for the receipt, so partial delivery is visible.
+`progress` publishes a bounded summary and leaves the item where it is; `complete` publishes the same bounded summary and attempts the review transition. The coordinator calls `progress` for an attempt another escalation rung follows, so the item stays in the running status until the climb ends. Give both only needed result data, not process environments or raw transcripts. If useful, project the existing RunResult into a small object at the call site; do not introduce a hierarchy of result interfaces. A failure can carry acknowledged comment ID/stage for the receipt, so partial delivery is visible.
 
 This interface supports future concrete sources without a plugin loader, class inheritance, capability negotiation, or speculative optional methods. An actual later source can use a remote marker instead of Jira's status transition while preserving the same coordinator contract.
 
