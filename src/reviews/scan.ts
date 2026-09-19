@@ -425,6 +425,15 @@ async function reviewWithTurn(
       head,
     );
   }
+  if (evidence.truncated) {
+    return attention(
+      ref,
+      `the changed-file list is truncated for ${pullRequest.url}, so the diff evidence is ` +
+        'incomplete; no reviewer turn was started and nothing was published. The coordinator ' +
+        'must arrange a complete review or split the pull request into smaller changes',
+      head,
+    );
+  }
   if (evidence.files.length === 0) {
     return attention(
       ref,

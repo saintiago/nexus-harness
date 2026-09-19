@@ -547,7 +547,10 @@ The queue is the configured project, issue type, and label in the `source`'s **r
    turn: the check is a projection of the native review, never a second decision.
 5. Otherwise the scan reads the evidence the reviewer is given: the pull request's changed files
    and their patches, the repository's `AGENTS.md` at the reviewed head when it has one, the
-   head's check runs, and its combined commit status.
+   head's check runs, and its combined commit status. A changed-file list that reaches the
+   bounded pagination limit (three full pages of 100 files) is treated as incomplete: no
+   reviewer turn starts and no review or check is published. The coordinator must arrange a
+   complete review or split the pull request into smaller changes.
 6. The `reviewer` launch runs as **one bounded turn** in its own evidence directory under
    `<workDir>/reviews/<reviewId>/`, with the same adapter, the same non-interactive launch, and
    the same task timeout a run gets. It is instructed to review only: it must not change files,
@@ -623,6 +626,11 @@ $env:NEXUS_LENS_PRIVATE_KEY_PATH = "C:\keys\nexus-lens.pem"
    installation**, while `delivery` still uses the operator's own `git` and `gh` login. Nothing
    here changes the operator's personal GitHub session, and the harness stores no GitHub
    credential of its own.
+
+The parent resolves both credentials before starting a reviewer, then removes `source.tokenEnv`
+and `review.app.privateKeyPathEnv` from the reviewer process environment. The operator's own
+environment and unrelated runtime settings are preserved. This avoids passing the token or the
+App key's location to the reviewer; it does not sandbox a process running as the same OS user.
 
 One review scan or watch per output directory is the supported arrangement. There is no local lock
 and no cross-machine coordination; the native review pinned to a commit is what keeps two scans

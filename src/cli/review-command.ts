@@ -31,13 +31,21 @@ import { hostSignals } from './signals.js';
 import { abortableSleep } from './source-command.js';
 
 /**
- * The environment a reviewer turn inherits: the same one, with the variable
- * that holds the Jira credential removed. The token is never handed to the
- * reviewer, and `process.env` itself is not modified (docs/architecture.md §9).
+ * The environment a reviewer turn inherits, with both the Jira token and the
+ * App key-path variables removed after the parent resolves them. Unrelated
+ * runtime settings and `process.env` itself are preserved. Windows environment
+ * names are case-insensitive, including when configuration spells them differently.
  */
-function environmentWithout(environment: NodeJS.ProcessEnv, name: string): NodeJS.ProcessEnv {
+function environmentWithout(environment: NodeJS.ProcessEnv, ...names: string[]): NodeJS.ProcessEnv {
   const copy: NodeJS.ProcessEnv = { ...environment };
-  delete copy[name];
+  const normalize = (name: string): string =>
+    process.platform === 'win32' ? name.toUpperCase() : name;
+  const removed = new Set(names.map(normalize));
+  for (const name of Object.keys(copy)) {
+    if (removed.has(normalize(name))) {
+      delete copy[name];
+    }
+  }
   return copy;
 }
 
@@ -146,7 +154,11 @@ async function reviewCommand(
   try {
     const token = resolveJiraToken(source, process.env);
     const privateKey = await resolveAppPrivateKey(review, process.env);
-    const childEnvironment = environmentWithout(process.env, source.tokenEnv);
+    const childEnvironment = environmentWithout(
+      process.env,
+      source.tokenEnv,
+      review.app.privateKeyPathEnv,
+    );
 
     // The review queue is the existing Jira connector read-only, with its
     // eligibility status set to the status a review scans: nothing else about

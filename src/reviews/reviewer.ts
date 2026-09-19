@@ -313,7 +313,7 @@ export interface ReviewerParts {
   readonly selection: AgentSelection;
   /**
    * What the reviewer process inherits: the harness's own environment with the
-   * Jira credential variable removed, exactly as a coding turn's is.
+   * Jira token and App private-key-path variables removed.
    */
   readonly environment: NodeJS.ProcessEnv;
   /** Where the reviewer's own activity is reported, when a display is watching. */

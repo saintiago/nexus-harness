@@ -1204,8 +1204,10 @@ function fakeWorld(options: {
       );
     }
     if (method === 'GET' && path === `/repos/${REPOSITORY}/pulls/27/files`) {
+      const page = Number(url.searchParams.get('page') ?? '1');
+      const size = Number(url.searchParams.get('per_page') ?? '100');
       return json(
-        files.map((file) => ({
+        files.slice((page - 1) * size, page * size).map((file) => ({
           filename: file.filename,
           additions: 3,
           deletions: 0,
@@ -1409,6 +1411,9 @@ async function reviewCommandFixture(options: {
     };
     try {
       const code = await runCli(['review', 'scan', '--config', configPath], context);
+      // Child filtering must leave the operator's process environment intact.
+      expect(process.env.JIRA_API_TOKEN).toBe('test-token');
+      expect(process.env.NEXUS_LENS_KEY_PATH).toBe(options.key === null ? undefined : keyFile);
       return { code, out: out.join('\n'), err: err.join('\n') };
     } finally {
       for (const [name, value] of Object.entries(previous)) {
@@ -1425,6 +1430,73 @@ async function reviewCommandFixture(options: {
 }
 
 describe('the review command through the CLI', () => {
+  it('keeps both configured credential variables out of the reviewer process', async () => {
+    const world = fakeWorld({
+      issues: [sourceIssue(['harness-ws-run-20260919100148-e48a9ab0'])],
+    });
+    const fixture = await reviewCommandFixture({
+      world,
+      plans: [
+        {
+          inspectEnvironment: ['JIRA_API_TOKEN', 'NEXUS_LENS_KEY_PATH', 'PATH', 'FAKE_CODEX'],
+          edits: [{ file: 'verdict.json', text: verdictFile(APPROVE) }],
+        },
+      ],
+    });
+
+    const result = await fixture.run();
+
+    expect(result.code).toBe(EXIT_OK);
+    expect(await fakeTurns(fixture.runtime.state)).toHaveLength(1);
+    expect((await fakeTurns(fixture.runtime.state))[0]?.environmentPresent).toEqual({
+      JIRA_API_TOKEN: false,
+      NEXUS_LENS_KEY_PATH: false,
+      PATH: true,
+      FAKE_CODEX: true,
+    });
+    // The parent resolved the key and still publishes as the App.
+    expect(world.publishedReviews[0]).toMatchObject({ event: 'APPROVE', commit_id: HEAD });
+    expect(world.publishedChecks[0]).toMatchObject({ conclusion: 'success' });
+  });
+
+  it.each([
+    { count: 101, truncated: false, pages: 2 },
+    { count: 301, truncated: true, pages: 3 },
+  ])(
+    'handles $count changed files without approving a truncated list',
+    async ({ count, truncated, pages }) => {
+      const world = fakeWorld({
+        issues: [sourceIssue(['harness-ws-run-20260919100148-e48a9ab0'])],
+        files: Array.from({ length: count }, (_, index) => ({
+          filename: `src/file-${String(index)}.mjs`,
+          patch: PATCH,
+        })),
+      });
+      const fixture = await reviewCommandFixture({
+        world,
+        plans: [{ edits: [{ file: 'verdict.json', text: verdictFile(APPROVE) }] }],
+      });
+
+      const result = await fixture.run();
+
+      expect(
+        world.githubCalls.filter((call) => new URL(call.url).pathname.endsWith('/files')),
+      ).toHaveLength(pages);
+      expect(result.code).toBe(truncated ? EXIT_INPUT_ERROR : EXIT_OK);
+      expect(await fakeTurns(fixture.runtime.state)).toHaveLength(truncated ? 0 : 1);
+      expect(world.publishedReviews).toHaveLength(truncated ? 0 : 1);
+      expect(world.publishedChecks).toHaveLength(truncated ? 0 : 1);
+      expect(world.issues[0]?.status).toBe('In Review');
+      if (truncated) {
+        expect(result.out).toContain('attention  1');
+        const log = await readFile(path.join(fixture.cwd, 'runs', 'reviews', 'review.log'), 'utf8');
+        expect(log).toContain('changed-file list is truncated');
+        expect(log).toContain('coordinator');
+        expect(log).toContain('no reviewer turn');
+      }
+    },
+  );
+
   it(
     'reviews an In Review ticket once, as the App, with a real JWT exchange and the configured profile',
     { timeout: 60_000 },

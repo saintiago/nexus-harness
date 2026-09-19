@@ -123,7 +123,7 @@ export interface ReviewEvidence {
   readonly pullRequest: OpenPullRequest;
   /** The pull request's changed files, bounded; empty is an inconclusive review. */
   readonly files: readonly ChangedFile[];
-  /** True when the changed-file list was bounded, so it is not read as the whole diff. */
+  /** True when the changed-file list was bounded; the scan must refuse a reviewer turn. */
   readonly truncated: boolean;
   /** The repository's `AGENTS.md` at the reviewed head, or `null` when it has none. */
   readonly instructions: string | null;
