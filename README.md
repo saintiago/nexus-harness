@@ -384,7 +384,8 @@ write there (`gh auth status`, and `gh auth setup-git` so Git can use those cred
 harness stores no GitHub credential and never runs a login flow. A working copy that still holds
 uncommitted files is **refused**, not committed for you, and a branch with no commit beyond the
 workspace's base has nothing to publish. The pull request is found by repository, head branch, and
-base branch — one is created only when none exists, and later committed work updates the same branch
+base branch — the one open match is updated, a closed or merged one is refused instead of edited,
+and one is created only when no match exists at all. Later committed work updates the same branch
 and the same pull request, because a continued attempt reuses the workspace and its branch. The
 harness never merges it and never marks the issue Done. Delivery applies to source attempts only: a
 `run --task` invocation clones afresh every time, so it has no stable branch to deliver and stays

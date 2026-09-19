@@ -338,11 +338,11 @@ export function createGitHubDelivery(
       if (leftovers.length > 0) {
         throw new DeliveryError(
           `${listPaths(leftovers)} still hold uncommitted changes in ${request.workspacePath}, so ` +
-            'nothing was pushed and no pull request was created or updated. Commit those paths ' +
-            'in the retained workspace, or remove them, and then push the branch and open or ' +
-            'update the pull request by hand with git and gh (docs/WORKFLOW.md §8); the harness ' +
-            "never commits or discards a coding turn's leftovers itself, and it starts no coding " +
-            'turn to repair a delivery failure.',
+            'this attempt pushed nothing and created or updated no pull request. Commit those ' +
+            'paths in the retained workspace, or remove them, and then push the branch and open ' +
+            'or update the pull request by hand with git and gh (docs/WORKFLOW.md §8); the ' +
+            "harness never commits or discards a coding turn's leftovers itself, and it starts " +
+            'no coding turn to repair a delivery failure.',
         );
       }
 
@@ -455,9 +455,7 @@ export function createGitHubDelivery(
       // A match that is no longer open receives no edit: editing it would report
       // a delivery that no open review received. The branch is already pushed.
       if (matches.length > 0) {
-        const described = matches
-          .map((match) => `${match.url} (${match.state})`)
-          .join(', ');
+        const described = matches.map((match) => `${match.url} (${match.state})`).join(', ');
         throw new DeliveryError(
           `the pull request found for ${repository} head ${request.branch} base ${baseBranch} ` +
             `is not open (${described}), so this attempt has no open review to receive it. The ` +

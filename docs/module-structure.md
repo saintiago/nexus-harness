@@ -258,10 +258,12 @@ further would separate one decision from itself: `runs/runner.ts` (the loop), `s
 
 - **Owns:** the one optional delivery step. `github.ts` pushes a passed attempt's own branch
   to the configured destination repository, finds its pull request by repository, head branch, and
-  base branch, creates one only when none exists, and otherwise updates it. It refuses a working
-  copy that still holds uncommitted work and delivers nothing when the branch has no commit beyond
-  its recorded base. Every command goes through `process/command.ts`, so it is bounded and its
-  output is kept in the run's log directory; the pull request body is written there too.
+  base branch, updates the one open match, creates one only when no match exists, and refuses a
+  closed or merged match instead of editing a pull request no open review would receive. It refuses
+  a working copy that still holds uncommitted work and delivers nothing when the branch has no
+  commit beyond its recorded base. Every command goes through `process/command.ts`, so it is
+  bounded and its output is kept in the run's log directory; the pull request body is written there
+  too.
 - **Does not own:** the run, the checks, the receipt, or whether delivery happens — the
   coordinator decides that, and only for a passed attempt. It never merges, force-pushes, or
   changes an issue, keeps no delivery state, and is not a source or a coding runtime.

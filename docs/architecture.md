@@ -223,7 +223,7 @@ A receipt needs only `version: 1`, source reference, reservation timestamp, and 
 
 Store the source reference with the normal result and lifecycle log. Keep intake diagnostics in the terminal and relevant receipts; do not add another persistent logging platform. Logs/errors from HTTP must be sanitized. If run creation fails before a real RunResult exists, retain the reservation/error and stop; do not invent a failed result or run ID.
 
-Preserve the coding outcome even when source feedback fails. The coordinator, not the runner, decides the source command's nonzero exit and records failed delivery. A configured delivery step runs between the run and that feedback; a failure there keeps the run's own report as it was written and stops intake the same way, and the retry is the same operator decision. Manual retries/recovery are documented in WORKFLOW. There is no cross-machine coordination, automatic replay, or crash recovery.
+Preserve the coding outcome even when source feedback fails. The coordinator, not the runner, decides the source command's nonzero exit and records failed delivery. A configured delivery step runs between the run and that feedback; a failure there keeps the run's own report as it was written, still publishes the run's own outcome with the failure beside it so a passed task is not left running, and stops intake the same way. Its retry is an operator step with Git and `gh` in the retained workspace, never a coding turn; `docs/WORKFLOW.md` §8 holds the recipe. There is no cross-machine coordination, automatic replay, or crash recovery.
 
 ## 9. Jira-specific implementation
 
