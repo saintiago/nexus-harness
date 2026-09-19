@@ -15,7 +15,7 @@ src/
   shared/             # small data contracts, and the one message helper
   process/            # starting, bounding, and stopping one command
   checks/             # one setup/check round and what a result means
-  workspace/          # Git and per-run working copies, the ledger, the change summary
+  workspace/          # Git, retained working copies, the ledger, the change summary
   runs/               # implementation/check/repair coordination and how a run ends
   reporting/          # result.json and log persistence
   sources/            # the source contract, receipts, guidance, the coordinator
@@ -69,7 +69,7 @@ Keep imports directional and acyclic. Retain the existing lightweight lint check
 
 ## 4. Working copy and runtime
 
-Use a separate local clone per run. Do not add linked worktrees or interchangeable workspace backends as part of this change.
+A fresh attempt clones once into a retained workspace; a continuation reopens that workspace instead of cloning again. Keep the one layout: `<workDir>/runs/<runId>` for an attempt's evidence and `<workDir>/workspaces/<workspaceId>` for the clone, with the workspace ledger beside it ([implement-workspace-continuation.md](implement-workspace-continuation.md)). Do not add linked worktrees or interchangeable workspace backends.
 
 ### Git owns version history
 
@@ -189,7 +189,7 @@ This interface supports future concrete sources without a plugin loader, class i
 
 ## 8. Coordinator and local files
 
-Load/freeze configuration once per invocation. Pass the same trusted repository/config and effective agent to each ordinary run; each run still has its own generated ID, clone, task deadline, and bounded repairs. Queue tasks do not select repositories or share mutable working copies.
+Load/freeze configuration once per invocation. Pass the same trusted repository/config and effective agent to each ordinary run; each run still has its own generated ID, task deadline, and bounded repairs, and a fresh attempt clones the workspace it works in. A continuation reopens the workspace its pointer label names, keeps that workspace's recorded base as the comparison base, and may start from a red baseline; a first attempt may not. Queue tasks do not select repositories or share mutable working copies.
 
 Use a plain `for...of` with awaited calls. A watch loop invokes the same finite batch function, then awaits an abortable timer. No parallel background poller, worker queue, cron library, or separate daemon is needed. Small function arguments for source, runner, clock/sleep, fetch, and filesystem tests are sufficient; reuse existing test conventions.
 
@@ -199,11 +199,12 @@ Use a plain `for...of` with awaited calls. A watch loop invokes the same finite 
     lock/                      # exclusive mkdir; owner metadata for manual inspection
     receipts/
       <sha256-identity>.json    # one attempted external item; kept across restarts
-  <run-id>/
+  runs/<runId>/
     source-task.json            # only source runs: { task, source }
-    workspace/
     result.json                 # usual outcome plus optional source reference
     logs/...
+  workspaces/<workspaceId>/     # the retained clone, branch harness/<workspaceId>
+  workspaces/<workspaceId>.json # its ledger: base, branch, attempts
 ```
 
 Hash a canonical encoding of `(type, scope, immutable id)` for receipt filenames; never use issue text as a path. The source site identifies Jira for human links and receipt identity; API calls always use the service-account gateway route. Do not include issue revision, project, repo, config path, or credentials in receipt identity. One workDir must not be repurposed for a different target without explicit operator review.

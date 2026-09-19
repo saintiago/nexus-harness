@@ -1,10 +1,10 @@
 # Workspace continuation and escalation
 
-The Jira intake currently treats every issue as a single attempt: one claim, one run, one workspace
-created inside that run's directory, and a receipt that makes the issue un-runnable afterwards by
-design (`docs/WORKFLOW.md` §6). A failed attempt therefore ends in operator surgery — delete the
-receipt, move the issue back — and the work the agent did is stranded in a directory no later run
-will look at.
+When this increment was written, the Jira intake treated every issue as a single attempt: one claim,
+one run, one workspace created inside that run's directory, and a receipt that made the issue
+un-runnable afterwards by design. A failed attempt therefore ended in operator surgery — delete the
+receipt, move the issue back — and the work the agent did was stranded in a directory no later run
+would look at.
 
 This increment makes the *workspace* the unit that survives, and an attempt a thing that happens to
 it. It also gives the harness a bounded escalation ladder, so a failed attempt can be followed by a
@@ -160,6 +160,13 @@ climbed inside a single claim, each with its own run, comment, launch, and repai
 guidance a continued attempt is told, which is the attempts its ledger records plus the item's own
 comments since the last of them, bounded, and context only.
 
+**Known gaps, separate tasks.** The contract above is the intended behaviour, and the implementation
+still has defects that these increments do not fix: the ladder can launch the wrong tier for a
+continued workspace, an attempt's result is published and the issue moved to review before the ladder
+is spent, an infrastructure failure is escalated like an ordinary failed check, and continuation
+resolution has stale-pointer, ownership, and state-validation gaps. They are tracked separately and
+are not claimed as fixed here.
+
 ## Verification
 
 - Offline: workspace allocation and resolution, reopening a workspace whose attempts committed,
@@ -167,6 +174,11 @@ comments since the last of them, bounded, and context only.
   red-baseline exception, the tier loop, and the guidance rendering, all against fakes;
   `npm run validate` green, on Linux as well as Windows for anything that touches process or path
   handling.
-- Live, once the increments are merged: HARN-1's existing workspace is adopted with its first
-  attempt recorded, the pointer label is set, the issue is moved back to the ready status, and the
-  next attempt continues that workspace rather than cloning a new one.
+- Live: **partly run, 2026-09-19.** A real Jira-driven continuation has happened: run
+  `run-20260919115244-4ff8eedf` claimed HARN-2, reopened workspace `run-20260919100148-e48a9ab0`
+  (same clone, same recorded base `36f62fd`, attempt 2), and the attempt's work is the local commit
+  `f835c33` on that retained branch. Still **not run:** the supervised adoption of HARN-1's existing
+  workspace — its first attempt recorded, the pointer label set, the issue moved back to the ready
+  status, and the next attempt continuing that workspace rather than cloning a new one — and any
+  live watch, restart, or failure scenario. The queue read recorded in [README.md](../README.md) is
+  not this exercise either.

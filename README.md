@@ -24,7 +24,8 @@ how to run it, what it does to your machine, and what is not proven yet.
   yourself. The harness starts it with a launch you configure — `codex` on `PATH` by default, or a
   path and a native profile of your choosing. See [Coding runtime](#coding-runtime).
 - **Git** on `PATH`. The harness runs real `git` commands: it records a base commit, clones the
-  repository into a workspace of its own, and creates a branch there.
+  repository into a workspace of its own (or reopens the workspace a continuation names), and works
+  on that workspace's own branch.
 - **Platform support, stated as it is.** Development, the full offline gate, and every recorded
   verification have run on **Windows 11 with Node 24.14.1** (PowerShell and Git Bash), which is the
   only platform verified by hand. CI runs the same offline gate on `ubuntu-latest`, so the suite is
@@ -147,15 +148,22 @@ target project writes can change which commands decide the result. Then:
 1. **Preflight.** The source repository must be a clean Git checkout with a commit; the output
    directory must not be inside it.
 2. **A run directory**, `<workDir>/runs/<runId>`, holding the logs and (last) the report, and a
-   **workspace**, `<workDir>/workspaces/<runId>`, holding the working copy beside it. `workDir`
-   comes from the configuration file and resolves from that file's own directory.
+   **workspace**, `<workDir>/workspaces/<workspaceId>`, holding the working copy beside it, with a
+   ledger at `workspaces/<workspaceId>.json` recording its base, branch, and attempts. A fresh
+   run's `workspaceId` is its own run ID; a continuation reuses the workspace its issue's pointer
+   label names. `workDir` comes from the configuration file and resolves from that file's own
+   directory.
 3. **A working copy**: a clone of the source at its recorded base commit, in that workspace, on a
-   dedicated branch `harness/<runId>`. Only committed content is inherited. The clone is given a
-   repository-local Git identity (`Nexus Agent <nexus@local>`, commit signing disabled) before
-   anything runs in it, so the coding turns can commit as they go; nothing is pushed.
+   dedicated branch `harness/<workspaceId>`. Only committed content is inherited. The clone is
+   given a repository-local Git identity (`Nexus Agent <nexus@local>`, commit signing disabled)
+   before anything runs in it, so the coding turns can commit as they go; nothing is pushed. A
+   **continuation** — a source issue moved back to the ready status whose pointer label names a
+   workspace this machine has — reopens that clone instead of making a new one, on its recorded
+   branch and base, keeping the local commits and uncommitted changes earlier attempts left.
 4. **The baseline round**: every `setup` command, then every `checks` command, in the order the
-   configuration lists them. A red baseline stops the run before any coding turn — the task is not
-   attempted on a project that is already failing.
+   configuration lists them. A red baseline stops a fresh run before any coding turn — the task is
+   not attempted on a project that is already failing. A continuation may start red, because its
+   workspace may already carry failed work, and only its post-turn round decides.
 5. **Coding turns**: one fresh invocation of the configured launch per top-level turn, started in
    the working copy and never asking for approval. The implementation turn is given the task; each
    repair turn is given the failures the harness observed for itself. Every turn of the run uses the
@@ -214,6 +222,7 @@ completion, and never names a report that does not exist.
 
 ```
 <workDir>/
+  .intake/                       source intake: the one-consumer lock and the per-issue receipts
   runs/<runId>/
     result.json                  the final report, written last
     logs/
@@ -226,7 +235,8 @@ completion, and never names a report that does not exist.
       attempt-1-check-1.stdout.log
       attempt-2-check-1.stdout.log
       …                          .stderr.log beside each, and one pair per configured command
-  workspaces/<runId>/            the working copy: a clone, on branch harness/<runId>
+  workspaces/<workspaceId>/      the working copy: a clone, on branch harness/<workspaceId>
+  workspaces/<workspaceId>.json  the workspace ledger: base, branch, and attempts
 ```
 
 A run ID is generated (`run-<UTC timestamp>-<8 hex>`) and never comes from task text, so no task can
@@ -354,9 +364,10 @@ coding turn makes stay in the retained workspace.
 
 **Nothing runs twice by accident.** `.intake/receipts/<hash>.json` under `workDir` records each
 attempted issue by its immutable ID, and a receipt is created **before** the issue is claimed. A
-receipt survives a restart, and editing or reopening the issue does not clear it. A single
-`.intake/lock/` directory makes sure only one consumer uses an output directory; it is never broken
-automatically.
+receipt survives a restart, and editing or reopening the issue does not clear it. Nor is a receipt
+the whole story: what happens next is decided by the pointer label below — a receipt with no
+pointer refuses the issue instead of silently repeating it. The single `.intake/lock/` directory
+makes sure only one consumer uses an output directory; it is never broken automatically.
 
 **Where an issue's work lives is written on the issue.** The run that creates a workspace adds one
 `harness-ws-<workspaceId>` label, before any coding turn, and a later attempt only ever reads it.
@@ -368,11 +379,13 @@ says why in a comment, and moves it out of the queue, so a stale ticket cannot q
 attempts. A pointer this machine cannot resolve, and an issue carrying two pointers, are refused
 the same way. The receipt stays as the audit trail behind all of it.
 
-To retry without that machinery — a first attempt again, in a new workspace — stop the watcher,
-inspect and stop prior processes, keep the run artifacts, delete only that issue's printed receipt
-file, remove its `harness-ws-*` pointer label if it has one (otherwise the harness would continue
-the old workspace instead of creating one), and put the issue back to the ready status. Never remove
-the whole `.intake` directory to fix one task.
+Putting an attempted issue back to the ready status is ordinary rework, not a retry of a dead run:
+the harness continues the workspace its pointer names, with a new run directory and report. To start
+over deliberately instead — a first attempt again, in a new workspace — stop the watcher, inspect
+and stop prior processes, keep the run artifacts, delete only that issue's printed receipt file,
+remove its `harness-ws-*` pointer label if it has one (otherwise the harness would continue the old
+workspace instead of creating one), and put the issue back to the ready status. Never remove the
+whole `.intake` directory to fix one task.
 
 Scans are periodic and pause during a batch, so a new issue is picked up on the next scan rather
 than instantly. `source list` and `source run` report a failed read and exit nonzero; `source watch`
@@ -499,11 +512,13 @@ run run-20260101000000-1a2b3c4d: passed
   report     /tmp/nexus-demo/harness/runs/run-20260101000000-1a2b3c4d/result.json
 ```
 
-That layout is the real one — `<workDir>/runs/<runId>` for the evidence, `<workDir>/workspaces/<runId>`
-for the working copy beside it — and it sits outside `/tmp/nexus-demo/tiny-project`. A later attempt
-could continue that working copy instead of cloning again; that is specified in
-[docs/implement-workspace-continuation.md](docs/implement-workspace-continuation.md) and not built
-yet. The run above was produced and
+That layout is the real one — `<workDir>/runs/<runId>` for the evidence,
+`<workDir>/workspaces/<workspaceId>` for the working copy beside it — and it sits outside
+`/tmp/nexus-demo/tiny-project`. A later attempt of the same Jira issue continues that working copy
+instead of cloning again when the issue carries its `harness-ws-<workspaceId>` pointer label; that
+is the implemented contract in
+[docs/implement-workspace-continuation.md](docs/implement-workspace-continuation.md) and the
+operator-facing rules in [docs/WORKFLOW.md](docs/WORKFLOW.md) §7. The run above was produced and
 checked **offline**, with the runtime boundary substituted by a stand-in `codex` on the CLI's
 `PATH` (the same boundary the end-to-end suite uses). It is not a live Codex result; a live run
 needs your own account, and the printed paths are always derived from the run directory the CLI
@@ -541,9 +556,11 @@ Read this before pointing a run at anything you care about.
   it is not an audit. The harness does not decide whether a changed test still tests the right
   thing. Read the diff, starting with the paths `changes.highlighted` names.
 - **There is no automatic resume.** Every top-level turn is one fresh `codex exec` invocation, and
-  no session is continued. A run that stops does not pick up where it left off, and nothing about it
-  can be resumed by running the command again: a new invocation is a new run, with a new clone at
-  the recorded base of the source repository as it is _then_.
+  no session is continued: a run that stops does not pick up where it left off, and re-running a
+  `run --task` command is a new run, with a new clone at the source's commit as it is _then_. A
+  Jira continuation is different: moving an attempted issue back to the ready status starts another
+  attempt in the workspace its pointer names, against that workspace's recorded base, but it
+  resumes no stopped process and recovers nothing automatically.
 - **The harness never pushes, merges, or publishes anything.** The working copy is given a
   repository-local commit identity (`Nexus Agent <nexus@local>`, commit signing disabled) and its
   turns are asked to commit small pieces as they go — but those commits are the turn's own doing,
@@ -599,6 +616,10 @@ Read this before pointing a run at anything you care about.
   one-consumer lock, a finite `source run`, a watch cycle that picks up a later issue, and the
   behaviour of a stop, a failed feedback, and a corrupt receipt. Nothing in that suite needs a Jira
   site, a token, or a network.
+- workspace continuation through the same fakes and real temporary Git repositories: a continued
+  attempt reopening the workspace its pointer label names and keeping its recorded base, the
+  per-attempt run directories and ledger, the escalation ladder's tiers, the guidance a continued
+  attempt is told, and the refusal of an attempted issue that names no workspace to continue.
 
 **Verified live (`npm run test:live`) on 2026-09-16, through the DeepSeek launch this checkout
 selects:** Codex CLI 0.154.0 answered a read-only connectivity probe, and both exercises then passed
@@ -651,19 +672,24 @@ and only a read.
 
 **Not verified anywhere yet:**
 
-- **any live turn through the unsandboxed launch this checkout selects.** All of the live evidence
-  above predates it: it was produced with the previous `--sandbox workspace-write` suffix, and no
-  live run has yet asked a runtime started this way to stage and commit. The offline suite pins the
-  adapter's arguments; only the by-hand check in "Coding runtime" — a real turn asked to commit —
-  can close that gap, and it is not evidence until it has been run and read.
+- **any live turn through the unsandboxed launch beyond the 2026-09-19 Windows smoke.** That smoke
+  is the only live evidence for this suffix: `run-20260919114837-ce22873c` had a real DeepSeek Flash
+  turn stage and commit its change (`e8dafb7`), and `run-20260919114936-a1feeae5` reopened the same
+  retained branch and committed `e105ef4` on top. Both ended clean, both commits are
+  `Nexus Agent <nexus@local>`, the clone has no remote, and the source checkout is unchanged. It is
+  one platform, one provider profile, and no Jira: `npm run test:live` has not run through this
+  launch.
 - any live coding turn on Linux or macOS, and any macOS behaviour at all;
 - live runs through a provider other than the one configured on this machine, and any profile or
   gateway the operator has not installed;
-- **any live Jira write.** The read half has been exercised live (below); no issue has been claimed,
-  commented on, or transitioned, no `source run` or `source watch` has run against a live site, and
-  the supervised exercise in
-  [docs/implement-task-source-connectors.md](docs/implement-task-source-connectors.md) §S07 has not
-  been run. Mocked tests are not evidence that the live write path works;
+- **the supervised live Jira exercise, and any live watch, restart, or failure scenario.** The read
+  half has been exercised live (above), and live writes now have evidence too: the Jira-driven runs
+  claimed HARN-2, commented on it, and moved it through its statuses, and one continued a retained
+  workspace and left a local commit there (see [Next task](#next-task)). The supervised exercise in
+  [docs/implement-task-source-connectors.md](docs/implement-task-source-connectors.md) §S07 — a
+  disposable repository, the exact-byte marker assertion, the restart check, and the watch cycle —
+  has not run, and no live watch, restart, or failure path has been exercised. Mocked tests are not
+  evidence for the parts that have not run;
 - behaviour on a runtime version other than the 0.154.0 interface this adapter was written against,
   and any runtime-reported model identity: a profile or model name in a report is launch
   information, not proof of which upstream model served a response.
@@ -869,7 +895,7 @@ operator's own `gh` credentials, once the check is green —
   assignment that added Jira intake, including the opt-in live exercise that has **not** been run.
 - [docs/implement-workspace-continuation.md](docs/implement-workspace-continuation.md) — the
   contract for workspaces that outlive runs, the workspace pointer label, and the escalation ladder.
-  Its increments are not implemented yet.
+  Its three increments are implemented; the defects it lists are separate tasks.
 - [docs/LONG_TERM_VISION.md](docs/LONG_TERM_VISION.md) — the direction the harness is meant to grow
   into. It defines no behaviour: [docs/spec.md](docs/spec.md) stays authoritative, and every change
   still needs a task.
@@ -885,12 +911,19 @@ operator's own `gh` credentials, once the check is green —
 ## Next task
 
 The 2026-09-16 extension added the optional `agent` selection, the selected-launch reporting, the
-explicit no-approval policy, and now the Jira task source with `source list`, `source run`, and
-`source watch`. What remains is listed under
+explicit no-approval policy, and the Jira task source with `source list`, `source run`, and
+`source watch`; the workspace-continuation increment — retained workspaces, the
+`harness-ws-<workspaceId>` pointer label, the escalation ladder, and continuation guidance — is
+implemented and verified offline. **A real Jira-driven continuation has since run:** Jira run
+`run-20260919115244-4ff8eedf` claimed HARN-2, continued workspace `run-20260919100148-e48a9ab0` —
+same clone, same recorded base `36f62fd`, attempt 2 — and the attempt's documentation work is the
+local commit `f835c33` on that retained branch: one issue's continuation, not the full supervised
+exercise. What remains is listed under
 [What is verified, and what is not](#what-is-verified-and-what-is-not) rather than promised here. The
-first real piece of work is the **supervised live Jira exercise**, which has not been run: it needs a
+next real piece of work is the **supervised live Jira exercise**, still not run: it needs a
 service-account token, a disposable target repository, and an operator who has inspected the queue
-before the first paid call. After that, a second coding adapter (Claude Code, with its own invocation
+before the first paid call, and its restart, watch, and failure steps have no live evidence. After
+that, a second coding adapter (Claude Code, with its own invocation
 and event parser and its own tests — a Claude launcher behind the Codex parser would be a bug), live
 turns on POSIX hosts, and stronger isolation before unattended runs of untrusted repositories.
 Nothing here builds them ahead of a task that needs them.

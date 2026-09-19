@@ -8,6 +8,13 @@ Read `AGENTS.md` if present, then [spec.md](spec.md), [architecture.md](architec
 
 The user must be able to preview ready Jira tasks, fetch and automatically execute a finite batch on demand, or leave one foreground process polling for further tasks. Each issue becomes the existing four-field Task and goes through the existing workspace → agent → checks → repair → result flow.
 
+**Status, 2026-09-19.** This assignment is history: it records the increment that added Jira intake,
+and it predates the implemented workspace-continuation contract
+([implement-workspace-continuation.md](implement-workspace-continuation.md)). Where the two disagree
+about what an attempt does, the continuation contract wins: one issue's attempts share a retained
+workspace, its recorded base stays the comparison base, and a re-armed issue continues that
+workspace rather than cloning again. The two instructions below that changed are marked in place.
+
 ## Scope
 
 Implement only Jira Cloud through direct REST API v3. Add one optional `source` config, a small `TaskSource` contract, and one serial coordinator. No database, message broker, HTTP server, webhooks, OS service installer, plugin registry, source array, parallel workers, generic workflow engine, or custom DeepSeek adapter.
@@ -82,7 +89,7 @@ On Ctrl+C, stop taking new work, interrupt the active run through the existing s
 
 Keep the supplied docs aligned with the implemented interface. Add a credential-free example config and an example Jira description to the repository's existing examples/docs convention. Document service-account creation/permissions, scoped API-token setup, persistent/session PowerShell token setup, queue readiness, source list/run/watch, read-only versus mutating commands, manual retry/lock recovery, and the one-consumer limitation.
 
-Explain that scans are periodic and pause during an active batch, separate task runs do not inherit unmerged changes, and source results remain local until a person reviews/applies them. Do not suggest this implementation has distributed exactly-once execution or security isolation for untrusted code.
+Explain that scans are periodic and pause during an active batch, that separate *issues* do not inherit each other's changes — since the continuation increment, one issue's attempts share and continue its workspace ([implement-workspace-continuation.md](implement-workspace-continuation.md)) — and that source results remain local until a person reviews/applies them. Do not suggest this implementation has distributed exactly-once execution or security isolation for untrusted code.
 
 **Verify:** Run the full offline `npm run validate` gate. Keep any actual existing equivalent command if the repository uses another spelling. Default discovery, CI, and `npm test` must require neither Jira nor LLM credentials and must make no real network calls. Run a CLI-level fake-transport/fake-agent test that demonstrates preview without side effects, a one-shot run, and a watch cycle picking up a later eligible issue.
 
@@ -96,7 +103,7 @@ The supervised exercise must:
 2. Run source list; verify expected issue mapping and no issue changes, directories, or paid agent calls.
 3. Run one approved smoke issue with `--limit 1`; inspect exactly one local run, its workspace/check evidence, receipt, Jira comment, and review status.
 4. Independently assert the expected marker file's exact bytes and full tracked/untracked diff. Do not rely on shell substitution, which loses trailing newline information. Do not make an absent post-change marker a mandatory baseline check.
-5. Restart intake and confirm the receipt prevents duplicate execution, including if that issue has merely been returned to To Do.
+5. Restart intake and confirm the receipt prevents duplicate execution of an issue that names no workspace to continue. (Since the continuation increment, returning an issue to the ready status with its pointer label continues that workspace instead of re-running it from scratch.)
 6. Start watch; create or make a second approved issue eligible while it is idle; verify one subsequent run, then stop cleanly. A later eligible issue is a new immutable identity, not an implicit retry of the first.
 
 Do not alter unrelated Jira work, use real application changes as a disposable fixture, deliberately exhaust paid provider retries, or delete retained artifacts. The existing `SAM1-11` is a candidate for a supervised exercise only after the operator checks the preview, target repository, and credentials. A code agent must not execute this live exercise merely because the documentation names that issue.
@@ -108,8 +115,13 @@ Do not alter unrelated Jira work, use real application changes as a disposable f
 a service-account token, and — after the language fix this exercise surfaced — reported `HARN-1` as
 valid and unattempted. The first run reported it `stale`, because the queue's JQL matched the
 canonical names while the site answered with translated ones; that defect and its evidence are
-recorded in [README.md](../README.md). Nothing was claimed, commented on, transitioned, or run, so
-the supervised exercise above is still **not run**.
+recorded in [README.md](../README.md). That read changed nothing. Since then, real Jira-driven runs
+have claimed HARN-2, commented on it, and moved it through its statuses, and one continued its
+retained workspace and left a local commit there; [README.md](../README.md) and
+[implement-workspace-continuation.md](implement-workspace-continuation.md) record that evidence and
+its limits. The supervised exercise above is still **not run as written**: it needs a disposable
+repository and an inspected queue, and its exact-byte assertion, restart check, and watch cycle have
+no live evidence.
 
 ## Definition of done
 
