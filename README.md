@@ -151,8 +151,8 @@ target project writes can change which commands decide the result. Then:
    comes from the configuration file and resolves from that file's own directory.
 3. **A working copy**: a clone of the source at its recorded base commit, in that workspace, on a
    dedicated branch `harness/<runId>`. Only committed content is inherited. The clone is given a
-   repository-local Git identity (`Nexus Agent <nexus@local>`, signing off) before anything runs in
-   it, so the coding turns can commit as they go; nothing is pushed.
+   repository-local Git identity (`Nexus Agent <nexus@local>`, commit signing disabled) before
+   anything runs in it, so the coding turns can commit as they go; nothing is pushed.
 4. **The baseline round**: every `setup` command, then every `checks` command, in the order the
    configuration lists them. A red baseline stops the run before any coding turn — the task is not
    attempted on a project that is already failing.
@@ -253,7 +253,8 @@ cat <runDir>/logs/run.log             # what happened, in order
 # The work itself: a real clone, on its own branch, still checked out
 cd <workDir>/workspaces/<runId>
 git log --oneline <baseCommit>..HEAD   # what the turns committed, if anything
-git status && git diff <baseCommit>    # and what they left uncommitted
+git diff <baseCommit>                  # the tracked diff against that base, committed or not
+git status                             # plus untracked and staged state
 ```
 
 `changes.paths` lists every path that differs from the recorded base commit;
@@ -542,10 +543,10 @@ Read this before pointing a run at anything you care about.
   can be resumed by running the command again: a new invocation is a new run, with a new clone at
   the recorded base of the source repository as it is _then_.
 - **The harness never pushes, merges, or publishes anything.** The working copy is given a
-  repository-local commit identity (`Nexus Agent <nexus@local>`, signing off) and its turns are
-  asked to commit small pieces as they go — but those commits are the turn's own doing, local to the
-  retained workspace. No remote is added, so there is no default push destination, and no pull
-  request is opened or merged. Nothing here integrates the work for you.
+  repository-local commit identity (`Nexus Agent <nexus@local>`, commit signing disabled) and its
+  turns are asked to commit small pieces as they go — but those commits are the turn's own doing,
+  local to the retained workspace. No remote is added, so there is no default push destination, and
+  no pull request is opened or merged. Nothing here integrates the work for you.
 - **Run directories and workspaces are kept, not cleaned up.** They accumulate: a run holds its logs
   and its report, and a workspace holds a full clone. Remove them by hand when you have read them.
 - **An interrupted or crashed run can leave an incomplete run directory.** A run directory can exist

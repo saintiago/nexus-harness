@@ -97,8 +97,8 @@ moved to the review status. Nothing local is created for it.
   `HEAD`, is what the report compares against.
 - A coding turn is encouraged to commit small, meaningful pieces locally as it works. Every
   attempt writes the workspace's repository-local commit identity (Nexus Agent \<nexus@local\>,
-  signing off) before its checks and turns run, so a continuation commits under the same identity
-  as the attempts before it.
+  commit signing disabled) before its checks and turns run, so a continuation commits under the same
+  identity as the attempts before it.
 - The workspace must not be deleted while an issue points at it.
 
 ## Attempts and escalation

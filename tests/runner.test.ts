@@ -894,6 +894,123 @@ describe('a working copy a coding turn commits in', () => {
     expect(report.workspace.prepared).toBe(true);
     expect(report.reason).toContain('user.name');
   }, 60_000);
+
+  it('does not start the identity phase for a run stopped while its workspace was recorded', async () => {
+    const fixture = await createFixture();
+    const controller = new AbortController();
+    const identities: string[] = [];
+    const agent = fakeAgent(fixture);
+
+    const result = await runTask(
+      {
+        ...request(fixture, configuration(fixture)),
+        stop: controller.signal,
+        // The caller stops the run in the hook a source uses to record where the
+        // workspace lives: after preparation, before anything else starts.
+        onWorkspaceReady: async () => {
+          controller.abort();
+        },
+      },
+      dependencies(agent.turn, {
+        configureWorkspaceIdentity: async (workspacePath) => {
+          identities.push(workspacePath);
+        },
+      }),
+    );
+
+    // The mutating phase was never started, and the run is reported as the stop
+    // it was rather than as whatever the phase would have failed with.
+    expect(identities).toEqual([]);
+    expect(agent.requests).toEqual([]);
+    expect(result.status).toBe('cancelled');
+    expect(result.cancellation?.phase).toBe("the working copy's Git identity");
+    expect(result.reason).toMatch(
+      /stopped by its caller before the working copy's Git identity was configured/,
+    );
+
+    const report = await readReport(result.reportPath);
+    expect(report.status).toBe('cancelled');
+    expect(report.baseline).toBeNull();
+    expect(report.cancellation?.phase).toBe("the working copy's Git identity");
+  }, 60_000);
+
+  it('does not start the identity phase once preparation has spent the task time', async () => {
+    const fixture = await createFixture();
+    const clock = testClock();
+    const config = configuration(fixture, { taskTimeoutMinutes: 1 });
+    const identities: string[] = [];
+    const agent = fakeAgent(fixture);
+
+    const result = await runTask(
+      request(fixture, config),
+      dependencies(agent.turn, {
+        now: clock.now,
+        // Preparation used up the run's whole minute.
+        prepareWorkspace: async (run, source, bounds) => {
+          const workspace = await prepareWorkspace(run, source, bounds);
+          clock.advance(minutes(1));
+          return workspace;
+        },
+        configureWorkspaceIdentity: async (workspacePath) => {
+          identities.push(workspacePath);
+        },
+      }),
+    );
+
+    expect(identities).toEqual([]);
+    expect(agent.requests).toEqual([]);
+    expect(result.status).toBe('failed');
+    expect(result.timeout).toEqual({
+      limit: 'task',
+      phase: "the working copy's Git identity",
+      limitMs: minutes(1),
+      elapsedMs: minutes(1),
+      termination: 'confirmed',
+      problem: null,
+    });
+    expect(result.reason).toMatch(
+      /task deadline expired before the working copy's Git identity was configured/,
+    );
+
+    const report = await readReport(result.reportPath);
+    expect(report.status).toBe('failed');
+    expect(report.timeout?.phase).toBe("the working copy's Git identity");
+  }, 60_000);
+
+  it('classifies a stop that arrives during a rejecting identity phase as a cancellation', async () => {
+    const fixture = await createFixture();
+    const controller = new AbortController();
+    const agent = fakeAgent(fixture);
+
+    const result = await runTask(
+      { ...request(fixture, configuration(fixture)), stop: controller.signal },
+      dependencies(agent.turn, {
+        // The phase was started, the caller stopped the run while it ran, and it
+        // rejected on the way out: the stop is what the run ended for.
+        configureWorkspaceIdentity: async (workspacePath) => {
+          controller.abort();
+          throw new WorkspaceError(
+            `the working copy's local Git setting "user.name" could not be set in ` +
+              `"${workspacePath}": a read-only .git/config`,
+          );
+        },
+      }),
+    );
+
+    expect(agent.requests).toEqual([]);
+    expect(result.status).toBe('cancelled');
+    expect(result.timeout).toBeNull();
+    expect(result.cancellation?.phase).toBe("the working copy's Git identity");
+    expect(result.reason).toMatch(
+      /stopped by its caller while the working copy's Git identity was being configured/,
+    );
+
+    const report = await readReport(result.reportPath);
+    expect(report.status).toBe('cancelled');
+    expect(report.cancellation?.phase).toBe("the working copy's Git identity");
+    // The rejection is not recorded as an ordinary configuration failure.
+    expect(report.reason).not.toContain('could not be configured');
+  }, 60_000);
 });
 
 describe('a continued run whose source checkout moved on', () => {

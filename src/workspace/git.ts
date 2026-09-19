@@ -82,9 +82,10 @@ export function runGit(args: readonly string[], cwd: string): Promise<GitResult>
 /**
  * The identity a target working copy commits with: repository-local settings
  * only, so a coding turn can make ordinary local commits without an ambient Git
- * identity and without any global or system Git setting being written. Signing
- * is turned off explicitly: a workspace commit must not depend on a signing key
- * the machine may not have, and a configured signer must not stop the turn.
+ * identity and without any global or system Git setting being written. Commit
+ * signing is turned off explicitly: a workspace commit must not depend on a
+ * signing key the machine may not have, and a configured signer must not stop
+ * the turn.
  */
 export const WORKSPACE_IDENTITY: readonly (readonly [string, string])[] = [
   ['user.name', 'Nexus Agent'],

@@ -298,31 +298,85 @@ export async function runTask(
     });
   }
 
-  // The working copy's own commit identity, written before any check or coding
-  // turn runs in it: a turn is encouraged to make small local commits, and the
-  // harness never writes the machine's global Git configuration. A setting that
-  // cannot be written ends the run here, with a report, rather than letting a
-  // turn run with an unknown commit identity.
+  /**
+   * The working copy's own commit identity, written before any check or coding
+   * turn runs in it: a turn is encouraged to make small local commits, and the
+   * harness never writes the machine's global Git configuration. It is guarded
+   * like every other phase: a stop or an expired deadline that has already
+   * arrived means it is not started at all, and one that arrives while it runs
+   * is what the run ends for — a rejection on the way out never replaces the
+   * reason the run actually stopped. A setting that plainly cannot be written
+   * ends the run here, with a report, rather than letting a turn run with an
+   * unknown commit identity.
+   */
+  const identityPhase = "the working copy's Git identity";
+  if (stopped()) {
+    return endStopped({
+      cause: callerStopped(
+        identityPhase,
+        "the run was stopped by its caller before the working copy's Git identity was configured, so no check and no coding turn was started",
+      ),
+      baseline: null,
+      attempts: [],
+    });
+  }
+  if (remainingMs() <= 0) {
+    const evidence = timedOut({ limit: 'task', phase: identityPhase, limitMs: taskLimitMs });
+    return endTimedOut({
+      reason:
+        "the run's task deadline expired before the working copy's Git identity was configured, so no check and no coding turn was started",
+      baseline: null,
+      attempts: [],
+      evidence,
+    });
+  }
+
+  let identityProblem: string | null = null;
   try {
     await dependencies.configureWorkspaceIdentity(workspace.workspacePath);
-    await dependencies.appendRunLog(
-      timeline,
-      `workspace Git identity configured: ${WORKSPACE_IDENTITY.map(
-        ([key, value]) => `${key}=${value}`,
-      ).join(', ')}`,
-    );
   } catch (cause) {
+    identityProblem = messageOf(cause);
+  }
+  // The stop the run observed while the phase ran is read first, then the
+  // deadline: what it returned or rejected with does not decide the status.
+  if (stopped()) {
+    return endStopped({
+      cause: callerStopped(
+        identityPhase,
+        "the run was stopped by its caller while the working copy's Git identity was being configured, so no check and no coding turn was started",
+      ),
+      baseline: null,
+      attempts: [],
+    });
+  }
+  if (remainingMs() <= 0) {
+    const evidence = timedOut({ limit: 'task', phase: identityPhase, limitMs: taskLimitMs });
+    return endTimedOut({
+      reason:
+        "the run's task deadline expired while the working copy's Git identity was being configured, so no check and no coding turn was started",
+      baseline: null,
+      attempts: [],
+      evidence,
+    });
+  }
+  if (identityProblem !== null) {
     return endRun({
       status: 'failed',
       reason:
         "the working copy's local Git identity could not be configured, so no check and no " +
-        `coding turn was started: ${oneLine(messageOf(cause))}`,
+        `coding turn was started: ${oneLine(identityProblem)}`,
       baseline: null,
       attempts: [],
       timeout: null,
       cancellation: null,
     });
   }
+  await dependencies.appendRunLog(
+    timeline,
+    `workspace Git identity configured: ${WORKSPACE_IDENTITY.map(
+      ([key, value]) => `${key}=${value}`,
+    ).join(', ')}`,
+  );
 
   // Everything below works in the prepared working copy, and keeps it.
   const workspacePath = workspace.workspacePath;
