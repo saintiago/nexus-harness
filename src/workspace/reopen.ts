@@ -178,9 +178,10 @@ function missingIdentityProblem(workDir: string, state: WorkspaceState): string 
     'not continue it. A ledger written before identities were recorded, or by a run that did not ' +
     'come from a source, is like this. To continue the work by hand, add a "sourceItem" object to ' +
     'that ledger with this item\'s identity — "type", "scope" (the site), "id" (the immutable ' +
-    'external id), and "key" — taking the values from ' +
-    `${evidence}; its sourceRef records them. The harness never adopts or migrates a workspace on ` +
-    'its own'
+    'external id), and "key". A source-backed run recorded it in ' +
+    `${evidence}; a workspace created by a run that did not come from a source has no such record, ` +
+    'and the identity has to be written deliberately. The harness never adopts or migrates a ' +
+    'workspace on its own'
   );
 }
 
