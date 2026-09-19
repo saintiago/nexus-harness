@@ -71,6 +71,12 @@ Keep imports directional and acyclic. Retain the existing lightweight lint check
 
 Use a separate local clone per run. Do not add linked worktrees or interchangeable workspace backends as part of this change.
 
+### Git owns version history
+
+Follow the specification's [Rely on Git](spec.md#rely-on-git) principle. `workspace/` uses ordinary Git commands and references for history, branch state, and diffs. Keep the workspace ledger focused on workspace identity and attempt outcomes, and reports focused on observed execution and check results. Git remains the authority for relationships between commits.
+
+Prefer reading facts from Git over maintaining equivalent harness state. Store references only where a concrete caller needs them; do not build a second version-control system through custom checkpoint catalogs, duplicated commit graphs, or mandatory per-attempt HEAD tracking. Workspace safety and exclusive execution are harness responsibilities; additional rules about how an agent arranges its local commits require an explicit behavioral task.
+
 ### Configurable launch, one implemented runtime
 
 The optional configuration is:

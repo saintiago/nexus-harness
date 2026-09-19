@@ -20,6 +20,12 @@ Codex CLI remains the only implemented coding runtime. Allow its launch prefix t
 
 Preserve normal local OpenAI Codex defaults. Selecting DeepSeek for the harness must not require switching the user's global default, deleting authentication, or restoring configuration before ordinary Codex use.
 
+### Rely on Git
+
+Git owns code history, branches, commits, and comparisons. The harness owns task execution, independent verification, and the evidence of what each run observed. Use Git's existing capabilities to show what a task changed and retain its code history.
+
+Keep harness state limited to what execution and reporting need. A report or workspace ledger may record a Git reference or commit SHA for a concrete purpose; that does not require a parallel history model or a continuation gate based on that SHA. Additional checkpoint bookkeeping, per-attempt commit ranges, or history restrictions need an explicit task requirement rather than being defaults.
+
 ## 2. What the working version does
 
 1. Read task/configuration JSON and a local Git repository path. Validate inputs, normalize the optional agent selection, and keep the loaded task/configuration fixed for the run.
