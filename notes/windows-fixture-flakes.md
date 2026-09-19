@@ -118,6 +118,80 @@ silent while the process somehow still runs, is left to its own backstop (20–6
 named by a PID nothing can vouch for: cleanup may leave a bounded process behind, but it can no
 longer kill a stranger.
 
+## The HARN-13 baseline failure: `taskkill` exit 128 (investigated 2026-09-19)
+
+The run `run-20260919121602-6df99460` (HARN-3, workspace base `e27bc48`) failed an unchanged
+baseline on
+`tests/agent.test.ts` > `stopping what a turn started` > `stops the runtime it started, waits for
+it, and reports a confirmed stop`: 456 passed, 1 failed, 1 skipped, no coding turn started, and the
+same test passed in isolation without changes. The recorded shutdown was
+`{ termination: 'unconfirmed', problem: '"taskkill" exited with code 128' }`, and the test took
+624 ms — its own `close` was observed well inside the 5 s grace, so the process it was talking
+about really had ended.
+
+Established on this host, not assumed:
+
+- `taskkill /PID <pid> /T /F` exits **128** when the PID holds nothing, with
+  `ERROR: The process "<pid>" not found.` — and it also exits 128 for a process it is _refused_:
+  `Access is denied`, or `This is critical system process` (asked about PID 0/4, its own children
+  listed as unreachable). The exit code alone therefore decides nothing; the utility's own words
+  do, which is why the harness stopped discarding them (below). Every 128 must still be read as a
+  failed stop, never as "the process is already gone".
+- With the failing test's own shape — `cmd.exe` → the `.cmd` shim → a node stand-in holding —
+  `taskkill` exits 0 and the tree ends: 40/40 idle, and 160/160 under four parallel workers plus
+  CPU load. A live tree of this shape does not produce 128 on this host.
+- The failing signature reproduces 6/6 by ending that tree from outside with the same `taskkill`
+  immediately before the harness's own stop request: the harness then asks about a PID that is
+  gone, reports the stop unconfirmed, while the process it spawned is seen to end. That is exactly
+  what the failure log shows.
+
+So the process was already ending when the harness's stop reached it, or its own stop ended it and
+the utility still failed on a member of the tree that had gone. Which of those the 128 was — did
+the PID hold nothing, or did `taskkill` race the tree it was ending — the discarded message would
+have said, and it is the difference between the failure that
+`tests/agent.test.ts`'s teardown would produce once a recorded PID is handed to another process and
+one that needs a reproduction before anything is changed. Two things point at the first: the
+failing workspace's base `e27bc48` predates PR #27, and four files there cleaned up their fixtures
+by naming recorded PIDs with no proof (`tests/checks.test.ts`, `tests/lifecycle.test.ts`,
+`tests/local-run.integration.test.ts`, `tests/fixture-beacon.test.ts`) — the section above records
+the same defect killing the live verifier's child in the very next HARN-3 run; and ending that tree
+from outside just before the harness's own stop reproduces this failure's shape every time. The
+second, `taskkill` racing the tree it is ending, did not appear in the bounded attempts above and
+would be a false reading of a stop that worked, so nothing is changed for it.
+
+**What changed here.** `tests/agent.test.ts` was the last file still naming a recorded PID to stop
+something: its teardown called `requestTreeStop` on any recorded PID that still looked alive, so a
+PID the host had handed to another process would have been stopped as a stranger. Its stand-in now
+answers on a beacon of its own (`tests/fixtures/beacon.mjs`) and records the token beside its PID;
+the teardown waits on that beacon and hands the record to `endFixtureTree`, which names the PID only
+while the beacon answers, never when a record carries no token. A new test pins the contract the
+cleanup leans on: the recorded token answers while that stand-in runs and falls silent once it has
+ended. The stop problem now also repeats what a failed utility said —
+`"taskkill" exited with code 128: ERROR: The process "1234" not found.` — so the next occurrence
+names its own kind; a Windows-only test covers it by asking about a PID argument no process can
+hold, so nothing is signalled.
+
+One full `vitest run` while that change was being validated also failed this file's teardown with
+`EBUSY: resource busy or locked, rmdir '…\runs\workspaces\run-…'`: a temporary directory removed
+while something still held it. Measured rather than assumed, neither a process whose working
+directory it is nor an open file in it refuses the removal on this host — node removes both — so
+what held that tree was not something a fixture did, and it is the same class of transient Windows
+lock the fixture helpers already retry. The teardown now waits for the stand-in's beacon to fall
+silent _and_ for its recorded PID to go (read-only) before cleaning up, and
+`cleanupTempDirectories` removes through the same bounded retry as `removeDirectory` (five
+attempts, ~1.5 s): a refusal that is transient is waited out, and a directory that is refused every
+time still throws, which `tests/support.test.ts` pins. The retry is not a reproduction of that one
+removal — no Node-side holder on this host provokes one.
+
+Honest limits. This change would not have made the HARN-3 failure pass: the killer is what had to
+change, and it did. The read-only liveness assertions of the suites — including `waitUntilGone` in
+`tests/agent.test.ts` — still read a bare PID, so a recycled PID can still fail one of those; that
+is a different failure and is still open. And a stand-in whose beacon never came up is left to its
+own release/backstop rather than named by a PID nothing vouches for, the same trade as above. What
+the next occurrence will settle is which reading its 128 was: the message is now kept, so a "not
+found" beside a process that was seen to end is a bystander kill, and a "could not be terminated"
+in the same place is the utility racing its own tree.
+
 ## What failed
 
 1. `tests/checks.test.ts` > `a command that runs out of time` > `is stopped with the child it started,
