@@ -199,9 +199,26 @@ export interface FakeState {
 }
 
 /**
- * Puts an executable named `codex` in a directory of its own: a `.cmd` on
- * Windows, which the harness starts through the command interpreter exactly as
- * it starts an installed `codex`, and a small shell script elsewhere.
+ * Writes the executable shim named `name` into `bin`, running `script` with this
+ * process's own `node`, and returns its path: a `.cmd` on Windows, which the
+ * harness starts through the command interpreter exactly as it starts an
+ * installed tool, and a small shell script elsewhere.
+ */
+async function writeShim(bin: string, name: string, script: string): Promise<string> {
+  if (process.platform === 'win32') {
+    const shim = path.join(bin, `${name}.cmd`);
+    await writeFile(shim, `@echo off\r\n"${process.execPath}" "${script}" %*\r\n`, 'utf8');
+    return shim;
+  }
+  const shim = path.join(bin, name);
+  await writeFile(shim, `#!/bin/sh\nexec "${process.execPath}" "${script}" "$@"\n`, 'utf8');
+  await chmod(shim, 0o755);
+  return shim;
+}
+
+/**
+ * Puts an executable named `codex` in a directory of its own, backed by the
+ * stand-in runtime above.
  */
 export async function installFakeRuntime(
   parent: string,
@@ -210,16 +227,7 @@ export async function installFakeRuntime(
   const stateDir = path.join(parent, 'fake-runtime-state');
   await mkdir(bin, { recursive: true });
   await mkdir(stateDir, { recursive: true });
-
-  let shim: string;
-  if (process.platform === 'win32') {
-    shim = path.join(bin, 'codex.cmd');
-    await writeFile(shim, `@echo off\r\n"${process.execPath}" "${FAKE_RUNTIME}" %*\r\n`, 'utf8');
-  } else {
-    shim = path.join(bin, 'codex');
-    await writeFile(shim, `#!/bin/sh\nexec "${process.execPath}" "${FAKE_RUNTIME}" "$@"\n`, 'utf8');
-    await chmod(shim, 0o755);
-  }
+  const shim = await writeShim(bin, 'codex', FAKE_RUNTIME);
 
   return {
     bin,
@@ -230,6 +238,76 @@ export async function installFakeRuntime(
       eventsFile: path.join(stateDir, 'runtime-events.jsonl'),
     },
   };
+}
+
+/** Where the stand-in `gh` keeps its records and the pull requests it holds. */
+export interface FakeGhState {
+  /** Directory holding both records. */
+  readonly dir: string;
+  /** One line per invocation, in order. */
+  readonly callsFile: string;
+  /** The pull requests the stand-in GitHub holds, one JSON line each. */
+  readonly pullRequestsFile: string;
+}
+
+/** One invocation of the stand-in `gh`, as it recorded it. */
+export interface FakeGhCall {
+  readonly op: 'list' | 'create' | 'edit';
+  readonly argv: readonly string[];
+  readonly cwd: string;
+  readonly repo: string | null;
+  readonly head: string | null;
+  readonly base: string | null;
+  readonly url: string | null;
+  readonly title: string | null;
+  readonly body: string | null;
+}
+
+/**
+ * The stand-in GitHub CLI, stored as a real file so that it can be read and
+ * reviewed: the lowest boundary the delivery step has, exactly as the stand-in
+ * `codex` is the lowest boundary of a coding turn.
+ */
+const FAKE_GH = path.join(repoRoot, 'tests', 'fixtures', 'fake-gh.mjs');
+
+/**
+ * Puts an executable named `gh` in a directory of its own, backed by
+ * tests/fixtures/fake-gh.mjs. It answers `gh pr list` from the pull requests it
+ * has been asked to create, and records every invocation. Nothing in `src/`
+ * knows it exists, and no flag reaches it.
+ */
+export async function installFakeGh(parent: string): Promise<{
+  readonly bin: string;
+  readonly shim: string;
+  readonly state: FakeGhState;
+}> {
+  const bin = path.join(parent, 'fake-gh-bin');
+  const stateDir = path.join(parent, 'fake-gh-state');
+  await mkdir(bin, { recursive: true });
+  await mkdir(stateDir, { recursive: true });
+  const shim = await writeShim(bin, 'gh', FAKE_GH);
+
+  return {
+    bin,
+    shim,
+    state: {
+      dir: stateDir,
+      callsFile: path.join(stateDir, 'calls.jsonl'),
+      pullRequestsFile: path.join(stateDir, 'pull-requests.json'),
+    },
+  };
+}
+
+/** Every invocation the stand-in `gh` recorded, in order. */
+export async function fakeGhCalls(state: FakeGhState): Promise<readonly FakeGhCall[]> {
+  return await readJsonLines<FakeGhCall>(state.callsFile);
+}
+
+/** The pull requests the stand-in GitHub holds, in the order they were created. */
+export async function fakePullRequests(
+  state: FakeGhState,
+): Promise<readonly { url: string; title: string; body: string }[]> {
+  return await readJsonLines<{ url: string; title: string; body: string }>(state.pullRequestsFile);
 }
 
 /** One turn's plan, as the stand-in runtime reads it. */

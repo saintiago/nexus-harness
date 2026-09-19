@@ -6,6 +6,7 @@
  * Presentation and process questions only: no command logic, no file reading,
  * and no run.
  */
+import type { GitHubDeliveryParts } from '../delivery/github.js';
 import type { RunnerDependencies } from '../runs/contracts.js';
 
 /** The run passed, or the CLI printed what it was asked for. */
@@ -69,4 +70,12 @@ export interface CliContext {
    * exercised end to end through the CLI without a live Jira site.
    */
   fetch?: typeof fetch;
+  /**
+   * The delivery step's own outward boundaries, when a caller needs to stand in
+   * for one of them: the destination's push URL, the environment `git` and `gh`
+   * are started with, or the bounded command runner. The process's own
+   * environment and the configured repository's HTTPS URL when a caller gives
+   * none: nothing in production substitutes them.
+   */
+  deliveryParts?: GitHubDeliveryParts;
 }

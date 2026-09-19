@@ -60,6 +60,7 @@ function oneLine(text: string): string {
  */
 function commentParagraphs(ref: SourceRef, outcome: SourceRunOutcome): readonly string[] {
   const attempt = outcome.attempt;
+  const pullRequest = outcome.pullRequest;
   return [
     `Harness run ${outcome.runId} for ${ref.key} finished: ${outcome.status}.` +
       (attempt === undefined || attempt.of <= 1
@@ -67,12 +68,18 @@ function commentParagraphs(ref: SourceRef, outcome: SourceRunOutcome): readonly 
         : ` Attempt ${String(attempt.number)} of ${String(attempt.of)} (tier ${attempt.tier}).`),
     `Reason: ${oneLine(outcome.reason)}`,
     `Checks: ${oneLine(outcome.checks)}`,
+    ...(pullRequest === undefined ? [] : [`Pull request: ${oneLine(pullRequest.url)}`]),
     `Repairs used: ${String(outcome.repairsUsed)}`,
     `Local artifacts on the machine that ran this harness (local paths, not Jira attachments): ` +
       `run directory ${oneLine(outcome.runDir)}; report ${oneLine(outcome.reportPath)}`,
-    'A human decides what happens next; this connector never marks an issue Done, and neither it ' +
-      'nor the harness pushes, merges, or publishes anything. Any commits a coding turn made are ' +
-      'local to the retained working copy on this machine.',
+    pullRequest === undefined
+      ? 'A human decides what happens next; this connector never marks an issue Done, and neither ' +
+        'it nor the harness pushes, merges, or publishes anything. Any commits a coding turn ' +
+        'made are local to the retained working copy on this machine.'
+      : "The harness pushed this attempt's branch and opened or updated the pull request above. " +
+        'It does not merge it and never marks this issue Done: a human decides what happens ' +
+        'next. Work a later attempt commits stays in the retained workspace until that attempt ' +
+        'delivers it.',
   ];
 }
 /** One comment's body, rendered as text: an empty body is an empty comment. */

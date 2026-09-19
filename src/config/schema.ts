@@ -163,6 +163,41 @@ const jiraSourceSchema = z
 /** Validates one `source` object: the documented optional field of a config. */
 export const sourceSchema = jiraSourceSchema;
 
+/** A destination repository on GitHub: exactly one slash, no host, no URL. */
+const REPOSITORY_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+
+/**
+ * A base branch name: nonblank, without whitespace, and not starting with `-`,
+ * so it is one literal argument to `gh` rather than something an option parser
+ * could read as another flag. Git's own branch rules are not duplicated here.
+ */
+const BRANCH_PATTERN = /^[^\s-][^\s]*$/;
+
+/**
+ * The optional delivery step. `"github"` is the only implemented type: a
+ * placeholder for a delivery service nobody has written would be a way to
+ * accept a configuration the harness cannot honour (docs/WORKFLOW.md §8).
+ */
+const githubDeliverySchema = z.strictObject({
+  type: z.literal('github', {
+    error:
+      'must be "github": pushing a branch with Git and managing its pull request with gh is the ' +
+      'only delivery step this harness implements, so another type is rejected rather than ' +
+      'accepted as a placeholder',
+  }),
+  repository: z.string({ error: 'repository must be a string' }).regex(REPOSITORY_PATTERN, {
+    error:
+      'repository must be the destination on github.com as "owner/name": no host, no URL, and ' +
+      'no path',
+  }),
+  baseBranch: z.string({ error: 'baseBranch must be a string' }).regex(BRANCH_PATTERN, {
+    error: 'baseBranch must be a branch name without whitespace, such as "main"',
+  }),
+});
+
+/** Validates one `delivery` object: the documented optional field of a config. */
+export const deliverySchema = githubDeliverySchema;
+
 export const harnessConfigSchema = z.strictObject({
   workDir: nonBlankString('workDir'),
   maxRepairs: boundedInteger('maxRepairs', 0, 'a nonnegative integer'),
@@ -191,6 +226,7 @@ export const harnessConfigSchema = z.strictObject({
       error: 'escalation tier names must be distinct: two tiers with one name are one tier',
     })
     .optional(),
+  delivery: deliverySchema.optional(),
   source: sourceSchema.optional(),
 });
 

@@ -15,6 +15,8 @@
  * intake for a human. Local results are kept whatever the remote feedback does.
  */
 import { rm } from 'node:fs/promises';
+import type { DeliveredPullRequest, Delivery } from '../delivery/github.js';
+import { DeliveryError } from '../delivery/github.js';
 import type { RunTaskResult } from '../runs/contracts.js';
 import { RunCancelledError } from '../runs/contracts.js';
 import { messageOf } from '../shared/errors.js';
@@ -48,6 +50,7 @@ import type { SourceReceipt } from './receipts.js';
 function runOutcome(
   result: RunTaskResult,
   attempt?: SourceRunOutcome['attempt'],
+  pullRequest?: DeliveredPullRequest | null,
 ): SourceRunOutcome {
   return {
     runId: result.run.runId,
@@ -58,6 +61,7 @@ function runOutcome(
     runDir: result.run.runDir,
     reportPath: result.reportPath,
     ...(attempt === undefined ? {} : { attempt }),
+    ...(pullRequest === null || pullRequest === undefined ? {} : { pullRequest }),
   };
 }
 
@@ -228,6 +232,47 @@ async function refuse(
   state.refused += 1;
   io.out(`${item.ref.key}: refusal published and the issue taken out of the queue`);
   return 'next';
+}
+
+/**
+ * One passed attempt's delivery, or `null` when the configured step found
+ * nothing to publish.
+ *
+ * The workspace the run left is what is delivered, on the branch it recorded:
+ * a later attempt continues the same clone on the same branch, so committed
+ * work from a later attempt updates that branch and the pull request it already
+ * has instead of producing a second one (docs/WORKFLOW.md §8).
+ */
+async function deliverPassed(
+  delivery: Delivery,
+  item: SourceTask,
+  run: RunTaskResult,
+  stop: AbortSignal,
+): Promise<DeliveredPullRequest | null> {
+  const workspace = run.workspace;
+  if (workspace === null) {
+    throw new DeliveryError(
+      `the run passed but kept no working copy (report ${run.reportPath}), so there was nothing to ` +
+        'deliver',
+    );
+  }
+
+  return await delivery.deliver(
+    {
+      workspacePath: workspace.workspacePath,
+      branch: workspace.branch,
+      baseCommit: workspace.baseCommit,
+      logsDir: run.run.logsDir,
+      runId: run.run.runId,
+      reportPath: run.reportPath,
+      task: { id: item.task.id, title: item.task.title },
+      // The same line the issue's comment carries, so the pull request and the
+      // issue never disagree about which checks decided the attempt.
+      checks: checkSummary(run),
+      sourceRef: item.ref,
+    },
+    stop,
+  );
 }
 
 /**
@@ -475,7 +520,6 @@ async function attempt(
         ` (attempt ${String(attempt)} of ${String(ladder.length)}, tier ${tier.name})`,
     );
 
-    const outcome = runOutcome(run, { number: attempt, of: ladder.length, tier: tier.name });
     // Whether the run's own execution was confirmed stopped: an expired limit and
     // a stop by the caller both record it, and only `confirmed` lets the next
     // issue run. A handled failed run may be followed by the next issue, but only
@@ -506,6 +550,50 @@ async function attempt(
               'stopped, so intake stops and the lock is kept for inspection',
           );
     }
+
+    // What a passed attempt produced is delivered before the issue is told it
+    // passed, so the published result can carry the pull request it produced. A
+    // delivery failure is not a coding failure: the run's own report and logs
+    // stay exactly as they were written, the receipt records what failed, and
+    // intake stops for a human instead of starting another attempt
+    // (docs/WORKFLOW.md §8).
+    let pullRequest: DeliveredPullRequest | null = null;
+    if (run.status === 'passed' && context.delivery !== undefined) {
+      if (stop.aborted) {
+        io.err(
+          `${item.ref.key}: intake is stopping, so the passed attempt was not delivered; its work ` +
+            'stays in the retained workspace',
+        );
+      } else {
+        try {
+          pullRequest = await deliverPassed(context.delivery, item, run, stop);
+        } catch (cause) {
+          const problem = messageOf(cause);
+          await updateReceipt(file, { problem: `delivery: ${problem}` });
+          return stopWith(
+            state,
+            `${item.ref.key}: the run is kept as passed (report ${run.reportPath}), but delivering ` +
+              `it failed, so intake stops for inspection: ${problem} Fix the cause and move the ` +
+              'issue back to the ready status to retry: the same workspace and branch are ' +
+              'continued, and a retry finds an existing pull request on GitHub instead of ' +
+              'creating a duplicate. This failure starts no coding turn of its own.',
+          );
+        }
+        io.out(
+          pullRequest === null
+            ? `${item.ref.key}: the attempt committed nothing beyond its recorded base, so there ` +
+                'was nothing to deliver'
+            : `${item.ref.key}: pull request ${pullRequest.created ? 'created' : 'updated'}: ` +
+                pullRequest.url,
+        );
+      }
+    }
+
+    const outcome = runOutcome(
+      run,
+      { number: attempt, of: ladder.length, tier: tier.name },
+      pullRequest,
+    );
 
     // A run the caller stopped still gets one bounded, best-effort feedback
     // sequence of its own, so the issue does not sit in the running status.

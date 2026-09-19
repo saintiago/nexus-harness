@@ -10,6 +10,7 @@
  */
 import path from 'node:path';
 import { ConfigError, escalationTiers, loadHarnessConfig, resolveWorkDir } from '../config/load.js';
+import { createGitHubDelivery } from '../delivery/github.js';
 import { runTask } from '../runs/runner.js';
 import type { HarnessConfig, JiraSourceConfig } from '../shared/types.js';
 import { SourceError } from '../sources/contract.js';
@@ -232,6 +233,17 @@ async function sourceCommand(
     // file-task run would use.
     const repoPath = path.resolve(cwd, repoArgument ?? '');
     const childEnvironment = environmentWithout(process.env, sourceConfig.tokenEnv);
+    // Delivery is built only when the configuration asks for it, and its
+    // commands inherit the same environment a coding turn does: everything
+    // except the Jira credential variable (docs/WORKFLOW.md §8).
+    const deliveryParts = context.deliveryParts ?? {};
+    const delivery =
+      config.delivery === undefined
+        ? undefined
+        : createGitHubDelivery(config.delivery, {
+            ...deliveryParts,
+            env: deliveryParts.env ?? childEnvironment,
+          });
     const dependencies = composeDependencies(
       context,
       io,
@@ -250,6 +262,7 @@ async function sourceCommand(
       io,
       stop: stop.signal,
       preflight: preflightSource,
+      ...(delivery === undefined ? {} : { delivery }),
       run: ({
         task,
         sourceRef,
