@@ -30,7 +30,17 @@ import { chmod, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { connect } from 'node:net';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { createTempDir, repoRoot, writeJsonFile } from '../support.js';
+
+/**
+ * The shared fixture beacon module, as a URL a fixture program written into a
+ * temporary directory can import: fixtures record a beacon token, and a suite
+ * names their PID again only while that beacon answers.
+ */
+export const beaconModuleUrl = pathToFileURL(
+  path.join(repoRoot, 'tests', 'fixtures', 'beacon.mjs'),
+).href;
 
 // ---------------------------------------------------------------------------
 // The target project, as committed source
@@ -777,11 +787,58 @@ export function processGone(pid: number): boolean {
   return !stillRunning(pid);
 }
 
-/** Where a fixture process's beacon answers, named by the token it recorded. */
-function beaconAddress(state: FakeState, token: string): string {
+/**
+ * Where a fixture process's beacon answers, named by the directory the fixture
+ * keeps its beacons in and the token it recorded.
+ */
+function beaconAddress(beaconDirectory: string, token: string): string {
   return process.platform === 'win32'
     ? `\\\\.\\pipe\\nexus-fixture-${token}`
-    : path.join(state.dir, 'beacons', `${token}.sock`);
+    : path.join(beaconDirectory, 'beacons', `${token}.sock`);
+}
+
+/** What one question to a fixture's beacon answered. */
+type BeaconAnswer = 'answers' | 'silent' | 'unknown';
+
+/**
+ * Asks one fixture process's beacon whether it is there.
+ *
+ * `answers` is the answer only a running process can give, and it is the one
+ * answer that proves a recorded PID still belongs to the process that recorded
+ * it. `silent` is a listener that is not there any more. Anything else — a
+ * listener that does not answer in time, or a failure that is not "nothing is
+ * listening" — is `unknown`, which is never read as either.
+ */
+async function askBeacon(
+  beaconDirectory: string,
+  token: string,
+  timeoutMs: number,
+): Promise<BeaconAnswer> {
+  return await new Promise<BeaconAnswer>((resolve) => {
+    const socket = connect(beaconAddress(beaconDirectory, token));
+    let settled = false;
+    const finish = (answer: BeaconAnswer): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      socket.destroy();
+      resolve(answer);
+    };
+    const timer = setTimeout(() => {
+      finish('unknown');
+    }, timeoutMs);
+    socket.once('connect', () => {
+      finish('answers');
+    });
+    socket.once('error', (cause) => {
+      const code = (cause as NodeJS.ErrnoException).code;
+      // Nothing is listening there any more. Any other failure is not an answer
+      // that the process is gone, and is not read as one.
+      finish(code === 'ENOENT' || code === 'ECONNREFUSED' ? 'silent' : 'unknown');
+    });
+  });
 }
 
 /**
@@ -797,31 +854,57 @@ function beaconAddress(state: FakeState, token: string): string {
  * answering is still there — so nothing is quietly reported as stopped.
  */
 export async function fixtureProcessGone(state: FakeState, token: string): Promise<boolean> {
-  return await new Promise<boolean>((resolve) => {
-    const socket = connect(beaconAddress(state, token));
-    let settled = false;
-    const finish = (gone: boolean): void => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      clearTimeout(timer);
-      socket.destroy();
-      resolve(gone);
-    };
-    const timer = setTimeout(() => {
-      finish(false);
-    }, 5000);
-    socket.once('connect', () => {
-      finish(false);
-    });
-    socket.once('error', (cause) => {
-      const code = (cause as NodeJS.ErrnoException).code;
-      // Nothing is listening there any more. Any other failure is not an answer
-      // that the process is gone, and is not read as one.
-      finish(code === 'ENOENT' || code === 'ECONNREFUSED');
-    });
-  });
+  return (await askBeacon(state.dir, token, 5000)) === 'silent';
+}
+
+/** One fixture process as a suite recorded it: the PID, and the token it recorded. */
+export interface FixtureProcessRecord {
+  readonly pid: number;
+  /** The beacon token of the process itself, when it recorded one. */
+  readonly token: string | null;
+  /** The directory the fixture's beacons answer from: the fixture's own directory. */
+  readonly beaconDirectory: string;
+}
+
+/**
+ * Ends one fixture process tree, but only a process whose beacon answers: a
+ * recorded PID is named only while the process that recorded it is proven to
+ * still hold it, so a PID Windows has since handed to something else is never
+ * signalled (notes/windows-fixture-flakes.md).
+ *
+ * The tree is what is stopped, so a child the fixture started goes with it. A
+ * fixture that no longer answers is left alone: its own backstop ends it, and a
+ * bare PID is not evidence enough to end anything by. Returns whether a stop
+ * was sent.
+ */
+export async function endFixtureTree(record: FixtureProcessRecord): Promise<boolean> {
+  if (
+    record.token === null ||
+    (await askBeacon(record.beaconDirectory, record.token, 1000)) !== 'answers'
+  ) {
+    return false;
+  }
+
+  if (process.platform === 'win32') {
+    const taskkill = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'taskkill.exe');
+    spawnSync(taskkill, ['/PID', String(record.pid), '/T', '/F'], { stdio: 'ignore' });
+    return true;
+  }
+
+  // Every fixture leads its own process group, so the group is addressed by the
+  // negated PID and the child the fixture started goes with it.
+  try {
+    process.kill(-record.pid, 'SIGKILL');
+    return true;
+  } catch {
+    try {
+      process.kill(record.pid, 'SIGKILL');
+      return true;
+    } catch {
+      // Already gone between the answer and the signal: nothing left to stop.
+      return false;
+    }
+  }
 }
 
 /** Removes a fixture directory, tolerating a file another process still holds. */
