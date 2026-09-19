@@ -17,6 +17,7 @@ import { runTask } from '../runs/runner.js';
 import type { HarnessConfig, RunStatus, Task } from '../shared/types.js';
 import { WorkspaceError } from '../workspace/errors.js';
 import type { RunDirectory } from '../workspace/run-directory.js';
+import { createActivityDisplay } from './activity.js';
 import { EXIT_CANCELLED, EXIT_INPUT_ERROR, EXIT_OK, EXIT_USAGE } from './context.js';
 import type { CliContext, CliIo } from './context.js';
 import { composeDependencies } from './dependencies.js';
@@ -145,15 +146,31 @@ export async function runCommand(options: ParsedOptions, context: CliContext): P
     throw cause;
   }
 
+  // From here on the terminal belongs to this run: progress, errors, and
+  // activity all go through one display, so the activity pane sits under the
+  // progress rather than through the middle of it. A run with no interactive
+  // terminal gets ordinary lines and no pane at all.
+  const pane = createActivityDisplay(io);
+  const activeIo: CliIo = {
+    out: (text) => {
+      pane.line(text);
+    },
+    err: (text) => {
+      pane.around(() => {
+        io.err(text);
+      });
+    },
+  };
+
   const stop = new AbortController();
   const release = (context.signals ?? hostSignals()).onInterrupt(() => {
     if (stop.signal.aborted) {
-      io.err(
+      activeIo.err(
         'interrupt received again: the run is already stopping, and this CLI is still waiting for it to finalize.',
       );
       return;
     }
-    io.err(
+    activeIo.err(
       [
         'interrupt received: asking the run to stop, and waiting for it to finalize before this',
         'command exits. The run records what it stopped and whether that stop was confirmed.',
@@ -166,11 +183,13 @@ export async function runCommand(options: ParsedOptions, context: CliContext): P
   const allocation: { run: RunDirectory | null } = { run: null };
   const dependencies = composeDependencies(
     context,
-    io,
+    activeIo,
     (run) => {
       allocation.run = run;
     },
     config.agent,
+    undefined,
+    pane,
   );
 
   const request: RunTaskRequest = {
@@ -183,10 +202,14 @@ export async function runCommand(options: ParsedOptions, context: CliContext): P
 
   try {
     const result = await runTask(request, dependencies);
-    io.out(describeOutcome(result, config.maxRepairs));
+    // The pane is erased before the outcome is printed: the run is over, and
+    // what is left on the terminal is the progress, the outcome, and the paths.
+    pane.close();
+    activeIo.out(describeOutcome(result, config.maxRepairs));
     return exitCodeFor(result.status);
   } catch (cause) {
-    return reportRunFailure(cause, io, allocation.run);
+    pane.close();
+    return reportRunFailure(cause, activeIo, allocation.run);
   } finally {
     // The run is over, one way or another: nothing is left listening for an
     // interrupt on its behalf.

@@ -7,9 +7,71 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import type { CliIo } from '../src/cli/context.js';
 
 /** Repository root, derived from this file's location. */
 export const repoRoot = fileURLToPath(new URL('..', import.meta.url));
+
+/**
+ * A fake interactive terminal: every write, in order, and the size it reports.
+ * `io` is a CLI output that goes to it with no cursor work of its own, so a test
+ * can tell the display's own sequences from anything a caller wrote.
+ */
+export interface FakeConsole {
+  readonly chunks: string[];
+  readonly io: CliIo;
+}
+
+export function fakeConsole(
+  parts: { readonly columns?: number; readonly rows?: number } = {},
+): FakeConsole {
+  const chunks: string[] = [];
+  return {
+    chunks,
+    io: {
+      out: (text) => chunks.push(`${text}\n`),
+      err: (text) => chunks.push(`${text}\n`),
+      terminal: {
+        write: (text) => chunks.push(text),
+        ...(parts.columns === undefined ? {} : { columns: parts.columns }),
+        ...(parts.rows === undefined ? {} : { rows: parts.rows }),
+      },
+    },
+  };
+}
+
+/**
+ * What a terminal would show after these writes, as the lines it holds: a line
+ * is created by `\n`, text lands at the cursor, `ESC[<n>A` moves it up `n`
+ * lines, and `ESC[J` erases from the cursor down. The activity pane writes at
+ * column 0, which is all this has to understand.
+ */
+/* eslint-disable no-control-regex -- the escape sequences are what this reads */
+export function screenAfter(chunks: readonly string[]): readonly string[] {
+  const screen: string[] = [];
+  let row = 0;
+  const tokens = /\u001b\[(\d+)A|\u001b\[J|\n|[^\u001b\n]+/g;
+
+  for (const match of chunks.join('').matchAll(tokens)) {
+    const token = match[0];
+    const count = match[1];
+    if (count !== undefined) {
+      row = Math.max(0, row - Number(count));
+      continue;
+    }
+    if (token === '\u001b[J') {
+      screen.length = row;
+      continue;
+    }
+    if (token === '\n') {
+      row += 1;
+      continue;
+    }
+    screen[row] = (screen[row] ?? '') + token;
+  }
+  return screen;
+}
+/* eslint-enable no-control-regex */
 
 /** The configuration example from docs/WORKFLOW.md §1. */
 export const documentedConfig = {

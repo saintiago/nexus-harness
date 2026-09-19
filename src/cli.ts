@@ -30,7 +30,7 @@
 import { pathToFileURL } from 'node:url';
 import { checkConfig } from './cli/check-config.js';
 import { EXIT_INPUT_ERROR, EXIT_OK, EXIT_USAGE } from './cli/context.js';
-import type { CliContext } from './cli/context.js';
+import type { CliContext, CliTerminal } from './cli/context.js';
 import { HELP, USAGE_HINT } from './cli/help.js';
 import { CHECK_CONFIG_OPTIONS, parseOptions, RUN_OPTIONS } from './cli/options.js';
 import { runCommand } from './cli/run-command.js';
@@ -92,7 +92,27 @@ export function consoleContext(): CliContext {
     io: {
       out: (text) => process.stdout.write(`${text}\n`),
       err: (text) => process.stderr.write(`${text}\n`),
+      terminal: consoleTerminal(),
     },
+  };
+}
+
+/**
+ * The process's own standard output as the pane needs it, when it is really an
+ * interactive terminal. A redirected stream — piped to a file, a test's own
+ * recorder, a process that reads it — is not one: it gets ordinary lines, and
+ * never a cursor sequence.
+ */
+function consoleTerminal(): CliTerminal | undefined {
+  if (process.stdout.isTTY !== true) {
+    return undefined;
+  }
+  const columns = process.stdout.columns;
+  const rows = process.stdout.rows;
+  return {
+    write: (text) => process.stdout.write(text),
+    ...(columns === undefined ? {} : { columns }),
+    ...(rows === undefined ? {} : { rows }),
   };
 }
 

@@ -617,6 +617,14 @@ checked **offline**, with the runtime boundary substituted by a stand-in `codex`
 needs your own account, and the printed paths are always derived from the run directory the CLI
 really allocated.
 
+While a coding turn runs, the CLI also draws what the runtime is doing — its messages, short command
+start and result lines, and the files it changed — in a fixed ten-line pane under the progress.
+New lines scroll the oldest out, long lines are fitted to the pane, and control characters in
+runtime text are never written as terminal commands. A redirected, too small, or too narrow terminal
+gets those lines as ordinary output instead, with no cursor sequences at all; on every ending the
+pane is taken away before the outcome block above is printed. The full runtime output always stays
+in the turn's own `logs/agent-*.log`.
+
 **5. Look at it, then delete it.**
 
 ```sh

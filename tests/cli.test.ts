@@ -31,10 +31,10 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { runCli } from '../src/cli.js';
 import { EXIT_CANCELLED, EXIT_INPUT_ERROR, EXIT_OK, EXIT_USAGE } from '../src/cli/context.js';
-import type { CliContext, InterruptSignals } from '../src/cli/context.js';
+import type { CliContext, CliTerminal, InterruptSignals } from '../src/cli/context.js';
 import { ReportError } from '../src/reporting/errors.js';
 import type { AgentTurnRequest, RunnerDependencies } from '../src/runs/contracts.js';
-import type { RunReport } from '../src/shared/types.js';
+import type { AgentActivity, RunReport } from '../src/shared/types.js';
 import { WorkspaceError } from '../src/workspace/errors.js';
 import { preflightSource } from '../src/workspace/preflight.js';
 import {
@@ -42,7 +42,9 @@ import {
   createTempDir,
   documentedConfig,
   documentedTask,
+  fakeConsole,
   repoRoot,
+  screenAfter,
   writeJsonFile,
 } from './support.js';
 
@@ -65,6 +67,8 @@ interface CliRunOptions {
   readonly signals?: InterruptSignals;
   /** Loop collaborators to substitute; the real ones are kept for the rest. */
   readonly dependencies?: Partial<RunnerDependencies>;
+  /** An interactive terminal for the CLI to write to, instead of plain output. */
+  readonly terminal?: CliTerminal;
 }
 
 /** Runs the CLI in-process with captured output. */
@@ -73,7 +77,11 @@ async function run(argv: readonly string[], options: CliRunOptions = {}): Promis
   const err: string[] = [];
   const context: CliContext = {
     cwd: options.cwd ?? repoRoot,
-    io: { out: (text) => out.push(text), err: (text) => err.push(text) },
+    io: {
+      out: (text) => out.push(text),
+      err: (text) => err.push(text),
+      ...(options.terminal === undefined ? {} : { terminal: options.terminal }),
+    },
   };
   if (options.signals !== undefined) {
     context.signals = options.signals;
@@ -945,6 +953,156 @@ describe('run', () => {
     expect(existsSync(path.join(runDir, 'result.json'))).toBe(false);
     // What the run did produce is still there to inspect.
     expect(existsSync(path.join(runDir, 'logs', 'run.log'))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The activity pane under the run status
+// ---------------------------------------------------------------------------
+
+/**
+ * A coding turn that reports synthetic activity, as the real adapter reports
+ * what a runtime is doing: one message, one command, and its result.
+ */
+function reportingAgent(): RunnerDependencies['runAgentTurn'] {
+  const activities: readonly AgentActivity[] = [
+    { kind: 'message', text: 'I will change one file.' },
+    { kind: 'command', text: 'npm test' },
+    { kind: 'result', text: 'exit 1' },
+  ];
+  return async (request) => {
+    for (const activity of activities) {
+      request.onActivity?.(activity);
+    }
+    return { summary: 'the file now holds the new line' };
+  };
+}
+
+describe('the activity pane under the run status', () => {
+  it('draws the activity in a pane, and takes the pane away before the outcome', async () => {
+    const fixture = await createRunFixture({ agent: reportingAgent() });
+    const console = fakeConsole({ columns: 80, rows: 24 });
+
+    const result = await run(
+      runArgv({ repo: 'target-project', config: 'harness.config.json', task: 'task.json' }),
+      {
+        cwd: fixture.parent,
+        dependencies: fixture.dependencies,
+        terminal: console.io.terminal,
+      },
+    );
+
+    expect(result.code).toBe(EXIT_OK);
+    const raw = console.chunks.join('');
+    // What the turn reported was drawn into the pane, in place: the cursor
+    // moves of a bounded pane are in the stream, and the lines are there.
+    expect(raw).toContain('agent: I will change one file.');
+    expect(raw).toContain('run: npm test');
+    expect(raw).toContain('result: exit 1');
+    expect(raw).toContain('\u001b[');
+
+    // The outcome is what is left on screen: closing erased the pane, so the
+    // terminal holds the run's progress and the outcome block, and the last
+    // thing printed is where the report is.
+    const { runDir, report } = await readRun(fixture.outDir);
+    const screen = screenAfter(console.chunks);
+    expect(screen.some((line) => line.startsWith('agent: '))).toBe(false);
+    expect(screen).toContain('implementation turn started');
+    expect(screen.join('\n')).toMatch(new RegExp(`^run ${report.runId}: passed$`, 'm'));
+    expect(screen.at(-1)).toBe(`  report     ${path.join(runDir, 'result.json')}`);
+  });
+
+  it('writes ordinary activity lines, with no cursor sequences, when redirected', async () => {
+    const fixture = await createRunFixture({ agent: reportingAgent() });
+
+    const result = await run(
+      runArgv({ repo: 'target-project', config: 'harness.config.json', task: 'task.json' }),
+      { cwd: fixture.parent, dependencies: fixture.dependencies },
+    );
+
+    expect(result.code).toBe(EXIT_OK);
+    expect(result.out).toMatch(/^run: npm test$/m);
+    expect(result.out).toMatch(/^agent: I will change one file\.$/m);
+    expect(result.out).toMatch(/^result: exit 1$/m);
+    expect(`${result.out}${result.err}`).not.toContain('\u001b');
+  });
+
+  it('shows a repair turn’s activity through the same pane', async () => {
+    const counter = path.join(await createTempDir(), 'count.txt');
+    const check = path.join(await createTempDir(), 'sequenced-check.cjs');
+    // Green for the baseline, red after the implementation, green after the
+    // repair: the run really spends one repair turn.
+    await writeFile(check, countingCheck('count === 2'), 'utf8');
+    const turns: number[] = [];
+    const fixture = await createRunFixture({
+      config: { maxRepairs: 1, checks: [[process.execPath, check, counter]] },
+      agent: async (request) => {
+        turns.push(request.turn);
+        request.onActivity?.({ kind: 'message', text: `turn ${String(request.turn)} reporting` });
+        return { summary: null };
+      },
+    });
+    const console = fakeConsole({ columns: 80, rows: 24 });
+
+    const result = await run(
+      runArgv({ repo: 'target-project', config: 'harness.config.json', task: 'task.json' }),
+      {
+        cwd: fixture.parent,
+        dependencies: fixture.dependencies,
+        terminal: console.io.terminal,
+      },
+    );
+
+    expect(result.code).toBe(EXIT_OK);
+    expect(turns).toEqual([1, 2]);
+    const raw = console.chunks.join('');
+    expect(raw).toContain('agent: turn 1 reporting');
+    expect(raw).toContain('agent: turn 2 reporting');
+    // The pane is drawn under the progress and taken away at the end, whichever
+    // turn reported last.
+    expect(screenAfter(console.chunks).some((line) => line.startsWith('agent: '))).toBe(false);
+    expect(result.err).toBe('');
+  });
+
+  it('leaves a usable screen behind an interrupt, with the outcome and its paths', async () => {
+    const signals = recordingSignals();
+    const fixture = await createRunFixture({
+      agent: async (request) => {
+        request.onActivity?.({ kind: 'message', text: 'still working' });
+        await new Promise<void>((resolve) => {
+          if (request.stop.aborted) {
+            resolve();
+            return;
+          }
+          request.stop.addEventListener('abort', () => resolve(), { once: true });
+        });
+        return { summary: null };
+      },
+    });
+    const console = fakeConsole({ columns: 80, rows: 24 });
+
+    const running = run(
+      runArgv({ repo: 'target-project', config: 'harness.config.json', task: 'task.json' }),
+      {
+        cwd: fixture.parent,
+        signals,
+        dependencies: fixture.dependencies,
+        terminal: console.io.terminal,
+      },
+    );
+    await waitFor(() => console.chunks.join('').includes('agent: still working'), 'the pane line');
+    signals.interrupt();
+    const result = await running;
+
+    expect(result.code).toBe(EXIT_CANCELLED);
+    expect(result.err).toMatch(/interrupt received: asking the run to stop/);
+
+    const { runDir, report } = await readRun(fixture.outDir);
+    const screen = screenAfter(console.chunks);
+    expect(screen.some((line) => line.startsWith('agent: '))).toBe(false);
+    expect(screen.join('\n')).toMatch(new RegExp(`^run ${report.runId}: cancelled$`, 'm'));
+    expect(screen.join('\n')).toContain(`run dir    ${runDir}`);
+    expect(screen.join('\n')).toContain(`report     ${path.join(runDir, 'result.json')}`);
   });
 });
 

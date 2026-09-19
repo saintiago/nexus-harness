@@ -43,6 +43,10 @@ Keep harness state limited to what execution and reporting need. A report or wor
 
 Run checks sequentially. Ordinary nonzero check results are repair feedback; a check that could not execute is not a pass. Do not keep coding after every check succeeds.
 
+### Terminal display
+
+As a run works, its progress is ordinary output, and the coding turn's own event stream is drawn in a fixed pane beneath it: the agent's messages, short command start/result lines, and the names of the files it changed. New lines scroll the oldest out of the pane, so the visible output does not grow with the turn, long lines are fitted to the terminal, and control characters in runtime text are never written as terminal commands. A redirected, too narrow, or too short terminal gets those lines as ordinary output with no cursor sequences. On completion, failure, and interrupt the pane is removed before the outcome and its local paths are printed, so the terminal is left usable and the logging, outcome, and cancellation behavior of §3 and §4 are unchanged. The pane is presentation only: a turn's own output is retained in its agent log, and nothing it reports is evidence or a status (HARN-11).
+
 ### Agent selection
 
 The original six configuration fields remain required. Preserve optional `agent`, containing `runtime` and a literal `command` prefix. When omitted, use `runtime: "codex"` and `command: ["codex"]`. When present, require both fields and reject unsupported runtime values and unknown fields. Add an independent optional `source` object for intake, as defined in WORKFLOW. All existing task and configuration files remain valid.

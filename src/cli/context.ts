@@ -29,6 +29,28 @@ export const EXIT_CANCELLED = 130;
 export interface CliIo {
   out(text: string): void;
   err(text: string): void;
+  /**
+   * The interactive terminal this output goes to, when it is one. Only the real
+   * console context installs it: a caller that hands the CLI its own output
+   * functions is treated as redirected output, and the CLI then writes ordinary
+   * lines only, with no cursor sequences.
+   */
+  readonly terminal?: CliTerminal;
+}
+
+/**
+ * An interactive terminal the CLI draws its activity pane on.
+ *
+ * `write` is the terminal of the CLI's own standard output, cursor sequences and
+ * all; `columns` and `rows` are what it reports, and are absent when it does not
+ * report a size. Nothing else is needed: the pane is redrawn in place with
+ * ordinary cursor moves, and a terminal that reports no size still gets the full
+ * pane.
+ */
+export interface CliTerminal {
+  write(text: string): void;
+  readonly columns?: number;
+  readonly rows?: number;
 }
 
 /**

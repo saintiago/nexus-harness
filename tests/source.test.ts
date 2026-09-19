@@ -78,6 +78,8 @@ import {
   cleanupTempDirectories,
   createTempDir,
   documentedConfig,
+  fakeConsole,
+  screenAfter,
   writeJsonFile,
 } from './support.js';
 
@@ -2640,6 +2642,8 @@ interface CliOptions {
   readonly signals?: InterruptSignals;
   readonly dependencies?: CliContext['dependencies'];
   readonly deliveryParts?: CliContext['deliveryParts'];
+  /** An interactive terminal for the CLI to write to, instead of plain output. */
+  readonly terminal?: CliContext['io']['terminal'];
   /** Called for every line the command prints, while it is printing. */
   readonly onOut?: (text: string) => void;
 }
@@ -2659,6 +2663,7 @@ async function runSourceCli(
         options.onOut?.(text);
       },
       err: (text) => err.push(text),
+      ...(options.terminal === undefined ? {} : { terminal: options.terminal }),
     },
     fetch: options.fetch,
   };
@@ -2813,6 +2818,60 @@ describe('the source commands through the CLI', () => {
           name.startsWith('run-'),
         ),
       ).toHaveLength(1);
+    } finally {
+      if (previous === undefined) {
+        delete process.env.JIRA_API_TOKEN;
+      } else {
+        process.env.JIRA_API_TOKEN = previous;
+      }
+    }
+  });
+
+  it('draws a source run’s activity in the pane, and leaves the summary behind it', async () => {
+    const target = await createTarget();
+    const jira = fakeJira([
+      {
+        id: '10011',
+        key: 'SAM1-11',
+        summary: 'Create the marker',
+        status: 'To Do',
+        updated: '2026-09-16T11:00:00.000Z',
+      },
+    ]);
+    const previous = process.env.JIRA_API_TOKEN;
+    process.env.JIRA_API_TOKEN = 'test-token';
+
+    try {
+      const dependencies: CliContext['dependencies'] = {
+        runAgentTurn: async (request) => {
+          request.onActivity?.({ kind: 'message', text: 'writing the marker' });
+          request.onActivity?.({ kind: 'change', text: 'add MARKER.md' });
+          await writeFile(path.join(request.workspacePath, 'MARKER.md'), 'done\n', 'utf8');
+          return { summary: 'wrote the marker' };
+        },
+      };
+      const console = fakeConsole({ columns: 80, rows: 24 });
+
+      const result = await runSourceCli(
+        ['source', 'run', '--repo', target.repo, '--config', target.configPath],
+        target.directory,
+        { fetch: jira.fetch, dependencies, terminal: console.io.terminal },
+      );
+
+      expect(result.code).toBe(EXIT_OK);
+      // The same pane the file-task command draws: what the turn reported was
+      // drawn while it ran, by cursor moves over a bounded block.
+      const raw = console.chunks.join('');
+      expect(raw).toContain('agent: writing the marker');
+      expect(raw).toContain('change: add MARKER.md');
+      expect(raw).toContain('\u001b[');
+
+      // And the batch's own summary is ordinary output, printed after the pane
+      // was taken away: nothing of the pane is left on the screen.
+      const screen = screenAfter(console.chunks);
+      expect(screen.some((line) => line.startsWith('agent: '))).toBe(false);
+      expect(screen.join('\n')).toMatch(/^source completed$/m);
+      expect(screen.at(-1)).toMatch(/^ {2}skipped /);
     } finally {
       if (previous === undefined) {
         delete process.env.JIRA_API_TOKEN;
