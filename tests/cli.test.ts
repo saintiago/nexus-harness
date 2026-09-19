@@ -1064,6 +1064,36 @@ describe('the activity pane under the run status', () => {
     expect(result.err).toBe('');
   });
 
+  it('takes the pane away before the outcome of a failed run, too', async () => {
+    const counter = path.join(await createTempDir(), 'count.txt');
+    const check = path.join(await createTempDir(), 'always-red-check.cjs');
+    // Green for the baseline, red from then on, with no repair allowance.
+    await writeFile(check, countingCheck('count >= 2'), 'utf8');
+    const fixture = await createRunFixture({
+      config: { maxRepairs: 0, checks: [[process.execPath, check, counter]] },
+      agent: reportingAgent(),
+    });
+    const console = fakeConsole({ columns: 80, rows: 24 });
+
+    const result = await run(
+      runArgv({ repo: 'target-project', config: 'harness.config.json', task: 'task.json' }),
+      {
+        cwd: fixture.parent,
+        dependencies: fixture.dependencies,
+        terminal: console.io.terminal,
+      },
+    );
+
+    expect(result.code).toBe(EXIT_INPUT_ERROR);
+    const { runDir, report } = await readRun(fixture.outDir);
+    const screen = screenAfter(console.chunks);
+    expect(report.status).toBe('failed');
+    expect(screen.some((line) => line.startsWith('agent: '))).toBe(false);
+    expect(screen.join('\n')).toMatch(new RegExp(`^run ${report.runId}: failed$`, 'm'));
+    expect(screen.join('\n')).toContain(`run dir    ${runDir}`);
+    expect(screen.join('\n')).toContain(`report     ${path.join(runDir, 'result.json')}`);
+  });
+
   it('leaves a usable screen behind an interrupt, with the outcome and its paths', async () => {
     const signals = recordingSignals();
     const fixture = await createRunFixture({
