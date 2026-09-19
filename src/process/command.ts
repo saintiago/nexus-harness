@@ -64,7 +64,7 @@ export interface RunCommandRequest {
  * failure to start the command is part of that result, not an exception; a
  * failure to persist its output is a {@link ReportError}.
  *
- * The invocation is bounded and stopable exactly as {@link runInvocation}
+ * The invocation is bounded and stoppable exactly as {@link runInvocation}
  * bounds and stops one: it is stopped when `timeoutMs` expires or the run's stop
  * request arrives, and the result says which, and whether that stop was
  * confirmed.
