@@ -170,6 +170,7 @@ function resultFor(
   reason = `the run ended ${status}`,
   cancellation: { termination: 'confirmed' | 'unconfirmed'; problem: string | null } | null = null,
   workspace: PreparedWorkspace | null = null,
+  workspaceLedgerProblem: string | null = null,
 ): RunTaskResult {
   return {
     run: runDirectoryAt(runDir),
@@ -190,6 +191,7 @@ function resultFor(
           }
         : null,
     changes: summarizeChanges({ baseCommit: 'base', paths: [] }),
+    workspaceLedgerProblem,
     reportPath: path.join(runDir, 'result.json'),
   };
 }
@@ -1255,6 +1257,51 @@ describe('the escalation ladder', () => {
     expect(fixture.requests.map((request) => request.tier)).toEqual(['flash']);
     expect(fixture.completions).toHaveLength(1);
   });
+
+  it('stops the climb when the attempt could not be recorded in its workspace ledger', async () => {
+    const workDir = await createTempDir();
+    const ledgerPath = workspaceStatePath(workDir, 'run-1');
+    const fixture = createFixture({
+      workDir,
+      tiers: TIERS,
+      scans: [[candidateFor('1')]],
+      run: (_task, _call, runDir) =>
+        Promise.resolve(
+          resultFor(
+            runDir,
+            'failed',
+            'the checks after the implementation turn did not pass',
+            null,
+            preparedWorkspaceFor(runDir),
+            `the workspace ledger ("${ledgerPath}") could not be updated with this attempt: ` +
+              'the file could not be replaced: the disk is read-only',
+          ),
+        ),
+    });
+
+    const summary = await runSource(fixture.context, null);
+
+    // The ladder stops instead of climbing: the next attempt would read this
+    // workspace's ledger for its number, its tier, and its guidance, and the
+    // ledger does not hold the attempt that just ran.
+    expect(summary.outcome).toBe('stopped');
+    expect(summary.attempted).toBe(1);
+    expect(fixture.requests).toHaveLength(1);
+    expect(fixture.completions).toEqual([]);
+    // The operator gets the failed path, what failed, and where the run's own
+    // evidence was kept.
+    expect(summary.problem).toContain(ledgerPath);
+    expect(summary.problem).toContain('the disk is read-only');
+    expect(summary.problem).toContain(path.join(workDir, 'run-1', 'result.json'));
+    expect(summary.problem).toContain('no further automatic attempt');
+    // The receipt keeps the real local result and records the failed save.
+    const receipt = await readReceipt(receiptFilePath(workDir, refFor('1')));
+    expect(receipt?.outcome).toBe('failed');
+    expect(receipt?.resultPath).toBe(path.join(workDir, 'run-1', 'result.json'));
+    expect(receipt?.feedback).toBe('pending');
+    expect(receipt?.problem).toContain('workspace ledger:');
+    expect(receipt?.problem).toContain(ledgerPath);
+  });
 });
 
 describe('an issue that points at a workspace', () => {
@@ -1541,6 +1588,135 @@ describe('an issue that points at a workspace', () => {
     expect(reason).toContain('never adopts or migrates');
     expect(fixture.log).not.toContain('claim:SAM1-2');
     expect(fixture.log).not.toContain('run:SAM1-2');
+  });
+
+  it('refuses a ledger this harness did not write, before any claim', async () => {
+    // Neither an unsupported version nor a partially written identity is read
+    // as version 1, as absence, or as anything else it is not, and nothing is
+    // migrated into place: the issue is refused with the file and the reason.
+    const cases: readonly {
+      readonly change: (ledger: Record<string, unknown>) => unknown;
+      readonly problem: string;
+    }[] = [
+      { change: (ledger) => ({ ...ledger, version: 2 }), problem: 'version' },
+      {
+        change: (ledger) => ({ ...ledger, sourceItem: { type: 'jira', scope: SCOPE } }),
+        problem: 'sourceItem.id',
+      },
+      {
+        change: (ledger) => ({
+          ...ledger,
+          attempts: [
+            {
+              runId: 'run-20260916100000-aaaaaaaa',
+              outcome: 'failed',
+              endedAt: 'not-a-date',
+              reportPath: '/runs/run-20260916100000-aaaaaaaa/result.json',
+            },
+          ],
+        }),
+        problem: 'attempts.0.endedAt',
+      },
+    ];
+
+    for (const entry of cases) {
+      const workDir = await createTempDir();
+      const { workspaceId, sourceRoot } = await preparedWorkspaceOnDisk(workDir);
+      const ledgerPath = workspaceStatePath(workDir, workspaceId);
+      const written = JSON.parse(await readFile(ledgerPath, 'utf8')) as Record<string, unknown>;
+      await writeFile(ledgerPath, `${JSON.stringify(entry.change(written))}\n`, 'utf8');
+      const fixture = createFixture({
+        workDir,
+        scans: [[candidateFor('2', 'SAM1-2')]],
+        prepare: (candidate) => preparedFor(candidate, [workspaceId]),
+        preflight: () => Promise.resolve({ sourceRoot, baseCommit: 'base' }),
+      });
+
+      const summary = await runSource(fixture.context, null);
+
+      expect(summary).toMatchObject({ outcome: 'completed', attempted: 0, refused: 1 });
+      const reason = fixture.refusals[0]?.reason ?? '';
+      expect(reason).toContain('cannot be read');
+      expect(reason).toContain(ledgerPath);
+      expect(reason).toContain(entry.problem);
+      expect(fixture.log).not.toContain('claim:SAM1-2');
+      expect(fixture.log).not.toContain('run:SAM1-2');
+    }
+  });
+
+  it('refuses an attempt whose recorded end is not a usable timestamp, and continues it once it is', async () => {
+    // `attempts[].endedAt` is not free-form text: a continuation hands it to the
+    // source as the moment it reads comments since, and a nonblank string that is
+    // not an instant would be parsed as `NaN`, which lets every old comment
+    // through. Such a record is refused with the ledger file and the field,
+    // before the claim, and the same workspace with a timestamp this harness
+    // writes is continued normally.
+    const workDir = await createTempDir();
+    const { workspaceId, sourceRoot } = await preparedWorkspaceOnDisk(workDir, [
+      { outcome: 'failed', reason: 'the checks after the implementation turn did not pass' },
+    ]);
+    const ledgerPath = workspaceStatePath(workDir, workspaceId);
+    const written = JSON.parse(await readFile(ledgerPath, 'utf8')) as {
+      readonly attempts: readonly Record<string, unknown>[];
+    };
+    const attempt = written.attempts[0];
+    expect(attempt?.endedAt).toBe('2026-01-01T00:00:00.000Z');
+    await writeFile(
+      ledgerPath,
+      `${JSON.stringify({ ...written, attempts: [{ ...attempt, endedAt: 'not-a-date' }] })}\n`,
+      'utf8',
+    );
+
+    const asked: string[] = [];
+    const fixture = createFixture({
+      workDir,
+      scans: [[candidateFor('2', 'SAM1-2')]],
+      prepare: (candidate) => preparedFor(candidate, [workspaceId]),
+      preflight: () => Promise.resolve({ sourceRoot, baseCommit: 'base' }),
+      commentsSince: (_item, since) => {
+        asked.push(since);
+        return [];
+      },
+    });
+
+    const summary = await runSource(fixture.context, null);
+
+    expect(summary).toMatchObject({ outcome: 'completed', attempted: 0, refused: 1 });
+    const reason = fixture.refusals[0]?.reason ?? '';
+    // The operator gets the ledger that could not be read and the field that is
+    // wrong with it.
+    expect(reason).toContain(ledgerPath);
+    expect(reason).toContain('attempts.0.endedAt');
+    // Nothing was read through the record: no claim, no run, no receipt, and the
+    // source was never asked to compare comments against the broken end.
+    expect(fixture.log).not.toContain('claim:SAM1-2');
+    expect(fixture.log).not.toContain('run:SAM1-2');
+    expect(fixture.log).not.toContain('comments:SAM1-2');
+    expect(asked).toEqual([]);
+    expect(existsSync(receiptFilePath(workDir, refFor('2', 'SAM1-2')))).toBe(false);
+    // The refused workspace itself is kept: the refusal is about the ledger
+    // record, and the retained clone is what the repair continues.
+    expect(existsSync(path.join(workDir, 'workspaces', workspaceId))).toBe(true);
+
+    // The same workspace, with the end this harness recorded, is continued: the
+    // recorded instant is what a continuation reads the item's comments since.
+    await writeFile(ledgerPath, `${JSON.stringify(written)}\n`, 'utf8');
+    const repaired = createFixture({
+      workDir,
+      scans: [[candidateFor('2', 'SAM1-2')]],
+      prepare: (candidate) => preparedFor(candidate, [workspaceId]),
+      preflight: () => Promise.resolve({ sourceRoot, baseCommit: 'base' }),
+      commentsSince: (_item, since) => {
+        asked.push(since);
+        return [];
+      },
+    });
+
+    const continued = await runSource(repaired.context, null);
+
+    expect(continued).toMatchObject({ outcome: 'completed', attempted: 1, passed: 1, refused: 0 });
+    expect(repaired.requests[0]?.continued).toBe(true);
+    expect(asked).toEqual(['2026-01-01T00:00:00.000Z']);
   });
 });
 

@@ -27,6 +27,7 @@ import { inspectWorkspaceChanges } from '../workspace/changes.js';
 import type { PreparedWorkspace } from '../workspace/prepare.js';
 import type { SourcePreflight } from '../workspace/preflight.js';
 import type { RunDirectory } from '../workspace/run-directory.js';
+import { workspaceStatePath } from '../workspace/state.js';
 import type { RunTaskRequest, RunTaskResult, RunnerDependencies } from './contracts.js';
 import {
   count,
@@ -246,11 +247,21 @@ export function createRunFinalizer(context: RunFinalizerContext) {
       changes,
       ...(request.sourceRef === undefined ? {} : { sourceRef: request.sourceRef }),
     });
+    /**
+     * Why this attempt is not in its workspace's ledger, when the record could
+     * not be written. The report above is already written and stays the
+     * authority; this is what the caller needs to know that the derived state a
+     * later attempt reads does not hold this attempt. The caller stops
+     * continuing the workspace automatically rather than starting another
+     * attempt against a ledger that is missing one
+     * (docs/implement-workspace-continuation.md).
+     */
+    let workspaceLedgerProblem: string | null = null;
     if (workspace !== null) {
       // The attempt is recorded against the workspace it happened in, so the next
       // attempt knows how many there have been and which tier comes next. The
       // report above stays the authority; this is derived state, and a failure to
-      // record it is said out loud in the timeline rather than swallowed.
+      // record it is named here and in the timeline rather than swallowed.
       try {
         await dependencies.recordWorkspaceAttempt(request.workDir, workspace.workspaceId, {
           runId: run.runId,
@@ -261,9 +272,14 @@ export function createRunFinalizer(context: RunFinalizerContext) {
           reportPath,
         });
       } catch (cause) {
+        workspaceLedgerProblem =
+          `the workspace ledger ("${workspaceStatePath(request.workDir, workspace.workspaceId)}") ` +
+          `could not be updated with this attempt: ${oneLine(messageOf(cause))}`;
         await dependencies.appendRunLog(
           timeline,
-          `workspace ledger: this attempt could not be recorded (${oneLine(messageOf(cause))})`,
+          `workspace ledger: this attempt could not be recorded (${oneLine(messageOf(cause))}); ` +
+            'the report and the working copy are kept, and no further attempt may be started from ' +
+            'this ledger without a human looking at it',
         );
       }
     }
@@ -279,6 +295,7 @@ export function createRunFinalizer(context: RunFinalizerContext) {
       cancellation: parts.cancellation,
       changes,
       reportPath,
+      workspaceLedgerProblem,
     };
   };
 

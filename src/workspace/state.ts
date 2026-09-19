@@ -10,6 +10,7 @@
 import { randomBytes } from 'node:crypto';
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { z } from 'zod';
 import { messageOf } from '../shared/errors.js';
 import type { RunStatus, SourceRef } from '../shared/types.js';
 import { WorkspaceError } from './errors.js';
@@ -75,57 +76,116 @@ export function workspaceStatePath(workDir: string, workspaceId: string): string
 }
 
 /**
- * One recorded source item, or `null` when the ledger holds no usable identity:
- * absent, of the wrong shape, or missing one of the four fields. An unusable
- * value is never guessed at — the continuation refuses the ledger and says what
- * to write (docs/implement-workspace-continuation.md).
+ * A string the ledger records: the field is present and holds something other
+ * than whitespace. The harness writes only such values, so a ledger holding
+ * anything else was not written by this harness and is refused rather than
+ * coerced (docs/implement-workspace-continuation.md).
  */
-function parseSourceItem(value: unknown): WorkspaceSourceItem | null {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    return null;
-  }
-  const fields = value as Record<string, unknown>;
-  const text = (name: string): string | null => {
-    const field = fields[name];
-    return typeof field === 'string' && field.trim() !== '' ? field : null;
-  };
-  const type = text('type');
-  const scope = text('scope');
-  const id = text('id');
-  const key = text('key');
-  if (type === null || scope === null || id === null || key === null) {
-    return null;
-  }
-  return { type, scope, id, key };
+function ledgerText(field: string): z.ZodString {
+  return z
+    .string({ error: `${field} must be a string` })
+    .refine((value) => value.trim().length > 0, { error: `${field} must not be blank` });
+}
+
+/**
+ * A timestamp the ledger records, validated as the instant the field is read
+ * as. `attempts[].endedAt` is handed to the source as the moment a
+ * continuation reads comments since, and that comparison parses it: a string
+ * that is not the ISO 8601 instant this harness writes would be read as `NaN`
+ * (every comment passes) or coerced into another day, so it is refused instead
+ * of parsed. The accepted form is exactly what `Date.prototype.toISOString()`
+ * writes, and nothing here transforms or substitutes a value for the record's
+ * own (docs/implement-workspace-continuation.md).
+ */
+function ledgerTimestamp(field: string): z.ZodType<string> {
+  return z.iso
+    .datetime({
+      error:
+        `${field} must be an ISO 8601 timestamp such as "2026-01-01T00:00:00.000Z": a ` +
+        'continuation parses it as the moment an attempt ended',
+    })
+    .refine((value) => Number.isFinite(Date.parse(value)), {
+      error: `${field} must be a timestamp this harness can compare with another instant`,
+    });
+}
+
+/**
+ * The item identity a ledger records, when it has one. The four fields are the
+ * identity and the display key a continuation checks; an object missing one of
+ * them was not written by this harness, and is refused rather than read as an
+ * identity it does not hold (`sourceItem: null` is the recorded absence).
+ */
+const workspaceSourceItemSchema = z.strictObject({
+  type: ledgerText('sourceItem.type'),
+  scope: ledgerText('sourceItem.scope'),
+  id: ledgerText('sourceItem.id'),
+  key: ledgerText('sourceItem.key'),
+});
+
+/**
+ * One recorded attempt, as a continuation and its guidance consume it: the run's
+ * id, how it ended and why, the tier that ran it, when it ended, and where its
+ * report is. An entry of another shape is refused, never read as a partial one.
+ */
+const workspaceAttemptSchema = z.strictObject({
+  runId: ledgerText('runId'),
+  outcome: z.enum(['passed', 'failed', 'cancelled'], {
+    error: 'outcome must be "passed", "failed", or "cancelled"',
+  }),
+  tier: ledgerText('tier').optional(),
+  reason: ledgerText('reason').optional(),
+  endedAt: ledgerTimestamp('endedAt'),
+  reportPath: ledgerText('reportPath'),
+});
+
+/**
+ * One ledger, as this harness writes it and reads it. The version is fixed: an
+ * unsupported one is refused instead of migrated into this shape, and every
+ * field a continuation or its guidance reads is validated here rather than cast.
+ */
+const workspaceStateSchema = z.strictObject({
+  version: z.literal(1, {
+    error:
+      'version must be 1: this harness writes and reads only version 1 of the workspace ledger, ' +
+      'and it never migrates one by itself',
+  }),
+  workspaceId: ledgerText('workspaceId'),
+  sourceRoot: ledgerText('sourceRoot'),
+  baseCommit: ledgerText('baseCommit'),
+  branch: ledgerText('branch'),
+  createdAt: ledgerText('createdAt'),
+  sourceItem: workspaceSourceItemSchema.nullish(),
+  attempts: z.array(workspaceAttemptSchema, { error: 'attempts must be an array' }),
+});
+
+/**
+ * How a ledger this harness did not write is reported: the file, what about it
+ * does not match, and the fact that nothing here guesses at it. The harness
+ * never adopts, repairs, or migrates a ledger on its own, so a record it cannot
+ * read as its own is refused before anything is read through it.
+ */
+function ledgerShapeProblem(where: string, error: z.ZodError): WorkspaceError {
+  const details = error.issues
+    .map((issue) => {
+      const at = issue.path.length === 0 ? 'the ledger' : issue.path.map(String).join('.');
+      return `${at}: ${issue.message}`;
+    })
+    .join('; ');
+  return new WorkspaceError(
+    `"${where}" is not a workspace ledger this harness wrote: ${details}. The harness refuses a ` +
+      'ledger it cannot read as its own rather than guessing at it: repair the file by hand, or ' +
+      'handle the issue without continuing this workspace',
+  );
 }
 
 /** One ledger, validated: a file that is not one is reported, never guessed at. */
 function parseWorkspaceState(value: unknown, where: string): WorkspaceState {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    throw new WorkspaceError(`"${where}" is not a workspace ledger object`);
+  const parsed = workspaceStateSchema.safeParse(value);
+  if (!parsed.success) {
+    throw ledgerShapeProblem(where, parsed.error);
   }
-  const fields = value as Record<string, unknown>;
-  const text = (name: string): string => {
-    const field = fields[name];
-    if (typeof field !== 'string' || field.trim() === '') {
-      throw new WorkspaceError(`"${where}" has no usable "${name}"`);
-    }
-    return field;
-  };
-  const attempts = fields['attempts'];
-  if (!Array.isArray(attempts)) {
-    throw new WorkspaceError(`"${where}" has no attempts array`);
-  }
-  return {
-    version: 1,
-    workspaceId: text('workspaceId'),
-    sourceRoot: text('sourceRoot'),
-    baseCommit: text('baseCommit'),
-    branch: text('branch'),
-    createdAt: text('createdAt'),
-    sourceItem: parseSourceItem(fields['sourceItem']),
-    attempts: attempts as readonly WorkspaceAttempt[],
-  };
+  const { sourceItem, ...fields } = parsed.data;
+  return { ...fields, sourceItem: sourceItem ?? null };
 }
 
 /** Reads one workspace's ledger, or `null` when there is none. */
