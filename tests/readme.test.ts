@@ -406,7 +406,7 @@ describe('the documented disposable example', () => {
         'never',
         'exec',
         '--sandbox',
-        'workspace-write',
+        'danger-full-access',
         '--json',
         '-',
       ]);

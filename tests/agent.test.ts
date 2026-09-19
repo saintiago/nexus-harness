@@ -25,7 +25,11 @@ import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { AgentError, runCodexTurn } from '../src/agents/codex/adapter.js';
-import { CODEX_EXECUTABLE, codexRuntime } from '../src/agents/codex/runtime.js';
+import {
+  CODEX_EXECUTABLE,
+  CODEX_EXEC_ARGUMENTS,
+  codexRuntime,
+} from '../src/agents/codex/runtime.js';
 import type { CodexRuntime } from '../src/agents/codex/runtime.js';
 import { runCheckRound } from '../src/checks/round.js';
 import { requestTreeStop } from '../src/process/stop.js';
@@ -594,14 +598,15 @@ describe('what one turn is told, and where it works', () => {
 
     const start = await startRecord(fixture);
     // The invocation is the documented one: no approval prompt (a run is
-    // unattended), `exec`, the sandbox the harness relies on, the event stream it
-    // reads, and the prompt on standard input.
+    // unattended), `exec`, the unsandboxed policy that lets a turn stage and
+    // commit in this working copy, the event stream it reads, and the prompt on
+    // standard input.
     expect(start.argv).toEqual([
       '--ask-for-approval',
       'never',
       'exec',
       '--sandbox',
-      'workspace-write',
+      'danger-full-access',
       '--json',
       '-',
     ]);
@@ -677,7 +682,7 @@ describe('what one turn is told, and where it works', () => {
       'never',
       'exec',
       '--sandbox',
-      'workspace-write',
+      'danger-full-access',
       '--json',
       '-',
     ]);
@@ -753,6 +758,39 @@ describe('what one turn is told, and where it works', () => {
     expect(prompt).toContain(`## Task ${TASK.id}: ${TASK.title}`);
     expect(prompt).toContain('not yours to change');
   }, 60_000);
+});
+
+describe('the launch every turn is given', () => {
+  it('is the explicit unsandboxed form, in the documented shape', () => {
+    // The fixed suffix, exactly: the unsandboxed policy is stated in this
+    // invocation rather than left to a native profile, a global default, or a
+    // fallback after a failure.
+    expect(CODEX_EXEC_ARGUMENTS).toEqual([
+      '--ask-for-approval',
+      'never',
+      'exec',
+      '--sandbox',
+      'danger-full-access',
+      '--json',
+      '-',
+    ]);
+    // The policy that carves `.git` out read-only on this Windows installation
+    // — where `git add` fails on `.git/index.lock` — is not used anywhere, in
+    // either its `--sandbox` spelling or its native permission-profile spelling
+    // (HARN-2, HARN-10).
+    const argumentsLine = CODEX_EXEC_ARGUMENTS.join(' ');
+    expect(argumentsLine).not.toContain('workspace-write');
+    expect(argumentsLine).not.toContain('permissions.');
+    expect(argumentsLine).not.toContain('default_permissions');
+    // Unattended: `--ask-for-approval never` leads, where this CLI accepts it,
+    // and nothing else can route an approval. The event stream the adapter
+    // parses comes last, with the prompt on standard input.
+    const approval = CODEX_EXEC_ARGUMENTS.indexOf('--ask-for-approval');
+    expect(approval).toBe(0);
+    expect(CODEX_EXEC_ARGUMENTS[approval + 1]).toBe('never');
+    expect(CODEX_EXEC_ARGUMENTS.indexOf('exec')).toBeGreaterThan(approval);
+    expect(CODEX_EXEC_ARGUMENTS.slice(-2)).toEqual(['--json', '-']);
+  });
 });
 
 describe('how a turn ends, and what it reports', () => {
@@ -1124,7 +1162,7 @@ describe('the runner, the real checks, and the real adapter together', () => {
         'never',
         'exec',
         '--sandbox',
-        'workspace-write',
+        'danger-full-access',
         '--json',
         '-',
       ]);
@@ -1172,6 +1210,43 @@ describe('the runner, the real checks, and the real adapter together', () => {
     expect(starts[1]?.prompt).toContain('exit code 1');
     expect(starts[1]?.prompt).toContain('app.txt');
     expect(starts[1]?.prompt).toContain('check.mjs');
+  }, 60_000);
+
+  it('launches a fresh workspace and its later turn under the same policy', async () => {
+    const fixture = await createFixture();
+    const result = await runTask(
+      request(fixture, configuration(fixture, { maxRepairs: 1 })),
+      dependencies(
+        runtimeByTurn(fixture, (turn) => ({
+          file: 'app.txt',
+          text: turn === 1 ? REWRITTEN_TEXT : BASELINE_TEXT,
+          write: 'replace',
+          summary: `turn ${String(turn)} is done.`,
+        })),
+      ),
+    );
+
+    expect(result.status).toBe('passed');
+    expect(result.repairsUsed).toBe(1);
+    // The first turn of a fresh working copy and the later turn that continues
+    // it in the same copy are launched by the same adapter, in turn, with the
+    // one fixed unsandboxed policy: neither falls back to the operator's own
+    // defaults or to a narrower one, and the second one can stage and commit
+    // what the first one left behind.
+    const starts = (await recordsOf(fixture)).filter((record) => record.event === 'start');
+    expect(starts).toHaveLength(2);
+    for (const start of starts) {
+      expect(start.argv).toEqual([
+        '--ask-for-approval',
+        'never',
+        'exec',
+        '--sandbox',
+        'danger-full-access',
+        '--json',
+        '-',
+      ]);
+      expect(realpathSync(start.cwd ?? '')).toBe(realpathSync(result.run.workspacePath));
+    }
   }, 60_000);
 
   it('refuses to check after a turn that could not confirm its own stop', async () => {

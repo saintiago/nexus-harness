@@ -3,7 +3,7 @@
  *
  * It is a real program that a real `codex` name resolves to, on the `PATH` of the
  * CLI the suite starts. The production adapter starts it exactly as it starts the
- * real runtime — `codex --ask-for-approval never exec --sandbox workspace-write
+ * real runtime — `codex --ask-for-approval never exec --sandbox danger-full-access
  * --json -`, prompt on standard input — so nothing in `src/` knows this file
  * exists and no flag reaches it. Everything above this boundary is real: the CLI
  * process, its argument parsing, Git, the target's own commands, the filesystem,

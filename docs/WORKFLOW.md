@@ -81,8 +81,10 @@ Here `--profile` chooses native configuration and `--model` explicitly selects t
 The adapter appends its existing suffix and supplies the task prompt on stdin:
 
 ```text
-codex --profile deepseek --model deepseek-flash exec --sandbox workspace-write --json -
+codex --profile deepseek --model deepseek-flash --ask-for-approval never exec --sandbox danger-full-access --json -
 ```
+
+The execution part is not configurability: it is the adapter's own fixed suffix. Each turn runs unsandboxed (`--sandbox danger-full-access`) and unattended (`--ask-for-approval never`, so nothing waits for a prompt), because a turn must be able to stage and commit in the retained working copy and the narrower `workspace-write` policy — in its `--sandbox` spelling or its native permission-profile spelling — leaves that copy's Git metadata read-only on Windows, where `git add` fails on `.git/index.lock` (HARN-2, HARN-10). That policy is an explicit, documented choice, not a hidden fallback: the suffix is the same for every turn, and nothing widens after a failure. A turn has the same file and network reach as the harness's own configured `setup` and `checks` commands; README "Safety" states that plainly.
 
 Do not put `exec`, a prompt, redirection, a shell expression, or an end-of-options `--` into the configured prefix. Do not use prefix options/wrappers that redirect the working directory, replace structured output, or override the adapter's execution/permission controls. This is a trusted launcher contract, not a general CLI policy language.
 
@@ -147,6 +149,8 @@ Without `--config`, preserve the verifier's existing documented defaults, includ
 Do not require `CODEX_API_KEY`, an OpenAI login, or `auth.json` as universal prerequisites. The live invocation establishes whether the selected runtime's credentials and protocol actually work. Launch failure or missing authentication is a failed/unexecuted live check, never a pass. No automatic login, provider fallback, or paid retry loop.
 
 Keep live tests outside default discovery, `npm test`, `npm run validate`, and CI. See the setup task for offline prerequisite tests and T16 evidence.
+
+The launch also has a by-hand commit check in README "Coding runtime": a disposable repository where a real turn commits its work, with the retained clone inspected afterwards. It is not part of `npm test`, `npm run validate`, or CI, and it is not evidence until it has been run.
 
 ## 4. Loop semantics
 

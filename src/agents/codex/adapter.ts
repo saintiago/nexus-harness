@@ -3,13 +3,13 @@
  * runner: a summary and, when the turn stopped something, how that stop went.
  *
  * The runtime is started in the run's working copy, which is the working root
- * Codex uses and the root its sandbox keeps writes inside. A turn that reports a
- * completed one is a summary; everything else rejects, and the runner treats a
- * rejected turn as a failed run. What the runtime says about the work — including
- * a claim that tests passed — is agent text: it is kept as the turn's summary and
- * never becomes a check result. Nothing vendor-specific leaves this module, and
- * credentials stay in the runtime's own environment, never in a task, a
- * configuration, a log, or a report.
+ * Codex uses for the turn and where its commits and any other leftovers stay.
+ * A turn that reports a completed one is a summary; everything else rejects,
+ * and the runner treats a rejected turn as a failed run. What the runtime says
+ * about the work — including a claim that tests passed — is agent text: it is
+ * kept as the turn's summary and never becomes a check result. Nothing
+ * vendor-specific leaves this module, and credentials stay in the runtime's own
+ * environment, never in a task, a configuration, a log, or a report.
  */
 import { spawn } from 'node:child_process';
 import type { ChildProcessByStdio } from 'node:child_process';
