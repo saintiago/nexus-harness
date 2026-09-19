@@ -27,6 +27,7 @@ src/
     check-config.ts               (97)   `check-config` and what it prints
     run-command.ts                (224)  `run`: load the inputs, install the stop, print the outcome
     source-command.ts             (379)  `source list|run|watch`, the connector selection, abortable sleep
+    review-command.ts             (273)  `review scan|watch`: the App client, the reviewer, the scan
     activity.ts                   (371)  the activity pane: a bounded, message-grouped block under the progress
     progress.ts                   (136)  what a run's own progress line reads as on an interactive terminal
     dependencies.ts               (154)  the loop's real collaborators and the wrapped set a test gets
@@ -88,15 +89,15 @@ src/
   delivery/
     github.ts                     (425)  the optional GitHub step: push, find, create or update a PR
   reviews/
-    contract.ts                   (329)  the review data, failures, and the repository/queue boundary
-    github.ts                     (718)  the App JWT, the installation token, and the repository calls
-    diff.ts                       (132)  the pull request's diff, and where a finding is positioned
-    reviewer.ts                   (390)  the reviewer prompt, the one bounded turn, and the verdict file
-    scan.ts                       (714)  one scan or watch: eligibility, dedup, publishing, evidence
+    contract.ts                   (327)  the review data, failures, and the repository/queue boundary
+    github.ts                     (726)  the App JWT, the installation token, and the repository calls
+    diff.ts                       (134)  the pull request's diff, and where a finding is positioned
+    reviewer.ts                   (402)  the reviewer prompt, the one bounded turn, and the verdict file
+    scan.ts                       (790)  one scan or watch: eligibility, dedup, publishing, evidence
   agents/
     codex/
       runtime.ts                  (110)  the launch prefix, the environment, the stop contract
-      adapter.ts                  (431)  runCodexTurn/runCodexPrompt: one turn, normalized for the runner
+      adapter.ts                  (447)  runCodexTurn/runCodexPrompt: one turn, normalized for the runner
       prompt.ts                   (137)  what one turn is told, the bounded guidance included
       events.ts                   (355)  the JSON event stream, and the activity lines read from it
 ```
@@ -119,10 +120,10 @@ further would separate one decision from itself: `runs/runner.ts` (the loop), `s
   lines when the output is redirected or the terminal cannot hold a pane. `cli/progress.ts` holds
   what those progress lines read as there, and only there: a line it does not recognize is written
   as the run wrote it. The directory is also the only place that composes the loop's collaborators
-  (`cli/dependencies.ts`), and the only place that constructs a task source.
+  (`cli/dependencies.ts`), and the only place that constructs a task source or the review path.
 - **Does not own:** any part of the loop, any command execution, any Git or Jira call. A command
-  module resolves its inputs, hands the collaborators to `runTask`/`runSource`/`watchSource`, and
-  returns an exit code.
+  module resolves its inputs, hands the collaborators to `runTask`/`runSource`/`watchSource` (or
+  `scanReviews`/`watchReviews`), and returns an exit code.
 - **Entry points:** `runCli`, `consoleContext` (`cli.ts`); `CliContext`, `CliIo`, `InterruptSignals`,
   `CliTerminal`, `EXIT_OK`, `EXIT_INPUT_ERROR`, `EXIT_USAGE`, `EXIT_CANCELLED`
   (`cli/context.ts`); `createActivityDisplay`, `ActivityDisplay`, `ACTIVITY_PANE_LINES`
