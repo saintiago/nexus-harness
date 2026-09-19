@@ -240,7 +240,7 @@ describe('the built CLI, end to end', () => {
         'never',
         'exec',
         '--sandbox',
-        'workspace-write',
+        'danger-full-access',
         '--json',
         '-',
       ]);
@@ -356,7 +356,7 @@ describe('the built CLI, end to end', () => {
         'never',
         'exec',
         '--sandbox',
-        'workspace-write',
+        'danger-full-access',
         '--json',
         '-',
       ]);

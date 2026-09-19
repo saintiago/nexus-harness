@@ -607,7 +607,7 @@ describe('the exercises, through the stand-in runtime boundary', () => {
         'never',
         'exec',
         '--sandbox',
-        'workspace-write',
+        'danger-full-access',
         '--json',
         '-',
       ]);

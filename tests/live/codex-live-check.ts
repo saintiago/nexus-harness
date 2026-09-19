@@ -910,8 +910,9 @@ export async function verifyImplementationExercise(
       );
       expectTrue(
         problems,
-        'the agent log names the interface the adapter used (--ask-for-approval never exec --sandbox workspace-write --json -)',
-        log.includes('--ask-for-approval never exec --sandbox workspace-write --json -'),
+        'the agent log names the interface the adapter used (--ask-for-approval never ' +
+          'exec --sandbox danger-full-access --json -)',
+        log.includes('--ask-for-approval never exec --sandbox danger-full-access --json -'),
       );
     }
 

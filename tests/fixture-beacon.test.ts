@@ -30,7 +30,7 @@ const ADAPTER_ARGUMENTS = [
   'never',
   'exec',
   '--sandbox',
-  'workspace-write',
+  'danger-full-access',
   '--json',
   '-',
 ];
