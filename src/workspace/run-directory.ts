@@ -12,6 +12,7 @@ import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { messageOf } from '../shared/errors.js';
 import { WorkspaceError } from './errors.js';
+import { isSameOrInside } from './git.js';
 
 /** A run directory allocated for one invocation, before any work is placed in it. */
 export interface RunDirectory {
@@ -83,9 +84,48 @@ export function runDirPathFor(workDir: string, runId: string): string {
   return path.join(path.resolve(workDir), 'runs', runId);
 }
 
-/** Where one workspace lives: `<workDir>/workspaces/<workspaceId>`. */
+/** `<workDir>/workspaces`: where every workspace and its ledger lives. */
+function workspacesRootFor(workDir: string): string {
+  return path.join(path.resolve(workDir), 'workspaces');
+}
+
+/**
+ * Why a workspace id cannot be resolved, or `null` when it can. A workspace id
+ * is the id of the run that created the workspace, so it has exactly the shape a
+ * generated run id has. The id reaches the harness through an issue's pointer
+ * label, so anything that could be read as a path, an option, or shell text is
+ * refused by name instead of being resolved into a location.
+ */
+export function workspaceIdProblem(workspaceId: string): string | null {
+  if (RUN_ID_PATTERN.test(workspaceId)) {
+    return null;
+  }
+  return (
+    `"${workspaceId}" is not a usable workspace id: a workspace id is a generated run name of ` +
+    'letters, digits, "-", and "_", and a pointer label is never read as a path'
+  );
+}
+
+/**
+ * Where one workspace lives: `<workDir>/workspaces/<workspaceId>`. The id is
+ * validated first, and the resolved path is then checked to lie inside the
+ * workspaces root, so a pointer label can never name a clone — or a ledger —
+ * somewhere else on the machine.
+ */
 export function workspacePathFor(workDir: string, workspaceId: string): string {
-  return path.join(path.resolve(workDir), 'workspaces', workspaceId);
+  const problem = workspaceIdProblem(workspaceId);
+  if (problem !== null) {
+    throw new WorkspaceError(problem);
+  }
+  const root = workspacesRootFor(workDir);
+  const resolved = path.join(root, workspaceId);
+  if (!isSameOrInside(root, resolved)) {
+    throw new WorkspaceError(
+      `the workspace id "${workspaceId}" does not resolve to a path inside "${root}", so it is not ` +
+        'a workspace this harness will use',
+    );
+  }
+  return resolved;
 }
 
 /**

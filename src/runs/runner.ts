@@ -40,6 +40,7 @@ import type {
 } from '../shared/types.js';
 import type { PreparedWorkspace } from '../workspace/prepare.js';
 import { WORKSPACE_IDENTITY } from '../workspace/git.js';
+import { sourceItemFor } from '../workspace/state.js';
 import type {
   AgentTurnResult,
   RunTaskRequest,
@@ -196,11 +197,19 @@ export async function runTask(
     );
   } else {
     try {
-      workspace = await dependencies.prepareWorkspace(run, source, {
-        deadlineMs,
-        now: dependencies.now,
-        stop: callerStop,
-      });
+      workspace = await dependencies.prepareWorkspace(
+        run,
+        source,
+        {
+          deadlineMs,
+          now: dependencies.now,
+          stop: callerStop,
+        },
+        // The item this workspace is created for, when the run came from a
+        // source: what a later pointer label is checked against, so the clone is
+        // never continued as another item's work.
+        request.sourceRef === undefined ? undefined : sourceItemFor(request.sourceRef),
+      );
       await dependencies.appendRunLog(
         timeline,
         `workspace prepared at ${oneLine(workspace.workspacePath)} on branch ${workspace.branch} at ${source.baseCommit}`,

@@ -7,7 +7,6 @@
  */
 import type { JiraSourceConfig } from '../../shared/types.js';
 import type { SourceCandidate } from '../contract.js';
-import { parseWorkspacePointers } from '../contract.js';
 import type { HttpClient } from './http.js';
 import { malformed, parseIssue, refFor } from './issue.js';
 import { isRecord } from './json.js';
@@ -83,9 +82,6 @@ export async function listEligibleIssues(
       candidates.push({
         ref: refFor(config, issue),
         title: issue.fields.summary,
-        // The workspace pointers the issue carries now. A run only ever reads
-        // them; the one that creates a workspace writes its own.
-        pointers: parseWorkspacePointers(issue.fields.labels),
       });
     }
 

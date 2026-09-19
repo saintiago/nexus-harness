@@ -64,7 +64,8 @@ import { prepareWorkspace } from '../src/workspace/prepare.js';
 import { preflightSource } from '../src/workspace/preflight.js';
 import { allocateRunDirectory } from '../src/workspace/run-directory.js';
 import type { RunDirectory } from '../src/workspace/run-directory.js';
-import { workspaceStatePath } from '../src/workspace/state.js';
+import type { WorkspaceSourceItem } from '../src/workspace/state.js';
+import { readWorkspaceState, sourceItemFor, workspaceStatePath } from '../src/workspace/state.js';
 import { fakeGhCalls, installFakeGh } from './fixtures/local-target.js';
 import type { FakeGhState } from './fixtures/local-target.js';
 import {
@@ -89,12 +90,8 @@ function refFor(id: string, key = `SAM1-${id}`, updatedAt = '2026-09-16T11:00:00
   };
 }
 
-function candidateFor(
-  id: string,
-  key = `SAM1-${id}`,
-  pointers: readonly string[] = [],
-): SourceCandidate {
-  return { ref: refFor(id, key), title: `Task ${key}`, pointers };
+function candidateFor(id: string, key = `SAM1-${id}`): SourceCandidate {
+  return { ref: refFor(id, key), title: `Task ${key}` };
 }
 
 function taskFor(candidate: SourceCandidate): Task {
@@ -104,6 +101,15 @@ function taskFor(candidate: SourceCandidate): Task {
     description: '## Acceptance criteria\n- It works.',
     acceptanceCriteria: ['It works.'],
   };
+}
+
+/**
+ * The item as the fresh read returns it: the same issue, with the pointer labels
+ * that read observed. The decision is made from these, never from what a search
+ * result said, so a test that wants a continuation puts the label here.
+ */
+function preparedFor(candidate: SourceCandidate, pointers: readonly string[] = []): SourceTask {
+  return { ref: candidate.ref, task: taskFor(candidate), pointers };
 }
 
 function runDirectoryAt(runDir: string): RunDirectory {
@@ -290,7 +296,7 @@ function createFixture(options: FixtureOptions): Fixture {
       prepareCount += 1;
       log.push(`prepare:${candidate.ref.key}`);
       const prepared = options.prepare?.(candidate, prepareCount);
-      return prepared === undefined ? { ref: candidate.ref, task: taskFor(candidate) } : prepared;
+      return prepared === undefined ? preparedFor(candidate) : prepared;
     },
     claim: async (item) => {
       claimCount += 1;
@@ -461,7 +467,7 @@ describe('a finite source run', () => {
         if (candidate.ref.id === '1') {
           throw new SourceError('invalid-task', 'SAM1-1: the description has no criteria heading');
         }
-        return { ref: candidate.ref, task: taskFor(candidate) };
+        return preparedFor(candidate);
       },
     });
 
@@ -963,7 +969,6 @@ describe('the local receipt', () => {
     const edited: SourceCandidate = {
       ref: refFor('1', 'SAM1-1', '2030-01-01T00:00:00.000Z'),
       title: 'A completely different issue body',
-      pointers: [],
     };
     const second = createFixture({ workDir, scans: [[edited]] });
     const summary = await runSource(second.context, null);
@@ -1083,7 +1088,14 @@ async function preparedWorkspaceOnDisk(
     readonly reason: string;
     readonly tier?: string;
   }[] = [],
-): Promise<{ workspaceId: string }> {
+  item: { readonly id: string; readonly key: string } = { id: '2', key: 'SAM1-2' },
+): Promise<{
+  readonly workspaceId: string;
+  /** The item identity the ledger records, as a continuation must match it. */
+  readonly sourceItem: WorkspaceSourceItem;
+  /** The repository root the ledger records, as this run's preflight resolves it. */
+  readonly sourceRoot: string;
+}> {
   const repo = await createTempDir();
   const runGit = (...args: readonly string[]): void => {
     const result = spawnSync('git', [...args], {
@@ -1107,12 +1119,18 @@ async function preparedWorkspaceOnDisk(
   runGit('add', '--all');
   runGit('commit', '--quiet', '--message', 'baseline');
 
+  const sourceItem = sourceItemFor(refFor(item.id, item.key));
   const source = await preflightSource({ repoPath: repo, workDir });
-  const prepared = await prepareWorkspace(await allocateRunDirectory(workDir), source, {
-    deadlineMs: Date.now() + 60_000,
-    now: () => new Date(),
-    stop: undefined,
-  });
+  const prepared = await prepareWorkspace(
+    await allocateRunDirectory(workDir),
+    source,
+    {
+      deadlineMs: Date.now() + 60_000,
+      now: () => new Date(),
+      stop: undefined,
+    },
+    sourceItem,
+  );
   if (attempts.length > 0) {
     // The ledger the runner writes as each attempt finishes, as this continuation
     // will read it.
@@ -1125,6 +1143,7 @@ async function preparedWorkspaceOnDisk(
         baseCommit: prepared.baseCommit,
         branch: prepared.branch,
         createdAt: '2026-01-01T00:00:00.000Z',
+        sourceItem,
         attempts: attempts.map((attempt, index) => ({
           runId: `run-${String(index + 1)}`,
           outcome: attempt.outcome,
@@ -1137,7 +1156,7 @@ async function preparedWorkspaceOnDisk(
       'utf8',
     );
   }
-  return { workspaceId: prepared.workspaceId };
+  return { workspaceId: prepared.workspaceId, sourceItem, sourceRoot: source.sourceRoot };
 }
 
 /**
@@ -1256,10 +1275,14 @@ describe('an issue that points at a workspace', () => {
 
   it('continues that workspace instead of creating one, and never writes a second pointer', async () => {
     const workDir = await createTempDir();
-    const { workspaceId } = await preparedWorkspaceOnDisk(workDir);
+    const { workspaceId, sourceRoot } = await preparedWorkspaceOnDisk(workDir);
     const fixture = createFixture({
       workDir,
-      scans: [[candidateFor('2', 'SAM1-2', [workspaceId])]],
+      // The search result is a preview: the workspace label is on the issue when
+      // the item is re-read, and that read is what decides.
+      scans: [[candidateFor('2', 'SAM1-2')]],
+      prepare: (candidate) => preparedFor(candidate, [workspaceId]),
+      preflight: () => Promise.resolve({ sourceRoot, baseCommit: 'base' }),
     });
 
     const summary = await runSource(fixture.context, null);
@@ -1277,7 +1300,7 @@ describe('an issue that points at a workspace', () => {
 
   it('tells a continued attempt what the earlier ones did, and what was said since', async () => {
     const workDir = await createTempDir();
-    const { workspaceId } = await preparedWorkspaceOnDisk(workDir, [
+    const { workspaceId, sourceRoot } = await preparedWorkspaceOnDisk(workDir, [
       {
         outcome: 'failed',
         reason: 'the baseline was red and the turn did not fix it',
@@ -1287,7 +1310,9 @@ describe('an issue that points at a workspace', () => {
     const asked: string[] = [];
     const fixture = createFixture({
       workDir,
-      scans: [[candidateFor('2', 'SAM1-2', [workspaceId])]],
+      scans: [[candidateFor('2', 'SAM1-2')]],
+      prepare: (candidate) => preparedFor(candidate, [workspaceId]),
+      preflight: () => Promise.resolve({ sourceRoot, baseCommit: 'base' }),
       commentsSince: (_item, since) => {
         asked.push(since);
         return [
@@ -1342,6 +1367,141 @@ describe('an issue that points at a workspace', () => {
         'read docs/module-structure.md before changing anything',
     ]);
   });
+
+  it('decides from the item as it is now, not from the pointer the search result carried', async () => {
+    const workDir = await createTempDir();
+    const { workspaceId, sourceRoot } = await preparedWorkspaceOnDisk(workDir);
+    // The search ran while the issue still carried the pointer label, so the
+    // candidate object still holds what it said then; the label has since been
+    // removed, and the fresh read says the issue names no workspace. The decision
+    // follows the fresh read: a new workspace, not the old one.
+    const staleSearchResult = Object.assign(candidateFor('2', 'SAM1-2'), {
+      pointers: [workspaceId],
+    });
+    const fixture = createFixture({
+      workDir,
+      scans: [[staleSearchResult]],
+      preflight: () => Promise.resolve({ sourceRoot, baseCommit: 'base' }),
+    });
+
+    const summary = await runSource(fixture.context, null);
+
+    expect(summary.attempted).toBe(1);
+    expect(summary.passed).toBe(1);
+    expect(fixture.requests[0]?.continued).toBe(false);
+    expect(fixture.log.filter((entry) => entry.startsWith('workspace:'))).toEqual([
+      'workspace:SAM1-2:run-1',
+    ]);
+    // The workspace the stale result named was left exactly as it was.
+    expect((await readWorkspaceState(workDir, workspaceId))?.attempts).toEqual([]);
+  });
+
+  it('refuses a pointer label that is not a workspace id, and publishes why', async () => {
+    const workDir = await createTempDir();
+    const fixture = createFixture({
+      workDir,
+      scans: [[candidateFor('1')]],
+      prepare: (candidate) => preparedFor(candidate, ['../escape']),
+    });
+
+    const summary = await runSource(fixture.context, null);
+
+    expect(summary).toMatchObject({ outcome: 'completed', attempted: 0, refused: 1 });
+    expect(fixture.refusals[0]?.reason).toMatch(/not a usable workspace id/);
+    expect(fixture.log).not.toContain('claim:SAM1-1');
+    expect(fixture.log).not.toContain('run:SAM1-1');
+    expect(existsSync(receiptFilePath(workDir, refFor('1')))).toBe(false);
+    expect(existsSync(path.join(workDir, 'workspaces'))).toBe(false);
+  });
+
+  it("refuses a pointer that names another item's workspace, and publishes why", async () => {
+    const workDir = await createTempDir();
+    // The workspace was created for SAM1-2; the pointer label sits on SAM1-3.
+    const { workspaceId, sourceRoot } = await preparedWorkspaceOnDisk(workDir);
+    const fixture = createFixture({
+      workDir,
+      scans: [[candidateFor('3', 'SAM1-3')]],
+      prepare: (candidate) => preparedFor(candidate, [workspaceId]),
+      preflight: () => Promise.resolve({ sourceRoot, baseCommit: 'base' }),
+    });
+
+    const summary = await runSource(fixture.context, null);
+
+    expect(summary).toMatchObject({ outcome: 'completed', attempted: 0, refused: 1 });
+    const reason = fixture.refusals[0]?.reason ?? '';
+    expect(reason).toContain('created for jira SAM1-2 (immutable id 2)');
+    expect(reason).toContain('not for this item (jira SAM1-3 (immutable id 3)');
+    expect(fixture.log).not.toContain('claim:SAM1-3');
+    expect(fixture.log).not.toContain('run:SAM1-3');
+  });
+
+  it('refuses a workspace cloned from another repository, and publishes why', async () => {
+    const workDir = await createTempDir();
+    const { workspaceId } = await preparedWorkspaceOnDisk(workDir);
+    const fixture = createFixture({
+      workDir,
+      scans: [[candidateFor('2', 'SAM1-2')]],
+      prepare: (candidate) => preparedFor(candidate, [workspaceId]),
+      // The run targets a different repository than the one the workspace was
+      // cloned from; the ledger's own sourceRoot is what it is checked against.
+      preflight: () => Promise.resolve({ sourceRoot: '/other/repo', baseCommit: 'base' }),
+    });
+
+    const summary = await runSource(fixture.context, null);
+
+    expect(summary).toMatchObject({ outcome: 'completed', attempted: 0, refused: 1 });
+    expect(fixture.refusals[0]?.reason).toMatch(/cloned from .*and this run's source repository/);
+    expect(fixture.log).not.toContain('claim:SAM1-2');
+    expect(fixture.log).not.toContain('run:SAM1-2');
+  });
+
+  it('refuses a ledger that records no source item identity, with manual next steps', async () => {
+    const workDir = await createTempDir();
+    const { workspaceId, sourceRoot } = await preparedWorkspaceOnDisk(workDir);
+    // A ledger written before identities were recorded: everything a continuation
+    // needs except the item the workspace belongs to.
+    const ledger = await readWorkspaceState(workDir, workspaceId);
+    if (ledger === null) {
+      throw new Error('the fixture workspace has no ledger');
+    }
+    await writeFile(
+      workspaceStatePath(workDir, workspaceId),
+      `${JSON.stringify({
+        version: 1,
+        workspaceId: ledger.workspaceId,
+        sourceRoot: ledger.sourceRoot,
+        baseCommit: ledger.baseCommit,
+        branch: ledger.branch,
+        createdAt: ledger.createdAt,
+        attempts: [
+          {
+            runId: workspaceId,
+            outcome: 'failed',
+            endedAt: '2026-01-01T00:00:00.000Z',
+            reportPath: `/runs/${workspaceId}/result.json`,
+          },
+        ],
+      })}\n`,
+      'utf8',
+    );
+    const fixture = createFixture({
+      workDir,
+      scans: [[candidateFor('2', 'SAM1-2')]],
+      prepare: (candidate) => preparedFor(candidate, [workspaceId]),
+      preflight: () => Promise.resolve({ sourceRoot, baseCommit: 'base' }),
+    });
+
+    const summary = await runSource(fixture.context, null);
+
+    expect(summary).toMatchObject({ outcome: 'completed', attempted: 0, refused: 1 });
+    const reason = fixture.refusals[0]?.reason ?? '';
+    expect(reason).toContain('records no source item identity');
+    expect(reason).toContain('"sourceItem"');
+    expect(reason).toContain(`/runs/${workspaceId}/result.json`);
+    expect(reason).toContain('never adopts or migrates');
+    expect(fixture.log).not.toContain('claim:SAM1-2');
+    expect(fixture.log).not.toContain('run:SAM1-2');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1363,7 +1523,7 @@ describe('source list', () => {
     // A workspace this machine has, named by an issue's pointer label: what a
     // continuation needs, and what the preview reports as continuable.
     const workspaceId = 'run-20260916100000-bbbbbbbb';
-    const continued = candidateFor('4', 'SAM1-4', [workspaceId]);
+    const continued = candidateFor('4', 'SAM1-4');
     await mkdir(path.join(workDir, 'workspaces', workspaceId), { recursive: true });
     await writeFile(
       workspaceStatePath(workDir, workspaceId),
@@ -1374,6 +1534,9 @@ describe('source list', () => {
         baseCommit: 'base',
         branch: `harness/${workspaceId}`,
         createdAt: '2026-09-16T10:00:00.000Z',
+        // The item the workspace was created for: the preview checks this before
+        // it says the issue can be continued.
+        sourceItem: sourceItemFor(refFor('4', 'SAM1-4')),
         attempts: [
           {
             runId: workspaceId,
@@ -1392,7 +1555,10 @@ describe('source list', () => {
         if (candidate.ref.id === '2') {
           throw new SourceError('invalid-task', 'SAM1-2: the description has no criteria heading');
         }
-        return candidate.ref.id === '3' ? null : { ref: candidate.ref, task: taskFor(candidate) };
+        if (candidate.ref.id === '3') {
+          return null;
+        }
+        return preparedFor(candidate, candidate.ref.id === '4' ? [workspaceId] : []);
       },
     });
     const receipted = path.join(workDir, '.intake', 'receipts');
@@ -1565,7 +1731,7 @@ describe('source watch', () => {
           if (preparations === 1) {
             throw new SourceError('retryable-read', 'the issue read timed out');
           }
-          return { ref: candidate.ref, task: taskFor(candidate) };
+          return preparedFor(candidate);
         },
       });
 
@@ -1661,6 +1827,8 @@ interface FakeIssue {
   readonly summary: string;
   status: string;
   updated: string;
+  /** The labels the site holds; the queue label is added when the site is built. */
+  labels?: string[];
 }
 
 interface FakeJira {
@@ -1728,6 +1896,12 @@ function fakeJira(issues: FakeIssue[]): FakeJira {
       headers: { 'content-type': 'application/json' },
     });
 
+  /** The labels the site holds for one issue; every issue carries the queue label. */
+  const labelsOf = (issue: FakeIssue): string[] => {
+    issue.labels ??= ['harness-task'];
+    return issue.labels;
+  };
+
   const impl = async (input: string | URL | Request, init: RequestInit = {}): Promise<Response> => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
     const method = init.method ?? 'GET';
@@ -1746,7 +1920,7 @@ function fakeJira(issues: FakeIssue[]): FakeJira {
           fields: {
             summary: issue.summary,
             status: { name: issue.status },
-            labels: ['harness-task'],
+            labels: labelsOf(issue),
             project: { key: 'SAM1' },
             issuetype: { name: 'Task' },
             updated: issue.updated,
@@ -1787,6 +1961,17 @@ function fakeJira(issues: FakeIssue[]): FakeJira {
       });
       return jsonResponse({ id });
     }
+    if (issueMatch !== null && method === 'PUT' && issue !== undefined) {
+      // The only write the connector makes to an issue is the pointer label.
+      const update = body?.['update'] as { labels?: Array<{ add?: string }> } | undefined;
+      for (const change of update?.labels ?? []) {
+        const add = change.add;
+        if (typeof add === 'string' && !labelsOf(issue).includes(add)) {
+          labelsOf(issue).push(add);
+        }
+      }
+      return new Response(null, { status: 204 });
+    }
     if (issue !== undefined) {
       return jsonResponse({
         id: issue.id,
@@ -1795,7 +1980,7 @@ function fakeJira(issues: FakeIssue[]): FakeJira {
           summary: issue.summary,
           description: jiraDocument(),
           status: { name: issue.status },
-          labels: ['harness-task'],
+          labels: labelsOf(issue),
           project: { key: 'SAM1' },
           issuetype: { name: 'Task' },
           updated: issue.updated,
@@ -2131,6 +2316,106 @@ describe('the source commands through the CLI', () => {
           name.startsWith('run-'),
         ),
       ).toHaveLength(1);
+    } finally {
+      if (previous === undefined) {
+        delete process.env.JIRA_API_TOKEN;
+      } else {
+        process.env.JIRA_API_TOKEN = previous;
+      }
+    }
+  });
+
+  it('continues the workspace its pointer names when the issue is moved back, in the same clone', async () => {
+    const target = await createTarget();
+    const jira = fakeJira([
+      {
+        id: '10011',
+        key: 'SAM1-11',
+        summary: 'Create the marker',
+        status: 'To Do',
+        updated: '2026-09-16T11:00:00.000Z',
+      },
+    ]);
+    const previous = process.env.JIRA_API_TOKEN;
+    process.env.JIRA_API_TOKEN = 'test-token';
+
+    try {
+      const dependencies: CliContext['dependencies'] = {
+        runAgentTurn: async (request) => {
+          await writeFile(path.join(request.workspacePath, 'MARKER.md'), 'done\n', 'utf8');
+          return { summary: 'wrote the marker' };
+        },
+      };
+      const first = await runSourceCli(
+        ['source', 'run', '--repo', target.repo, '--config', target.configPath],
+        target.directory,
+        { fetch: jira.fetch, dependencies },
+      );
+      expect(first.code).toBe(EXIT_OK);
+      const runNames = (): Promise<string[]> =>
+        readdir(path.join(target.workDir, 'runs')).then((names) =>
+          names.filter((name) => name.startsWith('run-')),
+        );
+      const [firstRun] = await runNames();
+
+      // The run that created the workspace recorded the item it was created for,
+      // and wrote the pointer label the next attempt is found by.
+      const workspaceId = (await readdir(path.join(target.workDir, 'workspaces'))).find((name) =>
+        name.startsWith('run-'),
+      );
+      expect(workspaceId).toBeDefined();
+      const ledgerPath = path.join(target.workDir, 'workspaces', `${workspaceId ?? ''}.json`);
+      const ledger = JSON.parse(await readFile(ledgerPath, 'utf8')) as { sourceItem?: unknown };
+      expect(ledger.sourceItem).toEqual({
+        type: 'jira',
+        scope: SCOPE,
+        id: '10011',
+        key: 'SAM1-11',
+      });
+      expect(jira.issues[0]?.labels).toContain(`harness-ws-${workspaceId ?? ''}`);
+
+      // The operator moves the issue back to the ready status; the pointer label
+      // is still on it, so the next scan continues that clone.
+      if (jira.issues[0] === undefined) {
+        throw new Error('the fixture issue disappeared');
+      }
+      jira.issues[0].status = 'To Do';
+      const second = await runSourceCli(
+        ['source', 'run', '--repo', target.repo, '--config', target.configPath],
+        target.directory,
+        { fetch: jira.fetch, dependencies },
+      );
+
+      expect(second.err).toBe('');
+      expect(second.code).toBe(EXIT_OK);
+      expect(second.out).toContain('1 passed');
+      const secondRun = (await runNames()).find((name) => name !== firstRun);
+      expect(secondRun).toBeDefined();
+      const report = JSON.parse(
+        await readFile(
+          path.join(target.workDir, 'runs', `${secondRun ?? ''}`, 'result.json'),
+          'utf8',
+        ),
+      ) as {
+        status: string;
+        workspace: { workspaceId: string; continued: boolean; attempt: number };
+      };
+      expect(report.status).toBe('passed');
+      expect(report.workspace).toMatchObject({
+        workspaceId,
+        continued: true,
+        attempt: 2,
+      });
+      // The same clone: the file the first attempt left is still there, and the
+      // continuation wrote no second pointer label.
+      expect(
+        existsSync(path.join(target.workDir, 'workspaces', `${workspaceId ?? ''}`, 'MARKER.md')),
+      ).toBe(true);
+      expect(
+        (jira.issues[0].labels ?? []).filter((label) => label.startsWith('harness-ws-')),
+      ).toEqual([`harness-ws-${workspaceId ?? ''}`]);
+      const after = JSON.parse(await readFile(ledgerPath, 'utf8')) as { attempts?: unknown[] };
+      expect(after.attempts).toHaveLength(2);
     } finally {
       if (previous === undefined) {
         delete process.env.JIRA_API_TOKEN;

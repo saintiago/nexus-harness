@@ -71,15 +71,12 @@ export class SourceFeedbackError extends Error {
 /** One eligible external item, before its content has been read. */
 export interface SourceCandidate {
   readonly ref: SourceRef;
-  /** The item's title as the source lists it; a preview, not the task. */
-  readonly title: string;
   /**
-   * The workspace ids the item's pointer labels name, in the order they were
-   * read. Empty for an item that names no workspace: that is a first attempt,
-   * unless a receipt says it was attempted before
-   * (docs/implement-workspace-continuation.md).
+   * The item's title as the source lists it; a preview, not the task. A search
+   * result can lag, so nothing else about the item is carried here: what the item
+   * says now, including the workspace pointers it carries, is read by `prepare`.
    */
-  readonly pointers: readonly string[];
+  readonly title: string;
 }
 
 /**
@@ -106,6 +103,14 @@ export function parseWorkspacePointers(labels: readonly string[]): readonly stri
 export interface SourceTask {
   readonly ref: SourceRef;
   readonly task: Task;
+  /**
+   * The workspace ids the item's pointer labels name, in the order they were
+   * read, as the read that produced this task observed them. The fresh, continue,
+   * or refuse decision is made from these, never from what a search result said
+   * earlier: a search can lag behind the item
+   * (docs/implement-workspace-continuation.md).
+   */
+  readonly pointers: readonly string[];
 }
 
 /**
@@ -171,7 +176,8 @@ export interface SourceComment {
  * - `prepare` re-reads the item, tests eligibility again, maps and validates the
  *   four-field task, and returns `null` for an item that no longer qualifies. An
  *   item that is real but unusable throws a {@link SourceError} of kind
- *   `invalid-task`.
+ *   `invalid-task`. The prepared item carries the pointer labels that read
+ *   observed, so the continuation decision never uses a stale search result.
  * - `claim` rechecks the captured revision and the eligibility rules, then
  *   requests the transition to the running status. `false` means it sent **no**
  *   mutation request and the coordinator may release the receipt it just
@@ -303,9 +309,10 @@ export interface SourceSummary {
   /** Issues skipped because their description is not a usable task. */
   readonly invalid: number;
   /**
-   * Issues the harness would not act on and said so: a pointer that resolves
-   * nowhere here, two pointers, or an attempted issue with nothing saying what to
-   * continue (docs/implement-workspace-continuation.md).
+   * Issues the harness would not act on and said so: a pointer that is not a
+   * workspace id, resolves nowhere here, or names another item's, site's, or
+   * repository's workspace; two pointers; or an attempted issue with nothing
+   * saying what to continue (docs/implement-workspace-continuation.md).
    */
   readonly refused: number;
   /** Issues skipped because a receipt existed or they were no longer eligible. */

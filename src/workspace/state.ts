@@ -11,8 +11,9 @@ import { randomBytes } from 'node:crypto';
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { messageOf } from '../shared/errors.js';
-import type { RunStatus } from '../shared/types.js';
+import type { RunStatus, SourceRef } from '../shared/types.js';
 import { WorkspaceError } from './errors.js';
+import { workspacePathFor } from './run-directory.js';
 
 /** One attempt recorded against a workspace. */
 export interface WorkspaceAttempt {
@@ -24,6 +25,23 @@ export interface WorkspaceAttempt {
   readonly reason?: string;
   readonly endedAt: string;
   readonly reportPath: string;
+}
+
+/**
+ * The external item a workspace was created for, as its ledger records it.
+ * Identity is the connector type, the site, and the immutable external id; the
+ * key is display only, because the key can change and the id cannot.
+ */
+export interface WorkspaceSourceItem {
+  readonly type: string;
+  readonly scope: string;
+  readonly id: string;
+  readonly key: string;
+}
+
+/** The identity fields of one prepared item, as a ledger records them. */
+export function sourceItemFor(ref: SourceRef): WorkspaceSourceItem {
+  return { type: ref.type, scope: ref.scope, id: ref.id, key: ref.key };
 }
 
 /**
@@ -39,11 +57,46 @@ export interface WorkspaceState {
   readonly baseCommit: string;
   readonly branch: string;
   readonly createdAt: string;
+  /**
+   * The external item this workspace was created for; `null` for a workspace a
+   * run created without one (a file-task run) and for a ledger written before
+   * identities were recorded. A continuation refuses a `null`: it cannot tell
+   * whether the workspace is that item's work
+   * (docs/implement-workspace-continuation.md).
+   */
+  readonly sourceItem: WorkspaceSourceItem | null;
   readonly attempts: readonly WorkspaceAttempt[];
 }
 /** Where one workspace's ledger lives: `<workDir>/workspaces/<workspaceId>.json`. */
 export function workspaceStatePath(workDir: string, workspaceId: string): string {
-  return path.join(path.resolve(workDir), 'workspaces', `${workspaceId}.json`);
+  // The same validated id the clone's own path uses, so a ledger can never be
+  // read from or written to a path the id was not allowed to name.
+  return `${workspacePathFor(workDir, workspaceId)}.json`;
+}
+
+/**
+ * One recorded source item, or `null` when the ledger holds no usable identity:
+ * absent, of the wrong shape, or missing one of the four fields. An unusable
+ * value is never guessed at — the continuation refuses the ledger and says what
+ * to write (docs/implement-workspace-continuation.md).
+ */
+function parseSourceItem(value: unknown): WorkspaceSourceItem | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return null;
+  }
+  const fields = value as Record<string, unknown>;
+  const text = (name: string): string | null => {
+    const field = fields[name];
+    return typeof field === 'string' && field.trim() !== '' ? field : null;
+  };
+  const type = text('type');
+  const scope = text('scope');
+  const id = text('id');
+  const key = text('key');
+  if (type === null || scope === null || id === null || key === null) {
+    return null;
+  }
+  return { type, scope, id, key };
 }
 
 /** One ledger, validated: a file that is not one is reported, never guessed at. */
@@ -70,6 +123,7 @@ function parseWorkspaceState(value: unknown, where: string): WorkspaceState {
     baseCommit: text('baseCommit'),
     branch: text('branch'),
     createdAt: text('createdAt'),
+    sourceItem: parseSourceItem(fields['sourceItem']),
     attempts: attempts as readonly WorkspaceAttempt[],
   };
 }

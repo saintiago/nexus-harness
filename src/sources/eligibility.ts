@@ -2,14 +2,16 @@
  * What one discovered item is: a first attempt, a continuation of the workspace
  * its pointer label names, or something the harness will not act on.
  *
- * Nothing is created here. It reads the item's own data, its receipt, and what
- * exists on this machine; whether a checkout is still usable is decided when the
- * attempt opens it.
+ * Nothing is created here. It reads the item as it was just prepared — the
+ * pointer labels that read observed, never what a search result said earlier —
+ * its receipt, and what exists on this machine; whether a checkout is still
+ * usable is decided when the attempt opens it.
  */
 import type { ContinuedWorkspace } from '../workspace/reopen.js';
 import { resolveWorkspace } from '../workspace/reopen.js';
+import { sourceItemFor } from '../workspace/state.js';
 import { WORKSPACE_POINTER_PREFIX } from './contract.js';
-import type { SourceCandidate } from './contract.js';
+import type { SourceTask } from './contract.js';
 import type { SourceReceipt } from './receipts.js';
 
 /** The receipt as a one-line summary for the terminal. */
@@ -40,15 +42,21 @@ type AttemptDecision =
 
 /**
  * Which of the three this item is (docs/implement-workspace-continuation.md).
- * Nothing is created here: this only reads the item's pointer labels, its
- * receipt, and what exists on this machine.
+ * Nothing is created here: this only reads the prepared item's pointer labels,
+ * its receipt, and what exists on this machine.
+ *
+ * `sourceRoot` is the real root of the repository this run targets, when the
+ * caller resolved one: a workspace whose ledger records another repository is
+ * refused. `null` means the caller cannot check that dimension (the read-only
+ * preview, which takes no `--repo`).
  */
 export async function decideAttempt(
   workDir: string,
-  candidate: SourceCandidate,
+  item: SourceTask,
   receipt: SourceReceipt | null,
+  sourceRoot: string | null,
 ): Promise<AttemptDecision> {
-  const pointers = candidate.pointers;
+  const pointers = item.pointers;
   if (pointers.length > 1) {
     return {
       kind: 'refuse',
@@ -59,13 +67,16 @@ export async function decideAttempt(
   }
   const [workspaceId] = pointers;
   if (workspaceId !== undefined) {
-    const resolution = await resolveWorkspace(workDir, workspaceId);
+    const resolution = await resolveWorkspace(workDir, workspaceId, {
+      sourceItem: sourceItemFor(item.ref),
+      sourceRoot,
+    });
     if (!resolution.ok) {
       return { kind: 'refuse', reason: resolution.problem };
     }
     // Reading the checkout itself is the attempt's job, not the preview's: this
-    // decides from what exists on disk, and a workspace whose branch or `HEAD`
-    // moved is refused when the attempt opens it.
+    // decides from what exists on disk, and a workspace that is not on the branch
+    // its ledger records is refused when the attempt opens it.
     return { kind: 'continue', workspace: resolution.workspace };
   }
   if (receipt !== null) {
