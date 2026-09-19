@@ -359,11 +359,15 @@ configuration. An issue whose description does not fit the documented format is 
 skipped; it is never guessed at and never launched.
 
 **What Jira sees.** On a confirmed claim the issue moves from the ready status to the running
-status. When an attempt ends, one compact comment carries the run ID, the exact outcome and reason,
-the check summary, the repairs used, and the local artifact paths. While an `escalation` ladder
-still has a rung to try, that comment is the attempt's own and the issue stays in the running
-status; the climb's last attempt — a pass, a terminal failure, or the rung that exhausted the
-ladder — moves it to the review status. `In Review` means "a local attempt finished and needs a
+status. An attempt that ends normally publishes one compact comment — the run ID, the exact outcome
+and reason, the check summary, the repairs used, and the local artifact paths — and while an
+`escalation` ladder still has a rung to try that comment is the attempt's own, with the issue left in
+the running status; the climb's last attempt — a pass, a terminal failure, or the rung that
+exhausted the ladder — moves it to the review status. Two endings deliberately publish nothing and
+move nothing, leaving the issue in the running status for a person: a run whose stopped executions
+could not be confirmed to have ended, and an attempt whose required workspace ledger could not be
+written. Both stop intake and keep the local result — the report, the logs, and the working copy —
+with the receipt saying what failed. `In Review` means "a local attempt finished and needs a
 human", not success. The check summary names the last round that ran, and says so in as many words
 when the run was stopped before any round followed its last turn: a stopped turn has no checks to
 report, and the round the run started with is not one. **Nothing here moves an issue to Done**, and
@@ -402,10 +406,13 @@ are still in it — with its own two-repair allowance. Attempt N of an issue run
 the last tier, and the tier's own launch is what really starts and what its report records. Only an
 exhausted ordinary red check round climbs: a setup, launch, authentication, or protocol error, a
 cancellation, a timeout, and an unconfirmed cleanup all end the intake at the rung where they
-happened, and that attempt's result is what the issue is told. A tier that names no `agent` or
-`maxRepairs` inherits the top-level one, and no `escalation` at all means the single ordinary tier.
-The launch prefixes above are operator-native Codex profiles; [nexus-agent-tools.md](docs/nexus-agent-tools.md)
-is how to install them, and the harness never reads or writes them.
+happened rather than spending a stronger launch on them, and that attempt's result is then the
+issue's last word — published and moved to review, except where a required local save failed or the
+run's stop was not confirmed, which publish no comment and leave the issue in the running status. A
+tier that names no `agent` or `maxRepairs` inherits the top-level one, and no `escalation` at all
+means the single ordinary tier. The launch prefixes above are operator-native Codex profiles;
+[nexus-agent-tools.md](docs/nexus-agent-tools.md) is how to install them, and the harness never reads
+or writes them.
 
 ```sh
 # One finite batch with the ladder: Flash first, Astra only if Flash's checks stay red.
@@ -713,11 +720,13 @@ Read this before pointing a run at anything you care about.
   attempt reopening the workspace its pointer label names and keeping its recorded base, the
   per-attempt run directories and ledger, the escalation ladder's tiers — the tier's own launch, each
   attempt's own comment while the issue stays in the running status, one review move when the ladder
-  ends, and the ladder's refusal to climb from a setup/launch/protocol error, a cancellation, or an
-  expired limit — the guidance a continued attempt is told, the decision made from the item as it was
-  just re-read rather than from the search result that discovered it, the pointer checks that refuse
-  a malformed id, another item's, site's, or repository's workspace, and a ledger with no item
-  identity, and the refusal of an attempted issue that names no workspace to continue.
+  ends, the two endings that publish nothing and leave the issue where it is (a stop that was not
+  confirmed, and a workspace ledger that could not be written), and the ladder's refusal to climb
+  from a setup/launch/protocol error, a cancellation, or an expired limit — the guidance a continued
+  attempt is told, the decision made from the item as it was just re-read rather than from the search
+  result that discovered it, the pointer checks that refuse a malformed id, another item's, site's,
+  or repository's workspace, and a ledger with no item identity, and the refusal of an attempted
+  issue that names no workspace to continue.
 - the optional GitHub delivery step, against disposable Git repositories with a local bare
   destination and a stand-in `gh` on `PATH`: the branch really moves to the destination, the pull
   request is created with the issue reference and the check summary, a repeated delivery finds and

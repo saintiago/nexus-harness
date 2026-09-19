@@ -163,10 +163,12 @@ An intake runs one **attempt per configured tier**, in order, without an operato
   its report records: the launched command and the reported tier agree, continuations included.
 - Each attempt is a separate run: its own run directory, report, comment ("attempt 2 of 3, tier
   pro"), and its own repair allowance.
-- The issue stays in the running status while the ladder climbs: each attempt's own comment is
-  published while nothing has moved the item, and only the climb's end moves it to review. Later
-  attempts read the item's thread for themselves, so a later rung is told the comment the harness
-  published for the rung before it.
+- The issue stays in the running status while the ladder climbs: an attempt whose result may be
+  published gets its own comment while nothing has moved the item, and only the climb's end moves it
+  to review. Two endings deliberately publish nothing and move nothing: a run whose stopped
+  executions could not be confirmed to have ended, and an attempt whose workspace ledger could not be
+  written (the "Continuation rules" ledger rule above). Later attempts read the item's thread for
+  themselves, so a later rung is told the comment the harness published for the rung before it.
 - Only an exhausted ordinary red check round climbs. A coding turn that could not finish (a launch,
   authentication, or protocol error), a round that could not be executed (a setup failure, a check
   that could not be launched), an expired limit, a cancellation, and a stop that was not confirmed
@@ -174,8 +176,9 @@ An intake runs one **attempt per configured tier**, in order, without an operato
   tier.
 - A green post-turn round ends the intake as passed. The ladder's last attempt — a pass, a terminal
   failure, or the rung that exhausted the ladder — publishes the final result and moves the issue to
-  the review status; the next step is another agent's or the operator's decision, taken by moving
-  the issue back.
+  the review status, unless it is one of the two silent endings above, which stop intake with the
+  issue left where it is; the next step is another agent's or the operator's decision, taken by
+  moving the issue back.
 
 ## What an attempt is told
 
@@ -220,10 +223,11 @@ comments since the last of them, bounded, and context only.
 
 **Defects fixed since, in HARN-7.** The contract above is the intended behaviour and it now holds in
 the implementation: the ladder launches the tier it reports (for a continued workspace included),
-an attempt's own comment is published while the issue stays in the running status and the review
-move happens only when the ladder is spent, and only an exhausted ordinary red check round
-escalates — a setup/launch/authentication/protocol error, a cancellation, a timeout, and a stop that
-was not confirmed each end the intake at the rung where they happened. The three defects this
+an attempt's own comment is published while the issue stays in the running status (except for the
+two silent endings: a stop that was not confirmed, and a workspace ledger that could not be saved)
+and the review move happens only when the ladder is spent, and only an exhausted ordinary red check
+round escalates — a setup/launch/authentication/protocol error, a cancellation, a timeout, and a stop
+that was not confirmed each end the intake at the rung where they happened. The three defects this
 section used to list are covered by the offline suite; the live exercise that has not been run is
 stated under "Verification" below.
 
