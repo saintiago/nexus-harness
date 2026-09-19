@@ -238,7 +238,8 @@ completion, and never names a report that does not exist.
       attempt-2-check-1.stdout.log
       …                          .stderr.log beside each, and one pair per configured command
   workspaces/<workspaceId>/      the working copy: a clone, on branch harness/<workspaceId>
-  workspaces/<workspaceId>.json  the workspace ledger: base, branch, and attempts
+  workspaces/<workspaceId>.json  the workspace ledger: what it was cloned from, the item it was
+                                 created for, and its attempts
 ```
 
 A run ID is generated (`run-<UTC timestamp>-<8 hex>`) and never comes from task text, so no task can
@@ -409,8 +410,15 @@ harness **continues its workspace** — the same clone, on the same branch, with
 earlier attempt still in it, and a baseline that is allowed to be red, because continuing failed
 work is the point. An attempted issue with no such label is not run again: the harness refuses it,
 says why in a comment, and moves it out of the queue, so a stale ticket cannot quietly burn more
-attempts. A pointer this machine cannot resolve, and an issue carrying two pointers, are refused
-the same way. The receipt stays as the audit trail behind all of it.
+attempts. A pointer the harness will not follow is refused the same way, and the comment says which
+of these it is: it is not a generated workspace id (a label is never read as a path), it names a
+workspace this machine does not have, the workspace's ledger records another item, site, or
+repository (a workspace is continued only by what created it), or the ledger records no item
+identity at all (a legacy ledger: add its `sourceItem` by hand — `type`, `scope`, `id`, and `key`,
+from that workspace's first attempt report, whose `sourceRef` records them — and scan again; the
+harness never adopts or migrates a workspace on its own). An issue carrying two pointers is refused
+too, because there is no way to tell which one to continue. The receipt stays as the audit trail
+behind all of it.
 
 Putting an attempted issue back to the ready status is ordinary rework, not a retry of a dead run:
 the harness continues the workspace its pointer names, with a new run directory and report. To start
@@ -659,7 +667,10 @@ Read this before pointing a run at anything you care about.
 - workspace continuation through the same fakes and real temporary Git repositories: a continued
   attempt reopening the workspace its pointer label names and keeping its recorded base, the
   per-attempt run directories and ledger, the escalation ladder's tiers, the guidance a continued
-  attempt is told, and the refusal of an attempted issue that names no workspace to continue.
+  attempt is told, the decision made from the item as it was just re-read rather than from the search
+  result that discovered it, the pointer checks that refuse a malformed id, another item's, site's,
+  or repository's workspace, and a ledger with no item identity, and the refusal of an attempted
+  issue that names no workspace to continue.
 - the optional GitHub delivery step, against disposable Git repositories with a local bare
   destination and a stand-in `gh` on `PATH`: the branch really moves to the destination, the pull
   request is created with the issue reference and the check summary, a repeated delivery finds and
