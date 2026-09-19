@@ -3100,6 +3100,191 @@ describe('the source commands through the CLI', () => {
     }
   });
 
+  it('runs a re-armed continuation at the rung its attempt count has reached', async () => {
+    const ladder: readonly EscalationTier[] = [
+      {
+        name: 'flash',
+        agent: {
+          runtime: 'codex',
+          command: ['codex', '--profile', 'nexus-flash', '--model', 'deepseek-flash'],
+        },
+        maxRepairs: 1,
+      },
+      {
+        name: 'astra',
+        agent: {
+          runtime: 'codex',
+          command: ['codex', '--profile', 'nexus-astra', '--model', 'gpt-6-astra'],
+        },
+        maxRepairs: 1,
+      },
+    ];
+    const target = await createTarget({ markerCheck: true, escalation: ladder });
+    const jira = fakeJira([
+      {
+        id: '10011',
+        key: 'SAM1-11',
+        summary: 'Write the marker',
+        status: 'To Do',
+        updated: '2026-09-16T11:00:00.000Z',
+      },
+    ]);
+    const runtime = await installFakeRuntime(target.directory);
+    const previous = process.env.JIRA_API_TOKEN;
+    process.env.JIRA_API_TOKEN = 'test-token';
+
+    try {
+      const argv = ['source', 'run', '--repo', target.repo, '--config', target.configPath];
+      const run = await withFakeRuntimeOnPath(
+        runtime.bin,
+        runtime.state,
+        [
+          // The first intake spends the whole ladder without fixing the check:
+          // flash's two turns, then astra's two.
+          { edits: [{ file: 'MARKER.md', text: 'not yet\n' }], summary: 'flash: first try' },
+          { edits: [{ file: 'MARKER.md', text: 'not yet\n' }], summary: 'flash: still wrong' },
+          { edits: [{ file: 'MARKER.md', text: 'not yet\n' }], summary: 'astra: first try' },
+          { edits: [{ file: 'MARKER.md', text: 'not yet\n' }], summary: 'astra: still wrong' },
+          // The re-armed issue is continued at the ladder's top rung.
+          { edits: [{ file: 'MARKER.md', text: 'done\n' }], summary: 'astra: finished it' },
+        ],
+        async () => {
+          const first = await runSourceCli(argv, target.directory, { fetch: jira.fetch });
+          expect(first.code).toBe(EXIT_INPUT_ERROR);
+          expect(jira.issues[0]?.status).toBe('In Review');
+
+          // The operator puts the issue back to work; its pointer label still
+          // names the workspace, so the next intake continues it — at attempt 3
+          // of the ladder, which is its top rung, Astra.
+          if (jira.issues[0] === undefined) {
+            throw new Error('the fixture issue disappeared');
+          }
+          jira.issues[0].status = 'To Do';
+          const second = await runSourceCli(argv, target.directory, { fetch: jira.fetch });
+          return { first, second };
+        },
+      );
+
+      expect(run.second.err).toBe('');
+      expect(run.second.code).toBe(EXIT_OK);
+      expect(run.second.out).toContain('1 passed');
+      // One attempt was made, in the same workspace, by the tier the attempt
+      // count maps to: the stronger launch really is what Astra's comment says.
+      const turns = await fakeTurns(runtime.state);
+      expect(turns).toHaveLength(5);
+      expect(turns[4]?.argv.slice(0, 2)).toEqual(['--profile', 'nexus-astra']);
+      const reports = await Promise.all(
+        (
+          await readdir(path.join(target.workDir, 'runs')).then((names) =>
+            names.filter((name) => name.startsWith('run-')).sort(),
+          )
+        ).map(
+          async (name) =>
+            JSON.parse(
+              await readFile(path.join(target.workDir, 'runs', name, 'result.json'), 'utf8'),
+            ) as RunReport,
+        ),
+      );
+      expect(reports.map((report) => report.status)).toEqual(['failed', 'failed', 'passed']);
+      const continued = reports[2];
+      expect(continued?.agent.command).toEqual([
+        'codex',
+        '--profile',
+        'nexus-astra',
+        '--model',
+        'gpt-6-astra',
+      ]);
+      expect(continued?.workspace.continued).toBe(true);
+      expect(continued?.workspace.attempt).toBe(3);
+      expect(jira.issues[0]?.status).toBe('In Review');
+      expect(jira.comments).toHaveLength(3);
+      expect(jira.comments[2]).toContain('finished: passed');
+      expect(jira.comments[2]).toContain('(tier astra)');
+    } finally {
+      if (previous === undefined) {
+        delete process.env.JIRA_API_TOKEN;
+      } else {
+        process.env.JIRA_API_TOKEN = previous;
+      }
+    }
+  });
+
+  it('does not spend the stronger tier on a runtime that could not finish the turn', async () => {
+    const ladder: readonly EscalationTier[] = [
+      {
+        name: 'flash',
+        agent: {
+          runtime: 'codex',
+          command: ['codex', '--profile', 'nexus-flash', '--model', 'deepseek-flash'],
+        },
+        maxRepairs: 1,
+      },
+      {
+        name: 'astra',
+        agent: {
+          runtime: 'codex',
+          command: ['codex', '--profile', 'nexus-astra', '--model', 'gpt-6-astra'],
+        },
+        maxRepairs: 1,
+      },
+    ];
+    const target = await createTarget({ markerCheck: true, escalation: ladder });
+    const jira = fakeJira([
+      {
+        id: '10011',
+        key: 'SAM1-11',
+        summary: 'Write the marker',
+        status: 'To Do',
+        updated: '2026-09-16T11:00:00.000Z',
+      },
+    ]);
+    const runtime = await installFakeRuntime(target.directory);
+    const previous = process.env.JIRA_API_TOKEN;
+    process.env.JIRA_API_TOKEN = 'test-token';
+
+    try {
+      const result = await withFakeRuntimeOnPath(
+        runtime.bin,
+        runtime.state,
+        // A runtime that cannot authenticate or cannot finish its turn reports a
+        // failed turn and ends without the event stream a completed one has. No
+        // check ran after it, so this is not an ordinary red round.
+        [{ mode: 'failed', summary: 'not logged in' }],
+        async () =>
+          await runSourceCli(
+            ['source', 'run', '--repo', target.repo, '--config', target.configPath],
+            target.directory,
+            { fetch: jira.fetch },
+          ),
+      );
+
+      expect(result.code).toBe(EXIT_INPUT_ERROR);
+      expect(result.out).toContain('1 failed');
+      // Only the first rung ran: a stronger tier would be spent on the same
+      // infrastructure, not on the code.
+      const turns = await fakeTurns(runtime.state);
+      expect(turns).toHaveLength(1);
+      expect(turns[0]?.argv.slice(0, 2)).toEqual(['--profile', 'nexus-flash']);
+      expect(result.out).not.toContain('escalating to tier');
+      // The issue is told the exact outcome and moved out of the queue, so the
+      // failure is visible to a human instead of sitting in the running status.
+      expect(jira.issues[0]?.status).toBe('In Review');
+      expect(jira.comments).toHaveLength(1);
+      expect(jira.comments[0]).toContain('finished: failed');
+      expect(jira.comments[0]).toContain('the coding runtime reported that the turn failed');
+      expect(jira.comments[0]).not.toContain('escalation ladder');
+      expect(
+        jira.calls.filter((call) => call.method === 'POST' && call.url.includes('/transitions')),
+      ).toHaveLength(2);
+    } finally {
+      if (previous === undefined) {
+        delete process.env.JIRA_API_TOKEN;
+      } else {
+        process.env.JIRA_API_TOKEN = previous;
+      }
+    }
+  });
+
   it('runs a failed attempt, reports it, and exits nonzero', async () => {
     const target = await createTarget();
     const jira = fakeJira([
