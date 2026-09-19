@@ -50,9 +50,8 @@ interface FixtureOptions {
   /** Make one stand-in `gh` invocation fail, as a refused request would. */
   readonly fail?: 'list' | 'create' | 'edit';
   /**
-   * One pull request the destination already holds for this head and base, as
-   * its own native state. Seeded where a repeated delivery would otherwise have
-   * created it.
+   * One pull request the destination already holds for this attempt's head and
+   * base, with the native state `gh` reports for it.
    */
   readonly existing?: { readonly state: 'OPEN' | 'CLOSED' | 'MERGED' };
 }
@@ -60,9 +59,6 @@ interface FixtureOptions {
 /** One pull request the stand-in GitHub already holds, before any delivery runs. */
 interface SeededPullRequest {
   readonly state: 'OPEN' | 'CLOSED' | 'MERGED';
-  /** Defaults to the seed's position, so the first one is `pull/1`. */
-  readonly number?: number;
-  readonly body?: string;
 }
 
 /** One attempt's workspace: a clone-shaped repository on its own branch. */
@@ -136,7 +132,7 @@ async function seedPullRequests(
     fixture.gh.pullRequestsFile,
     seeds
       .map((seed, index) => {
-        const number = seed.number ?? index + 1;
+        const number = index + 1;
         return `${JSON.stringify({
           url: `https://github.com/${REPOSITORY}/pull/${String(number)}`,
           number,
@@ -144,7 +140,7 @@ async function seedPullRequests(
           head: BRANCH,
           base: BASE_BRANCH,
           title: `an earlier pull request (${seed.state})`,
-          body: seed.body ?? `the body a previous delivery wrote (${seed.state})`,
+          body: `the body a previous delivery wrote (${seed.state})`,
           state: seed.state,
         })}\n`;
       })
