@@ -776,8 +776,8 @@ operator's own `gh` credentials, once the check is green —
 - [docs/LONG_TERM_VISION.md](docs/LONG_TERM_VISION.md) — the direction the harness is meant to grow
   into. It defines no behaviour: [docs/spec.md](docs/spec.md) stays authoritative, and every change
   still needs a task.
-- [docs/module-structure.md](docs/module-structure.md) — the `src/` layout one task aims at, written
-  by an earlier attempt that was stopped. A target, not a description of the tree as it stands.
+- [docs/module-structure.md](docs/module-structure.md) — the `src/` layout as it stands, and the
+  rules for placing new code in it.
 - [docs/harness.jira.example.json](docs/harness.jira.example.json) — a credential-free source
   configuration to copy.
 - [docs/GIT-WORKFLOW.md](docs/GIT-WORKFLOW.md) — how changes to this repository are made: one
