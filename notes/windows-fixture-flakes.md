@@ -1,10 +1,12 @@
 # Fixture flakes, recorded as they are found and fixed
 
-**Status: every known race addressed; none of the assertions were weakened, skipped, or
-reordered.** The name of this file is narrower than its content: the first flakes were seen on
-Windows, and the lifecycle one was seen on Ubuntu. The fourth entry below (2026-09-19) is the one
-that stopped a harness run by ending an unrelated process, and it is the entry that fixed the
-cleanup, not the assertions.
+**Status: every reproduced race addressed; none of the assertions were weakened, skipped, or
+reordered.** One entry below (HARN-13, 2026-09-19) records a failure whose signature was reproduced
+but whose cause was not: it is marked there as a hypothesis, and what it adds is a guard and a
+diagnostic rather than a proven fix. The name of this file is narrower than its content: the first
+flakes were seen on Windows, and the lifecycle one was seen on Ubuntu. The fourth entry below
+(2026-09-19) is the one that stopped a harness run by ending an unrelated process, and it is the
+entry that fixed the cleanup, not the assertions.
 
 Failures 1 and 2 happened during full `npm run validate` / `npx vitest run` runs on Windows on
 2026-09-16 and 2026-09-17, and never in an isolated run of the file involved.
@@ -117,6 +119,105 @@ failure from this one, and still open. And a process whose beacon never came up,
 silent while the process somehow still runs, is left to its own backstop (20–60 s) instead of being
 named by a PID nothing can vouch for: cleanup may leave a bounded process behind, but it can no
 longer kill a stranger.
+
+## The HARN-13 baseline failure: `taskkill` exit 128 (investigated 2026-09-19)
+
+The run `run-20260919121602-6df99460` (HARN-3, workspace base `e27bc48`) failed an unchanged
+baseline on
+`tests/agent.test.ts` > `stopping what a turn started` > `stops the runtime it started, waits for
+it, and reports a confirmed stop`: 456 passed, 1 failed, 1 skipped, no coding turn started, and the
+same test passed in isolation without changes. The recorded shutdown was
+`{ termination: 'unconfirmed', problem: '"taskkill" exited with code 128' }`, and the test took
+624 ms — its own `close` was observed well inside the 5 s grace, so the process it was talking
+about really had ended.
+
+Everything quoted above is retained outside this repository: the failing run's own output is at
+`E:/projects/nexus-jira-runs/runs/run-20260919121602-6df99460/logs/baseline-check-1.stderr.log`
+(the vitest failure block) and `.../baseline-check-1.stdout.log` (the gate's stdout); the raw outputs
+of the bounded reproduction and of the one `EBUSY` removal below are in the investigating attempt's
+agent log, `E:/projects/nexus-jira-runs/runs/run-20260919151935-04dbd8ce/logs/agent-implementation.log`.
+The reproduction's scratch scripts were not committed, so the counts here are reported from that
+log, not re-runnable from this checkout.
+
+**Reproduced on this host** (a signature, not a cause):
+
+- With the failing test's own shape — `cmd.exe` → the `.cmd` shim → a node stand-in holding —
+  `taskkill /PID <pid> /T /F` exits 0 and the tree ends: 40/40 idle, 160/160 under four parallel
+  workers plus CPU load, and 40 more in the first experiment. On this host a live tree of that shape
+  did not produce 128.
+- The failing signature comes back 6/6 when that tree is ended from outside with the same
+  `taskkill` immediately before the harness's own stop request: the harness then asks about a PID
+  that holds nothing, reports the stop unconfirmed, and the process it spawned is seen to end — the
+  shape the failure log shows. That says what an outside stop _can_ produce; it does not say who
+  stopped the historical process, and a later not-found message beside an observed `close` cannot
+  identify a bystander.
+- `taskkill` exits **128** both for a PID that holds nothing, with
+  `ERROR: The process "<pid>" not found.` — which the suite's own Windows-only test asks about with
+  a PID argument no process can hold — and for a process it is _refused_: `Access is denied`, or
+  `This is critical system process`. The refusal text is on record from one probe of unrelated
+  system PIDs (`taskkill /PID 0 /T /F`, `/PID 4 /T /F`) made while investigating; that probe was
+  outside this task's owned-fixture constraint, is not repeated, and error scenarios from here come
+  from an owned fixture's own record or from mocked utility output. The exit code alone decides
+  nothing: every 128 must still be read as a failed stop, never as "the process is already gone",
+  and the utility's own words are what tell the two apart — which is why the harness stopped
+  discarding them (below).
+
+**Supported hypothesis, and what stays open.** The failure's shape is consistent with the harness's
+stop reaching a process that was already ending — its own stop had ended the tree, or the fixture
+had ended by itself, or something else stopped it first. What would have separated a `not found`
+from a refusal was thrown away with the utility's output. Two pieces of retained history make the
+last of those worth guarding against, without proving it did this: the failing workspace's base
+`e27bc48` predates PR #27, whose section above records four fixture cleanups that named recorded
+PIDs with no proof (`tests/checks.test.ts`, `tests/lifecycle.test.ts`,
+`tests/local-run.integration.test.ts`, `tests/fixture-beacon.test.ts`), and the section above
+records that same defect killing the live verifier's child in a HARN-3 run; `tests/agent.test.ts`'s
+own teardown named recorded PIDs the same way. The other reading — `taskkill` failing on a tree it
+was ending itself — did not appear in the bounded attempts, and nothing here establishes whether it
+is possible on this host; the stop is not changed for it.
+
+**What changed here.** `tests/agent.test.ts` was the last file still naming a recorded PID to stop
+something: its teardown called `requestTreeStop` on any recorded PID that still looked alive, so a
+PID the host had handed to another process would have been stopped as a stranger. Its stand-in now
+answers on a beacon of its own (`tests/fixtures/beacon.mjs`) and records the token beside its PID;
+the teardown waits on that beacon and hands the record to `endFixtureTree`, which names the PID only
+while the beacon answers, never when a record carries no token. A new test pins the contract the
+cleanup leans on: the recorded token answers while that stand-in runs and falls silent once it has
+ended. The stop problem now also repeats what a failed utility said —
+`"taskkill" exited with code 128: ERROR: The process "1234" not found.` — with each stream bounded
+as it is collected and standard error preferred over standard output, because `taskkill /T` prints a
+success line per child it ended before it can report a failure and the reason must not be crowded
+out of the record. `tests/stop.test.ts` pins that with a long success prefix followed by a failure on
+standard error, through the collector itself, so no system process is started; the Windows-only test
+in `tests/agent.test.ts` still asks about a PID argument no process can hold, so nothing is
+signalled.
+
+One full `vitest run` while that change was being validated also failed this file's teardown with
+`Error: EBUSY: resource busy or locked, rmdir '…\runs\workspaces\run-…'`: a temporary directory
+removed while something still held it. That one refusal is the only evidence for the retry; two
+probes made while writing this — a process whose working directory was the tree, and a process with
+an open file in it — did not refuse a removal on this host, but they do not exclude every
+fixture-related lock, they only say those two Node shapes were not enough, and what held this tree
+was never established. The teardown now waits for the stand-in's beacon to fall silent _and_ for its
+recorded PID to go (read-only) before cleaning up, and `cleanupTempDirectories` removes through the
+same bounded retry as `removeDirectory` (five attempts, 100+200+300+400 ms of waiting, so about a
+second, then whatever the removal said). The retry waits out `EBUSY` alone and rethrows any other
+failure at once, which `tests/support.test.ts` pins, together with a directory that is refused every
+time still throwing: the tolerance is a response to one demonstrated refusal, not a blanket retry
+for failures that were never shown to be transient.
+
+Honest limits. None of this establishes that HARN-3's process was stopped by a bystander: the
+reproduced signature shows an outside stop can produce that reading, and the retained history makes
+it worth guarding against, but the process could have ended by itself, or the harness's own stop
+could have ended it, and the discarded message is what would have narrowed that. What the guard does
+is remove the only PID-naming stop left in this suite, so that a PID the host handed to something
+else can no longer be named here; the stopping behaviour itself, and every stop-result assertion,
+are unchanged. The read-only liveness assertions of the suites — including `waitUntilGone` in
+`tests/agent.test.ts` — still read a bare PID, so a recycled PID can still fail one of those; that
+is a different failure and is still open. And a stand-in whose beacon never came up is left to its
+own release/backstop rather than named by a PID nothing vouches for, the same trade as above. The
+kept words are what the next occurrence gains: a `not found` names a PID that held nothing when the
+stop ran, a refusal names a process the utility could not end — neither says who, if anyone, stopped
+the process first, and only a further occurrence beside its own evidence can say more.
 
 ## What failed
 

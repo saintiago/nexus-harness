@@ -43,15 +43,34 @@ import { prepareWorkspace } from '../src/workspace/prepare.js';
 import { preflightSource } from '../src/workspace/preflight.js';
 import { allocateRunDirectory } from '../src/workspace/run-directory.js';
 import { recordWorkspaceAttempt } from '../src/workspace/state.js';
+import {
+  beaconModuleUrl,
+  endFixtureTree,
+  fixtureProcessGone,
+  waitFor,
+} from './fixtures/local-target.js';
 import { cleanupTempDirectories, createTempDir } from './support.js';
 
 /**
- * The stand-in runtime processes this file has started, by the PID a stand-in
- * recorded for itself, and the release file that asks each of them to end. A
- * test that leaves one running (because stopping it is what the test is about)
- * registers it here, so a failed test cannot leave it behind.
+ * The stand-in runtime processes this file has started, as each of them recorded
+ * itself: its PID, the beacon token only that process answers on, and the release
+ * file that asks it to end. A test that leaves one running (because stopping it
+ * is what the test is about) registers it here, so a failed test cannot leave it
+ * behind.
  */
-const standInProcesses = new Map<number, string>();
+const standInProcesses = new Map<number, StandInProcess>();
+
+/** One stand-in process of this file, as its own records name it. */
+interface StandInProcess {
+  /** The PID the stand-in recorded for itself. */
+  readonly pid: number;
+  /** The beacon token it recorded; `null` when it recorded no token. */
+  readonly token: string | null;
+  /** The directory its beacon answers from. */
+  readonly beaconDirectory: string;
+  /** The file whose appearance asks the stand-in to end by itself. */
+  readonly release: string;
+}
 
 /** The file whose appearance asks this fixture's stand-in runtimes to end. */
 function releasePathFor(fixture: Fixture): string {
@@ -82,39 +101,70 @@ async function waitUntilGone(pid: number, timeoutMs = 10_000): Promise<boolean> 
 
 /**
  * Every stand-in runtime still running is asked to end by itself, and waited
- * for, before the temporary directories are removed: a process that still holds
- * its working directory open would keep the directory from being removed, and
- * would outlive the test that started it.
+ * for, before the temporary directories are removed: a process the test started
+ * must not outlive it, and a removal that races one is a failure the test did not
+ * find (measured on the host this was written for: a working directory on its
+ * own does not refuse the removal, so waiting is about the process, not a lock).
  *
- * A recorded PID is released rather than stopped, and a stop is only the last
- * resort for one that did not answer. The operating system hands PID numbers
- * out again once they are free, and by this point in a run many of them are
- * already dead — a stand-in the harness itself stopped, or one that ended by
- * itself — so stopping them again would risk ending whatever process holds the
- * number now, in this file or in another suite running beside it.
+ * A recorded process is released rather than stopped, and a stop is only the
+ * last resort for one whose own beacon still answers. A PID is not an identity
+ * on this platform — Windows hands one to a new process once the process that
+ * held it ends — and by this point in a run many are already dead, a stand-in
+ * the harness itself stopped among them, so naming one again on the strength of
+ * a PID alone could end whatever holds that number now, in this file or in
+ * another suite running beside it. `endFixtureTree` asks the beacon the
+ * stand-in recorded before it names the PID (notes/windows-fixture-flakes.md).
  */
 afterEach(async () => {
-  const registered = [...standInProcesses];
+  const registered = [...standInProcesses.values()];
   standInProcesses.clear();
 
-  for (const [, release] of registered) {
+  for (const one of registered) {
     try {
-      await writeFile(release, 'release\n', 'utf8');
+      await writeFile(one.release, 'release\n', 'utf8');
     } catch {
       // The fixture's own directory is gone already: there is nothing left to
       // release, and the waits below decide what is still running.
     }
   }
 
-  for (const [pid] of registered) {
-    if (await waitUntilGone(pid, 5_000)) {
+  for (const one of registered) {
+    // The release is asked of the process itself: its own beacon stops answering
+    // when it has ended, where a PID would only say that *something* holds the
+    // number now.
+    await waitForBeaconSilence(one, 5_000);
+    // Read, never named: this waits out a process that is still exiting, and a
+    // recycled PID that answers it can only cost this wait, never a signal.
+    if (await waitUntilGone(one.pid, 5_000)) {
       continue;
     }
-    await requestTreeStop(pid);
-    await waitUntilGone(pid);
+    // Names the PID only while the beacon that process recorded still answers
+    // for it; a record without a token is never named again.
+    const stopped = await endFixtureTree({
+      pid: one.pid,
+      token: one.token,
+      beaconDirectory: one.beaconDirectory,
+    });
+    if (stopped) {
+      await waitUntilGone(one.pid);
+    }
   }
   await cleanupTempDirectories();
 });
+
+/** Waits, bounded, for one stand-in's own beacon to fall silent. */
+async function waitForBeaconSilence(one: StandInProcess, timeoutMs: number): Promise<void> {
+  if (one.token === null) {
+    return;
+  }
+  const deadline = Date.now() + timeoutMs;
+  while (!(await fixtureProcessGone({ dir: one.beaconDirectory }, one.token))) {
+    if (Date.now() >= deadline) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+}
 
 /**
  * A private Git environment for the fixtures: the developer's own hooks, signing,
@@ -209,7 +259,9 @@ interface StandInConfig {
  * configuration says. It contacts nothing: the only writes it makes are its
  * records, its event stream, and the working copy it was pointed at. It ends by
  * setting an exit code rather than exiting outright, so nothing it wrote is lost
- * on the way out.
+ * on the way out. It also answers on a liveness beacon of its own, and records
+ * that token beside its PID, so the suite's teardown can ask the process itself
+ * before it names the PID again.
  */
 const STAND_IN_SOURCE = [
   "import { appendFileSync, existsSync, writeFileSync } from 'node:fs';",
@@ -226,9 +278,18 @@ const STAND_IN_SOURCE = [
   '  prompt += chunk;',
   '});',
   '',
-  "process.stdin.on('end', () => {",
+  "process.stdin.on('end', async () => {",
+  '  // This process answers on a beacon of its own, and the record that names its',
+  '  // PID names that token too: the suite asks the beacon before it names the PID',
+  '  // again, so a PID Windows has since handed to another process is never',
+  '  // signalled (notes/windows-fixture-flakes.md). The listener is up before the',
+  '  // record that names it, so a recorded token always names a beacon that exists.',
+  '  const { randomToken, startBeacon } = await import(config.beaconModule);',
+  '  const beaconToken = randomToken();',
+  '  await startBeacon(config.beaconDirectory, beaconToken);',
   "  record('start', {",
   '    pid: process.pid,',
+  '    pidToken: beaconToken,',
   '    cwd: process.cwd(),',
   '    argv: process.argv.slice(2),',
   "    key: process.env.CODEX_API_KEY ? 'present' : 'absent',",
@@ -455,6 +516,8 @@ async function createFixture(parts: { readonly instructionFile?: boolean } = {})
 interface RecordedRun {
   readonly event: 'start' | 'end';
   readonly pid?: number;
+  /** The beacon token that PID answers on, when it recorded one. */
+  readonly pidToken?: string;
   readonly cwd?: string;
   readonly argv?: readonly string[];
   readonly key?: string;
@@ -492,9 +555,7 @@ async function waitForStart(fixture: Fixture, timeoutMs = 10_000): Promise<Recor
   for (;;) {
     const start = (await recordsOf(fixture)).find((record) => record.event === 'start');
     if (start !== undefined) {
-      if (start.pid !== undefined) {
-        standInProcesses.set(start.pid, releasePathFor(fixture));
-      }
+      registerStandIn(fixture, start);
       return start;
     }
     if (Date.now() > deadline) {
@@ -502,6 +563,24 @@ async function waitForStart(fixture: Fixture, timeoutMs = 10_000): Promise<Recor
     }
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
+}
+
+/**
+ * Remembers one stand-in the suite must not leave running, as that process
+ * recorded itself: its PID, the beacon token only it answers on, and the file
+ * that asks it to end. Cleanup that cannot ask its beacon refuses to name the
+ * PID (see the teardown above).
+ */
+function registerStandIn(fixture: Fixture, start: RecordedRun): void {
+  if (start.pid === undefined) {
+    return;
+  }
+  standInProcesses.set(start.pid, {
+    pid: start.pid,
+    token: start.pidToken ?? null,
+    beaconDirectory: fixture.parent,
+    release: releasePathFor(fixture),
+  });
 }
 
 /**
@@ -522,6 +601,8 @@ function standInRuntime(
       FAKE_CODEX: JSON.stringify({
         events: fixture.recordsFile,
         release: releasePathFor(fixture),
+        beaconDirectory: fixture.parent,
+        beaconModule: beaconModuleUrl,
         ...config,
       }),
       ...env,
@@ -964,12 +1045,9 @@ describe('stopping what a turn started', () => {
       { holdMs: 30_000, summary: 'still working' },
       {
         // A stop the host cannot carry out is what this test is about, so it
-        // does not happen here — and the tree the harness asked about is the one
-        // this test's own teardown asks to end.
-        stopTree: async (pid) => {
-          standInProcesses.set(pid, releasePathFor(fixture));
-          return 'the host could not reach the process tree';
-        },
+        // does not happen here — and the process the harness asked about is the
+        // one this test's own teardown releases, by the beacon it recorded.
+        stopTree: async () => 'the host could not reach the process tree',
         stopGraceMs: 60,
       },
     );
@@ -1004,6 +1082,50 @@ describe('stopping what a turn started', () => {
       summary: null,
       shutdown: { termination: 'confirmed', problem: null },
     });
+  }, 60_000);
+
+  // Windows-only: the stop there is a host utility, and what that utility said is
+  // the only thing that tells one failed stop from another — `taskkill` exits 128
+  // both for a PID nothing holds and for a live process it was refused. The
+  // argument here is a name no process can hold, so nothing is signalled.
+  it.skipIf(process.platform !== 'win32')(
+    'repeats what the stop utility said when it found nothing to stop',
+    async () => {
+      const problem = await requestTreeStop(Number.NaN);
+
+      expect(problem).toContain('exited with code 128');
+      expect(problem).toContain('not found');
+    },
+  );
+});
+
+describe('the stand-in runtime this suite starts', () => {
+  it('answers on the beacon token it recorded, and falls silent when it ends', async () => {
+    const fixture = await createFixture();
+    const turn = await openTurn(fixture);
+    const running = runCodexTurn(
+      turn.request,
+      standInRuntime(fixture, { holdMs: 30_000, summary: 'still working' }),
+    );
+    const start = await waitForStart(fixture);
+    const token = start.pidToken ?? '';
+    expect(token).not.toBe('');
+
+    // A token a stand-in recorded names a listener only that process answers on,
+    // and the suite's teardown names a recorded PID only while this question is
+    // answered: a PID the host has since handed to another process is never
+    // signalled (notes/windows-fixture-flakes.md).
+    expect(await fixtureProcessGone({ dir: fixture.parent }, token)).toBe(false);
+
+    await writeFile(releasePathFor(fixture), 'release\n', 'utf8');
+    const result = await running;
+    await turn.close();
+
+    expect(result.summary).toBe('still working');
+    await waitFor(
+      async () => await fixtureProcessGone({ dir: fixture.parent }, token),
+      'the stand-in’s beacon to fall silent',
+    );
   }, 60_000);
 });
 
@@ -1293,12 +1415,9 @@ describe('the runner, the real checks, and the real adapter together', () => {
       { holdMs: 30_000, summary: 'still working' },
       {
         // The stop the harness cannot confirm is the whole point here, so it
-        // does not kill anything: the tree it asked about is what this test's
-        // own teardown asks to end.
-        stopTree: async (pid) => {
-          standInProcesses.set(pid, releasePathFor(fixture));
-          return 'the host could not reach the process tree';
-        },
+        // does not kill anything: the process it asked about is the one this
+        // test's own teardown releases, by the beacon it recorded.
+        stopTree: async () => 'the host could not reach the process tree',
         stopGraceMs: 60,
       },
     );
