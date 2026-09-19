@@ -64,9 +64,10 @@
  * The disposable directories are **kept**, like every run directory the harness
  * makes: they hold the reports, the logs, and the working copies this check
  * asserts on, and deleting them would delete the evidence. Remove them by hand
- * when you are done with them. Nothing is committed, pushed, or published, and
- * the source repository of a live check is a temporary repository this file
- * created — never a real project.
+ * when you are done with them. Nothing is pushed, merged, or published, and any
+ * local commit a coding turn makes stays in the disposable working copy; the
+ * source repository of a live check is a temporary repository this file created
+ * — never a real project.
  */
 
 import { spawn, spawnSync } from 'node:child_process';

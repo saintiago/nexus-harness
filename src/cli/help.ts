@@ -38,11 +38,13 @@ validates that file; without one it validates the configuration alone.
 run prepares a working copy of the source repository, runs the configured setup and
 checks, asks the coding runtime to implement the task, reruns the checks, and gives
 the runtime the observed failures to repair within maxRepairs. Progress and the
-outcome are printed; the working copy and the report are always kept. Nothing is
-committed, pushed, or published. The run ends at the first of: a green round, a red
-round with no repair allowance left, a failure it cannot repair away, the task
-deadline, or a user interrupt (Ctrl+C, or Ctrl+Break on Windows), which stops
-the run and waits for it to finalize.
+outcome are printed; the working copy and the report are always kept. A coding turn
+is asked to make small local commits in the working copy, and the harness itself
+never pushes, merges, or publishes anything: the commits stay local to the retained
+workspace, and the work is never integrated for you. The run ends at the first of:
+a green round, a red round with no repair allowance left, a failure it cannot repair
+away, the task deadline, or a user interrupt (Ctrl+C, or Ctrl+Break on Windows),
+which stops the run and waits for it to finalize.
 
 source list, source run and source watch are the intake commands. They need a
 \`source\` object in the configuration and the credential its \`tokenEnv\` names in the

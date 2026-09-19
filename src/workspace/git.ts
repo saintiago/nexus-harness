@@ -80,6 +80,39 @@ export function runGit(args: readonly string[], cwd: string): Promise<GitResult>
 }
 
 /**
+ * The identity a target working copy commits with: repository-local settings
+ * only, so a coding turn can make ordinary local commits without an ambient Git
+ * identity and without any global or system Git setting being written. Signing
+ * is turned off explicitly: a workspace commit must not depend on a signing key
+ * the machine may not have, and a configured signer must not stop the turn.
+ */
+export const WORKSPACE_IDENTITY: readonly (readonly [string, string])[] = [
+  ['user.name', 'Nexus Agent'],
+  ['user.email', 'nexus@local'],
+  ['commit.gpgsign', 'false'],
+];
+
+/**
+ * Configures the identity a working copy commits with, before any check or
+ * coding turn runs in it. The settings are written with `--local`, into that
+ * clone's own `.git/config`; the caller's Git configuration is never touched. A
+ * setting that cannot be written is a {@link WorkspaceError} naming the working
+ * copy and the setting, so an attempt never runs a coding turn with an unknown
+ * commit identity.
+ */
+export async function configureWorkspaceIdentity(workspacePath: string): Promise<void> {
+  for (const [key, value] of WORKSPACE_IDENTITY) {
+    const result = await runGit(['config', '--local', key, value], workspacePath);
+    if (result.code !== 0) {
+      throw new WorkspaceError(
+        `the working copy's local Git setting "${key}" could not be set in ` +
+          `"${workspacePath}": ${firstLine(result.stderr)}`,
+      );
+    }
+  }
+}
+
+/**
  * Resolves a path to its canonical form, following symlinks and junctions. The
  * trailing segments may not exist yet (a run directory under an existing
  * `workDir`): the closest existing ancestor is resolved and the remaining names

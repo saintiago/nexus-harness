@@ -169,6 +169,8 @@ prepare → setup → baseline checks
 
 A red baseline, setup/launch/authentication/protocol error, expired timeout, cancellation, or exhausted repair allowance stops the loop and preserves work. Only ordinary completed red check rounds trigger repair. Checks are rerun by the harness regardless of the agent's claims. The selected agent does not change between turns. See the specification for reporting and safety semantics.
 
+Every working copy is given a **repository-local** Git identity (`Nexus Agent <nexus@local>`, signing off) before any check or coding turn runs, so a turn can make small local commits as it works; it is encouraged to finish with the relevant work committed where practical. Those commits stay in the retained working copy: the harness itself never pushes, merges, publishes, or integrates a target's changes, a commit is not a check result, and anything a turn leaves uncommitted is kept. A continued workspace keeps the base commit its ledger recorded as the comparison base, so `changes` in the report is the whole diff against that base, committed and uncommitted parts alike. These settings are written with `git config --local`; the harness never writes global or system Git configuration.
+
 ## 5. Source configuration — Jira Cloud
 
 The only implemented source type is `"jira"`. Exactly one source belongs to a config; do not add a `sources` array or accept placeholder types. The local `--repo` and the original setup/check fields bind every fetched issue to an explicitly chosen target. Issues cannot supply paths or executable commands to the harness.

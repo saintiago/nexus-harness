@@ -60,7 +60,12 @@ export interface RunReportRequest {
    * native configuration or credentials (docs/spec.md §4).
    */
   readonly agent: AgentSelection;
-  /** The repository and committed base the run was approved against. */
+  /**
+   * The repository the run started from and the committed base it records: the
+   * commit preflight selected for a fresh run, or the continued workspace's own
+   * recorded base, which stays the comparison base across attempts
+   * (docs/implement-workspace-continuation.md).
+   */
   readonly source: SourcePreflight;
   /**
    * The prepared working copy, or `null` when preparation failed. The run

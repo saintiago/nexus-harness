@@ -87,6 +87,7 @@ import type {
   RunReport,
   Task,
 } from '../src/shared/types.js';
+import { configureWorkspaceIdentity } from '../src/workspace/git.js';
 import type { PreparedWorkspace } from '../src/workspace/prepare.js';
 import { prepareWorkspace } from '../src/workspace/prepare.js';
 import { preflightSource } from '../src/workspace/preflight.js';
@@ -827,6 +828,7 @@ function dependencies(
     preflight: preflightSource,
     allocateRunDirectory,
     prepareWorkspace,
+    configureWorkspaceIdentity,
     recordWorkspaceAttempt,
     runCheckRound,
     appendRunLog,

@@ -63,8 +63,10 @@ export function promptFor(request: AgentTurnRequest): string {
   sections.push(
     [
       '## Where you are working',
-      `The working copy is ${workspacePath}. It was cloned from ${sourceRoot} and checked out at`,
-      `${baseCommit}, and it is the project root for this turn: the runtime was started in it.`,
+      `The working copy is ${workspacePath}. It was cloned from ${sourceRoot}, and ${baseCommit} is`,
+      'its recorded base commit: the harness keeps comparing the work against it — commits included —',
+      'for as long as this workspace lives. It is the project root for this turn: the runtime was',
+      'started in it.',
       instructions,
     ].join('\n'),
   );
@@ -81,6 +83,19 @@ export function promptFor(request: AgentTurnRequest): string {
         ' checkout, and do not push, open pull requests, publish packages, deploy, or upload the work',
       '  anywhere: this turn’s work stays in this working copy.',
       `- Work only on the task. Leave everything you are not asked to change as you found it.`,
+    ].join('\n'),
+  );
+
+  sections.push(
+    [
+      '## Local commits',
+      'Make small, meaningful local commits in this working copy as you go — a completed piece, or',
+      'work in progress you can describe — and finish with the relevant work committed where',
+      'practical. The working copy is already configured to commit as Nexus Agent, and a previous',
+      'attempt may have committed here too.',
+      'These commits are local to this working copy: do not push, open a pull request, or publish.',
+      'A commit proves nothing about the checks — the harness runs them itself and its results decide',
+      'the task — and anything you leave uncommitted is kept, not discarded.',
     ].join('\n'),
   );
 

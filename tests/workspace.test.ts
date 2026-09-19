@@ -272,18 +272,45 @@ describe('a workspace that outlives its run', () => {
     expect(reopened.attempt).toBe(1);
   });
 
-  it('refuses a workspace something else committed in', async () => {
+  it('reopens a workspace whose earlier attempt committed in it', async () => {
     const fixture = await createRepository();
     const prepared = await prepareRun(fixture);
-    // The harness never commits in a workspace, so a moved HEAD is a change it
-    // cannot account for and will not build on.
+    // A coding turn commits its own work locally, so the branch is expected to
+    // move forward from the recorded base; the recorded base is what stays.
+    await writeFile(path.join(prepared.workspacePath, 'committed.txt'), 'a checkpoint\n', 'utf8');
+    // The file is named rather than staged with `--all`: a host whose Git
+    // rewrites line endings at checkout would otherwise renormalize the files
+    // this fixture never touched.
+    await gitOrFail(['add', 'committed.txt'], prepared.workspacePath);
     await gitOrFail(
-      ['commit', '--quiet', '--allow-empty', '--message', 'a commit the harness did not make'],
+      ['commit', '--quiet', '--message', 'a checkpoint an attempt made'],
       prepared.workspacePath,
     );
+    expect(await headOf(prepared.workspacePath)).not.toBe(prepared.baseCommit);
+
+    const reopened = await reopenWorkspace(fixture.workDir, prepared.workspaceId);
+    expect(reopened.workspacePath).toBe(prepared.workspacePath);
+    expect(reopened.branch).toBe(prepared.branch);
+    expect(reopened.baseCommit).toBe(prepared.baseCommit);
+    expect(reopened.attempt).toBe(1);
+
+    // The commit is visible against the recorded base, exactly as uncommitted
+    // work is: reopening loses nothing.
+    const changes = await inspectWorkspaceChanges(prepared);
+    const committed = changes.find((change) => change.path === 'committed.txt');
+    expect(committed?.kind).toBe('added');
+    expect(committed?.states).toEqual(['committed']);
+  });
+
+  it('refuses a workspace that is not on the branch its ledger records', async () => {
+    const fixture = await createRepository();
+    const prepared = await prepareRun(fixture);
+    // A checkout on another branch — or, as here, on no branch at all — is not
+    // the workspace the ledger names, and the harness will not continue it.
+    await gitOrFail(['checkout', '--quiet', '--detach'], prepared.workspacePath);
 
     await expect(reopenWorkspace(fixture.workDir, prepared.workspaceId)).rejects.toThrow(
-      /something committed in it/,
+      /not its recorded/,
     );
   });
 

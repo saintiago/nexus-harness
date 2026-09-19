@@ -535,7 +535,11 @@ export interface RunReport {
    * from native configuration or credentials (docs/spec.md §4).
    */
   readonly agent: AgentSelection;
-  /** The repository the run started from, and the committed base it recorded. */
+  /**
+   * The repository the run started from, and the committed base it recorded:
+   * what preflight selected for a fresh run, or the base the continued
+   * workspace's ledger holds, which stays the comparison base for every attempt.
+   */
   readonly source: { readonly path: string; readonly baseCommit: string };
   /**
    * Where a source-triggered run took its task from; absent for a run that was

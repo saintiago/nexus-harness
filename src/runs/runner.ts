@@ -39,6 +39,7 @@ import type {
   RepairFeedback,
 } from '../shared/types.js';
 import type { PreparedWorkspace } from '../workspace/prepare.js';
+import { WORKSPACE_IDENTITY } from '../workspace/git.js';
 import type {
   AgentTurnResult,
   RunTaskRequest,
@@ -225,6 +226,17 @@ export async function runTask(
   }
 
   /**
+   * The source provenance the report carries. A fresh run's base is the commit
+   * preflight recorded; a continued workspace keeps the base its own ledger
+   * recorded, so a source checkout that advanced since then never replaces the
+   * comparison base the retained work is measured against.
+   */
+  const reportSource =
+    workspace !== null && workspace.continued
+      ? { ...source, baseCommit: workspace.baseCommit }
+      : source;
+
+  /**
    * How this run ends: the evidence factories, the final change summary, and the
    * report. The loop decides when a run ends; the finalizer decides what that
    * ending records, so every ending goes through one place.
@@ -236,7 +248,7 @@ export async function runTask(
     run,
     task,
     config,
-    source,
+    source: reportSource,
     workspace,
     preparationProblem,
     startedAt,
@@ -279,6 +291,32 @@ export async function runTask(
     return endRun({
       status: 'failed',
       reason: 'preparing the working copy failed, so no check and no coding turn was started',
+      baseline: null,
+      attempts: [],
+      timeout: null,
+      cancellation: null,
+    });
+  }
+
+  // The working copy's own commit identity, written before any check or coding
+  // turn runs in it: a turn is encouraged to make small local commits, and the
+  // harness never writes the machine's global Git configuration. A setting that
+  // cannot be written ends the run here, with a report, rather than letting a
+  // turn run with an unknown commit identity.
+  try {
+    await dependencies.configureWorkspaceIdentity(workspace.workspacePath);
+    await dependencies.appendRunLog(
+      timeline,
+      `workspace Git identity configured: ${WORKSPACE_IDENTITY.map(
+        ([key, value]) => `${key}=${value}`,
+      ).join(', ')}`,
+    );
+  } catch (cause) {
+    return endRun({
+      status: 'failed',
+      reason:
+        "the working copy's local Git identity could not be configured, so no check and no " +
+        `coding turn was started: ${oneLine(messageOf(cause))}`,
       baseline: null,
       attempts: [],
       timeout: null,

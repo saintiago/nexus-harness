@@ -236,6 +236,16 @@ export interface RunnerDependencies {
     source: SourcePreflight,
     bounds: PrepareWorkspaceBounds,
   ) => Promise<PreparedWorkspace>;
+  /**
+   * Writes the working copy's repository-local commit identity
+   * (`WORKSPACE_IDENTITY`, `src/workspace/git.ts`) before anything runs in it, so
+   * the coding turns that follow can make small local commits without an ambient
+   * Git identity. It touches that clone's own `.git/config` and never the
+   * machine's global or system configuration. A failure is a
+   * {@link WorkspaceError}-style rejection the runner reports as the failed run
+   * it is, rather than proceeding with an unknown identity.
+   */
+  readonly configureWorkspaceIdentity: (workspacePath: string) => Promise<void>;
   /** Runs one setup/check round in the working copy. */
   readonly runCheckRound: (request: CheckRoundRequest) => Promise<CheckRoundResult>;
   /**

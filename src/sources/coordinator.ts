@@ -255,9 +255,9 @@ async function attempt(
     return 'cancelled';
   }
 
-  // A continuation's checkout is read before anything is reserved: a branch or a
-  // `HEAD` that moved is refused while nothing has been claimed and nothing has
-  // been created.
+  // A continuation's checkout is read before anything is reserved: one that is
+  // not on the branch its ledger records is refused while nothing has been
+  // claimed and nothing has been created.
   let continuedWorkspace: ContinuedWorkspace | undefined;
   if (decision.kind === 'continue') {
     try {

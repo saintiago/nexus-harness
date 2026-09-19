@@ -178,9 +178,10 @@ further would separate one decision from itself: `runs/runner.ts` (the loop), `s
   `run-directory.ts` allocates `<workDir>/runs/<runId>` and names
   `<workDir>/workspaces/<workspaceId>` for one attempt's evidence and clone; `prepare.ts` fills an
   allocated directory with a clone of the recorded base and writes the ledger `state.ts` owns;
-  `reopen.ts` resolves a pointer to a workspace, reads the checkout, and refuses one whose branch or
-  `HEAD` moved; `changes.ts` reads what the copy differs from its base by; `git.ts` and `status.ts` are
-  the plumbing they share.
+  `reopen.ts` resolves a pointer to a workspace, reads the checkout, and refuses one that is not on
+  the branch its ledger records; `changes.ts` reads what the copy differs from its base by; `git.ts`
+  and `status.ts` are the plumbing they share, including the repository-local commit identity
+  (`configureWorkspaceIdentity`) a run writes into a working copy before any check or coding turn.
 - **Does not own:** the coding turns, the checks, the report, or the policy that decides whether an
   item continues a workspace (that is `sources/eligibility.ts`). The ledger is derived state: a run's
   own report stays the authority on what the run did.
@@ -190,18 +191,21 @@ further would separate one decision from itself: `runs/runner.ts` (the loop), `s
   `PrepareWorkspaceBounds`, `prepareWorkspace` (`workspace/prepare.ts`); `WorkspaceAttempt`,
   `WorkspaceState`, `workspaceStatePath`, `readWorkspaceState`, `recordWorkspaceAttempt`
   (`workspace/state.ts`); `ContinuedWorkspace`, `WorkspaceResolution`, `resolveWorkspace`,
-  `reopenWorkspace` (`workspace/reopen.ts`); `inspectWorkspaceChanges` (`workspace/changes.ts`);
-  `WorkspaceError` (`workspace/errors.ts`).
+  `reopenWorkspace` (`workspace/reopen.ts`); `WORKSPACE_IDENTITY`, `configureWorkspaceIdentity`
+  (`workspace/git.ts`); `inspectWorkspaceChanges` (`workspace/changes.ts`); `WorkspaceError`
+  (`workspace/errors.ts`).
 
 ### `runs/`
 
 - **Owns:** one run's order of work. `contracts.ts` states what a run is asked to do, including a
   workspace to continue instead of one to create, the tier name it records, and the guidance every
-  turn is given; `runner.ts` runs the loop, allows a red baseline only for a continuation, and starts
-  nothing after the first stop it observes; `finalize.ts` turns an ending into evidence, a change
-  summary, and the report; `stops.ts` is the one stop request a phase honours, and the reason a stop
-  carries; `progress.ts` is the wording the timeline and the reasons use; `feedback.ts` collects the
-  failed commands a repair turn is given.
+  turn is given; `runner.ts` runs the loop, gives the working copy its repository-local commit
+  identity before any check or turn runs in it, allows a red baseline only for a continuation, and
+  starts nothing after the first stop it observes; `finalize.ts` turns an ending into evidence, a
+  change summary, and the report, from the source base the runner recorded for that run; `stops.ts`
+  is the one stop request a phase honours, and the reason a stop carries; `progress.ts` is the
+  wording the timeline and the reasons use; `feedback.ts` collects the failed commands a repair turn
+  is given.
 - **Does not own:** the working copy, the checks, the runtime, the report files, or any connector. It
   never imports `sources/` or `agents/`: the CLI hands it ordinary functions.
 - **Entry points:** `runTask` (`runs/runner.ts`); `RunTaskRequest`, `RunTaskResult`,
