@@ -649,6 +649,9 @@ describe('reading activity from the runtime event stream', () => {
       ['cmd.exe /d /s /c "npm test"', '"npm test"'],
       ['/bin/zsh -lc "git status --short"', '"git status --short"'],
       ['bash -ec "npm run validate"', '"npm run validate"'],
+      ['bash -l -e -c "npm test"', '"npm test"'],
+      ['PowerShell.exe -NoLogo -NonInteractive -NoProfile -Command "npm test"', '"npm test"'],
+      ['cmd.exe /D /S /C "npm test"', '"npm test"'],
     ] as const;
     for (const [command, payload] of cases) {
       expect(itemActivities('item.started', { type: 'command_execution', command })).toEqual([
@@ -669,6 +672,49 @@ describe('reading activity from the runtime event stream', () => {
     expect(command?.text).not.toContain('pwsh.exe');
     expect(command?.text.length).toBeLessThanOrEqual(401);
     expect(command?.text.endsWith('…')).toBe(true);
+  });
+
+  it.each([
+    'pwsh -NoProfile -File build.ps1 -Command smoke',
+    'powershell.exe -File "build script.ps1" -c smoke',
+    'pwsh -f build.ps1 -Command smoke',
+    'pwsh build.ps1 -Command smoke',
+    'pwsh -NoProfile build.ps1 -c smoke',
+    'bash build.sh -c smoke',
+    'bash -e "build script.sh" -lc smoke',
+    'sh -- build.sh -c smoke',
+    'cmd.exe /d build.cmd /c smoke',
+    'cmd.exe /k build.cmd /c smoke',
+    'pwsh -ExecutionPolicy Bypass -Command smoke',
+    'pwsh -Unknown -Command smoke',
+    'bash -o -c smoke',
+    'bash --rcfile -c smoke',
+    'bash -oc smoke',
+    'bash -C smoke',
+    'bash -ic smoke',
+    'cmd.exe /unknown /c smoke',
+  ])('retains the original command for an uncertain launch shape: %s', (command) => {
+    expect(itemActivities('item.started', { type: 'command_execution', command })).toEqual([
+      { kind: 'command', text: command },
+    ]);
+    expect(
+      itemActivities('item.completed', {
+        type: 'command_execution',
+        command,
+        exit_code: 0,
+        aggregated_output: 'smoke finished\n',
+      }),
+    ).toEqual([{ kind: 'result', text: `exit 0 — ${command} — smoke finished` }]);
+  });
+
+  it('bounds script-argument fallbacks without extracting their command-like flags', () => {
+    const command = `pwsh -File build.ps1 -Command ${'x'.repeat(500)}`;
+    expect(itemActivities('item.started', { type: 'command_execution', command })).toEqual([
+      { kind: 'command', text: `${command.slice(0, 400)}…` },
+    ]);
+    expect(
+      itemActivities('item.completed', { type: 'command_execution', command, exit_code: 1 }),
+    ).toEqual([{ kind: 'result', text: `exit 1 — ${command.slice(0, 160)}…` }]);
   });
 
   it('falls back to the command line it was given for a shape it does not know', () => {

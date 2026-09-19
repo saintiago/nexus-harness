@@ -151,6 +151,26 @@ try {
     exit_code: 0,
   });
 
+  // Command-like arguments after a script must not hide the actual script.
+  await draw('item.completed', {
+    type: 'agent_message',
+    text: 'Script arguments retain the script that receives them.',
+  });
+  for (const command of [
+    'pwsh -NoProfile -File build.ps1 -Command smoke',
+    'bash build.sh -c smoke',
+  ]) {
+    assert.deepEqual(itemActivities('item.started', { type: 'command_execution', command }), [
+      { kind: 'command', text: command },
+    ]);
+    await draw('item.started', { type: 'command_execution', command });
+    await draw('item.completed', {
+      type: 'command_execution',
+      command,
+      exit_code: 0,
+    });
+  }
+
   // A second message: its own group gets its own work lines, and more than
   // three of them keep the latest three.
   await draw('item.completed', {

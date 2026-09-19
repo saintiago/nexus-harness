@@ -214,9 +214,20 @@ function isCommandFlag(family: ShellFamily, token: string): boolean {
   if (family === 'cmd') {
     return flag === '/c';
   }
-  // A POSIX shell takes the command as the argument of a short-flag cluster
-  // that ends in `c`: `-c`, `-lc`, `-ec`.
-  return /^-[a-z]*c$/.test(flag);
+  // Recognize only these familiar, case-sensitive POSIX flag clusters.
+  // Other letters can select a different mode or consume an option argument.
+  return /^-[le]*c$/.test(token);
+}
+
+/** Known options that neither consume an argument nor select another input mode. */
+function isLauncherOption(family: ShellFamily, token: string): boolean {
+  if (family === 'powershell') {
+    return ['-noprofile', '-nologo', '-noninteractive'].includes(token.toLowerCase());
+  }
+  if (family === 'cmd') {
+    return ['/d', '/s'].includes(token.toLowerCase());
+  }
+  return /^-[le]+$/.test(token);
 }
 
 /**
@@ -228,6 +239,9 @@ function isCommandFlag(family: ShellFamily, token: string): boolean {
  * re-spelling of it. Nothing is executed, and nothing in the payload is
  * interpreted. A launcher this does not recognize, one whose flag is missing,
  * and one with an empty payload all return `null` and are shown as reported.
+ * Before the command flag, only known argument-free launcher options may be
+ * skipped. A script operand, file mode, or unfamiliar option ends recognition:
+ * a later command-like flag may belong to that script or option instead.
  */
 function unwrapCommand(command: string): string | null {
   const tokens = commandTokens(command);
@@ -240,11 +254,13 @@ function unwrapCommand(command: string): string | null {
     return null;
   }
   for (const token of tokens.slice(1)) {
-    if (!isCommandFlag(family, token.text)) {
-      continue;
+    if (isCommandFlag(family, token.text)) {
+      const payload = command.slice(token.end).trim();
+      return payload === '' ? null : payload;
     }
-    const payload = command.slice(token.end).trim();
-    return payload === '' ? null : payload;
+    if (!isLauncherOption(family, token.text)) {
+      return null;
+    }
   }
   return null;
 }

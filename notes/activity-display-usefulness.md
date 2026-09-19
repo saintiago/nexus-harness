@@ -2,8 +2,8 @@
 
 The pane now reads a command the way the runtime reported it. A launch through a
 wrapper this reader recognizes — PowerShell (`pwsh`/`powershell`, `-Command` or
-`-c`), `cmd.exe /c`, or a POSIX shell (`sh`, `bash`, `dash`, `zsh`, `ksh`, a
-short-flag cluster ending in `c`) — is shown as the payload that wrapper was
+`-c`), `cmd.exe /c`, or a POSIX shell (`sh`, `bash`, `dash`, `zsh`, `ksh`, `-c`
+optionally preceded by `l`/`e` in the same cluster) — is shown as the payload that wrapper was
 given, in its own quoting, _before_ the 400-code-unit activity bound applies, so
 a long `pwsh.exe` path can no longer consume the width. The payload is sliced out
 of the reported line; nothing is executed and nothing in it is interpreted. A
@@ -103,3 +103,39 @@ synthetic outcome and paths alone on the screen.
 - `npm run validate`: formatting, lint, typecheck, build, and the full suite —
   21 files, 636 passed, 2 existing platform skips.
 - `node tests/manual/activity-display.mjs` in the Windows PTY described above.
+
+## Review correction: stop at uncertain launcher arguments
+
+The original scanner continued past scripts and unfamiliar options, incorrectly
+showing only `smoke` for both `pwsh -NoProfile -File build.ps1 -Command smoke`
+and `bash build.sh -c smoke`. Recognition now stops at the first token that is
+neither a command flag nor a known argument-free launcher option. The allowed
+prefix options are PowerShell's `-NoProfile`, `-NoLogo`, and `-NonInteractive`,
+cmd's `/d` and `/s`, and POSIX `l`/`e` flag clusters. POSIX flags remain case
+sensitive. File modes, positional scripts, option terminators, and unfamiliar
+options preserve the original bounded command on both starts and completions.
+Even valid launch options outside this deliberately small set use the fallback;
+long unfamiliar wrappers can still obscure their operation within the bound.
+
+Added 19 regression cases alongside the existing long-path PowerShell case.
+The focused command `npx vitest run tests/activity.test.ts tests/cli.test.ts
+tests/source.test.ts` passed all 233 tests. The grouped display is unchanged.
+`npm run validate` passed formatting, lint, typecheck, build, and all 21 test
+files: 655 tests passed, with 2 existing platform skips.
+
+Reran `node tests/manual/activity-display.mjs` against the built reader in a
+Windows 80 by 24 PTY: exit 0 in about seven seconds, including all row-width
+assertions. The added script cases visibly retained their script names:
+
+```text
+run: pwsh -NoProfile -File build.ps1 -Command smoke
+result: exit 0 — pwsh -NoProfile -File build.ps1 -Command smoke
+run: bash build.sh -c smoke
+result: exit 0 — bash build.sh -c smoke
+```
+
+The demonstration now includes seven retained agent messages and 31 synthetic
+activity entries, with older work disappearing first at twenty rows. Recognized
+long-path launches still showed `'npm run validate'` and `'npm run typecheck'`
+with their supplied outcomes and excerpts. This remains an offline presentation
+check; no displayed command, script, or live model was run.
