@@ -10,6 +10,7 @@ import type { CheckRoundRequest } from '../checks/round.js';
 import type { AgentLog } from '../reporting/logs.js';
 import type { RunReportRequest } from '../reporting/report.js';
 import type {
+  AgentActivity,
   AttemptEvidence,
   AttemptKind,
   CancellationEvidence,
@@ -161,6 +162,14 @@ export interface AgentTurnRequest {
    * (docs/implement-workspace-continuation.md).
    */
   readonly guidance?: readonly string[];
+  /**
+   * Where a turn reports what it is doing as it goes, line by line: the runtime's
+   * own messages, commands, their results, and the files it changed. It is
+   * presentation for whoever is watching the terminal; a display that is not
+   * there changes nothing, and nothing reported here is evidence, an outcome, or
+   * a replacement for the turn's log.
+   */
+  readonly onActivity?: (activity: AgentActivity) => void;
   /**
    * Asked to abort when the run's remaining task time is used up, and when the
    * run's caller stops it: the same deadline every other phase carries, and the

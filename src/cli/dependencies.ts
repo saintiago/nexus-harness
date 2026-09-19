@@ -4,8 +4,9 @@
  * Every collaborator is an ordinary function of the module that owns it; this is
  * the only place they are composed into a run, and the only place a test's
  * substitution is merged over them. The wrapped ones let the terminal follow the
- * run: the allocated run directory is remembered, and the run's own timeline is
- * echoed as the runner writes it.
+ * run: the allocated run directory is remembered, the run's own timeline is
+ * echoed as the runner writes it, and what the runtime reports about itself goes
+ * to the activity pane when there is one.
  */
 import { runCodexTurn } from '../agents/codex/adapter.js';
 import { selectedCodexRuntime } from '../agents/codex/runtime.js';
@@ -20,6 +21,7 @@ import { preflightSource } from '../workspace/preflight.js';
 import { allocateRunDirectory } from '../workspace/run-directory.js';
 import type { RunDirectory } from '../workspace/run-directory.js';
 import { recordWorkspaceAttempt } from '../workspace/state.js';
+import type { ActivityDisplay } from './activity.js';
 import type { CliContext, CliIo } from './context.js';
 
 function realDependencies(
@@ -66,8 +68,8 @@ const FINAL_STATUS_PREFIX = 'final status:';
 
 /**
  * The loop's collaborators as this invocation will use them: the real ones,
- * with any substitution the caller made, and two wrapped so the terminal can be
- * told what the run is doing.
+ * with any substitution the caller made, and three wrapped so the terminal can
+ * be told what the run is doing.
  *
  * - `allocateRunDirectory` is wrapped to remember the run directory as soon as
  *   one exists, so that a failure afterwards — a report that cannot be written
@@ -76,6 +78,10 @@ const FINAL_STATUS_PREFIX = 'final status:';
  *   writes it, which is what the progress the user sees is made of. The line is
  *   echoed only after it was appended, and the runner's final status is left to
  *   the outcome block.
+ * - `runAgentTurn` is wrapped, when the invocation has an activity pane, to hand
+ *   each turn the pane as its `onActivity` sink, so what the runtime is doing is
+ *   drawn while it does it. A substituted turn that reports nothing simply
+ *   leaves the pane empty.
  */
 export function composeDependencies(
   context: CliContext,
@@ -83,6 +89,7 @@ export function composeDependencies(
   onAllocated: (run: RunDirectory) => void,
   agent: AgentSelection,
   childEnvironment?: NodeJS.ProcessEnv,
+  activity?: ActivityDisplay,
 ): RunnerDependencies {
   const real = realDependencies(agent, childEnvironment);
   const replaced = context.dependencies ?? {};
@@ -100,7 +107,18 @@ export function composeDependencies(
     configureWorkspaceIdentity:
       replaced.configureWorkspaceIdentity ?? real.configureWorkspaceIdentity,
     runCheckRound: replaced.runCheckRound ?? real.runCheckRound,
-    runAgentTurn: replaced.runAgentTurn ?? real.runAgentTurn,
+    runAgentTurn: async (request) => {
+      const turn = replaced.runAgentTurn ?? real.runAgentTurn;
+      if (activity === undefined) {
+        return await turn(request);
+      }
+      return await turn({
+        ...request,
+        onActivity: (reported) => {
+          activity.activity(reported);
+        },
+      });
+    },
     openAgentLog: replaced.openAgentLog ?? real.openAgentLog,
     appendRunLog: async (runLog: string, message: string) => {
       await append(runLog, message);

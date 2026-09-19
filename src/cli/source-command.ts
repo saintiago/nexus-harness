@@ -23,8 +23,9 @@ import { listSource } from '../sources/list.js';
 import type { SourceListEntry } from '../sources/list.js';
 import { WorkspaceError } from '../workspace/errors.js';
 import { preflightSource } from '../workspace/preflight.js';
+import { createActivityDisplay } from './activity.js';
 import { EXIT_CANCELLED, EXIT_INPUT_ERROR, EXIT_OK, EXIT_USAGE } from './context.js';
-import type { CliContext } from './context.js';
+import type { CliContext, CliIo } from './context.js';
 import { composeDependencies } from './dependencies.js';
 import { USAGE_HINT } from './help.js';
 import {
@@ -190,15 +191,31 @@ async function sourceCommand(
     context.fetch === undefined ? {} : { fetch: context.fetch },
   );
 
+  // One display for the whole invocation: every attempt of every issue writes
+  // its progress and its activity through it, so the pane that sits under the
+  // progress outlives the runs it is showing. A redirected terminal gets
+  // ordinary lines and no pane.
+  const pane = createActivityDisplay(io);
+  const activeIo: CliIo = {
+    out: (text) => {
+      pane.line(text);
+    },
+    err: (text) => {
+      pane.around(() => {
+        io.err(text);
+      });
+    },
+  };
+
   const stop = new AbortController();
   const release = (context.signals ?? hostSignals()).onInterrupt(() => {
     if (stop.signal.aborted) {
-      io.err(
+      activeIo.err(
         'interrupt received again: intake is already stopping, and this CLI is still waiting for it to finish.',
       );
       return;
     }
-    io.err(
+    activeIo.err(
       [
         'interrupt received: asking intake to stop, and waiting for the active run to finalize before',
         'this command exits. Artifacts and receipts are kept; nothing new is claimed.',
@@ -213,15 +230,15 @@ async function sourceCommand(
       try {
         entries = await listSource({ source: connector, workDir, stop: stop.signal });
       } catch (cause) {
-        io.err(`error: ${cause instanceof Error ? cause.message : String(cause)}`);
+        activeIo.err(`error: ${cause instanceof Error ? cause.message : String(cause)}`);
         return stop.signal.aborted ? EXIT_CANCELLED : EXIT_INPUT_ERROR;
       }
       for (const entry of entries) {
-        io.out(`${entry.disposition.padEnd(9)} ${entry.ref.key}  ${entry.title}`);
-        io.out(`          ${entry.ref.url}`);
-        io.out(`          ${entry.detail}`);
+        activeIo.out(`${entry.disposition.padEnd(9)} ${entry.ref.key}  ${entry.title}`);
+        activeIo.out(`          ${entry.ref.url}`);
+        activeIo.out(`          ${entry.detail}`);
       }
-      io.out(
+      activeIo.out(
         `source list: ${String(entries.length)} eligible issue(s); nothing was claimed, no run was ` +
           'started, and no directory was created',
       );
@@ -252,7 +269,7 @@ async function sourceCommand(
       // the single ordinary rung built from `agent` and `maxRepairs`.
       tiers: escalationTiers(config),
       repoPath,
-      io,
+      io: activeIo,
       stop: stop.signal,
       preflight: preflightSource,
       ...(delivery === undefined ? {} : { delivery }),
@@ -273,10 +290,11 @@ async function sourceCommand(
         const agent = tier?.agent ?? config.agent;
         const dependencies = composeDependencies(
           context,
-          io,
+          activeIo,
           () => undefined,
           agent,
           childEnvironment,
+          pane,
         );
         return runTask(
           {
@@ -308,16 +326,21 @@ async function sourceCommand(
             pollIntervalMs: sourceConfig.pollIntervalSeconds * 1000,
           } satisfies SourceWatchOptions);
 
-    io.out(describeSourceSummary(summary));
+    // The pane belongs to the invocation, not to one run: it is taken away
+    // before the batch's summary, so that summary reads as ordinary output.
+    pane.close();
+    activeIo.out(describeSourceSummary(summary));
     return exitCodeForSource(summary);
   } catch (cause) {
+    pane.close();
     if (cause instanceof SourceError || cause instanceof WorkspaceError) {
-      io.err(`error: ${cause.message}`);
+      activeIo.err(`error: ${cause.message}`);
       return EXIT_INPUT_ERROR;
     }
     throw cause;
   } finally {
     release();
+    pane.close();
   }
 }
 

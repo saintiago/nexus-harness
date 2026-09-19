@@ -19,21 +19,22 @@ Line counts are indicative, not a rule: they are here to show where the substanc
 
 ```text
 src/
-  cli.ts                          (120)  entry point: dispatch, bootstrap, exit code
+  cli.ts                          (140)  entry point: dispatch, bootstrap, exit code
   cli/
-    context.ts                    (72)   exit codes, CliIo, interrupt signals, CliContext
-    help.ts                       (63)   the usage text and the hint that points at it
+    context.ts                    (103)  exit codes, CliIo, the terminal, interrupt signals, CliContext
+    help.ts                       (68)   the usage text and the hint that points at it
     options.ts                    (105)   each command's option table and the argument parser
-    check-config.ts               (94)   `check-config` and what it prints
-    run-command.ts                (194)  `run`: load the inputs, install the stop, print the outcome
-    source-command.ts             (339)  `source list|run|watch`, the connector selection, abortable sleep
-    dependencies.ts               (132)  the loop's real collaborators and the wrapped set a test gets
+    check-config.ts               (97)   `check-config` and what it prints
+    run-command.ts                (224)  `run`: load the inputs, install the stop, print the outcome
+    source-command.ts             (379)  `source list|run|watch`, the connector selection, abortable sleep
+    activity.ts                   (235)  the activity pane: a bounded block of lines under the progress
+    dependencies.ts               (154)  the loop's real collaborators and the wrapped set a test gets
     signals.ts                    (28)   host SIGINT/SIGTERM/SIGBREAK handling
   config/
     schema.ts                     (216)  zod schemas and the documented defaults
     load.ts                       (156)  file reading, validation, workDir and agent-executable paths
   shared/
-    types.ts                      (585)  the data contracts; data only, no imports, no runtime I/O
+    types.ts                      (636)  the data contracts; data only, no imports, no runtime I/O
     errors.ts                     (10)    `messageOf`: the one message helper
   process/
     launch.ts                     (167)  how one command is started (executable, args, Windows shims)
@@ -57,7 +58,7 @@ src/
     reopen.ts                     (131)  resolveWorkspace/reopenWorkspace: the pointer, the checkout
     changes.ts                    (288)  inspectWorkspaceChanges: what the copy differs from its base by
   runs/
-    contracts.ts                  (312)  run and turn requests/results, RunnerDependencies, the two errors
+    contracts.ts                  (345)  run and turn requests/results, RunnerDependencies, the two errors
     runner.ts                     (668)  runTask: the loop (prepare or continue -> baseline -> turns -> checks)
     finalize.ts                   (462)  how a run ends: stop evidence, change summary, report
     stops.ts                      (113)  the stop request one phase works under, and the stop cause
@@ -87,9 +88,9 @@ src/
   agents/
     codex/
       runtime.ts                  (110)  the launch prefix, the environment, the stop contract
-      adapter.ts                  (390)  runCodexTurn: one turn, normalized for the runner
+      adapter.ts                  (402)  runCodexTurn: one turn, normalized for the runner
       prompt.ts                   (137)  what one turn is told, the bounded guidance included
-      events.ts                   (80)   reading the runtime's JSON event stream
+      events.ts                   (158)  reading the runtime's JSON event stream, activity lines included
 ```
 
 Every file is a module with one job. Three files stay deliberately large, because splitting them
@@ -104,13 +105,18 @@ further would separate one decision from itself: `runs/runner.ts` (the loop), `s
 
 - **Owns:** the process entry point, command dispatch, exit codes, argument parsing, usage text, and
   everything the user sees: progress echoed from the run timeline, the outcome block, source-list
-  output, and error messages. It is also the only place that composes the loop's collaborators
-  (`cli/dependencies.ts`), and the only place that constructs a task source.
+  output, and error messages. `cli/activity.ts` is the one place that draws on the terminal beyond
+  ordinary lines: it keeps the latest runtime activity in a bounded pane under the progress, and it
+  falls back to ordinary lines when the output is redirected or the terminal cannot hold a pane. It
+  is also the only place that composes the loop's collaborators (`cli/dependencies.ts`), and the
+  only place that constructs a task source.
 - **Does not own:** any part of the loop, any command execution, any Git or Jira call. A command
   module resolves its inputs, hands the collaborators to `runTask`/`runSource`/`watchSource`, and
   returns an exit code.
 - **Entry points:** `runCli`, `consoleContext` (`cli.ts`); `CliContext`, `CliIo`, `InterruptSignals`,
-  `EXIT_OK`, `EXIT_INPUT_ERROR`, `EXIT_USAGE`, `EXIT_CANCELLED` (`cli/context.ts`).
+  `CliTerminal`, `EXIT_OK`, `EXIT_INPUT_ERROR`, `EXIT_USAGE`, `EXIT_CANCELLED`
+  (`cli/context.ts`); `createActivityDisplay`, `ActivityDisplay`, `ACTIVITY_PANE_LINES`
+  (`cli/activity.ts`).
 
 ### `config/`
 
