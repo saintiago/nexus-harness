@@ -1603,6 +1603,20 @@ describe('an issue that points at a workspace', () => {
         change: (ledger) => ({ ...ledger, sourceItem: { type: 'jira', scope: SCOPE } }),
         problem: 'sourceItem.id',
       },
+      {
+        change: (ledger) => ({
+          ...ledger,
+          attempts: [
+            {
+              runId: 'run-20260916100000-aaaaaaaa',
+              outcome: 'failed',
+              endedAt: 'not-a-date',
+              reportPath: '/runs/run-20260916100000-aaaaaaaa/result.json',
+            },
+          ],
+        }),
+        problem: 'attempts.0.endedAt',
+      },
     ];
 
     for (const entry of cases) {
@@ -1628,6 +1642,81 @@ describe('an issue that points at a workspace', () => {
       expect(fixture.log).not.toContain('claim:SAM1-2');
       expect(fixture.log).not.toContain('run:SAM1-2');
     }
+  });
+
+  it('refuses an attempt whose recorded end is not a usable timestamp, and continues it once it is', async () => {
+    // `attempts[].endedAt` is not free-form text: a continuation hands it to the
+    // source as the moment it reads comments since, and a nonblank string that is
+    // not an instant would be parsed as `NaN`, which lets every old comment
+    // through. Such a record is refused with the ledger file and the field,
+    // before the claim, and the same workspace with a timestamp this harness
+    // writes is continued normally.
+    const workDir = await createTempDir();
+    const { workspaceId, sourceRoot } = await preparedWorkspaceOnDisk(workDir, [
+      { outcome: 'failed', reason: 'the checks after the implementation turn did not pass' },
+    ]);
+    const ledgerPath = workspaceStatePath(workDir, workspaceId);
+    const written = JSON.parse(await readFile(ledgerPath, 'utf8')) as {
+      readonly attempts: readonly Record<string, unknown>[];
+    };
+    const attempt = written.attempts[0];
+    expect(attempt?.endedAt).toBe('2026-01-01T00:00:00.000Z');
+    await writeFile(
+      ledgerPath,
+      `${JSON.stringify({ ...written, attempts: [{ ...attempt, endedAt: 'not-a-date' }] })}\n`,
+      'utf8',
+    );
+
+    const asked: string[] = [];
+    const fixture = createFixture({
+      workDir,
+      scans: [[candidateFor('2', 'SAM1-2')]],
+      prepare: (candidate) => preparedFor(candidate, [workspaceId]),
+      preflight: () => Promise.resolve({ sourceRoot, baseCommit: 'base' }),
+      commentsSince: (_item, since) => {
+        asked.push(since);
+        return [];
+      },
+    });
+
+    const summary = await runSource(fixture.context, null);
+
+    expect(summary).toMatchObject({ outcome: 'completed', attempted: 0, refused: 1 });
+    const reason = fixture.refusals[0]?.reason ?? '';
+    // The operator gets the ledger that could not be read and the field that is
+    // wrong with it.
+    expect(reason).toContain(ledgerPath);
+    expect(reason).toContain('attempts.0.endedAt');
+    // Nothing was read through the record: no claim, no run, no receipt, and the
+    // source was never asked to compare comments against the broken end.
+    expect(fixture.log).not.toContain('claim:SAM1-2');
+    expect(fixture.log).not.toContain('run:SAM1-2');
+    expect(fixture.log).not.toContain('comments:SAM1-2');
+    expect(asked).toEqual([]);
+    expect(existsSync(receiptFilePath(workDir, refFor('2', 'SAM1-2')))).toBe(false);
+    // The refused workspace itself is kept: the refusal is about the ledger
+    // record, and the retained clone is what the repair continues.
+    expect(existsSync(path.join(workDir, 'workspaces', workspaceId))).toBe(true);
+
+    // The same workspace, with the end this harness recorded, is continued: the
+    // recorded instant is what a continuation reads the item's comments since.
+    await writeFile(ledgerPath, `${JSON.stringify(written)}\n`, 'utf8');
+    const repaired = createFixture({
+      workDir,
+      scans: [[candidateFor('2', 'SAM1-2')]],
+      prepare: (candidate) => preparedFor(candidate, [workspaceId]),
+      preflight: () => Promise.resolve({ sourceRoot, baseCommit: 'base' }),
+      commentsSince: (_item, since) => {
+        asked.push(since);
+        return [];
+      },
+    });
+
+    const continued = await runSource(repaired.context, null);
+
+    expect(continued).toMatchObject({ outcome: 'completed', attempted: 1, passed: 1, refused: 0 });
+    expect(repaired.requests[0]?.continued).toBe(true);
+    expect(asked).toEqual(['2026-01-01T00:00:00.000Z']);
   });
 });
 
