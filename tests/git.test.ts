@@ -475,7 +475,12 @@ describe('workspace steps that use Git', () => {
     // run's evidence instead of reporting a clean end.
     expect(error).toBeInstanceOf(WorkspaceError);
     expect(error.message).toContain('did not finish within');
-    expect((error as WorkspaceError).stop).toEqual({ termination: 'confirmed', problem: null });
+    expect((error as WorkspaceError).stop).toEqual({
+      termination: 'confirmed',
+      problem: null,
+      kind: 'timeout',
+      timeoutMs: 3000,
+    });
     expect(error.message).toContain(
       `The incomplete run directory was kept for inspection: "${run.runDir}"`,
     );
@@ -517,6 +522,8 @@ describe('workspace steps that use Git', () => {
     expect((error as WorkspaceError).stop).toEqual({
       termination: 'confirmed',
       problem: null,
+      kind: 'timeout',
+      timeoutMs: 3000,
     });
     await expectGone(record.pid);
   }, 60_000);

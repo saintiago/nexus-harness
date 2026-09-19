@@ -24,6 +24,8 @@ import type {
   TimeoutLimit,
 } from '../shared/types.js';
 import { inspectWorkspaceChanges } from '../workspace/changes.js';
+import { workspaceStopOf } from '../workspace/errors.js';
+import { GIT_COMMAND_TIMEOUT_MS } from '../workspace/git.js';
 import type { PreparedWorkspace } from '../workspace/prepare.js';
 import type { SourcePreflight } from '../workspace/preflight.js';
 import type { RunDirectory } from '../workspace/run-directory.js';
@@ -166,9 +168,17 @@ export function createRunFinalizer(context: RunFinalizerContext) {
     try {
       return summarizeChanges({
         baseCommit: workspace.baseCommit,
-        paths: await inspectWorkspaceChanges(workspace),
+        // A run already cancelled still gets a bounded evidence reading. An
+        // interrupt arriving during a fresh final reading stops that Git too.
+        paths: await inspectWorkspaceChanges(
+          workspace,
+          callerStop === undefined || callerStop.aborted ? {} : { stop: callerStop },
+        ),
       });
     } catch (cause) {
+      if (workspaceStopOf(cause)?.termination === 'unconfirmed') {
+        throw cause;
+      }
       return summarizeChanges({
         baseCommit: workspace.baseCommit,
         problem: `the working copy could not be compared with its recorded base: ${oneLine(messageOf(cause))}`,
@@ -221,7 +231,53 @@ export function createRunFinalizer(context: RunFinalizerContext) {
     // The run has stopped writing to its working copy, so this is the moment its
     // changes are read — before the status is recorded, so the timeline reads as
     // what the run left and then how it ended.
-    const changes = await finalChanges(parts);
+    let changes: ChangeSummary;
+    try {
+      changes = await finalChanges(parts);
+    } catch (cause) {
+      const stop = workspaceStopOf(cause);
+      if (stop === null) throw cause;
+      const problem = `final workspace inspection: ${oneLine(messageOf(cause))}`;
+      changes = summarizeChanges({
+        baseCommit: workspace?.baseCommit ?? source.baseCommit,
+        problem,
+      });
+      // Keep the first stop's trigger, but never its now-obsolete clean-up claim.
+      // Otherwise intake could deliver or reuse a copy while Git still owns it.
+      if (parts.timeout !== null) {
+        parts = { ...parts, timeout: { ...parts.timeout, termination: 'unconfirmed', problem } };
+      } else if (parts.cancellation !== null) {
+        parts = {
+          ...parts,
+          cancellation: { ...parts.cancellation, termination: 'unconfirmed', problem },
+        };
+      } else if (stop.kind === 'cancelled') {
+        parts = {
+          ...parts,
+          status: 'cancelled',
+          reason: problem,
+          cancellation: cancelled({
+            phase: 'final workspace inspection',
+            termination: 'unconfirmed',
+            problem,
+          }),
+        };
+      } else {
+        parts = {
+          ...parts,
+          status: 'failed',
+          reason: problem,
+          timeout: timedOut({
+            limit: 'command',
+            phase: 'final workspace inspection',
+            limitMs: stop.timeoutMs ?? GIT_COMMAND_TIMEOUT_MS,
+            termination: 'unconfirmed',
+            problem,
+          }),
+        };
+      }
+      await dependencies.appendRunLog(timeline, `termination unconfirmed: ${problem}`);
+    }
     for (const line of changeLines(changes)) {
       await dependencies.appendRunLog(timeline, line);
     }

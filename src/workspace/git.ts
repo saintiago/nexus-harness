@@ -167,7 +167,7 @@ export async function runGit(
   return {
     // A Git killed or stopped before it exited is a failure; -1 keeps it out of
     // the success range, exactly as the code before this change did.
-    code: result.exitCode ?? -1,
+    code: result.outcome === 'exited' ? (result.exitCode ?? -1) : -1,
     stdout,
     stderr,
     outcome: result.outcome,
@@ -242,7 +242,17 @@ export function gitStopOf(result: GitResult): GitStop | null {
  * why a run ended can carry an unconfirmed stop instead of rounding it down.
  */
 export function gitFailure(describe: string, result: GitResult): WorkspaceError {
-  return new WorkspaceError(`${describe}: ${gitProblem(result)}`, { stop: gitStopOf(result) });
+  const stop = gitStopOf(result);
+  return new WorkspaceError(`${describe}: ${gitProblem(result)}`, {
+    stop:
+      stop === null
+        ? null
+        : {
+            ...stop,
+            kind: result.outcome === 'stopped' ? 'cancelled' : 'timeout',
+            timeoutMs: result.timeoutMs,
+          },
+  });
 }
 
 /**

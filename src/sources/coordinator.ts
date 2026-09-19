@@ -18,8 +18,9 @@ import { rm } from 'node:fs/promises';
 import type { DeliveredPullRequest, Delivery } from '../delivery/github.js';
 import { DeliveryError } from '../delivery/github.js';
 import type { RunTaskResult } from '../runs/contracts.js';
-import { RunCancelledError } from '../runs/contracts.js';
+import { RunCancelledError, RunTimeoutError } from '../runs/contracts.js';
 import { messageOf } from '../shared/errors.js';
+import { workspaceStopOf } from '../workspace/errors.js';
 import type { AttemptEvidence } from '../shared/types.js';
 import type { ContinuedWorkspace } from '../workspace/reopen.js';
 import { reopenWorkspace } from '../workspace/reopen.js';
@@ -179,6 +180,28 @@ function stopWith(state: BatchState, problem: string, confirmed = true): 'stop' 
 }
 /** What handling one candidate did, and whether the batch should go on. */
 type Step = 'next' | 'stop' | 'cancelled';
+
+/** A failed Git cleanup is an intake stop, including before a run exists. */
+function unconfirmedWorkspaceStop(
+  state: BatchState,
+  cause: unknown,
+  phase: string,
+  signal: AbortSignal,
+): Step | null {
+  const evidence =
+    workspaceStopOf(cause) ??
+    (cause instanceof RunCancelledError || cause instanceof RunTimeoutError
+      ? workspaceStopOf(cause.cause)
+      : null);
+  if (evidence?.termination !== 'unconfirmed') return null;
+  stopWith(
+    state,
+    `${phase}: ${messageOf(cause)}; termination unconfirmed: ` +
+      `${evidence.problem ?? 'no reason was recorded'}. Intake stops; any existing intake lock is kept for inspection.`,
+    false,
+  );
+  return signal.aborted || evidence.kind === 'cancelled' ? 'cancelled' : 'stop';
+}
 /**
  * Publishes a refusal and takes the item out of the queue, so a later scan does
  * not read it again and again. Nothing is claimed, nothing runs, and nothing
@@ -411,6 +434,13 @@ async function attempt(
       })
     ).sourceRoot;
   } catch (cause) {
+    const cleanup = unconfirmedWorkspaceStop(
+      state,
+      cause,
+      `${candidate.ref.key}: source preflight`,
+      stop,
+    );
+    if (cleanup !== null) return cleanup;
     if (stop.aborted) {
       // The reading was stopped because the intake was, not because of what the
       // source checkout is: nothing is claimed and no receipt is touched.
@@ -482,6 +512,13 @@ async function attempt(
         { stop },
       );
     } catch (cause) {
+      const cleanup = unconfirmedWorkspaceStop(
+        state,
+        cause,
+        `${candidate.ref.key}: continuation verification`,
+        stop,
+      );
+      if (cleanup !== null) return cleanup;
       if (stop.aborted) {
         // The verification of the checkout was stopped because the intake was:
         // that is not a refusal of the item, and nothing has been claimed yet.
@@ -624,6 +661,13 @@ async function attempt(
     } catch (cause) {
       const problem = messageOf(cause);
       await updateReceipt(file, { problem: `run: ${problem}` });
+      const cleanup = unconfirmedWorkspaceStop(
+        state,
+        cause,
+        `${item.ref.key}: run preflight`,
+        stop,
+      );
+      if (cleanup !== null) return cleanup;
       if (cause instanceof RunCancelledError) {
         return 'cancelled';
       }
@@ -664,18 +708,17 @@ async function attempt(
           `feedback: not attempted, because the run's termination was not confirmed (` +
           `${stopEvidence.problem ?? 'no reason was recorded'})`,
       });
-      state.cleanupConfirmed = false;
+      stopWith(
+        state,
+        `${item.ref.key}: the run ended without confirming that everything it started had ` +
+          `stopped (${stopEvidence.problem ?? 'no reason was recorded'}), so intake stops and the lock is kept for inspection`,
+        false,
+      );
       io.err(
         `${item.ref.key}: the run was stopped without a confirmed termination, so no result was ` +
           'posted and the intake lock is kept for inspection',
       );
-      return run.status === 'cancelled'
-        ? 'cancelled'
-        : stopWith(
-            state,
-            `${item.ref.key}: the run ended without confirming that everything it started had ` +
-              'stopped, so intake stops and the lock is kept for inspection',
-          );
+      return run.status === 'cancelled' ? 'cancelled' : 'stop';
     }
 
     // The workspace's own ledger is what the next attempt reads for its attempt
@@ -894,6 +937,9 @@ export async function runSource(
       bounds: { stop: context.stop },
     });
   } catch (cause) {
+    const cleanup = unconfirmedWorkspaceStop(state, cause, 'source preflight', context.stop);
+    if (cleanup !== null)
+      return summarize(cleanup === 'cancelled' ? 'cancelled' : 'stopped', state);
     if (context.stop.aborted) {
       return summarize('cancelled', state);
     }
@@ -965,6 +1011,9 @@ export async function watchSource(options: SourceWatchOptions): Promise<SourceSu
       bounds: { stop },
     });
   } catch (cause) {
+    const cleanup = unconfirmedWorkspaceStop(state, cause, 'source preflight', stop);
+    if (cleanup !== null)
+      return summarize(cleanup === 'cancelled' ? 'cancelled' : 'stopped', state);
     if (stop.aborted) {
       return summarize('cancelled', state);
     }

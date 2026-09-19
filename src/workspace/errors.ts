@@ -8,6 +8,9 @@ import type { TerminationOutcome } from '../shared/types.js';
  * Git step rather than rounding it down.
  */
 export interface WorkspaceStepStop {
+  /** The Git stop trigger and bound, when recorded by the invocation. */
+  readonly kind?: 'timeout' | 'cancelled';
+  readonly timeoutMs?: number;
   readonly termination: TerminationOutcome;
   readonly problem: string | null;
 }

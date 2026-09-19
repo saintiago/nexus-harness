@@ -2604,6 +2604,60 @@ async function expectNoPendingTimers(timers: TimerSpy): Promise<void> {
  * T09.
  */
 describe('a run the caller stops', () => {
+  for (const phase of ['preflight', 'preparation', 'identity'] as const) {
+    it.each(['timeout', 'cancelled'] as const)(
+      `retains Git's %s and cleanup evidence from ${phase} without relying on the clock`,
+      async (kind) => {
+        const fixture = await createFixture();
+        const agent = fakeAgent(fixture);
+        const error = new WorkspaceError('Git stopped but its owned tree did not end', {
+          stop: {
+            kind,
+            timeoutMs: 25,
+            termination: 'unconfirmed',
+            problem: 'owned Git tree still running',
+          },
+        });
+        const fail = async (): Promise<never> => {
+          throw error;
+        };
+        const parts =
+          phase === 'preflight'
+            ? { preflight: fail }
+            : phase === 'preparation'
+              ? { prepareWorkspace: fail }
+              : { configureWorkspaceIdentity: fail };
+        const pending = runTask(
+          request(fixture, configuration(fixture)),
+          dependencies(agent.turn, {
+            ...parts,
+            now: () => new Date('2026-09-19T12:00:00.000Z'),
+          }),
+        );
+        if (phase === 'preflight') {
+          await expect(pending).rejects.toBeInstanceOf(
+            kind === 'timeout' ? RunTimeoutError : RunCancelledError,
+          );
+          await expect(pending).rejects.toMatchObject({ cause: error });
+          expect(existsSync(fixture.workDir)).toBe(false);
+        } else {
+          const result = await pending;
+          expect(result.status).toBe(kind === 'timeout' ? 'failed' : 'cancelled');
+          expect(result.timeout ?? result.cancellation).toMatchObject({
+            termination: 'unconfirmed',
+            problem: 'owned Git tree still running',
+          });
+          const report = await readReport(result.reportPath);
+          expect(report.timeout ?? report.cancellation).toEqual(
+            result.timeout ?? result.cancellation,
+          );
+          expect(report.changes.inspected).toBe(false);
+        }
+        expect(agent.requests).toEqual([]);
+      },
+    );
+  }
+
   it('refuses a run that was stopped before it started, and allocates nothing', async () => {
     const fixture = await createFixture();
     const config = configuration(fixture);

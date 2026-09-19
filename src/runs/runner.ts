@@ -115,13 +115,14 @@ export async function runTask(
    * reading that was stopped there says so, with whether its stop was confirmed,
    * even though the run itself left nothing behind to report it in.
    */
-  const refuseCancelled = (where: string, detail?: string): RunCancelledError =>
+  const refuseCancelled = (where: string, detail?: string, cause?: unknown): RunCancelledError =>
     new RunCancelledError(
       [
         `the run was stopped by its caller ${where}, before any run directory was allocated.`,
         ...(detail === undefined ? [] : [`What was running when it arrived: ${detail}`]),
         'No run directory, no working copy, and no report were created: there is nothing to inspect and nothing to reuse, and no command and no coding turn was started.',
       ].join('\n'),
+      { cause },
     );
 
   if (stopped()) {
@@ -147,10 +148,12 @@ export async function runTask(
       },
     });
   } catch (cause) {
-    if (stopped()) {
+    const gitStop = workspaceStopOf(cause);
+    if (gitStop?.kind === 'cancelled' || (gitStop?.kind === undefined && stopped())) {
       throw refuseCancelled(
         'while the source repository was being checked',
         workspaceStopOf(cause) === null ? undefined : oneLine(messageOf(cause)),
+        cause,
       );
     }
     if (workspaceStopOf(cause) !== null) {
@@ -164,6 +167,7 @@ export async function runTask(
           'No run directory, no working copy, and no report were created: there is nothing to inspect and nothing to reuse, and no command and no coding turn was started.',
           `Run the task again with more than ${String(config.taskTimeoutMinutes)} minutes of task time available.`,
         ].join('\n'),
+        { cause },
       );
     }
     throw cause;
@@ -318,7 +322,10 @@ export async function runTask(
   const { endRun, endTimedOut, endStopped, callerStopped, timedOut, roundStop } = finalizer;
 
   if (workspace === null) {
-    if (stopped()) {
+    if (
+      preparationStop?.kind === 'cancelled' ||
+      (preparationStop?.kind === undefined && stopped())
+    ) {
       // Preparation was stopped by the caller's request, not by Git: the report
       // keeps the preparation problem it has, and the cancellation says why the
       // run ended there. Nothing was checked and no turn was started.
@@ -332,7 +339,7 @@ export async function runTask(
         attempts: [],
       });
     }
-    if (remainingMs() <= 0) {
+    if (preparationStop !== null || remainingMs() <= 0) {
       // Preparation stopped because the run's own deadline had passed, not
       // because Git failed. The report keeps the preparation problem it has,
       // and the timeout says which limit was responsible.
@@ -413,7 +420,7 @@ export async function runTask(
   }
   // The stop the run observed while the phase ran is read first, then the
   // deadline: what it returned or rejected with does not decide the status.
-  if (stopped()) {
+  if (identityStop?.kind === 'cancelled' || (identityStop?.kind === undefined && stopped())) {
     return endStopped({
       cause: callerStopped(
         identityPhase,
@@ -424,7 +431,7 @@ export async function runTask(
       attempts: [],
     });
   }
-  if (remainingMs() <= 0) {
+  if (identityStop !== null || remainingMs() <= 0) {
     const evidence = timedOut({
       limit: 'task',
       phase: identityPhase,

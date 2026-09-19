@@ -19,7 +19,14 @@ import { existsSync } from 'node:fs';
 import { mkdir, readFile, readdir, rename, symlink, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import * as invocation from '../src/process/invocation.js';
+import { appendRunLog } from '../src/reporting/logs.js';
+import { writeRunReport } from '../src/reporting/report.js';
+import { createRunFinalizer } from '../src/runs/finalize.js';
+import { WorkspaceError } from '../src/workspace/errors.js';
+import { configureWorkspaceIdentity, runGit } from '../src/workspace/git.js';
+import { inspectWorkspaceChanges } from '../src/workspace/changes.js';
 import { runCli } from '../src/cli.js';
 import { EXIT_CANCELLED, EXIT_INPUT_ERROR, EXIT_OK } from '../src/cli/context.js';
 import type { CliContext, InterruptSignals } from '../src/cli/context.js';
@@ -83,7 +90,10 @@ import {
   writeJsonFile,
 } from './support.js';
 
-afterEach(cleanupTempDirectories);
+afterEach(async () => {
+  vi.restoreAllMocks();
+  await cleanupTempDirectories();
+});
 
 const SCOPE = 'https://example.atlassian.net';
 
@@ -1108,6 +1118,270 @@ describe('the intake lock', () => {
 // ---------------------------------------------------------------------------
 // Continuation
 // ---------------------------------------------------------------------------
+
+describe('Git cleanup at intake boundaries', () => {
+  const cleanupProblem = 'owned fake Git tree did not stop';
+  const failure = () =>
+    new WorkspaceError('Git inspection did not finish', {
+      stop: { termination: 'unconfirmed', problem: cleanupProblem },
+    });
+
+  it.each(['timed-out', 'stopped'] as const)(
+    'rejects zero-exit %s in identity and inspection callers',
+    async (outcome) => {
+      const invoke = vi.spyOn(invocation, 'runInvocation').mockResolvedValue({
+        outcome,
+        exitCode: 0,
+        signal: null,
+        launchError: null,
+        timeoutMs: 25,
+        termination: 'unconfirmed',
+        terminationProblem: cleanupProblem,
+      });
+      expect((await runGit(['status'], '/mock')).code).toBe(-1);
+      await expect(configureWorkspaceIdentity('/mock')).rejects.toMatchObject({
+        stop: { termination: 'unconfirmed', problem: cleanupProblem },
+      });
+      await expect(
+        inspectWorkspaceChanges(preparedWorkspaceFor('/mock/run-1')),
+      ).rejects.toMatchObject({
+        stop: { termination: 'unconfirmed', problem: cleanupProblem },
+      });
+      expect(invoke).toHaveBeenCalledTimes(3);
+    },
+  );
+
+  for (const mode of ['run', 'watch'] as const) {
+    for (const cancelled of [false, true]) {
+      for (const phase of ['initial', 'candidate', 'reopen', 'runner'] as const) {
+        it(`${mode} retains unconfirmed cleanup during ${phase}, cancelled=${String(cancelled)}`, async () => {
+          const workDir = await createTempDir();
+          const workspace = phase === 'reopen' ? await preparedWorkspaceOnDisk(workDir) : null;
+          const existingLock =
+            phase === 'initial' ? await acquireIntakeLock(workDir, () => new Date()) : null;
+          const previousOwner =
+            existingLock === null
+              ? null
+              : await readFile(path.join(existingLock.dir, 'owner.json'), 'utf8');
+          const retained =
+            workspace === null
+              ? null
+              : path.join(workDir, 'workspaces', workspace.workspaceId, 'partial.txt');
+          if (retained !== null) await writeFile(retained, 'keep partial work');
+          if (workspace !== null)
+            await reserveReceipt(receiptFilePath(workDir, refFor('2')), {
+              version: 1,
+              source: refFor('2'),
+              reservedAt: new Date().toISOString(),
+            });
+          const oldReceipt =
+            workspace === null ? null : await readReceipt(receiptFilePath(workDir, refFor('2')));
+          const fixture = createFixture({
+            workDir,
+            scans: [[candidateFor('2'), candidateFor('3')]],
+            prepare: (candidate) =>
+              preparedFor(candidate, workspace === null ? [] : [workspace.workspaceId]),
+            preflight: async (call) => {
+              if ((phase === 'initial' && call === 1) || (phase === 'candidate' && call === 2)) {
+                if (cancelled) fixture.stop.abort();
+                throw failure();
+              }
+              return { sourceRoot: workspace?.sourceRoot ?? '/repo', baseCommit: 'base' };
+            },
+            run: async () => {
+              if (cancelled) fixture.stop.abort();
+              throw new RunCancelledError('runner preflight stopped', { cause: failure() });
+            },
+            sleep: async () => {
+              throw new Error('must not poll again');
+            },
+          });
+          if (phase === 'reopen')
+            vi.spyOn(invocation, 'runInvocation').mockImplementation(async () => {
+              if (cancelled) fixture.stop.abort();
+              return {
+                outcome: cancelled ? 'stopped' : 'timed-out',
+                exitCode: 0,
+                signal: null,
+                launchError: null,
+                timeoutMs: 25,
+                termination: 'unconfirmed',
+                terminationProblem: cleanupProblem,
+              };
+            });
+          const summary =
+            mode === 'run'
+              ? await runSource(fixture.context, null)
+              : await watchSource({ ...fixture.context, pollIntervalMs: 1 });
+          expect(summary.outcome).toBe(cancelled ? 'cancelled' : 'stopped');
+          expect(summary.cleanupConfirmed).toBe(false);
+          expect(summary.problem).toContain(cleanupProblem);
+          expect(existsSync(intakeLockPath(workDir))).toBe(true);
+          expect(fixture.completions).toEqual([]);
+          expect(fixture.progresses).toEqual([]);
+          expect(fixture.refusals).toEqual([]);
+          expect(fixture.requests).toHaveLength(phase === 'runner' ? 1 : 0);
+          expect(fixture.log).not.toContain('prepare:SAM1-3');
+          if (previousOwner !== null)
+            expect(await readFile(path.join(intakeLockPath(workDir), 'owner.json'), 'utf8')).toBe(
+              previousOwner,
+            );
+          if (retained !== null) expect(await readFile(retained, 'utf8')).toBe('keep partial work');
+          if (workspace !== null)
+            expect(await readReceipt(receiptFilePath(workDir, refFor('2')))).toEqual(oldReceipt);
+        });
+      }
+    }
+  }
+
+  it.each(
+    (['timed-out', 'stopped'] as const).flatMap((outcome) =>
+      (['passed', 'timeout', 'cancelled', 'confirmed'] as const).map((prior) => ({
+        outcome,
+        prior,
+      })),
+    ),
+  )(
+    'finalizer keeps cleanup and first-stop evidence after $outcome with exit 0, prior=$prior',
+    async ({ outcome, prior }) => {
+      const workDir = await createTempDir();
+      const confirmed = prior === 'confirmed';
+      const status = confirmed
+        ? 'passed'
+        : prior === 'cancelled'
+          ? 'cancelled'
+          : prior === 'timeout'
+            ? 'failed'
+            : outcome === 'stopped'
+              ? 'cancelled'
+              : 'failed';
+      const delivery = { deliver: vi.fn<Delivery['deliver']>().mockResolvedValue(null) };
+      const ledger = vi.fn().mockResolvedValue(undefined);
+      const fixture = createFixture({
+        workDir,
+        scans: [confirmed ? [candidateFor('1')] : [candidateFor('1'), candidateFor('2')]],
+        delivery,
+        tiers: [
+          { name: 'first', agent: { runtime: 'codex', command: ['codex'] }, maxRepairs: 0 },
+          { name: 'next', agent: { runtime: 'codex', command: ['codex'] }, maxRepairs: 0 },
+        ],
+        run: async (task, _call, runDir) => {
+          const run = runDirectoryAt(runDir);
+          const workspace = preparedWorkspaceFor(runDir);
+          await mkdir(run.logsDir, { recursive: true });
+          await mkdir(workspace.workspacePath, { recursive: true });
+          await writeFile(path.join(workspace.workspacePath, 'partial.txt'), 'retained');
+          vi.spyOn(invocation, 'runInvocation').mockResolvedValue({
+            outcome,
+            exitCode: 0,
+            signal: null,
+            launchError: null,
+            timeoutMs: 25,
+            termination: confirmed ? 'confirmed' : 'unconfirmed',
+            terminationProblem: confirmed ? null : cleanupProblem,
+          });
+          const unexpected = async (): Promise<never> => {
+            throw new Error('unexpected finalizer dependency');
+          };
+          const config = {
+            ...documentedConfig,
+            agent: { runtime: 'codex' as const, command: ['codex'] },
+          };
+          const now = new Date();
+          const finalizer = createRunFinalizer({
+            request: { task, config, repoPath: '/repo', workDir },
+            run,
+            workspace,
+            task,
+            config,
+            source: { sourceRoot: '/repo', baseCommit: workspace.baseCommit },
+            preparationProblem: null,
+            timeline: path.join(run.logsDir, 'run.log'),
+            start: now,
+            startedAt: now.toISOString(),
+            deadlineMs: now.getTime() + 1000,
+            dependencies: {
+              preflight: unexpected,
+              allocateRunDirectory: unexpected,
+              prepareWorkspace: unexpected,
+              configureWorkspaceIdentity: unexpected,
+              runCheckRound: unexpected,
+              runAgentTurn: unexpected,
+              openAgentLog: unexpected,
+              appendRunLog,
+              writeRunReport,
+              recordWorkspaceAttempt: ledger,
+              now: () => now,
+            },
+          });
+          return finalizer.endRun({
+            status: prior === 'cancelled' ? 'cancelled' : prior === 'timeout' ? 'failed' : 'passed',
+            reason: prior === 'timeout' || prior === 'cancelled' ? 'first stop' : 'checks passed',
+            baseline: roundFor('passed', 0),
+            attempts: [attemptFor(1, 'implementation', roundFor('passed', 0))],
+            timeout:
+              prior === 'timeout'
+                ? {
+                    phase: 'checks',
+                    limit: 'task',
+                    limitMs: 1000,
+                    elapsedMs: 1000,
+                    termination: 'confirmed',
+                    problem: null,
+                  }
+                : null,
+            cancellation:
+              prior === 'cancelled'
+                ? { phase: 'checks', elapsedMs: 1000, termination: 'confirmed', problem: null }
+                : null,
+          });
+        },
+      });
+      const summary = await runSource(fixture.context, null);
+      expect(summary.outcome).toBe(
+        confirmed ? 'completed' : status === 'cancelled' ? 'cancelled' : 'stopped',
+      );
+      expect(summary.cleanupConfirmed).toBe(confirmed);
+      expect(fixture.requests).toHaveLength(1);
+      expect(delivery.deliver).toHaveBeenCalledTimes(confirmed ? 1 : 0);
+      expect(fixture.completions).toHaveLength(confirmed ? 1 : 0);
+      expect(fixture.progresses).toEqual([]);
+      expect(fixture.log).toContain('workspace:SAM1-1:run-1');
+      expect(existsSync(intakeLockPath(workDir))).toBe(!confirmed);
+      const receipt = await readReceipt(receiptFilePath(workDir, refFor('1')));
+      if (!confirmed) {
+        expect(receipt?.feedback).toBe('pending');
+        expect(receipt?.problem).toContain(cleanupProblem);
+      }
+      const report = JSON.parse(await readFile(receipt?.resultPath ?? '', 'utf8')) as RunReport;
+      expect(report.status).toBe(status);
+      if (confirmed) expect(report.timeout ?? report.cancellation).toBeNull();
+      else
+        expect(report.timeout ?? report.cancellation).toMatchObject({
+          termination: 'unconfirmed',
+          phase:
+            prior === 'timeout' || prior === 'cancelled' ? 'checks' : 'final workspace inspection',
+        });
+      if (prior === 'timeout' || prior === 'cancelled') expect(report.reason).toBe('first stop');
+      expect(report.changes.inspected).toBe(false);
+      expect(report.changes.problem).toContain(
+        confirmed ? 'could not be compared' : cleanupProblem,
+      );
+      expect(report.attempts[0]?.checks?.outcome).toBe('passed');
+      expect(ledger).toHaveBeenCalledWith(
+        workDir,
+        'run-1',
+        expect.objectContaining({ outcome: report.status }),
+      );
+      expect(
+        await readFile(
+          path.join(preparedWorkspaceFor(path.join(workDir, 'run-1')).workspacePath, 'partial.txt'),
+          'utf8',
+        ),
+      ).toBe('retained');
+    },
+  );
+});
 
 /** A real workspace on disk, prepared the way a first attempt prepares one. */
 async function preparedWorkspaceOnDisk(
