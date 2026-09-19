@@ -9,7 +9,7 @@ import type { JiraSourceConfig } from '../../shared/types.js';
 import type { TaskSource } from '../contract.js';
 import { commentsSince, completeItem, progressItem, refuseItem } from './comments.js';
 import { createHttpClient } from './http.js';
-import type { JiraSourceParts } from './http.js';
+import type { HttpClient, JiraSourceParts } from './http.js';
 import { recordWorkspacePointer } from './labels.js';
 import { listEligibleIssues } from './search.js';
 import { prepareItem } from './tasks.js';
@@ -25,9 +25,8 @@ export function createJiraSource(
   config: JiraSourceConfig,
   token: string,
   parts: Partial<JiraSourceParts> = {},
+  http: HttpClient = createHttpClient(config, token, parts),
 ): TaskSource {
-  const http = createHttpClient(config, token, parts);
-
   return {
     listEligible: (stop) => listEligibleIssues(config, http, stop),
     prepare: (candidate, stop) => prepareItem(config, http, candidate, stop),

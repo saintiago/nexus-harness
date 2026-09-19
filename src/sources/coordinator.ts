@@ -26,6 +26,7 @@ import type { ContinuedWorkspace } from '../workspace/reopen.js';
 import { reopenWorkspace } from '../workspace/reopen.js';
 import { readWorkspaceState, sourceItemFor } from '../workspace/state.js';
 import type {
+  CompletionRunSummary,
   SourceCandidate,
   SourceComment,
   SourceContext,
@@ -141,6 +142,8 @@ interface BatchState {
   skipped: number;
   problem: string | null;
   cleanupConfirmed: boolean;
+  /** What the last review-to-completion pass did; `null` when it is off. */
+  completion: CompletionRunSummary | null;
 }
 
 function emptyState(): BatchState {
@@ -154,7 +157,38 @@ function emptyState(): BatchState {
     skipped: 0,
     problem: null,
     cleanupConfirmed: true,
+    completion: null,
   };
+}
+
+/**
+ * The optional review-to-completion pass: how an In Review item's delivered pull
+ * request is carried to a verified finish or back for repair. It runs after the
+ * batch, never changes what the batch itself did, and never starts a coding turn.
+ * A failure is reported through the summary and the terminal; the intake's own
+ * outcome stands, because a completion problem is not a coding one.
+ */
+async function runCompletion(context: SourceContext, state: BatchState): Promise<void> {
+  const completion = context.completion;
+  if (completion === undefined || context.stop.aborted) {
+    return;
+  }
+  try {
+    state.completion = await completion.run(context.stop);
+  } catch (cause) {
+    // The pass turns its own failures into a reported summary; anything that
+    // escapes it is still not a reason to fail the intake that just ran.
+    state.completion = {
+      done: 0,
+      toDo: 0,
+      attention: 0,
+      observed: 0,
+      problem: messageOf(cause),
+    };
+  }
+  if (state.completion.problem !== null) {
+    context.io.err(`completion pass: ${state.completion.problem}`);
+  }
 }
 
 function summarize(outcome: SourceOutcome, state: BatchState): SourceSummary {
@@ -169,6 +203,7 @@ function summarize(outcome: SourceOutcome, state: BatchState): SourceSummary {
     skipped: state.skipped,
     problem: state.problem,
     cleanupConfirmed: state.cleanupConfirmed,
+    completion: state.completion,
   };
 }
 
@@ -965,7 +1000,15 @@ export async function runSource(
     if (step === 'cancelled') {
       return summarize('cancelled', state);
     }
-    return summarize(step === 'stop' ? 'stopped' : 'completed', state);
+    // The batch is over; before the command reports it, the optional
+    // review-to-completion pass reads the In Review items it may finish or
+    // return. Its own outcome is reported beside the batch's and never replaces
+    // it.
+    await runCompletion(context, state);
+    if (step === 'stop') {
+      return summarize('stopped', state);
+    }
+    return summarize('completed', state);
   } finally {
     if (state.cleanupConfirmed) {
       await lock.release();
@@ -1079,6 +1122,10 @@ export async function watchSource(options: SourceWatchOptions): Promise<SourceSu
         return summarize('stopped', state);
       }
 
+      await runCompletion(options, state);
+      if (stop.aborted) {
+        return summarize('cancelled', state);
+      }
       io.out(`scan complete; polling again in ${String(pollIntervalMs)} ms`);
       await sleep(pollIntervalMs, stop);
     }

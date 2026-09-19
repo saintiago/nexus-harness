@@ -316,6 +316,16 @@ export interface FakeGhCall {
 const FAKE_GH = path.join(repoRoot, 'tests', 'fixtures', 'fake-gh.mjs');
 
 /**
+ * The stand-in GitHub CLI of the review-to-completion suites: the same idea, one
+ * step further. It answers the reads and the one auto-merge request the
+ * completion path makes, holds the pull request, its reviews, its checks, and
+ * its workflow runs as seeded JSON files, and records the credential every
+ * invocation was made with — which is how a test shows that the reviewer's
+ * credential never became the operator's.
+ */
+const FAKE_GH_COMPLETION = path.join(repoRoot, 'tests', 'fixtures', 'fake-gh-completion.mjs');
+
+/**
  * Puts an executable named `gh` in a directory of its own, backed by
  * tests/fixtures/fake-gh.mjs. It answers `gh pr list` from the pull requests it
  * has been asked to create, and records every invocation. Nothing in `src/`
@@ -341,6 +351,68 @@ export async function installFakeGh(parent: string): Promise<{
       pullRequestsFile: path.join(stateDir, 'pull-requests.json'),
     },
   };
+}
+
+/** Where the completion stand-in keeps its record and the state it was given. */
+export interface FakeCompletionState {
+  /** Directory holding the call record and every state file. */
+  readonly dir: string;
+  readonly callsFile: string;
+  readonly pullRequestsFile: string;
+  readonly reviewsFile: string;
+  readonly checksFile: string;
+  readonly runsFile: string;
+  /** The GitHub CLI this stand-in is installed as. */
+  readonly command: string;
+}
+
+/**
+ * Puts an executable named `gh` in a directory of its own, backed by
+ * tests/fixtures/fake-gh-completion.mjs.
+ */
+export async function installFakeGhCompletion(
+  parent: string,
+  name = 'completion-gh',
+): Promise<FakeCompletionState> {
+  const bin = path.join(parent, 'fake-gh-completion-bin');
+  const stateDir = path.join(parent, 'fake-gh-completion-state');
+  await mkdir(bin, { recursive: true });
+  await mkdir(stateDir, { recursive: true });
+  const command = await writeShim(bin, name, FAKE_GH_COMPLETION);
+  return {
+    dir: stateDir,
+    callsFile: path.join(stateDir, 'calls.jsonl'),
+    pullRequestsFile: path.join(stateDir, 'pull-requests.json'),
+    reviewsFile: path.join(stateDir, 'pr-reviews.json'),
+    checksFile: path.join(stateDir, 'pr-checks.json'),
+    runsFile: path.join(stateDir, 'workflow-runs.json'),
+    command,
+  };
+}
+
+/** One invocation of the completion stand-in, in the order it happened. */
+export interface FakeCompletionCall {
+  readonly op: 'list' | 'view' | 'reviews' | 'checks' | 'merge' | 'runs';
+  readonly argv: readonly string[];
+  /** The credential this invocation was made with, as the environment had it. */
+  readonly credential: string | null;
+  readonly repo: string | null;
+  readonly url?: string | null;
+  readonly head?: string | null;
+  readonly commit?: string | null;
+  readonly event?: string | null;
+  readonly branch?: string | null;
+  readonly state?: string | null;
+  readonly headRefOid?: string | null;
+  readonly auto?: boolean;
+  readonly squash?: boolean;
+}
+
+/** Every invocation the completion stand-in recorded, in order. */
+export async function fakeCompletionCalls(
+  state: FakeCompletionState,
+): Promise<readonly FakeCompletionCall[]> {
+  return await readJsonLines<FakeCompletionCall>(state.callsFile);
 }
 
 /** Every invocation the stand-in `gh` recorded, in order. */

@@ -8,7 +8,7 @@
  * silent guess.
  */
 import { z } from 'zod';
-import type { AgentSelection } from '../shared/types.js';
+import type { AgentSelection, CompletionConfig } from '../shared/types.js';
 
 /** A string that is present and contains something other than whitespace. */
 function nonBlankString(field: string): z.ZodString {
@@ -173,6 +173,95 @@ const REPOSITORY_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
  */
 const BRANCH_PATTERN = /^[^\s-][^\s]*$/;
 
+/** Documented defaults of the optional review-to-completion step. */
+export const COMPLETION_DEFAULTS = {
+  lensReviewContext: 'nexus-lens',
+  pollIntervalSeconds: 30,
+  deadlineSeconds: 30 * 60,
+} as const;
+
+/** The smallest delay between two completion polls, in seconds. */
+export const MIN_COMPLETION_POLL_INTERVAL_SECONDS = 5;
+
+/**
+ * One identifier for an expected post-merge GitHub Actions workflow: the file
+ * name, the path under `.github/workflows`, or the numeric workflow ID. It is
+ * one literal value and carries no option-like prefix.
+ */
+const WORKFLOW_PATTERN = /^[^\s-][^\s]*$/;
+
+/**
+ * The optional review-to-completion step inside `delivery`. Every field that
+ * says who may gate the work is required: nothing is defaulted into a
+ * configuration that would then finish an item nobody named a reviewer for.
+ */
+const completionSchema = z.strictObject({
+  lensApp: nonBlankString('lensApp'),
+  lensReviewContext: nonBlankString('lensReviewContext').default(
+    COMPLETION_DEFAULTS.lensReviewContext,
+  ),
+  lensCheckName: nonBlankString('lensCheckName'),
+  reviewerTokenEnv: z
+    .string({ error: 'reviewerTokenEnv must be a string' })
+    .regex(TOKEN_ENV_PATTERN, {
+      error:
+        'reviewerTokenEnv must be an environment-variable name such as "NEXUS_LENS_TOKEN": ' +
+        'the reviewer credential never appears in the configuration file',
+    }),
+  postMergeWorkflows: z
+    .array(
+      z.string({ error: 'postMergeWorkflows entries must be strings' }).regex(WORKFLOW_PATTERN, {
+        error:
+          'postMergeWorkflows entries must be a workflow file name such as "ci.yml", a path ' +
+          'such as ".github/workflows/ci.yml", or a numeric workflow ID',
+      }),
+      { error: 'postMergeWorkflows must be an array of workflow identifiers' },
+    )
+    .min(1, {
+      error:
+        'postMergeWorkflows must name at least one expected post-merge workflow: an empty list ' +
+        'is not evidence that CI passed',
+    }),
+  toDoStatus: nonBlankString('toDoStatus'),
+  doneStatus: nonBlankString('doneStatus'),
+  pollIntervalSeconds: boundedInteger(
+    'pollIntervalSeconds',
+    MIN_COMPLETION_POLL_INTERVAL_SECONDS,
+    `an integer of at least ${String(MIN_COMPLETION_POLL_INTERVAL_SECONDS)} seconds`,
+  ).default(COMPLETION_DEFAULTS.pollIntervalSeconds),
+  deadlineSeconds: boundedInteger(
+    'deadlineSeconds',
+    MIN_COMPLETION_POLL_INTERVAL_SECONDS,
+    `an integer of at least ${String(MIN_COMPLETION_POLL_INTERVAL_SECONDS)} seconds`,
+  ).default(COMPLETION_DEFAULTS.deadlineSeconds),
+});
+
+/**
+ * The one validation a completion object cannot express field by field: moving
+ * an item out of review has to mean something, so both of its outcomes differ
+ * from the review status it starts in and from each other.
+ */
+export function checkCompletionStatuses(
+  reviewStatus: string,
+  completion: CompletionConfig,
+): string | null {
+  const same = (left: string, right: string): boolean =>
+    left.trim().toLowerCase() === right.trim().toLowerCase();
+  if (same(completion.toDoStatus, completion.doneStatus)) {
+    return (
+      'toDoStatus and doneStatus must be different statuses: a failed outcome and a completed ' +
+      'one cannot end in the same place'
+    );
+  }
+  if (same(completion.toDoStatus, reviewStatus) || same(completion.doneStatus, reviewStatus)) {
+    return (
+      `toDoStatus and doneStatus must differ from the source's reviewStatus "${reviewStatus}": ` +
+      'otherwise a completion outcome would look like the state it started in'
+    );
+  }
+  return null;
+}
+
 /**
  * The optional delivery step. `"github"` is the only implemented type: a
  * placeholder for a delivery service nobody has written would be a way to
@@ -193,42 +282,61 @@ const githubDeliverySchema = z.strictObject({
   baseBranch: z.string({ error: 'baseBranch must be a string' }).regex(BRANCH_PATTERN, {
     error: 'baseBranch must be a branch name without whitespace, such as "main"',
   }),
+  completion: completionSchema.optional(),
 });
 
 /** Validates one `delivery` object: the documented optional field of a config. */
 export const deliverySchema = githubDeliverySchema;
 
-export const harnessConfigSchema = z.strictObject({
-  workDir: nonBlankString('workDir'),
-  maxRepairs: boundedInteger('maxRepairs', 0, 'a nonnegative integer'),
-  taskTimeoutMinutes: boundedInteger('taskTimeoutMinutes', 1, 'a positive integer'),
-  commandTimeoutMinutes: boundedInteger('commandTimeoutMinutes', 1, 'a positive integer'),
-  setup: z.array(commandSchema, { error: 'must be an array of command arrays' }),
-  checks: z
-    .array(commandSchema, { error: 'must be an array of command arrays' })
-    .min(1, { error: 'must contain at least one command' }),
-  agent: agentSchema.optional(),
-  escalation: z
-    .array(
-      z.strictObject({
-        name: nonBlankString('escalation[].name'),
-        agent: agentSchema.optional(),
-        maxRepairs: boundedInteger(
-          'escalation[].maxRepairs',
-          0,
-          'a nonnegative integer',
-        ).optional(),
-      }),
-      { error: 'escalation must be an array of tiers' },
-    )
-    .min(1, { error: 'escalation must hold at least one tier' })
-    .refine((tiers) => new Set(tiers.map((tier) => tier.name)).size === tiers.length, {
-      error: 'escalation tier names must be distinct: two tiers with one name are one tier',
-    })
-    .optional(),
-  delivery: deliverySchema.optional(),
-  source: sourceSchema.optional(),
-});
+export const harnessConfigSchema = z
+  .strictObject({
+    workDir: nonBlankString('workDir'),
+    maxRepairs: boundedInteger('maxRepairs', 0, 'a nonnegative integer'),
+    taskTimeoutMinutes: boundedInteger('taskTimeoutMinutes', 1, 'a positive integer'),
+    commandTimeoutMinutes: boundedInteger('commandTimeoutMinutes', 1, 'a positive integer'),
+    setup: z.array(commandSchema, { error: 'must be an array of command arrays' }),
+    checks: z
+      .array(commandSchema, { error: 'must be an array of command arrays' })
+      .min(1, { error: 'must contain at least one command' }),
+    agent: agentSchema.optional(),
+    escalation: z
+      .array(
+        z.strictObject({
+          name: nonBlankString('escalation[].name'),
+          agent: agentSchema.optional(),
+          maxRepairs: boundedInteger(
+            'escalation[].maxRepairs',
+            0,
+            'a nonnegative integer',
+          ).optional(),
+        }),
+        { error: 'escalation must be an array of tiers' },
+      )
+      .min(1, { error: 'escalation must hold at least one tier' })
+      .refine((tiers) => new Set(tiers.map((tier) => tier.name)).size === tiers.length, {
+        error: 'escalation tier names must be distinct: two tiers with one name are one tier',
+      })
+      .optional(),
+    delivery: deliverySchema.optional(),
+    source: sourceSchema.optional(),
+  })
+  .superRefine((config, ctx) => {
+    // A completion object moves an item between statuses the source owns, so the
+    // two are validated together: with a source configured, both of its target
+    // statuses have to differ from the review status it starts in.
+    const completion = config.delivery?.completion;
+    if (completion === undefined || config.source === undefined) {
+      return;
+    }
+    const problem = checkCompletionStatuses(config.source.reviewStatus, completion);
+    if (problem !== null) {
+      ctx.addIssue({
+        code: 'custom',
+        message: problem,
+        path: ['delivery', 'completion', 'toDoStatus'],
+      });
+    }
+  });
 
 /**
  * The launch the harness uses when the configuration names none: the installed

@@ -286,6 +286,15 @@ export interface SourceContext {
    * starting another attempt (docs/WORKFLOW.md §8).
    */
   readonly delivery?: Delivery;
+  /**
+   * The optional review-to-completion pass: what an In Review item's delivered
+   * pull request is carried through once the Nexus Lens reviewer approved it.
+   * Absent means an In Review item waits for a person, exactly as before. The
+   * coordinator runs it after a finite batch and after each watch scan; it never
+   * changes the intake's own outcome and never starts a coding turn
+   * (docs/WORKFLOW.md §9).
+   */
+  readonly completion?: CompletionRun;
   /** The existing source/output preflight, re-run before each reservation. */
   readonly preflight: (request: PreflightRequest) => Promise<SourcePreflight>;
   /** The existing runner, as one ordinary function. */
@@ -293,6 +302,25 @@ export interface SourceContext {
   readonly now: () => Date;
   /** An abortable wait; resolves early when the stop request arrives. */
   readonly sleep: (ms: number, stop: AbortSignal) => Promise<void>;
+}
+
+/** What one completion pass did, as a batch summary counts it. */
+export interface CompletionRunSummary {
+  readonly done: number;
+  readonly toDo: number;
+  readonly attention: number;
+  readonly observed: number;
+  /** Why the completion pass itself could not run; `null` when it did. */
+  readonly problem: string | null;
+}
+
+/**
+ * One completion pass, as the coordinator runs it: a bounded scan that reports
+ * what it did. It is a function of the coordinator's own contract so the
+ * coordinator never imports a connector, a repository, or a credential.
+ */
+export interface CompletionRun {
+  run(stop: AbortSignal): Promise<CompletionRunSummary>;
 }
 
 /** What a read-only preview needs: no runner, no lock, no directories. */
@@ -338,4 +366,6 @@ export interface SourceSummary {
    * lock for manual inspection instead of releasing it (docs/spec.md §6).
    */
   readonly cleanupConfirmed: boolean;
+  /** What the review-to-completion pass did after this batch; `null` when it is off. */
+  readonly completion: CompletionRunSummary | null;
 }
