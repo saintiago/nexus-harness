@@ -7,9 +7,11 @@ itself. It is not about target projects. The two disciplines point in opposite d
 purpose: a harness *run* never pushes, merges, publishes, or opens a pull request in the repository
 it works on, and leaves its work in the retained working copy for a person to integrate — the local
 commits a coding turn makes there are part of that retained work
-([docs/spec.md](spec.md), [docs/WORKFLOW.md](WORKFLOW.md) §6). Nothing in this document is a rule
-about that, and nothing about that should shape this. They are separate on purpose; an earlier
-iteration of this file blurred them and produced a workflow that merged its own pull requests.
+([docs/spec.md](spec.md), [docs/WORKFLOW.md](WORKFLOW.md) §4, §7). That holds when a run's target is
+this repository itself: the run works in its own retained clone, its coding turn commits locally at
+most, and only the loop below — run by the operator — integrates anything. Nothing in this document
+is a rule about that, and nothing about that should shape this. They are separate on purpose; an
+earlier iteration of this file blurred them and produced a workflow that merged its own pull requests.
 
 ## The rule
 

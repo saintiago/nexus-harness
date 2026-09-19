@@ -81,8 +81,10 @@ Here `--profile` chooses native configuration and `--model` explicitly selects t
 The adapter appends its existing suffix and supplies the task prompt on stdin:
 
 ```text
-codex --profile deepseek --model deepseek-flash exec --sandbox workspace-write --json -
+codex --profile deepseek --model deepseek-flash --ask-for-approval never exec --sandbox danger-full-access --json -
 ```
+
+The execution part is not configurability: it is the adapter's own fixed suffix. Each turn runs unsandboxed (`--sandbox danger-full-access`) and unattended (`--ask-for-approval never`, so nothing waits for a prompt), because a turn must be able to stage and commit in the retained working copy and the narrower `workspace-write` policy — in its `--sandbox` spelling or its native permission-profile spelling — leaves that copy's Git metadata read-only on Windows, where `git add` fails on `.git/index.lock` (HARN-2, HARN-10). That policy is an explicit, documented choice, not a hidden fallback: the suffix is the same for every turn, and nothing widens after a failure. A turn has the same file and network reach as the harness's own configured `setup` and `checks` commands; README "Safety" states that plainly.
 
 Do not put `exec`, a prompt, redirection, a shell expression, or an end-of-options `--` into the configured prefix. Do not use prefix options/wrappers that redirect the working directory, replace structured output, or override the adapter's execution/permission controls. This is a trusted launcher contract, not a general CLI policy language.
 
@@ -148,6 +150,8 @@ Do not require `CODEX_API_KEY`, an OpenAI login, or `auth.json` as universal pre
 
 Keep live tests outside default discovery, `npm test`, `npm run validate`, and CI. See the setup task for offline prerequisite tests and T16 evidence.
 
+The launch also has a by-hand commit check in README "Coding runtime": a disposable repository where a real turn commits its work, with the retained clone inspected afterwards. It is not part of `npm test`, `npm run validate`, or CI, and it is not evidence until it has been run.
+
 ## 4. Loop semantics
 
 ```text
@@ -167,7 +171,7 @@ prepare → setup → baseline checks
                  save local result
 ```
 
-A red baseline, setup/launch/authentication/protocol error, expired timeout, cancellation, or exhausted repair allowance stops the loop and preserves work. Only ordinary completed red check rounds trigger repair. Checks are rerun by the harness regardless of the agent's claims. The selected agent does not change between turns. See the specification for reporting and safety semantics.
+A red baseline stops a **fresh attempt** before any coding turn; a **continuation** may start red, because its workspace may already carry unfinished or failed work, and only its post-turn check round decides. A setup/launch/authentication/protocol error, expired timeout, cancellation, or exhausted repair allowance stops the loop and preserves work, fresh or continued. Only ordinary completed red check rounds trigger repair. Checks are rerun by the harness regardless of the agent's claims. The selected agent does not change between turns. See the specification for reporting and safety semantics.
 
 Every working copy is given a **repository-local** Git identity (`Nexus Agent <nexus@local>`, commit signing disabled) before any check or coding turn runs, so a turn can make small local commits as it works; it is encouraged to finish with the relevant work committed where practical. Those commits stay in the retained working copy: the harness itself never pushes, merges, publishes, or integrates a target's changes, a commit is not a check result, and anything a turn leaves uncommitted is kept. A continued workspace keeps the base commit its ledger recorded as the comparison base, so `changes` in the report is the whole diff against that base, committed and uncommitted parts alike. These settings are written with `git config --local`; the harness never writes global or system Git configuration.
 
@@ -292,7 +296,7 @@ The `Verification` section is **not executable configuration**. Existing configu
 
 ## 7. Source CLI
 
-The commands below are the interface to implement, not a claim that they already exist:
+The commands below are the implemented interface:
 
 ```sh
 # Static validation; no credentials or network needed.
@@ -304,28 +308,28 @@ npm run dev -- source list --config harness.jira.config.json
 # Fetch a finite batch and automatically run at most one new attempt.
 npm run dev -- source run --repo ../target-project --config harness.jira.config.json --limit 1
 
-# Run all currently discovered eligible, valid, unattempted issues sequentially.
+# Run all currently discovered eligible, valid issues sequentially.
 npm run dev -- source run --repo ../target-project --config harness.jira.config.json
 
 # Scan immediately, then continue polling until Ctrl+C.
 npm run dev -- source watch --repo ../target-project --config harness.jira.config.json
 ```
 
-`source list` needs only `--config`. `source run` and `source watch` require `--repo` and `--config`; reject `--task` on source commands. `--limit` is a positive integer accepted only by `source run`, counting fresh reservations/claim attempts, not old receipts or validation skips. Omitting it means the complete finite discovered batch. Watch has no lifetime task limit in this increment.
+`source list` needs only `--config`. `source run` and `source watch` require `--repo` and `--config`; reject `--task` on source commands. `--limit` is a positive integer accepted only by `source run`, counting the attempts it starts — a first attempt or a continuation — not receipted skips, refusals, or invalid descriptions. Omitting it means the complete finite discovered batch. Watch has no lifetime task limit in this increment.
 
-The source preview shows issue key/title/URL and disposition: valid/unattempted, already attempted (receipt path and known result), or invalid with a reason. Existing receipts are checked before further mapping; an old attempt is not made runnable by an edited description. No directory creation, locks, remote writes, or process launches are allowed in preview.
+The source preview prints each issue's disposition, key, title, URL, and one detail line. The dispositions are `valid` (unattempted, and a run would create its workspace), `continuable` (the detail names the workspace ID and the attempt number a run would continue), `refused` (why it will not be acted on: a receipt with no pointer, a pointer this machine cannot resolve, or more than one pointer), `invalid` (the task-description problem), and `stale` (no longer eligible when re-read). A continuation's detail carries only that workspace ID and attempt number — the receipt path and its recorded result are not repeated there; a refusal may quote the receipt's own one-line summary in its reason. Existing receipts and pointers are checked before further mapping; an old attempt is not made runnable by an edited description. No directory creation, locks, remote writes, or process launches are allowed in preview.
 
-`source run` exits 0 for an empty queue or when all new runs pass and feedback succeeds, with only harmless stale/receipted skips. Invalid task descriptions, failed/cancelled runs, claim/API errors, and failed feedback give a nonzero result; a valid later issue can still run after an ordinary task failure. Fatal integration/local-state/process-cleanup errors stop the batch immediately. Print a compact count/result summary and real artifact/receipt paths, not only a generic success message.
+`source run` exits 0 for an empty queue or when all new attempts pass and feedback succeeds, with only harmless stale, refused, or still-receipted skips. Invalid task descriptions, failed/cancelled runs, claim/API errors, and failed feedback give a nonzero result; a valid later issue can still run after an ordinary task failure. Fatal integration/local-state/process-cleanup errors stop the batch immediately. Print a compact count/result summary and real artifact/receipt paths, not only a generic success message.
 
 Watch keeps running after handled task failures or invalid descriptions. It stops on fatal configuration/authentication errors, uncertain remote writes, failed feedback, or unsafe process cleanup. Read-only transient failures back off; successful discovery resets the backoff. Print changes and per-batch outcomes, not unchanged issue bodies on every empty poll. Preserve existing interrupt exit-code behavior; do not hide a fatal exit as success.
 
 Normal file-based `run --task ...` remains independent: even with `source` in its config, it must not read Jira credential values, contact Jira, create intake state, or emit remote updates. The opt-in coding runtime verifier also ignores `source` and must never contact or mutate Jira.
 
-### Result status and manual retry
+### Result status, continuation, and manual retry
 
 For all terminal local outcomes, publish the exact `passed`, `failed`, or `cancelled` outcome and move from running to review when still appropriate. `In Review` does not mean success. `Done` stays a human decision after inspecting and applying the retained changes.
 
-A local receipt prevents repeat execution across polling and restart. Changing the issue or putting it back in To Do does not clear that receipt. **Rework happens in the same workspace**: the run that creates a workspace writes the pointer label `harness-ws-<workspaceId>` on the issue once, before any coding turn, and an issue in the ready status whose pointer resolves on this machine is continued — same clone, same recorded base, a new run directory and report, and a baseline round that may be red. Every attempt reads the issue's own thread as context: a continuation reads what was added since the last attempt ended, a first attempt reads the whole thread, and a continuation is also told what its ledger records of the attempts before it (tier, outcome, reason). Neither the criteria nor the configured checks change. One attempt is run per configured `escalation` tier, in order, inside the same claim; a failed attempt climbs to the next tier, and only when the ladder is spent does the issue end in the review status. An attempted issue with no pointer, a pointer this machine cannot resolve, and an issue carrying two pointers are **refused**: one comment naming the reason, the issue moved to the review status, and nothing claimed and nothing run. A workspace is looked for at `<workDir>/workspaces/<workspaceId>` and nowhere else: a `workDir` written before this increment is upgraded by hand, and the ledger there, not the path an older report records, says where the clone is. To deliberately start over instead — a first attempt in a new workspace — either create a new task, or stop the watcher, inspect/stop prior processes, retain prior artifacts, remove the pointer label if the issue carries one, remove only the printed receipt file for the issue, and restore the issue to its ready status. Never clear the entire `.intake` directory to fix one task. Inspect a leftover lock and stop its owner before manually removing it; a stale-looking timestamp is insufficient. [docs/implement-workspace-continuation.md](implement-workspace-continuation.md) is the contract, including the upgrade steps.
+A local receipt prevents a second attempt from starting by accident across polling and restart. Changing the issue or putting it back in To Do does not clear that receipt; neither does it re-run the issue, because the pointer label, not the receipt, decides what happens next. **Rework happens in the same workspace**: the run that creates a workspace writes the pointer label `harness-ws-<workspaceId>` on the issue once, before any coding turn, and an issue in the ready status whose pointer resolves on this machine is continued — same clone, same recorded base, a new run directory and report, and a baseline round that may be red. Every attempt reads the issue's own thread as context: a continuation reads what was added since the last attempt ended, a first attempt reads the whole thread, and a continuation is also told what its ledger records of the attempts before it (tier, outcome, reason). Neither the criteria nor the configured checks change. One attempt is run per configured `escalation` tier, in order, inside the same claim; a failed attempt climbs to the next tier, and only when the ladder is spent does the issue end in the review status. An attempted issue with no pointer, a pointer this machine cannot resolve, and an issue carrying two pointers are **refused**: one comment naming the reason, the issue moved to the review status, and nothing claimed and nothing run. A workspace is looked for at `<workDir>/workspaces/<workspaceId>` and nowhere else: a `workDir` written before this increment is upgraded by hand, and the ledger there, not the path an older report records, says where the clone is. To deliberately start over instead — a first attempt in a new workspace — either create a new task, or stop the watcher, inspect/stop prior processes, retain prior artifacts, remove the pointer label if the issue carries one, remove only the printed receipt file for the issue, and restore the issue to its ready status. Never clear the entire `.intake` directory to fix one task. Inspect a leftover lock and stop its owner before manually removing it; a stale-looking timestamp is insufficient. [docs/implement-workspace-continuation.md](implement-workspace-continuation.md) is the contract, including the upgrade steps and a note on the defects that are still separate tasks.
 
 ### Operator setup
 

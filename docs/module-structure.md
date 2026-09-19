@@ -175,9 +175,9 @@ further would separate one decision from itself: `runs/runner.ts` (the loop), `s
 
 - **Owns:** the source checkout and the working copies, and Git is invoked nowhere else. `preflight.ts`
   records the committed base and refuses a dirty checkout or an output path that overlaps the source;
-  `run-directory.ts` allocates `<workDir>/runs/<runId>` and names
-  `<workDir>/workspaces/<workspaceId>` for one attempt's evidence and clone; `prepare.ts` fills an
-  allocated directory with a clone of the recorded base and writes the ledger `state.ts` owns;
+  `run-directory.ts` allocates `<workDir>/runs/<runId>` for one attempt's evidence and names
+  `<workDir>/workspaces/<workspaceId>` for the retained clone; `prepare.ts` fills an allocated
+  directory with a clone of the recorded base and writes the ledger `state.ts` owns;
   `reopen.ts` resolves a pointer to a workspace, reads the checkout, and refuses one that is not on
   the branch its ledger records; `changes.ts` reads what the copy differs from its base by; `git.ts`
   and `status.ts` are the plumbing they share, including the repository-local commit identity

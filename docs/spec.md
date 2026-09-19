@@ -1,8 +1,10 @@
 # Simple development harness — specification
 
-**Baseline:** local-first, single-process. One task per run, one retained working copy per run, independent checks, and a local report. A source invocation may start several runs, strictly sequentially; the original file-based invocation still runs one task.
+**Baseline:** local-first, single-process. One task per run, one retained workspace that attempts may continue, independent checks, and a local report. A source invocation may start several runs, strictly sequentially; the original file-based invocation still runs one task.
 
 **Revision: 2026-09-16 — task input sources, Jira first; service-account authentication.** Extend the supplied application after the reported completion of T01–T15; do not rebuild it or change the implementation/check/repair loop. Preserve configurable Codex launching. [WORKFLOW.md](WORKFLOW.md) owns JSON and CLI contracts; [architecture.md](architecture.md) owns module placement; [implement-task-source-connectors.md](implement-task-source-connectors.md) is the new implementation assignment. Existing runtime setup and T16 remain separate: these documents are requirements, not evidence that code or live verification has passed.
+
+**Revision: 2026-09-19 — workspaces outlive runs.** The continuation contract in [implement-workspace-continuation.md](implement-workspace-continuation.md) is implemented: the split layout (`runs/<runId>` evidence, `workspaces/<workspaceId>` clone with its ledger beside it), the pointer label, continuation rules, the escalation ladder, and continued-attempt guidance. This revision realigns the text below with that contract and with the [Rely on Git](#rely-on-git) change; it adds no runtime behaviour of its own.
 
 ## 1. Goal
 
@@ -29,9 +31,10 @@ Keep harness state limited to what execution and reporting need. A report or wor
 ## 2. What the working version does
 
 1. Read task/configuration JSON and a local Git repository path. Validate inputs, normalize the optional agent selection, and keep the loaded task/configuration fixed for the run.
-2. Create a unique run directory. Clone the source repository's committed `HEAD` and use a dedicated local branch. Require a clean source checkout so uncommitted work is not silently omitted. Never reset or edit the source checkout.
-3. Run configured setup and checks before the agent. A failing baseline stops the run with a clear explanation.
+2. Create a unique run directory. A fresh attempt clones the source repository's committed `HEAD` into a new workspace and uses a dedicated local branch there; a continuation reopens the workspace its pointer label names, on its recorded branch and base. Require a clean source checkout so uncommitted work is not silently omitted. Never reset or edit the source checkout.
+3. Run configured setup and checks before the agent. A failing baseline stops a fresh attempt with a clear explanation; a continuation may start red, because its workspace may already carry failed work, and only its post-turn round decides.
 4. Ask the selected agent invocation to implement the task in the retained working copy. Supply the task, acceptance criteria, and relevant target-repository instructions. The turn works with a repository-local Git identity and is asked to commit small, meaningful pieces as it goes; those commits stay in the retained copy and are never pushed, merged, or published.
+   The turn's runtime is launched with write access to that copy, its Git metadata included, so staging and committing are possible; the harness still makes no commit of its own.
 5. Wait for the agent to finish and stop its managed mutating processes. Run setup again, then all configured checks from the harness. Agent-reported success is not a check result.
 6. After an ordinary completed red check round, send observed failure output back to the same selected agent and repeat step 5 while repairs remain. A setup/launch/authentication/protocol error or timeout stops the run rather than starting a code-repair loop.
 7. Save the report and retain the working copy, whether the run passes or fails. Human review and subsequent delivery happen outside this version.
@@ -71,14 +74,17 @@ On cancellation/timeout, stop owned commands and agent execution before reportin
 Use one generated run ID, unrelated to task text:
 
 ```text
-<workDir>/<run-id>/
-  workspace/
-  result.json
-  logs/
-    run.log
-    agent-implementation.log
-    agent-repair-1.log          # only when a repair is attempted
-    ...                        # distinct command stdout/stderr and later turns
+<workDir>/
+  runs/<run-id>/
+    result.json
+    logs/
+      run.log
+      agent-implementation.log
+      agent-repair-1.log          # only when a repair is attempted
+      ...                        # distinct command stdout/stderr and later turns
+  workspaces/<workspaceId>/       # the retained clone, on branch harness/<workspaceId>
+  workspaces/<workspaceId>.json   # the workspace ledger: base, branch, attempts
+  .intake/                        # source intake only: the lock and per-issue receipts
 ```
 
 The report retains task/run IDs, source path and base commit, workspace path, times, repairs used, status/reason, and check results grouped by baseline and implementation/repair attempt. Keep arguments, exit/signal/timeout information, log locations, and final change-review warnings. Never overwrite earlier failure evidence. A continued workspace reports the base its own ledger recorded, which stays the comparison base for every attempt even when the source checkout has advanced since; only a fresh run records the base that preflight selected then.
@@ -99,6 +105,8 @@ Keep the command plan outside the task working copy. Instruct the agent not to w
 
 The agent launcher is trusted operator configuration. Secrets are prohibited in its arguments because launch information is reportable. Use the tested platform launcher; unsupported argument/interpreter combinations must fail clearly rather than being silently altered. Do not introduce a shell-string executor or runtime permission bypass.
 
+The harness launches every turn with one explicit policy, as part of the invocation rather than as something the operator has to configure: the runtime runs unsandboxed (`exec --sandbox danger-full-access`, approvals never asked), so the retained working copy — its Git metadata included — can be staged and committed. That is a documented choice, not a hidden fallback: the narrower `workspace-write` policy leaves that copy's Git metadata read-only on Windows and makes a local commit impossible. The harness itself still makes no commit of its own, and the launch is fixed for every turn of a run.
+
 The production harness must never edit global Codex defaults, install provider configuration, copy credentials, run setup/restore scripts, or log the user in/out. The setup task may create the specifically requested local profile/catalog, preserving existing files and accounts. Native configuration remains external and can be re-read by the runtime; this version does not freeze it or provide configuration isolation for untrusted repositories.
 
 Unattended execution of untrusted repositories requires a separate isolation improvement.
@@ -117,15 +125,15 @@ Authenticate Jira with a dedicated Atlassian service account and scoped API toke
 
 ### On demand and watch
 
-- `source list`: read-only preview of matching issues, invalid task descriptions, and existing local receipts. Never claim, create a run, or launch an agent.
-- `source run`: take one finite candidate snapshot, then automatically start one normal run per valid, unattempted issue, sequentially. Optional `--limit` bounds new attempts; no interactive confirmation is required after this explicit command.
+- `source list`: read-only preview of matching issues, invalid task descriptions, existing local receipts, and workspace pointers. Never claim, create a run, or launch an agent.
+- `source run`: take one finite candidate snapshot, then automatically start one normal run per valid issue it takes — a first attempt or a continuation — sequentially. Optional `--limit` bounds the attempts it starts; no interactive confirmation is required after this explicit command.
 - `source watch`: run a scan immediately, process that finite batch, sleep, and repeat until stopped. Use ordinary interval polling, default 30 seconds, not a purported Jira long-poll endpoint.
 
 Finish discovery of a batch before changing Jira statuses. De-duplicate returned immutable issue IDs. Revalidate each candidate just before its turn; issues edited, relabelled, moved, or deleted while waiting may no longer qualify. Capture task text once for the run; later edits do not rewrite an active prompt. Never treat comments or attachments as extra instructions automatically.
 
 Watch polls do not overlap or run concurrently with a coding batch. New work remains in Jira until the next scan; detection latency includes active run time. Re-scan the full eligible queue rather than only `created`/`updated` timestamps, so older issues made ready later are discoverable. Do not claim snapshot isolation for Jira search.
 
-Every run still starts from the source checkout's then-current committed `HEAD`. Separate runs do not inherit earlier unmerged working-copy changes. Queue ordering does not implement dependencies, cumulative branches, merging, or delivery.
+A fresh issue's first attempt still clones the source checkout's then-current committed `HEAD`. A continuation instead reopens the workspace its pointer label names, keeps the base its ledger recorded as the comparison base, and therefore inherits the earlier attempts' local commits and uncommitted changes; separate workspaces do not inherit each other's changes. Queue ordering does not implement dependencies, merging, or delivery.
 
 ### Issue mapping and trusted execution
 
@@ -141,8 +149,8 @@ For `source run` and `source watch`, perform existing source/output safety prefl
 
 For each prepared valid issue:
 
-1. Skip it when its receipt already exists. Identity is connector type + canonical source site + immutable external issue ID, not mutable summary, key, status, or update timestamp.
-2. Exclusively create its receipt before any remote mutation or agent work. Receipt existence means **attempt reserved**, not success.
+1. Decide what it is from its workspace pointer labels and its receipt: no pointer and no receipt is a **fresh** attempt, which creates the workspace; exactly one pointer that resolves on this machine is a **continuation** of that workspace; a receipt with no pointer, a pointer that does not resolve here, and more than one pointer are refused and published like any terminal outcome, with nothing created. Identity is connector type + canonical source site + immutable external issue ID, not mutable summary, key, status, or update timestamp.
+2. Exclusively create its receipt before any remote mutation or agent work; a continuation already has one and reuses it. Receipt existence means **attempt reserved**, not success.
 3. Recheck eligibility and the captured issue revision, then request the transition to the configured running status. Only an unambiguously successful claim permits `runTask`.
 4. Run through the unchanged runner; persist source provenance and the normalized input snapshot with normal local artifacts.
 5. Record the real run ID, result path, and outcome in the receipt, then attempt remote feedback. Never turn a Jira delivery error into another coding attempt.
@@ -153,7 +161,7 @@ The local lock/receipt protects one consumer using the same retained `workDir`. 
 
 ### Jira feedback and completion
 
-Use existing workflow statuses, defaulting to `To Do → In Progress → In Review`. `In Review` means **the local attempt ended and needs human attention**, for `passed`, `failed`, and `cancelled` alike. A result comment must state the exact outcome; never represent a failed attempt as completed implementation. Do not automatically set `Done`, merge, commit, or publish changes.
+Use existing workflow statuses, defaulting to `To Do → In Progress → In Review`. `In Review` means **the local attempt ended and needs human attention**, for `passed`, `failed`, and `cancelled` alike. A result comment must state the exact outcome; never represent a failed attempt as completed implementation. Do not automatically set `Done`, push, merge, publish, or otherwise integrate the changes: the local commits a coding turn made stay in the retained workspace.
 
 Discover available transitions for the issue and select a unique transition by its target status, not by assuming a status ID is a transition ID. If a workflow requires additional fields or offers no unambiguous transition, report that limitation rather than changing the workflow. [J2]
 
@@ -173,13 +181,13 @@ On interrupt, stop polling and claiming immediately, cancel the active run throu
 
 Store `.intake/lock/` and `.intake/receipts/<identity-hash>.json` under `workDir`, outside target workspaces. A receipt contains source identity, reservation time, and any known real run/result/feedback details. The initial creation is exclusive; subsequent replacements are atomic. Corrupt/unknown receipt formats must fail closed, not be treated as absence. This is duplicate prevention, not a new run registry or resumable workflow engine.
 
-The simplest deliberate retry is a new Jira task. To retry the same issue, first stop the watcher, inspect/stop prior processes, retain its run artifacts, remove only that issue's receipt, and restore its ready status. Merely editing or reopening an issue does not erase its receipt. Preserve `.intake` when cleaning old run directories.
+Rework is ordinary: move an attempted issue back to the ready status and the harness continues the workspace its pointer label names — same clone, same recorded base, a new run directory and report, and a baseline that may be red. Merely editing or reopening an issue does not erase its receipt or its pointer. To deliberately start over — a first attempt in a new workspace — create a new Jira task, or stop the watcher, inspect/stop prior processes, retain the run artifacts, remove the pointer label, remove only that issue's receipt, and restore its ready status. Preserve `.intake` when cleaning old run directories.
 
 ## 7. Current increment and later work
 
 **Keep:** the existing workspace/check/report loop, file-task CLI, configurable Codex adapter and DeepSeek profile selection, offline tests, logging, deadlines, cancellation, and retained artifacts. Inspect actual code and preserve user changes. The production harness still never configures the user's coding-provider account.
 
-**Implement now:** optional source configuration; a small source contract; Jira Cloud mapping, discovery, claim, and result feedback; list/run/watch commands; a single-consumer lock and local receipts; offline tests and an opt-in Jira exercise. Do not require Jira credentials for existing file-task commands or ordinary validation.
+**Implemented by this increment:** optional source configuration; a small source contract; Jira Cloud mapping, discovery, claim, and result feedback; list/run/watch commands; a single-consumer lock and local receipts; offline tests and an opt-in Jira exercise. Do not require Jira credentials for existing file-task commands or ordinary validation. The later workspace-continuation increment builds on it: see [implement-workspace-continuation.md](implement-workspace-continuation.md).
 
 **Later, only when needed:** another concrete task source, real Claude Code adapter, webhooks, parallel consumers, dependency scheduling, PR publication, CI feedback, stronger isolation, or remote recovery. Add another connector without changing Task or the coding loop; do not ship a placeholder connector now.
 

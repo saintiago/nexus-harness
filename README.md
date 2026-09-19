@@ -24,7 +24,8 @@ how to run it, what it does to your machine, and what is not proven yet.
   yourself. The harness starts it with a launch you configure — `codex` on `PATH` by default, or a
   path and a native profile of your choosing. See [Coding runtime](#coding-runtime).
 - **Git** on `PATH`. The harness runs real `git` commands: it records a base commit, clones the
-  repository into a workspace of its own, and creates a branch there.
+  repository into a workspace of its own (or reopens the workspace a continuation names), and works
+  on that workspace's own branch.
 - **Platform support, stated as it is.** Development, the full offline gate, and every recorded
   verification have run on **Windows 11 with Node 24.14.1** (PowerShell and Git Bash), which is the
   only platform verified by hand. CI runs the same offline gate on `ubuntu-latest`, so the suite is
@@ -147,15 +148,22 @@ target project writes can change which commands decide the result. Then:
 1. **Preflight.** The source repository must be a clean Git checkout with a commit; the output
    directory must not be inside it.
 2. **A run directory**, `<workDir>/runs/<runId>`, holding the logs and (last) the report, and a
-   **workspace**, `<workDir>/workspaces/<runId>`, holding the working copy beside it. `workDir`
-   comes from the configuration file and resolves from that file's own directory.
+   **workspace**, `<workDir>/workspaces/<workspaceId>`, holding the working copy beside it, with a
+   ledger at `workspaces/<workspaceId>.json` recording its base, branch, and attempts. A fresh
+   run's `workspaceId` is its own run ID; a continuation reuses the workspace its issue's pointer
+   label names. `workDir` comes from the configuration file and resolves from that file's own
+   directory.
 3. **A working copy**: a clone of the source at its recorded base commit, in that workspace, on a
-   dedicated branch `harness/<runId>`. Only committed content is inherited. The clone is given a
-   repository-local Git identity (`Nexus Agent <nexus@local>`, commit signing disabled) before
-   anything runs in it, so the coding turns can commit as they go; nothing is pushed.
+   dedicated branch `harness/<workspaceId>`. Only committed content is inherited. The clone is
+   given a repository-local Git identity (`Nexus Agent <nexus@local>`, commit signing disabled)
+   before anything runs in it, so the coding turns can commit as they go; nothing is pushed. A
+   **continuation** — a source issue moved back to the ready status whose pointer label names a
+   workspace this machine has — reopens that clone instead of making a new one, on its recorded
+   branch and base, keeping the local commits and uncommitted changes earlier attempts left.
 4. **The baseline round**: every `setup` command, then every `checks` command, in the order the
-   configuration lists them. A red baseline stops the run before any coding turn — the task is not
-   attempted on a project that is already failing.
+   configuration lists them. A red baseline stops a fresh run before any coding turn — the task is
+   not attempted on a project that is already failing. A continuation may start red, because its
+   workspace may already carry failed work, and only its post-turn round decides.
 5. **Coding turns**: one fresh invocation of the configured launch per top-level turn, started in
    the working copy and never asking for approval. The implementation turn is given the task; each
    repair turn is given the failures the harness observed for itself. Every turn of the run uses the
@@ -214,6 +222,7 @@ completion, and never names a report that does not exist.
 
 ```
 <workDir>/
+  .intake/                       source intake: the one-consumer lock and the per-issue receipts
   runs/<runId>/
     result.json                  the final report, written last
     logs/
@@ -226,7 +235,8 @@ completion, and never names a report that does not exist.
       attempt-1-check-1.stdout.log
       attempt-2-check-1.stdout.log
       …                          .stderr.log beside each, and one pair per configured command
-  workspaces/<runId>/            the working copy: a clone, on branch harness/<runId>
+  workspaces/<workspaceId>/      the working copy: a clone, on branch harness/<workspaceId>
+  workspaces/<workspaceId>.json  the workspace ledger: base, branch, and attempts
 ```
 
 A run ID is generated (`run-<UTC timestamp>-<8 hex>`) and never comes from task text, so no task can
@@ -354,9 +364,10 @@ coding turn makes stay in the retained workspace.
 
 **Nothing runs twice by accident.** `.intake/receipts/<hash>.json` under `workDir` records each
 attempted issue by its immutable ID, and a receipt is created **before** the issue is claimed. A
-receipt survives a restart, and editing or reopening the issue does not clear it. A single
-`.intake/lock/` directory makes sure only one consumer uses an output directory; it is never broken
-automatically.
+receipt survives a restart, and editing or reopening the issue does not clear it. Nor is a receipt
+the whole story: what happens next is decided by the pointer label below — a receipt with no
+pointer refuses the issue instead of silently repeating it. The single `.intake/lock/` directory
+makes sure only one consumer uses an output directory; it is never broken automatically.
 
 **Where an issue's work lives is written on the issue.** The run that creates a workspace adds one
 `harness-ws-<workspaceId>` label, before any coding turn, and a later attempt only ever reads it.
@@ -368,11 +379,13 @@ says why in a comment, and moves it out of the queue, so a stale ticket cannot q
 attempts. A pointer this machine cannot resolve, and an issue carrying two pointers, are refused
 the same way. The receipt stays as the audit trail behind all of it.
 
-To retry without that machinery — a first attempt again, in a new workspace — stop the watcher,
-inspect and stop prior processes, keep the run artifacts, delete only that issue's printed receipt
-file, remove its `harness-ws-*` pointer label if it has one (otherwise the harness would continue
-the old workspace instead of creating one), and put the issue back to the ready status. Never remove
-the whole `.intake` directory to fix one task.
+Putting an attempted issue back to the ready status is ordinary rework, not a retry of a dead run:
+the harness continues the workspace its pointer names, with a new run directory and report. To start
+over deliberately instead — a first attempt again, in a new workspace — stop the watcher, inspect
+and stop prior processes, keep the run artifacts, delete only that issue's printed receipt file,
+remove its `harness-ws-*` pointer label if it has one (otherwise the harness would continue the old
+workspace instead of creating one), and put the issue back to the ready status. Never remove the
+whole `.intake` directory to fix one task.
 
 Scans are periodic and pause during a batch, so a new issue is picked up on the next scan rather
 than instantly. `source list` and `source run` report a failed read and exit nonzero; `source watch`
@@ -499,11 +512,13 @@ run run-20260101000000-1a2b3c4d: passed
   report     /tmp/nexus-demo/harness/runs/run-20260101000000-1a2b3c4d/result.json
 ```
 
-That layout is the real one — `<workDir>/runs/<runId>` for the evidence, `<workDir>/workspaces/<runId>`
-for the working copy beside it — and it sits outside `/tmp/nexus-demo/tiny-project`. A later attempt
-could continue that working copy instead of cloning again; that is specified in
-[docs/implement-workspace-continuation.md](docs/implement-workspace-continuation.md) and not built
-yet. The run above was produced and
+That layout is the real one — `<workDir>/runs/<runId>` for the evidence,
+`<workDir>/workspaces/<workspaceId>` for the working copy beside it — and it sits outside
+`/tmp/nexus-demo/tiny-project`. A later attempt of the same Jira issue continues that working copy
+instead of cloning again when the issue carries its `harness-ws-<workspaceId>` pointer label; that
+is the implemented contract in
+[docs/implement-workspace-continuation.md](docs/implement-workspace-continuation.md) and the
+operator-facing rules in [docs/WORKFLOW.md](docs/WORKFLOW.md) §7. The run above was produced and
 checked **offline**, with the runtime boundary substituted by a stand-in `codex` on the CLI's
 `PATH` (the same boundary the end-to-end suite uses). It is not a live Codex result; a live run
 needs your own account, and the printed paths are always derived from the run directory the CLI
@@ -522,12 +537,14 @@ rm -rf /tmp/nexus-demo                                        # nothing was clea
 Read this before pointing a run at anything you care about.
 
 - **Configured commands execute target-project code.** `setup` and `checks` are started as real
-  processes, in the working copy, with your user's privileges and no sandbox. The runtime's own
-  `--sandbox workspace-write` constrains the _runtime's_ file writes, and the harness always adds
-  `--ask-for-approval never`: an unattended run never waits for a prompt, so an action outside that
-  sandbox fails the turn instead of pausing for you. Neither setting constrains your configured
-  commands. Treat a target project's configuration the way you would treat a script you are about
-  to run.
+  processes, in the working copy, with your user's privileges and no sandbox. The coding turn is
+  **unsandboxed too**: it runs with `--sandbox danger-full-access` and `--ask-for-approval never`, so
+  it can read and write anywhere your user can, exactly like a configured command. That is a
+  deliberate, documented choice, not a fallback — the narrower `workspace-write` policy this CLI
+  offers on Windows leaves the working copy's `.git` read-only, so a turn cannot stage or commit its
+  work (`git add` fails on `.git/index.lock`; HARN-2). An unattended run still never waits for a
+  prompt. Treat a target project's configuration the way you would treat a script you are about to
+  run.
 - **A clone is not a sandbox.** The working copy is a separate directory and a separate branch, so
   your source checkout is not where the work happens — but the code in it runs as you, and it can
   write anywhere your user can.
@@ -539,9 +556,11 @@ Read this before pointing a run at anything you care about.
   it is not an audit. The harness does not decide whether a changed test still tests the right
   thing. Read the diff, starting with the paths `changes.highlighted` names.
 - **There is no automatic resume.** Every top-level turn is one fresh `codex exec` invocation, and
-  no session is continued. A run that stops does not pick up where it left off, and nothing about it
-  can be resumed by running the command again: a new invocation is a new run, with a new clone at
-  the recorded base of the source repository as it is _then_.
+  no session is continued: a run that stops does not pick up where it left off, and re-running a
+  `run --task` command is a new run, with a new clone at the source's commit as it is _then_. A
+  Jira continuation is different: moving an attempted issue back to the ready status starts another
+  attempt in the workspace its pointer names, against that workspace's recorded base, but it
+  resumes no stopped process and recovers nothing automatically.
 - **The harness never pushes, merges, or publishes anything.** The working copy is given a
   repository-local commit identity (`Nexus Agent <nexus@local>`, commit signing disabled) and its
   turns are asked to commit small pieces as they go — but those commits are the turn's own doing,
@@ -597,6 +616,10 @@ Read this before pointing a run at anything you care about.
   one-consumer lock, a finite `source run`, a watch cycle that picks up a later issue, and the
   behaviour of a stop, a failed feedback, and a corrupt receipt. Nothing in that suite needs a Jira
   site, a token, or a network.
+- workspace continuation through the same fakes and real temporary Git repositories: a continued
+  attempt reopening the workspace its pointer label names and keeping its recorded base, the
+  per-attempt run directories and ledger, the escalation ladder's tiers, the guidance a continued
+  attempt is told, and the refusal of an attempted issue that names no workspace to continue.
 
 **Verified live (`npm run test:live`) on 2026-09-16, through the DeepSeek launch this checkout
 selects:** Codex CLI 0.154.0 answered a read-only connectivity probe, and both exercises then passed
@@ -608,8 +631,10 @@ the live check's own output, which this document does not restate. A deliberatel
 way (`run-20260916194015-9fce84bf`): a disposable task asking the turn to write
 `C:\Users\User\nexus-sandbox-probe.txt` produced three refused attempts
 (`System.UnauthorizedAccessException`, access denied), no file on disk, and a turn that reported the
-refusal and ended normally — nothing hung waiting for an approval nobody was there to give. It is a
-Codex CLI + DeepSeek result: not OpenAI-backed inference, and not Claude Code.
+refusal and ended normally — nothing hung waiting for an approval nobody was there to give. That
+exercise belongs to the sandboxed launch of that date: the unsandboxed launch this checkout now
+selects does not refuse such a write, and nothing re-verifies the older claim here. It is a Codex
+CLI + DeepSeek result: not OpenAI-backed inference, and not Claude Code.
 
 `npm run test:live` builds `dist/` and then runs `tests/live/codex-live-check.ts`: it prepares two
 disposable repositories, drives the built CLI against them with the selected runtime, and reads back
@@ -647,6 +672,11 @@ and only a read.
 
 **Not verified anywhere yet:**
 
+- **any live turn through the unsandboxed launch this checkout selects.** All of the live evidence
+  above predates it: it was produced with the previous `--sandbox workspace-write` suffix, and no
+  live run has yet asked a runtime started this way to stage and commit. The offline suite pins the
+  adapter's arguments; only the by-hand check in "Coding runtime" — a real turn asked to commit —
+  can close that gap, and it is not evidence until it has been run and read.
 - any live coding turn on Linux or macOS, and any macOS behaviour at all;
 - live runs through a provider other than the one configured on this machine, and any profile or
   gateway the operator has not installed;
@@ -667,26 +697,35 @@ single non-interactive turn on this platform and needs no extra client library i
 
 - **Interface:** `codex exec` (`@openai/codex`, version **0.154.0** when this was written, which
   publishes a `win32-x64` build). The adapter invokes exactly
-  `<your launch prefix> --ask-for-approval never exec --sandbox workspace-write --json -`, started
-  **in the working copy**, with the prompt written to standard input. `--json` makes the runtime
-  write one JSON event per line to standard output; its progress goes to standard error; the turn
-  ends when the runtime exits. Nothing is interpolated and no shell is involved beyond what a
+  `<your launch prefix> --ask-for-approval never exec --sandbox danger-full-access --json -`,
+  started **in the working copy**, with the prompt written to standard input. `--json` makes the
+  runtime write one JSON event per line to standard output; its progress goes to standard error; the
+  turn ends when the runtime exits. Nothing is interpolated and no shell is involved beyond what a
   Windows `.cmd` shim already requires.
-- **Non-interactive by construction.** `--ask-for-approval never` is the adapter's own argument, not
-  a profile setting and not a configuration field, so a run never waits for a human: an action the
-  `workspace-write` sandbox does not allow fails the turn and stops the run. There is no
-  `--dangerously-bypass-approvals-and-sandbox`, no fallback to a weaker sandbox, and no retry with
-  one. On the installed CLI the approval option is accepted **before** the `exec` subcommand and
-  rejected after it (`unexpected argument '--ask-for-approval'`), which is why it leads the
-  adapter's own arguments rather than sitting beside `--sandbox`; the tracked documents
-  [docs/WORKFLOW.md](docs/WORKFLOW.md) and [docs/architecture.md](docs/architecture.md) still spell
-  the suffix without it.
+- **The turn is deliberately unsandboxed.** `--sandbox danger-full-access` is the adapter's own
+  explicit selection, not a hidden fallback: a turn has to be able to stage and commit in the
+  retained working copy, and the narrower `workspace-write` policy — in its `--sandbox` spelling and
+  in its native `permissions`/`default_permissions` spelling — leaves that copy's Git metadata
+  read-only on this Windows installation, where `git add` fails on `.git/index.lock` (reproduced by
+  hand with the installed CLI; HARN-2, HARN-10). Model-generated commands therefore run the way your
+  `setup` and `checks` run: as you, with no sandbox and no network carve-out. The suffix is the same
+  for every turn; there is no `--dangerously-bypass-approvals-and-sandbox`, no retry with a wider
+  policy, and no automatic approval service.
+- **Non-interactive by construction.** `--ask-for-approval never` is the adapter's own argument, so a
+  run never waits for a human: a turn that would ask for an approval is refused instead of pausing,
+  and the failure stops the run. On the installed CLI the approval option is accepted **before** the
+  `exec` subcommand and rejected after it (`unexpected argument '--ask-for-approval'`), which is why
+  it leads the adapter's own arguments rather than sitting beside `--sandbox`.
 - **Official references consulted:** [Non-interactive mode](https://learn.chatgpt.com/docs/non-interactive-mode),
   [CLI commands and flags](https://learn.chatgpt.com/docs/developer-commands?surface=cli) (`exec`,
-  `--json`, `--sandbox`, `-o/--output-last-message`, `resume`), [AGENTS.md](https://learn.chatgpt.com/docs/agent-configuration/agents-md),
-  and the `openai/codex` documentation served through the Context7 MCP server. `resume` and
-  `--output-last-message` exist and are deliberately unused: every top-level turn is one fresh
-  invocation, so continuing a session can never quietly buy extra turns.
+  `--json`, `--sandbox`, `-o/--output-last-message`, `resume`),
+  [permissions](https://learn.chatgpt.com/docs/permissions) and
+  [agent approvals and security](https://learn.chatgpt.com/docs/agent-approvals-security) for the
+  permission and sandbox model the policy sits in,
+  [AGENTS.md](https://learn.chatgpt.com/docs/agent-configuration/agents-md), and the `openai/codex`
+  documentation served through the Context7 MCP server. `resume` and `--output-last-message` exist
+  and are deliberately unused: every top-level turn is one fresh invocation, so continuing a session
+  can never quietly buy extra turns.
 - **Local setup and authentication (yours to do, outside this repository):**
   `npm install --global @openai/codex`, then `codex login` (or `codex login --with-api-key`, or set
   `CODEX_API_KEY`) for the ordinary OpenAI-backed defaults. Credentials live where the CLI keeps
@@ -717,10 +756,78 @@ single non-interactive turn on this platform and needs no extra client library i
     npm packaging for the `win32-x64` optional dependency has had reported breakage (for example
     `openai/codex` issues #12931 and #17432). If `codex` is missing or will not start, the run
     fails with a launch error naming the executable; that is a stop, not something to retry.
-  - The runtime's sandbox has network access **off** by default, so a turn cannot install packages.
-    `setup` commands run outside that sandbox and are the right place for installs.
+  - The unsandboxed turn can reach the network, as your own shell can: the harness does not rely on
+    a turn being unable to install something. `setup` remains the place for installs — it runs
+    before the turns, and its failure stops the run before any paid work.
   - `--cd` is not used: the working root is the process's own working directory, so a working-copy
     path that a Windows shim cannot carry as an argument can never fail a turn.
+- **Verify the launch once, by hand (opt-in).** The offline suite proves what the adapter sends; only
+  a real launch proves what the installed runtime and platform do with it. After a change to the
+  launch, run both steps once, with the account and configuration this machine uses. Neither is part
+  of `npm test`, `npm run validate`, or CI, and neither is a claim that either has already been run.
+
+  1. `npm run test:live -- --config harness.config.json` — the opt-in live check. It drives the built
+     CLI against two disposable repositories with the selected launch and reads its assertions out
+     of the retained working copies. Its repair exercise is a second coding turn in the same
+     retained working copy, so a fresh launch and a later launch over one clone both run.
+  2. The commit check below: a real turn asked to change a tracked file and commit it — the part no
+     offline test can decide about a real runtime. Run it from this repository's checkout: it takes
+     the `agent` block from this checkout's `harness.config.json`, and its source, the run's output
+     root, and the probe's own files are three separate paths outside any system temp directory.
+
+```powershell
+$probe  = Join-Path $env:USERPROFILE ("nexus-harness-probe-" + (Get-Date -Format 'yyyyMMdd-HHmmss'))
+$source = Join-Path $probe 'source'
+New-Item -ItemType Directory -Force (Join-Path $source 'src') | Out-Null
+Set-Content (Join-Path $source 'src\committed.txt') 'placeholder'
+git -C $source init -q
+git -C $source config user.email probe@local
+git -C $source config user.name probe
+git -C $source add -A
+git -C $source commit -qm base
+
+# `workDir` resolves against this file, so the run's output is a sibling of the
+# source, not inside it. The checks pass on the clean baseline and after the
+# turn's commit, and go red if the turn leaves its edit uncommitted. The agent
+# block is added through ConvertFrom-Json/ConvertTo-Json, which escapes the
+# Windows paths in it instead of pasting them into a hand-written string.
+$config = @'
+{ "workDir": "./run", "maxRepairs": 0, "taskTimeoutMinutes": 20, "commandTimeoutMinutes": 5,
+  "setup": [],
+  "checks": [
+    ["git", "ls-files", "--error-unmatch", "src/committed.txt"],
+    ["git", "diff", "--quiet", "HEAD"]
+  ],
+  "agent": null }
+'@ | ConvertFrom-Json
+$config.agent = (Get-Content harness.config.json -Raw | ConvertFrom-Json).agent
+$config | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $probe 'probe.config.json')
+
+@'
+{ "id": "commit-probe", "title": "Commit inside the retained working copy",
+  "description": "Replace the only line of src/committed.txt with: committed by the coding turn. Stage and commit the change with the message 'probe: commit from the coding turn'. Change nothing else.",
+  "acceptanceCriteria": ["src/committed.txt holds the required line and is committed.", "The commit 'probe: commit from the coding turn' is on the current branch.", "git status --porcelain is empty."] }
+'@ | Set-Content (Join-Path $probe 'probe.task.json')
+
+npm run build
+npm start -- run --repo $source --config (Join-Path $probe 'probe.config.json') --task (Join-Path $probe 'probe.task.json')
+```
+
+```powershell
+$clone = (Get-Item (Join-Path $probe 'run\workspaces\*') | Select-Object -First 1).FullName
+git -C $clone log --oneline -2                          # the baseline, then the turn's own commit
+git -C $clone log -1 --format='%s | %an <%ae>'          # the message, and Nexus Agent <nexus@local>
+git -C $clone show HEAD:src/committed.txt               # the line the turn committed
+git -C $clone status --porcelain --untracked-files=all  # empty: the turn left nothing behind
+```
+
+The checks decide whether an edit was left uncommitted; a commit is read from `git show` and
+`git log` above, not inferred from a clean diff — `git diff` would never show an untracked file, so
+the example makes the turn change a file that is tracked from the start. A turn that cannot stage or
+commit (the HARN-2 failure) leaves its edit visible and stops the run. Continuing a workspace reuses
+the same launch: the repair exercise in step 1 is already a later turn in one retained copy, and
+`source run` continues a clone across runs through the issue's `harness-ws-*` pointer
+(docs/WORKFLOW.md §6). Nothing cleans `$probe` up.
 
 ## Module ownership
 
@@ -783,7 +890,7 @@ operator's own `gh` credentials, once the check is green —
   assignment that added Jira intake, including the opt-in live exercise that has **not** been run.
 - [docs/implement-workspace-continuation.md](docs/implement-workspace-continuation.md) — the
   contract for workspaces that outlive runs, the workspace pointer label, and the escalation ladder.
-  Its increments are not implemented yet.
+  Its three increments are implemented; the defects it lists are separate tasks.
 - [docs/LONG_TERM_VISION.md](docs/LONG_TERM_VISION.md) — the direction the harness is meant to grow
   into. It defines no behaviour: [docs/spec.md](docs/spec.md) stays authoritative, and every change
   still needs a task.
@@ -799,8 +906,11 @@ operator's own `gh` credentials, once the check is green —
 ## Next task
 
 The 2026-09-16 extension added the optional `agent` selection, the selected-launch reporting, the
-explicit no-approval policy, and now the Jira task source with `source list`, `source run`, and
-`source watch`. What remains is listed under
+explicit no-approval policy, and the Jira task source with `source list`, `source run`, and
+`source watch`; the workspace-continuation increment — retained workspaces, the
+`harness-ws-<workspaceId>` pointer label, the escalation ladder, and continuation guidance — is
+implemented and verified offline. **No live attempt has continued a real issue's workspace yet.**
+What remains is listed under
 [What is verified, and what is not](#what-is-verified-and-what-is-not) rather than promised here. The
 first real piece of work is the **supervised live Jira exercise**, which has not been run: it needs a
 service-account token, a disposable target repository, and an operator who has inspected the queue

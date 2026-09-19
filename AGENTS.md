@@ -9,8 +9,8 @@ Build and maintain a small, local-first coding harness. The documents in `docs/`
 - [WORKFLOW.md](docs/WORKFLOW.md): the loop, the JSON input contract, and the source CLI.
 - [implement-task-source-connectors.md](docs/implement-task-source-connectors.md): the Jira intake assignment, including the opt-in live exercise that has not been run.
 - [implement-workspace-continuation.md](docs/implement-workspace-continuation.md): the contract for
-  workspaces that outlive runs, the pointer label, and the escalation ladder. Increments 1-3 there
-  are not implemented yet.
+  workspaces that outlive runs, the pointer label, and the escalation ladder. All three increments
+  are implemented; the defects it lists under "Known gaps" are separate tasks.
 - [LONG_TERM_VISION.md](docs/LONG_TERM_VISION.md): the direction the harness is meant to grow into.
   It defines no behaviour: the spec stays authoritative, and every change to behaviour still needs a
   task.
@@ -21,7 +21,9 @@ Read what is relevant to the task. The spec defines behavior; the task defines w
 
 ## Work on a branch
 
-`main` stays green. One task, one `task/<name>` branch, merged into `main` through a pull request: see [docs/GIT-WORKFLOW.md](docs/GIT-WORKFLOW.md). Never commit directly to `main`, and never push, merge, publish, or open pull requests in a *target* repository: a run leaves its work in the retained working copy.
+`main` stays green. One task, one `task/<name>` branch, merged into `main` through a pull request: see [docs/GIT-WORKFLOW.md](docs/GIT-WORKFLOW.md). Never commit directly to `main`.
+
+Working *in* a target repository is different. A run's coding turns may make small, meaningful local commits in the retained workspace, but the harness never checkpoints automatically and never pushes, merges, publishes, opens a pull request, or otherwise integrates a target's work. That holds when the run targets this repository too: it works in its own retained clone and leaves its commits there for the operator to integrate.
 
 CI is read-only. Nothing under `.github/` writes to this repository, opens a pull request, or merges one: the merge is made by the operator, or by an agent using the operator's credentials, once the gate is green. That is the harness's own process, and it has nothing to do with how a harness *run* treats a target repository.
 
