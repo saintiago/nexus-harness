@@ -14,9 +14,11 @@ import { existsSync } from 'node:fs';
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { commandSucceeded, runCheckRound, runCommand } from '../src/checks.js';
-import { ReportError, appendRunLog, openCommandLog, runLogPath } from '../src/report.js';
-import type { CheckRoundResult, Command, CommandResult } from '../src/types.js';
+import { commandSucceeded, runCheckRound } from '../src/checks/round.js';
+import { runCommand } from '../src/process/command.js';
+import { ReportError } from '../src/reporting/errors.js';
+import { appendRunLog, openCommandLog, runLogPath } from '../src/reporting/logs.js';
+import type { CheckRoundResult, Command, CommandResult } from '../src/shared/types.js';
 import { cleanupTempDirectories, createTempDir } from './support.js';
 
 /**
@@ -1115,7 +1117,7 @@ describe('a command that runs out of time', () => {
  * The Windows launcher. `npm` and other installed commands are `.cmd` shims:
  * `spawn` cannot start them without a shell, so the harness starts them through
  * the command interpreter instead. See "Supported platforms and launchers" in
- * src/checks.ts. These tests run for real on Windows and skip elsewhere; the
+ * src/process/command.ts. These tests run for real on Windows and skip elsewhere; the
  * tests above cover the direct launcher that every platform uses.
  */
 describe.skipIf(process.platform !== 'win32')('the native Windows launcher', () => {

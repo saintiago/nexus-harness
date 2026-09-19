@@ -13,25 +13,16 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { taskSchema } from '../src/config.js';
-import {
-  WorkspaceError,
-  allocateRunDirectory,
-  inspectWorkspaceChanges,
-  prepareWorkspace,
-  preflightSource,
-  readWorkspaceState,
-  reopenWorkspace,
-  resolveWorkspace,
-  workspaceStatePath,
-  workspacePathFor,
-} from '../src/workspace.js';
-import type {
-  PreparedWorkspace,
-  PreflightRequest,
-  PrepareWorkspaceBounds,
-  SourcePreflight,
-} from '../src/workspace.js';
+import { taskSchema } from '../src/config/schema.js';
+import { inspectWorkspaceChanges } from '../src/workspace/changes.js';
+import { WorkspaceError } from '../src/workspace/errors.js';
+import { prepareWorkspace } from '../src/workspace/prepare.js';
+import type { PreparedWorkspace, PrepareWorkspaceBounds } from '../src/workspace/prepare.js';
+import { preflightSource } from '../src/workspace/preflight.js';
+import type { PreflightRequest, SourcePreflight } from '../src/workspace/preflight.js';
+import { reopenWorkspace, resolveWorkspace } from '../src/workspace/reopen.js';
+import { allocateRunDirectory, workspacePathFor } from '../src/workspace/run-directory.js';
+import { readWorkspaceState, workspaceStatePath } from '../src/workspace/state.js';
 import { cleanupTempDirectories, createTempDir, repoRoot } from './support.js';
 
 afterEach(cleanupTempDirectories);
@@ -372,7 +363,7 @@ describe('a clean source repository', () => {
 
   it('resolves relative paths from the invocation directory, not this one', async () => {
     const fixture = await createRepository();
-    const moduleUrl = pathToFileURL(path.join(repoRoot, 'src', 'workspace.ts')).href;
+    const moduleUrl = pathToFileURL(path.join(repoRoot, 'src', 'workspace', 'preflight.ts')).href;
     const script = [
       `const { preflightSource } = await import(${JSON.stringify(moduleUrl)});`,
       `const result = await preflightSource({ repoPath: 'repo', workDir: 'runs' });`,

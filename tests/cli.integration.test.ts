@@ -40,7 +40,7 @@ import {
 } from './fixtures/local-target.js';
 import type { FakePlan, LocalTarget } from './fixtures/local-target.js';
 import { cleanupTempDirectories, writeJsonFile } from './support.js';
-import type { AttemptEvidence, CommandResult, RunReport } from '../src/types.js';
+import type { AttemptEvidence, CommandResult, RunReport } from '../src/shared/types.js';
 
 /** Every fixture created by this file, so that all of them are removed after it. */
 const targets: LocalTarget[] = [];

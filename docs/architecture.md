@@ -10,15 +10,21 @@ Retain the modules introduced by the completed tasks:
 
 ```text
 src/
-  cli.ts          # arguments, help, exit codes, top-level wiring
-  config.ts       # input validation, defaults, configuration-relative paths
-  types.ts        # small data contracts
-  runner.ts       # implementation/check/repair coordination
-  workspace.ts    # Git and per-run working copies
-  agent.ts        # Codex CLI invocation and normalized turn results
-  checks.ts       # configured setup/check command execution
-  report.ts       # result.json and log persistence
+  cli.ts + cli/       # arguments, help, exit codes, command dispatch, top-level wiring
+  config/             # input schemas, defaults, configuration-relative paths
+  shared/             # small data contracts, and the one message helper
+  process/            # starting, bounding, and stopping one command
+  checks/             # one setup/check round and what a result means
+  workspace/          # Git and per-run working copies, the ledger, the change summary
+  runs/               # implementation/check/repair coordination and how a run ends
+  reporting/          # result.json and log persistence
+  sources/            # the source contract, receipts, guidance, the coordinator
+  sources/jira/       # the Jira Cloud connector
+  agents/codex/       # Codex CLI invocation and normalized turn results
 ```
+
+The full tree, the placement rules, and the extension steps are in
+[module-structure.md](module-structure.md); this section keeps the same ownership rules.
 
 Inspect the actual repository before editing. Reuse its existing process-launch and shutdown helpers wherever they currently live; this change does not require moving them or recreating modules.
 
@@ -36,7 +42,7 @@ cli → runner → workspace
              → report
 ```
 
-Only `agent.ts` talks to a coding runtime. Only `workspace.ts` handles Git/working-copy preparation. Only `checks.ts` runs configured setup/check commands. Report file writes belong in `report.ts`.
+Only `agents/codex/` talks to a coding runtime. Only `workspace/` handles Git/working-copy preparation. Only `process/` starts or stops a process, and `checks/round.ts` says what a configured command's result means. Report file writes belong in `reporting/`.
 
 `config.ts` validates the optional `agent` object, supplies the legacy default when it is omitted, and applies the path rules in WORKFLOW. CLI composition passes the effective selection to the existing agent adapter. The runner does not interpret profiles, model IDs, credentials, CLI events, or provider APIs.
 
@@ -124,9 +130,10 @@ Add at most these three modules, reusing equivalent existing helpers when presen
 
 ```text
 src/
-  source.ts       # source contract, sequential batch/watch coordination, lock/receipts
-  jira.ts         # Jira REST calls, eligibility, description mapping, transitions/comments
-  jira-format.ts  # small ADF reader and plain-text comment builder; may stay in jira.ts
+  sources/contract.ts     # source contract and the ordinary source data
+  sources/coordinator.ts  # sequential batch/watch coordination, lock and receipts
+  sources/jira/           # Jira REST calls, eligibility, description mapping, transitions/comments
+  sources/jira/adf*.ts    # small ADF reader and plain-text comment builder
 ```
 
 ```text

@@ -7,8 +7,8 @@ import {
   loadHarnessConfig,
   loadTask,
   resolveWorkDir,
-} from '../src/config.js';
-import type { HarnessConfig, Task } from '../src/types.js';
+} from '../src/config/load.js';
+import type { HarnessConfig, Task } from '../src/shared/types.js';
 import {
   cleanupTempDirectories,
   createTempDir,

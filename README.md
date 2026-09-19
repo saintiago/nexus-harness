@@ -713,29 +713,32 @@ single non-interactive turn on this platform and needs no extra client library i
 
 ## Module ownership
 
-| File                 | Responsibility                                                                           |
-| -------------------- | ---------------------------------------------------------------------------------------- |
-| `src/cli.ts`         | Arguments, help, exit codes, top-level wiring. Owns all presentation.                    |
-| `src/config.ts`      | Reads and validates the two JSON inputs; resolves `workDir`.                             |
-| `src/types.ts`       | The data contracts. Data only: no imports, no runtime I/O.                               |
-| `src/workspace.ts`   | Preflight, run directory allocation, the working copy, and the final change summary.     |
-| `src/checks.ts`      | Setup/check command execution, process-tree stop, output capture.                        |
-| `src/agent.ts`       | The coding runtime: one turn through the Codex CLI, normalized for the runner.           |
-| `src/runner.ts`      | The order the work happens in: baseline, turns, checks, repair, deadlines, cancellation. |
-| `src/report.ts`      | `result.json` and the logs under `<runDir>/logs`; reads back command output for repair.  |
-| `src/source.ts`      | The task-source contract and the one serial coordinator: batch, watch, lock, receipts.   |
-| `src/jira.ts`        | The Jira Cloud connector: search, reads, transitions, comments, service-account auth.    |
-| `src/jira-format.ts` | The small ADF reader and the plain-text result comment builder.                          |
+`src/` is a small hierarchy of responsibility-based modules; [docs/module-structure.md](docs/module-structure.md)
+is the full tree, the placement rules, and the steps for adding a source or a runtime.
 
-`src/cli.ts` depends on `config.ts` and `types.ts`; nothing depends on `cli.ts`. That boundary and
-the "`types.ts` is data only" rule are enforced by `no-restricted-imports` entries in
-`eslint.config.js`, and `tests/boundaries.test.ts` demonstrates one permitted and one rejected
-import against fixtures in `tests/fixtures/boundaries/`.
+| Module                    | Responsibility                                                                               |
+| ------------------------- | -------------------------------------------------------------------------------------------- |
+| `src/cli.ts` + `src/cli/` | Arguments, help, exit codes, command dispatch, and top-level wiring. Owns all presentation.  |
+| `src/config/`             | The input schemas and their documented defaults, and reading/validating the two JSON inputs. |
+| `src/shared/`             | The data contracts (data only: no imports, no runtime I/O) and the one message helper.       |
+| `src/process/`            | Starting one command, running it under a limit, and stopping a process tree.                 |
+| `src/checks/`             | One setup/check round and what a command's result means.                                     |
+| `src/workspace/`          | Preflight, run directory allocation, the working copy, the ledger, and the change summary.   |
+| `src/runs/`               | The order the work happens in: baseline, turns, checks, repair, deadlines, the report.       |
+| `src/reporting/`          | `result.json`, the logs under `<runDir>/logs`, and the change summary.                       |
+| `src/sources/`            | The task-source contract, receipts, eligibility, guidance, and the serial coordinator.       |
+| `src/sources/jira/`       | The Jira Cloud connector: HTTP, search, reads, transitions, comments, the ADF reader.        |
+| `src/agents/codex/`       | The coding runtime: one turn through the Codex CLI, normalized for the runner.               |
 
-The intake boundary is the `TaskSource` contract in `src/source.ts`. The coordinator knows ordinary
-data and functions, the runner never imports Jira, and `cli.ts` selects the connector with one
-explicit branch on `source.type`: a second source would be a concrete adapter plus configuration and
-CLI wiring, not a change to `Task` or to the loop.
+`src/cli.ts` (and `src/cli/`) depends on the modules below it; nothing depends on `cli.ts`. Helper
+modules never import the CLI, and `src/shared/types.ts` is data only. Both rules are enforced by
+`no-restricted-imports` entries in `eslint.config.js`, and `tests/boundaries.test.ts` demonstrates
+one permitted and one rejected import against fixtures in `tests/fixtures/boundaries/`.
+
+The intake boundary is the `TaskSource` contract in `src/sources/contract.ts`. The coordinator knows
+ordinary data and functions, the runner never imports Jira, and the source command in `src/cli/`
+selects the connector with one explicit branch on `source.type`: a second source would be a concrete
+adapter plus configuration and CLI wiring, not a change to `Task` or to the loop.
 
 `.prettierignore` excludes the supplied `AGENTS.md` and `docs/` so those design documents stay
 byte-for-byte as written.
@@ -773,8 +776,8 @@ operator's own `gh` credentials, once the check is green —
 - [docs/LONG_TERM_VISION.md](docs/LONG_TERM_VISION.md) — the direction the harness is meant to grow
   into. It defines no behaviour: [docs/spec.md](docs/spec.md) stays authoritative, and every change
   still needs a task.
-- [docs/module-structure.md](docs/module-structure.md) — the `src/` layout one task aims at, written
-  by an earlier attempt that was stopped. A target, not a description of the tree as it stands.
+- [docs/module-structure.md](docs/module-structure.md) — the `src/` layout as it stands, and the
+  rules for placing new code in it.
 - [docs/harness.jira.example.json](docs/harness.jira.example.json) — a credential-free source
   configuration to copy.
 - [docs/GIT-WORKFLOW.md](docs/GIT-WORKFLOW.md) — how changes to this repository are made: one

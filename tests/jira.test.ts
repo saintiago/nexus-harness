@@ -10,17 +10,22 @@
  */
 
 import { afterEach, describe, expect, it } from 'vitest';
-import { loadHarnessConfig } from '../src/config.js';
+import { loadHarnessConfig } from '../src/config/load.js';
+import type { JiraSourceConfig } from '../src/shared/types.js';
+import { SourceError, SourceFeedbackError } from '../src/sources/contract.js';
+import type {
+  SourceCandidate,
+  SourceRunOutcome,
+  SourceTask,
+  TaskSource,
+} from '../src/sources/contract.js';
+import { createJiraSource } from '../src/sources/jira/connector.js';
 import {
   JIRA_REQUEST_TIMEOUT_MS,
-  createJiraSource,
   jiraApiBaseUrl,
-  queueJql,
   resolveJiraToken,
-} from '../src/jira.js';
-import { SourceError, SourceFeedbackError } from '../src/source.js';
-import type { SourceCandidate, SourceRunOutcome, SourceTask, TaskSource } from '../src/source.js';
-import type { JiraSourceConfig } from '../src/types.js';
+} from '../src/sources/jira/http.js';
+import { queueJql } from '../src/sources/jira/search.js';
 import {
   cleanupTempDirectories,
   createTempDir,

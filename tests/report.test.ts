@@ -16,21 +16,18 @@ import { existsSync } from 'node:fs';
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { runCheckRound } from '../src/checks.js';
+import { runCheckRound } from '../src/checks/round.js';
+import { ReportError } from '../src/reporting/errors.js';
 import {
-  ReportError,
   agentLogPath,
   appendRunLog,
   openAgentLog,
   readCommandOutput,
   runLogPath,
-  runReportPath,
-  summarizeChanges,
-  writeRunReport,
-} from '../src/report.js';
-import type { RunReportRequest } from '../src/report.js';
-import { WorkspaceError, allocateRunDirectory, prepareWorkspace } from '../src/workspace.js';
-import type { PreparedWorkspace, RunDirectory, SourcePreflight } from '../src/workspace.js';
+} from '../src/reporting/logs.js';
+import { summarizeChanges } from '../src/reporting/changes.js';
+import { runReportPath, writeRunReport } from '../src/reporting/report.js';
+import type { RunReportRequest } from '../src/reporting/report.js';
 import type {
   AttemptEvidence,
   ChangedPath,
@@ -39,7 +36,13 @@ import type {
   CommandResult,
   RunReport,
   RunStatus,
-} from '../src/types.js';
+} from '../src/shared/types.js';
+import { WorkspaceError } from '../src/workspace/errors.js';
+import { prepareWorkspace } from '../src/workspace/prepare.js';
+import type { PreparedWorkspace } from '../src/workspace/prepare.js';
+import { allocateRunDirectory } from '../src/workspace/run-directory.js';
+import type { RunDirectory } from '../src/workspace/run-directory.js';
+import type { SourcePreflight } from '../src/workspace/preflight.js';
 import { cleanupTempDirectories, createTempDir } from './support.js';
 
 afterEach(cleanupTempDirectories);

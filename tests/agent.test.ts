@@ -24,19 +24,20 @@ import { existsSync, realpathSync } from 'node:fs';
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { AgentError, CODEX_EXECUTABLE, codexRuntime, runCodexTurn } from '../src/agent.js';
-import type { CodexRuntime } from '../src/agent.js';
-import { requestTreeStop, runCheckRound } from '../src/checks.js';
-import { appendRunLog, openAgentLog, writeRunReport } from '../src/report.js';
-import { runTask } from '../src/runner.js';
-import type { AgentTurnRequest, RunnerDependencies } from '../src/runner.js';
-import {
-  allocateRunDirectory,
-  prepareWorkspace,
-  preflightSource,
-  recordWorkspaceAttempt,
-} from '../src/workspace.js';
-import type { CommandResult, HarnessConfig, RunReport, Task } from '../src/types.js';
+import { AgentError, runCodexTurn } from '../src/agents/codex/adapter.js';
+import { CODEX_EXECUTABLE, codexRuntime } from '../src/agents/codex/runtime.js';
+import type { CodexRuntime } from '../src/agents/codex/runtime.js';
+import { runCheckRound } from '../src/checks/round.js';
+import { requestTreeStop } from '../src/process/stop.js';
+import { appendRunLog, openAgentLog } from '../src/reporting/logs.js';
+import { writeRunReport } from '../src/reporting/report.js';
+import { runTask } from '../src/runs/runner.js';
+import type { AgentTurnRequest, RunnerDependencies } from '../src/runs/contracts.js';
+import type { CommandResult, HarnessConfig, RunReport, Task } from '../src/shared/types.js';
+import { prepareWorkspace } from '../src/workspace/prepare.js';
+import { preflightSource } from '../src/workspace/preflight.js';
+import { allocateRunDirectory } from '../src/workspace/run-directory.js';
+import { recordWorkspaceAttempt } from '../src/workspace/state.js';
 import { cleanupTempDirectories, createTempDir } from './support.js';
 
 /**

@@ -29,7 +29,7 @@ export const helperImportPatterns = [
 export const dataModuleImportPatterns = [
   {
     group: ['node:*'],
-    message: 'types.ts holds data contracts only; keep runtime I/O out of it.',
+    message: 'shared/types.ts holds data contracts only; keep runtime I/O out of it.',
   },
 ];
 
@@ -55,7 +55,7 @@ export default [
     // A later config wins for the same rule id, so the data module repeats the
     // helper boundary instead of dropping it: it must not import the CLI either.
     name: 'harness/data-module-boundaries',
-    files: ['src/types.ts'],
+    files: ['src/shared/types.ts'],
     rules: restrictImports([...helperImportPatterns, ...dataModuleImportPatterns]),
   },
 ];

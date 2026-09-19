@@ -94,7 +94,8 @@ and is not waited for`. The failing assertion was `expect(result.outcome).toBe('
 ## What the two have in common
 
 Both sit at the boundary where the harness stops a real process tree it started itself. A check
-invocation with a child (`src/checks.ts`) and a run's runtime stand-in with a child (`src/agent.ts`)
+invocation with a child (`src/process/command.ts`) and a run's runtime stand-in with a child
+(`src/agents/codex/adapter.ts`)
 are stopped differently per platform: `taskkill /PID <pid> /T /F` on Windows, a signal to the
 invocation's process group on POSIX. Both failures look like the Windows side of that path losing a
 race under load, but nothing below has been established yet.
