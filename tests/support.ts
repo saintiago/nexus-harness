@@ -76,15 +76,29 @@ export async function cleanupTempDirectories(): Promise<void> {
 }
 
 /**
- * Runs one removal, retrying a refusal for a moment before it is reported.
+ * The one removal refusal this helper waits out: a tree something else is
+ * still letting go of, which Windows reports as `EBUSY` (demonstrated once, in
+ * the full-suite removal recorded in notes/windows-fixture-flakes.md). Nothing
+ * else reaches the retry — a permission problem, a programming error, or a
+ * refusal with no code is not a race this helper knows anything about.
+ */
+const TRANSIENT_REMOVAL_CODE = 'EBUSY';
+
+/** Whether a failure is the refusal a removal is retried for. */
+function isTransientRemovalRefusal(cause: unknown): boolean {
+  return (cause as NodeJS.ErrnoException | null)?.code === TRANSIENT_REMOVAL_CODE;
+}
+
+/**
+ * Runs one removal, retrying a transient refusal for a moment before it is
+ * reported.
  *
- * On Windows a removal can race a handle something else still has on the
- * directory or its files, and the refusal it reports is transient. Measured on
- * the host this was written for: neither a process whose working directory the
- * tree is nor an open file in it refuses the removal, so what a suite raises
- * itself is not what holds it (notes/windows-fixture-flakes.md). A removal that
- * is refused every time still throws, so a directory something is really holding
- * is not quietly kept.
+ * The tolerance is for the one refusal that was seen, not a reproduction of who
+ * caused it: the attempts made while writing this did not establish what held
+ * the tree, and the two Node-side shapes they tried do not exclude every
+ * fixture-related holder (notes/windows-fixture-flakes.md). A refusal that is
+ * not that one, and one that happens every time, still throws, so a directory
+ * something is really holding is not quietly kept.
  */
 export async function removeWithRetry(
   remove: () => Promise<void>,
@@ -96,7 +110,7 @@ export async function removeWithRetry(
       await remove();
       return;
     } catch (cause) {
-      if (attempt >= attempts) {
+      if (attempt >= attempts || !isTransientRemovalRefusal(cause)) {
         throw cause;
       }
       await new Promise((resolve) => setTimeout(resolve, pauseMs * attempt));
