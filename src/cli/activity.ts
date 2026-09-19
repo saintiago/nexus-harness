@@ -16,6 +16,7 @@
  * runtime output stays in the turn's own agent log, and every decision is made
  * from the harness's own checks (docs/spec.md §2).
  */
+import stringWidth from 'string-width';
 import type { AgentActivity } from '../shared/types.js';
 import type { CliIo } from './context.js';
 
@@ -224,10 +225,26 @@ function flatten(text: string): string {
     .trim();
 }
 
-/** `text` cut to `width` characters, with an ellipsis marking what was cut. */
+const graphemes = new Intl.Segmenter();
+
+/**
+ * Fit terminal cells, leaving grapheme clusters (CJK, combining marks, emoji)
+ * intact. The caller leaves the last terminal column unused to avoid autowrap.
+ * Use the usual narrow ambiguous-character convention, as string-width does.
+ */
 function truncate(text: string, width: number): string {
-  if (text.length <= width) {
+  if (stringWidth(text) <= width) {
     return text;
   }
-  return `${text.slice(0, Math.max(0, width - 1))}…`;
+  let fitted = '';
+  let cells = 0;
+  for (const { segment } of graphemes.segment(text)) {
+    const size = stringWidth(segment);
+    if (cells + size > width - 1) {
+      break;
+    }
+    fitted += segment;
+    cells += size;
+  }
+  return `${fitted}…`;
 }

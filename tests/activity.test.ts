@@ -13,11 +13,21 @@
  * event is read as, and what is deliberately not read as activity.
  */
 import { describe, expect, it } from 'vitest';
+import stringWidth from 'string-width';
 import { itemActivities } from '../src/agents/codex/events.js';
 import { createActivityDisplay } from '../src/cli/activity.js';
 import { fakeConsole, screenAfter } from './support.js';
 
 const FULL_TERMINAL = { columns: 80, rows: 24 } as const;
+const WIDE_TEXT = [
+  { text: '界', cells: 2 },
+  { text: '😀', cells: 2 },
+  { text: '👩🏽‍💻', cells: 2 },
+  { text: '👨‍👩‍👧‍👦', cells: 2 },
+  { text: '🇪🇸', cells: 2 },
+  { text: '1️⃣', cells: 2 },
+  { text: 'e\u0301', cells: 1 },
+] as const;
 
 // ---------------------------------------------------------------------------
 // The pane
@@ -95,6 +105,95 @@ describe('the activity pane', () => {
     expect(line.startsWith('agent: xxx')).toBe(true);
     expect(line.endsWith('…')).toBe(true);
     pane.close();
+  });
+
+  it('models physical wrapping, including the reviewed CJK overflow', () => {
+    // The old 39-code-unit output occupies 70 cells. A newline-only screen
+    // would incorrectly say that moving up one row and erasing cleans it up.
+    const oldLine = `agent: ${'界'.repeat(31)}…`;
+    expect(stringWidth(oldLine)).toBe(70);
+    expect(screenAfter([`${oldLine}\n`], 40)).toEqual([
+      `agent: ${'界'.repeat(16)}`,
+      `${'界'.repeat(15)}…`,
+    ]);
+    expect(screenAfter([`${oldLine}\n`, '\u001b[1A\u001b[J'], 40)).toEqual([
+      `agent: ${'界'.repeat(16)}`,
+    ]);
+  });
+
+  it.each(WIDE_TEXT)(
+    'fits complete $text graphemes by cells at pane boundaries',
+    ({ text, cells }) => {
+      // Known fixture widths and exact expected prefixes keep this assertion
+      // independent of merely asking the production width library for a bound.
+      expect(stringWidth(text)).toBe(cells);
+      for (const columns of [20, 40, 80]) {
+        const terminal = fakeConsole({ columns, rows: 24 });
+        const pane = createActivityDisplay(terminal.io);
+        pane.activity({ kind: 'message', text: text.repeat(100) });
+        const count = Math.floor((columns - 1 - 'agent: '.length - 1) / cells);
+        const expected = `agent: ${text.repeat(count)}…`;
+        expect(terminal.chunks).toEqual([`${expected}\n`]);
+        expect(stringWidth(expected)).toBe(7 + count * cells + 1);
+        expect(stringWidth(expected)).toBeLessThan(columns);
+        expect(screenAfter(terminal.chunks, columns)).toEqual([expected]);
+        pane.close();
+        expect(screenAfter(terminal.chunks, columns)).toEqual([]);
+      }
+    },
+  );
+
+  it.each(WIDE_TEXT)(
+    'keeps exactly fitting $text intact, including combining marks',
+    ({ text, cells }) => {
+      const terminal = fakeConsole({ columns: 40, rows: 24 });
+      const pane = createActivityDisplay(terminal.io);
+      const message = text.repeat(32 / cells);
+      pane.activity({ kind: 'message', text: message });
+      expect(terminal.chunks).toEqual([`agent: ${message}\n`]);
+      expect(stringWidth(`agent: ${message}`)).toBe(39);
+      pane.close();
+      expect(screenAfter(terminal.chunks, 40)).toEqual([]);
+    },
+  );
+
+  it('keeps wide activity in ten physical rows across scrolling, progress and cleanup', () => {
+    const terminal = fakeConsole({ columns: 40, rows: 24 });
+    const pane = createActivityDisplay(terminal.io);
+    const progress = ['HARN-11: implementation'];
+    const latest: string[] = [];
+    pane.line(progress[0] ?? '');
+    for (let index = 0; index < 30; index += 1) {
+      const kind = (['message', 'command', 'result', 'change'] as const)[index % 4] ?? 'message';
+      const label = { message: 'agent', command: 'run', result: 'result', change: 'change' }[kind];
+      const prefix = `${label}: ${String(index)} `;
+      pane.activity({ kind, text: `${String(index)} ${'界👩🏽‍💻'.repeat(40)}` });
+      const count = Math.floor((38 - prefix.length) / 2);
+      const fitted = Array.from({ length: count }, (_, offset) =>
+        offset % 2 === 0 ? '界' : '👩🏽‍💻',
+      ).join('');
+      latest.push(`${prefix}${fitted}…`);
+      if (latest.length > 10) latest.shift();
+      expect(stringWidth(latest.at(-1) ?? '')).toBeLessThan(40);
+      expect(screenAfter(terminal.chunks, 40)).toEqual([...progress, ...latest]);
+      if (index === 14) {
+        pane.line('HARN-11: repair 1');
+        progress.push('HARN-11: repair 1');
+        pane.around(() => terminal.chunks.push('diagnostic\n'));
+        progress.push('diagnostic');
+        expect(screenAfter(terminal.chunks, 40)).toEqual([...progress, ...latest]);
+      }
+    }
+    for (const chunk of terminal.chunks) {
+      if (!chunk.startsWith('\u001b')) expect(stringWidth(chunk.trimEnd())).toBeLessThan(40);
+    }
+    pane.close();
+    pane.close();
+    pane.line('cancelled; log: logs/agent.log');
+    expect(screenAfter(terminal.chunks, 40)).toEqual([
+      ...progress,
+      'cancelled; log: logs/agent.log',
+    ]);
   });
 
   it('writes output that arrives by another route above the pane', () => {
@@ -196,6 +295,15 @@ describe('a terminal that cannot hold a pane', () => {
     expect(out.join('')).not.toContain('\u001b');
   });
 
+  it('keeps long redirected Unicode text while sanitizing its controls', () => {
+    const out: string[] = [];
+    const pane = createActivityDisplay({ out: (text) => out.push(text), err: () => undefined });
+    const text = '界👩🏽‍💻e\u0301'.repeat(100);
+    pane.activity({ kind: 'message', text: `\u001b[31m${text}\u001b[0m\r\nend\u0007` });
+    pane.close();
+    expect(out).toEqual([`agent: ${text} end`]);
+  });
+
   it('keeps the pane full when the terminal reports no size', () => {
     const terminal = fakeConsole();
     const pane = createActivityDisplay(terminal.io);
@@ -281,5 +389,13 @@ describe('reading activity from the runtime event stream', () => {
     expect(command?.text.startsWith('line one xxx')).toBe(true);
     expect(command?.text.length).toBeLessThanOrEqual(401);
     expect(command?.text).not.toContain('\n');
+  });
+
+  it.each(WIDE_TEXT)('does not split $text at the event summary size limit', ({ text }) => {
+    const [activity] = itemActivities('item.completed', {
+      type: 'agent_message',
+      text: `${'x'.repeat(399)}${text}tail`,
+    });
+    expect(activity?.text).toBe(`${'x'.repeat(399)}${text.length === 1 ? text : ''}…`);
   });
 });

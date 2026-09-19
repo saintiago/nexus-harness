@@ -81,6 +81,7 @@ export function failureText(event: Record<string, unknown>): string | null {
 
 /** How much of a command or a message one activity line keeps. */
 const MAX_ACTIVITY_CHARS = 400;
+const graphemes = new Intl.Segmenter();
 
 /** One runtime string flattened onto one line, bounded, or `null` for no text. */
 function activityText(value: unknown): string | null {
@@ -91,7 +92,19 @@ function activityText(value: unknown): string | null {
   if (flat === '') {
     return null;
   }
-  return flat.length <= MAX_ACTIVITY_CHARS ? flat : `${flat.slice(0, MAX_ACTIVITY_CHARS)}…`;
+  if (flat.length <= MAX_ACTIVITY_CHARS) {
+    return flat;
+  }
+  // Keep the existing size bound without splitting a cluster before the CLI
+  // has a chance to fit it to terminal columns. Full text stays in the log.
+  let end = 0;
+  for (const { segment, index } of graphemes.segment(flat)) {
+    if (index + segment.length > MAX_ACTIVITY_CHARS) {
+      break;
+    }
+    end = index + segment.length;
+  }
+  return `${flat.slice(0, end)}…`;
 }
 
 /** One entry of a `file_change` item's `changes` array, as an activity line. */

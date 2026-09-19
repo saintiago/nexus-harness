@@ -7,6 +7,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import stringWidth from 'string-width';
 import type { CliIo } from '../src/cli/context.js';
 
 /** Repository root, derived from this file's location. */
@@ -42,14 +43,17 @@ export function fakeConsole(
 
 /**
  * What a terminal would show after these writes, as the lines it holds: a line
- * is created by `\n`, text lands at the cursor, `ESC[<n>A` moves it up `n`
- * lines, and `ESC[J` erases from the cursor down. The activity pane writes at
- * column 0, which is all this has to understand.
+ * is created by `\n` or wrapping at `columns`, `ESC[<n>A` moves up physical
+ * rows, and `ESC[J` erases from the cursor down. Model newline's terminal CRLF
+ * translation and whole grapheme cell widths. This only handles the sequences
+ * the pane emits; it is not a general terminal emulator.
  */
 /* eslint-disable no-control-regex -- the escape sequences are what this reads */
-export function screenAfter(chunks: readonly string[]): readonly string[] {
+export function screenAfter(chunks: readonly string[], columns = Infinity): readonly string[] {
   const screen: string[] = [];
   let row = 0;
+  let column = 0;
+  const graphemes = new Intl.Segmenter();
   const tokens = /\u001b\[(\d+)A|\u001b\[J|\n|[^\u001b\n]+/g;
 
   for (const match of chunks.join('').matchAll(tokens)) {
@@ -65,9 +69,18 @@ export function screenAfter(chunks: readonly string[]): readonly string[] {
     }
     if (token === '\n') {
       row += 1;
+      column = 0;
       continue;
     }
-    screen[row] = (screen[row] ?? '') + token;
+    for (const { segment } of graphemes.segment(token)) {
+      const cells = stringWidth(segment);
+      if (cells > 0 && column + cells > columns) {
+        row += 1;
+        column = 0;
+      }
+      screen[row] = (screen[row] ?? '') + segment;
+      column += cells;
+    }
   }
   return screen;
 }

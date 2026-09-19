@@ -23,6 +23,7 @@
     "validate": "npm run format:check && npm run lint && npm run typecheck && npm run build && npm run test"
   },
   "dependencies": {
+    "string-width": "^8.2.2",
     "zod": "^4.6.5"
   },
   "devDependencies": {
