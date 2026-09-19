@@ -25,7 +25,14 @@ import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { AgentError, runCodexTurn } from '../src/agents/codex/adapter.js';
-import { CODEX_EXECUTABLE, codexRuntime } from '../src/agents/codex/runtime.js';
+import {
+  CODEX_EXECUTABLE,
+  CODEX_EXEC_ARGUMENTS,
+  codexRuntime,
+  DEFAULT_PERMISSIONS_OVERRIDE,
+  PERMISSION_PROFILE_NAME,
+  PERMISSION_PROFILE_OVERRIDE,
+} from '../src/agents/codex/runtime.js';
 import type { CodexRuntime } from '../src/agents/codex/runtime.js';
 import { runCheckRound } from '../src/checks/round.js';
 import { requestTreeStop } from '../src/process/stop.js';
@@ -594,14 +601,18 @@ describe('what one turn is told, and where it works', () => {
 
     const start = await startRecord(fixture);
     // The invocation is the documented one: no approval prompt (a run is
-    // unattended), `exec`, the sandbox the harness relies on, the event stream it
-    // reads, and the prompt on standard input.
+    // unattended), strict configuration, `exec`, the permission profile the
+    // harness owns for this invocation, the event stream it reads, and the
+    // prompt on standard input.
     expect(start.argv).toEqual([
       '--ask-for-approval',
       'never',
+      '--strict-config',
       'exec',
-      '--sandbox',
-      'workspace-write',
+      '-c',
+      PERMISSION_PROFILE_OVERRIDE,
+      '-c',
+      DEFAULT_PERMISSIONS_OVERRIDE,
       '--json',
       '-',
     ]);
@@ -675,9 +686,12 @@ describe('what one turn is told, and where it works', () => {
       '',
       '--ask-for-approval',
       'never',
+      '--strict-config',
       'exec',
-      '--sandbox',
-      'workspace-write',
+      '-c',
+      PERMISSION_PROFILE_OVERRIDE,
+      '-c',
+      DEFAULT_PERMISSIONS_OVERRIDE,
       '--json',
       '-',
     ]);
@@ -753,6 +767,65 @@ describe('what one turn is told, and where it works', () => {
     expect(prompt).toContain(`## Task ${TASK.id}: ${TASK.title}`);
     expect(prompt).toContain('not yours to change');
   }, 60_000);
+});
+
+describe('the permission configuration every turn is launched with', () => {
+  it('defines and selects a harness-owned profile instead of a legacy sandbox', () => {
+    // The policy is owned by this invocation: the same arguments define the
+    // profile and make it the turn's policy, so no operator profile, global
+    // configuration, or model profile has to change.
+    expect(PERMISSION_PROFILE_NAME).toBe('nexus-workspace');
+    expect(PERMISSION_PROFILE_OVERRIDE).toBe(
+      'permissions.nexus-workspace=' +
+        "{description='Nexus coding turn: read everywhere, write only the retained working copy " +
+        "and temporary directories',filesystem={':root'='read',':workspace_roots'='write'," +
+        "':tmpdir'='write',':slash_tmp'='write'}}",
+    );
+    expect(DEFAULT_PERMISSIONS_OVERRIDE).toBe("default_permissions='nexus-workspace'");
+
+    // Reads stay unrestricted. The write is the working copy the turn is started
+    // in (where its Git metadata lives) plus the temporary directories the
+    // runtime already had.
+    expect(PERMISSION_PROFILE_OVERRIDE).toContain("':root'='read'");
+    expect(PERMISSION_PROFILE_OVERRIDE).toContain("':workspace_roots'='write'");
+    expect(PERMISSION_PROFILE_OVERRIDE).toContain("':tmpdir'='write'");
+    expect(PERMISSION_PROFILE_OVERRIDE).toContain("':slash_tmp'='write'");
+    // An argument a Windows `.cmd` shim could not be handed is refused by the
+    // launcher, so the permission arguments carry no double quote, no percent
+    // sign, and no line break.
+    for (const argument of CODEX_EXEC_ARGUMENTS) {
+      expect(argument).not.toContain('"');
+      expect(argument).not.toContain('%');
+      expect(argument).not.toContain('\n');
+    }
+
+    const argumentsLine = CODEX_EXEC_ARGUMENTS.join(' ');
+    // The legacy flag wins over permission profiles on this CLI, so using it
+    // would bring the read-only `.git` carveout back.
+    expect(CODEX_EXEC_ARGUMENTS).not.toContain('--sandbox');
+    expect(argumentsLine).not.toContain('workspace-write');
+    // Nothing widens access, and nothing replaces the adapter's own controls.
+    for (const forbidden of [
+      '--dangerously-bypass-approvals-and-sandbox',
+      'danger-full-access',
+      '--full-auto',
+      '--approve-for-me',
+      '--add-dir',
+      '--config-file',
+    ]) {
+      expect(argumentsLine).not.toContain(forbidden);
+    }
+    // An unsupported permission configuration fails visibly: `--strict-config`
+    // makes an override this CLI does not recognize an error instead of
+    // something it silently ignores.
+    expect(CODEX_EXEC_ARGUMENTS).toContain('--strict-config');
+    // And the run is still non-interactive, in the documented form.
+    const approval = CODEX_EXEC_ARGUMENTS.indexOf('--ask-for-approval');
+    expect(approval).toBeGreaterThanOrEqual(0);
+    expect(CODEX_EXEC_ARGUMENTS[approval + 1]).toBe('never');
+    expect(CODEX_EXEC_ARGUMENTS.indexOf('exec')).toBeGreaterThan(approval);
+    expect(CODEX_EXEC_ARGUMENTS.slice(-2)).toEqual(['--json', '-']);
+  });
 });
 
 describe('how a turn ends, and what it reports', () => {
@@ -1122,9 +1195,12 @@ describe('the runner, the real checks, and the real adapter together', () => {
         'deepseek-flash',
         '--ask-for-approval',
         'never',
+        '--strict-config',
         'exec',
-        '--sandbox',
-        'workspace-write',
+        '-c',
+        PERMISSION_PROFILE_OVERRIDE,
+        '-c',
+        DEFAULT_PERMISSIONS_OVERRIDE,
         '--json',
         '-',
       ]);
@@ -1172,6 +1248,46 @@ describe('the runner, the real checks, and the real adapter together', () => {
     expect(starts[1]?.prompt).toContain('exit code 1');
     expect(starts[1]?.prompt).toContain('app.txt');
     expect(starts[1]?.prompt).toContain('check.mjs');
+  }, 60_000);
+
+  it('launches a fresh workspace and its later turn under the same policy', async () => {
+    const fixture = await createFixture();
+    const result = await runTask(
+      request(fixture, configuration(fixture, { maxRepairs: 1 })),
+      dependencies(
+        runtimeByTurn(fixture, (turn) => ({
+          file: 'app.txt',
+          text: turn === 1 ? REWRITTEN_TEXT : BASELINE_TEXT,
+          write: 'replace',
+          summary: `turn ${String(turn)} is done.`,
+        })),
+      ),
+    );
+
+    expect(result.status).toBe('passed');
+    expect(result.repairsUsed).toBe(1);
+    // The first turn of a fresh working copy and the later turn that continues
+    // it in the same copy are launched by the same adapter, in turn, with the
+    // policy the harness owns: neither falls back to a legacy sandbox or to the
+    // operator's own defaults, and the second one can stage and commit what the
+    // first one left behind.
+    const starts = (await recordsOf(fixture)).filter((record) => record.event === 'start');
+    expect(starts).toHaveLength(2);
+    for (const start of starts) {
+      expect(start.argv).toEqual([
+        '--ask-for-approval',
+        'never',
+        '--strict-config',
+        'exec',
+        '-c',
+        PERMISSION_PROFILE_OVERRIDE,
+        '-c',
+        DEFAULT_PERMISSIONS_OVERRIDE,
+        '--json',
+        '-',
+      ]);
+      expect(realpathSync(start.cwd ?? '')).toBe(realpathSync(result.run.workspacePath));
+    }
   }, 60_000);
 
   it('refuses to check after a turn that could not confirm its own stop', async () => {

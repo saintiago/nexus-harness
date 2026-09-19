@@ -19,6 +19,10 @@ import { readdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
+  DEFAULT_PERMISSIONS_OVERRIDE,
+  PERMISSION_PROFILE_OVERRIDE,
+} from '../src/agents/codex/runtime.js';
+import {
   BUILT_CLI,
   FEATURE_IMPLEMENTED,
   FEATURE_MISSING,
@@ -238,9 +242,12 @@ describe('the built CLI, end to end', () => {
       expect(turn?.argv).toEqual([
         '--ask-for-approval',
         'never',
+        '--strict-config',
         'exec',
-        '--sandbox',
-        'workspace-write',
+        '-c',
+        PERMISSION_PROFILE_OVERRIDE,
+        '-c',
+        DEFAULT_PERMISSIONS_OVERRIDE,
         '--json',
         '-',
       ]);
@@ -354,9 +361,12 @@ describe('the built CLI, end to end', () => {
         'deepseek-flash',
         '--ask-for-approval',
         'never',
+        '--strict-config',
         'exec',
-        '--sandbox',
-        'workspace-write',
+        '-c',
+        PERMISSION_PROFILE_OVERRIDE,
+        '-c',
+        DEFAULT_PERMISSIONS_OVERRIDE,
         '--json',
         '-',
       ]);

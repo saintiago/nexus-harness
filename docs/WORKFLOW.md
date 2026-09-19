@@ -81,10 +81,12 @@ Here `--profile` chooses native configuration and `--model` explicitly selects t
 The adapter appends its existing suffix and supplies the task prompt on stdin:
 
 ```text
-codex --profile deepseek --model deepseek-flash exec --sandbox workspace-write --json -
+codex --profile deepseek --model deepseek-flash --ask-for-approval never --strict-config exec -c permissions.nexus-workspace={...} -c default_permissions='nexus-workspace' --json -
 ```
 
-Do not put `exec`, a prompt, redirection, a shell expression, or an end-of-options `--` into the configured prefix. Do not use prefix options/wrappers that redirect the working directory, replace structured output, or override the adapter's execution/permission controls. This is a trusted launcher contract, not a general CLI policy language.
+The permission part is not configurability: it is the adapter's own fixed suffix. Each turn defines and selects a scoped Codex permission profile in the same invocation, so reads stay unrestricted and writes stay inside the working copy the runtime is started in — its Git metadata included, which is what lets the turn stage and commit — plus the system temporary directories. Nothing wider is used, nothing has to be added to the operator's global configuration or model profiles, and the legacy `--sandbox` flag is deliberately absent because it overrides permission profiles and carves `.git` back out as read-only. `--strict-config` keeps a runtime that does not understand the overrides a visible failure instead of a silently ignored configuration.
+
+Do not put `exec`, a prompt, redirection, a shell expression, or an end-of-options `--` into the configured prefix. Do not use prefix options/wrappers that redirect the working directory, replace structured output, or override the adapter's execution/permission controls. This is a trusted launcher contract, not a general CLI policy language. Note that on Windows a runtime installed as a `.cmd` shim is handed the adapter's arguments through `cmd.exe`, which cannot carry a double quote or a percent sign; the adapter's own arguments therefore contain neither.
 
 ### Agent launch and path rules
 
@@ -147,6 +149,8 @@ Without `--config`, preserve the verifier's existing documented defaults, includ
 Do not require `CODEX_API_KEY`, an OpenAI login, or `auth.json` as universal prerequisites. The live invocation establishes whether the selected runtime's credentials and protocol actually work. Launch failure or missing authentication is a failed/unexecuted live check, never a pass. No automatic login, provider fallback, or paid retry loop.
 
 Keep live tests outside default discovery, `npm test`, `npm run validate`, and CI. See the setup task for offline prerequisite tests and T16 evidence.
+
+The launcher's permission policy has its own opt-in, by-hand verification in README "Coding runtime": a disposable repository where a real turn commits its work, a sibling sentinel outside the working copy is refused, and the retained clone is inspected afterwards. It is not part of `npm run test:live`, and it is not evidence until it has been run.
 
 ## 4. Loop semantics
 

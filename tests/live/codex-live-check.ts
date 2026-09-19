@@ -910,8 +910,11 @@ export async function verifyImplementationExercise(
       );
       expectTrue(
         problems,
-        'the agent log names the interface the adapter used (--ask-for-approval never exec --sandbox workspace-write --json -)',
-        log.includes('--ask-for-approval never exec --sandbox workspace-write --json -'),
+        'the agent log names the interface the adapter used (--ask-for-approval never ' +
+          '--strict-config exec, the harness-owned permission profile, --json -)',
+        log.includes(
+          '--ask-for-approval never --strict-config exec -c permissions.nexus-workspace={',
+        ) && log.includes(" -c default_permissions='nexus-workspace' --json -"),
       );
     }
 

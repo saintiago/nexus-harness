@@ -32,6 +32,7 @@ Keep harness state limited to what execution and reporting need. A report or wor
 2. Create a unique run directory. Clone the source repository's committed `HEAD` and use a dedicated local branch. Require a clean source checkout so uncommitted work is not silently omitted. Never reset or edit the source checkout.
 3. Run configured setup and checks before the agent. A failing baseline stops the run with a clear explanation.
 4. Ask the selected agent invocation to implement the task in the retained working copy. Supply the task, acceptance criteria, and relevant target-repository instructions. The turn works with a repository-local Git identity and is asked to commit small, meaningful pieces as it goes; those commits stay in the retained copy and are never pushed, merged, or published.
+   The turn's runtime is launched with write access to that copy, its Git metadata included, so staging and committing are possible; the harness still makes no commit of its own.
 5. Wait for the agent to finish and stop its managed mutating processes. Run setup again, then all configured checks from the harness. Agent-reported success is not a check result.
 6. After an ordinary completed red check round, send observed failure output back to the same selected agent and repeat step 5 while repairs remain. A setup/launch/authentication/protocol error or timeout stops the run rather than starting a code-repair loop.
 7. Save the report and retain the working copy, whether the run passes or fails. Human review and subsequent delivery happen outside this version.
@@ -98,6 +99,8 @@ Use only approved repositories and commands. Do not supply production/publishing
 Keep the command plan outside the task working copy. Instruct the agent not to weaken tests or tooling to manufacture a pass; highlight test/tooling/configuration changes in the final summary. `passed` means configured checks passed, not that every acceptance criterion is proven or the changes are safe to ship. Human diff review remains required.
 
 The agent launcher is trusted operator configuration. Secrets are prohibited in its arguments because launch information is reportable. Use the tested platform launcher; unsupported argument/interpreter combinations must fail clearly rather than being silently altered. Do not introduce a shell-string executor or runtime permission bypass.
+
+The harness pins the runtime's own file-write policy for every turn, as part of the invocation rather than as something the operator has to configure: writes are allowed in the retained working copy (its Git metadata included, which is what a local commit needs) and in the system temporary directories, reads stay unrestricted, and nothing wider is granted. A runtime that cannot express that policy must fail the turn visibly instead of running under broader access.
 
 The production harness must never edit global Codex defaults, install provider configuration, copy credentials, run setup/restore scripts, or log the user in/out. The setup task may create the specifically requested local profile/catalog, preserving existing files and accounts. Native configuration remains external and can be re-read by the runtime; this version does not freeze it or provide configuration isolation for untrusted repositories.
 
