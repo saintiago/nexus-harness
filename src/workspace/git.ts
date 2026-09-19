@@ -46,10 +46,11 @@ const MAX_LISTED_PATHS = 3;
  * The finite bound one Git invocation runs under when no run deadline covers
  * it: a source preflight, a workspace verification before a continuation, or
  * the run's final reading of what its working copy differs from its base by.
- * A run's own phases pass what is left of its task time instead; this bound is
- * for the readings that happen without one, so a stalled Git can never hold the
- * harness indefinitely. It is the same five minutes the delivery step gives its
- * own Git and `gh` commands.
+ * A run's own phases pass the run's deadline and clock instead, so each of
+ * their readings runs under what is left of the run; this bound is for the
+ * readings that happen without one, so a stalled Git can never hold the harness
+ * indefinitely. It is the same five minutes the delivery step gives its own Git
+ * and `gh` commands.
  */
 export const GIT_COMMAND_TIMEOUT_MS = 5 * 60_000;
 

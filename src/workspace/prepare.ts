@@ -284,17 +284,17 @@ export async function prepareWorkspace(
         ].join('\n'),
       );
     }
-    if (bounds.deadlineMs - bounds.now().getTime() > 0) {
+    const remaining = bounds.deadlineMs - bounds.now().getTime();
+    if (remaining > 0) {
       return {
         deadlineMs: bounds.deadlineMs,
         now: bounds.now,
         ...(bounds.stop === undefined ? {} : { stop: bounds.stop }),
       };
     }
-    const overdue = bounds.now().getTime() - bounds.deadlineMs;
     throw new WorkspaceError(
       [
-        `the run's task deadline passed ${String(overdue)} ms before ${step}, so preparation stopped there.`,
+        `the run's task deadline passed ${String(-remaining)} ms before ${step}, so preparation stopped there.`,
         'What preparation had already written is kept in the run directory, but it is not a usable ' +
           'working copy and must not be reused.',
       ].join('\n'),
