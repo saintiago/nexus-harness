@@ -23,6 +23,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { runCli } from '../src/cli.js';
 import { EXIT_CANCELLED, EXIT_INPUT_ERROR, EXIT_OK } from '../src/cli/context.js';
 import type { CliContext, InterruptSignals } from '../src/cli/context.js';
+import type { Delivery, DeliveryRequest } from '../src/delivery/github.js';
+import { DeliveryError } from '../src/delivery/github.js';
 import { summarizeChanges } from '../src/reporting/changes.js';
 import { ReportError } from '../src/reporting/errors.js';
 import type { RunTaskResult } from '../src/runs/contracts.js';
@@ -57,11 +59,14 @@ import type {
   SourceRef,
   Task,
 } from '../src/shared/types.js';
+import type { PreparedWorkspace } from '../src/workspace/prepare.js';
 import { prepareWorkspace } from '../src/workspace/prepare.js';
 import { preflightSource } from '../src/workspace/preflight.js';
 import { allocateRunDirectory } from '../src/workspace/run-directory.js';
 import type { RunDirectory } from '../src/workspace/run-directory.js';
 import { workspaceStatePath } from '../src/workspace/state.js';
+import { fakeGhCalls, installFakeGh } from './fixtures/local-target.js';
+import type { FakeGhState } from './fixtures/local-target.js';
 import {
   cleanupTempDirectories,
   createTempDir,
@@ -158,10 +163,11 @@ function resultFor(
   status: RunStatus,
   reason = `the run ended ${status}`,
   cancellation: { termination: 'confirmed' | 'unconfirmed'; problem: string | null } | null = null,
+  workspace: PreparedWorkspace | null = null,
 ): RunTaskResult {
   return {
     run: runDirectoryAt(runDir),
-    workspace: null,
+    workspace,
     status,
     reason,
     baseline: null,
@@ -179,6 +185,24 @@ function resultFor(
         : null,
     changes: summarizeChanges({ baseCommit: 'base', paths: [] }),
     reportPath: path.join(runDir, 'result.json'),
+  };
+}
+
+/**
+ * A prepared working copy as a run's result records the one it used. The
+ * delivery step is handed the working copy a passed run left, so a fake run has
+ * to carry one for a delivery to be possible at all.
+ */
+function preparedWorkspaceFor(runDir: string): PreparedWorkspace {
+  const workspaceId = path.basename(runDir);
+  return {
+    ...runDirectoryAt(runDir),
+    workspaceId,
+    continued: false,
+    attempt: 1,
+    sourceRoot: '/repo',
+    baseCommit: 'base-commit',
+    branch: `harness/${workspaceId}`,
   };
 }
 
@@ -211,6 +235,8 @@ interface FixtureOptions {
   ) => Promise<readonly SourceComment[]> | readonly SourceComment[];
   readonly preflight?: (call: number) => Promise<{ sourceRoot: string; baseCommit: string }>;
   readonly sleep?: (ms: number, stop: AbortSignal) => Promise<void>;
+  /** The delivery step this fixture's coordinator uses, when it has one. */
+  readonly delivery?: Delivery;
 }
 
 interface Fixture {
@@ -305,6 +331,7 @@ function createFixture(options: FixtureOptions): Fixture {
     repoPath: '/repo',
     io: { out: (text) => output.push(text), err: (text) => errors.push(text) },
     stop: stop.signal,
+    ...(options.delivery === undefined ? {} : { delivery: options.delivery }),
     preflight: async () => {
       preflightCount += 1;
       log.push(`preflight:${String(preflightCount)}`);
@@ -715,6 +742,132 @@ describe('a finite source run', () => {
     expect(summary.outcome).toBe('cancelled');
     expect(summary.cleanupConfirmed).toBe(true);
     expect(fixture.completions).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The optional delivery step
+// ---------------------------------------------------------------------------
+
+describe('delivering a passed attempt', () => {
+  /** A run that passed in a working copy the delivery step can be handed. */
+  function passedRun(task: Task, call: number, runDir: string): RunTaskResult {
+    return resultFor(
+      runDir,
+      'passed',
+      'every configured check passed after the implementation turn',
+      null,
+      preparedWorkspaceFor(runDir),
+    );
+  }
+
+  it('delivers before publishing, and carries the pull request into the result', async () => {
+    const workDir = await createTempDir();
+    const requests: DeliveryRequest[] = [];
+    const fixture = createFixture({
+      workDir,
+      run: passedRun,
+      delivery: {
+        deliver: async (request) => {
+          requests.push(request);
+          return { url: 'https://github.com/example-owner/example-repo/pull/7', created: true };
+        },
+      },
+    });
+
+    const summary = await runSource(fixture.context, null);
+
+    expect(summary.outcome).toBe('completed');
+    expect(summary.passed).toBe(1);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({
+      workspacePath: preparedWorkspaceFor(path.join(workDir, 'run-1')).workspacePath,
+      branch: 'harness/run-1',
+      baseCommit: 'base-commit',
+      logsDir: path.join(workDir, 'run-1', 'logs'),
+      runId: 'run-1',
+      task: { id: 'SAM1-1', title: 'Task SAM1-1' },
+      checks: 'no check round was completed for this run',
+      sourceRef: { type: 'jira', id: '1', key: 'SAM1-1' },
+    });
+    expect(fixture.completions).toHaveLength(1);
+    expect(fixture.completions[0]?.outcome.pullRequest).toEqual({
+      url: 'https://github.com/example-owner/example-repo/pull/7',
+      created: true,
+    });
+    expect(fixture.log).toContain('complete:SAM1-1:passed');
+    expect(fixture.output.join('\n')).toContain(
+      'pull request created: https://github.com/example-owner/example-repo/pull/7',
+    );
+  });
+
+  it('keeps failed and cancelled work local: the delivery step is never asked', async () => {
+    const workDir = await createTempDir();
+    const requests: DeliveryRequest[] = [];
+    const fixture = createFixture({
+      workDir,
+      scans: [[candidateFor('1'), candidateFor('2')]],
+      run: (task, call, runDir) =>
+        resultFor(runDir, task.id === 'SAM1-1' ? 'failed' : 'cancelled'),
+      delivery: {
+        deliver: async (request) => {
+          requests.push(request);
+          return null;
+        },
+      },
+    });
+
+    const summary = await runSource(fixture.context, null);
+
+    expect(summary.failed).toBe(1);
+    expect(summary.cancelled).toBe(1);
+    expect(requests).toEqual([]);
+    expect(fixture.completions.map((entry) => entry.outcome.status)).toEqual([
+      'failed',
+      'cancelled',
+    ]);
+  });
+
+  it('stops intake and keeps the passed run when delivery fails', async () => {
+    const workDir = await createTempDir();
+    const fixture = createFixture({
+      workDir,
+      run: passedRun,
+      delivery: {
+        deliver: async () => {
+          throw new DeliveryError('git push failed: authentication required');
+        },
+      },
+    });
+
+    const summary = await runSource(fixture.context, null);
+
+    expect(summary.outcome).toBe('stopped');
+    expect(summary.problem).toContain('authentication required');
+    expect(summary.problem).toContain('ready status to retry');
+    // The run's own evidence was already written and is kept as it is.
+    expect(fixture.completions).toEqual([]);
+    const receipt = await readReceipt(receiptFilePath(workDir, refFor('1')));
+    expect(receipt?.outcome).toBe('passed');
+    expect(receipt?.resultPath).toBe(path.join(workDir, 'run-1', 'result.json'));
+    expect(receipt?.problem).toContain('delivery: git push failed: authentication required');
+  });
+
+  it('publishes normally when the configured step finds nothing to deliver', async () => {
+    const workDir = await createTempDir();
+    const fixture = createFixture({
+      workDir,
+      run: passedRun,
+      delivery: { deliver: async () => null },
+    });
+
+    const summary = await runSource(fixture.context, null);
+
+    expect(summary.outcome).toBe('completed');
+    expect(summary.passed).toBe(1);
+    expect(fixture.completions).toHaveLength(1);
+    expect(fixture.completions[0]?.outcome.pullRequest).toBeUndefined();
+    expect(fixture.output.join('\n')).toContain('nothing to deliver');
   });
 });
 
@@ -1663,7 +1816,9 @@ async function gitOrFail(args: readonly string[], cwd: string): Promise<void> {
 }
 
 /** A clean repository with one commit and a config that points at a Jira queue. */
-async function createTarget(): Promise<{
+async function createTarget(
+  options: { readonly delivery?: boolean } = {},
+): Promise<{
   directory: string;
   repo: string;
   configPath: string;
@@ -1683,6 +1838,15 @@ async function createTarget(): Promise<{
     maxRepairs: 1,
     setup: [],
     checks: [[process.execPath, '-e', 'process.exit(0)']],
+    ...(options.delivery === true
+      ? {
+          delivery: {
+            type: 'github',
+            repository: 'example-owner/example-repo',
+            baseBranch: 'main',
+          },
+        }
+      : {}),
     source: {
       type: 'jira',
       siteUrl: SCOPE,
@@ -1696,10 +1860,67 @@ async function createTarget(): Promise<{
   return { directory, repo, configPath, workDir: path.join(directory, 'runs') };
 }
 
+/**
+ * A disposable destination for the delivery step: a bare repository the branch
+ * can really be pushed into, and the stand-in `gh` the pull request commands
+ * resolve to.
+ */
+async function createDeliveryDestination(directory: string): Promise<{
+  readonly remote: string;
+  readonly bin: string;
+  readonly state: FakeGhState;
+}> {
+  const remote = path.join(directory, 'delivery-origin.git');
+  await gitOrFail(['init', '--quiet', '--bare', remote], directory);
+  const { bin, state } = await installFakeGh(directory);
+  return { remote, bin, state };
+}
+
+/**
+ * Runs `body` with the stand-in `gh` first on this process's own `PATH` and told
+ * which state directory it keeps. The CLI builds both the child environment and
+ * (on Windows) its own executable resolution from this process, so a suite that
+ * wants the stand-in has to put it there and take it away again.
+ */
+async function withFakeGhOnPath<T>(
+  bin: string,
+  state: FakeGhState,
+  body: () => Promise<T>,
+): Promise<T> {
+  const previousPath = process.env.PATH;
+  const previousConfig = process.env.FAKE_GH;
+  process.env.PATH = `${bin}${path.delimiter}${previousPath ?? ''}`;
+  process.env.FAKE_GH = JSON.stringify({ stateDir: state.dir });
+  try {
+    return await body();
+  } finally {
+    if (previousPath === undefined) {
+      delete process.env.PATH;
+    } else {
+      process.env.PATH = previousPath;
+    }
+    if (previousConfig === undefined) {
+      delete process.env.FAKE_GH;
+    } else {
+      process.env.FAKE_GH = previousConfig;
+    }
+  }
+}
+
+/** The single run directory one source batch left under a target's output. */
+async function onlyRunDirectory(workDir: string): Promise<string> {
+  const runs = (await readdir(path.join(workDir, 'runs'))).filter((name) =>
+    name.startsWith('run-'),
+  );
+  expect(runs).toHaveLength(1);
+  return path.join(workDir, 'runs', runs[0] ?? '');
+}
+
 interface CliOptions {
   readonly fetch: typeof fetch;
   readonly signals?: InterruptSignals;
   readonly dependencies?: CliContext['dependencies'];
+  readonly deliveryParts?: CliContext['deliveryParts'];
 }
 
 async function runSourceCli(
@@ -1719,6 +1940,9 @@ async function runSourceCli(
   }
   if (options.dependencies !== undefined) {
     context.dependencies = options.dependencies;
+  }
+  if (options.deliveryParts !== undefined) {
+    context.deliveryParts = options.deliveryParts;
   }
   const code = await runCli(argv, context);
   return { code, out: out.join('\n'), err: err.join('\n') };
@@ -1904,6 +2128,221 @@ describe('the source commands through the CLI', () => {
       expect(jira.issues[0]?.status).toBe('In Review');
       expect(jira.comments[0]).toContain('finished: failed');
       expect(jira.comments[0]).toContain('the runtime could not be started');
+    } finally {
+      if (previous === undefined) {
+        delete process.env.JIRA_API_TOKEN;
+      } else {
+        process.env.JIRA_API_TOKEN = previous;
+      }
+    }
+  });
+
+  it('delivers a passed attempt and puts the pull request on the issue', async () => {
+    const target = await createTarget({ delivery: true });
+    const jira = fakeJira([
+      {
+        id: '10011',
+        key: 'SAM1-11',
+        summary: 'Create the marker',
+        status: 'To Do',
+        updated: '2026-09-16T11:00:00.000Z',
+      },
+    ]);
+    const destination = await createDeliveryDestination(target.directory);
+    const previous = process.env.JIRA_API_TOKEN;
+    process.env.JIRA_API_TOKEN = 'test-token';
+
+    try {
+      const dependencies: CliContext['dependencies'] = {
+        runAgentTurn: async (request) => {
+          await writeFile(path.join(request.workspacePath, 'MARKER.md'), 'done\n', 'utf8');
+          await gitOrFail(['add', '--all'], request.workspacePath);
+          await gitOrFail(
+            ['commit', '--quiet', '--message', 'write the marker'],
+            request.workspacePath,
+          );
+          return { summary: 'wrote and committed the marker' };
+        },
+      };
+      const result = await withFakeGhOnPath(
+        destination.bin,
+        destination.state,
+        async () =>
+          await runSourceCli(
+            ['source', 'run', '--repo', target.repo, '--config', target.configPath],
+            target.directory,
+            {
+              fetch: jira.fetch,
+              dependencies,
+              deliveryParts: { pushUrl: destination.remote },
+            },
+          ),
+      );
+
+      expect(result.err).toBe('');
+      expect(result.code).toBe(EXIT_OK);
+      const url = 'https://github.com/example-owner/example-repo/pull/1';
+      expect(result.out).toContain(`pull request created: ${url}`);
+
+      // Jira received the link, and the issue is not represented as merged or Done.
+      expect(jira.comments).toHaveLength(1);
+      expect(jira.comments[0]).toContain(`Pull request: ${url}`);
+      expect(jira.comments[0]).toContain('never marks this issue Done');
+      expect(jira.issues[0]?.status).toBe('In Review');
+
+      // The destination really holds the attempt's branch, at the commit its
+      // workspace holds: the delivery pushed work, not a stale copy of it.
+      const runDir = await onlyRunDirectory(target.workDir);
+      const report = JSON.parse(await readFile(path.join(runDir, 'result.json'), 'utf8')) as {
+        status: string;
+        workspace: { path: string; branch: string };
+      };
+      expect(report.status).toBe('passed');
+      const pushed = await runProcess(
+        'git',
+        ['--git-dir', destination.remote, 'rev-parse', `refs/heads/${report.workspace.branch}`],
+        target.directory,
+      );
+      const local = await runProcess('git', ['rev-parse', 'HEAD'], report.workspace.path);
+      expect(pushed.code).toBe(0);
+      expect(pushed.stdout.trim()).toBe(local.stdout.trim());
+
+      // GitHub was asked exactly once, and the pull request carries the issue
+      // reference and the same check summary the issue's comment carries.
+      const calls = await fakeGhCalls(destination.state);
+      expect(calls.map((call) => call.op)).toEqual(['list', 'create']);
+      expect(calls[1]?.repo).toBe('example-owner/example-repo');
+      expect(calls[1]?.head).toBe(report.workspace.branch);
+      expect(calls[1]?.base).toBe('main');
+      expect(calls[1]?.body).toContain('SAM1-11');
+      expect(calls[1]?.body).toContain('1 of 1 configured checks exited 0 (round: passed)');
+      expect(existsSync(path.join(runDir, 'logs', 'delivery-pull-request-body.md'))).toBe(true);
+    } finally {
+      if (previous === undefined) {
+        delete process.env.JIRA_API_TOKEN;
+      } else {
+        process.env.JIRA_API_TOKEN = previous;
+      }
+    }
+  });
+
+  it('refuses to deliver a passed attempt that left uncommitted work', async () => {
+    const target = await createTarget({ delivery: true });
+    const jira = fakeJira([
+      {
+        id: '10011',
+        key: 'SAM1-11',
+        summary: 'Create the marker',
+        status: 'To Do',
+        updated: '2026-09-16T11:00:00.000Z',
+      },
+    ]);
+    const destination = await createDeliveryDestination(target.directory);
+    const previous = process.env.JIRA_API_TOKEN;
+    process.env.JIRA_API_TOKEN = 'test-token';
+
+    try {
+      const dependencies: CliContext['dependencies'] = {
+        runAgentTurn: async (request) => {
+          // The turn passes the checks but leaves its work uncommitted.
+          await writeFile(path.join(request.workspacePath, 'MARKER.md'), 'done\n', 'utf8');
+          return { summary: 'wrote the marker without committing it' };
+        },
+      };
+      const result = await withFakeGhOnPath(
+        destination.bin,
+        destination.state,
+        async () =>
+          await runSourceCli(
+            ['source', 'run', '--repo', target.repo, '--config', target.configPath],
+            target.directory,
+            {
+              fetch: jira.fetch,
+              dependencies,
+              deliveryParts: { pushUrl: destination.remote },
+            },
+          ),
+      );
+
+      expect(result.code).toBe(EXIT_INPUT_ERROR);
+      expect(result.out).toContain('uncommitted changes');
+      expect(result.out).toContain('MARKER.md');
+      expect(result.out).toContain('never commits or discards');
+      expect(result.out).toContain('ready status to retry');
+
+      // The run's own evidence is a passing run, exactly as it was written.
+      const runDir = await onlyRunDirectory(target.workDir);
+      const report = JSON.parse(await readFile(path.join(runDir, 'result.json'), 'utf8')) as {
+        status: string;
+      };
+      expect(report.status).toBe('passed');
+
+      // The receipt carries the delivery failure into the next attempt.
+      const receipt = await readReceipt(receiptFilePath(target.workDir, refFor('10011', 'SAM1-11')));
+      expect(receipt?.outcome).toBe('passed');
+      expect(receipt?.problem).toContain('delivery:');
+      expect(receipt?.problem).toContain('MARKER.md');
+
+      // Nothing was pushed, GitHub was not asked, and the issue is not told a
+      // result that does not exist.
+      expect(await fakeGhCalls(destination.state)).toEqual([]);
+      expect(jira.comments).toEqual([]);
+      expect(jira.issues[0]?.status).toBe('In Progress');
+    } finally {
+      if (previous === undefined) {
+        delete process.env.JIRA_API_TOKEN;
+      } else {
+        process.env.JIRA_API_TOKEN = previous;
+      }
+    }
+  });
+
+  it('keeps a passed attempt local when no delivery step is configured', async () => {
+    const target = await createTarget();
+    const jira = fakeJira([
+      {
+        id: '10011',
+        key: 'SAM1-11',
+        summary: 'Create the marker',
+        status: 'To Do',
+        updated: '2026-09-16T11:00:00.000Z',
+      },
+    ]);
+    const destination = await createDeliveryDestination(target.directory);
+    const previous = process.env.JIRA_API_TOKEN;
+    process.env.JIRA_API_TOKEN = 'test-token';
+
+    try {
+      const dependencies: CliContext['dependencies'] = {
+        runAgentTurn: async (request) => {
+          await writeFile(path.join(request.workspacePath, 'MARKER.md'), 'done\n', 'utf8');
+          await gitOrFail(['add', '--all'], request.workspacePath);
+          await gitOrFail(['commit', '--quiet', '--message', 'write the marker'], request.workspacePath);
+          return { summary: 'wrote and committed the marker' };
+        },
+      };
+      // A stand-in gh and a reachable destination are configured for the
+      // delivery step that this configuration does not ask for: they stay unused.
+      const result = await withFakeGhOnPath(
+        destination.bin,
+        destination.state,
+        async () =>
+          await runSourceCli(
+            ['source', 'run', '--repo', target.repo, '--config', target.configPath],
+            target.directory,
+            {
+              fetch: jira.fetch,
+              dependencies,
+              deliveryParts: { pushUrl: destination.remote },
+            },
+          ),
+      );
+
+      expect(result.code).toBe(EXIT_OK);
+      expect(await fakeGhCalls(destination.state)).toEqual([]);
+      expect(jira.comments).toHaveLength(1);
+      expect(jira.comments[0]).not.toContain('Pull request:');
+      expect(jira.comments[0]).toContain('nor the harness pushes');
     } finally {
       if (previous === undefined) {
         delete process.env.JIRA_API_TOKEN;
