@@ -31,8 +31,10 @@ limit.
     lock/
 ```
 
-- A **workspace** is the working copy: cloned once, accumulated over attempts, never pushed or
-  integrated elsewhere, retained while an issue points at it.
+- A **workspace** is the working copy: cloned once, accumulated over attempts, integrated nowhere
+  by the harness itself — a configured delivery step may push a passed attempt's branch and open or
+  update its pull request, and never merges ([WORKFLOW.md](WORKFLOW.md) §8) — and retained while an
+  issue points at it.
 - A **run** is one attempt: one deadline, one baseline round, its own turns, one verdict, one
   comment. Its report is never rewritten.
 - `workspaceId` is the id of the run that created the workspace (`run-<timestamp>-<hash>`), so the
@@ -135,9 +137,10 @@ limit, and none of it changes the acceptance criteria or the checks that decide 
 
 ## What does not change
 
-- The harness itself never pushes, merges, publishes, or integrates anything in the target
-  repository. Local commits are the coding turn's own work: they stay in the retained workspace,
-  and everything there — commits and uncommitted changes together — waits for a human.
+- The harness never merges or integrates anything in the target repository, and without a configured
+  delivery step it pushes and publishes nothing either. Local commits are the coding turn's own
+  work: they stay in the retained workspace, and everything there — commits and uncommitted changes
+  together — waits for a human.
 - One consumer per output directory; the lock is never broken automatically.
 - Receipts stay local, and remain the audit trail and the second-consumer guard.
 - `In Review` still means "an attempt finished and needs a decision", never success, and nothing
