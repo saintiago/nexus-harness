@@ -345,8 +345,44 @@ describe('the gateway route and the queue', () => {
 
     expect(jql).toBe(
       'project = "SAM\\"1" AND issuetype = "Task" AND labels = "harness\' OR x" AND ' +
-        'status = "To Do" ORDER BY created ASC, key ASC',
+        'status = "To Do" ORDER BY priority DESC, created ASC, key ASC',
     );
+  });
+
+  it('asks Jira for priority order and keeps the order of its answer', async () => {
+    // HARN-4: Jira's own Priority field decides which ready issue runs next —
+    // priority DESC, then the oldest creation, then the issue key. The connector
+    // never re-sorts locally: the order it received is the batch order, so a
+    // priority change takes effect on the next scan, not inside this batch.
+    const pages = [
+      {
+        issues: [issue({ id: '10013', key: 'SAM1-13' }), issue({ id: '10011', key: 'SAM1-11' })],
+        isLast: false,
+        nextPageToken: 'page-2',
+      },
+      {
+        issues: [issue({ id: '10012', key: 'SAM1-12' })],
+        isLast: true,
+      },
+    ];
+    const http = fakeHttp((_call, index) => json(pages[index] ?? { issues: [], isLast: true }));
+    const source = createJiraSource(jiraConfig(), TOKEN, { fetch: http.fetch });
+
+    const candidates = await source.listEligible(new AbortController().signal);
+
+    // Eligibility is untouched: the ready-status filter is what keeps a Draft
+    // issue out of the queue, and the ordering clause is the only added term.
+    expect(queueJql(jiraConfig())).toContain(
+      'AND status = "To Do" ORDER BY priority DESC, created ASC, key ASC',
+    );
+    expect(http.calls[0]?.body).toMatchObject({ jql: queueJql(jiraConfig()) });
+    // The keys are not ascending, and the answer's order survives the page
+    // boundary instead of being re-sorted into created/key order.
+    expect(candidates.map((candidate) => candidate.ref.key)).toEqual([
+      'SAM1-13',
+      'SAM1-11',
+      'SAM1-12',
+    ]);
   });
 
   it('lists eligible issues with a Bearer token and the documented search call', async () => {

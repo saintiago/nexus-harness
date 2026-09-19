@@ -298,7 +298,10 @@ npm start -- source watch --repo ../target-project --config harness.jira.config.
 `source list` needs only `--config`. `source run` and `source watch` also need `--repo`, which is
 the one repository every fetched issue is bound to, and they reject `--task`: a source task comes
 from Jira, not from a file. The whole batch is discovered **before** any issue is claimed, and the
-runs are strictly sequential.
+runs are strictly sequential. Jira decides the order with its own Priority field: highest priority
+first, then the oldest creation, then the issue key. The harness takes that order as the batch order,
+so a priority change in Jira takes effect at the next scan and never reorders an active task or a
+batch that was already discovered.
 
 The queue is the configuration's `source` object, and nothing else:
 

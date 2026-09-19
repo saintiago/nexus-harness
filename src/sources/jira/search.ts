@@ -23,9 +23,11 @@ function jqlLiteral(value: string): string {
 
 /**
  * The configured queue, as the documented JQL: the project, the issue type, the
- * label, and the ready status, with a deterministic order. No arbitrary JQL and
- * no timestamp cursor: the configured values are the whole queue definition
- * (docs/WORKFLOW.md §5).
+ * label, and the ready status, with a deterministic order: Jira's own Priority
+ * field first, then the oldest creation, then the issue key. Jira sorts; this
+ * function only asks for the order, and `listEligibleIssues` keeps the answer's
+ * order. No arbitrary JQL and no timestamp cursor: the configured values are the
+ * whole queue definition (docs/WORKFLOW.md §5).
  */
 export function queueJql(config: JiraSourceConfig): string {
   return [
@@ -33,7 +35,7 @@ export function queueJql(config: JiraSourceConfig): string {
     `AND issuetype = ${jqlLiteral(config.issueType)}`,
     `AND labels = ${jqlLiteral(config.label)}`,
     `AND status = ${jqlLiteral(config.readyStatus)}`,
-    'ORDER BY created ASC, key ASC',
+    'ORDER BY priority DESC, created ASC, key ASC',
   ].join(' ');
 }
 /**
