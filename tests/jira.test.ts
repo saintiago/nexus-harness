@@ -532,7 +532,6 @@ describe('mapping an issue onto the existing four-field Task', () => {
         url: `${SITE}/browse/${String(raw['key'])}`,
         updatedAt: '2026-09-16T11:00:00.000Z',
       },
-      pointers: [],
       title: 'Create the smoke-test marker',
     };
     return source.prepare(candidate, new AbortController().signal);
@@ -789,7 +788,6 @@ describe('mapping an issue onto the existing four-field Task', () => {
         updatedAt: '2026-09-16T11:00:00.000Z',
       },
       title: 'gone',
-      pointers: [],
     };
 
     await expect(source.prepare(candidate, new AbortController().signal)).resolves.toBeNull();
@@ -823,10 +821,7 @@ describe('mapping an issue onto the existing four-field Task', () => {
 // Claiming and feedback
 // ---------------------------------------------------------------------------
 
-function candidateFor(
-  updatedAt = '2026-09-16T11:00:00.000Z',
-  pointers: readonly string[] = [],
-): SourceCandidate {
+function candidateFor(updatedAt = '2026-09-16T11:00:00.000Z'): SourceCandidate {
   return {
     ref: {
       type: 'jira',
@@ -837,7 +832,6 @@ function candidateFor(
       updatedAt,
     },
     title: 'Create the smoke-test marker',
-    pointers,
   };
 }
 
@@ -869,6 +863,7 @@ const TRANSITIONS_TO_REVIEW = {
  */
 const PREPARED: SourceTask = {
   ref: candidateFor().ref,
+  pointers: [],
   task: {
     id: 'SAM1-11',
     title: 'Create the smoke-test marker',
@@ -1010,22 +1005,22 @@ describe('claiming an issue', () => {
 });
 
 describe('a workspace pointer and a refusal', () => {
-  it('reads the pointer labels an issue carries, and nothing else', async () => {
+  it('reads the pointer labels in the same read that prepares the item', async () => {
     const http = fakeHttp(() =>
-      json({
-        issues: [
-          issue({
-            labels: ['harness-task', 'harness-ws-run-a', 'harness-test', 'harness-ws-run-b'],
-          }),
-        ],
-        isLast: true,
-      }),
+      json(
+        issue({
+          labels: ['harness-task', 'harness-ws-run-a', 'harness-test', 'harness-ws-run-b'],
+        }),
+      ),
     );
     const source = createJiraSource(jiraConfig(), TOKEN, { fetch: http.fetch });
 
-    const candidates = await source.listEligible(new AbortController().signal);
+    const prepared = await preparedFor(source, candidateFor());
 
-    expect(candidates[0]?.pointers).toEqual(['run-a', 'run-b']);
+    // The decision is made from the item as this read saw it, so a search result
+    // that lags behind the issue cannot decide where the work goes.
+    expect(prepared.pointers).toEqual(['run-a', 'run-b']);
+    expect(prepared.ref.id).toBe('10011');
   });
 
   it('records a workspace by adding its pointer label to the issue', async () => {

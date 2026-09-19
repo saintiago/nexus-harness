@@ -27,7 +27,7 @@ import type { PreparedWorkspace, PrepareWorkspaceBounds } from '../workspace/pre
 import type { PreflightRequest, SourcePreflight } from '../workspace/preflight.js';
 import type { ContinuedWorkspace } from '../workspace/reopen.js';
 import type { RunDirectory } from '../workspace/run-directory.js';
-import type { WorkspaceAttempt } from '../workspace/state.js';
+import type { WorkspaceAttempt, WorkspaceSourceItem } from '../workspace/state.js';
 
 /**
  * A run refused because its task time ran out before a run directory existed.
@@ -229,12 +229,15 @@ export interface RunnerDependencies {
   readonly allocateRunDirectory: (workDir: string) => Promise<RunDirectory>;
   /**
    * Fills an allocated run directory with a clone of the recorded base, bounded
-   * by the run's remaining task time and by the run's own stop request.
+   * by the run's remaining task time and by the run's own stop request. The
+   * external item the workspace is created for travels with it into the ledger,
+   * so a later continuation can check that the pointer label names this item.
    */
   readonly prepareWorkspace: (
     run: RunDirectory,
     source: SourcePreflight,
     bounds: PrepareWorkspaceBounds,
+    sourceItem?: WorkspaceSourceItem,
   ) => Promise<PreparedWorkspace>;
   /**
    * Writes the working copy's repository-local commit identity

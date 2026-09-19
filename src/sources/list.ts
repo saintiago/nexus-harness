@@ -7,7 +7,7 @@
  * (docs/WORKFLOW.md section 7).
  */
 import type { SourceRef } from '../shared/types.js';
-import type { SourcePreview } from './contract.js';
+import type { SourcePreview, SourceTask } from './contract.js';
 import { SourceError } from './contract.js';
 import { decideAttempt } from './eligibility.js';
 import { readReceipt, receiptFilePath } from './receipts.js';
@@ -33,43 +33,13 @@ export async function listSource(preview: SourcePreview): Promise<readonly Sourc
 
   for (const candidate of candidates) {
     const receipt = await readReceipt(receiptFilePath(preview.workDir, candidate.ref));
-    const decision = await decideAttempt(preview.workDir, candidate, receipt);
-    if (decision.kind === 'refuse') {
-      entries.push({
-        disposition: 'refused',
-        ref: candidate.ref,
-        title: candidate.title,
-        detail: decision.reason,
-      });
-      continue;
-    }
 
+    // The item is re-read before it is judged, exactly as an attempt would read
+    // it: what the search result said about its pointer labels can already be out
+    // of date, and the disposition must describe the item as it is now.
+    let prepared: SourceTask | null;
     try {
-      const prepared = await preview.source.prepare(candidate, preview.stop);
-      entries.push(
-        prepared === null
-          ? {
-              disposition: 'stale',
-              ref: candidate.ref,
-              title: candidate.title,
-              detail: 'no longer eligible at the time of the preview',
-            }
-          : decision.kind === 'continue'
-            ? {
-                disposition: 'continuable',
-                ref: prepared.ref,
-                title: prepared.task.title,
-                detail:
-                  `continues workspace ${decision.workspace.workspaceId} ` +
-                  `(attempt ${String(decision.workspace.attempt)})`,
-              }
-            : {
-                disposition: 'valid',
-                ref: prepared.ref,
-                title: prepared.task.title,
-                detail: 'valid and unattempted: this run would create its workspace',
-              },
-      );
+      prepared = await preview.source.prepare(candidate, preview.stop);
     } catch (cause) {
       if (cause instanceof SourceError && cause.kind === 'invalid-task') {
         entries.push({
@@ -82,6 +52,45 @@ export async function listSource(preview: SourcePreview): Promise<readonly Sourc
       }
       throw cause;
     }
+    if (prepared === null) {
+      entries.push({
+        disposition: 'stale',
+        ref: candidate.ref,
+        title: candidate.title,
+        detail: 'no longer eligible at the time of the preview',
+      });
+      continue;
+    }
+
+    // The preview takes no `--repo`, so it cannot check the repository a
+    // workspace was cloned from; an attempt checks that before it reserves.
+    const decision = await decideAttempt(preview.workDir, prepared, receipt, null);
+    if (decision.kind === 'refuse') {
+      entries.push({
+        disposition: 'refused',
+        ref: prepared.ref,
+        title: prepared.task.title,
+        detail: decision.reason,
+      });
+      continue;
+    }
+    entries.push(
+      decision.kind === 'continue'
+        ? {
+            disposition: 'continuable',
+            ref: prepared.ref,
+            title: prepared.task.title,
+            detail:
+              `continues workspace ${decision.workspace.workspaceId} ` +
+              `(attempt ${String(decision.workspace.attempt)})`,
+          }
+        : {
+            disposition: 'valid',
+            ref: prepared.ref,
+            title: prepared.task.title,
+            detail: 'valid and unattempted: this run would create its workspace',
+          },
+    );
   }
 
   return entries;

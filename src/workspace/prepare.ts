@@ -17,6 +17,7 @@ import type { SourcePreflight } from './preflight.js';
 import { incompleteRunError } from './run-directory.js';
 import type { RunDirectory } from './run-directory.js';
 import { parseStatus } from './status.js';
+import type { WorkspaceSourceItem } from './state.js';
 import { writeWorkspaceState } from './state.js';
 
 /** An allocated run directory whose working copy is ready for a task. */
@@ -228,11 +229,19 @@ export interface PrepareWorkspaceBounds {
  * stopped while it holds a lock can damage the checkout it is writing. The
  * bounded cost of that is one Git command's run time after the deadline or the
  * stop request, which the run's later phases and its report both see.
+ *
+ * `sourceItem` is the external item this workspace is being created for, when
+ * the run came from a source: the identity every later pointer label is checked
+ * against, so a label on another item, another site, or another repository
+ * cannot continue this clone. A run with no source records `null`, and a
+ * source-backed continuation refuses such a ledger
+ * (docs/implement-workspace-continuation.md).
  */
 export async function prepareWorkspace(
   run: RunDirectory,
   source: SourcePreflight,
   bounds: PrepareWorkspaceBounds,
+  sourceItem?: WorkspaceSourceItem,
 ): Promise<PreparedWorkspace> {
   const branch = `${RUN_BRANCH_PREFIX}${run.runId}`;
 
@@ -290,6 +299,7 @@ export async function prepareWorkspace(
     baseCommit: source.baseCommit,
     branch,
     createdAt: new Date().toISOString(),
+    sourceItem: sourceItem ?? null,
     attempts: [],
   });
 

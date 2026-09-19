@@ -54,8 +54,10 @@ attempt's evidence, where `workspaceId` is the id of the run that created the wo
 2. Move the first attempt's evidence: everything else under `<workDir>/<workspaceId>/` →
    `<workDir>/runs/<workspaceId>/`.
 3. Write the ledger, from that attempt's own report (`result.json`): `workspaceId`, `sourceRoot`,
-   `baseCommit`, `branch`, `createdAt`, and one `attempts` entry with its `runId`, `outcome`,
-   `endedAt`, and the report's new path.
+   `baseCommit`, `branch`, `createdAt`, `sourceItem` (the immutable item identity the report's
+   `sourceRef` records: `type`, `scope`, `id`, and `key`), and one `attempts` entry with its
+   `runId`, `outcome`, `endedAt`, and the report's new path. A ledger written without `sourceItem`
+   is refused when an issue's pointer names it; see "The pointer" below.
 
 The report keeps the path it recorded when it was written — evidence is not rewritten — so an
 upgraded run's `workspace.path` points at where the clone used to be. The ledger is where the
@@ -70,15 +72,40 @@ workspace; a continuation never writes a label.
 The label is the only durable statement of where an issue's work lives, and it is readable by any
 agent. The queue label (`harness-task`) selects work; this one records where the work is.
 
+A label is untrusted text, so the id it names is checked before anything else happens to it: it must
+be a generated workspace id (the same shape a run id has, `[A-Za-z0-9][A-Za-z0-9_-]{0,63}`), its
+resolved path must stay under `<workDir>/workspaces`, and the workspace's ledger must record the
+item and the repository the workspace was created for. *Resolved* means through the filesystem, not
+by the spelling of the name: junctions and symbolic links are followed, for the clone and for the
+ledger read beside it, so a generated id whose directory — or whose `<workspaceId>.json` — lies
+inside the workspaces directory only lexically, while reaching somewhere else, is refused before
+anything is read through it. Identity is the connector type, the site, and the immutable external
+id; the key is display only. A label on another item, another site, or a run against another
+repository is refused, not followed.
+
+The harness never adopts or migrates a workspace by itself. A ledger that records no source item —
+written before identities were recorded, or by a run that did not come from a source — is refused
+with the repair: add a `sourceItem` object to that ledger, taking `type`, `scope`, `id`, and `key`
+from the workspace's own first attempt report (`sourceRef` there records them), and scan again.
+
 ## Eligibility
 
-| pointer labels | receipt | decision |
+| pointer labels (as the item was just re-read) | receipt | decision |
 | --- | --- | --- |
 | none | none | **fresh**: create the workspace, write the pointer, claim, attempt 1 |
 | none | present | **refuse**: already attempted, and nothing says what to continue |
 | exactly one, and it resolves on this machine | any | **continue** that workspace, attempt N+1 |
 | exactly one, and it does not resolve here | any | **refuse**: the pointer names a workspace this machine does not have |
+| exactly one, and it is not a generated workspace id | any | **refuse**: a label is never read as a path |
+| exactly one, and its real location is not under `<workDir>/workspaces` | any | **refuse**: a junction or symbolic link leads out of the workspaces directory, and a pointer is never followed through one |
+| exactly one, and the ledger records another item, site, or repository | any | **refuse**: a workspace belongs to what created it |
+| exactly one, and the ledger records no source item | any | **refuse**: the workspace cannot be shown to be this issue's, and the repair is manual |
 | two or more | any | **refuse**: ambiguous, and the harness never guesses which one |
+
+The decision is made from the item as it was just re-read, never from the search result that
+discovered it: a search index can lag, and a pointer added or removed between discovery and the
+read must not decide where the work goes. The search result is a candidate, and the pointer labels
+travel with the prepared item because they were read with it.
 
 A refusal is published like any other terminal outcome: one comment naming the reason, and the issue
 moved to the review status. Nothing local is created for it.
@@ -165,18 +192,21 @@ comments since the last of them, bounded, and context only.
 
 **Known gaps, separate tasks.** The contract above is the intended behaviour, and the implementation
 still has defects that these increments do not fix: the ladder can launch the wrong tier for a
-continued workspace, an attempt's result is published and the issue moved to review before the ladder
-is spent, an infrastructure failure is escalated like an ordinary failed check, and continuation
-resolution has stale-pointer, ownership, and state-validation gaps. They are tracked separately and
-are not claimed as fixed here.
+continued workspace, an attempt's result is published and the issue moved to review before the
+ladder is spent, and an infrastructure failure is escalated like an ordinary failed check. They are
+tracked separately and are not claimed as fixed here.
 
 ## Verification
 
 - Offline: workspace allocation and resolution, reopening a workspace whose attempts committed,
   refusal when the checkout is not on its recorded branch, the eligibility table, the
-  red-baseline exception, the tier loop, and the guidance rendering, all against fakes;
-  `npm run validate` green, on Linux as well as Windows for anything that touches process or path
-  handling.
+  red-baseline exception, the tier loop, the guidance rendering, the decision made from the item as
+  it was just re-read rather than from a lagging search result, and the pointer checks — a malformed
+  id, another item's, site's, or repository's workspace, a workspace directory or ledger whose
+  resolved path leaves the workspaces directory through a junction or symbolic link (owned
+  temporary fixtures, refused as a refusal rather than an exception), and a ledger with no item
+  identity — all against fakes; `npm run validate` green, on Linux as well as Windows for anything
+  that touches process or path handling.
 - Live: **partly run, 2026-09-19.** A real Jira-driven continuation has happened: run
   `run-20260919115244-4ff8eedf` claimed HARN-2, reopened workspace `run-20260919100148-e48a9ab0`
   (same clone, same recorded base `36f62fd`, attempt 2), and the attempt's work is the local commit

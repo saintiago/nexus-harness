@@ -38,6 +38,7 @@ import type {
   CommandResult,
   HarnessConfig,
   RunReport,
+  SourceRef,
   Task,
   TerminationOutcome,
 } from '../src/shared/types.js';
@@ -47,6 +48,7 @@ import { prepareWorkspace } from '../src/workspace/prepare.js';
 import type { PreparedWorkspace } from '../src/workspace/prepare.js';
 import { preflightSource } from '../src/workspace/preflight.js';
 import type { PreflightRequest, SourcePreflight } from '../src/workspace/preflight.js';
+import type { WorkspaceExpectation } from '../src/workspace/reopen.js';
 import { reopenWorkspace } from '../src/workspace/reopen.js';
 import { allocateRunDirectory } from '../src/workspace/run-directory.js';
 import type { RunDirectory } from '../src/workspace/run-directory.js';
@@ -340,6 +342,32 @@ function configuration(fixture: Fixture, parts: Partial<HarnessConfig> = {}): Ha
 /** What one run is asked to do: the loaded task, the loaded plan, and the paths. */
 function request(fixture: Fixture, config: HarnessConfig): Parameters<typeof runTask>[0] {
   return { task: fixture.task, config, repoPath: fixture.repo, workDir: fixture.workDir };
+}
+
+/** The source item the continuation tests' first attempt came from. */
+const SOURCE_REF: SourceRef = {
+  type: 'jira',
+  scope: 'https://example.atlassian.net',
+  id: '10011',
+  key: 'SAM1-11',
+  url: 'https://example.atlassian.net/browse/SAM1-11',
+  updatedAt: '2026-09-16T11:00:00.000Z',
+};
+
+/**
+ * What a continuation of the fixture's own workspace must match, as its ledger
+ * records it. These tests are about the runner's continuation mechanics; the
+ * identity check itself has its own tests.
+ */
+async function expectationFor(
+  fixture: Fixture,
+  workspaceId: string,
+): Promise<WorkspaceExpectation> {
+  const ledger = await readWorkspaceState(fixture.workDir, workspaceId);
+  if (ledger === null || ledger.sourceItem === null) {
+    throw new Error('the fixture workspace recorded no source item identity');
+  }
+  return { sourceItem: ledger.sourceItem, sourceRoot: ledger.sourceRoot };
 }
 
 /**
@@ -705,7 +733,7 @@ describe('a run that continues a workspace', () => {
       text: 'from the first attempt\n',
     });
     const first = await runTask(
-      request(fixture, configuration(fixture)),
+      { ...request(fixture, configuration(fixture)), sourceRef: SOURCE_REF },
       dependencies(firstAgent.turn),
     );
     const workspaceId = first.workspace?.workspaceId ?? '';
@@ -722,7 +750,11 @@ describe('a run that continues a workspace', () => {
     const result = await runTask(
       {
         ...request(fixture, config),
-        continuedWorkspace: await reopenWorkspace(fixture.workDir, workspaceId),
+        continuedWorkspace: await reopenWorkspace(
+          fixture.workDir,
+          workspaceId,
+          await expectationFor(fixture, workspaceId),
+        ),
       },
       dependencies(agent.turn),
     );
@@ -1026,7 +1058,7 @@ describe('a continued run whose source checkout moved on', () => {
       ],
     });
     const first = await runTask(
-      request(fixture, configuration(fixture)),
+      { ...request(fixture, configuration(fixture)), sourceRef: SOURCE_REF },
       dependencies(firstAgent.turn),
     );
     const workspace = first.workspace;
@@ -1053,7 +1085,11 @@ describe('a continued run whose source checkout moved on', () => {
             checks: [command(fixture, 'check-1', 'need', 'app.txt', IMPLEMENTED_TEXT)],
           }),
         ),
-        continuedWorkspace: await reopenWorkspace(fixture.workDir, workspace.workspaceId),
+        continuedWorkspace: await reopenWorkspace(
+          fixture.workDir,
+          workspace.workspaceId,
+          await expectationFor(fixture, workspace.workspaceId),
+        ),
       },
       dependencies(agent.turn),
     );

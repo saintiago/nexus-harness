@@ -23,7 +23,7 @@ import { messageOf } from '../shared/errors.js';
 import type { AttemptEvidence } from '../shared/types.js';
 import type { ContinuedWorkspace } from '../workspace/reopen.js';
 import { reopenWorkspace } from '../workspace/reopen.js';
-import { readWorkspaceState } from '../workspace/state.js';
+import { readWorkspaceState, sourceItemFor } from '../workspace/state.js';
 import type {
   SourceCandidate,
   SourceComment,
@@ -352,9 +352,10 @@ async function reportDeliveryFailure(
 }
 
 /**
- * One item, through the documented reservation sequence: receipt first,
- * eligibility and revision rechecked, an unambiguous claim, the unchanged
- * runner, the real local result, and then remote feedback.
+ * One item, through the documented reservation sequence: receipt first, a fresh
+ * read of the item and a decision from that read, eligibility and revision
+ * rechecked, an unambiguous claim, the unchanged runner, the real local result,
+ * and then remote feedback.
  */
 async function attempt(
   context: SourceContext,
@@ -367,32 +368,17 @@ async function attempt(
   const identity = receiptIdentity(candidate.ref);
 
   const existing = await readReceipt(file);
-  const decision = await decideAttempt(workDir, candidate, existing);
-  if (decision.kind === 'refuse') {
-    return await refuse(context, candidate, decision.reason, state, diagnostics);
-  }
 
   if (stop.aborted) {
     return 'cancelled';
   }
 
-  // A continuation's checkout is read before anything is reserved: one that is
-  // not on the branch its ledger records is refused while nothing has been
-  // claimed and nothing has been created.
-  let continuedWorkspace: ContinuedWorkspace | undefined;
-  if (decision.kind === 'continue') {
-    try {
-      continuedWorkspace = await reopenWorkspace(workDir, decision.workspace.workspaceId);
-    } catch (cause) {
-      return await refuse(context, candidate, messageOf(cause), state, diagnostics);
-    }
-  }
-
   // The source checkout is rechecked before the reservation, not after it: a
   // checkout that cannot be used must not leave a receipt on an issue the
   // harness would not have been allowed to run.
+  let sourceRoot: string;
   try {
-    await context.preflight({ repoPath: context.repoPath, workDir });
+    sourceRoot = (await context.preflight({ repoPath: context.repoPath, workDir })).sourceRoot;
   } catch (cause) {
     return stopWith(
       state,
@@ -400,6 +386,9 @@ async function attempt(
     );
   }
 
+  // The item is re-read before anything is decided: a search result can lag, so
+  // the fresh, continue, or refuse decision below is made from the pointer labels
+  // this read observed, never from the ones discovery returned.
   let prepared: SourceTask | null;
   try {
     prepared = await source.prepare(candidate, stop);
@@ -435,6 +424,27 @@ async function attempt(
   }
 
   const item = prepared;
+  const decision = await decideAttempt(workDir, item, existing, sourceRoot);
+  if (decision.kind === 'refuse') {
+    return await refuse(context, candidate, decision.reason, state, diagnostics);
+  }
+
+  // A continuation's checkout is read before anything is reserved: one that is
+  // not on the branch its ledger records, or whose ledger records another item or
+  // another repository, is refused while nothing has been claimed and nothing has
+  // been created.
+  let continuedWorkspace: ContinuedWorkspace | undefined;
+  if (decision.kind === 'continue') {
+    try {
+      continuedWorkspace = await reopenWorkspace(workDir, decision.workspace.workspaceId, {
+        sourceItem: sourceItemFor(item.ref),
+        sourceRoot,
+      });
+    } catch (cause) {
+      return await refuse(context, candidate, messageOf(cause), state, diagnostics);
+    }
+  }
+
   // What the item's own thread says: every attempt is told, whether it continues
   // a workspace or starts one. A continuation reads what was added since the last
   // attempt ended; a first attempt reads the whole thread, which is where an

@@ -9,6 +9,7 @@
 import { taskSchema } from '../../config/schema.js';
 import type { JiraSourceConfig, Task } from '../../shared/types.js';
 import { SourceError } from '../contract.js';
+import { parseWorkspacePointers } from '../contract.js';
 import type { SourceCandidate, SourceTask } from '../contract.js';
 import { AdfError, parseDescription } from './adf.js';
 import { extractAcceptanceCriteria, renderDescription } from './adf-text.js';
@@ -91,6 +92,12 @@ export async function prepareItem(
   }
   const task = mapTask(issue);
   // The reference returned with the task carries the revision this reading
-  // observed, so the claim can refuse an issue that changed again in between.
-  return { ref: refFor(config, issue), task } satisfies SourceTask;
+  // observed, so the claim can refuse an issue that changed again in between. The
+  // pointers come from this same reading, so the continuation decision never runs
+  // on a search result that has since been overtaken.
+  return {
+    ref: refFor(config, issue),
+    task,
+    pointers: parseWorkspacePointers(issue.fields.labels),
+  } satisfies SourceTask;
 }
