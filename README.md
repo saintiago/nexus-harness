@@ -741,6 +741,14 @@ and only a read.
   request has been created by the harness here. The commands follow `gh`'s documented interface,
   but the live push, the live create-or-update decision, and a live authentication failure have not
   been exercised;
+- **the Nexus research-tool profiles.** [docs/nexus-agent-tools.md](docs/nexus-agent-tools.md)
+  defines two native Codex profile layers for the Flash and Astra launches. Their TOML and the MCP
+  servers they name were checked with the installed CLI 0.154.0 in a temporary Codex home, and the
+  suggestion deny-list through equivalent `-c` overrides. This repository installs none of them and
+  changes no launch prefix, and no live session has run from this checkout: the four capabilities
+  on their credential-free defaults (anonymous Context7, keyless Tavily), the optional keyed forms,
+  and the absence of the personal connectors in a real session are not proven here. The operator's
+  new-session smoke is what confirms them;
 - behaviour on a runtime version other than the 0.154.0 interface this adapter was written against,
   and any runtime-reported model identity: a profile or model name in a report is launch
   information, not proof of which upstream model served a response.
@@ -800,6 +808,15 @@ single non-interactive turn on this platform and needs no extra client library i
   it starts the prefix you configured and records that prefix. A profile is a layer over your
   ordinary settings, not a second installation, and a profile name in a report is not an observed
   model identity.
+- **Research tools for a Nexus turn, without personal connectors.** One native Codex profile layer
+  per Nexus tier — `<Codex home>/nexus-flash.config.toml` and
+  `<Codex home>/nexus-astra.config.toml` — carries that tier's model selection, adds the OpenAI
+  Docs MCP server, Context7 and Tavily, and keeps every connector app except GitHub out of the
+  turn. [docs/nexus-agent-tools.md](docs/nexus-agent-tools.md) has the two copy-ready files, the
+  launch-prefix change, the optional private credentials — neither is needed: Context7 answers
+  anonymously and Tavily's keyless mode is the default — and a short new-session smoke procedure.
+  The checkout's own `harness.config.json` does not select those profiles: they are operator-native
+  configuration the harness never reads or writes.
 - **Observed limitations, stated rather than smoothed over:**
   - `codex exec`'s **exit codes are not documented**. The adapter therefore does not read an exit
     code as meaning anything by itself: it reads the event stream, and every other ending — a
@@ -959,6 +976,9 @@ operator's own `gh` credentials, once the check is green —
   rules for placing new code in it.
 - [docs/harness.jira.example.json](docs/harness.jira.example.json) — a credential-free source
   configuration to copy.
+- [docs/nexus-agent-tools.md](docs/nexus-agent-tools.md) — the two native Codex profile files that
+  give a Nexus turn GitHub (read), the OpenAI Docs MCP server, Context7 and Tavily, and keep the
+  personal connectors out, with the operator setup and the new-session smoke procedure.
 - [docs/GIT-WORKFLOW.md](docs/GIT-WORKFLOW.md) — how changes to this repository are made: one
   `task/<name>` branch per task, merged into `main` through a pull request. It is about this
   repository only; a harness run never merges anything in a target repository, and without a

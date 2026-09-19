@@ -25,7 +25,7 @@
     "command": [
       "codex",
       "--profile",
-      "deepseek"
+      "nexus-flash"
     ]
   },
   "delivery": {
