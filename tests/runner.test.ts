@@ -16,7 +16,7 @@
 import { spawn } from 'node:child_process';
 import { getEventListeners } from 'node:events';
 import { existsSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { runCheckRound } from '../src/checks/round.js';
@@ -2413,6 +2413,89 @@ describe('a run that runs out of task time', () => {
     );
   }, 60_000);
 
+  it('carries a stop preparation could not confirm into the cancellation it reports', async () => {
+    const fixture = await createFixture();
+    const controller = new AbortController();
+    const agent = fakeAgent(fixture);
+    const reason = 'the clone was still running 5000 ms after it was stopped';
+
+    const result = await runTask(
+      { ...request(fixture, configuration(fixture)), stop: controller.signal },
+      dependencies(agent.turn, {
+        // Preparation was stopped because the run was, and the Git step it was
+        // stopped with could not be confirmed stopped: the run reports that
+        // limitation instead of a clean cancellation, because what the step was
+        // writing may still be written to and must not be reused.
+        prepareWorkspace: async () => {
+          controller.abort();
+          throw new WorkspaceError('the clone did not finish', {
+            stop: { termination: 'unconfirmed', problem: reason },
+          });
+        },
+      }),
+    );
+
+    expect(result.status).toBe('cancelled');
+    expect(result.workspace).toBeNull();
+    expect(result.cancellation?.phase).toBe('preparation of the working copy');
+    expect(result.cancellation?.termination).toBe('unconfirmed');
+    expect(result.cancellation?.problem).toBe(reason);
+    expect(agent.requests).toEqual([]);
+
+    const report = await readReport(result.reportPath);
+    expect(report.status).toBe('cancelled');
+    expect(report.cancellation).toEqual(result.cancellation);
+    expect(report.workspace.prepared).toBe(false);
+    const timeline = timelineMessages(await readText(report.runLog));
+    expect(
+      timeline.some(
+        (message) =>
+          message.startsWith('cancelled: ') &&
+          message.includes(`termination unconfirmed: ${reason}`),
+      ),
+    ).toBe(true);
+  }, 60_000);
+
+  it('carries an unconfirmed deadline stop from preparation into the timeout it reports', async () => {
+    const fixture = await createFixture();
+    const clock = testClock();
+    const config = configuration(fixture, { taskTimeoutMinutes: 1 });
+    const agent = fakeAgent(fixture);
+    const reason = 'the clone had not ended 5000 ms after it was stopped';
+
+    const result = await runTask(
+      request(fixture, config),
+      dependencies(agent.turn, {
+        now: clock.now,
+        // Preparation spent the whole minute and was stopped at the deadline,
+        // without the harness confirming that the Git it stopped had ended.
+        prepareWorkspace: async () => {
+          clock.advance(minutes(1));
+          throw new WorkspaceError('the clone did not finish', {
+            stop: { termination: 'unconfirmed', problem: reason },
+          });
+        },
+      }),
+    );
+
+    expect(result.status).toBe('failed');
+    expect(result.workspace).toBeNull();
+    expect(result.timeout?.phase).toBe('preparation of the working copy');
+    expect(result.timeout?.termination).toBe('unconfirmed');
+    expect(result.timeout?.problem).toBe(reason);
+    expect(agent.requests).toEqual([]);
+
+    const report = await readReport(result.reportPath);
+    expect(report.timeout).toEqual(result.timeout);
+    const timeline = timelineMessages(await readText(report.runLog));
+    expect(
+      timeline.some(
+        (message) =>
+          message.startsWith('timeout: ') && message.includes(`termination unconfirmed: ${reason}`),
+      ),
+    ).toBe(true);
+  }, 60_000);
+
   it('refuses a run whose task time is gone before a run directory exists', async () => {
     const fixture = await createFixture();
     const clock = testClock();
@@ -2439,7 +2522,16 @@ describe('a run that runs out of task time', () => {
     await expect(attempt).rejects.toThrow(
       /No run directory, no working copy, and no report were created/,
     );
-    expect(preflights).toEqual([{ repoPath: fixture.repo, workDir: fixture.workDir }]);
+    // The check is the run's own: it is given what is left of the task time as
+    // the bound its Git readings run under, and no stop request (the request has
+    // none), so a stalled reading cannot outlive the run's deadline.
+    expect(preflights).toEqual([
+      {
+        repoPath: fixture.repo,
+        workDir: fixture.workDir,
+        bounds: { timeoutMs: minutes(1) },
+      },
+    ]);
     expect(agent.requests).toEqual([]);
     // Refused rather than reported: no run directory was made, so no report was
     // invented for a run that never started.
@@ -3040,7 +3132,7 @@ describe('the collaborators a run is given', () => {
     expect(result.reason).toBe('every configured check passed after the implementation turn');
     expect(result.reportPath).toBe(path.join(run.runDir, 'result.json'));
 
-    expect(preflights).toEqual([{ repoPath, workDir }]);
+    expect(preflights).toEqual([{ repoPath, workDir, bounds: { timeoutMs: minutes(60) } }]);
     expect(allocations).toEqual([workDir]);
     // The working copy was given its commit identity before the baseline ran.
     expect(identities).toEqual([workspace.workspacePath]);
@@ -3190,6 +3282,38 @@ describe('what a run records about the working copy it left', () => {
     expect(timeline.some((message) => message.startsWith('changed path:'))).toBe(false);
     expect(timeline.join('\n')).not.toContain('the working copy matches the recorded base');
     expect(timeline.at(-1)).toMatch(/^final status: failed, /);
+  }, 60_000);
+
+  it('records a diagnostic when the final comparison cannot be made', async () => {
+    const fixture = await createFixture();
+    const agent = fakeAgent(fixture);
+
+    const result = await runTask(
+      request(fixture, configuration(fixture)),
+      dependencies(agent.turn, {
+        // The working copy loses its repository before the run's final reading:
+        // the comparison cannot be made, and the run records that as a
+        // diagnostic rather than waiting for an answer or claiming no changes.
+        runCheckRound: async (asked) => {
+          await rm(path.join(asked.cwd, '.git'), { recursive: true, force: true });
+          return { outcome: 'passed', setup: [], checks: [], problem: null };
+        },
+      }),
+    );
+
+    // The run itself is decided by its checks, which passed; the comparison is
+    // what could not be made, and the report says so.
+    expect(result.status).toBe('passed');
+    expect(result.changes.inspected).toBe(false);
+    expect(result.changes.problem).toMatch(/could not be compared with its recorded base/);
+    expect(result.changes.paths).toEqual([]);
+
+    const report = await readReport(result.reportPath);
+    expect(report.changes).toEqual(result.changes);
+    const timeline = timelineMessages(await readText(report.runLog));
+    expect(timeline).toContain(`changes: unavailable, ${result.changes.problem}`);
+    expect(timeline.join('\n')).not.toContain('the working copy matches the recorded base');
+    expect(timeline.at(-1)).toMatch(/^final status: passed, /);
   }, 60_000);
 });
 
