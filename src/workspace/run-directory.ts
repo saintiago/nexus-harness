@@ -12,7 +12,7 @@ import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { messageOf } from '../shared/errors.js';
 import { WorkspaceError } from './errors.js';
-import { isSameOrInside } from './git.js';
+import { canonicalPath, isSameOrInside } from './git.js';
 
 /** A run directory allocated for one invocation, before any work is placed in it. */
 export interface RunDirectory {
@@ -110,7 +110,9 @@ export function workspaceIdProblem(workspaceId: string): string | null {
  * Where one workspace lives: `<workDir>/workspaces/<workspaceId>`. The id is
  * validated first, and the resolved path is then checked to lie inside the
  * workspaces root, so a pointer label can never name a clone — or a ledger —
- * somewhere else on the machine.
+ * somewhere else on the machine. The check is made on the path's canonical
+ * location, with junctions and symbolic links followed: a generated name whose
+ * directory is an alias out of the workspaces root is refused, not opened.
  */
 export function workspacePathFor(workDir: string, workspaceId: string): string {
   const problem = workspaceIdProblem(workspaceId);
@@ -119,13 +121,41 @@ export function workspacePathFor(workDir: string, workspaceId: string): string {
   }
   const root = workspacesRootFor(workDir);
   const resolved = path.join(root, workspaceId);
-  if (!isSameOrInside(root, resolved)) {
-    throw new WorkspaceError(
-      `the workspace id "${workspaceId}" does not resolve to a path inside "${root}", so it is not ` +
-        'a workspace this harness will use',
-    );
+  const outside = outsideWorkspacesProblem(workDir, resolved);
+  if (outside !== null) {
+    throw new WorkspaceError(outside);
   }
   return resolved;
+}
+
+/**
+ * Why `candidate` is not a location this harness will use for a workspace, or
+ * `null` when it is. Both `candidate` and `<workDir>/workspaces` are resolved
+ * through the filesystem before they are compared, so junctions and symbolic
+ * links are followed: a name that lies inside the workspaces root only lexically
+ * is not enough, and a `workDir` that is itself reached through an alias is not
+ * mistaken for an escape. A path that does not exist yet is judged by where it
+ * would be created: its closest existing ancestor is what is resolved. A refusal
+ * says which location the name really reaches, because a pointer label is never
+ * read as a path and never followed out of the workspaces directory.
+ */
+export function outsideWorkspacesProblem(workDir: string, candidate: string): string | null {
+  const root = workspacesRootFor(workDir);
+  let canonicalRoot: string;
+  let canonicalCandidate: string;
+  try {
+    canonicalRoot = canonicalPath(root);
+    canonicalCandidate = canonicalPath(candidate);
+  } catch (cause) {
+    return `"${candidate}" cannot be resolved: ${messageOf(cause)}`;
+  }
+  if (isSameOrInside(canonicalRoot, canonicalCandidate)) {
+    return null;
+  }
+  return (
+    `"${candidate}" resolves to "${canonicalCandidate}", outside the workspaces directory ` +
+    `"${canonicalRoot}", because a junction or symbolic link leads out of it`
+  );
 }
 
 /**

@@ -9,16 +9,18 @@
  *
  * A pointer label is untrusted text on the issue, so resolving it checks more
  * than that it names a directory: the id must be a generated workspace id, its
- * resolved path must stay under the workspaces root, and the ledger must record
- * the external item and the repository the workspace was created for. A pointer
- * on the wrong item, site, or repository is refused instead of continued
+ * resolved path — junctions and symbolic links followed, both for the clone and
+ * for the ledger beside it — must stay under the workspaces root, and the ledger
+ * must record the external item and the repository the workspace was created
+ * for. A pointer on the wrong item, site, or repository is refused instead of
+ * continued
  * (docs/implement-workspace-continuation.md).
  */
 import { statSync } from 'node:fs';
 import { messageOf } from '../shared/errors.js';
 import { WorkspaceError } from './errors.js';
 import { runGit } from './git.js';
-import { workspaceIdProblem, workspacePathFor } from './run-directory.js';
+import { outsideWorkspacesProblem, workspaceIdProblem, workspacePathFor } from './run-directory.js';
 import type { WorkspaceSourceItem } from './state.js';
 import { readWorkspaceState, workspaceStatePath } from './state.js';
 import type { WorkspaceState } from './state.js';
@@ -86,13 +88,42 @@ export async function resolveWorkspace(
         "the workspace that holds this issue's work, or remove it and handle the issue by hand",
     };
   }
-  const workspacePath = workspacePathFor(workDir, workspaceId);
+  // Where the id's own name points is checked first, and on the resolved path:
+  // a generated id whose directory is a junction or symbolic link out of the
+  // workspaces root is refused here, before anything is read through it and
+  // before anything is reserved or claimed.
+  let workspacePath: string;
+  try {
+    workspacePath = workspacePathFor(workDir, workspaceId);
+  } catch (cause) {
+    return {
+      ok: false,
+      problem:
+        `its workspace pointer names workspace ${workspaceId}, whose directory is not where this ` +
+        `harness keeps workspaces: ${messageOf(cause)}. Move the workspace's real directory ` +
+        'where the layout says it lives, or remove the label and handle the issue by hand',
+    };
+  }
   if (!isDirectory(workspacePath)) {
     return {
       ok: false,
       problem:
         `its workspace pointer names ${workspaceId}, and this machine has no workspace at ` +
         `"${workspacePath}"`,
+    };
+  }
+  // The ledger read is the other half of the same check: the clone is where the
+  // layout puts it, but the record beside it can still be a link out of the
+  // workspaces root, and a continuation reads only what resolves inside it.
+  const ledgerPath = workspaceStatePath(workDir, workspaceId);
+  const ledgerOutside = outsideWorkspacesProblem(workDir, ledgerPath);
+  if (ledgerOutside !== null) {
+    return {
+      ok: false,
+      problem:
+        `its workspace pointer names workspace ${workspaceId}, and the ledger beside it is not one ` +
+        `this harness will read: ${ledgerOutside}. Put the workspace's own ledger back at ` +
+        `"${ledgerPath}", or remove the label and handle the issue by hand`,
     };
   }
 

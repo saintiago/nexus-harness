@@ -16,7 +16,7 @@
 
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rename, symlink, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -1433,6 +1433,46 @@ describe('an issue that points at a workspace', () => {
     expect(reason).toContain('not for this item (jira SAM1-3 (immutable id 3)');
     expect(fixture.log).not.toContain('claim:SAM1-3');
     expect(fixture.log).not.toContain('run:SAM1-3');
+  });
+
+  it('refuses a pointer whose workspace leaves the workspaces directory, before any claim', async (context) => {
+    const workDir = await createTempDir();
+    const { workspaceId, sourceRoot } = await preparedWorkspaceOnDisk(workDir);
+    // The id is a generated one and its name lies inside the workspaces root, but
+    // the directory that name reaches is a junction to one outside it. The check
+    // is the pointer decision's, so it happens before the receipt, before the
+    // claim, and before any run: a scan refuses the issue and goes on.
+    const outside = path.join(workDir, 'outside');
+    const workspacePath = path.join(workDir, 'workspaces', workspaceId);
+    await rename(workspacePath, outside);
+    try {
+      await symlink(outside, workspacePath, 'junction');
+    } catch (cause) {
+      // Junctions need no elevation on Windows; a host that cannot make one
+      // cannot show what this test is about.
+      if (process.platform === 'win32') {
+        throw cause;
+      }
+      context.skip();
+      return;
+    }
+    const fixture = createFixture({
+      workDir,
+      scans: [[candidateFor('2', 'SAM1-2')]],
+      prepare: (candidate) => preparedFor(candidate, [workspaceId]),
+      preflight: () => Promise.resolve({ sourceRoot, baseCommit: 'base' }),
+    });
+
+    const summary = await runSource(fixture.context, null);
+
+    expect(summary).toMatchObject({ outcome: 'completed', attempted: 0, refused: 1 });
+    const reason = fixture.refusals[0]?.reason ?? '';
+    expect(reason).toContain(workspaceId);
+    expect(reason).toMatch(/junction or symbolic link/);
+    expect(reason).toMatch(/Move the workspace's real directory/);
+    expect(fixture.log).not.toContain('claim:SAM1-2');
+    expect(fixture.log).not.toContain('run:SAM1-2');
+    expect(existsSync(receiptFilePath(workDir, refFor('2', 'SAM1-2')))).toBe(false);
   });
 
   it('refuses a workspace cloned from another repository, and publishes why', async () => {

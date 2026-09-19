@@ -195,12 +195,13 @@ async function accepted(request: PreflightRequest): Promise<SourcePreflight> {
 /**
  * Creates a directory alias. A `junction` needs no elevation on Windows and is
  * a plain symlink elsewhere; a `dir` symlink needs a privileged developer mode
- * on Windows, so its test skips where the alias cannot be created.
+ * on Windows, so its test skips where the alias cannot be created. A `file`
+ * symlink needs that same privilege on Windows.
  */
 async function createAlias(
   target: string,
   link: string,
-  type: 'junction' | 'dir',
+  type: 'junction' | 'dir' | 'file',
 ): Promise<boolean> {
   try {
     await symlink(target, link, type);
@@ -361,6 +362,78 @@ describe('a workspace that outlives its run', () => {
     expect(resolved.ok).toBe(false);
     if (!resolved.ok) {
       expect(resolved.problem).toContain(workspacePathFor(fixture.workDir, prepared.workspaceId));
+    }
+  });
+
+  it('refuses a pointer whose workspace directory is a junction out of the workspaces root', async (context) => {
+    const fixture = await createRepository();
+    const prepared = await prepareRun(fixture);
+    // The id is generated and the name lies inside the workspaces root, but the
+    // directory it names is a junction to one outside it: the label is followed
+    // to where the directory really is, and a pointer is never followed out of
+    // the workspaces root (docs/implement-workspace-continuation.md).
+    const outside = path.join(fixture.parent, 'outside');
+    await rename(prepared.workspacePath, outside);
+    if (!(await createAlias(outside, prepared.workspacePath, 'junction'))) {
+      // Junctions need no elevation on Windows; other hosts may lack them.
+      if (process.platform === 'win32') {
+        throw new Error(`could not create a junction at "${prepared.workspacePath}"`);
+      }
+      context.skip();
+      return;
+    }
+    expect(realpathSync.native(prepared.workspacePath)).toBe(realpathSync.native(outside));
+
+    const resolved = await resolveWorkspace(fixture.workDir, prepared.workspaceId, {
+      sourceItem: FIXTURE_SOURCE_ITEM,
+      sourceRoot: prepared.sourceRoot,
+    });
+
+    // A refusal, not an exception: a scan goes on to publish why, rather than
+    // ending on a containment check it could not express.
+    expect(resolved.ok).toBe(false);
+    if (!resolved.ok) {
+      expect(resolved.problem).toContain(prepared.workspaceId);
+      expect(resolved.problem).toContain(prepared.workspacePath);
+      expect(resolved.problem).toContain(realpathSync.native(outside));
+      expect(resolved.problem).toContain(
+        realpathSync.native(path.join(fixture.workDir, 'workspaces')),
+      );
+      expect(resolved.problem).toMatch(/junction or symbolic link/);
+      expect(resolved.problem).toMatch(/Move the workspace's real directory/);
+    }
+    // Nothing was opened through the alias: the directory it reaches is whole.
+    expect(existsSync(path.join(outside, '.git'))).toBe(true);
+  });
+
+  it('refuses a pointer whose ledger is a link out of the workspaces root', async (context) => {
+    const fixture = await createRepository();
+    const prepared = await prepareRun(fixture);
+    // The clone is a real workspace where the layout puts it; the record beside
+    // it is a link to a file somewhere else, which a continuation will not read.
+    const ledgerPath = workspaceStatePath(fixture.workDir, prepared.workspaceId);
+    const outside = path.join(fixture.parent, 'outside-ledger.json');
+    await rename(ledgerPath, outside);
+    if (!(await createAlias(outside, ledgerPath, 'file'))) {
+      // A file symlink needs elevation or developer mode on Windows; the
+      // junction case above covers the alias behavior on that platform.
+      expect(process.platform).toBe('win32');
+      context.skip();
+      return;
+    }
+
+    const resolved = await resolveWorkspace(fixture.workDir, prepared.workspaceId, {
+      sourceItem: FIXTURE_SOURCE_ITEM,
+      sourceRoot: prepared.sourceRoot,
+    });
+
+    expect(resolved.ok).toBe(false);
+    if (!resolved.ok) {
+      expect(resolved.problem).toContain('ledger');
+      expect(resolved.problem).toContain(ledgerPath);
+      expect(resolved.problem).toContain(realpathSync.native(outside));
+      expect(resolved.problem).toMatch(/junction or symbolic link/);
+      expect(resolved.problem).toMatch(/Put the workspace's own ledger back/);
     }
   });
 
