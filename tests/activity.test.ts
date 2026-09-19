@@ -19,6 +19,8 @@ import { createActivityDisplay } from '../src/cli/activity.js';
 import { fakeConsole, screenAfter } from './support.js';
 
 const FULL_TERMINAL = { columns: 80, rows: 24 } as const;
+/** Two graphemes that each occupy two cells: four cells of one wide pair. */
+const WIDE_PAIR = '界👩🏽‍💻';
 const WIDE_TEXT = [
   { text: '界', cells: 2 },
   { text: '😀', cells: 2 },
@@ -29,12 +31,36 @@ const WIDE_TEXT = [
   { text: 'e\u0301', cells: 1 },
 ] as const;
 
+/**
+ * What the pane draws for one activity entry at `columns`: the label, then as
+ * much of the entry as fits while leaving the last column unused, then the
+ * ellipsis that marks what was cut. The exact-fit expectations live in the
+ * `WIDE_TEXT` cases; this is the model the redraw sweep below is read against.
+ */
+function fittedEntry(label: string, text: string, columns: number): string {
+  const full = `${label}: ${text}`;
+  if (stringWidth(full) <= columns - 1) {
+    return full;
+  }
+  let fitted = '';
+  let cells = 0;
+  for (const { segment } of new Intl.Segmenter().segment(full)) {
+    const size = stringWidth(segment);
+    if (cells + size > columns - 2) {
+      break;
+    }
+    fitted += segment;
+    cells += size;
+  }
+  return `${fitted}…`;
+}
+
 // ---------------------------------------------------------------------------
 // The pane
 // ---------------------------------------------------------------------------
 
 describe('the activity pane', () => {
-  it('keeps the latest ten lines, and stops the screen from growing with the turn', () => {
+  it('stops the screen from growing with the turn, and keeps the newest work', () => {
     const terminal = fakeConsole(FULL_TERMINAL);
     const pane = createActivityDisplay(terminal.io);
     pane.line('run run-1: implementation turn started');
@@ -43,16 +69,119 @@ describe('the activity pane', () => {
       pane.activity({ kind: 'command', text: `step ${String(index)}` });
       // The screen after every line, not only the last one: a pane that grew
       // would show it here long before the run ended.
-      expect(screenAfter(terminal.chunks)).toHaveLength(1 + Math.min(index, 10));
+      expect(screenAfter(terminal.chunks).length).toBeLessThanOrEqual(1 + 20);
     }
 
     const screen = screenAfter(terminal.chunks);
     // The task and the phase stay on screen, and the pane below them holds the
-    // ten newest lines, oldest first.
+    // newest work lines, oldest first — one message-less group holds three.
     expect(screen[0]).toBe('run run-1: implementation turn started');
-    expect(screen.slice(1)).toEqual(
-      Array.from({ length: 10 }, (_, offset) => `run: step ${String(offset + 31)}`),
+    expect(screen.slice(1)).toEqual(['run: step 38', 'run: step 39', 'run: step 40']);
+    pane.close();
+  });
+
+  it('starts a new group at every agent message', () => {
+    const terminal = fakeConsole(FULL_TERMINAL);
+    const pane = createActivityDisplay(terminal.io);
+    // Work reported before the first message keeps its own group above it.
+    pane.activity({ kind: 'command', text: 'early work' });
+    pane.activity({ kind: 'message', text: 'I will change one file.' });
+    pane.activity({ kind: 'command', text: 'npm test' });
+    pane.activity({ kind: 'result', text: 'exit 1 — npm test' });
+    pane.activity({ kind: 'message', text: 'The failure is in the parser.' });
+    pane.activity({ kind: 'change', text: 'update src/parser.ts' });
+
+    expect(screenAfter(terminal.chunks)).toEqual([
+      'run: early work',
+      'agent: I will change one file.',
+      'run: npm test',
+      'result: exit 1 — npm test',
+      'agent: The failure is in the parser.',
+      'change: update src/parser.ts',
+    ]);
+    pane.close();
+  });
+
+  it('keeps at most the latest three work lines under one message', () => {
+    const terminal = fakeConsole(FULL_TERMINAL);
+    const pane = createActivityDisplay(terminal.io);
+    pane.activity({ kind: 'message', text: 'working' });
+    for (let index = 1; index <= 5; index += 1) {
+      pane.activity({ kind: 'command', text: `step ${String(index)}` });
+    }
+
+    expect(screenAfter(terminal.chunks)).toEqual([
+      'agent: working',
+      'run: step 3',
+      'run: step 4',
+      'run: step 5',
+    ]);
+    pane.close();
+  });
+
+  it('drops the oldest work lines first, so the messages accumulate in order', () => {
+    const terminal = fakeConsole(FULL_TERMINAL);
+    const pane = createActivityDisplay(terminal.io);
+    for (let group = 1; group <= 7; group += 1) {
+      pane.activity({ kind: 'message', text: `message ${String(group)}` });
+      for (const step of ['a', 'b', 'c']) {
+        pane.activity({ kind: 'command', text: `work ${String(group)}${step}` });
+      }
+      expect(screenAfter(terminal.chunks).length).toBeLessThanOrEqual(20);
+    }
+
+    // Twenty lines exactly: every message is still there, and what the earlier
+    // ones no longer carry is the work that followed them.
+    expect(screenAfter(terminal.chunks)).toEqual([
+      'agent: message 1',
+      'agent: message 2',
+      'agent: message 3',
+      'run: work 3c',
+      'agent: message 4',
+      'run: work 4a',
+      'run: work 4b',
+      'run: work 4c',
+      'agent: message 5',
+      'run: work 5a',
+      'run: work 5b',
+      'run: work 5c',
+      'agent: message 6',
+      'run: work 6a',
+      'run: work 6b',
+      'run: work 6c',
+      'agent: message 7',
+      'run: work 7a',
+      'run: work 7b',
+      'run: work 7c',
+    ]);
+    pane.close();
+  });
+
+  it('scrolls the oldest message once the work lines are gone', () => {
+    const terminal = fakeConsole(FULL_TERMINAL);
+    const pane = createActivityDisplay(terminal.io);
+    for (let index = 1; index <= 21; index += 1) {
+      pane.activity({ kind: 'message', text: `message ${String(index)}` });
+    }
+
+    expect(screenAfter(terminal.chunks)).toEqual(
+      Array.from({ length: 20 }, (_, offset) => `agent: message ${String(offset + 2)}`),
     );
+    pane.close();
+  });
+
+  it('makes room for new work rather than hiding it behind a full history of messages', () => {
+    const terminal = fakeConsole(FULL_TERMINAL);
+    const pane = createActivityDisplay(terminal.io);
+    for (let index = 1; index <= 20; index += 1) {
+      pane.activity({ kind: 'message', text: `message ${String(index)}` });
+    }
+    pane.activity({ kind: 'command', text: 'npm test' });
+
+    const screen = screenAfter(terminal.chunks);
+    expect(screen).toHaveLength(20);
+    expect(screen[0]).toBe('agent: message 2');
+    expect(screen.at(-1)).toBe('run: npm test');
     pane.close();
   });
 
@@ -157,28 +286,22 @@ describe('the activity pane', () => {
     },
   );
 
-  it('keeps wide activity in ten physical rows across scrolling, progress and cleanup', () => {
+  it('keeps wide activity on one row each across redraws, progress and cleanup', () => {
     const terminal = fakeConsole({ columns: 40, rows: 24 });
     const pane = createActivityDisplay(terminal.io);
-    const progress = ['HARN-11: implementation'];
+    const progress = ['HARN-16: implementation'];
     const latest: string[] = [];
     pane.line(progress[0] ?? '');
     for (let index = 0; index < 30; index += 1) {
-      const kind = (['message', 'command', 'result', 'change'] as const)[index % 4] ?? 'message';
-      const label = { message: 'agent', command: 'run', result: 'result', change: 'change' }[kind];
-      const prefix = `${label}: ${String(index)} `;
-      pane.activity({ kind, text: `${String(index)} ${'界👩🏽‍💻'.repeat(40)}` });
-      const count = Math.floor((38 - prefix.length) / 2);
-      const fitted = Array.from({ length: count }, (_, offset) =>
-        offset % 2 === 0 ? '界' : '👩🏽‍💻',
-      ).join('');
-      latest.push(`${prefix}${fitted}…`);
-      if (latest.length > 10) latest.shift();
+      const text = `${String(index)} ${WIDE_PAIR.repeat(40)}`;
+      pane.activity({ kind: 'change', text });
+      latest.push(fittedEntry('change', text, 40));
+      if (latest.length > 3) latest.shift();
       expect(stringWidth(latest.at(-1) ?? '')).toBeLessThan(40);
       expect(screenAfter(terminal.chunks, 40)).toEqual([...progress, ...latest]);
       if (index === 14) {
-        pane.line('HARN-11: repair 1');
-        progress.push('HARN-11: repair 1');
+        pane.line('HARN-16: repair 1');
+        progress.push('HARN-16: repair 1');
         pane.around(() => terminal.chunks.push('diagnostic\n'));
         progress.push('diagnostic');
         expect(screenAfter(terminal.chunks, 40)).toEqual([...progress, ...latest]);
@@ -304,18 +427,127 @@ describe('a terminal that cannot hold a pane', () => {
     expect(out).toEqual([`agent: ${text} end`]);
   });
 
-  it('keeps the pane full when the terminal reports no size', () => {
+  it('keeps the full-size bound when the terminal reports no size', () => {
     const terminal = fakeConsole();
     const pane = createActivityDisplay(terminal.io);
-    for (let index = 1; index <= 12; index += 1) {
-      pane.activity({ kind: 'command', text: `step ${String(index)}` });
+    for (let group = 1; group <= 8; group += 1) {
+      pane.activity({ kind: 'message', text: `message ${String(group)}` });
+      for (const step of ['a', 'b', 'c']) {
+        pane.activity({ kind: 'command', text: `work ${String(group)}${step}` });
+      }
     }
 
     const screen = screenAfter(terminal.chunks);
-    expect(screen).toHaveLength(10);
-    expect(screen[0]).toBe('run: step 3');
-    expect(screen.at(-1)).toBe('run: step 12');
+    expect(screen).toHaveLength(20);
+    expect(screen[0]).toBe('agent: message 1');
+    expect(screen.at(-1)).toBe('run: work 8c');
     pane.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The progress lines the pane sits under
+// ---------------------------------------------------------------------------
+
+describe('the progress lines above the pane', () => {
+  it('condenses a run’s startup inventory to what a reader follows', () => {
+    const terminal = fakeConsole(FULL_TERMINAL);
+    const pane = createActivityDisplay(terminal.io);
+    // The exact lines the source coordinator and the runner write, in order.
+    const lines = [
+      'HARN-8: reserved (E:\\projects\\nexus-jira-runs\\.intake\\receipts\\4008ea048f55a8edacd91d163b73d9f79772881e8bc40b590a47b977b3346c3a.json); claiming 10117',
+      'run run-20260919191843-5b7b4004 started: task "HARN-8" (Preserve Jira response-body read failures)',
+      'task deadline set for 2026-09-19T20:18:43.109Z: 3600000 ms of total task time, 600000 ms per configured command',
+      'agent selected: runtime codex, launch prefix ["C:/Users/User/.codex/packages/standalone/current/bin/codex.exe","--profile","nexus-flash","--model","deepseek-flash"]',
+      'source task: jira HARN-8 https://malton-family.atlassian.net/browse/HARN-8 (immutable id 10117, revision 2026-09-19T19:55:47.688+0200)',
+      'workspace prepared at E:\\projects\\nexus-jira-runs\\workspaces\\run-20260919191843-5b7b4004 on branch harness/run-20260919191843-5b7b4004 at df5769de5f5678896f85b0abe72111b98105d0f9',
+      'workspace Git identity configured: user.name=Nexus Agent, user.email=nexus@local, commit.gpgsign=false',
+      'baseline check-round started: 1 setup command, 1 check',
+      'baseline check-round result: passed',
+    ];
+    for (const line of lines) {
+      pane.line(line);
+    }
+
+    expect(screenAfter(terminal.chunks)).toEqual([
+      'HARN-8: reserved; claiming',
+      'run run-20260919191843-5b7b4004 started: task "HARN-8" (Preserve Jira response-body read failures)',
+      'time limit: 60 min total, 10 min per command',
+      'agent: runtime codex, model deepseek-flash',
+      'source task: jira HARN-8',
+      'workspace prepared at E:\\projects\\nexus-jira-runs\\workspaces\\run-20260919191843-5b7b4004',
+      'baseline check-round started: 1 setup command, 1 check',
+      'baseline check-round result: passed',
+    ]);
+    pane.close();
+  });
+
+  it('condenses a continuation’s receipt and workspace lines the same way', () => {
+    const terminal = fakeConsole(FULL_TERMINAL);
+    const pane = createActivityDisplay(terminal.io);
+    pane.line(
+      'HARN-8: reserved (E:\\projects\\nexus-jira-runs\\.intake\\receipts\\4008ea04.json); ' +
+        'continuing workspace ws-20260919191843-5b7b4004 (attempt 2); claiming 10117',
+    );
+    pane.line(
+      'continuing workspace ws-20260919191843-5b7b4004 (attempt 2) at ' +
+        'E:\\projects\\nexus-jira-runs\\workspaces\\ws-20260919191843-5b7b4004 on branch ' +
+        'harness/ws-20260919191843-5b7b4004 at df5769de5f5678896f85b0abe72111b98105d0f9',
+    );
+    pane.line(
+      'HARN-8: another reservation already existed, so it was not attempted ' +
+        '(E:\\projects\\nexus-jira-runs\\.intake\\receipts\\4008ea04.json)',
+    );
+
+    expect(screenAfter(terminal.chunks)).toEqual([
+      'HARN-8: reserved; continuing workspace ws-20260919191843-5b7b4004 (attempt 2); claiming',
+      'continuing workspace ws-20260919191843-5b7b4004 (attempt 2) at ' +
+        'E:\\projects\\nexus-jira-runs\\workspaces\\ws-20260919191843-5b7b4004',
+      'HARN-8: another reservation already existed, so it was not attempted',
+    ]);
+    pane.close();
+  });
+
+  it('names the runtime alone when the launch prefix names no model', () => {
+    const terminal = fakeConsole(FULL_TERMINAL);
+    const pane = createActivityDisplay(terminal.io);
+    pane.line('agent selected: runtime codex, launch prefix ["codex"]');
+    // A prefix that cannot be read as an argument array is not guessed at.
+    pane.line('agent selected: runtime codex, launch prefix not-json');
+
+    expect(screenAfter(terminal.chunks)).toEqual(['agent: runtime codex', 'agent: runtime codex']);
+    pane.close();
+  });
+
+  it('leaves a line it does not recognize as it was written', () => {
+    const terminal = fakeConsole(FULL_TERMINAL);
+    const pane = createActivityDisplay(terminal.io);
+    pane.line('implementation turn started');
+    pane.line('sj-1: skipped, not a usable task');
+    pane.line('post-agent check-round result: failed, 1 of 2 checks passed');
+
+    expect(screenAfter(terminal.chunks)).toEqual([
+      'implementation turn started',
+      'sj-1: skipped, not a usable task',
+      'post-agent check-round result: failed, 1 of 2 checks passed',
+    ]);
+    pane.close();
+  });
+
+  it('keeps every progress line exactly as written when the output is redirected', () => {
+    const out: string[] = [];
+    const pane = createActivityDisplay({ out: (text) => out.push(text), err: () => undefined });
+    const lines = [
+      'task deadline set for 2026-09-19T20:18:43.109Z: 3600000 ms of total task time, 600000 ms per configured command',
+      'agent selected: runtime codex, launch prefix ["codex","--model","deepseek-flash"]',
+      'workspace Git identity configured: user.name=Nexus Agent, user.email=nexus@local, commit.gpgsign=false',
+    ];
+    for (const line of lines) {
+      pane.line(line);
+    }
+    pane.close();
+
+    expect(out).toEqual(lines);
   });
 });
 
@@ -334,7 +566,7 @@ describe('reading activity from the runtime event stream', () => {
         command: 'npm test',
         exit_code: 2,
       }),
-    ).toEqual([{ kind: 'result', text: 'exit 2' }]);
+    ).toEqual([{ kind: 'result', text: 'exit 2 — npm test' }]);
     // No exit code: the runtime's own status word is what is reported.
     expect(
       itemActivities('item.completed', { type: 'command_execution', status: 'failed' }),
@@ -342,7 +574,169 @@ describe('reading activity from the runtime event stream', () => {
     // Neither an exit code nor a status word: it is still a finished command.
     expect(
       itemActivities('item.completed', { type: 'command_execution', command: 'npm test' }),
-    ).toEqual([{ kind: 'result', text: 'finished' }]);
+    ).toEqual([{ kind: 'result', text: 'finished — npm test' }]);
+  });
+
+  it('reports what the command said, when it said anything', () => {
+    expect(
+      itemActivities('item.completed', {
+        type: 'command_execution',
+        command: 'npm test',
+        exit_code: 1,
+        aggregated_output: 'FAIL src/a.test.ts\n  expected 1 to be 2\n\nTests  1 failed\n',
+      }),
+    ).toEqual([
+      {
+        kind: 'result',
+        // The last nonblank line: where a summary or an error usually is.
+        text: 'exit 1 — npm test — Tests 1 failed',
+      },
+    ]);
+    // A successful command with output says what it observed, too.
+    expect(
+      itemActivities('item.completed', {
+        type: 'command_execution',
+        command: 'git status --short',
+        exit_code: 0,
+        aggregated_output: ' M src/greet.ts\n',
+      }),
+    ).toEqual([{ kind: 'result', text: 'exit 0 — git status --short — M src/greet.ts' }]);
+    // Missing, empty, or unreadable output is not an excerpt.
+    for (const output of [undefined, '', '   \n\n', 7]) {
+      expect(
+        itemActivities('item.completed', {
+          type: 'command_execution',
+          command: 'npm test',
+          exit_code: 0,
+          aggregated_output: output,
+        }),
+      ).toEqual([{ kind: 'result', text: 'exit 0 — npm test' }]);
+    }
+  });
+
+  it('shows the payload of a PowerShell launcher instead of its own path', () => {
+    const launcher =
+      '"C:\\Users\\User\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies' +
+      '\\native\\powershell\\pwsh.exe"';
+    const payload = `'npm run validate'`;
+    expect(
+      itemActivities('item.started', {
+        type: 'command_execution',
+        command: `${launcher} -Command ${payload}`,
+      }),
+    ).toEqual([{ kind: 'command', text: payload }]);
+    // The same launcher on a completion: the operation is named by its payload,
+    // and the exit code and the excerpt are still there beside it.
+    expect(
+      itemActivities('item.completed', {
+        type: 'command_execution',
+        command: `${launcher} -NoProfile -Command ${payload}`,
+        exit_code: 2,
+        aggregated_output: 'src/a.ts(3,1): error TS2322: Type mismatch\n',
+      }),
+    ).toEqual([
+      {
+        kind: 'result',
+        text: "exit 2 — 'npm run validate' — src/a.ts(3,1): error TS2322: Type mismatch",
+      },
+    ]);
+  });
+
+  it('shows the payload of the other launchers it recognizes, quoting and all', () => {
+    const cases = [
+      ['pwsh -NoProfile -c "npm test"', '"npm test"'],
+      ['pwsh.exe -Command "git commit -m \'x\'"', '"git commit -m \'x\'"'],
+      ['cmd.exe /d /s /c "npm test"', '"npm test"'],
+      ['/bin/zsh -lc "git status --short"', '"git status --short"'],
+      ['bash -ec "npm run validate"', '"npm run validate"'],
+      ['bash -l -e -c "npm test"', '"npm test"'],
+      ['PowerShell.exe -NoLogo -NonInteractive -NoProfile -Command "npm test"', '"npm test"'],
+      ['cmd.exe /D /S /C "npm test"', '"npm test"'],
+    ] as const;
+    for (const [command, payload] of cases) {
+      expect(itemActivities('item.started', { type: 'command_execution', command })).toEqual([
+        { kind: 'command', text: payload },
+      ]);
+    }
+  });
+
+  it('shows the payload before bounding it, so a long path cannot hide the operation', () => {
+    const launcher = `"C:\\Users\\User\\.cache\\${'codex-runtimes\\'.repeat(12)}pwsh.exe"`;
+    const payload = `npm run validate -- --filter ${'x'.repeat(500)}`;
+    const [command] = itemActivities('item.started', {
+      type: 'command_execution',
+      command: `${launcher} -Command '${payload}'`,
+    });
+    expect(command?.kind).toBe('command');
+    expect(command?.text.startsWith("'npm run validate -- --filter")).toBe(true);
+    expect(command?.text).not.toContain('pwsh.exe');
+    expect(command?.text.length).toBeLessThanOrEqual(401);
+    expect(command?.text.endsWith('…')).toBe(true);
+  });
+
+  it.each([
+    'pwsh -NoProfile -File build.ps1 -Command smoke',
+    'powershell.exe -File "build script.ps1" -c smoke',
+    'pwsh -f build.ps1 -Command smoke',
+    'pwsh build.ps1 -Command smoke',
+    'pwsh -NoProfile build.ps1 -c smoke',
+    'bash build.sh -c smoke',
+    'bash -e "build script.sh" -lc smoke',
+    'sh -- build.sh -c smoke',
+    'cmd.exe /d build.cmd /c smoke',
+    'cmd.exe /k build.cmd /c smoke',
+    'pwsh -ExecutionPolicy Bypass -Command smoke',
+    'pwsh -Unknown -Command smoke',
+    'bash -o -c smoke',
+    'bash --rcfile -c smoke',
+    'bash -oc smoke',
+    'bash -C smoke',
+    'bash -ic smoke',
+    'cmd.exe /unknown /c smoke',
+  ])('retains the original command for an uncertain launch shape: %s', (command) => {
+    expect(itemActivities('item.started', { type: 'command_execution', command })).toEqual([
+      { kind: 'command', text: command },
+    ]);
+    expect(
+      itemActivities('item.completed', {
+        type: 'command_execution',
+        command,
+        exit_code: 0,
+        aggregated_output: 'smoke finished\n',
+      }),
+    ).toEqual([{ kind: 'result', text: `exit 0 — ${command} — smoke finished` }]);
+  });
+
+  it('bounds script-argument fallbacks without extracting their command-like flags', () => {
+    const command = `pwsh -File build.ps1 -Command ${'x'.repeat(500)}`;
+    expect(itemActivities('item.started', { type: 'command_execution', command })).toEqual([
+      { kind: 'command', text: `${command.slice(0, 400)}…` },
+    ]);
+    expect(
+      itemActivities('item.completed', { type: 'command_execution', command, exit_code: 1 }),
+    ).toEqual([{ kind: 'result', text: `exit 1 — ${command.slice(0, 160)}…` }]);
+  });
+
+  it('falls back to the command line it was given for a shape it does not know', () => {
+    // A program that is not one of the recognized launchers, even when a flag
+    // looks like one: the line is shown as it was reported.
+    const unknown = 'nerdctl.exe run --rm -v "C:\\a b\\tools" --command test image';
+    expect(itemActivities('item.started', { type: 'command_execution', command: unknown })).toEqual(
+      [{ kind: 'command', text: unknown }],
+    );
+    // A recognized launcher whose flag is missing is not read as a wrapper.
+    const noFlag = '"C:\\tools\\pwsh.exe" -NoProfile -File build.ps1';
+    expect(itemActivities('item.started', { type: 'command_execution', command: noFlag })).toEqual([
+      { kind: 'command', text: noFlag },
+    ]);
+    // And an unknown line longer than the activity bound is bounded, not shown
+    // in full.
+    const long = `node -e "${'x'.repeat(500)}"`;
+    const [bounded] = itemActivities('item.started', {
+      type: 'command_execution',
+      command: long,
+    });
+    expect(bounded?.text).toBe(`${long.slice(0, 400)}…`);
   });
 
   it('reads a message only once, when the item is complete', () => {

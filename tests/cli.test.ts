@@ -1006,7 +1006,7 @@ describe('the activity pane under the run status', () => {
     // thing printed is where the report is.
     const { runDir, report } = await readRun(fixture.outDir);
     const screen = screenAfter(console.chunks);
-    expect(screen.some((line) => line.startsWith('agent: '))).toBe(false);
+    expect(screen.some((line) => line.includes('I will change one file.'))).toBe(false);
     expect(screen).toContain('implementation turn started');
     expect(screen.join('\n')).toMatch(new RegExp(`^run ${report.runId}: passed$`, 'm'));
     expect(screen.at(-1)).toBe(`  report     ${path.join(runDir, 'result.json')}`);
@@ -1025,6 +1025,60 @@ describe('the activity pane under the run status', () => {
     expect(result.out).toMatch(/^agent: I will change one file\.$/m);
     expect(result.out).toMatch(/^result: exit 1$/m);
     expect(`${result.out}${result.err}`).not.toContain('\u001b');
+  });
+
+  it('keeps the task, the phase, and the model on screen without the startup inventory', async () => {
+    const fixture = await createRunFixture({
+      config: {
+        agent: {
+          runtime: 'codex',
+          command: ['codex', '--profile', 'nexus-flash', '--model', 'deepseek-flash'],
+        },
+      },
+      agent: reportingAgent(),
+    });
+    const console = fakeConsole({ columns: 100, rows: 24 });
+
+    const result = await run(
+      runArgv({ repo: 'target-project', config: 'harness.config.json', task: 'task.json' }),
+      {
+        cwd: fixture.parent,
+        dependencies: fixture.dependencies,
+        terminal: console.io.terminal,
+      },
+    );
+
+    expect(result.code).toBe(EXIT_OK);
+    // The interactive view carries the task, the phase, and the selected model.
+    const screen = screenAfter(console.chunks);
+    expect(screen.join('\n')).toMatch(/^run \S+ started: task "example-001" /m);
+    expect(screen).toContain('agent: runtime codex, model deepseek-flash');
+    expect(screen).toContain('implementation turn started');
+    // The useful path stays; the inventory a reader does not need — the launch
+    // prefix, the deadline timestamp, the revision, the branch and base commit,
+    // the commit identity — is left to the run log.
+    const shown = screen.join('\n');
+    for (const inventory of [
+      'launch prefix',
+      'task deadline set for',
+      'immutable id',
+      ' on branch ',
+      'Git identity',
+      'revision ',
+    ]) {
+      expect(shown, `the interactive view still shows "${inventory}"`).not.toContain(inventory);
+    }
+    expect(screen.some((line) => line.startsWith('workspace prepared at '))).toBe(true);
+
+    // What the run wrote to its own timeline is untouched by the presentation.
+    const { runDir } = await readRun(fixture.outDir);
+    const timeline = await readFile(path.join(runDir, 'logs', 'run.log'), 'utf8');
+    expect(timeline).toContain(
+      'agent selected: runtime codex, launch prefix ["codex","--profile","nexus-flash","--model","deepseek-flash"]',
+    );
+    expect(timeline).toContain('task deadline set for');
+    expect(timeline).toContain('workspace Git identity configured:');
+    expect(timeline).toContain('workspace prepared at');
   });
 
   it('shows a repair turn’s activity through the same pane', async () => {
@@ -1060,7 +1114,7 @@ describe('the activity pane under the run status', () => {
     expect(raw).toContain('agent: turn 2 reporting');
     // The pane is drawn under the progress and taken away at the end, whichever
     // turn reported last.
-    expect(screenAfter(console.chunks).some((line) => line.startsWith('agent: '))).toBe(false);
+    expect(screenAfter(console.chunks).some((line) => line.startsWith('agent: turn '))).toBe(false);
     expect(result.err).toBe('');
   });
 
@@ -1088,7 +1142,7 @@ describe('the activity pane under the run status', () => {
     const { runDir, report } = await readRun(fixture.outDir);
     const screen = screenAfter(console.chunks);
     expect(report.status).toBe('failed');
-    expect(screen.some((line) => line.startsWith('agent: '))).toBe(false);
+    expect(screen.some((line) => line.includes('I will change one file.'))).toBe(false);
     expect(screen.join('\n')).toMatch(new RegExp(`^run ${report.runId}: failed$`, 'm'));
     expect(screen.join('\n')).toContain(`run dir    ${runDir}`);
     expect(screen.join('\n')).toContain(`report     ${path.join(runDir, 'result.json')}`);
@@ -1129,7 +1183,7 @@ describe('the activity pane under the run status', () => {
 
     const { runDir, report } = await readRun(fixture.outDir);
     const screen = screenAfter(console.chunks);
-    expect(screen.some((line) => line.startsWith('agent: '))).toBe(false);
+    expect(screen.some((line) => line.includes('still working'))).toBe(false);
     expect(screen.join('\n')).toMatch(new RegExp(`^run ${report.runId}: cancelled$`, 'm'));
     expect(screen.join('\n')).toContain(`run dir    ${runDir}`);
     expect(screen.join('\n')).toContain(`report     ${path.join(runDir, 'result.json')}`);

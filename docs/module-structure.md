@@ -27,7 +27,8 @@ src/
     check-config.ts               (97)   `check-config` and what it prints
     run-command.ts                (224)  `run`: load the inputs, install the stop, print the outcome
     source-command.ts             (379)  `source list|run|watch`, the connector selection, abortable sleep
-    activity.ts                   (235)  the activity pane: a bounded block of lines under the progress
+    activity.ts                   (371)  the activity pane: a bounded, message-grouped block under the progress
+    progress.ts                   (136)  what a run's own progress line reads as on an interactive terminal
     dependencies.ts               (154)  the loop's real collaborators and the wrapped set a test gets
     signals.ts                    (28)   host SIGINT/SIGTERM/SIGBREAK handling
   config/
@@ -91,7 +92,7 @@ src/
       runtime.ts                  (110)  the launch prefix, the environment, the stop contract
       adapter.ts                  (402)  runCodexTurn: one turn, normalized for the runner
       prompt.ts                   (137)  what one turn is told, the bounded guidance included
-      events.ts                   (158)  reading the runtime's JSON event stream, activity lines included
+      events.ts                   (355)  the JSON event stream, and the activity lines read from it
 ```
 
 Every file is a module with one job. Three files stay deliberately large, because splitting them
@@ -107,17 +108,19 @@ further would separate one decision from itself: `runs/runner.ts` (the loop), `s
 - **Owns:** the process entry point, command dispatch, exit codes, argument parsing, usage text, and
   everything the user sees: progress echoed from the run timeline, the outcome block, source-list
   output, and error messages. `cli/activity.ts` is the one place that draws on the terminal beyond
-  ordinary lines: it keeps the latest runtime activity in a bounded pane under the progress, and it
-  falls back to ordinary lines when the output is redirected or the terminal cannot hold a pane. It
-  is also the only place that composes the loop's collaborators (`cli/dependencies.ts`), and the
-  only place that constructs a task source.
+  ordinary lines: it keeps the runtime activity in a bounded pane under the progress — grouped by
+  the agent's messages, with the oldest work lines dropped first — and it falls back to ordinary
+  lines when the output is redirected or the terminal cannot hold a pane. `cli/progress.ts` holds
+  what those progress lines read as there, and only there: a line it does not recognize is written
+  as the run wrote it. The directory is also the only place that composes the loop's collaborators
+  (`cli/dependencies.ts`), and the only place that constructs a task source.
 - **Does not own:** any part of the loop, any command execution, any Git or Jira call. A command
   module resolves its inputs, hands the collaborators to `runTask`/`runSource`/`watchSource`, and
   returns an exit code.
 - **Entry points:** `runCli`, `consoleContext` (`cli.ts`); `CliContext`, `CliIo`, `InterruptSignals`,
   `CliTerminal`, `EXIT_OK`, `EXIT_INPUT_ERROR`, `EXIT_USAGE`, `EXIT_CANCELLED`
   (`cli/context.ts`); `createActivityDisplay`, `ActivityDisplay`, `ACTIVITY_PANE_LINES`
-  (`cli/activity.ts`).
+  (`cli/activity.ts`); `interactiveProgress` (`cli/progress.ts`).
 
 ### `config/`
 

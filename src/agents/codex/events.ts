@@ -7,6 +7,11 @@
  * then have to keep up with the CLI — while a line that is not an event at all
  * is counted, because an interface that is not the one this adapter was written
  * for is exactly what an incomplete completion has to be reported as.
+ *
+ * The activity lines it reads are a copy for the terminal, never a replacement
+ * for the stream: the turn's own log keeps every event, nothing here decides an
+ * outcome, and what a command was asked to run is taken from the launch wrapper
+ * the runtime reported it through rather than guessed at.
  */
 import type { AgentActivity, TerminationOutcome } from '../../shared/types.js';
 
@@ -81,10 +86,20 @@ export function failureText(event: Record<string, unknown>): string | null {
 
 /** How much of a command or a message one activity line keeps. */
 const MAX_ACTIVITY_CHARS = 400;
+
+/**
+ * How much of a command a completion line repeats to say which operation it
+ * belongs to, and how much of that command's own output it quotes. Both are
+ * smaller than the activity bound, so a long command cannot crowd its outcome
+ * and its excerpt out of the line.
+ */
+const RESULT_OPERATION_CHARS = 160;
+const RESULT_EXCERPT_CHARS = 160;
+
 const graphemes = new Intl.Segmenter();
 
-/** One runtime string flattened onto one line, bounded, or `null` for no text. */
-function activityText(value: unknown): string | null {
+/** One runtime string flattened onto one line and bounded, or `null` for no text. */
+function activityText(value: unknown, max: number = MAX_ACTIVITY_CHARS): string | null {
   if (typeof value !== 'string') {
     return null;
   }
@@ -92,19 +107,209 @@ function activityText(value: unknown): string | null {
   if (flat === '') {
     return null;
   }
-  if (flat.length <= MAX_ACTIVITY_CHARS) {
+  if (flat.length <= max) {
     return flat;
   }
   // Keep the existing size bound without splitting a cluster before the CLI
   // has a chance to fit it to terminal columns. Full text stays in the log.
   let end = 0;
   for (const { segment, index } of graphemes.segment(flat)) {
-    if (index + segment.length > MAX_ACTIVITY_CHARS) {
+    if (index + segment.length > max) {
       break;
     }
     end = index + segment.length;
   }
   return `${flat.slice(0, end)}…`;
+}
+
+/** One token of a command line: its raw text and the offset just after it. */
+interface CommandToken {
+  readonly text: string;
+  readonly end: number;
+}
+
+/** Whether one character separates tokens. */
+function isSpace(character: string | undefined): boolean {
+  return character !== undefined && /\s/.test(character);
+}
+
+/**
+ * Splits a command line into its shell tokens. Only the boundaries matter here —
+ * whitespace outside quotes, and the quote characters themselves — so the
+ * scanner keeps every character exactly as it was reported and never interprets
+ * an escape, a substitution, or a variable.
+ */
+function commandTokens(command: string): readonly CommandToken[] {
+  const tokens: CommandToken[] = [];
+  let index = 0;
+  while (index < command.length) {
+    while (isSpace(command[index])) {
+      index += 1;
+    }
+    if (index >= command.length) {
+      break;
+    }
+    const start = index;
+    let quote = '';
+    while (index < command.length) {
+      const character = command[index] ?? '';
+      if (quote === '') {
+        if (character === '"' || character === "'") {
+          quote = character;
+          index += 1;
+          continue;
+        }
+        if (isSpace(character)) {
+          break;
+        }
+        index += 1;
+        continue;
+      }
+      if (character === quote) {
+        quote = '';
+      }
+      index += 1;
+    }
+    tokens.push({ text: command.slice(start, index), end: index });
+  }
+  return tokens;
+}
+
+/** The program a token names: no surrounding quotes, no directory, lower case. */
+function programName(token: string): string {
+  let text = token;
+  for (const quote of ['"', "'"]) {
+    if (text.length > 1 && text.startsWith(quote) && text.endsWith(quote)) {
+      text = text.slice(1, -1);
+      break;
+    }
+  }
+  const parts = text.split(/[\\/]/);
+  return (parts.at(-1) ?? text).toLowerCase();
+}
+
+/** How the launcher families this adapter recognizes pass the command through. */
+type ShellFamily = 'powershell' | 'cmd' | 'posix';
+
+const SHELL_FAMILIES: ReadonlyMap<string, ShellFamily> = new Map<string, ShellFamily>([
+  ['pwsh', 'powershell'],
+  ['pwsh.exe', 'powershell'],
+  ['powershell', 'powershell'],
+  ['powershell.exe', 'powershell'],
+  ['cmd', 'cmd'],
+  ['cmd.exe', 'cmd'],
+  ['sh', 'posix'],
+  ['bash', 'posix'],
+  ['dash', 'posix'],
+  ['zsh', 'posix'],
+  ['ksh', 'posix'],
+]);
+
+/** Whether one token is this family's own way of naming the command to run. */
+function isCommandFlag(family: ShellFamily, token: string): boolean {
+  const flag = token.toLowerCase();
+  if (family === 'powershell') {
+    return flag === '-command' || flag === '-c';
+  }
+  if (family === 'cmd') {
+    return flag === '/c';
+  }
+  // Recognize only these familiar, case-sensitive POSIX flag clusters.
+  // Other letters can select a different mode or consume an option argument.
+  return /^-[le]*c$/.test(token);
+}
+
+/** Known options that neither consume an argument nor select another input mode. */
+function isLauncherOption(family: ShellFamily, token: string): boolean {
+  if (family === 'powershell') {
+    return ['-noprofile', '-nologo', '-noninteractive'].includes(token.toLowerCase());
+  }
+  if (family === 'cmd') {
+    return ['/d', '/s'].includes(token.toLowerCase());
+  }
+  return /^-[le]+$/.test(token);
+}
+
+/**
+ * The command a recognized shell launcher was asked to run, or `null` for a
+ * shape this adapter does not recognize.
+ *
+ * Only the reported line is read, and the payload is the rest of it exactly as
+ * it was written — quotes and all — so what a reader sees is what ran, never a
+ * re-spelling of it. Nothing is executed, and nothing in the payload is
+ * interpreted. A launcher this does not recognize, one whose flag is missing,
+ * and one with an empty payload all return `null` and are shown as reported.
+ * Before the command flag, only known argument-free launcher options may be
+ * skipped. A script operand, file mode, or unfamiliar option ends recognition:
+ * a later command-like flag may belong to that script or option instead.
+ */
+function unwrapCommand(command: string): string | null {
+  const tokens = commandTokens(command);
+  const program = tokens[0];
+  if (program === undefined) {
+    return null;
+  }
+  const family = SHELL_FAMILIES.get(programName(program.text));
+  if (family === undefined) {
+    return null;
+  }
+  for (const token of tokens.slice(1)) {
+    if (isCommandFlag(family, token.text)) {
+      const payload = command.slice(token.end).trim();
+      return payload === '' ? null : payload;
+    }
+    if (!isLauncherOption(family, token.text)) {
+      return null;
+    }
+  }
+  return null;
+}
+
+/**
+ * The operation a command line performs: the payload of a recognized launcher,
+ * or the whole line when its shape is not one this adapter knows.
+ */
+function operationText(value: unknown, max: number): string | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  return activityText(unwrapCommand(value) ?? value, max);
+}
+
+/**
+ * The last thing a command's own output said, bounded, or `null` for no output.
+ * The last nonblank line is where a summary or an error usually is; nothing is
+ * read out of it, so an excerpt can never turn into a claim about the work.
+ */
+function outputExcerpt(value: unknown): string | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const lines = value.split('\n');
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = activityText(lines[index], RESULT_EXCERPT_CHARS);
+    if (line !== null) {
+      return line;
+    }
+  }
+  return null;
+}
+
+/**
+ * What one completed command reports: the outcome it was observed with, the
+ * operation it belongs to, and the last thing that operation's own output said
+ * when it said anything. The exit code is repeated, not read as success or
+ * failure, and an excerpt is the runtime's own words.
+ */
+function resultText(item: Record<string, unknown>): string {
+  const exitCode = item['exit_code'];
+  const outcome =
+    typeof exitCode === 'number'
+      ? `exit ${String(exitCode)}`
+      : (activityText(item['status']) ?? 'finished');
+  const operation = operationText(item['command'], RESULT_OPERATION_CHARS);
+  const excerpt = outputExcerpt(item['aggregated_output']);
+  return [outcome, operation, excerpt].filter((part): part is string => part !== null).join(' — ');
 }
 
 /** One entry of a `file_change` item's `changes` array, as an activity line. */
@@ -140,18 +345,13 @@ export function itemActivities(eventType: string, item: unknown): readonly Agent
   switch (record['type']) {
     case 'command_execution': {
       if (eventType === 'item.started') {
-        const command = activityText(record['command']);
+        const command = operationText(record['command'], MAX_ACTIVITY_CHARS);
         return command === null ? [] : [{ kind: 'command', text: command }];
       }
       if (eventType !== 'item.completed') {
         return [];
       }
-      const exitCode = record['exit_code'];
-      if (typeof exitCode === 'number') {
-        return [{ kind: 'result', text: `exit ${String(exitCode)}` }];
-      }
-      const status = activityText(record['status']);
-      return [{ kind: 'result', text: status ?? 'finished' }];
+      return [{ kind: 'result', text: resultText(record) }];
     }
     case 'agent_message': {
       const text = eventType === 'item.completed' ? activityText(record['text']) : null;

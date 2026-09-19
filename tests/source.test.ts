@@ -3143,7 +3143,11 @@ describe('the source commands through the CLI', () => {
       // And the batch's own summary is ordinary output, printed after the pane
       // was taken away: nothing of the pane is left on the screen.
       const screen = screenAfter(console.chunks);
-      expect(screen.some((line) => line.startsWith('agent: '))).toBe(false);
+      expect(screen.some((line) => line.includes('writing the marker'))).toBe(false);
+      // What the reservation said on the live terminal is the key and the act;
+      // its receipt path and immutable ID stay in the run's own evidence.
+      expect(screen).toContain('SAM1-11: reserved; claiming');
+      expect(screen.join('\n')).not.toContain('receipts');
       expect(screen.join('\n')).toMatch(/^source completed$/m);
       expect(screen.at(-1)).toMatch(/^ {2}skipped /);
     } finally {

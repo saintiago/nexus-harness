@@ -622,13 +622,19 @@ checked **offline**, with the runtime boundary substituted by a stand-in `codex`
 needs your own account, and the printed paths are always derived from the run directory the CLI
 really allocated.
 
-While a coding turn runs, the CLI also draws what the runtime is doing — its messages, short command
-start and result lines, and the files it changed — in a fixed ten-line pane under the progress.
-New lines scroll the oldest out, long lines are fitted to the pane, and control characters in
-runtime text are never written as terminal commands. A redirected, too small, or too narrow terminal
-gets those lines as ordinary output instead, with no cursor sequences at all; on every ending the
-pane is taken away before the outcome block above is printed. The full runtime output always stays
-in the turn's own `logs/agent-*.log`.
+While a coding turn runs, the CLI also draws what the runtime is doing — its messages, the commands
+it runs and their results, and the files it changed — in a fixed pane under the progress. A command
+is shown as the payload the runtime's shell wrapper was given, so a long PowerShell path cannot hide
+the operation, and a completion names the operation, its recorded exit code or status, and the last
+line of what it printed. The pane is grouped by the agent's messages — each message keeps at most
+its three latest work lines — and the whole history is at most twenty lines: the oldest work
+disappears first, so earlier messages stay in order as the work between them scrolls away. Every
+entry is fitted to one row, and control characters in runtime text are never written as terminal
+commands. The progress above keeps the task, the phase, and the selected model readable; the startup
+inventory — receipt paths, IDs, hashes, launch arguments — stays in the run log. A redirected, too
+small, or too narrow terminal gets every line as ordinary output instead, with no cursor sequences
+at all; on every ending the pane is taken away before the outcome block above is printed. The full
+runtime output always stays in the turn's own `logs/agent-*.log`.
 
 **5. Look at it, then delete it.**
 

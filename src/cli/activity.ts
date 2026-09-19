@@ -3,14 +3,20 @@
  * bounded block of lines drawn under the run's own progress.
  *
  * The progress — the timeline lines the CLI echoes as the run goes, then the
- * outcome block — is ordinary output. On an interactive terminal the latest
- * activity lines are kept in a fixed pane beneath it: a new line scrolls the
- * oldest out, and the pane is redrawn in place instead of appended, so the
- * visible screen stops growing with the turn. A redirected, too narrow, or too
- * short terminal gets the same lines as ordinary ones instead, without a single
- * cursor sequence. Closing the pane erases it and stops drawing, so the outcome
- * and the paths that follow are printed exactly as they were before the pane
- * existed, and an interrupted run leaves a usable terminal.
+ * outcome block — is ordinary output. On an interactive terminal the activity
+ * lines are kept in a fixed pane beneath it: it is redrawn in place instead of
+ * appended, so the visible screen stops growing with the turn, and it is bounded
+ * in lines, so a long run stays readable. A redirected, too narrow, or too short
+ * terminal gets the same lines as ordinary ones instead, without a single cursor
+ * sequence. Closing the pane erases it and stops drawing, so the outcome and the
+ * paths that follow are printed exactly as they were before the pane existed,
+ * and an interrupted run leaves a usable terminal.
+ *
+ * The history is grouped by the agent's own messages: each message starts a
+ * group that keeps at most the three latest work lines that followed it, and the
+ * whole history is bounded, so with several turns on screen the messages
+ * accumulate one below another while the work between them disappears
+ * oldest-first.
  *
  * It is presentation only. Nothing here is evidence of what a turn did: the full
  * runtime output stays in the turn's own agent log, and every decision is made
@@ -19,9 +25,13 @@
 import stringWidth from 'string-width';
 import type { AgentActivity } from '../shared/types.js';
 import type { CliIo } from './context.js';
+import { interactiveProgress } from './progress.js';
 
 /** How many activity lines the pane keeps and shows on a full-size terminal. */
-export const ACTIVITY_PANE_LINES = 10;
+export const ACTIVITY_PANE_LINES = 20;
+
+/** How many work lines one agent message's group keeps visible. */
+const WORK_LINES_PER_GROUP = 3;
 
 /** The terminal lines the pane always leaves to the run's own progress. */
 const RESERVED_ROWS = 4;
@@ -75,7 +85,11 @@ export interface ActivityDisplay {
    * the middle of it.
    */
   around(write: () => void): void;
-  /** Records one activity line; the oldest is dropped once the pane is full. */
+  /**
+   * Records one activity line. A message starts a new group; work lines join the
+   * newest group, which keeps its latest three, and the history is trimmed to
+   * the pane's bound.
+   */
   activity(activity: AgentActivity): void;
   /**
    * Erases the pane and stops drawing it. Called on every ending — a pass, a
@@ -122,7 +136,7 @@ function paneDisplay(
   width: number,
   height: number,
 ): ActivityDisplay {
-  const lines: string[] = [];
+  const groups: ActivityGroup[] = [];
   /** How many pane lines are on screen directly above the cursor. */
   let drawn = 0;
   let closed = false;
@@ -137,10 +151,32 @@ function paneDisplay(
 
   /** Draws the pane from the cursor's line, leaving the cursor below it. */
   const draw = (): void => {
+    const lines = linesOf(groups);
     for (const text of lines) {
       write(`${text}\n`);
     }
     drawn = lines.length;
+  };
+
+  /** Records one formatted activity line in its group. */
+  const record = (kind: AgentActivity['kind'], text: string): void => {
+    if (kind === 'message') {
+      groups.push({ message: text, work: [] });
+    } else {
+      let group = groups.at(-1);
+      if (group === undefined) {
+        // Work reported before the turn's first message is still that work: it
+        // keeps its own group rather than being placed under a message that
+        // came later.
+        group = { message: null, work: [] };
+        groups.push(group);
+      }
+      group.work.push(text);
+      if (group.work.length > WORK_LINES_PER_GROUP) {
+        group.work.splice(0, group.work.length - WORK_LINES_PER_GROUP);
+      }
+    }
+    fitHistory(groups, height);
   };
 
   return {
@@ -149,8 +185,12 @@ function paneDisplay(
         write(`${text}\n`);
         return;
       }
+      const presented = interactiveProgress(text);
+      if (presented === null) {
+        return;
+      }
       erase();
-      write(`${text}\n`);
+      write(`${presented}\n`);
       draw();
     },
     around: (action) => {
@@ -168,10 +208,7 @@ function paneDisplay(
         write(`${text}\n`);
         return;
       }
-      lines.push(text);
-      if (lines.length > height) {
-        lines.splice(0, lines.length - height);
-      }
+      record(activity.kind, text);
       erase();
       draw();
     },
@@ -180,6 +217,90 @@ function paneDisplay(
       closed = true;
     },
   };
+}
+
+/** One agent message and the work lines that followed it. */
+interface ActivityGroup {
+  /** The message line that starts the group, or `null` for work seen before one. */
+  readonly message: string | null;
+  /** The group's retained work lines, oldest first. */
+  readonly work: string[];
+}
+
+/** One row the pane draws, and where in the history it is kept. */
+interface ActivityRow {
+  readonly group: ActivityGroup;
+  /** The index of a work line, or `null` for the group's message line. */
+  readonly work: number | null;
+}
+
+/** Every line the history would draw, oldest first. */
+function linesOf(groups: readonly ActivityGroup[]): readonly string[] {
+  const lines: string[] = [];
+  for (const group of groups) {
+    if (group.message !== null) {
+      lines.push(group.message);
+    }
+    lines.push(...group.work);
+  }
+  return lines;
+}
+
+/** Every row of the history with the place it is kept, oldest first. */
+function rowsOf(groups: readonly ActivityGroup[]): readonly ActivityRow[] {
+  const rows: ActivityRow[] = [];
+  for (const group of groups) {
+    if (group.message !== null) {
+      rows.push({ group, work: null });
+    }
+    group.work.forEach((_line, index) => {
+      rows.push({ group, work: index });
+    });
+  }
+  return rows;
+}
+
+/** Removes one row, and a message-less group that no longer holds anything. */
+function removeRow(groups: ActivityGroup[], row: ActivityRow): void {
+  const position = groups.indexOf(row.group);
+  if (position < 0) {
+    return;
+  }
+  if (row.work === null) {
+    groups.splice(position, 1);
+    return;
+  }
+  row.group.work.splice(row.work, 1);
+  if (row.group.work.length === 0 && row.group.message === null) {
+    groups.splice(position, 1);
+  }
+}
+
+/**
+ * Drops rows until the history fits the pane it is drawn in.
+ *
+ * The oldest work line goes first, so earlier agent messages stay in order and
+ * accumulate one below another as the work between them disappears; a message
+ * is dropped only once no work line can go instead, and the history then scrolls
+ * as a plain sequence of messages. The row that just arrived is never the one
+ * dropped — a pane that hid the newest line would not show the work it exists to
+ * show — so work arriving under a history that is already all messages takes the
+ * oldest message's place.
+ */
+function fitHistory(groups: ActivityGroup[], capacity: number): void {
+  for (;;) {
+    const rows = rowsOf(groups);
+    if (rows.length <= capacity) {
+      return;
+    }
+    const oldestWork = rows.findIndex((row) => row.work !== null);
+    const target = oldestWork >= 0 && oldestWork < rows.length - 1 ? oldestWork : 0;
+    const row = rows[target];
+    if (row === undefined) {
+      return;
+    }
+    removeRow(groups, row);
+  }
 }
 
 /**
