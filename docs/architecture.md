@@ -6,6 +6,8 @@ One TypeScript CLI application, a few modules, and local files. No services, fra
 
 **Revision: 2026-09-19 — optional GitHub delivery.** One optional, configured step may push a passed source attempt's branch and open or update its pull request with Git and `gh`, before that attempt's result is published. It is its own small module, it runs commands through the existing process launcher, it keeps no delivery state, and it never merges. [spec.md](spec.md) §7 defines the behavior and [WORKFLOW.md](WORKFLOW.md) §8 the input.
 
+**Revision: 2026-09-19 — optional Nexus Lens reviews.** One optional, configured path reviews the pull requests of tickets the Jira connection reports as being in review, through an explicitly configured reviewer launch of the Codex adapter, and publishes a native GitHub review plus an app-owned check run as a GitHub App installation. It is its own small module, it is read-only on Jira and on any working copy, it keeps no registry or database, and it never merges. [spec.md](spec.md) §9 defines the behavior and [WORKFLOW.md](WORKFLOW.md) §9 the input.
+
 ## 1. Keep the existing application
 
 Retain the modules introduced by the completed tasks:
@@ -23,6 +25,7 @@ src/
   sources/            # the source contract, receipts, guidance, the coordinator
   sources/jira/       # the Jira Cloud connector
   delivery/           # the optional GitHub step: push a passed attempt, manage its pull request
+  reviews/            # the optional Nexus Lens review path: verdicts, GitHub App reviews and checks
   agents/codex/       # Codex CLI invocation and normalized turn results
 ```
 
@@ -44,11 +47,14 @@ cli → runner → workspace
              → checks
              → report
 cli → delivery (the optional GitHub step, used by a source command)
+cli → reviews (the optional Nexus Lens review path, with the read-only Jira queue)
 ```
 
 Only `agents/codex/` talks to a coding runtime. Only `workspace/` handles Git/working-copy preparation. Only `process/` starts or stops a process, and `checks/round.ts` says what a configured command's result means. Report file writes belong in `reporting/`.
 
 `delivery/github.ts` is the one module that pushes a branch or drives `gh`. It starts every command through `process/`, refuses a working copy that still holds uncommitted work, treats GitHub as the record of whether a pull request exists, and never merges, force-pushes, or changes an issue's state. The CLI builds it from the configuration and hands it to the source coordinator; the runner never sees it, and a run without it behaves exactly as before.
+
+`reviews/` is the one module that reviews a ticket's pull request, and the only one that talks to GitHub as a GitHub App. `github.ts` owns the App JWT, the installation token, and the repository reads and writes; `reviewer.ts` owns the reviewer prompt, the one bounded Codex turn that answers it, and the verdict file it validates; `diff.ts` owns how a finding is positioned in the pull request's diff; `scan.ts` owns one scan or watch and what it publishes; `contract.ts` is the ordinary data and failures they share. The CLI builds it from the configuration, the Jira connection, and the two credentials the configuration names. It never claims a Jira item, transitions one, or posts a comment, it never opens a working copy, and the runner never sees it.
 
 `config.ts` validates the optional `agent` object, supplies the legacy default when it is omitted, and applies the path rules in WORKFLOW. CLI composition passes the effective selection to the existing agent adapter. The runner does not interpret profiles, model IDs, credentials, CLI events, or provider APIs.
 
@@ -138,7 +144,7 @@ Keep npm, strict TypeScript, ESLint, Prettier, Vitest, Zod, the existing dev run
 
 Add Claude Code only as a later concrete adapter with its own invocation/event parser and tests. Share existing process-lifetime code where useful; keep vendor types out of the runner. Do not build it, accept it in validation, or add a throwing placeholder now.
 
-Jira intake and the optional GitHub delivery step are the current additions. Merging a delivered pull request, CI observation, stronger isolation, parallel work, provider routing, and dashboards remain deferred. Keep one application until an actual feature requires otherwise.
+Jira intake, the optional GitHub delivery step, and the optional Nexus Lens review path are the current additions. Merging a delivered pull request, coordinator-driven CI observation and merge verification, stronger isolation, parallel work, provider routing, and dashboards remain deferred. Keep one application until an actual feature requires otherwise.
 
 ## 7. Small task-source boundary
 

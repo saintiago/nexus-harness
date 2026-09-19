@@ -87,6 +87,13 @@ export interface HarnessConfig {
    */
   readonly escalation?: readonly EscalationTier[];
   /**
+   * The optional review path, normalized: the only implemented type is
+   * `"github"`, and without this object no command reviews anything — a
+   * `review` command needs it, and nothing else reads it
+   * (docs/WORKFLOW.md §9).
+   */
+  readonly review?: GitHubReviewConfig;
+  /**
    * The optional delivery step, normalized: the only implemented type is
    * `"github"`, and without this object a run stays local-only — nothing is
    * pushed and no pull request is opened (docs/WORKFLOW.md §8).
@@ -157,6 +164,57 @@ export interface GitHubDeliveryConfig {
   readonly repository: string;
   /** Base branch a delivered pull request targets, for example `main`. */
   readonly baseBranch: string;
+}
+
+/**
+ * The GitHub App a review is published as: the installation identity, never a
+ * credential.
+ *
+ * The App ID and the installation ID name the installation; the private key
+ * that signs the App's JWT is named by an environment variable holding the path
+ * of its PEM file, exactly as the Jira token is named by `tokenEnv`. The key
+ * itself never appears in configuration, in a task, in a log, or in a report
+ * (docs/WORKFLOW.md §9).
+ */
+export interface GitHubReviewAppConfig {
+  /** The GitHub App's numeric ID, as the JWT `iss` issuer. */
+  readonly appId: number;
+  /** The installation of that App on the configured repository. */
+  readonly installationId: number;
+  /** Name of the environment variable holding the path of the App's PEM key. */
+  readonly privateKeyPathEnv: string;
+  /**
+   * The login the installation's reviews are authored as, for example
+   * `nexus-lens[bot]`. A completed review by this login is the record that one
+   * head was already reviewed.
+   */
+  readonly login: string;
+}
+
+/**
+ * Validated `review` object: the optional Nexus Lens review path.
+ *
+ * It reviews open pull requests that belong to tickets the configured Jira
+ * connection reports as being in review, through the existing Jira connector
+ * and the configured Codex runner, and publishes one native GitHub review plus
+ * one app-owned check run for the reviewed head. The reviewer launch is its own
+ * selection, so reviewing is never the coding tier that implemented the ticket
+ * (docs/WORKFLOW.md §9).
+ */
+export interface GitHubReviewConfig {
+  /** The only implemented review type: the GitHub REST API, as an App. */
+  readonly type: 'github';
+  /** Repository as `owner/name` on github.com whose pull requests are reviewed. */
+  readonly repository: string;
+  /** The App installation the review and its check are published as. */
+  readonly app: GitHubReviewAppConfig;
+  /**
+   * The reviewer's launch, resolved like the top-level `agent`: the reviewer
+   * profile is explicitly configured, and it is not the coding tier.
+   */
+  readonly reviewer: AgentSelection;
+  /** Name of the app-owned check run that carries an approved verdict. */
+  readonly checkName: string;
 }
 
 /**

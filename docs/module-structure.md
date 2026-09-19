@@ -87,10 +87,16 @@ src/
       adf-text.ts                 (296)  rendering that description and extracting the criteria
   delivery/
     github.ts                     (425)  the optional GitHub step: push, find, create or update a PR
+  reviews/
+    contract.ts                   (329)  the review data, failures, and the repository/queue boundary
+    github.ts                     (718)  the App JWT, the installation token, and the repository calls
+    diff.ts                       (132)  the pull request's diff, and where a finding is positioned
+    reviewer.ts                   (390)  the reviewer prompt, the one bounded turn, and the verdict file
+    scan.ts                       (714)  one scan or watch: eligibility, dedup, publishing, evidence
   agents/
     codex/
       runtime.ts                  (110)  the launch prefix, the environment, the stop contract
-      adapter.ts                  (402)  runCodexTurn: one turn, normalized for the runner
+      adapter.ts                  (431)  runCodexTurn/runCodexPrompt: one turn, normalized for the runner
       prompt.ts                   (137)  what one turn is told, the bounded guidance included
       events.ts                   (355)  the JSON event stream, and the activity lines read from it
 ```
@@ -182,7 +188,8 @@ further would separate one decision from itself: `runs/runner.ts` (the loop), `s
 - **Does not own:** the run's decisions; it writes what it is handed, and a file that already exists is
   refused rather than overwritten.
 - **Entry points:** `runLogPath`, `appendRunLog`, `openCommandLog`, `readCommandOutput`,
-  `agentLogPath`, `openAgentLog` (`reporting/logs.ts`); `RunReportRequest`, `runReportPath`,
+  `agentLogPath`, `openAgentLog`, `openEvidenceLog` (`reporting/logs.ts`); `RunReportRequest`,
+  `runReportPath`,
   `sourceTaskPath`, `writeSourceTaskSnapshot`, `writeRunReport` (`reporting/report.ts`);
   `ChangeSummaryRequest`, `summarizeChanges` (`reporting/changes.ts`); `ReportError`
   (`reporting/errors.ts`).
@@ -301,9 +308,36 @@ further would separate one decision from itself: `runs/runner.ts` (the loop), `s
 - **Does not own:** the run, the checks, the working copy, or model/provider selection. The launch
   prefix comes from configuration, and credentials stay in the runtime's own environment or native
   configuration.
-- **Entry points:** `runCodexTurn`, `AgentError` (`agents/codex/adapter.ts`); `codexRuntime`,
+- **Entry points:** `runCodexTurn`, `runCodexPrompt`, `CodexPromptRequest`, `AgentError`
+  (`agents/codex/adapter.ts`); `codexRuntime`,
   `selectedCodexRuntime`, `CodexRuntime`, `CODEX_EXECUTABLE`, `CODEX_EXEC_ARGUMENTS`
   (`agents/codex/runtime.ts`).
+
+### `reviews/`
+
+- **Owns:** the one optional Nexus Lens review path. `contract.ts` is the ordinary data and
+  failures the scan acts on (`ReviewError`, its problem kinds, the pull request, review, verdict,
+  evidence and summary shapes, and the two boundaries — `ReviewQueue`, the read-only Jira side,
+  and `ReviewRepository`, everything the scan needs from GitHub). `github.ts` is the App
+  installation: the RS256 JWT signed with the configured PEM key, the installation token it is
+  exchanged for, and the pull request, review, diff, contents, check and check-run calls the scan
+  makes. `diff.ts` renders the diff the reviewer reads and computes the classic diff position of
+  a finding, so a finding the patch does not show is reported in the body instead of dropped.
+  `reviewer.ts` is the prompt one ticket's evidence becomes, the one bounded Codex turn through
+  `agents/codex/`, and the strict reader of the `verdict.json` that turn has to write. `scan.ts`
+  is one finite scan and the watch above it: eligibility, the pointer-to-branch pull request
+  lookup, the native deduplication, the stale-head and stale-ticket rechecks before publishing,
+  the review and check publishing, and the evidence directory and log each attempt keeps.
+- **Does not own:** the coding loop, the working copy, Jira writes, delivery, or merging. It
+  claims nothing, moves nothing, posts no Jira comment, starts no coding turn, and keeps no
+  registry: a completed review pinned to a commit is the deduplication record.
+- **Entry points:** `ReviewError`, `ReviewScanContext`, `ReviewWatchOptions`, `ReviewSummary`,
+  `ReviewItemResult`, `ReviewQueue`, `ReviewRepository`, `ReviewerTurn`, `ReviewVerdict`
+  (`reviews/contract.ts`); `resolveAppPrivateKey`, `appJwt`, `createGitHubReviewClient`,
+  `GITHUB_API_BASE_URL` (`reviews/github.ts`); `reviewPrompt`, `parseVerdict`,
+  `createReviewerTurn` (`reviews/reviewer.ts`); `scanReviews`, `watchReviews`,
+  `allocateReviewDirectory` (`reviews/scan.ts`); `diffPosition`, `renderDiff`,
+  `positionFindings` (`reviews/diff.ts`).
 
 ## 3. Dependency direction
 
@@ -329,6 +363,9 @@ cli/*  ---- the commands: parse, load, compose, print, exit
   |
   +--> delivery/  -------> process/ (bounded commands), workspace/ (Git hygiene)
   |
+  +--> reviews/   -------> agents/codex/, reporting/ (evidence log), workspace/ (pointer ids),
+  |                        sources/contract.ts, shared/
+  |
   +--> agents/codex/  -------> process/ (launch and stop)
   |
   +--> config/  and  shared/  (low level: schemas, data contracts, messageOf)
@@ -348,6 +385,11 @@ The rules that keep it acyclic:
 - `sources/jira/` depends on `sources/contract.ts`, `sources/jira/json.ts`, and `config/schema.ts`;
   nothing above `sources/` imports a connector except the one command that builds it
   (`cli/source-command.ts`).
+- `reviews/` depends on `agents/codex/` for the reviewer turn, `reporting/` for its evidence log,
+  `workspace/run-directory.ts` for the pointer-id check, `sources/contract.ts` for the ordinary
+  queue data, and `shared/`. Its queue is handed to it as functions, so it imports no Jira
+  connector; the CLI is the one place that builds it (`cli/review-command.ts`), and nothing else
+  imports `reviews/`.
 - Nothing imports `cli.ts`, and nothing outside `cli/` writes to the terminal.
 
 The two boundary rules the repository enforces mechanically are checked with ESLint and the boundary
@@ -368,6 +410,7 @@ fixtures: helper modules may not import the CLI, and `src/shared/types.ts` may n
 | Escalation ladder | `EscalationTier` (`src/shared/types.ts`), the `escalation` schema in `src/config/schema.ts`, the climb in `src/sources/coordinator.ts` | the operator's configuration |
 | Attempt guidance | `SourceComment` (`src/sources/contract.ts`), rendering and bounds in `src/sources/guidance.ts`, the prompt section in `src/agents/codex/prompt.ts` | the item's own thread and the workspace ledger, bounded, context only |
 | Delivery | `GitHubDeliveryConfig` (`src/shared/types.ts`), the `delivery` schema in `src/config/schema.ts`, `Delivery`/`DeliveryRequest`/`DeliveredPullRequest` and `createGitHubDelivery` (`src/delivery/github.ts`), the call in `src/sources/coordinator.ts` | the operator's configuration; GitHub is the record of whether a pull request exists |
+| Review | `GitHubReviewConfig` (`src/shared/types.ts`), the `review` schema in `src/config/schema.ts`, `ReviewQueue`/`ReviewRepository`/`ReviewVerdict`/`ReviewSummary` (`src/reviews/contract.ts`), `createGitHubReviewClient` (`src/reviews/github.ts`), `createReviewerTurn` (`src/reviews/reviewer.ts`), `scanReviews`/`watchReviews` (`src/reviews/scan.ts`), wired by `src/cli/review-command.ts` | the operator's configuration and the GitHub App installation; the native review pinned to a commit is the record of what was reviewed |
 
 The runner's collaborators are still plain functions (`RunnerDependencies`), so a test substitutes
 one function rather than a framework. `cli/dependencies.ts` is the only place that builds the real

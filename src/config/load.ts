@@ -98,7 +98,7 @@ export async function loadHarnessConfig(configPath: string): Promise<HarnessConf
   if (!result.success) {
     throw new ConfigError(configPath, describeIssues(result.error));
   }
-  const { agent, escalation, source, ...rest } = result.data;
+  const { agent, escalation, source, review, ...rest } = result.data;
   const selection = resolveAgentSelection(agent ?? DEFAULT_AGENT_SELECTION, configPath);
   return {
     ...rest,
@@ -121,6 +121,12 @@ export async function loadHarnessConfig(configPath: string): Promise<HarnessConf
     // must not acquire a connector, a credential, or intake state because a
     // field it never asked for was given a default (docs/WORKFLOW.md §5).
     ...(source === undefined ? {} : { source }),
+    // A reviewer launch obeys the same path rules as the coding launch: the
+    // selection is resolved once, before anything runs, and a review command is
+    // the only caller that reads it (docs/WORKFLOW.md §9).
+    ...(review === undefined
+      ? {}
+      : { review: { ...review, reviewer: resolveAgentSelection(review.reviewer, configPath) } }),
   };
 }
 
