@@ -7,8 +7,10 @@
  * that run's result is reported, so the issue's comment can carry the pull
  * request the attempt produced. GitHub is the record of whether a pull request
  * exists: the step lists the destination by repository, head branch, and base
- * branch, creates one only when none exists, and otherwise updates the one it
- * found. There is no local delivery state and no automatic replay.
+ * branch, updates the one open match, creates one only when none exists, and
+ * refuses a match that is closed or merged instead of editing a pull request
+ * no open review would receive. There is no local delivery state and no
+ * automatic replay.
  *
  * Four rules this module keeps, whatever the commands do:
  *
@@ -100,9 +102,11 @@ export interface GitHubDeliveryParts {
   readonly env?: NodeJS.ProcessEnv;
 }
 
-/** One pull request as `gh pr list --json url` reports it. */
+/** One pull request as `gh pr list --json url,state` reports it. */
 interface PullRequestMatch {
   readonly url: string;
+  /** GitHub's own state for it: `OPEN`, `CLOSED`, or `MERGED`. */
+  readonly state: string;
 }
 
 /** The last nonblank line of what a command wrote, for a one-line failure. */
@@ -185,7 +189,7 @@ function pullRequestUrl(output: string): string | null {
   return match === null ? null : match[0];
 }
 
-/** What `gh pr list --json url` answered, or a failure naming what it said. */
+/** What `gh pr list --json url,state` answered, or a failure naming what it said. */
 function parsePullRequestList(output: string): readonly PullRequestMatch[] {
   let value: unknown;
   try {
@@ -201,16 +205,22 @@ function parsePullRequestList(output: string): readonly PullRequestMatch[] {
     throw new DeliveryError('gh pr list did not answer with a list of pull requests.');
   }
   return value.map((entry) => {
-    if (
-      typeof entry !== 'object' ||
-      entry === null ||
-      typeof (entry as { url?: unknown }).url !== 'string'
-    ) {
+    if (typeof entry !== 'object' || entry === null) {
+      throw new DeliveryError('gh pr list answered with an entry that is not a pull request.');
+    }
+    const { url, state } = entry as { url?: unknown; state?: unknown };
+    if (typeof url !== 'string') {
       throw new DeliveryError(
         'gh pr list answered with an entry that carries no pull request URL.',
       );
     }
-    return { url: (entry as { url: string }).url };
+    if (typeof state !== 'string') {
+      throw new DeliveryError(
+        `gh pr list answered with a pull request that carries no native state, so this harness ` +
+          `cannot tell whether ${url} is still open.`,
+      );
+    }
+    return { url, state };
   });
 }
 
@@ -284,18 +294,27 @@ export function createGitHubDelivery(
     }
   };
 
-  const gitHint =
-    'Check that this machine can reach the destination repository and that its Git credentials ' +
-    'are set up, then retry; the harness never force-pushes.';
-  const ghHint =
-    'Check the GitHub CLI with "gh auth status", then retry; a retry looks the pull request up on ' +
-    'GitHub first, so it updates an existing one instead of creating a second.';
-
   return {
     async deliver(
       request: DeliveryRequest,
       stop: AbortSignal,
     ): Promise<DeliveredPullRequest | null> {
+      // How an operator finishes this delivery by hand: checking the destination
+      // first matters because a push or a pull request creation that reported a
+      // failure may still have taken effect, and nothing here ever replays the
+      // coding turn that produced the work (docs/WORKFLOW.md §8).
+      const gitHint =
+        `Check that this machine can reach ${repository} and that its Git credentials are set ` +
+        'up. A failed push may already have updated the branch, so check the destination before ' +
+        `pushing by hand from the retained workspace ("git ls-remote ${pushUrl} ` +
+        `refs/heads/${request.branch}", or ${repository} on GitHub). The harness never ` +
+        'force-pushes, and it never starts a coding turn to repair a delivery failure.';
+      const ghHint =
+        'Check the GitHub CLI with "gh auth status". Before retrying by hand, look the pull ' +
+        `request up on GitHub ("gh pr list --repo ${repository} --head ${request.branch} --base ` +
+        `${baseBranch} --state all", or the repository's own page): a failed create may already ` +
+        'have opened it. The harness never starts a coding turn to repair a delivery failure.';
+
       // What the run left behind is checked again here, against the checkout
       // itself: a working copy that is still dirty is refused, and nothing of it
       // is pushed or committed on its behalf.
@@ -319,9 +338,11 @@ export function createGitHubDelivery(
       if (leftovers.length > 0) {
         throw new DeliveryError(
           `${listPaths(leftovers)} still hold uncommitted changes in ${request.workspacePath}, so ` +
-            'nothing was pushed and no pull request was created or updated. Commit those paths in ' +
-            'the retained workspace, or remove them, and retry; the harness never commits or ' +
-            "discards a coding turn's leftovers itself.",
+            'nothing was pushed and no pull request was created or updated. Commit those paths ' +
+            'in the retained workspace, or remove them, and then push the branch and open or ' +
+            'update the pull request by hand with git and gh (docs/WORKFLOW.md §8); the harness ' +
+            "never commits or discards a coding turn's leftovers itself, and it starts no coding " +
+            'turn to repair a delivery failure.',
         );
       }
 
@@ -381,23 +402,25 @@ export function createGitHubDelivery(
           '--limit',
           '20',
           '--json',
-          'url',
+          'url,state',
         ],
         stop,
         ghHint,
       );
       const matches = parsePullRequestList(await stdoutOf(listed));
-      if (matches.length > 1) {
+      const open = matches.filter((match) => match.state.toUpperCase() === 'OPEN');
+      if (open.length > 1) {
         throw new DeliveryError(
-          `${String(matches.length)} pull requests already match ${repository} head ` +
-            `${request.branch} base ${baseBranch}, so the harness will not guess which one is this ` +
-            "attempt's delivery. Resolve them by hand and retry.",
+          `${String(open.length)} open pull requests already match ${repository} head ` +
+            `${request.branch} base ${baseBranch}, so the harness will not guess which one is ` +
+            "this attempt's delivery. Resolve them by hand and deliver again.",
         );
       }
 
       // What is published is written down first: the same body goes to a new
       // pull request and to one that is updated, and the file stays beside the
-      // run's other evidence.
+      // run's other evidence — where an operator opening the pull request by
+      // hand can take it from.
       const bodyFile = path.join(request.logsDir, 'delivery-pull-request-body.md');
       try {
         await writeFile(bodyFile, pullRequestBody(request), 'utf8');
@@ -407,7 +430,7 @@ export function createGitHubDelivery(
         );
       }
 
-      const [found] = matches;
+      const [found] = open;
       if (found !== undefined) {
         await execute(
           request,
@@ -427,6 +450,22 @@ export function createGitHubDelivery(
           ghHint,
         );
         return { url: found.url, created: false };
+      }
+
+      // A match that is no longer open receives no edit: editing it would report
+      // a delivery that no open review received. The branch is already pushed.
+      if (matches.length > 0) {
+        const described = matches
+          .map((match) => `${match.url} (${match.state})`)
+          .join(', ');
+        throw new DeliveryError(
+          `the pull request found for ${repository} head ${request.branch} base ${baseBranch} ` +
+            `is not open (${described}), so this attempt has no open review to receive it. The ` +
+            'branch was pushed; the harness never reopens a closed or merged pull request and ' +
+            'never edits one back into looking current. Either reopen it by hand if the review ' +
+            `should continue, or open a new pull request from this branch yourself, using the ` +
+            `title and the body this step wrote to ${bodyFile}.`,
+        );
       }
 
       const created = await execute(
@@ -455,8 +494,10 @@ export function createGitHubDelivery(
       if (url === null) {
         throw new DeliveryError(
           'gh pr create did not report a pull request URL, so this harness cannot say what was ' +
-            'created. Check the destination repository on GitHub before retrying: a retry looks ' +
-            'the pull request up first and updates it instead of creating a second one.',
+            'created: it may already have opened one. Check the destination repository on GitHub ' +
+            'before opening a pull request by hand — when an open pull request for this head and ' +
+            'base is already there, the attempt is delivered, and this step updates it rather ' +
+            'than creating a second one.',
         );
       }
       return { url, created: true };

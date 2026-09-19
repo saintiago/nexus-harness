@@ -49,6 +49,20 @@ interface FixtureOptions {
   readonly leftover?: string;
   /** Make one stand-in `gh` invocation fail, as a refused request would. */
   readonly fail?: 'list' | 'create' | 'edit';
+  /**
+   * One pull request the destination already holds for this head and base, as
+   * its own native state. Seeded where a repeated delivery would otherwise have
+   * created it.
+   */
+  readonly existing?: { readonly state: 'OPEN' | 'CLOSED' | 'MERGED' };
+}
+
+/** One pull request the stand-in GitHub already holds, before any delivery runs. */
+interface SeededPullRequest {
+  readonly state: 'OPEN' | 'CLOSED' | 'MERGED';
+  /** Defaults to the seed's position, so the first one is `pull/1`. */
+  readonly number?: number;
+  readonly body?: string;
 }
 
 /** One attempt's workspace: a clone-shaped repository on its own branch. */
@@ -94,7 +108,49 @@ async function createFixture(options: FixtureOptions = {}): Promise<Fixture> {
     env: fakeGhEnvironment(bin, state, options.fail),
   });
 
-  return { parent, workspace, bin, remote, logsDir, baseCommit, gh: state, delivery };
+  const fixture: Fixture = {
+    parent,
+    workspace,
+    bin,
+    remote,
+    logsDir,
+    baseCommit,
+    gh: state,
+    delivery,
+  };
+  if (options.existing !== undefined) {
+    await seedPullRequests(fixture, [options.existing]);
+  }
+  return fixture;
+}
+
+/**
+ * Writes the pull requests the stand-in GitHub already holds for this head and
+ * base: one JSON line each, as the stand-in reads them back.
+ */
+async function seedPullRequests(
+  fixture: Fixture,
+  seeds: readonly SeededPullRequest[],
+): Promise<void> {
+  await writeFile(
+    fixture.gh.pullRequestsFile,
+    seeds
+      .map((seed, index) => {
+        const number = seed.number ?? index + 1;
+        return `${JSON.stringify({
+          url: `https://github.com/${REPOSITORY}/pull/${String(number)}`,
+          number,
+          repo: REPOSITORY,
+          head: BRANCH,
+          base: BASE_BRANCH,
+          title: `an earlier pull request (${seed.state})`,
+          body: seed.body ?? `the body a previous delivery wrote (${seed.state})`,
+          state: seed.state,
+        })}\n`;
+      })
+      .join(''),
+    'utf8',
+  );
 }
 
 /** What the delivery commands inherit: the stand-in `gh` first on `PATH`. */
@@ -202,6 +258,9 @@ describe('the GitHub delivery step', () => {
 
     const calls = await fakeGhCalls(fixture.gh);
     expect(calls.map((call) => call.op)).toEqual(['list', 'create']);
+    // The lookup reads the pull request's own state, so a match that is no
+    // longer open cannot be mistaken for a delivery.
+    expect(calls[0]?.argv).toContain('url,state');
     const created = calls[1];
     expect(created?.repo).toBe(REPOSITORY);
     expect(created?.head).toBe(BRANCH);
@@ -319,6 +378,56 @@ describe('the GitHub delivery step', () => {
     expect(delivered).toBeNull();
     expect(await fakeGhCalls(fixture.gh)).toEqual([]);
     expect(destinationHasBranch(fixture)).toBe(false);
+  });
+
+  it.each(['CLOSED', 'MERGED'] as const)(
+    'refuses to edit a %s pull request into a delivery no open review receives',
+    async (state) => {
+      const fixture = await createFixture({ existing: { state } });
+
+      const failure = await withFakeGhOnPath(fixture.bin, async () =>
+        refusal(
+          async () =>
+            await fixture.delivery.deliver(requestFor(fixture), new AbortController().signal),
+        ),
+      );
+
+      expect(failure).toBeInstanceOf(DeliveryError);
+      expect(failure.message).toContain('is not open');
+      expect(failure.message).toContain(state);
+      expect(failure.message).toContain(`https://github.com/${REPOSITORY}/pull/1`);
+      expect(failure.message).toContain('never reopens');
+      expect(failure.message).toContain('reopen');
+
+      // The branch really was pushed before the lookup, but the pull request
+      // was neither edited nor duplicated, and its own body is untouched.
+      expect(destinationHasBranch(fixture)).toBe(true);
+      const calls = await fakeGhCalls(fixture.gh);
+      expect(calls.map((call) => call.op)).toEqual(['list']);
+      const held = await fakePullRequests(fixture.gh);
+      expect(held).toHaveLength(1);
+      expect(held[0]?.body).toBe(`the body a previous delivery wrote (${state})`);
+    },
+  );
+
+  it('still reuses the one open pull request when a closed one also matches', async () => {
+    const fixture = await createFixture();
+    // An older attempt's pull request was closed, and a later one is open: the
+    // open match is still this attempt's review, and it is the one that is
+    // updated rather than creating a second.
+    await seedPullRequests(fixture, [{ state: 'CLOSED' }, { state: 'OPEN' }]);
+
+    const delivered = await withFakeGhOnPath(
+      fixture.bin,
+      async () => await fixture.delivery.deliver(requestFor(fixture), new AbortController().signal),
+    );
+
+    const url = `https://github.com/${REPOSITORY}/pull/2`;
+    expect(delivered).toEqual({ url, created: false });
+    const calls = await fakeGhCalls(fixture.gh);
+    expect(calls.map((call) => call.op)).toEqual(['list', 'edit']);
+    expect(calls[1]?.url).toBe(url);
+    expect(destinationHasBranch(fixture)).toBe(true);
   });
 
   it('says what is unknown when the harness stops a delivery command', async () => {

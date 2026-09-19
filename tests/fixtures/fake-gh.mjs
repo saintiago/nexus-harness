@@ -10,7 +10,7 @@
  * It speaks the three invocations the delivery step makes, and only those:
  *
  *   gh pr list --repo <owner/name> --head <branch> --base <branch> --state all
- *              --limit 20 --json url
+ *              --limit 20 --json url,state
  *   gh pr create --repo <owner/name> --head <branch> --base <branch>
  *                --title <title> --body-file <file>
  *   gh pr edit <url> --title <title> --body-file <file>
@@ -20,7 +20,8 @@
  *
  * Its own record is what it was asked to do (one JSON line per invocation in
  * `calls.jsonl`) and what "GitHub" now holds (one JSON line per pull request in
- * `pull-requests.json`). `FAKE_GH` in the environment is
+ * `pull-requests.json`, each with the native state `gh` reports; one seeded
+ * before a test runs needs its own `state`). `FAKE_GH` in the environment is
  * `{ "stateDir": "...", "fail": "list" | "create" | "edit" }`: the optional
  * failure makes that one invocation end nonzero with a GitHub-shaped message,
  * which is how the suites exercise a delivery that failed part-way.
@@ -85,7 +86,11 @@ if (argv[0] !== 'pr') {
   if (failure === 'list') {
     fail('HTTP 401: Bad credentials (https://api.github.com/graphql)');
   } else {
-    process.stdout.write(`${JSON.stringify(pullRequests.map((pull) => ({ url: pull.url })))}\n`);
+    process.stdout.write(
+      `${JSON.stringify(
+        pullRequests.map((pull) => ({ url: pull.url, state: pull.state ?? 'OPEN' })),
+      )}\n`,
+    );
   }
 } else if (argv[1] === 'create') {
   const repo = optionValue('--repo');
@@ -112,6 +117,7 @@ if (argv[0] !== 'pr') {
       base: optionValue('--base'),
       title: optionValue('--title'),
       body,
+      state: 'OPEN',
     });
     writeFileSync(
       pullRequestsFile,
