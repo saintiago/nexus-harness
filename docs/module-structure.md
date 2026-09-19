@@ -146,7 +146,8 @@ further would separate one decision from itself: `runs/runner.ts` (the loop), `s
   (`runs/`), or any vendor's invocation (`agents/codex/`). Nothing here knows about tasks, runs, or
   Jira.
 - **Entry points:** `planLaunch` (`process/launch.ts`); `RunCommandRequest`, `runCommand`
-  (`process/command.ts`); `requestTreeStop`, `within`, `STOP_GRACE_MS` (`process/stop.ts`).
+  (`process/command.ts`); `requestTreeStop`, `collectHostUtilityWords`, `HostUtilityWords`, `within`,
+  `STOP_GRACE_MS` (`process/stop.ts`).
 
 ### `checks/`
 
