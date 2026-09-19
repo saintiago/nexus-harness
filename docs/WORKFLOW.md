@@ -513,8 +513,8 @@ npm start -- review watch --config harness.jira.config.json
 npm start -- review scan --config harness.jira.config.json --limit 1
 ```
 
-`review` takes `--config` and nothing else; there is no `--repo`, because a review works from
-GitHub's own record of the pull request and never needs a local clone. `--limit` belongs to
+`review` takes `--config`; it never takes `--repo`, because a review works from GitHub's own record
+of the pull request and never needs a local clone. `--limit` belongs to
 `review scan` alone and counts reviewer turns, not tickets: a ticket whose head was already
 reviewed costs nothing. `review watch` exits `130` on Ctrl+C after the active reviewer turn and
 the current ticket are finished; evidence already written is kept.
@@ -524,42 +524,48 @@ the current ticket are finished; evidence already written is kept.
 The queue is the configured project, issue type, and label in the `source`'s **review status**
 (default `In Review`). For each eligible ticket:
 
-1. The ticket is re-read and mapped exactly as intake maps it, so the reviewer is given the
+1. The ticket's own local intake receipt is read when this output directory has one. A review
+   approves work, so a receipt whose last recorded attempt ended `failed` or `cancelled`, or one
+   that records a reservation with no finished attempt, is **reported for coordinator attention**
+   and reviewed no further: a pull request that predates the failure is not the successful code a
+   review would approve. A ticket this machine never attempted has no receipt and is reviewed from
+   its pull request alone; a receipt that cannot be read is reported rather than ignored.
+2. The ticket is re-read and mapped exactly as intake maps it, so the reviewer is given the
    ticket's own description and acceptance criteria. Its pointer labels are read from that same
    read, never from the search result.
-2. A review needs one clearly identified pull request. Exactly one valid
+3. A review needs one clearly identified pull request. Exactly one valid
    `harness-ws-<workspaceId>` pointer label names the workspace whose branch the delivery step
    pushed, and exactly one open pull request in `repository` must have the head branch
    `harness/<workspaceId>`. No pointer, a pointer that is not a generated workspace id, two
    pointers, no open pull request, and more than one match are all **reported for coordinator
    attention**: nothing is reviewed, nothing is published, and the ticket stays where it is.
-3. A head whose current commit already carries a completed review by `app.login` whose
+4. A head whose current commit already carries a completed review by `app.login` whose
    `commit_id` is that head — state `APPROVED` or `CHANGES_REQUESTED` — is not reviewed again, and
    no reviewer turn is started. A later commit is a new head and is reviewed again; a stale
    verdict can never approve it. If such a review exists but the app-owned `checkName` check run
    for that head does not, the scan publishes the check from the review's own state and starts no
    turn: the check is a projection of the native review, never a second decision.
-4. Otherwise the scan reads the evidence the reviewer is given: the pull request's changed files
+5. Otherwise the scan reads the evidence the reviewer is given: the pull request's changed files
    and their patches, the repository's `AGENTS.md` at the reviewed head when it has one, the
    head's check runs, and its combined commit status.
-5. The `reviewer` launch runs as **one bounded turn** in its own evidence directory under
+6. The `reviewer` launch runs as **one bounded turn** in its own evidence directory under
    `<workDir>/reviews/<reviewId>/`, with the same adapter, the same non-interactive launch, and
    the same task timeout a run gets. It is instructed to review only: it must not change files,
    implement fixes, commit, push, merge, or edit the ticket or the pull request, and it must write
    one `verdict.json` (a `verdict` of `approve` or `request_changes`, a summary, and actionable
    findings). A turn that fails, is stopped, or writes no usable verdict is **inconclusive**:
    nothing is published for it.
-6. Before anything is published, the pull request is re-read and must still be open at the
+7. Before anything is published, the pull request is re-read and must still be open at the
    reviewed head, and the ticket is re-read and must still be in the configured review status. A
    head that moved, a closed pull request, or a ticket that left review publishes nothing: the
    result is stale, and a later scan reviews the new head.
-7. The verdict becomes one native review — `APPROVE` for an approved verdict, `REQUEST_CHANGES`
+8. The verdict becomes one native review — `APPROVE` for an approved verdict, `REQUEST_CHANGES`
    otherwise — pinned to the reviewed commit with `commit_id` and carrying the ticket reference
    and URL, the summary, and any finding the diff could not position. Findings whose file and line
    the pull request's own patch shows are published as native inline comments.
    `REQUEST_CHANGES` requires at least one finding; an approval is published only when the
    reviewer completed with a usable verdict.
-8. One app-owned check run named `checkName` is then published on the same head: conclusion
+9. One app-owned check run named `checkName` is then published on the same head: conclusion
    `success` only for an approved verdict, `failure` for a requested change. If the review is
    published but the check is not, that is reported; a later scan reads the completed review and
    publishes the missing check, so a half-published verdict heals instead of being re-reviewed.

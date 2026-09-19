@@ -39,6 +39,7 @@ import { appJwt, resolveAppPrivateKey } from '../src/reviews/github.js';
 import { parseVerdict, reviewPrompt } from '../src/reviews/reviewer.js';
 import { allocateReviewDirectory, scanReviews, watchReviews } from '../src/reviews/scan.js';
 import type { SourceCandidate, SourceTask } from '../src/sources/contract.js';
+import { receiptFilePath, reserveReceipt } from '../src/sources/receipts.js';
 import type { SourceRef, Task } from '../src/shared/types.js';
 import { fakeTurns, installFakeRuntime } from './fixtures/local-target.js';
 import type { FakePlan, FakeState } from './fixtures/local-target.js';
@@ -663,6 +664,48 @@ describe('one review scan', () => {
     expect(ambiguous.errors.join('\n')).toContain('2 open pull requests');
   });
 
+  it('does not review a ticket whose last local attempt did not pass', async () => {
+    const repository = fakeRepository();
+    const fixture = await scanFixture({
+      repository,
+      reviewer: async () => {
+        throw new Error('a failed local attempt must not be reviewed');
+      },
+    });
+    const receipt = receiptFilePath(fixture.workDir, refFor());
+    await reserveReceipt(receipt, {
+      version: 1,
+      source: refFor(),
+      reservedAt: '2026-09-19T11:00:00.000Z',
+      runId: 'run-20260919110000-abcd1234',
+      outcome: 'failed',
+      problem: 'the post-agent check round never went green',
+    });
+
+    const summary = await scanReviews(fixture.context);
+
+    expect(summary).toMatchObject({ attention: 1, reviewed: 0, reviewerRuns: 0 });
+    expect(fixture.errors.join('\n')).toContain('its last attempt on this machine ended failed');
+    expect(repository.calls.publishedReviews).toEqual([]);
+  });
+
+  it('reviews a ticket whose local receipt records a passed attempt', async () => {
+    const repository = fakeRepository();
+    const fixture = await scanFixture({ repository });
+    const receipt = receiptFilePath(fixture.workDir, refFor());
+    await reserveReceipt(receipt, {
+      version: 1,
+      source: refFor(),
+      reservedAt: '2026-09-19T11:00:00.000Z',
+      runId: 'run-20260919110000-abcd1234',
+      outcome: 'passed',
+    });
+
+    const summary = await scanReviews(fixture.context);
+
+    expect(summary).toMatchObject({ reviewed: 1, attention: 0 });
+  });
+
   it('reports a ticket with several pointers, and one whose pointer is not an id', async () => {
     const several = await scanFixture({ items: [preparedFor('HARN-3', ['one', 'two'])] });
     expect(await scanReviews(several.context)).toMatchObject({ attention: 1 });
@@ -1120,6 +1163,7 @@ function fakeWorld(options: {
           html_url: `https://github.com/${REPOSITORY}/pull/27#pullrequestreview-5256006204`,
           state: body['event'],
           commit_id: body['commit_id'],
+          user: { login: LOGIN },
         },
         201,
       );
@@ -1330,6 +1374,12 @@ describe('the review command through the CLI', () => {
         status: 'completed',
         conclusion: 'success',
       });
+      // A review reads Jira and changes nothing there: no claim, no comment, no
+      // transition, and the ticket stays In Review.
+      expect(
+        world.jiraCalls.every((call) => call.method === 'GET' || call.url.endsWith('/search/jql')),
+      ).toBe(true);
+      expect(world.issues[0]?.status).toBe('In Review');
 
       // The reviewer really went through the adapter, with the configured
       // reviewer profile, in the review's own evidence directory.
@@ -1443,6 +1493,35 @@ describe('the review command through the CLI', () => {
     expect(world.publishedReviews).toEqual([]);
     expect(world.publishedChecks).toEqual([]);
     expect(await fakeTurns(fixture.runtime.state)).toHaveLength(1);
+    expect(world.issues[0]?.status).toBe('In Review');
+  });
+
+  it('refuses --repo and a bad --limit, the way every command does', async () => {
+    const directory = await createTempDir();
+    const configPath = await writeJsonFile(directory, 'harness.review.json', reviewConfig());
+    const errors: string[] = [];
+    const io = { out: () => undefined, err: (text: string) => errors.push(text) };
+
+    const withRepo = await runCli(['review', 'scan', '--config', configPath, '--repo', directory], {
+      cwd: directory,
+      io,
+    });
+    expect(withRepo).toBe(2);
+    expect(errors.join('\n')).toContain('unknown option "--repo"');
+
+    const badLimit = await runCli(['review', 'scan', '--config', configPath, '--limit', 'lots'], {
+      cwd: directory,
+      io,
+    });
+    expect(badLimit).toBe(2);
+    expect(errors.join('\n')).toContain('--limit');
+
+    const watchLimit = await runCli(['review', 'watch', '--config', configPath, '--limit', '1'], {
+      cwd: directory,
+      io,
+    });
+    expect(watchLimit).toBe(2);
+    expect(errors.join('\n')).toContain('unknown option "--limit"');
   });
 
   it('refuses a review configuration that has no Jira connection', async () => {

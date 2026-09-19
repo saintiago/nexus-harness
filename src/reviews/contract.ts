@@ -10,7 +10,7 @@
  * type-only contracts.
  */
 import type { SourceCandidate, SourceOutcome, SourceTask } from '../sources/contract.js';
-import type { AgentSelection, SourceRef, Task } from '../shared/types.js';
+import type { SourceRef, Task } from '../shared/types.js';
 
 /**
  * How the review path failed, in the few categories the scan acts on.
@@ -324,10 +324,4 @@ export interface ReviewScanContext {
 /** One scan or watch with its poll interval. */
 export interface ReviewWatchOptions extends ReviewScanContext {
   readonly pollIntervalMs: number;
-}
-
-/** The launch a review command hands a reviewer turn, for the record. */
-export interface ReviewerLaunch {
-  readonly selection: AgentSelection;
-  readonly environment: NodeJS.ProcessEnv;
 }

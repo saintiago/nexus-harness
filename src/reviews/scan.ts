@@ -18,6 +18,8 @@ import { appendFile, mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { SourceCandidate, SourceTask } from '../sources/contract.js';
 import { SourceError } from '../sources/contract.js';
+import { readReceipt, receiptFilePath } from '../sources/receipts.js';
+import type { SourceReceipt } from '../sources/receipts.js';
 import { messageOf } from '../shared/errors.js';
 import type { SourceRef, Task } from '../shared/types.js';
 import { workspaceIdProblem } from '../workspace/run-directory.js';
@@ -149,6 +151,50 @@ function attention(
     detail,
     reviewerRun,
   };
+}
+
+/**
+ * What the local intake record says about the ticket's last attempt, when this
+ * machine has one.
+ *
+ * A review publishes an approval of work, so the ticket's own last recorded
+ * attempt has to be a passing one: an attempt that ended `failed` or
+ * `cancelled`, and a reservation with no recorded attempt at all, are reported
+ * for the coordinator instead of being reviewed. The check only reads the
+ * receipt this output directory already keeps — it creates nothing, it writes
+ * nothing, and a ticket this machine never attempted has no receipt and is
+ * reviewed from its pull request alone (docs/spec.md §9).
+ */
+async function localAttemptProblem(workDir: string, ref: SourceRef): Promise<string | null> {
+  const file = receiptFilePath(workDir, ref);
+  let receipt: SourceReceipt | null;
+  try {
+    receipt = await readReceipt(file);
+  } catch (cause) {
+    return (
+      'its local intake receipt could not be read, so whether the ticket has a finished, ' +
+      `successful attempt is unknown: ${messageOf(cause)}`
+    );
+  }
+  if (receipt === null) {
+    return null;
+  }
+  if (receipt.outcome === undefined) {
+    return (
+      `it has a local intake reservation with no finished attempt ("${file}"), so its work cannot ` +
+      'be shown to be the successful code a review would approve; the coordinator decides what ' +
+      'happens next'
+    );
+  }
+  if (receipt.outcome !== 'passed') {
+    return (
+      `its last attempt on this machine ended ${receipt.outcome}` +
+      (receipt.problem === undefined ? '' : ` (${logLine(receipt.problem)})`) +
+      ', so a pull request for it is not the successful code a review would approve; the ' +
+      'coordinator decides what happens next'
+    );
+  }
+  return null;
 }
 
 /** What the reviewer's verdict means for one head, as the review list reported it. */
@@ -361,6 +407,36 @@ async function reviewWithTurn(
 ): Promise<ReviewItemResult> {
   const { ref } = item;
   const head = pullRequest.headSha;
+
+  // The evidence is read before a review directory exists: a failed read is
+  // reported and leaves nothing behind, so a repeated outage cannot fill the
+  // output directory with empty attempts.
+  let evidence: ReviewEvidence;
+  try {
+    evidence = await context.repository.readEvidence(
+      { ref, task: item.task, pullRequest },
+      context.stop,
+    );
+  } catch (cause) {
+    if (stopsBatch(cause)) {
+      throw cause;
+    }
+    return attention(
+      ref,
+      `the evidence for ${ref.key} could not be read, so no reviewer turn was started: ` +
+        messageOf(cause),
+      head,
+    );
+  }
+  if (evidence.files.length === 0) {
+    return attention(
+      ref,
+      `the pull request ${pullRequest.url} changes no files, so there is no diff to review; the ` +
+        'coordinator decides what happens next',
+      head,
+    );
+  }
+
   const reviewDir = await allocateReviewDirectory(context.workDir);
   const startedAt = context.now().toISOString();
 
@@ -417,30 +493,6 @@ async function reviewWithTurn(
     });
     return attention(ref, detail, head, reviewerRun);
   };
-
-  let evidence: ReviewEvidence;
-  try {
-    evidence = await context.repository.readEvidence(
-      { ref, task: item.task, pullRequest },
-      context.stop,
-    );
-  } catch (cause) {
-    if (stopsBatch(cause)) {
-      throw cause;
-    }
-    return await attentionResult(
-      `the evidence for ${ref.key} could not be read, so no reviewer turn was started: ` +
-        messageOf(cause),
-      false,
-    );
-  }
-  if (evidence.files.length === 0) {
-    return await attentionResult(
-      `the pull request ${pullRequest.url} changes no files, so there is no diff to review; the ` +
-        'coordinator decides what happens next',
-      false,
-    );
-  }
 
   const turn = await context.reviewer({
     dir: reviewDir.dir,
@@ -656,6 +708,16 @@ export async function scanReviews(
         detail: 'no longer eligible at the time of the scan',
         reviewerRun: false,
       };
+      countResult(summary, result);
+      await reportResult(context, result);
+      continue;
+    }
+
+    // The ticket's own local record decides first: a review approves work, and
+    // an attempt that did not pass is not work to approve.
+    const localProblem = await localAttemptProblem(context.workDir, item.ref);
+    if (localProblem !== null) {
+      const result = attention(item.ref, localProblem);
       countResult(summary, result);
       await reportResult(context, result);
       continue;

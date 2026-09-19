@@ -544,8 +544,11 @@ example to copy, [docs/WORKFLOW.md](docs/WORKFLOW.md) §9 is the field contract,
 **What one pass does.** A ticket is eligible when it is in the `source` connection's review status
 with the configured project, issue type, and label, it carries exactly one valid
 `harness-ws-<workspaceId>` pointer label, and exactly one open pull request in `repository` has the
-head branch `harness/<workspaceId>`. Anything else — no pointer, two pointers, no pull request, more
-than one match — is reported and left in review; nothing is published for it. For an eligible
+head branch `harness/<workspaceId>`. A ticket whose local intake receipt records a failed or
+cancelled attempt — or a reservation with no finished attempt — is reported too: a review approves
+work, and a pull request that predates the failure is not the successful code awaiting approval.
+Anything else — no pointer, two pointers, no pull request, more than one match — is reported and
+left in review; nothing is published for it. For an eligible
 ticket the scan reads the pull request's changed files and patches, the repository's `AGENTS.md` at
 the reviewed head, and the head's check runs and combined status, and runs the configured reviewer
 as **one bounded turn** in its own evidence directory under `<workDir>/reviews/`. The reviewer never
@@ -865,7 +868,8 @@ Read this before pointing a run at anything you care about.
   account, a token, or a network.
 - the optional Nexus Lens review path, against a fake Jira queue, a fake GitHub API, and a real
   generated RSA test key (`tests/reviews.test.ts`): eligibility and the pointer-to-branch pull
-  request link, approve and request-changes publishing as the App (a real JWT exchange, a review
+  request link, a ticket whose local receipt records a failed attempt being reported instead of
+  reviewed, approve and request-changes publishing as the App (a real JWT exchange, a review
   pinned to the head, inline comments positioned in the diff, one app-owned check run that is
   successful only for an approval), a head that already carries a completed review starting no
   reviewer turn, a later or moved head being reviewed again or refused as stale, a missing check

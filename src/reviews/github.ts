@@ -640,6 +640,16 @@ export function createGitHubReviewClient(
             `${request.head}, so this scan will not claim the head was reviewed.`,
         );
       }
+      const user = isRecord(review['user']) ? review['user'] : null;
+      const publishedAs = user === null ? null : user['login'];
+      if (typeof publishedAs === 'string' && publishedAs !== config.app.login) {
+        throw new ReviewError(
+          'api',
+          `GitHub recorded the review as ${publishedAs}, not as the configured App login ` +
+            `${config.app.login}, so a later scan would not recognise it as this App's review. ` +
+            'Check the installation, the App, and app.login, and treat this head as not reviewed.',
+        );
+      }
       return {
         id: numberField(review, 'id', 'the published review'),
         url: stringField(review, 'html_url', 'the published review'),

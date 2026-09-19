@@ -325,9 +325,10 @@ further would separate one decision from itself: `runs/runner.ts` (the loop), `s
   a finding, so a finding the patch does not show is reported in the body instead of dropped.
   `reviewer.ts` is the prompt one ticket's evidence becomes, the one bounded Codex turn through
   `agents/codex/`, and the strict reader of the `verdict.json` that turn has to write. `scan.ts`
-  is one finite scan and the watch above it: eligibility, the pointer-to-branch pull request
-  lookup, the native deduplication, the stale-head and stale-ticket rechecks before publishing,
-  the review and check publishing, and the evidence directory and log each attempt keeps.
+  is one finite scan and the watch above it: eligibility, the ticket's own intake receipt when the
+  output directory holds one, the pointer-to-branch pull request lookup, the native
+  deduplication, the stale-head and stale-ticket rechecks before publishing, the review and check
+  publishing, and the evidence directory and log each attempt keeps.
 - **Does not own:** the coding loop, the working copy, Jira writes, delivery, or merging. It
   claims nothing, moves nothing, posts no Jira comment, starts no coding turn, and keeps no
   registry: a completed review pinned to a commit is the deduplication record.
