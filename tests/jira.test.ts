@@ -126,6 +126,22 @@ function json(value: unknown, status = 200, headers: Record<string, string> = {}
   });
 }
 
+/**
+ * An answer the server sent with the given status, whose body read then fails:
+ * what a connection dropped mid-answer looks like. The body is never read here,
+ * so the status is the only thing the transport still knows.
+ */
+function unreadableBody(status = 200): Response {
+  const response = new Response('{}', {
+    status,
+    headers: { 'content-type': 'application/json' },
+  });
+  Object.defineProperty(response, 'text', {
+    value: () => Promise.reject(new Error('the connection was reset while the body was read')),
+  });
+  return response;
+}
+
 /** One issue as the API returns it, with only the fields the connector reads. */
 function issue(
   overrides: {
@@ -793,6 +809,35 @@ describe('mapping an issue onto the existing four-field Task', () => {
     await expect(source.prepare(candidate, new AbortController().signal)).resolves.toBeNull();
   });
 
+  it('reports an issue read whose body failed instead of a missing issue', async () => {
+    const http = fakeHttp(() => unreadableBody());
+    const source = createJiraSource(jiraConfig(), TOKEN, { fetch: http.fetch });
+    const candidate: SourceCandidate = {
+      ref: {
+        type: 'jira',
+        scope: SITE,
+        id: '10011',
+        key: 'SAM1-11',
+        url: `${SITE}/browse/SAM1-11`,
+        updatedAt: '2026-09-16T11:00:00.000Z',
+      },
+      title: 'unreadable',
+    };
+
+    let thrown: unknown;
+    try {
+      await source.prepare(candidate, new AbortController().signal);
+    } catch (cause) {
+      thrown = cause;
+    }
+
+    // The issue is not reported as gone: the answer never arrived, so a later
+    // scan may read it again.
+    expect(thrown).toBeInstanceOf(SourceError);
+    expect((thrown as SourceError).kind).toBe('retryable-read');
+    expect((thrown as SourceError).message).toMatch(/could not be read/);
+  });
+
   it('never turns issue text into a command, a repository, or an agent argument', async () => {
     const prepared = await prepare(
       issue({
@@ -1002,6 +1047,30 @@ describe('claiming an issue', () => {
     expect((thrown as SourceError).kind).toBe('uncertain-write');
     expect(http.calls.filter((call) => call.method === 'POST')).toHaveLength(1);
   });
+
+  it('reports a write whose answer body failed instead of a successful claim', async () => {
+    const http = fakeHttp((call) =>
+      call.method === 'POST'
+        ? unreadableBody()
+        : call.url.includes('/transitions')
+          ? json(TRANSITIONS_TO_PROGRESS)
+          : json(issue()),
+    );
+    const source = createJiraSource(jiraConfig(), TOKEN, { fetch: http.fetch });
+    const prepared = await preparedFor(source, candidateFor());
+
+    let thrown: unknown;
+    try {
+      await source.claim(prepared, new AbortController().signal);
+    } catch (cause) {
+      thrown = cause;
+    }
+
+    // The transition may have happened, so the claim is uncertain and is never
+    // sent a second time.
+    expect((thrown as SourceError).kind).toBe('uncertain-write');
+    expect(http.calls.filter((call) => call.method === 'POST')).toHaveLength(1);
+  });
 });
 
 describe('a workspace pointer and a refusal', () => {
@@ -1039,6 +1108,27 @@ describe('a workspace pointer and a refusal', () => {
     expect(write?.body).toEqual({
       update: { labels: [{ add: `harness-ws-${workspaceId}` }] },
     });
+  });
+
+  it('keeps an answer that legitimately carries no body as a success', async () => {
+    // 204 is Jira's no-content answer, and an empty 200 is the same kind of
+    // answer: neither may be confused with a body that could not be read.
+    for (const answer of [
+      (): Response => new Response(null, { status: 204 }),
+      (): Response => new Response('', { status: 200 }),
+    ]) {
+      const http = fakeHttp((call) => (call.method === 'PUT' ? answer() : json(issue())));
+      const source = createJiraSource(jiraConfig(), TOKEN, { fetch: http.fetch });
+      const prepared = await preparedFor(source, candidateFor());
+
+      await expect(
+        source.recordWorkspace(
+          prepared,
+          'run-20260916100000-aaaaaaaa',
+          new AbortController().signal,
+        ),
+      ).resolves.toBeUndefined();
+    }
   });
 
   it('reads only the comments added since an attempt ended, rendered and attributed', async () => {
@@ -1346,6 +1436,39 @@ describe('bounded network behavior', () => {
     });
 
     expect(redirected.kind).toBe('retryable-read');
+  });
+
+  it('classifies a JSON answer whose body failed as a retryable read', async () => {
+    const unread = await listFailure(unreadableBody());
+
+    // Never a scan that quietly found no issues: the answer was lost.
+    expect(unread.kind).toBe('retryable-read');
+    expect(unread.message).toMatch(/could not be read/);
+  });
+
+  it('keeps the status of a failed answer whose body could not be read', async () => {
+    const unread = await listFailure(unreadableBody(503));
+
+    expect(unread.kind).toBe('retryable-read');
+    expect(unread.message).toContain('HTTP 503');
+    expect(unread.message).toMatch(/could not be read/);
+  });
+
+  it('keeps a body read the caller stopped as a stop, not a retryable failure', async () => {
+    const controller = new AbortController();
+    const http = fakeHttp(() => unreadableBody());
+    const source = createJiraSource(jiraConfig(), TOKEN, { fetch: http.fetch });
+    controller.abort(new Error('interrupt'));
+
+    let thrown: unknown;
+    try {
+      await source.listEligible(controller.signal);
+    } catch (cause) {
+      thrown = cause;
+    }
+
+    expect((thrown as SourceError).kind).toBe('fatal');
+    expect((thrown as SourceError).message).toMatch(/stopped by the caller/);
   });
 
   it('stops a request when the caller stops it', async () => {
