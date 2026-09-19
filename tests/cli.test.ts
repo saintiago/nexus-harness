@@ -435,6 +435,24 @@ describe('check-config', () => {
     expect(result.out).toContain('NEXUS_CHECK_CONFIG_MUST_NOT_RESOLVE_THIS');
   });
 
+  it('prints the delivery selection without contacting GitHub', async () => {
+    const { configPath } = await writeInputs({
+      ...documentedConfig,
+      delivery: {
+        type: 'github',
+        repository: 'example-owner/example-repo',
+        baseBranch: 'main',
+      },
+    });
+
+    const result = await run(['check-config', '--config', configPath]);
+
+    expect(result.err).toBe('');
+    expect(result.code).toBe(EXIT_OK);
+    expect(result.out).toContain('delivery');
+    expect(result.out).toContain('example-owner/example-repo');
+  });
+
   it('accepts the --option=value form', async () => {
     const { configPath, taskPath } = await writeInputs();
 

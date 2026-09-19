@@ -354,6 +354,77 @@ describe('the optional escalation ladder', () => {
   });
 });
 
+describe('the optional delivery step', () => {
+  const gitHub = {
+    type: 'github',
+    repository: 'example-owner/example-repo',
+    baseBranch: 'main',
+  };
+
+  it('is absent when the configuration does not ask for it', async () => {
+    const config = await loadConfig(documentedConfig);
+
+    expect(config.delivery).toBeUndefined();
+  });
+
+  it('keeps the destination repository and base branch as they were written', async () => {
+    const config = await loadConfig(configWith({ delivery: gitHub }));
+
+    expect(config.delivery).toEqual(gitHub);
+  });
+
+  const rejections: Array<[name: string, value: unknown, problems: RegExp[]]> = [
+    ['a delivery that is not an object', configWith({ delivery: 'github' }), [/delivery:/]],
+    ['a null delivery', configWith({ delivery: null }), [/delivery:/]],
+    [
+      'a delivery without a type',
+      configWith({ delivery: { repository: 'example-owner/example-repo', baseBranch: 'main' } }),
+      [/delivery\.type/],
+    ],
+    [
+      'an unsupported delivery type',
+      configWith({ delivery: { ...gitHub, type: 'gitlab' } }),
+      [/delivery\.type: must be "github"/],
+    ],
+    [
+      'a repository given as a URL',
+      configWith({ delivery: { ...gitHub, repository: 'https://github.com/example-owner/x' } }),
+      [/delivery\.repository/],
+    ],
+    [
+      'a repository without an owner',
+      configWith({ delivery: { ...gitHub, repository: 'example-repo' } }),
+      [/delivery\.repository/],
+    ],
+    [
+      'a blank base branch',
+      configWith({ delivery: { ...gitHub, baseBranch: '   ' } }),
+      [/delivery\.baseBranch/],
+    ],
+    [
+      'a base branch with whitespace',
+      configWith({ delivery: { ...gitHub, baseBranch: 'release 1' } }),
+      [/delivery\.baseBranch/],
+    ],
+    [
+      'a base branch that starts with an option dash',
+      configWith({ delivery: { ...gitHub, baseBranch: '--repo' } }),
+      [/delivery\.baseBranch/],
+    ],
+    [
+      'an unknown delivery field',
+      configWith({ delivery: { ...gitHub, remote: 'somewhere' } }),
+      [/delivery: Unrecognized key: "remote"/],
+    ],
+  ];
+
+  for (const [name, value, problems] of rejections) {
+    it(`rejects ${name}`, async () => {
+      await expectRejected(() => loadConfig(value), ...problems);
+    });
+  }
+});
+
 describe('task validation', () => {
   function taskWith(overrides: JsonObject): JsonObject {
     return { ...documentedTask, ...overrides };

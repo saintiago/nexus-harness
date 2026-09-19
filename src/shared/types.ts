@@ -87,6 +87,12 @@ export interface HarnessConfig {
    */
   readonly escalation?: readonly EscalationTier[];
   /**
+   * The optional delivery step, normalized: the only implemented type is
+   * `"github"`, and without this object a run stays local-only — nothing is
+   * pushed and no pull request is opened (docs/WORKFLOW.md §8).
+   */
+  readonly delivery?: GitHubDeliveryConfig;
+  /**
    * The optional task-input source, normalized: the only implemented type is
    * `"jira"`, and its documented defaults are already applied. Absent means the
    * configuration describes file-task runs only, which is why a file-task
@@ -128,6 +134,29 @@ export interface JiraSourceConfig {
   readonly pollIntervalSeconds: number;
   /** Name of the environment variable holding the API token. Never the value. */
   readonly tokenEnv: string;
+}
+
+/**
+ * Validated `delivery` object: the one optional delivery step.
+ *
+ * It selects the destination repository and the base branch a delivered branch
+ * targets. It carries no credential, no push URL, and no local path: the branch
+ * that is delivered is the retained workspace's own, and the credential is the
+ * `gh`/Git one the operator's environment already holds. Absent means the
+ * local-only behavior — a run ends with its retained working copy and its
+ * report, and nothing leaves the machine (docs/WORKFLOW.md §8).
+ */
+export interface GitHubDeliveryConfig {
+  /** The only implemented delivery type: Git and the GitHub CLI. */
+  readonly type: 'github';
+  /**
+   * Destination repository as `owner/name` on github.com. The attempt's branch
+   * is pushed to `https://github.com/<repository>.git`, and pull requests are
+   * found and created in this repository.
+   */
+  readonly repository: string;
+  /** Base branch a delivered pull request targets, for example `main`. */
+  readonly baseBranch: string;
 }
 
 /**

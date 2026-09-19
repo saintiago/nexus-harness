@@ -1,8 +1,10 @@
 # Fixture flakes, recorded as they are found and fixed
 
-**Status: all three known races addressed; none of the assertions were weakened, skipped, or
+**Status: every known race addressed; none of the assertions were weakened, skipped, or
 reordered.** The name of this file is narrower than its content: the first flakes were seen on
-Windows, and the lifecycle one was seen on Ubuntu.
+Windows, and the lifecycle one was seen on Ubuntu. The fourth entry below (2026-09-19) is the one
+that stopped a harness run by ending an unrelated process, and it is the entry that fixed the
+cleanup, not the assertions.
 
 Failures 1 and 2 happened during full `npm run validate` / `npx vitest run` runs on Windows on
 2026-09-16 and 2026-09-17, and never in an isolated run of the file involved.
@@ -59,6 +61,62 @@ parallel workers found it stale together. `ensureBuiltCli` now takes an exclusiv
 re-checks under it, and only the worker that holds the lock removes it. Evidence: reproduced before the
 fix (one of two concurrent suites failed, the other passed), and after it two concurrent processes
 rebuilt from a stale `dist/` and passed 40/40 each, with two concurrent full suites green.
+
+## The 2026-09-19 occurrence: a cleanup killed an unrelated process
+
+The harness run `run-20260919130309-d941f854` ran `npm run validate` and the vitest phase failed on
+`tests/live-verifier.test.ts` > `the entry point, as a process` > `runs both exercises through the
+configured selection, against the fixture`:
+
+```
+AssertionError: expected 1 to be +0 // Object.is equality
+ ❯ tests/live-verifier.test.ts:350:29
+    349|       expect(result.stderr).toBe('');
+    350|       expect(result.status).toBe(EXIT_OK);
+```
+
+The test had spawned the live entry as a real process, and that process died in 157 ms — where the
+same test normally takes about 14 s — with **nothing on either stream** and exit code 1. It had not
+reached its first exercise: no `nexus-live-check-*` directory was created at that time. The entry
+point cannot exit 1 in silence — it prints a header before anything else, and every one of its
+failure paths writes to standard error — so the process was ended from outside.
+
+Two things were established on this host rather than assumed:
+
+- A process ended by `taskkill /PID <pid> /T /F` reports exactly that shape to the process that
+  spawned it: `code` 1, no signal, empty stdout and stderr. The same holds for
+  `process.kill(pid, 'SIGKILL')` on Windows, which is the same termination by another name.
+- PIDs are recycled fast enough to make that dangerous: spawning 300 short-lived `node`
+  processes and then 300 more handed 64 of the second batch a PID the first batch had held
+  within the last few seconds. So a PID recorded seconds earlier is routinely held by something
+  else — usually a process an unrelated test file started — by the time a cleanup names it.
+
+That was the defect: four suites cleaned up their own fixture processes by naming recorded PIDs
+with no further proof (`tests/checks.test.ts`, `tests/lifecycle.test.ts`,
+`tests/local-run.integration.test.ts`, `tests/fixture-beacon.test.ts`). A PID whose process had
+already ended — which is the normal case, since each test stops its own fixtures and cleanup runs
+afterwards — is a lottery ticket, and this time it landed on the live verifier's own child.
+
+**The fix, in tests only: a recorded PID is named again only while that process's own beacon
+answers.** The beacon moved into `tests/fixtures/beacon.mjs`, shared by the stand-in runtime and by
+the three fixture programs written into temporary directories. Each fixture process — and the child
+it starts, through a token the fixture passes down and records only once that child's beacon
+answers — now records a token of its own with its PID, and `endFixtureTree`
+(`tests/fixtures/local-target.ts`) asks that token before it stops anything. Both records are
+registered, the parent and the child: a `taskkill /T` on the parent does not reliably reach the
+child when the parent dies first, which is why the old cleanup named both PIDs and why this one
+does too — each with its own proof. A record that carries no token is never named again: the target
+project's own hanging test in the local-loop suite has only its backstop.
+`tests/fixture-beacon.test.ts` covers both directions: a live fixture process is ended when its own
+beacon names the PID, and a live bystander whose PID is recorded with a token nothing answers on is
+left alone. No assertion moved, and none was weakened; what changed is which PIDs may be signalled.
+
+Honest limits. The liveness assertions in those three suites still read a bare PID
+(`expectGone`, `stillRunning`), so a recycled PID can still make one of _those_ fail — a different
+failure from this one, and still open. And a process whose beacon never came up, or has fallen
+silent while the process somehow still runs, is left to its own backstop (20–60 s) instead of being
+named by a PID nothing can vouch for: cleanup may leave a bounded process behind, but it can no
+longer kill a stranger.
 
 ## What failed
 

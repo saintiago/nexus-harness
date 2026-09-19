@@ -28,6 +28,11 @@
       "deepseek"
     ]
   },
+  "delivery": {
+    "type": "github",
+    "repository": "saintiago/nexus-harness",
+    "baseBranch": "main"
+  },
   "source": {
     "type": "jira",
     "siteUrl": "https://malton-family.atlassian.net",

@@ -30,7 +30,17 @@ import { chmod, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { connect } from 'node:net';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { createTempDir, repoRoot, writeJsonFile } from '../support.js';
+
+/**
+ * The shared fixture beacon module, as a URL a fixture program written into a
+ * temporary directory can import: fixtures record a beacon token, and a suite
+ * names their PID again only while that beacon answers.
+ */
+export const beaconModuleUrl = pathToFileURL(
+  path.join(repoRoot, 'tests', 'fixtures', 'beacon.mjs'),
+).href;
 
 // ---------------------------------------------------------------------------
 // The target project, as committed source
@@ -199,9 +209,26 @@ export interface FakeState {
 }
 
 /**
- * Puts an executable named `codex` in a directory of its own: a `.cmd` on
- * Windows, which the harness starts through the command interpreter exactly as
- * it starts an installed `codex`, and a small shell script elsewhere.
+ * Writes the executable shim named `name` into `bin`, running `script` with this
+ * process's own `node`, and returns its path: a `.cmd` on Windows, which the
+ * harness starts through the command interpreter exactly as it starts an
+ * installed tool, and a small shell script elsewhere.
+ */
+async function writeShim(bin: string, name: string, script: string): Promise<string> {
+  if (process.platform === 'win32') {
+    const shim = path.join(bin, `${name}.cmd`);
+    await writeFile(shim, `@echo off\r\n"${process.execPath}" "${script}" %*\r\n`, 'utf8');
+    return shim;
+  }
+  const shim = path.join(bin, name);
+  await writeFile(shim, `#!/bin/sh\nexec "${process.execPath}" "${script}" "$@"\n`, 'utf8');
+  await chmod(shim, 0o755);
+  return shim;
+}
+
+/**
+ * Puts an executable named `codex` in a directory of its own, backed by the
+ * stand-in runtime above.
  */
 export async function installFakeRuntime(
   parent: string,
@@ -210,16 +237,7 @@ export async function installFakeRuntime(
   const stateDir = path.join(parent, 'fake-runtime-state');
   await mkdir(bin, { recursive: true });
   await mkdir(stateDir, { recursive: true });
-
-  let shim: string;
-  if (process.platform === 'win32') {
-    shim = path.join(bin, 'codex.cmd');
-    await writeFile(shim, `@echo off\r\n"${process.execPath}" "${FAKE_RUNTIME}" %*\r\n`, 'utf8');
-  } else {
-    shim = path.join(bin, 'codex');
-    await writeFile(shim, `#!/bin/sh\nexec "${process.execPath}" "${FAKE_RUNTIME}" "$@"\n`, 'utf8');
-    await chmod(shim, 0o755);
-  }
+  const shim = await writeShim(bin, 'codex', FAKE_RUNTIME);
 
   return {
     bin,
@@ -230,6 +248,76 @@ export async function installFakeRuntime(
       eventsFile: path.join(stateDir, 'runtime-events.jsonl'),
     },
   };
+}
+
+/** Where the stand-in `gh` keeps its records and the pull requests it holds. */
+export interface FakeGhState {
+  /** Directory holding both records. */
+  readonly dir: string;
+  /** One line per invocation, in order. */
+  readonly callsFile: string;
+  /** The pull requests the stand-in GitHub holds, one JSON line each. */
+  readonly pullRequestsFile: string;
+}
+
+/** One invocation of the stand-in `gh`, as it recorded it. */
+export interface FakeGhCall {
+  readonly op: 'list' | 'create' | 'edit';
+  readonly argv: readonly string[];
+  readonly cwd: string;
+  readonly repo: string | null;
+  readonly head: string | null;
+  readonly base: string | null;
+  readonly url: string | null;
+  readonly title: string | null;
+  readonly body: string | null;
+}
+
+/**
+ * The stand-in GitHub CLI, stored as a real file so that it can be read and
+ * reviewed: the lowest boundary the delivery step has, exactly as the stand-in
+ * `codex` is the lowest boundary of a coding turn.
+ */
+const FAKE_GH = path.join(repoRoot, 'tests', 'fixtures', 'fake-gh.mjs');
+
+/**
+ * Puts an executable named `gh` in a directory of its own, backed by
+ * tests/fixtures/fake-gh.mjs. It answers `gh pr list` from the pull requests it
+ * has been asked to create, and records every invocation. Nothing in `src/`
+ * knows it exists, and no flag reaches it.
+ */
+export async function installFakeGh(parent: string): Promise<{
+  readonly bin: string;
+  readonly shim: string;
+  readonly state: FakeGhState;
+}> {
+  const bin = path.join(parent, 'fake-gh-bin');
+  const stateDir = path.join(parent, 'fake-gh-state');
+  await mkdir(bin, { recursive: true });
+  await mkdir(stateDir, { recursive: true });
+  const shim = await writeShim(bin, 'gh', FAKE_GH);
+
+  return {
+    bin,
+    shim,
+    state: {
+      dir: stateDir,
+      callsFile: path.join(stateDir, 'calls.jsonl'),
+      pullRequestsFile: path.join(stateDir, 'pull-requests.json'),
+    },
+  };
+}
+
+/** Every invocation the stand-in `gh` recorded, in order. */
+export async function fakeGhCalls(state: FakeGhState): Promise<readonly FakeGhCall[]> {
+  return await readJsonLines<FakeGhCall>(state.callsFile);
+}
+
+/** The pull requests the stand-in GitHub holds, in the order they were created. */
+export async function fakePullRequests(
+  state: FakeGhState,
+): Promise<readonly { url: string; title: string; body: string }[]> {
+  return await readJsonLines<{ url: string; title: string; body: string }>(state.pullRequestsFile);
 }
 
 /** One turn's plan, as the stand-in runtime reads it. */
@@ -699,11 +787,58 @@ export function processGone(pid: number): boolean {
   return !stillRunning(pid);
 }
 
-/** Where a fixture process's beacon answers, named by the token it recorded. */
-function beaconAddress(state: FakeState, token: string): string {
+/**
+ * Where a fixture process's beacon answers, named by the directory the fixture
+ * keeps its beacons in and the token it recorded.
+ */
+function beaconAddress(beaconDirectory: string, token: string): string {
   return process.platform === 'win32'
     ? `\\\\.\\pipe\\nexus-fixture-${token}`
-    : path.join(state.dir, 'beacons', `${token}.sock`);
+    : path.join(beaconDirectory, 'beacons', `${token}.sock`);
+}
+
+/** What one question to a fixture's beacon answered. */
+type BeaconAnswer = 'answers' | 'silent' | 'unknown';
+
+/**
+ * Asks one fixture process's beacon whether it is there.
+ *
+ * `answers` is the answer only a running process can give, and it is the one
+ * answer that proves a recorded PID still belongs to the process that recorded
+ * it. `silent` is a listener that is not there any more. Anything else — a
+ * listener that does not answer in time, or a failure that is not "nothing is
+ * listening" — is `unknown`, which is never read as either.
+ */
+async function askBeacon(
+  beaconDirectory: string,
+  token: string,
+  timeoutMs: number,
+): Promise<BeaconAnswer> {
+  return await new Promise<BeaconAnswer>((resolve) => {
+    const socket = connect(beaconAddress(beaconDirectory, token));
+    let settled = false;
+    const finish = (answer: BeaconAnswer): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      socket.destroy();
+      resolve(answer);
+    };
+    const timer = setTimeout(() => {
+      finish('unknown');
+    }, timeoutMs);
+    socket.once('connect', () => {
+      finish('answers');
+    });
+    socket.once('error', (cause) => {
+      const code = (cause as NodeJS.ErrnoException).code;
+      // Nothing is listening there any more. Any other failure is not an answer
+      // that the process is gone, and is not read as one.
+      finish(code === 'ENOENT' || code === 'ECONNREFUSED' ? 'silent' : 'unknown');
+    });
+  });
 }
 
 /**
@@ -719,31 +854,57 @@ function beaconAddress(state: FakeState, token: string): string {
  * answering is still there — so nothing is quietly reported as stopped.
  */
 export async function fixtureProcessGone(state: FakeState, token: string): Promise<boolean> {
-  return await new Promise<boolean>((resolve) => {
-    const socket = connect(beaconAddress(state, token));
-    let settled = false;
-    const finish = (gone: boolean): void => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      clearTimeout(timer);
-      socket.destroy();
-      resolve(gone);
-    };
-    const timer = setTimeout(() => {
-      finish(false);
-    }, 5000);
-    socket.once('connect', () => {
-      finish(false);
-    });
-    socket.once('error', (cause) => {
-      const code = (cause as NodeJS.ErrnoException).code;
-      // Nothing is listening there any more. Any other failure is not an answer
-      // that the process is gone, and is not read as one.
-      finish(code === 'ENOENT' || code === 'ECONNREFUSED');
-    });
-  });
+  return (await askBeacon(state.dir, token, 5000)) === 'silent';
+}
+
+/** One fixture process as a suite recorded it: the PID, and the token it recorded. */
+export interface FixtureProcessRecord {
+  readonly pid: number;
+  /** The beacon token of the process itself, when it recorded one. */
+  readonly token: string | null;
+  /** The directory the fixture's beacons answer from: the fixture's own directory. */
+  readonly beaconDirectory: string;
+}
+
+/**
+ * Ends one fixture process tree, but only a process whose beacon answers: a
+ * recorded PID is named only while the process that recorded it is proven to
+ * still hold it, so a PID Windows has since handed to something else is never
+ * signalled (notes/windows-fixture-flakes.md).
+ *
+ * The tree is what is stopped, so a child the fixture started goes with it. A
+ * fixture that no longer answers is left alone: its own backstop ends it, and a
+ * bare PID is not evidence enough to end anything by. Returns whether a stop
+ * was sent.
+ */
+export async function endFixtureTree(record: FixtureProcessRecord): Promise<boolean> {
+  if (
+    record.token === null ||
+    (await askBeacon(record.beaconDirectory, record.token, 1000)) !== 'answers'
+  ) {
+    return false;
+  }
+
+  if (process.platform === 'win32') {
+    const taskkill = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'taskkill.exe');
+    spawnSync(taskkill, ['/PID', String(record.pid), '/T', '/F'], { stdio: 'ignore' });
+    return true;
+  }
+
+  // Every fixture leads its own process group, so the group is addressed by the
+  // negated PID and the child the fixture started goes with it.
+  try {
+    process.kill(-record.pid, 'SIGKILL');
+    return true;
+  } catch {
+    try {
+      process.kill(record.pid, 'SIGKILL');
+      return true;
+    } catch {
+      // Already gone between the answer and the signal: nothing left to stop.
+      return false;
+    }
+  }
 }
 
 /** Removes a fixture directory, tolerating a file another process still holds. */

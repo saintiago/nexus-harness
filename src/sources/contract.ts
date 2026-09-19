@@ -9,6 +9,7 @@
  * This module declares data and shapes; it performs no I/O and imports no
  * connector.
  */
+import type { DeliveredPullRequest, Delivery } from '../delivery/github.js';
 import type { RunTaskResult } from '../runs/contracts.js';
 import type { EscalationTier, RunStatus, SourceRef, Task } from '../shared/types.js';
 import type { PreflightRequest, SourcePreflight } from '../workspace/preflight.js';
@@ -132,6 +133,20 @@ export interface SourceRunOutcome {
     readonly of: number;
     readonly tier: string;
   };
+  /**
+   * The pull request this attempt's work was delivered as, when a delivery step
+   * is configured and the attempt produced one. Absent when delivery is
+   * disabled, the run did not pass, or a passed attempt had nothing to deliver
+   * (docs/WORKFLOW.md §8).
+   */
+  readonly pullRequest?: DeliveredPullRequest;
+  /**
+   * Why the configured delivery step failed, when it did: the run's own outcome
+   * above is still what happened, and this is the publication failure reported
+   * beside it. Absent when delivery is disabled, the run did not pass, or the
+   * delivery step completed (docs/WORKFLOW.md §8).
+   */
+  readonly deliveryFailure?: string;
 }
 
 /**
@@ -244,6 +259,14 @@ export interface SourceContext {
   readonly io: SourceIo;
   /** The intake's own stop request: the caller's interrupt. */
   readonly stop: AbortSignal;
+  /**
+   * The optional delivery step: what a passed attempt's committed work is
+   * published as, before its result is reported. Absent means the local-only
+   * behavior — nothing is pushed and no pull request is opened. The coordinator
+   * starts it only for a passed attempt, and a failure stops intake instead of
+   * starting another attempt (docs/WORKFLOW.md §8).
+   */
+  readonly delivery?: Delivery;
   /** The existing source/output preflight, re-run before each reservation. */
   readonly preflight: (request: PreflightRequest) => Promise<SourcePreflight>;
   /** The existing runner, as one ordinary function. */

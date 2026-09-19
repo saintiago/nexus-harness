@@ -55,11 +55,16 @@ function oneLine(text: string): string {
 /**
  * The compact result comment: the run ID, the exact local outcome and reason,
  * the check summary, the repairs used, and where the artifacts are on this
- * machine. It carries no transcript, diff, environment, or credential, and it
- * never describes a failed attempt as completed (docs/spec.md §6).
+ * machine — plus the pull request when the attempt was delivered, or the
+ * delivery failure beside the outcome it could not publish. It carries no
+ * transcript, diff, environment, or credential; it never describes a failed
+ * attempt as completed, and never a partial delivery as published
+ * (docs/spec.md §6, docs/WORKFLOW.md §8).
  */
 function commentParagraphs(ref: SourceRef, outcome: SourceRunOutcome): readonly string[] {
   const attempt = outcome.attempt;
+  const pullRequest = outcome.pullRequest;
+  const deliveryFailure = outcome.deliveryFailure;
   return [
     `Harness run ${outcome.runId} for ${ref.key} finished: ${outcome.status}.` +
       (attempt === undefined || attempt.of <= 1
@@ -67,13 +72,50 @@ function commentParagraphs(ref: SourceRef, outcome: SourceRunOutcome): readonly 
         : ` Attempt ${String(attempt.number)} of ${String(attempt.of)} (tier ${attempt.tier}).`),
     `Reason: ${oneLine(outcome.reason)}`,
     `Checks: ${oneLine(outcome.checks)}`,
+    ...(pullRequest === undefined ? [] : [`Pull request: ${oneLine(pullRequest.url)}`]),
+    ...(deliveryFailure === undefined
+      ? []
+      : [
+          `Delivery: the optional GitHub step failed, so this attempt may not have been ` +
+            `published: ${oneLine(deliveryFailure)}`,
+        ]),
     `Repairs used: ${String(outcome.repairsUsed)}`,
     `Local artifacts on the machine that ran this harness (local paths, not Jira attachments): ` +
       `run directory ${oneLine(outcome.runDir)}; report ${oneLine(outcome.reportPath)}`,
-    'A human decides what happens next; this connector never marks an issue Done, and neither it ' +
-      'nor the harness pushes, merges, or publishes anything. Any commits a coding turn made are ' +
-      'local to the retained working copy on this machine.',
+    closingParagraph(pullRequest?.url, deliveryFailure),
   ];
+}
+
+/**
+ * What the issue is told happens next. A failed delivery is never described as
+ * "nothing was published": only the destination can say how far it got, so the
+ * comment says to check it rather than claim a state the harness cannot know.
+ */
+function closingParagraph(
+  pullRequestUrl: string | undefined,
+  deliveryFailure: string | undefined,
+): string {
+  if (pullRequestUrl !== undefined) {
+    return (
+      "The harness pushed this attempt's branch and opened or updated the pull request above. " +
+      'It does not merge it and never marks this issue Done: a human decides what happens next. ' +
+      'Work a later attempt commits stays in the retained workspace until that attempt delivers it.'
+    );
+  }
+  if (deliveryFailure !== undefined) {
+    return (
+      'Delivering this attempt failed, so its push or its pull request creation may have only ' +
+      'partly happened: check the destination repository on GitHub before retrying the ' +
+      'publication by hand. The harness never merges a pull request and never marks an issue ' +
+      'Done; no coding turn is started to repair a publishing failure, and a human decides what ' +
+      'happens next.'
+    );
+  }
+  return (
+    'A human decides what happens next; this connector never marks an issue Done, and neither ' +
+    'it nor the harness pushes, merges, or publishes anything. Any commits a coding turn made ' +
+    'are local to the retained working copy on this machine.'
+  );
 }
 /** One comment's body, rendered as text: an empty body is an empty comment. */
 function renderCommentBody(value: unknown, key: string, token: string): string {

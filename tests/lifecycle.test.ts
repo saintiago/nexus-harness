@@ -18,12 +18,14 @@
  * the fixture processes really are still running, the report says so, and nothing
  * claims the working copy is safe to reuse.
  *
- * Only PIDs a fixture recorded for itself are ever terminated, and each is
- * registered for cleanup as soon as it is known, so a test that fails half-way
- * leaves nothing running. See docs/tasks.md T09.
+ * A fixture process is registered for cleanup as soon as it records itself, so a
+ * test that fails half-way leaves nothing running; its PID is named again only
+ * while the fixture's own beacon proves it is still that process's, because a
+ * bare PID is not an identity on this platform
+ * (notes/windows-fixture-flakes.md). See docs/tasks.md T09.
  */
 
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { existsSync, statSync } from 'node:fs';
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -40,56 +42,48 @@ import { prepareWorkspace } from '../src/workspace/prepare.js';
 import { preflightSource } from '../src/workspace/preflight.js';
 import { allocateRunDirectory } from '../src/workspace/run-directory.js';
 import { recordWorkspaceAttempt } from '../src/workspace/state.js';
+import { beaconModuleUrl, endFixtureTree } from './fixtures/local-target.js';
+import type { FixtureProcessRecord } from './fixtures/local-target.js';
 import { cleanupTempDirectories, createTempDir } from './support.js';
 
 /**
- * The fixture processes of these tests, by PID: a stop a test means to prove is
- * stopped here too, so a test that fails half-way cannot leave a hanging fixture
- * behind for the rest of the run. See {@link registerFixture}.
+ * The fixture processes of these tests, as each fixture recorded itself: a stop a
+ * test means to prove is stopped here too, so a test that fails half-way cannot
+ * leave a hanging fixture behind for the rest of the run. See
+ * {@link registerFixture}.
  */
-const fixtureProcesses = new Set<number>();
+const fixtureProcesses: FixtureProcessRecord[] = [];
 
 /**
- * Ends the recorded fixture processes, by PID and with the host's own utility
- * named by absolute path, so the cleanup does not depend on the PATH a test may
- * have left behind. Only PIDs the fixtures recorded for themselves are named.
+ * Ends the recorded fixture processes, each named by its PID only while its own
+ * beacon answers: a PID this host has already handed to another process is never
+ * signalled (notes/windows-fixture-flakes.md).
  */
-function stopFixtureProcesses(): void {
-  for (const pid of fixtureProcesses) {
-    if (process.platform === 'win32') {
-      const taskkill = path.join(
-        process.env.SystemRoot ?? 'C:\\Windows',
-        'System32',
-        'taskkill.exe',
-      );
-      if (existsSync(taskkill)) {
-        spawnSync(taskkill, ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore' });
-        continue;
-      }
-    }
-    try {
-      process.kill(pid, 'SIGKILL');
-    } catch {
-      // Already gone: nothing to clean up.
-    }
+async function stopFixtureProcesses(): Promise<void> {
+  for (const record of fixtureProcesses.splice(0)) {
+    await endFixtureTree(record);
   }
-  fixtureProcesses.clear();
 }
 
 afterEach(async () => {
-  stopFixtureProcesses();
+  await stopFixtureProcesses();
   await cleanupTempDirectories();
 });
 
 /**
- * Remembers fixture PIDs for the end of the test. Called as soon as a fixture has
- * recorded them, before any assertion, so an assertion that fails still leaves
- * nothing running.
+ * Remembers a fixture process, and the child it started, for the end of the test.
+ * Called as soon as a fixture has recorded them, before any assertion, so an
+ * assertion that fails still leaves nothing running. The child is registered on
+ * its own token: the parent's tree stop may miss it when the parent dies first.
  */
-function registerFixture(parts: { readonly pid: number; readonly child: number | null }): void {
-  fixtureProcesses.add(parts.pid);
-  if (parts.child !== null) {
-    fixtureProcesses.add(parts.child);
+function registerFixture(parts: PidRecord): void {
+  fixtureProcesses.push(parts);
+  if (parts.child !== null && parts.childToken !== null) {
+    fixtureProcesses.push({
+      pid: parts.child,
+      token: parts.childToken,
+      beaconDirectory: parts.beaconDirectory,
+    });
   }
 }
 
@@ -214,38 +208,55 @@ const BACKSTOP_MS = 30_000;
  * While the red flag is present instead it prints and exits nonzero, which is an
  * ordinary red check; with neither present it prints and exits `0`.
  */
-const CHECK_SOURCE = [
-  "import { appendFileSync, existsSync, writeFileSync } from 'node:fs';",
-  "import { spawn } from 'node:child_process';",
-  "import path from 'node:path';",
-  '',
-  'const [, , id, pidFile, beatsFile, workspace, flagFile, redFile, holdsForMs] = process.argv;',
-  "const record = (event) => appendFileSync(beatsFile, `${JSON.stringify({ event, id, at: Date.now() })}\\n`, 'utf8');",
-  "const isChild = id.endsWith('-child');",
-  "const hangs = isChild || flagFile === '-' || existsSync(path.join(workspace, flagFile));",
-  'const red = !hangs && existsSync(path.join(workspace, redFile));',
-  '',
-  'if (!hangs) {',
-  "  record('start');",
-  '  // The exit code is set rather than forced, so what this wrote is flushed',
-  '  // before the process ends: a red check is not a check with no output.',
-  '  process.stdout.write(red ? `failed ${id}\\n` : `ran ${id}\\n`);',
-  "  record('end');",
-  '  process.exitCode = red ? 3 : 0;',
-  '} else {',
-  '  const child = isChild',
-  '    ? null',
-  "    : spawn(process.execPath, [process.argv[1], `${id}-child`, pidFile, beatsFile, workspace, flagFile, redFile, holdsForMs], { stdio: 'ignore' });",
-  "  writeFileSync(`${pidFile}.${id}`, JSON.stringify({ pid: process.pid, child: child?.pid ?? null }), 'utf8');",
-  "  record('start');",
-  '  process.stdout.write(`ran ${id}\\n`);',
-  "  record('hanging');",
-  "  setInterval(() => record('beating'), 50);",
-  '  // A backstop: a fixture that outlives its test still ends on its own.',
-  '  setTimeout(() => process.exit(0), Number(holdsForMs));',
-  '}',
-  '',
-].join('\n');
+const checkSource = (beaconModule: string): string =>
+  [
+    `import { beaconAnswers, randomToken, startBeacon } from ${JSON.stringify(beaconModule)};`,
+    "import { appendFileSync, existsSync, writeFileSync } from 'node:fs';",
+    "import { spawn } from 'node:child_process';",
+    "import path from 'node:path';",
+    '',
+    'const [, , id, pidFile, beatsFile, workspace, flagFile, redFile, holdsForMs] = process.argv;',
+    "const record = (event) => appendFileSync(beatsFile, `${JSON.stringify({ event, id, at: Date.now() })}\\n`, 'utf8');",
+    "const isChild = id.endsWith('-child');",
+    "const hangs = isChild || flagFile === '-' || existsSync(path.join(workspace, flagFile));",
+    'const red = !hangs && existsSync(path.join(workspace, redFile));',
+    '',
+    'if (!hangs) {',
+    "  record('start');",
+    '  // The exit code is set rather than forced, so what this wrote is flushed',
+    '  // before the process ends: a red check is not a check with no output.',
+    '  process.stdout.write(red ? `failed ${id}\\n` : `ran ${id}\\n`);',
+    "  record('end');",
+    '  process.exitCode = red ? 3 : 0;',
+    '} else {',
+    '  // Answers while this process runs, at an address named by a token only this',
+    '  // process records. The child gets a token of its own, so each process is',
+    '  // named again only while its own beacon answers.',
+    '  const ownToken = process.env.FAKE_BEACON_TOKEN ?? randomToken();',
+    '  const childToken = isChild ? null : randomToken();',
+    '  const child =',
+    '    childToken === null',
+    '      ? null',
+    '      : spawn(process.execPath, [process.argv[1], `${id}-child`, pidFile, beatsFile, workspace, flagFile, redFile, holdsForMs], {',
+    "          stdio: 'ignore',",
+    '          env: { ...process.env, FAKE_BEACON_TOKEN: childToken },',
+    '        });',
+    '  const beaconReady = startBeacon(path.dirname(pidFile), ownToken);',
+    '  await beaconReady;',
+    '  const childAnswers =',
+    '    childToken === null',
+    '      ? false',
+    '      : await beaconAnswers(path.dirname(pidFile), childToken, 10_000);',
+    "  writeFileSync(`${pidFile}.${id}`, JSON.stringify({ pid: process.pid, pidToken: ownToken, child: child?.pid ?? null, childToken: childAnswers ? childToken : null }), 'utf8');",
+    "  record('start');",
+    '  process.stdout.write(`ran ${id}\\n`);',
+    "  record('hanging');",
+    "  setInterval(() => record('beating'), 50);",
+    '  // A backstop: a fixture that outlives its test still ends on its own.',
+    '  setTimeout(() => process.exit(0), Number(holdsForMs));',
+    '}',
+    '',
+  ].join('\n');
 
 /**
  * The stand-in coding turn: a real process that leaves the implementation's mark
@@ -254,37 +265,53 @@ const CHECK_SOURCE = [
  * hold of zero posts the mark and returns at once, with no child and nothing
  * armed, which is what a turn that completes on its own looks like.
  */
-const TURN_SOURCE = [
-  "import { appendFileSync, writeFileSync } from 'node:fs';",
-  "import { spawn } from 'node:child_process';",
-  "import path from 'node:path';",
-  '',
-  'const [, , id, pidFile, beatsFile, workspace, flagFile, holdsForMs] = process.argv;',
-  "const record = (event) => appendFileSync(beatsFile, `${JSON.stringify({ event, id, at: Date.now() })}\\n`, 'utf8');",
-  'const hold = Number(holdsForMs);',
-  "const isChild = id.endsWith('-child');",
-  'const child =',
-  '  isChild || hold <= 0',
-  '    ? null',
-  "    : spawn(process.execPath, [process.argv[1], `${id}-child`, pidFile, beatsFile, workspace, flagFile, holdsForMs], { stdio: 'ignore' });",
-  '// A child this host refuses to start must not take this process down: an',
-  '// unhandled error event would end a fixture that is meant to keep running.',
-  'child?.on("error", () => {});',
-  '// What the implementation leaves behind: the mark that makes the checks the',
-  "// harness runs next hang, so a stop has something of the run's own to reach.",
-  '// Written before the pid record, so a test that sees the record - and may stop',
-  '// this process the moment it does - already sees the mark it will assert on.',
-  "if (!isChild && flagFile !== '-') writeFileSync(path.join(workspace, flagFile), 'the implementation turn made the checks hang\\n');",
-  "record('start');",
-  "writeFileSync(`${pidFile}.${id}`, JSON.stringify({ pid: process.pid, child: child?.pid ?? null }), 'utf8');",
-  'process.stdout.write(`turn ${id}: working in ${workspace}\\n`);',
-  '',
-  'if (hold > 0) {',
-  "  setInterval(() => record('beating'), 50);",
-  '  setTimeout(() => process.exit(0), hold);',
-  '}',
-  '',
-].join('\n');
+const turnSource = (beaconModule: string): string =>
+  [
+    `import { beaconAnswers, randomToken, startBeacon } from ${JSON.stringify(beaconModule)};`,
+    "import { appendFileSync, writeFileSync } from 'node:fs';",
+    "import { spawn } from 'node:child_process';",
+    "import path from 'node:path';",
+    '',
+    'const [, , id, pidFile, beatsFile, workspace, flagFile, holdsForMs] = process.argv;',
+    "const record = (event) => appendFileSync(beatsFile, `${JSON.stringify({ event, id, at: Date.now() })}\\n`, 'utf8');",
+    'const hold = Number(holdsForMs);',
+    "const isChild = id.endsWith('-child');",
+    '// Answers while this process runs, at an address named by a token only this',
+    '// process records. The child gets a token of its own, so each process is',
+    '// named again only while its own beacon answers.',
+    'const ownToken = process.env.FAKE_BEACON_TOKEN ?? randomToken();',
+    'const childToken = isChild || hold <= 0 ? null : randomToken();',
+    'const child =',
+    '  childToken === null',
+    '    ? null',
+    '    : spawn(process.execPath, [process.argv[1], `${id}-child`, pidFile, beatsFile, workspace, flagFile, holdsForMs], {',
+    "        stdio: 'ignore',",
+    '        env: { ...process.env, FAKE_BEACON_TOKEN: childToken },',
+    '      });',
+    '// A child this host refuses to start must not take this process down: an',
+    '// unhandled error event would end a fixture that is meant to keep running.',
+    'child?.on("error", () => {});',
+    '// What the implementation leaves behind: the mark that makes the checks the',
+    "// harness runs next hang, so a stop has something of the run's own to reach.",
+    '// Written before the pid record, so a test that sees the record - and may stop',
+    '// this process the moment it does - already sees the mark it will assert on.',
+    "if (!isChild && flagFile !== '-') writeFileSync(path.join(workspace, flagFile), 'the implementation turn made the checks hang\\n');",
+    "record('start');",
+    'const beaconReady = startBeacon(path.dirname(pidFile), ownToken);',
+    'await beaconReady;',
+    'const childAnswers =',
+    '  childToken === null',
+    '    ? false',
+    '    : await beaconAnswers(path.dirname(pidFile), childToken, 10_000);',
+    "writeFileSync(`${pidFile}.${id}`, JSON.stringify({ pid: process.pid, pidToken: ownToken, child: child?.pid ?? null, childToken: childAnswers ? childToken : null }), 'utf8');",
+    'process.stdout.write(`turn ${id}: working in ${workspace}\\n`);',
+    '',
+    'if (hold > 0) {',
+    "  setInterval(() => record('beating'), 50);",
+    '  setTimeout(() => process.exit(0), hold);',
+    '}',
+    '',
+  ].join('\n');
 
 interface Beat {
   readonly event: 'start' | 'end' | 'hanging' | 'beating';
@@ -292,9 +319,12 @@ interface Beat {
   readonly at: number;
 }
 
-interface PidRecord {
-  readonly pid: number;
+/** One fixture process, as the fixture recorded itself, and its own child. */
+interface PidRecord extends FixtureProcessRecord {
+  /** The process the fixture itself started, or `null` when it started none. */
   readonly child: number | null;
+  /** The beacon token that process answers on, when it recorded one. */
+  readonly childToken: string | null;
 }
 
 interface Fixture {
@@ -340,9 +370,9 @@ async function createFixture(options: { readonly hangFromBase?: boolean } = {}):
   await git(['commit', '--quiet', '--message', 'baseline'], repo);
 
   const check = path.join(parent, 'check.mjs');
-  await writeFile(check, CHECK_SOURCE, 'utf8');
+  await writeFile(check, checkSource(beaconModuleUrl), 'utf8');
   const turn = path.join(parent, 'turn.mjs');
-  await writeFile(turn, TURN_SOURCE, 'utf8');
+  await writeFile(turn, turnSource(beaconModuleUrl), 'utf8');
 
   return {
     parent,
@@ -452,7 +482,19 @@ async function fixtureRecorded(fixture: Fixture, id: string): Promise<PidRecord>
     if (existsSync(file)) {
       read = await readText(file);
       try {
-        const record = JSON.parse(read) as PidRecord;
+        const written = JSON.parse(read) as {
+          pid: number;
+          pidToken: string | null;
+          child: number | null;
+          childToken: string | null;
+        };
+        const record: PidRecord = {
+          pid: written.pid,
+          token: written.pidToken,
+          beaconDirectory: path.dirname(fixture.pidFile),
+          child: written.child,
+          childToken: written.childToken,
+        };
         registerFixture(record);
         return record;
       } catch {
@@ -528,19 +570,14 @@ function stopRequested(signal: AbortSignal): Promise<void> {
 }
 
 /**
- * Ends one process tree a test started itself. Only a PID this test recorded for
- * a process it started is named here, and nothing outside the fixture is touched.
+ * Ends one process tree a test started itself, but only while the fixture's own
+ * beacon proves the recorded PID is still the process that recorded it: a stop
+ * the harness already carried out leaves a PID this host may have handed to
+ * something else, and that PID must not be named
+ * (notes/windows-fixture-flakes.md).
  */
-function stopOwnTree(pid: number): void {
-  if (process.platform === 'win32') {
-    spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore' });
-    return;
-  }
-  try {
-    process.kill(-pid, 'SIGKILL');
-  } catch {
-    // Already gone: nothing left to stop.
-  }
+async function stopOwnTree(record: PidRecord): Promise<void> {
+  await endFixtureTree(record);
 }
 
 describe('a run its caller stops, for real', () => {
@@ -764,7 +801,7 @@ describe('a run its caller stops, for real', () => {
         ]);
         controller.abort();
         await stopRequested(asked.stop);
-        stopOwnTree(turn.pid);
+        await stopOwnTree(turn);
         await expectTreeGone(turn);
         asked.agentLog.write('the turn stopped the tree it manages, and it is gone\n');
         const finished = await spawned;
@@ -875,7 +912,7 @@ describe('a run its caller stops, for real', () => {
         expect(stillRunning(turn.pid)).toBe(true);
         controller.abort();
         await stopRequested(asked.stop);
-        stopOwnTree(turn.pid);
+        await stopOwnTree(turn);
         await expectTreeGone(turn);
         asked.agentLog.write('the repair turn stopped the tree it manages, and it is gone\n');
         expect((await spawned).code).not.toBe(0);

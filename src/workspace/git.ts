@@ -41,8 +41,14 @@ export function firstLine(text: string): string {
   return line.trim() === '' ? 'no diagnostic output' : line.trim();
 }
 
-function gitEnvironment(): NodeJS.ProcessEnv {
-  const environment: NodeJS.ProcessEnv = { ...process.env, GIT_OPTIONAL_LOCKS: '0' };
+/**
+ * The environment a Git invocation runs with: inherited Git variables dropped,
+ * and optional locks off so a read never rewrites the index. The delivery step
+ * starts its own Git commands over this same base, so neither the harness's own
+ * inspection nor a delivery command can be redirected at another repository.
+ */
+export function gitInvocationEnvironment(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const environment: NodeJS.ProcessEnv = { ...base, GIT_OPTIONAL_LOCKS: '0' };
   for (const name of INHERITED_GIT_VARIABLES) {
     delete environment[name];
   }
@@ -54,7 +60,7 @@ export function runGit(args: readonly string[], cwd: string): Promise<GitResult>
   return new Promise((resolve, reject) => {
     const child = spawn('git', [...args], {
       cwd,
-      env: gitEnvironment(),
+      env: gitInvocationEnvironment(),
       windowsHide: true,
     });
     let stdout = '';

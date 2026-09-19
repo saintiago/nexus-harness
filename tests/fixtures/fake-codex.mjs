@@ -45,10 +45,9 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { spawn } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
-import { connect, createServer } from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { beaconAnswers, randomToken, startBeacon } from './beacon.mjs';
 
 const config = JSON.parse(process.env.FAKE_CODEX ?? '{}');
 const stateDir = config.stateDir;
@@ -59,69 +58,6 @@ const self = fileURLToPath(import.meta.url);
 const record = (event, extra = {}) =>
   appendFileSync(eventsFile, `${JSON.stringify({ event, at: Date.now(), ...extra })}\n`, 'utf8');
 const emit = (one) => process.stdout.write(`${JSON.stringify(one)}\n`);
-
-/** A fresh token, unique to one fixture process. */
-const randomToken = () => randomBytes(8).toString('hex');
-
-/** Where one process's beacon answers: a named pipe on Windows, a socket elsewhere. */
-const beaconAddress = (token) =>
-  process.platform === 'win32'
-    ? `\\\\.\\pipe\\nexus-fixture-${token}`
-    : path.join(stateDir, 'beacons', `${token}.sock`);
-
-/**
- * Answers while this process runs, at an address named by a token only this
- * process records. The suite asks the beacon, never a bare PID, whether the
- * process a turn recorded is still there: on Windows a PID is reused within
- * seconds of the process that held it ending, so a PID that looks alive is not
- * evidence that this process is. The server never keeps this process alive and
- * never ends a turn.
- */
-function startBeacon(token) {
-  if (process.platform !== 'win32') {
-    mkdirSync(path.dirname(beaconAddress(token)), { recursive: true });
-  }
-  const server = createServer((socket) => {
-    // A client that has already gone — which is exactly what a liveness check
-    // does the moment it has its answer — must never end this process: a write
-    // failure here would turn a check into a kill.
-    socket.on('error', () => undefined);
-    socket.end(`${token}\n`);
-  });
-  // A beacon that could not be created is not a failed turn either.
-  server.on('error', () => undefined);
-  // The listener is not a reason for this process to stay alive.
-  server.unref();
-  const ready = new Promise((resolve) => {
-    server.once('listening', resolve);
-    server.once('error', resolve);
-  });
-  server.listen(beaconAddress(token));
-  return ready;
-}
-
-/** Connects to one beacon until it answers, or gives up: does it answer at all? */
-function beaconAnswers(token, timeoutMs) {
-  return new Promise((resolve) => {
-    const deadline = Date.now() + timeoutMs;
-    const attempt = () => {
-      const socket = connect(beaconAddress(token));
-      socket.on('error', () => {
-        socket.destroy();
-        if (Date.now() >= deadline) {
-          resolve(false);
-          return;
-        }
-        setTimeout(attempt, 25);
-      });
-      socket.once('connect', () => {
-        socket.destroy();
-        resolve(true);
-      });
-    };
-    attempt();
-  });
-}
 
 for (const signal of ['SIGINT', 'SIGTERM', 'SIGBREAK']) {
   process.on(signal, () => record('signal', { signal, pid: process.pid }));
@@ -138,9 +74,11 @@ if (process.argv.includes('--version')) {
 // This process's own token, and the token its holding child is given: both are
 // recorded in turns.jsonl, so the suite can ask each process itself whether it
 // is gone rather than asking a PID that may now belong to something else.
+/** The directory the beacons answer from: sockets live in its `beacons/` child. */
+const beaconDirectory = stateDir;
 const holdFlag = process.argv.indexOf('--hold');
 const beaconToken = holdFlag >= 0 ? (process.argv[holdFlag + 1] ?? randomToken()) : randomToken();
-const beaconReady = startBeacon(beaconToken);
+const beaconReady = startBeacon(beaconDirectory, beaconToken);
 
 if (holdFlag >= 0) {
   // The process a holding turn manages. It never ends on its own, so a stop that
@@ -175,7 +113,8 @@ async function run(prompt) {
       : spawn(process.execPath, [self, '--hold', holdToken], { stdio: 'ignore' });
   // The record names the child's beacon only once that beacon answers, so a
   // recorded token always names a listener that exists.
-  const childAnswers = holdToken === null ? false : await beaconAnswers(holdToken, 10_000);
+  const childAnswers =
+    holdToken === null ? false : await beaconAnswers(beaconDirectory, holdToken, 10_000);
   // This process's own beacon, before the record that names it.
   await beaconReady;
 

@@ -82,6 +82,8 @@ src/
       json.ts                     (20)   the narrow readers every Jira answer goes through
       adf.ts                      (243)  the supported ADF description parser
       adf-text.ts                 (296)  rendering that description and extracting the criteria
+  delivery/
+    github.ts                     (425)  the optional GitHub step: push, find, create or update a PR
   agents/
     codex/
       runtime.ts                  (110)  the launch prefix, the environment, the stop contract
@@ -252,6 +254,23 @@ further would separate one decision from itself: `runs/runner.ts` (the loop), `s
   `jiraApiBaseUrl`, `JIRA_REQUEST_TIMEOUT_MS`, `JiraSourceParts` (`sources/jira/http.ts`);
   `queueJql` (`sources/jira/search.ts`).
 
+### `delivery/`
+
+- **Owns:** the one optional delivery step. `github.ts` pushes a passed attempt's own branch
+  to the configured destination repository, finds its pull request by repository, head branch, and
+  base branch, updates the one open match, creates one only when no match exists, and refuses a
+  closed or merged match instead of editing a pull request no open review would receive. It refuses
+  a working copy that still holds uncommitted work and delivers nothing when the branch has no
+  commit beyond its recorded base. Every command goes through `process/command.ts`, so it is
+  bounded and its output is kept in the run's log directory; the pull request body is written there
+  too.
+- **Does not own:** the run, the checks, the receipt, or whether delivery happens — the
+  coordinator decides that, and only for a passed attempt. It never merges, force-pushes, or
+  changes an issue, keeps no delivery state, and is not a source or a coding runtime.
+- **Entry points:** `createGitHubDelivery`, `Delivery`, `DeliveryRequest`,
+  `DeliveredPullRequest`, `GitHubDeliveryParts`, `DeliveryError`,
+  `DELIVERY_COMMAND_TIMEOUT_MS` (`delivery/github.ts`).
+
 ### `agents/codex/`
 
 - **Owns:** the only implemented coding runtime. `runtime.ts` is the launch prefix and the host
@@ -285,7 +304,10 @@ cli/*  ---- the commands: parse, load, compose, print, exit
   +--> sources/   the coordinator and the preview
   |      |
   |      +--> runs/contracts.ts   (the result it publishes)
+  |      +--> delivery/github.ts  (the optional step's own types)
   |      +--> sources/jira/  -----> config/schema.ts (the Task schema)
+  |
+  +--> delivery/  -------> process/ (bounded commands), workspace/ (Git hygiene)
   |
   +--> agents/codex/  -------> process/ (launch and stop)
   |
@@ -301,6 +323,8 @@ The rules that keep it acyclic:
   functions (`RunnerDependencies`), and the CLI is what wires the adapter in.
 - `agents/codex/` depends on `runs/contracts.ts` for the turn's own types only; no module under
   `runs/` imports an adapter.
+- `delivery/` depends on `process/`, `workspace/`, and `shared/`; `sources/` imports its `Delivery`
+  type only, and the CLI is the one place that builds the implementation from the configuration.
 - `sources/jira/` depends on `sources/contract.ts`, `sources/jira/json.ts`, and `config/schema.ts`;
   nothing above `sources/` imports a connector except the one command that builds it
   (`cli/source-command.ts`).
@@ -323,6 +347,7 @@ fixtures: helper modules may not import the CLI, and `src/shared/types.ts` may n
 | Pointer label | `workspacePointerLabel`/`parseWorkspacePointers` (`src/sources/contract.ts`), written through `src/sources/jira/labels.ts` | the run that creates a workspace, once, before any coding turn |
 | Escalation ladder | `EscalationTier` (`src/shared/types.ts`), the `escalation` schema in `src/config/schema.ts`, the climb in `src/sources/coordinator.ts` | the operator's configuration |
 | Attempt guidance | `SourceComment` (`src/sources/contract.ts`), rendering and bounds in `src/sources/guidance.ts`, the prompt section in `src/agents/codex/prompt.ts` | the item's own thread and the workspace ledger, bounded, context only |
+| Delivery | `GitHubDeliveryConfig` (`src/shared/types.ts`), the `delivery` schema in `src/config/schema.ts`, `Delivery`/`DeliveryRequest`/`DeliveredPullRequest` and `createGitHubDelivery` (`src/delivery/github.ts`), the call in `src/sources/coordinator.ts` | the operator's configuration; GitHub is the record of whether a pull request exists |
 
 The runner's collaborators are still plain functions (`RunnerDependencies`), so a test substitutes
 one function rather than a framework. `cli/dependencies.ts` is the only place that builds the real
@@ -384,6 +409,9 @@ boundary.
 - Process spawning and cancellation stay under `src/process/`. A capability that needs to start or
   stop a process imports it; it does not spawn or kill on its own. The Codex adapter starts the
   runtime through the same launcher and stops it through the same tree stop.
+- Delivery stays in `src/delivery/`: one optional step of a source command, not a source, not a
+  connector, and not part of the runner. It starts its commands through `src/process/` like
+  everything else, and nothing under `sources/jira/` pushes a branch or opens a pull request.
 - CLI parsing and presentation stay under `src/cli/`. A command module writes through `CliIo` and
   returns an exit code; nothing under `runs/`, `sources/`, `checks/`, or `reporting/` prints.
 - Run orchestration stays in `src/runs/`. Workspace preparation stays in `src/workspace/`: the runner

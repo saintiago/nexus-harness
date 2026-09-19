@@ -27,7 +27,10 @@ function describeConfig(config: HarnessConfig, configPath: string, workDir: stri
     `  setup                  ${commandCount(config.setup)}`,
     `  checks                 ${commandCount(config.checks)}`,
   ];
-  const { source } = config;
+  const { delivery, source } = config;
+  if (delivery !== undefined) {
+    lines.push(`  delivery               github ${delivery.repository} -> ${delivery.baseBranch}`);
+  }
   if (source !== undefined) {
     lines.push(
       `  source                 jira ${source.siteUrl} project ${source.projectKey}`,

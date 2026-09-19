@@ -39,8 +39,8 @@ run prepares a working copy of the source repository, runs the configured setup 
 checks, asks the coding runtime to implement the task, reruns the checks, and gives
 the runtime the observed failures to repair within maxRepairs. Progress and the
 outcome are printed; the working copy and the report are always kept. A coding turn
-is asked to make small local commits in the working copy, and the harness itself
-never pushes, merges, or publishes anything: the commits stay local to the retained
+is asked to make small local commits in the working copy, and the run itself never
+pushes, merges, or publishes anything: the commits stay local to the retained
 workspace, and the work is never integrated for you. The run ends at the first of:
 a green round, a red round with no repair allowance left, a failure it cannot repair
 away, the task deadline, or a user interrupt (Ctrl+C, or Ctrl+Break on Windows),
@@ -52,7 +52,10 @@ environment; a source run or watch also needs \`--repo\`. \`source list\` only r
 claims nothing and starts nothing. A source run claims each eligible issue it finds,
 runs it through the same loop, and posts the result back. source watch does that for
 every scan and keeps polling until you stop it. Runs stay sequential, and one local
-receipt per issue prevents attempting the same issue twice.
+receipt per issue prevents attempting the same issue twice. When the configuration
+also selects a \`delivery\` step, a passed attempt's branch is pushed and its pull
+request opened or updated before that result is posted; without one, nothing leaves
+the machine. \`run --task\` never delivers: its clone is fresh every time.
 
 Exit codes:
   0    the run passed

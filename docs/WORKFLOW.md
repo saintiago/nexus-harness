@@ -4,6 +4,8 @@ This is a human-readable reference, **not runtime configuration**. The applicati
 
 **Revision: 2026-09-16 — task input sources, Jira first; service-account authentication.** Preserve optional `agent` and add independent optional `source`. Existing six-field configurations and four-field task files remain valid. [spec.md](spec.md) defines behavior; [architecture.md](architecture.md) assigns ownership; [implement-task-source-connectors.md](implement-task-source-connectors.md) implements intake. The earlier `setup-codex-task.md` remains the separate runtime setup assignment, not reissued here.
 
+**Revision: 2026-09-19 — optional GitHub delivery.** Add independent optional `delivery`, defined in §8: with it, a passed attempt's branch is pushed and its pull request opened or updated before the result is published. Without it, nothing changes: every command and every run stays local. [spec.md](spec.md) §7 defines the behavior and [architecture.md](architecture.md) §2 the module.
+
 ## 1. Configuration
 
 Keep the existing `harness.config.json` shape valid:
@@ -23,7 +25,7 @@ These are target-project commands, not the harness's own CI pipeline. Edit them 
 
 ### Fields
 
-All six original fields are required. `agent` and `source` are independently optional. Reject unknown top-level/nested fields and invalid types rather than coercing them. Source commands require `source`; ordinary file-task commands do not construct it or require its credentials.
+All six original fields are required. `agent`, `escalation`, `source`, and `delivery` are independently optional. Reject unknown top-level/nested fields and invalid types rather than coercing them. Source commands require `source`; ordinary file-task commands do not construct it or require its credentials. Without `delivery` nothing is pushed or published, whatever else the configuration says.
 
 | Field | Meaning and validation |
 | --- | --- |
@@ -36,6 +38,7 @@ All six original fields are required. `agent` and `source` are independently opt
 | `agent` | Optional strict object with required `runtime` and `command` fields when present. No `null` or partial objects. |
 | `escalation` | Optional nonempty array of tiers: `{ "name", "agent"?, "maxRepairs"? }` with distinct names. Attempt N of one issue runs tier N, clamped to the last, in the same workspace; a tier that names no `agent` or `maxRepairs` inherits the top-level one. Absent means a single `default` tier built from `agent` and `maxRepairs` (docs/implement-workspace-continuation.md). |
 | `source` | Optional strict Jira object defined in section 5. No `null`; unsupported source types are errors. |
+| `delivery` | Optional strict GitHub object defined in section 8: the destination repository and base branch a passed attempt is delivered to. No `null`; unsupported delivery types are errors. Absent means local-only. |
 
 Setup/check commands remain nonempty string arrays with a nonblank executable first. Remaining arguments are literal strings, including intentional empty strings. Never concatenate task text into commands or implicitly interpolate environment variables. Use the tested platform launcher and retain its documented restrictions.
 
@@ -169,11 +172,16 @@ prepare → setup → baseline checks
                        pass
                         v
                  save local result
+                        |
+                        v
+            deliver (§8, only when configured)
 ```
 
 A red baseline stops a **fresh attempt** before any coding turn; a **continuation** may start red, because its workspace may already carry unfinished or failed work, and only its post-turn check round decides. A setup/launch/authentication/protocol error, expired timeout, cancellation, or exhausted repair allowance stops the loop and preserves work, fresh or continued. Only ordinary completed red check rounds trigger repair. Checks are rerun by the harness regardless of the agent's claims. The selected agent does not change between turns. See the specification for reporting and safety semantics.
 
-Every working copy is given a **repository-local** Git identity (`Nexus Agent <nexus@local>`, commit signing disabled) before any check or coding turn runs, so a turn can make small local commits as it works; it is encouraged to finish with the relevant work committed where practical. Those commits stay in the retained working copy: the harness itself never pushes, merges, publishes, or integrates a target's changes, a commit is not a check result, and anything a turn leaves uncommitted is kept. A continued workspace keeps the base commit its ledger recorded as the comparison base, so `changes` in the report is the whole diff against that base, committed and uncommitted parts alike. These settings are written with `git config --local`; the harness never writes global or system Git configuration.
+The delivery step is **outside the run**: the run's own report is written first, and only a `passed` attempt is delivered. A delivery failure changes neither the run's status nor its evidence, and it never starts a coding turn (§8).
+
+Every working copy is given a **repository-local** Git identity (`Nexus Agent <nexus@local>`, commit signing disabled) before any check or coding turn runs, so a turn can make small local commits as it works; it is encouraged to finish with the relevant work committed where practical. Those commits stay in the retained working copy: the harness itself never merges or integrates a target's changes and, without a configured delivery step, never pushes or publishes them either. A commit is not a check result, and anything a turn leaves uncommitted is kept. A continued workspace keeps the base commit its ledger recorded as the comparison base, so `changes` in the report is the whole diff against that base, committed and uncommitted parts alike. These settings are written with `git config --local`; the harness never writes global or system Git configuration.
 
 ## 5. Source configuration — Jira Cloud
 
@@ -323,11 +331,13 @@ The source preview prints each issue's disposition, key, title, URL, and one det
 
 Watch keeps running after handled task failures or invalid descriptions. It stops on fatal configuration/authentication errors, uncertain remote writes, failed feedback, or unsafe process cleanup. Read-only transient failures back off; successful discovery resets the backoff. Print changes and per-batch outcomes, not unchanged issue bodies on every empty poll. Preserve existing interrupt exit-code behavior; do not hide a fatal exit as success.
 
-Normal file-based `run --task ...` remains independent: even with `source` in its config, it must not read Jira credential values, contact Jira, create intake state, or emit remote updates. The opt-in coding runtime verifier also ignores `source` and must never contact or mutate Jira.
+Normal file-based `run --task ...` remains independent: even with `source` in its config, it must not read Jira credential values, contact Jira, create intake state, or emit remote updates. It never delivers either: a file-task run's clone is fresh every time, so there is no stable branch for §8 to update, and the command stays local even with a `delivery` object present. The opt-in coding runtime verifier also ignores `source` and `delivery`, and must never contact or mutate Jira or GitHub.
 
 ### Result status, continuation, and manual retry
 
-For all terminal local outcomes, publish the exact `passed`, `failed`, or `cancelled` outcome and move from running to review when still appropriate. `In Review` does not mean success. `Done` stays a human decision after inspecting and applying the retained changes.
+For all terminal local outcomes, publish the exact `passed`, `failed`, or `cancelled` outcome and move from running to review when still appropriate. `In Review` does not mean success. `Done` stays a human decision after inspecting and applying the retained changes. A passed attempt delivered by §8 carries its pull request URL in that comment; a passed attempt whose delivery failed carries the run's own outcome with the failure beside it, so the two never leave a finished task sitting in the running status. Nothing else about the comment changes.
+
+A delivery failure is an operator problem, not a coding one: the run's report and logs are kept as they were written, the receipt records `delivery: <what failed>`, the issue is still told the outcome the run produced with the failure beside it, and intake stops. Fix what the failure names — a leftover path, Git credentials, or `gh auth status` — and retry the publication **by hand** in the retained workspace with ordinary `git` and `gh`, checking GitHub first because a failed push or creation may already have taken effect; §8 has the recipe. Moving the issue back to the ready status is not that retry: it starts a new coding run in the same workspace. No coding turn is started to repair a publishing failure.
 
 A local receipt prevents a second attempt from starting by accident across polling and restart. Changing the issue does not clear that receipt: the pointer label, not the receipt, decides what happens next. Returning the issue to the ready status with a valid pointer starts another attempt in the same workspace — it does not create a fresh clone or clear the receipt. **Rework happens in the same workspace**: the run that creates a workspace writes the pointer label `harness-ws-<workspaceId>` on the issue once, before any coding turn, and an issue in the ready status whose pointer resolves on this machine is continued — same clone, same recorded base, a new run directory and report, and a baseline round that may be red. Every attempt reads the issue's own thread as context: a continuation reads what was added since the last attempt ended, a first attempt reads the whole thread, and a continuation is also told what its ledger records of the attempts before it (tier, outcome, reason). Neither the criteria nor the configured checks change. One attempt is run per configured `escalation` tier, in order, inside the same claim; a failed attempt climbs to the next tier, and only when the ladder is spent does the issue end in the review status. An attempted issue with no pointer, a pointer this machine cannot resolve, and an issue carrying two pointers are **refused**: one comment naming the reason, the issue moved to the review status, and nothing claimed and nothing run. A workspace is looked for at `<workDir>/workspaces/<workspaceId>` and nowhere else: a `workDir` written before this increment is upgraded by hand, and the ledger there, not the path an older report records, says where the clone is. To deliberately start over instead — a first attempt in a new workspace — either create a new task, or stop the watcher, inspect/stop prior processes, retain prior artifacts, remove the pointer label if the issue carries one, remove only the printed receipt file for the issue, and restore the issue to its ready status. Never clear the entire `.intake` directory to fix one task. Inspect a leftover lock and stop its owner before manually removing it; a stale-looking timestamp is insufficient. [docs/implement-workspace-continuation.md](implement-workspace-continuation.md) is the contract, including the upgrade steps and a note on the defects that are still separate tasks.
 
@@ -369,6 +379,61 @@ node -e "const fs = require('node:fs'); const actual = fs.readFileSync('HARNESS_
 ```
 
 Run this in the resulting retained workspace and also inspect its complete tracked/untracked diff. Do not add an assertion requiring a not-yet-created file to baseline checks, and do not count a receipt, agent summary, or generic test pass alone as proof of smoke-task completion.
+
+## 8. Delivery — optional GitHub pull requests
+
+Delivery is off unless the configuration asks for it: a source run then ends with its retained working copy and its local report, and nothing leaves the machine. To have a **passed** attempt delivered, add one strict optional object:
+
+```json
+{
+  "delivery": {
+    "type": "github",
+    "repository": "owner/name",
+    "baseBranch": "main"
+  }
+}
+```
+
+| Field | Contract |
+| --- | --- |
+| `type` | Required, exactly `"github"`. Git pushes the branch; `gh` finds, creates, or updates the pull request. Another type is rejected rather than accepted as a placeholder. |
+| `repository` | Required destination on github.com as `owner/name`. No host, URL, or path: the branch is pushed to `https://github.com/<repository>.git`. |
+| `baseBranch` | Required branch a delivered pull request targets, for example `main`. Nonblank, without whitespace, and not starting with `-`, so it stays one literal argument. |
+
+It applies to a source command's attempts, and to nothing else. A `run --task` invocation creates a fresh clone and branch every time, so it has no stable branch to deliver and stays local even when the field is present; `source list` never delivers because it never runs anything. The rest of the configuration — repository, setup, checks, agent — is unchanged: delivery decides only where a passed attempt's own branch goes.
+
+### What a delivery does
+
+The step runs after an attempt passed, in that attempt's retained workspace, and before the attempt's result is published:
+
+1. A working copy that still holds uncommitted work — staged, unstaged, or untracked — is refused, before anything is pushed. Nothing is committed, stashed, or discarded for the turn: the message names the paths, and finishing that delivery is an operator step — commit or remove them in the retained workspace, then push the branch and open or update the pull request by hand.
+2. A branch with no commit beyond the workspace's recorded base is not delivered; a passed attempt that changed nothing has nothing to publish. Its result is still reported as the ordinary passed result it is, without a pull request link.
+3. Otherwise the branch is pushed to `https://github.com/<repository>.git` exactly as it is — never with force.
+4. The pull request is found in that repository by head branch and base branch, whatever its state, and its native state decides what happens. Exactly one **open** match is updated; with no match at all, one is created; two or more open matches are refused as ambiguous; and a match that is `CLOSED` or `MERGED` is refused too — the harness never reopens one or edits one back into looking current, so an attempt is never reported as delivered when no open review received its work. Both a created and an updated pull request get the same title and body: the item's reference and URL, the task, the actual check summary, and the run ID. GitHub is the record — there is no local delivery state to reconcile.
+5. The result comment the issue receives then carries `Pull request: <url>`.
+
+Delivery never merges a pull request and never marks an issue `Done`. It writes the pull request body to `<runDir>/logs/delivery-pull-request-body.md` and keeps every command's output in the same logs directory (`delivery-*.stdout.log`, `delivery-*.stderr.log`), so what was published is reviewable beside the run's other evidence. Each delivery command is bounded; an over-long one is stopped like any other harness command.
+
+### Operator setup
+
+1. `gh` must be on `PATH` and authenticated as an account that may write to the destination repository: `gh auth status` reports both. Git has to be able to use those credentials; `gh auth setup-git` configures the credential helper for github.com. The harness stores no GitHub credential, runs no login flow, and never writes global Git configuration.
+2. Set `repository` and `baseBranch` in the configuration. `check-config` prints the effective `delivery` selection before anything runs.
+3. A run that failed or was cancelled is never delivered, and a configuration without `delivery` keeps today's local-only behavior.
+
+The delivery commands inherit the same environment a coding turn does, which is the operator's own without the Jira credential variable; they run with the operator's own account and privileges.
+
+### When delivery fails
+
+A delivery failure is a publishing failure, not a coding one. The run keeps its own evidence — `result.json`, the logs, and the check results are not rewritten, and the run is not repeated — and the issue is still told the outcome the run produced, with the delivery failure beside it, and moved to review when Jira is reachable; if Jira itself fails, the report, logs, and receipt stay exactly as they were written. The receipt records `delivery: <what failed>`, intake stops for a human, and the terminal message names the cause and where the command output is.
+
+Retrying the publication is an operator step with ordinary `git` and `gh` and the artifacts the run already wrote — there is no delivery command to replay, no retry service, and no coding turn:
+
+1. Check the destination **before** retrying anything: a push, or a pull request creation or edit, that reported a failure may already have taken effect. `gh pr list --repo <repository> --head <branch> --base <baseBranch> --state all`, or the repository's own page, answers that.
+2. An open pull request that is already there does not by itself prove this attempt was delivered: a failed push leaves it pointing at an older commit, and a failed edit leaves its title and body stale. Compare the retained branch's tip with the pull request's head — `git rev-parse refs/heads/<branch>` reads the retained branch, and the pull request page or `gh pr view <url> --json headRefOid` names the head it really has — and check its title and body against what this run wrote. Push the branch when the head is stale, and update the title or body with `gh pr edit` when either is stale, before declaring publication complete.
+3. If no open pull request matches, push the retained workspace's branch by hand and open one with `gh pr create --repo <repository> --head <branch> --base <baseBranch> --title "<task id: title>" --body-file <runDir>/logs/delivery-pull-request-body.md`. That body file is written only after the status, count, push, and list commands have all succeeded, so an early failure can leave it absent: use it when it is there, and when it is not, write a short body by hand from the task that ran, its Jira reference and URL, the run ID, and the result and check evidence the run already wrote. Never state a result the run did not produce.
+4. A `CLOSED` or `MERGED` match is not edited: reopen it by hand if the review should continue, or open a new pull request from the same branch.
+
+Returning the issue to the ready status is **code rework**, not a delivery retry: it starts a new coding run in the same workspace. A later attempt's delivery still finds the open pull request and updates it instead of creating a second.
 
 ## External references
 

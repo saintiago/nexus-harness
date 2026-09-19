@@ -17,7 +17,13 @@ import type { ChildProcess } from 'node:child_process';
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { fakeTurns, fixtureProcessGone, stillRunning, waitFor } from './fixtures/local-target.js';
+import {
+  endFixtureTree,
+  fakeTurns,
+  fixtureProcessGone,
+  stillRunning,
+  waitFor,
+} from './fixtures/local-target.js';
 import type { FakeState, FakeTurn } from './fixtures/local-target.js';
 import { cleanupTempDirectories, createTempDir, repoRoot } from './support.js';
 
@@ -44,29 +50,45 @@ interface RunningFixture {
   readonly process: ChildProcess;
   /** Resolves when the process itself has ended, whenever that happens. */
   readonly closed: Promise<void>;
-  /** The PIDs the fixture recorded for itself and its child, once it has. */
-  readonly pids: number[];
+  /** The processes the fixture recorded for itself and for its child, once it has. */
+  readonly processes: FixtureProcess[];
+}
+
+/** One fixture process, as the fixture recorded it: its PID and its beacon. */
+interface FixtureProcess {
+  readonly pid: number;
+  /** The beacon token of that process, when it recorded one. */
+  readonly token: string | null;
 }
 
 /** Every fixture this file started, ended again after the test that started it. */
 const started: RunningFixture[] = [];
 
-/** Ends one process this file started, whatever state it is in by then. */
-function endProcess(pid: number): void {
-  if (pid <= 0) {
+/**
+ * Ends one process this file started, whatever state it is in by then — but only
+ * while its own beacon proves the recorded PID still belongs to it: on this
+ * platform a PID is handed to a new process once the process that held it ends,
+ * so a PID alone must never be named again (notes/windows-fixture-flakes.md).
+ */
+async function endProcess(state: FakeState, record: FixtureProcess): Promise<void> {
+  if (record.pid <= 0 || record.token === null || (await fixtureProcessGone(state, record.token))) {
     return;
   }
   try {
-    process.kill(pid, 'SIGKILL');
+    process.kill(record.pid, 'SIGKILL');
   } catch {
     // Already gone: nothing to end.
   }
 }
 
-/** Ends the tree of a fixture that never got as far as recording a turn. */
+/**
+ * Ends the tree of a fixture that never got as far as recording a turn, through
+ * the handle this file holds: the PID is named only while that handle says the
+ * process this file started has not ended.
+ */
 function endTree(fixture: RunningFixture): void {
   const pid = fixture.process.pid;
-  if (pid === undefined) {
+  if (pid === undefined || fixture.process.exitCode !== null) {
     return;
   }
   if (process.platform === 'win32') {
@@ -83,8 +105,8 @@ function endTree(fixture: RunningFixture): void {
 
 afterEach(async () => {
   for (const fixture of started.splice(0)) {
-    for (const pid of fixture.pids) {
-      endProcess(pid);
+    for (const record of fixture.processes) {
+      await endProcess(fixture.state, record);
     }
     // The handle reaches the process even when no turn was recorded, and the
     // tree stop reaches a child the turn never named.
@@ -129,7 +151,7 @@ async function startHoldingTurn(): Promise<{ fixture: RunningFixture; turn: Fake
       resolve();
     });
   });
-  const fixture: RunningFixture = { state, process: runtime, closed, pids: [] };
+  const fixture: RunningFixture = { state, process: runtime, closed, processes: [] };
   started.push(fixture);
 
   await waitFor(async () => (await fakeTurns(state)).length === 1, 'the turn to be recorded');
@@ -137,9 +159,9 @@ async function startHoldingTurn(): Promise<{ fixture: RunningFixture; turn: Fake
   if (turn === undefined) {
     throw new Error('the turn was recorded and could not be read back');
   }
-  fixture.pids.push(turn.pid);
+  fixture.processes.push({ pid: turn.pid, token: turn.pidToken });
   if (turn.child !== null) {
-    fixture.pids.push(turn.child);
+    fixture.processes.push({ pid: turn.child, token: turn.childToken });
   }
   return { fixture, turn };
 }
@@ -169,9 +191,9 @@ describe("the stand-in runtime's beacon", () => {
     expect(await fixtureProcessGone(state, `${turn.pidToken ?? ''}-not-a-token`)).toBe(true);
 
     // Gone: each process ends, and its own beacon falls silent with it.
-    endProcess(turn.pid);
+    await endProcess(state, { pid: turn.pid, token: turn.pidToken });
     if (turn.child !== null) {
-      endProcess(turn.child);
+      await endProcess(state, { pid: turn.child, token: turn.childToken });
     }
     await waitForSilence(state, turn.pidToken ?? '', "the runtime's beacon to fall silent");
     await waitForSilence(state, turn.childToken ?? '', "the child's beacon to fall silent");
@@ -202,13 +224,68 @@ describe("the stand-in runtime's beacon", () => {
     // second turn keeps answering. Nothing about the answering process can make
     // the dead one's token look alive — which is exactly what a reused PID would
     // have done to a check that asked a PID instead of a token.
-    endProcess(first.turn.pid);
+    await endProcess(first.fixture.state, { pid: first.turn.pid, token: first.turn.pidToken });
     if (first.turn.child !== null) {
-      endProcess(first.turn.child);
+      await endProcess(first.fixture.state, {
+        pid: first.turn.child,
+        token: first.turn.childToken,
+      });
     }
     await waitForSilence(first.fixture.state, first.turn.pidToken ?? '', 'the first beacon');
     expect(await fixtureProcessGone(first.fixture.state, first.turn.pidToken ?? '')).toBe(true);
     expect(await fixtureProcessGone(second.fixture.state, second.turn.pidToken ?? '')).toBe(false);
     expect(stillRunning(second.turn.pid)).toBe(true);
+  }, 30_000);
+
+  it('ends each fixture process by the PID its own beacon names', async () => {
+    const { fixture, turn } = await startHoldingTurn();
+    await waitForAnswer(fixture.state, turn.pidToken ?? '', "the runtime's beacon to answer");
+    await waitForAnswer(fixture.state, turn.childToken ?? '', "the child's beacon to answer");
+
+    // The parent's tree first, then the child on its own token: what the tree
+    // stop reaches is not something to rely on, which is why every suite records
+    // the child's own token as well.
+    const stopped = await endFixtureTree({
+      pid: turn.pid,
+      token: turn.pidToken,
+      beaconDirectory: fixture.state.dir,
+    });
+    if (turn.child !== null && turn.childToken !== null) {
+      await endFixtureTree({
+        pid: turn.child,
+        token: turn.childToken,
+        beaconDirectory: fixture.state.dir,
+      });
+    }
+
+    expect(stopped).toBe(true);
+    await waitForSilence(fixture.state, turn.pidToken ?? '', "the runtime's beacon to fall silent");
+    await waitForSilence(fixture.state, turn.childToken ?? '', "the child's beacon to fall silent");
+  }, 30_000);
+
+  it('never names a PID a silent beacon does not prove is still that process', async () => {
+    // A live process of this file's own, holding a PID, and a record that names
+    // that PID with a token nothing answers on: exactly the shape a recycled PID
+    // has to a cleanup that would otherwise kill whatever now holds it. Cleaning
+    // up by PID is what turns that into a killed bystander
+    // (notes/windows-fixture-flakes.md); this is the regression cover for it.
+    const bystander = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000);'], {
+      stdio: 'ignore',
+    });
+    try {
+      await waitFor(() => bystander.pid !== undefined, 'the bystander process to start');
+
+      const stopped = await endFixtureTree({
+        pid: bystander.pid ?? 0,
+        token: 'a-token-no-process-answers',
+        beaconDirectory: await createTempDir(),
+      });
+
+      expect(stopped).toBe(false);
+      expect(bystander.exitCode).toBeNull();
+      expect(stillRunning(bystander.pid ?? 0)).toBe(true);
+    } finally {
+      bystander.kill('SIGKILL');
+    }
   }, 30_000);
 });
