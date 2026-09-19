@@ -135,10 +135,11 @@ export function createHttpClient(
    * to have happened (docs/architecture.md §9).
    */
   const classifyFailure = async (request: JiraRequest, response: Response): Promise<never> => {
-    // The body may be unreadable; the status alone still says what happened.
+    // The status alone decides the classification; a body that could not be
+    // read is reported as exactly that rather than silently dropped.
     const detail = await response.text().then(
       (body) => sanitize(body, token),
-      () => '',
+      (cause) => `the answer's body could not be read (${diagnosticOf(cause, token)})`,
     );
     const suffix = detail === '' ? '' : `: ${detail}`;
     const where = `the request to ${baseUrl}${request.path} answered HTTP ${String(response.status)}`;
@@ -218,7 +219,27 @@ export function createHttpClient(
         return null;
       }
 
-      const text = await response.text().catch(() => '');
+      // A body that could not be read is never an empty one: reporting no
+      // content here would be read as a missing issue by a read and as an
+      // acknowledged answer by a write. The failure is carried through the same
+      // classification a request that never answered gets: a stopped caller is
+      // over, a failed read may be retried, and a write whose answer was lost is
+      // uncertain and is never sent again.
+      let text: string;
+      try {
+        text = await response.text();
+      } catch (cause) {
+        if (request.signal.aborted) {
+          throw new SourceError(
+            request.mutation === true ? 'uncertain-write' : 'fatal',
+            `the request to ${url} was stopped by the caller before its answer was read`,
+          );
+        }
+        throw new SourceError(
+          request.mutation === true ? 'uncertain-write' : 'retryable-read',
+          `the answer from ${url} could not be read: ${diagnosticOf(cause, token)}`,
+        );
+      }
       try {
         return text.trim() === '' ? null : (JSON.parse(text) as unknown);
       } catch {
