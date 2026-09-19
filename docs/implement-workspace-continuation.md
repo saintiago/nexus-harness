@@ -75,9 +75,13 @@ agent. The queue label (`harness-task`) selects work; this one records where the
 A label is untrusted text, so the id it names is checked before anything else happens to it: it must
 be a generated workspace id (the same shape a run id has, `[A-Za-z0-9][A-Za-z0-9_-]{0,63}`), its
 resolved path must stay under `<workDir>/workspaces`, and the workspace's ledger must record the
-item and the repository the workspace was created for. Identity is the connector type, the site,
-and the immutable external id; the key is display only. A label on another item, another site, or a
-run against another repository is refused, not followed.
+item and the repository the workspace was created for. *Resolved* means through the filesystem, not
+by the spelling of the name: junctions and symbolic links are followed, for the clone and for the
+ledger read beside it, so a generated id whose directory — or whose `<workspaceId>.json` — lies
+inside the workspaces directory only lexically, while reaching somewhere else, is refused before
+anything is read through it. Identity is the connector type, the site, and the immutable external
+id; the key is display only. A label on another item, another site, or a run against another
+repository is refused, not followed.
 
 The harness never adopts or migrates a workspace by itself. A ledger that records no source item —
 written before identities were recorded, or by a run that did not come from a source — is refused
@@ -93,6 +97,7 @@ from the workspace's own first attempt report (`sourceRef` there records them), 
 | exactly one, and it resolves on this machine | any | **continue** that workspace, attempt N+1 |
 | exactly one, and it does not resolve here | any | **refuse**: the pointer names a workspace this machine does not have |
 | exactly one, and it is not a generated workspace id | any | **refuse**: a label is never read as a path |
+| exactly one, and its real location is not under `<workDir>/workspaces` | any | **refuse**: a junction or symbolic link leads out of the workspaces directory, and a pointer is never followed through one |
 | exactly one, and the ledger records another item, site, or repository | any | **refuse**: a workspace belongs to what created it |
 | exactly one, and the ledger records no source item | any | **refuse**: the workspace cannot be shown to be this issue's, and the repair is manual |
 | two or more | any | **refuse**: ambiguous, and the harness never guesses which one |
@@ -197,9 +202,11 @@ tracked separately and are not claimed as fixed here.
   refusal when the checkout is not on its recorded branch, the eligibility table, the
   red-baseline exception, the tier loop, the guidance rendering, the decision made from the item as
   it was just re-read rather than from a lagging search result, and the pointer checks — a malformed
-  id, another item's, site's, or repository's workspace, and a ledger with no item identity — all
-  against fakes; `npm run validate` green, on Linux as well as Windows for anything that touches
-  process or path handling.
+  id, another item's, site's, or repository's workspace, a workspace directory or ledger whose
+  resolved path leaves the workspaces directory through a junction or symbolic link (owned
+  temporary fixtures, refused as a refusal rather than an exception), and a ledger with no item
+  identity — all against fakes; `npm run validate` green, on Linux as well as Windows for anything
+  that touches process or path handling.
 - Live: **partly run, 2026-09-19.** A real Jira-driven continuation has happened: run
   `run-20260919115244-4ff8eedf` claimed HARN-2, reopened workspace `run-20260919100148-e48a9ab0`
   (same clone, same recorded base `36f62fd`, attempt 2), and the attempt's work is the local commit

@@ -412,13 +412,14 @@ work is the point. An attempted issue with no such label is not run again: the h
 says why in a comment, and moves it out of the queue, so a stale ticket cannot quietly burn more
 attempts. A pointer the harness will not follow is refused the same way, and the comment says which
 of these it is: it is not a generated workspace id (a label is never read as a path), it names a
-workspace this machine does not have, the workspace's ledger records another item, site, or
-repository (a workspace is continued only by what created it), or the ledger records no item
-identity at all (a legacy ledger: add its `sourceItem` by hand — `type`, `scope`, `id`, and `key`,
-from that workspace's first attempt report, whose `sourceRef` records them — and scan again; the
-harness never adopts or migrates a workspace on its own). An issue carrying two pointers is refused
-too, because there is no way to tell which one to continue. The receipt stays as the audit trail
-behind all of it.
+workspace this machine does not have, its directory or its ledger is a junction or symbolic link
+out of `workDir/workspaces` (a pointer is never followed through one), the workspace's ledger
+records another item, site, or repository (a workspace is continued only by what created it), or
+the ledger records no item identity at all (a legacy ledger: add its `sourceItem` by hand —
+`type`, `scope`, `id`, and `key`, from that workspace's first attempt report, whose `sourceRef`
+records them — and scan again; the harness never adopts or migrates a workspace on its own). An
+issue carrying two pointers is refused too, because there is no way to tell which one to continue.
+The receipt stays as the audit trail behind all of it.
 
 Putting an attempted issue back to the ready status is ordinary rework, not a retry of a dead run:
 the harness continues the workspace its pointer names, with a new run directory and report. To start
