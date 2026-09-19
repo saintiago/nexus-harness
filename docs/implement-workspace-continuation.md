@@ -159,23 +159,36 @@ An intake runs one **attempt per configured tier**, in order, without an operato
 - With no `escalation` field, one tier is built from `agent` and `maxRepairs`, which is today's
   behaviour.
 - Attempt N uses tier N, clamped to the last tier: a re-armed issue whose earlier attempts already
-  spent the ladder continues at its top.
+  spent the ladder continues at its top. The tier's own launch is what the attempt starts, and what
+  its report records: the launched command and the reported tier agree, continuations included.
 - Each attempt is a separate run: its own run directory, report, comment ("attempt 2 of 3, tier
   pro"), and its own repair allowance.
-- A green post-turn round ends the intake as passed. When the ladder is exhausted, the harness
-  publishes the final result and moves the issue to the review status; the next step is another
-  agent's or the operator's decision, taken by moving the issue back.
+- The issue stays in the running status while the ladder climbs: each attempt's own comment is
+  published while nothing has moved the item, and only the climb's end moves it to review. Later
+  attempts read the item's thread for themselves, so a later rung is told the comment the harness
+  published for the rung before it.
+- Only an exhausted ordinary red check round climbs. A coding turn that could not finish (a launch,
+  authentication, or protocol error), a round that could not be executed (a setup failure, a check
+  that could not be launched), an expired limit, a cancellation, and a stop that was not confirmed
+  are all the ladder's last word at the rung where they happened, and none of them starts another
+  tier.
+- A green post-turn round ends the intake as passed. The ladder's last attempt — a pass, a terminal
+  failure, or the rung that exhausted the ladder — publishes the final result and moves the issue to
+  the review status; the next step is another agent's or the operator's decision, taken by moving
+  the issue back.
 
 ## What an attempt is told
 
 An attempt's task text is the issue's current description — the task — plus the item's own thread:
 every attempt reads it, because that is where a restarted ticket's history, another agent's
 reasoning, and the harness's own result comments live. A continuation reads what was added since the
-previous attempt ended; a first attempt reads the whole thread. A continuation is also told what its
-workspace ledger records of the attempts before it: tier, outcome, and the reason each run ended
-with. All of it is rendered, attributed, bounded (twelve lines, four thousand characters, six
-hundred per line), and context for the turn. None of it becomes a command, an argument, a path, or a
-limit, and none of it changes the acceptance criteria or the checks that decide the run.
+previous attempt ended; a first attempt reads the whole thread. Every rung of one climb reads it for
+itself, so a later rung is not handed the previous rung's stale view of the thread — the harness's
+own comment for the attempt before it included. A continuation is also told what its workspace
+ledger records of the attempts before it: tier, outcome, and the reason each run ended with. All of
+it is rendered, attributed, bounded (twelve lines, four thousand characters, six hundred per line),
+and context for the turn. None of it becomes a command, an argument, a path, or a limit, and none of
+it changes the acceptance criteria or the checks that decide the run.
 
 ## What does not change
 
@@ -205,11 +218,14 @@ climbed inside a single claim, each with its own run, comment, launch, and repai
 guidance a continued attempt is told, which is the attempts its ledger records plus the item's own
 comments since the last of them, bounded, and context only.
 
-**Known gaps, separate tasks.** The contract above is the intended behaviour, and the implementation
-still has defects that these increments do not fix: the ladder can launch the wrong tier for a
-continued workspace, an attempt's result is published and the issue moved to review before the
-ladder is spent, and an infrastructure failure is escalated like an ordinary failed check. They are
-tracked separately and are not claimed as fixed here.
+**Defects fixed since, in HARN-7.** The contract above is the intended behaviour and it now holds in
+the implementation: the ladder launches the tier it reports (for a continued workspace included),
+an attempt's own comment is published while the issue stays in the running status and the review
+move happens only when the ladder is spent, and only an exhausted ordinary red check round
+escalates — a setup/launch/authentication/protocol error, a cancellation, a timeout, and a stop that
+was not confirmed each end the intake at the rung where they happened. The three defects this
+section used to list are covered by the offline suite; the live exercise that has not been run is
+stated under "Verification" below.
 
 ## Verification
 

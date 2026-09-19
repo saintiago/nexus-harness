@@ -352,6 +352,29 @@ async function reportDeliveryFailure(
 }
 
 /**
+ * Whether a run's own evidence says the escalation ladder may climb from it:
+ * the attempt ended on an ordinary completed red check round whose repair
+ * allowance was spent, and nothing else stopped it.
+ *
+ * Every other ending is terminal at the rung that produced it — a coding turn
+ * that could not finish (a launch, authentication, or protocol error), a round
+ * that could not be executed (a setup failure, a check that could not be
+ * launched), an expired limit, a cancellation, or a stop that was not confirmed
+ * — and escalating those would spend a stronger launch on infrastructure rather
+ * than on code. The fields below are what says which ending a run had: the
+ * status, the stop evidence, and the last turn's own round. No reason string is
+ * read, so rewording a run's sentence can never change where the ladder goes
+ * (docs/implement-workspace-continuation.md).
+ */
+function exhaustedRedRound(run: RunTaskResult): boolean {
+  if (run.status !== 'failed' || run.timeout !== null || run.cancellation !== null) {
+    return false;
+  }
+  const lastTurn = run.attempts.at(-1);
+  return lastTurn !== undefined && lastTurn.checks?.outcome === 'failed';
+}
+
+/**
  * One item, through the documented reservation sequence: receipt first, a fresh
  * read of the item and a decision from that read, eligibility and revision
  * rechecked, an unambiguous claim, the unchanged runner, the real local result,
@@ -445,31 +468,6 @@ async function attempt(
     }
   }
 
-  // What the item's own thread says: every attempt is told, whether it continues
-  // a workspace or starts one. A continuation reads what was added since the last
-  // attempt ended; a first attempt reads the whole thread, which is where an
-  // earlier ticket, a restarted one, or another agent left what it knew. A read
-  // that fails is said out loud and does not stop the attempt: it is context, and
-  // the run's own evidence is not.
-  let comments: readonly SourceComment[] = [];
-  const ledger =
-    decision.kind === 'continue'
-      ? await readWorkspaceState(workDir, decision.workspace.workspaceId)
-      : null;
-  const previousAttempt = ledger?.attempts.at(-1);
-  try {
-    comments = await source.commentsSince(
-      item,
-      previousAttempt?.endedAt ?? new Date(0).toISOString(),
-      stop,
-    );
-  } catch (cause) {
-    io.err(
-      `${item.ref.key}: its comments could not be read, so this attempt runs without them: ` +
-        messageOf(cause),
-    );
-  }
-
   // A first attempt reserves its own receipt. A continuation has one from the
   // attempt it continues; one whose pointer a person added by hand does not, and
   // it needs one all the same, because this attempt's outcome is recorded there.
@@ -528,9 +526,11 @@ async function attempt(
 
   // The ladder: one attempt per rung, starting from the rung the workspace's own
   // attempt count has reached. A re-armed issue whose earlier attempts already
-  // spent the ladder climbs at its top rung; a green attempt, or one the caller
-  // stopped, ends the climb. Every attempt is its own run — its own directory,
-  // report, comment, and repair allowance
+  // spent the ladder climbs at its top rung. Every attempt is its own run — its
+  // own directory, report, comment, and repair allowance — and the issue stays
+  // in the running status until the climb ends: only an exhausted ordinary red
+  // check round climbs, and a pass, a terminal failure, or the last rung
+  // publishes the result and moves the issue to review
   // (docs/implement-workspace-continuation.md).
   const ladder = context.tiers;
   const lastAttempt = Math.max(ladder.length, continuedWorkspace?.attempt ?? 1);
@@ -559,6 +559,24 @@ async function attempt(
       workspaceId === undefined
         ? []
         : ((await readWorkspaceState(workDir, workspaceId))?.attempts ?? []);
+    // What the item's own thread says since the previous attempt ended: for a
+    // first attempt of a workspace, the whole thread, and for a later rung of the
+    // same climb, the harness's own comment for the attempt before it. A read
+    // that fails is said out loud and does not stop the attempt: it is context,
+    // and the run's own evidence is not.
+    let comments: readonly SourceComment[] = [];
+    try {
+      comments = await source.commentsSince(
+        item,
+        earlier.at(-1)?.endedAt ?? new Date(0).toISOString(),
+        stop,
+      );
+    } catch (cause) {
+      io.err(
+        `${item.ref.key}: its comments could not be read, so this attempt runs without them: ` +
+          messageOf(cause),
+      );
+    }
     const guidance = guidanceFrom(earlier, comments);
     try {
       run = await context.run({
@@ -704,14 +722,32 @@ async function attempt(
       pullRequest,
     );
 
+    // Whether another rung follows this attempt. Only an exhausted ordinary red
+    // check round climbs; the ladder's remaining rungs are the configured ones,
+    // so nothing here can add an attempt the configuration did not allow.
+    const climbs = exhaustedRedRound(run) && attempt < lastAttempt;
+
     // A run the caller stopped still gets one bounded, best-effort feedback
     // sequence of its own, so the issue does not sit in the running status.
     const feedbackStop =
       run.status === 'cancelled' ? AbortSignal.timeout(FEEDBACK_DEADLINE_MS) : stop;
     try {
-      await source.complete(item, outcome, feedbackStop);
-      await updateReceipt(file, { feedback: 'sent' });
-      io.out(`${item.ref.key}: result published and moved to review`);
+      if (climbs) {
+        // The attempt's own comment, published while the issue stays in the
+        // running status: the next rung works in the same retained workspace,
+        // and the ladder's end is what publishes the result and moves the issue
+        // to review (docs/implement-workspace-continuation.md). The receipt stays
+        // `pending`: the issue has not been given this intake's last word yet.
+        await source.progress(item, outcome, feedbackStop);
+        io.out(
+          `${item.ref.key}: attempt ${String(attempt)} of ${String(ladder.length)} (tier ` +
+            `${tier.name}) published; the issue stays in the running status`,
+        );
+      } else {
+        await source.complete(item, outcome, feedbackStop);
+        await updateReceipt(file, { feedback: 'sent' });
+        io.out(`${item.ref.key}: result published and moved to review`);
+      }
     } catch (cause) {
       const failure = feedbackFailure(cause);
       await updateReceipt(file, {
@@ -726,10 +762,9 @@ async function attempt(
       );
     }
 
-    // Only a failed attempt climbs: a green one ends the issue's intake, and one
-    // the caller stopped is over. When the ladder has no rung left, the climb
-    // stops here and the last comment already says how it ended.
-    if (run.status !== 'failed' || attempt >= lastAttempt) {
+    // When nothing may follow — a pass, a terminal failure, or no rung left —
+    // the climb is over and the result above was the issue's last word.
+    if (!climbs) {
       break;
     }
 

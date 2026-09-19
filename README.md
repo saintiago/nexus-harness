@@ -359,14 +359,58 @@ configuration. An issue whose description does not fit the documented format is 
 skipped; it is never guessed at and never launched.
 
 **What Jira sees.** On a confirmed claim the issue moves from the ready status to the running
-status. When the run ends — `passed`, `failed`, or `cancelled` alike — one compact comment carries
-the run ID, the exact outcome and reason, the check summary, the repairs used, and the local
-artifact paths, and the issue moves to the review status. `In Review` means "a local attempt
-finished and needs a human", not success. The check summary names the last round that ran, and says
-so in as many words when the run was stopped before any round followed its last turn: a stopped turn
-has no checks to report, and the round the run started with is not one. **Nothing here moves an
-issue to Done**, and the harness merges nothing: without a delivery step, local commits a coding
-turn makes stay in the retained workspace, and the comment says so.
+status. When an attempt ends, one compact comment carries the run ID, the exact outcome and reason,
+the check summary, the repairs used, and the local artifact paths. While an `escalation` ladder
+still has a rung to try, that comment is the attempt's own and the issue stays in the running
+status; the climb's last attempt — a pass, a terminal failure, or the rung that exhausted the
+ladder — moves it to the review status. `In Review` means "a local attempt finished and needs a
+human", not success. The check summary names the last round that ran, and says so in as many words
+when the run was stopped before any round followed its last turn: a stopped turn has no checks to
+report, and the round the run started with is not one. **Nothing here moves an issue to Done**, and
+the harness merges nothing: without a delivery step, local commits a coding turn makes stay in the
+retained workspace, and the comment says so.
+
+**A ladder: a cheaper tier first, a stronger one after it.** The optional `escalation` array
+declares tiers tried in order inside one claim, each with its own launch and repair allowance:
+
+```json
+{
+  "escalation": [
+    {
+      "name": "flash",
+      "agent": {
+        "runtime": "codex",
+        "command": ["codex", "--profile", "nexus-flash", "--model", "deepseek-flash"]
+      },
+      "maxRepairs": 2
+    },
+    {
+      "name": "astra",
+      "agent": {
+        "runtime": "codex",
+        "command": ["codex", "--profile", "nexus-astra", "--model", "gpt-6-astra"]
+      },
+      "maxRepairs": 2
+    }
+  ]
+}
+```
+
+Flash runs the implementation and up to two repair turns; only when its post-agent checks are still
+red does Astra run — in the **same retained workspace**, so the earlier commits and uncommitted work
+are still in it — with its own two-repair allowance. Attempt N of an issue runs tier N, clamped to
+the last tier, and the tier's own launch is what really starts and what its report records. Only an
+exhausted ordinary red check round climbs: a setup, launch, authentication, or protocol error, a
+cancellation, a timeout, and an unconfirmed cleanup all end the intake at the rung where they
+happened, and that attempt's result is what the issue is told. A tier that names no `agent` or
+`maxRepairs` inherits the top-level one, and no `escalation` at all means the single ordinary tier.
+The launch prefixes above are operator-native Codex profiles; [nexus-agent-tools.md](docs/nexus-agent-tools.md)
+is how to install them, and the harness never reads or writes them.
+
+```sh
+# One finite batch with the ladder: Flash first, Astra only if Flash's checks stay red.
+npm start -- source run --repo ../target-project --config harness.jira.config.json --limit 1
+```
 
 **Delivering a passed attempt (optional).** Add a `delivery` object to have the harness push a
 **passed** attempt's branch and open — or update — its pull request, so the work reaches GitHub
@@ -667,11 +711,13 @@ Read this before pointing a run at anything you care about.
   site, a token, or a network.
 - workspace continuation through the same fakes and real temporary Git repositories: a continued
   attempt reopening the workspace its pointer label names and keeping its recorded base, the
-  per-attempt run directories and ledger, the escalation ladder's tiers, the guidance a continued
-  attempt is told, the decision made from the item as it was just re-read rather than from the search
-  result that discovered it, the pointer checks that refuse a malformed id, another item's, site's,
-  or repository's workspace, and a ledger with no item identity, and the refusal of an attempted
-  issue that names no workspace to continue.
+  per-attempt run directories and ledger, the escalation ladder's tiers — the tier's own launch, each
+  attempt's own comment while the issue stays in the running status, one review move when the ladder
+  ends, and the ladder's refusal to climb from a setup/launch/protocol error, a cancellation, or an
+  expired limit — the guidance a continued attempt is told, the decision made from the item as it was
+  just re-read rather than from the search result that discovered it, the pointer checks that refuse
+  a malformed id, another item's, site's, or repository's workspace, and a ledger with no item
+  identity, and the refusal of an attempted issue that names no workspace to continue.
 - the optional GitHub delivery step, against disposable Git repositories with a local bare
   destination and a stand-in `gh` on `PATH`: the branch really moves to the destination, the pull
   request is created with the issue reference and the check summary, a repeated delivery finds and
@@ -983,7 +1029,8 @@ operator's own `gh` credentials, once the check is green —
   assignment that added Jira intake, including the opt-in live exercise that has **not** been run.
 - [docs/implement-workspace-continuation.md](docs/implement-workspace-continuation.md) — the
   contract for workspaces that outlive runs, the workspace pointer label, and the escalation ladder.
-  Its three increments are implemented; the defects it lists are separate tasks.
+  Its three increments are implemented, including the corrections HARN-7 made to which tier really
+  launches, when Jira moves to review, and which failures may escalate.
 - [docs/LONG_TERM_VISION.md](docs/LONG_TERM_VISION.md) — the direction the harness is meant to grow
   into. It defines no behaviour: [docs/spec.md](docs/spec.md) stays authoritative, and every change
   still needs a task.

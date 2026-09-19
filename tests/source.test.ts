@@ -55,6 +55,7 @@ import type {
   CommandResult,
   EscalationTier,
   RoundOutcome,
+  RunReport,
   RunStatus,
   SourceRef,
   Task,
@@ -66,8 +67,13 @@ import { allocateRunDirectory } from '../src/workspace/run-directory.js';
 import type { RunDirectory } from '../src/workspace/run-directory.js';
 import type { WorkspaceSourceItem } from '../src/workspace/state.js';
 import { readWorkspaceState, sourceItemFor, workspaceStatePath } from '../src/workspace/state.js';
-import { fakeGhCalls, installFakeGh } from './fixtures/local-target.js';
-import type { FakeGhState } from './fixtures/local-target.js';
+import {
+  fakeGhCalls,
+  fakeTurns,
+  installFakeGh,
+  installFakeRuntime,
+} from './fixtures/local-target.js';
+import type { FakeGhState, FakePlan } from './fixtures/local-target.js';
 import {
   cleanupTempDirectories,
   createTempDir,
@@ -234,6 +240,11 @@ interface FixtureOptions {
     outcome: SourceRunOutcome,
     call: number,
   ) => Promise<void> | void;
+  readonly progress?: (
+    item: SourceTask,
+    outcome: SourceRunOutcome,
+    call: number,
+  ) => Promise<void> | void;
   readonly run?: (task: Task, call: number, runDir: string) => Promise<RunTaskResult>;
   readonly recordWorkspace?: (item: SourceTask, workspaceId: string) => Promise<void> | void;
   readonly refuse?: (item: SourceTask, reason: string) => Promise<void> | void;
@@ -250,6 +261,8 @@ interface FixtureOptions {
 interface Fixture {
   readonly context: SourceContext;
   readonly log: string[];
+  /** One entry per intermediate attempt comment, in order. */
+  readonly progresses: Array<{ key: string; outcome: SourceRunOutcome }>;
   readonly completions: Array<{ key: string; outcome: SourceRunOutcome }>;
   readonly refusals: Array<{ key: string; reason: string }>;
   readonly requests: Array<{
@@ -268,6 +281,7 @@ interface Fixture {
 /** The coordinator, wired to fakes that record exactly what happened. */
 function createFixture(options: FixtureOptions): Fixture {
   const log: string[] = [];
+  const progresses: Fixture['progresses'] = [];
   const completions: Fixture['completions'] = [];
   const refusals: Fixture['refusals'] = [];
   const requests: Fixture['requests'] = [];
@@ -280,6 +294,7 @@ function createFixture(options: FixtureOptions): Fixture {
   let prepareCount = 0;
   let claimCount = 0;
   let completeCount = 0;
+  let progressCount = 0;
   let runCount = 0;
   let preflightCount = 0;
 
@@ -304,6 +319,12 @@ function createFixture(options: FixtureOptions): Fixture {
       claimCount += 1;
       log.push(`claim:${item.ref.key}`);
       return options.claim?.(item, claimCount) ?? true;
+    },
+    progress: async (item, outcome) => {
+      progressCount += 1;
+      log.push(`progress:${item.ref.key}:${outcome.status}`);
+      progresses.push({ key: item.ref.key, outcome });
+      await options.progress?.(item, outcome, progressCount);
     },
     complete: async (item, outcome) => {
       completeCount += 1;
@@ -376,6 +397,7 @@ function createFixture(options: FixtureOptions): Fixture {
   return {
     context,
     log,
+    progresses,
     completions,
     refusals,
     requests,
@@ -405,27 +427,30 @@ describe('a finite source run', () => {
     expect(summary.outcome).toBe('completed');
     expect(summary.attempted).toBe(3);
     expect(summary.passed).toBe(3);
+    // The item's thread is read after the claim, per attempt: a claim that was
+    // rejected costs no read, and a later rung of a ladder reads the thread
+    // again rather than reusing the previous rung's view of it.
     expect(fixture.log).toEqual([
       'preflight:1',
       'list',
       'preflight:2',
       'prepare:SAM1-1',
-      'comments:SAM1-1',
       'claim:SAM1-1',
+      'comments:SAM1-1',
       'run:SAM1-1',
       'workspace:SAM1-1:run-1',
       'complete:SAM1-1:passed',
       'preflight:3',
       'prepare:SAM1-2',
-      'comments:SAM1-2',
       'claim:SAM1-2',
+      'comments:SAM1-2',
       'run:SAM1-2',
       'workspace:SAM1-2:run-2',
       'complete:SAM1-2:passed',
       'preflight:4',
       'prepare:SAM1-3',
-      'comments:SAM1-3',
       'claim:SAM1-3',
+      'comments:SAM1-3',
       'run:SAM1-3',
       'workspace:SAM1-3:run-3',
       'complete:SAM1-3:passed',
@@ -1163,16 +1188,21 @@ async function preparedWorkspaceOnDisk(
 
 /**
  * A run result that carries the workspace it worked in, the way the runner's
- * does: the ladder reads the next attempt number from it.
+ * does: the ladder reads the next attempt number from it. `attempts` is the
+ * evidence its own turns left, which is what decides whether another rung may
+ * follow it.
  */
 function resultContinuing(
   runDir: string,
   workspace: { readonly workspaceId: string; readonly attempt: number },
   status: RunStatus,
+  attempts: readonly AttemptEvidence[] = [],
 ): RunTaskResult {
   const workDir = path.dirname(runDir);
   return {
     ...resultFor(runDir, status, `attempt ${String(workspace.attempt)}`),
+    attempts,
+    repairsUsed: attempts.filter((attempt) => attempt.kind === 'repair').length,
     workspace: {
       workDir,
       runId: path.basename(runDir),
@@ -1187,6 +1217,17 @@ function resultContinuing(
       branch: `harness/${workspace.workspaceId}`,
     },
   };
+}
+
+/**
+ * The turns of a run that spent its repair allowance on ordinary completed red
+ * check rounds — the one ending the escalation ladder climbs from.
+ */
+function redRoundAttempts(): readonly AttemptEvidence[] {
+  return [
+    attemptFor(1, 'implementation', roundFor('failed', 1)),
+    attemptFor(2, 'repair', roundFor('failed', 1)),
+  ];
 }
 
 describe('the escalation ladder', () => {
@@ -1215,6 +1256,9 @@ describe('the escalation ladder', () => {
             runDir,
             { workspaceId: 'run-1', attempt: call },
             call === 1 ? 'failed' : 'passed',
+            call === 1
+              ? redRoundAttempts()
+              : [attemptFor(1, 'implementation', roundFor('passed', 0))],
           ),
         ),
     });
@@ -1237,12 +1281,24 @@ describe('the escalation ladder', () => {
       baseCommit: 'base',
       attempt: 2,
     });
-    // Two runs, two comments, each saying which attempt it was.
-    expect(fixture.completions.map((completion) => completion.outcome.attempt)).toEqual([
+    // Two runs, two comments, each saying which attempt it was: the first is the
+    // intermediate attempt's own comment, published while the item stays in the
+    // running status, and only the second moves it by completing the issue.
+    expect(fixture.progresses.map((entry) => entry.outcome.attempt)).toEqual([
       { number: 1, of: 2, tier: 'flash' },
+    ]);
+    expect(fixture.completions.map((completion) => completion.outcome.attempt)).toEqual([
       { number: 2, of: 2, tier: 'pro' },
     ]);
+    expect(fixture.log.indexOf('progress:SAM1-1:failed')).toBeGreaterThanOrEqual(0);
+    expect(fixture.log.indexOf('progress:SAM1-1:failed')).toBeLessThan(
+      fixture.log.indexOf('complete:SAM1-1:passed'),
+    );
+    expect(fixture.output.join('\n')).toContain('the issue stays in the running status');
     expect(fixture.output.join('\n')).toContain('escalating to tier pro (attempt 2 of 2)');
+    // Every rung reads the item's thread for itself, so a later attempt is not
+    // handed the previous rung's stale view of it.
+    expect(fixture.log.filter((entry) => entry === 'comments:SAM1-1')).toHaveLength(2);
     // The pointer was written once, by the first attempt.
     expect(fixture.log.filter((entry) => entry.startsWith('workspace:'))).toHaveLength(1);
   });
@@ -1255,6 +1311,124 @@ describe('the escalation ladder', () => {
 
     expect(summary.passed).toBe(1);
     expect(fixture.requests.map((request) => request.tier)).toEqual(['flash']);
+    expect(fixture.completions).toHaveLength(1);
+  });
+
+  it('does not climb when the attempt ended on a turn that failed', async () => {
+    const workDir = await createTempDir();
+    // A coding turn that could not finish — a launch, authentication, or
+    // protocol error — leaves no round after it. That is not an ordinary failed
+    // check: a stronger tier would be spent on the same infrastructure, so the
+    // run is the ladder's last word at this rung.
+    const fixture = createFixture({
+      workDir,
+      tiers: TIERS,
+      scans: [[candidateFor('1')]],
+      run: (_task, _call, runDir) =>
+        Promise.resolve(
+          resultContinuing(runDir, { workspaceId: 'run-1', attempt: 1 }, 'failed', [
+            attemptFor(1, 'implementation', null),
+          ]),
+        ),
+    });
+
+    const summary = await runSource(fixture.context, null);
+
+    expect(summary.outcome).toBe('completed');
+    expect(summary.failed).toBe(1);
+    expect(fixture.requests.map((request) => request.tier)).toEqual(['flash']);
+    expect(fixture.progresses).toEqual([]);
+    expect(fixture.completions).toHaveLength(1);
+    expect(fixture.output.join('\n')).not.toContain('escalating to tier');
+  });
+
+  it('does not climb when the post-agent round could not be executed', async () => {
+    const workDir = await createTempDir();
+    // A setup command failed or a check could not be launched: the round is an
+    // execution error, not a red check to code around, so it stays on the rung
+    // it happened on.
+    const fixture = createFixture({
+      workDir,
+      tiers: TIERS,
+      scans: [[candidateFor('1')]],
+      run: (_task, _call, runDir) =>
+        Promise.resolve(
+          resultContinuing(runDir, { workspaceId: 'run-1', attempt: 1 }, 'failed', [
+            attemptFor(1, 'implementation', roundFor('execution-error', null)),
+          ]),
+        ),
+    });
+
+    const summary = await runSource(fixture.context, null);
+
+    expect(summary.outcome).toBe('completed');
+    expect(summary.failed).toBe(1);
+    expect(fixture.requests.map((request) => request.tier)).toEqual(['flash']);
+    expect(fixture.progresses).toEqual([]);
+    expect(fixture.completions).toHaveLength(1);
+  });
+
+  it('does not climb when the caller stopped the attempt', async () => {
+    const workDir = await createTempDir();
+    // Even a stopped run whose last round was red is over: the caller asked for
+    // it to end, so nothing follows it.
+    const fixture = createFixture({
+      workDir,
+      tiers: TIERS,
+      scans: [[candidateFor('1')]],
+      run: (_task, _call, runDir) =>
+        Promise.resolve(
+          resultContinuing(
+            runDir,
+            { workspaceId: 'run-1', attempt: 1 },
+            'cancelled',
+            redRoundAttempts(),
+          ),
+        ),
+    });
+
+    const summary = await runSource(fixture.context, null);
+
+    expect(summary.cancelled).toBe(1);
+    expect(fixture.requests.map((request) => request.tier)).toEqual(['flash']);
+    expect(fixture.progresses).toEqual([]);
+    expect(fixture.completions).toHaveLength(1);
+  });
+
+  it('does not climb when the task deadline expired after a red round', async () => {
+    const workDir = await createTempDir();
+    // The red round would be an ordinary failure, but the run's own limit
+    // expired before the repair turn: the run is failed with a timeout record,
+    // and an expired limit is not repair feedback to escalate.
+    const fixture = createFixture({
+      workDir,
+      tiers: TIERS,
+      scans: [[candidateFor('1')]],
+      run: (_task, _call, runDir) =>
+        Promise.resolve({
+          ...resultContinuing(
+            runDir,
+            { workspaceId: 'run-1', attempt: 1 },
+            'failed',
+            redRoundAttempts(),
+          ),
+          timeout: {
+            limit: 'task',
+            phase: 'repair turn 2',
+            limitMs: 60_000,
+            elapsedMs: 60_000,
+            termination: 'confirmed',
+            problem: null,
+          },
+        }),
+    });
+
+    const summary = await runSource(fixture.context, null);
+
+    expect(summary.outcome).toBe('completed');
+    expect(summary.failed).toBe(1);
+    expect(fixture.requests.map((request) => request.tier)).toEqual(['flash']);
+    expect(fixture.progresses).toEqual([]);
     expect(fixture.completions).toHaveLength(1);
   });
 
@@ -2172,7 +2346,11 @@ function fakeJira(issues: FakeIssue[]): FakeJira {
       thread.push({
         id,
         author: { displayName: 'Harness' },
-        created: `2026-09-16T12:${String(thread.length).padStart(2, '0')}:00.000+0000`,
+        // Stamped on this process's own clock, one second apart, so the moment a
+        // comment was posted is later than the ledger entry of the attempt that
+        // ended just before it: a later attempt asking for what was added since
+        // then really sees the harness's own comment for the attempt before it.
+        created: new Date(Date.now() + thread.length * 1000).toISOString(),
         body: body?.['body'] ?? null,
       });
       return jsonResponse({ id });
@@ -2264,7 +2442,15 @@ async function gitOrFail(args: readonly string[], cwd: string): Promise<void> {
 }
 
 /** A clean repository with one commit and a config that points at a Jira queue. */
-async function createTarget(options: { readonly delivery?: boolean } = {}): Promise<{
+async function createTarget(
+  options: {
+    readonly delivery?: boolean;
+    /** Commit a check that is green until the marker file holds anything else. */
+    readonly markerCheck?: boolean;
+    /** The escalation ladder the configuration declares, when a test wants one. */
+    readonly escalation?: readonly EscalationTier[];
+  } = {},
+): Promise<{
   directory: string;
   repo: string;
   configPath: string;
@@ -2274,6 +2460,10 @@ async function createTarget(options: { readonly delivery?: boolean } = {}): Prom
   const repo = path.join(directory, 'target-project');
   await mkdir(repo, { recursive: true });
   await writeFile(path.join(repo, 'README.md'), '# target\n', 'utf8');
+  if (options.markerCheck === true) {
+    await mkdir(path.join(repo, 'tools'), { recursive: true });
+    await writeFile(path.join(repo, 'tools', 'check.mjs'), MARKER_CHECK_SOURCE, 'utf8');
+  }
   await gitOrFail(['init', '--quiet', '--initial-branch=main'], repo);
   await gitOrFail(['add', '--all'], repo);
   await gitOrFail(['commit', '--quiet', '--message', 'baseline'], repo);
@@ -2283,7 +2473,11 @@ async function createTarget(options: { readonly delivery?: boolean } = {}): Prom
     workDir: './runs',
     maxRepairs: 1,
     setup: [],
-    checks: [[process.execPath, '-e', 'process.exit(0)']],
+    checks:
+      options.markerCheck === true
+        ? [[process.execPath, 'tools/check.mjs']]
+        : [[process.execPath, '-e', 'process.exit(0)']],
+    ...(options.escalation === undefined ? {} : { escalation: options.escalation }),
     ...(options.delivery === true
       ? {
           delivery: {
@@ -2305,6 +2499,29 @@ async function createTarget(options: { readonly delivery?: boolean } = {}): Prom
 
   return { directory, repo, configPath, workDir: path.join(directory, 'runs') };
 }
+
+/**
+ * The check a ladder test's project runs: no marker file is the feature not
+ * implemented yet, which is what makes the committed baseline green; the awaited
+ * text is the feature done; anything else is a real failed check, in the
+ * project's own runner.
+ */
+const MARKER_CHECK_SOURCE = [
+  "import { existsSync, readFileSync } from 'node:fs';",
+  '',
+  "if (!existsSync('MARKER.md')) {",
+  "  console.log('marker: skipped, the feature is not implemented in this working copy');",
+  '} else {',
+  "  const text = readFileSync('MARKER.md', 'utf8').trim();",
+  "  if (text === 'done') {",
+  "    console.log('marker: ok');",
+  '  } else {',
+  '    console.log(`marker: wrong, it holds ${JSON.stringify(text)}`);',
+  '    process.exitCode = 1;',
+  '  }',
+  '}',
+  '',
+].join('\n');
 
 /**
  * A disposable destination for the delivery step: a bare repository the branch
@@ -2353,6 +2570,38 @@ async function withFakeGhOnPath<T>(
   }
 }
 
+/**
+ * Runs `body` with the stand-in `codex` first on this process's own `PATH` and
+ * told which plans its turns follow. The CLI builds both the child environment
+ * and (on Windows) its own executable resolution from this process, so a suite
+ * that wants the stand-in has to put it there and take it away again.
+ */
+async function withFakeRuntimeOnPath<T>(
+  bin: string,
+  state: { readonly dir: string },
+  plans: readonly FakePlan[],
+  body: () => Promise<T>,
+): Promise<T> {
+  const previousPath = process.env.PATH;
+  const previousConfig = process.env.FAKE_CODEX;
+  process.env.PATH = `${bin}${path.delimiter}${previousPath ?? ''}`;
+  process.env.FAKE_CODEX = JSON.stringify({ stateDir: state.dir, plans });
+  try {
+    return await body();
+  } finally {
+    if (previousPath === undefined) {
+      delete process.env.PATH;
+    } else {
+      process.env.PATH = previousPath;
+    }
+    if (previousConfig === undefined) {
+      delete process.env.FAKE_CODEX;
+    } else {
+      process.env.FAKE_CODEX = previousConfig;
+    }
+  }
+}
+
 /** The single run directory one source batch left under a target's output. */
 async function onlyRunDirectory(workDir: string): Promise<string> {
   const runs = (await readdir(path.join(workDir, 'runs'))).filter((name) =>
@@ -2367,6 +2616,8 @@ interface CliOptions {
   readonly signals?: InterruptSignals;
   readonly dependencies?: CliContext['dependencies'];
   readonly deliveryParts?: CliContext['deliveryParts'];
+  /** Called for every line the command prints, while it is printing. */
+  readonly onOut?: (text: string) => void;
 }
 
 async function runSourceCli(
@@ -2378,7 +2629,13 @@ async function runSourceCli(
   const err: string[] = [];
   const context: CliContext = {
     cwd,
-    io: { out: (text) => out.push(text), err: (text) => err.push(text) },
+    io: {
+      out: (text) => {
+        out.push(text);
+        options.onOut?.(text);
+      },
+      err: (text) => err.push(text),
+    },
     fetch: options.fetch,
   };
   if (options.signals !== undefined) {
@@ -2632,6 +2889,181 @@ describe('the source commands through the CLI', () => {
       ).toEqual([`harness-ws-${workspaceId ?? ''}`]);
       const after = JSON.parse(await readFile(ledgerPath, 'utf8')) as { attempts?: unknown[] };
       expect(after.attempts).toHaveLength(2);
+    } finally {
+      if (previous === undefined) {
+        delete process.env.JIRA_API_TOKEN;
+      } else {
+        process.env.JIRA_API_TOKEN = previous;
+      }
+    }
+  });
+
+  it('runs one attempt per ladder tier in the same workspace, keeping the issue running until the end', async () => {
+    const ladder: readonly EscalationTier[] = [
+      {
+        name: 'flash',
+        agent: {
+          runtime: 'codex',
+          command: ['codex', '--profile', 'nexus-flash', '--model', 'deepseek-flash'],
+        },
+        maxRepairs: 1,
+      },
+      {
+        name: 'astra',
+        agent: {
+          runtime: 'codex',
+          command: ['codex', '--profile', 'nexus-astra', '--model', 'gpt-6-astra'],
+        },
+        maxRepairs: 1,
+      },
+    ];
+    const target = await createTarget({ markerCheck: true, escalation: ladder });
+    const jira = fakeJira([
+      {
+        id: '10011',
+        key: 'SAM1-11',
+        summary: 'Write the marker',
+        status: 'To Do',
+        updated: '2026-09-16T11:00:00.000Z',
+      },
+    ]);
+    const runtime = await installFakeRuntime(target.directory);
+    const previous = process.env.JIRA_API_TOKEN;
+    process.env.JIRA_API_TOKEN = 'test-token';
+    /** The issue's status as the climb moved on, read while the ladder was running. */
+    const statusWhenEscalating: string[] = [];
+
+    try {
+      const result = await withFakeRuntimeOnPath(
+        runtime.bin,
+        runtime.state,
+        [
+          // The flash attempt: two checked turns, both wrong, so its allowance is
+          // spent on ordinary red rounds and the ladder climbs.
+          { edits: [{ file: 'MARKER.md', text: 'not yet\n' }], summary: 'flash: first try' },
+          {
+            edits: [{ file: 'MARKER.md', text: 'not yet\n' }],
+            summary: 'flash: repaired, still wrong',
+          },
+          // The astra attempt continues the same clone and finishes it.
+          { edits: [{ file: 'MARKER.md', text: 'done\n' }], summary: 'astra: finished the marker' },
+        ],
+        async () =>
+          await runSourceCli(
+            ['source', 'run', '--repo', target.repo, '--config', target.configPath],
+            target.directory,
+            {
+              fetch: jira.fetch,
+              onOut: (text) => {
+                if (text.includes('escalating to tier')) {
+                  statusWhenEscalating.push(jira.issues[0]?.status ?? 'gone');
+                }
+              },
+            },
+          ),
+      );
+
+      expect(result.err).toBe('');
+      expect(result.code).toBe(EXIT_OK);
+      expect(result.out).toContain('source completed');
+      expect(result.out).toContain('1 passed');
+
+      // Three real runtime invocations: flash's implementation and repair, then
+      // astra's implementation. What was really launched is the tier's own
+      // prefix, and it is the prefix each run's report records — every attempt,
+      // the continuation included.
+      const turns = await fakeTurns(runtime.state);
+      expect(turns).toHaveLength(3);
+      const flashPrefix = ['--profile', 'nexus-flash', '--model', 'deepseek-flash'];
+      const astraPrefix = ['--profile', 'nexus-astra', '--model', 'gpt-6-astra'];
+      expect(turns[0]?.argv.slice(0, flashPrefix.length)).toEqual(flashPrefix);
+      expect(turns[1]?.argv.slice(0, flashPrefix.length)).toEqual(flashPrefix);
+      expect(turns[2]?.argv.slice(0, astraPrefix.length)).toEqual(astraPrefix);
+      expect(turns[2]?.argv.slice(astraPrefix.length)).toEqual([
+        '--ask-for-approval',
+        'never',
+        'exec',
+        '--sandbox',
+        'danger-full-access',
+        '--json',
+        '-',
+      ]);
+      // Every turn worked in the one workspace the first attempt created.
+      expect(new Set(turns.map((turn) => turn.cwd)).size).toBe(1);
+      const [workspaceId] = (await readdir(path.join(target.workDir, 'workspaces'))).filter(
+        (name) => !name.endsWith('.json'),
+      );
+      expect(turns[2]?.cwd).toBe(path.join(target.workDir, 'workspaces', workspaceId ?? ''));
+
+      // Each attempt is its own run with its own report: the launch that ran it,
+      // and the repair turns its own allowance let it spend.
+      const runNames = (
+        await readdir(path.join(target.workDir, 'runs')).then((names) =>
+          names.filter((name) => name.startsWith('run-')),
+        )
+      ).sort();
+      expect(runNames).toHaveLength(2);
+      const reports = await Promise.all(
+        runNames.map(
+          async (name) =>
+            JSON.parse(
+              await readFile(path.join(target.workDir, 'runs', name, 'result.json'), 'utf8'),
+            ) as RunReport,
+        ),
+      );
+      expect(reports[0]?.status).toBe('failed');
+      expect(reports[0]?.repairsUsed).toBe(1);
+      expect(reports[0]?.agent.command).toEqual([
+        'codex',
+        '--profile',
+        'nexus-flash',
+        '--model',
+        'deepseek-flash',
+      ]);
+      expect(reports[1]?.status).toBe('passed');
+      expect(reports[1]?.repairsUsed).toBe(0);
+      expect(reports[1]?.agent.command).toEqual([
+        'codex',
+        '--profile',
+        'nexus-astra',
+        '--model',
+        'gpt-6-astra',
+      ]);
+      expect(reports[1]?.workspace.continued).toBe(true);
+      expect(reports[1]?.workspace.attempt).toBe(2);
+
+      // The stronger attempt is told what the weaker one did — its ledger line,
+      // and the comment the harness published for it before the next rung ran.
+      const strongerPrompt = turns[2]?.prompt ?? '';
+      expect(strongerPrompt).toContain('attempt 1 (tier flash) failed');
+      expect(strongerPrompt).toContain('comment by Harness');
+      expect(strongerPrompt).toContain('finished: failed');
+
+      // Jira: one comment per attempt, the issue still in the running status when
+      // the climb moved on, and exactly one move to review, after both comments.
+      expect(statusWhenEscalating).toEqual(['In Progress']);
+      expect(jira.issues[0]?.status).toBe('In Review');
+      expect(jira.comments).toHaveLength(2);
+      expect(jira.comments[0]).toContain('finished: failed');
+      expect(jira.comments[0]).toContain('Attempt 1 of 2 (tier flash)');
+      expect(jira.comments[0]).toContain('still climbing its escalation ladder');
+      expect(jira.comments[1]).toContain('finished: passed');
+      expect(jira.comments[1]).toContain('Attempt 2 of 2 (tier astra)');
+      const transitions = jira.calls.filter(
+        (call) => call.method === 'POST' && call.url.includes('/transitions'),
+      );
+      expect(transitions).toHaveLength(2);
+      expect(transitions[0]?.body).toMatchObject({ transition: { id: '11' } });
+      expect(transitions[1]?.body).toMatchObject({ transition: { id: '31' } });
+      const lastTransition = jira.calls.findLastIndex(
+        (call) => call.method === 'POST' && call.url.includes('/transitions'),
+      );
+      const commentPosts = jira.calls
+        .map((call, index) => ({ call, index }))
+        .filter(({ call }) => call.method === 'POST' && call.url.includes('/comment'))
+        .map(({ index }) => index);
+      expect(commentPosts).toHaveLength(2);
+      expect(commentPosts[1] ?? -1).toBeLessThan(lastTransition);
     } finally {
       if (previous === undefined) {
         delete process.env.JIRA_API_TOKEN;
