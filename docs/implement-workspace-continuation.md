@@ -174,7 +174,11 @@ are not claimed as fixed here.
   red-baseline exception, the tier loop, and the guidance rendering, all against fakes;
   `npm run validate` green, on Linux as well as Windows for anything that touches process or path
   handling.
-- Live: **not run.** The supervised adoption of HARN-1's existing workspace — its first attempt
-  recorded, the pointer label set, the issue moved back to the ready status, and the next attempt
-  continuing that workspace rather than cloning a new one — has not happened. The live Jira evidence
-  recorded in [README.md](../README.md) is a read of the queue, not this exercise.
+- Live: **partly run, 2026-09-19.** A real Jira-driven continuation has happened: run
+  `run-20260919115244-4ff8eedf` claimed HARN-2, reopened workspace `run-20260919100148-e48a9ab0`
+  (same clone, same recorded base `36f62fd`, attempt 2), and the attempt's work is the local commit
+  `f835c33` on that retained branch. Still **not run:** the supervised adoption of HARN-1's existing
+  workspace — its first attempt recorded, the pointer label set, the issue moved back to the ready
+  status, and the next attempt continuing that workspace rather than cloning a new one — and any
+  live watch, restart, or failure scenario. The queue read recorded in [README.md](../README.md) is
+  not this exercise either.

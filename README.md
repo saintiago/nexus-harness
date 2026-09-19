@@ -672,19 +672,24 @@ and only a read.
 
 **Not verified anywhere yet:**
 
-- **any live turn through the unsandboxed launch this checkout selects.** All of the live evidence
-  above predates it: it was produced with the previous `--sandbox workspace-write` suffix, and no
-  live run has yet asked a runtime started this way to stage and commit. The offline suite pins the
-  adapter's arguments; only the by-hand check in "Coding runtime" — a real turn asked to commit —
-  can close that gap, and it is not evidence until it has been run and read.
+- **any live turn through the unsandboxed launch beyond the 2026-09-19 Windows smoke.** That smoke
+  is the only live evidence for this suffix: `run-20260919114837-ce22873c` had a real DeepSeek Flash
+  turn stage and commit its change (`e8dafb7`), and `run-20260919114936-a1feeae5` reopened the same
+  retained branch and committed `e105ef4` on top. Both ended clean, both commits are
+  `Nexus Agent <nexus@local>`, the clone has no remote, and the source checkout is unchanged. It is
+  one platform, one provider profile, and no Jira: `npm run test:live` has not run through this
+  launch.
 - any live coding turn on Linux or macOS, and any macOS behaviour at all;
 - live runs through a provider other than the one configured on this machine, and any profile or
   gateway the operator has not installed;
-- **any live Jira write.** The read half has been exercised live (below); no issue has been claimed,
-  commented on, or transitioned, no `source run` or `source watch` has run against a live site, and
-  the supervised exercise in
-  [docs/implement-task-source-connectors.md](docs/implement-task-source-connectors.md) §S07 has not
-  been run. Mocked tests are not evidence that the live write path works;
+- **the supervised live Jira exercise, and any live watch, restart, or failure scenario.** The read
+  half has been exercised live (above), and live writes now have evidence too: the Jira-driven runs
+  claimed HARN-2, commented on it, and moved it through its statuses, and one continued a retained
+  workspace and left a local commit there (see [Next task](#next-task)). The supervised exercise in
+  [docs/implement-task-source-connectors.md](docs/implement-task-source-connectors.md) §S07 — a
+  disposable repository, the exact-byte marker assertion, the restart check, and the watch cycle —
+  has not run, and no live watch, restart, or failure path has been exercised. Mocked tests are not
+  evidence for the parts that have not run;
 - behaviour on a runtime version other than the 0.154.0 interface this adapter was written against,
   and any runtime-reported model identity: a profile or model name in a report is launch
   information, not proof of which upstream model served a response.
@@ -909,12 +914,16 @@ The 2026-09-16 extension added the optional `agent` selection, the selected-laun
 explicit no-approval policy, and the Jira task source with `source list`, `source run`, and
 `source watch`; the workspace-continuation increment — retained workspaces, the
 `harness-ws-<workspaceId>` pointer label, the escalation ladder, and continuation guidance — is
-implemented and verified offline. **No live attempt has continued a real issue's workspace yet.**
-What remains is listed under
+implemented and verified offline. **A real Jira-driven continuation has since run:** Jira run
+`run-20260919115244-4ff8eedf` claimed HARN-2, continued workspace `run-20260919100148-e48a9ab0` —
+same clone, same recorded base `36f62fd`, attempt 2 — and the attempt's documentation work is the
+local commit `f835c33` on that retained branch: one issue's continuation, not the full supervised
+exercise. What remains is listed under
 [What is verified, and what is not](#what-is-verified-and-what-is-not) rather than promised here. The
-first real piece of work is the **supervised live Jira exercise**, which has not been run: it needs a
+next real piece of work is the **supervised live Jira exercise**, still not run: it needs a
 service-account token, a disposable target repository, and an operator who has inspected the queue
-before the first paid call. After that, a second coding adapter (Claude Code, with its own invocation
+before the first paid call, and its restart, watch, and failure steps have no live evidence. After
+that, a second coding adapter (Claude Code, with its own invocation
 and event parser and its own tests — a Claude launcher behind the Codex parser would be a bug), live
 turns on POSIX hosts, and stronger isolation before unattended runs of untrusted repositories.
 Nothing here builds them ahead of a task that needs them.

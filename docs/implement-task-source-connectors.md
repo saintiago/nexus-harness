@@ -115,8 +115,13 @@ Do not alter unrelated Jira work, use real application changes as a disposable f
 a service-account token, and — after the language fix this exercise surfaced — reported `HARN-1` as
 valid and unattempted. The first run reported it `stale`, because the queue's JQL matched the
 canonical names while the site answered with translated ones; that defect and its evidence are
-recorded in [README.md](../README.md). Nothing was claimed, commented on, transitioned, or run, so
-the supervised exercise above is still **not run**.
+recorded in [README.md](../README.md). That read changed nothing. Since then, real Jira-driven runs
+have claimed HARN-2, commented on it, and moved it through its statuses, and one continued its
+retained workspace and left a local commit there; [README.md](../README.md) and
+[implement-workspace-continuation.md](implement-workspace-continuation.md) record that evidence and
+its limits. The supervised exercise above is still **not run as written**: it needs a disposable
+repository and an inspected queue, and its exact-byte assertion, restart check, and watch cycle have
+no live evidence.
 
 ## Definition of done
 
