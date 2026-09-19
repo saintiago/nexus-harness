@@ -19,7 +19,8 @@
 import { statSync } from 'node:fs';
 import { messageOf } from '../shared/errors.js';
 import { WorkspaceError } from './errors.js';
-import { runGit } from './git.js';
+import { gitFailure, runGit } from './git.js';
+import type { GitRunBounds } from './git.js';
 import { outsideWorkspacesProblem, workspaceIdProblem, workspacePathFor } from './run-directory.js';
 import type { WorkspaceSourceItem } from './state.js';
 import { readWorkspaceState, workspaceStatePath } from './state.js';
@@ -222,12 +223,16 @@ function missingIdentityProblem(workDir: string, state: WorkspaceState): string 
  * recorded base is ordinary: the branch is what identifies the checkout, and a
  * workspace that is not on the branch its ledger records is refused rather than
  * continued. The recorded base travels back with the workspace so every attempt
- * keeps comparing against it.
+ * keeps comparing against it. The reading of the branch is bounded and
+ * stoppable like every other Git invocation: a caller that already has a stop
+ * request hands it over, and a reading the harness had to stop is reported as
+ * the stop it was rather than as a statement about the checkout.
  */
 export async function reopenWorkspace(
   workDir: string,
   workspaceId: string,
   expected: WorkspaceExpectation,
+  bounds: GitRunBounds = {},
 ): Promise<ContinuedWorkspace> {
   const resolution = await resolveWorkspace(workDir, workspaceId, expected);
   if (!resolution.ok) {
@@ -238,8 +243,14 @@ export async function reopenWorkspace(
   const symbolic = await runGit(
     ['symbolic-ref', '--quiet', '--short', 'HEAD'],
     workspace.workspacePath,
+    bounds,
   );
   const branch = symbolic.stdout.trim();
+  if (symbolic.outcome !== 'exited') {
+    // A reading the harness stopped is not a statement about the checkout: it
+    // says nothing about which branch the workspace is on.
+    throw gitFailure(`the branch of workspace ${workspaceId} could not be read`, symbolic);
+  }
   if (symbolic.code !== 0 || branch !== workspace.branch) {
     throw new WorkspaceError(
       `workspace ${workspaceId} is on ${branch === '' ? 'no branch' : `branch "${branch}"`}, not ` +

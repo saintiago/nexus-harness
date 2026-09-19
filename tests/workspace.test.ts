@@ -1308,17 +1308,19 @@ describe('preparation that runs out of time', () => {
     const run = await allocateRunDirectory(fixture.workDir);
     const sourceBefore = await snapshotRepository(fixture.repo);
 
-    // The run's deadline is spent as preparation works: the first steps are
-    // given the time that is left, and by the fourth there is none, so the step
-    // is not started. The clock is the run's own, read the same way the runner
-    // reads it.
+    // The run's deadline is spent as preparation works: the clock is the run's
+    // own, read before each step and again for every Git invocation a step makes
+    // — the source's HEAD, the clone, and removing the clone's remote, before the
+    // branch step — so the first steps run with time to spare and, by the branch
+    // step, there is none: that step is not started, and what the clone wrote is
+    // kept.
     const start = Date.now();
     let reads = 0;
     const error = await expectWorkspaceError(
       () =>
         prepareWorkspace(run, source, {
           deadlineMs: start + 5000,
-          now: () => new Date(start + (reads++ < 3 ? 0 : 60_000)),
+          now: () => new Date(start + (reads++ < 6 ? 0 : 60_000)),
         }),
       /task deadline passed 55000 ms/,
       /must not be reused/,

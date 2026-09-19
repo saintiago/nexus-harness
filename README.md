@@ -193,6 +193,11 @@ caller supplies.
 - `taskTimeoutMinutes` bounds the **whole run**: setup, coding turns, and checks together.
 - `commandTimeoutMinutes` bounds each **single** configured command, capped by the task time left
   when it starts — the remaining task time always wins.
+- Every Git step is bounded too: inside a run each reading gets what is left of the task time when
+  it starts, and the run's own stop request; a reading with no run deadline to spend — the source
+  preflight, a continuation's branch check, the final comparison — runs under a fixed finite bound.
+  A Git stopped at its limit is reported as that stop, with whether it was confirmed, instead of
+  being waited for.
 - A limit that expires is a **`failed` run** with a `timeout` record saying which limit expired, in
   which phase, and whether the execution it stopped was confirmed to have ended. It is never
   reported as a red check round, and an exit code the harness cut short means nothing either way.
@@ -990,7 +995,7 @@ is the full tree, the placement rules, and the steps for adding a source or a ru
 | `src/cli.ts` + `src/cli/` | Arguments, help, exit codes, command dispatch, and top-level wiring. Owns all presentation.  |
 | `src/config/`             | The input schemas and their documented defaults, and reading/validating the two JSON inputs. |
 | `src/shared/`             | The data contracts (data only: no imports, no runtime I/O) and the one message helper.       |
-| `src/process/`            | Starting one command, running it under a limit, and stopping a process tree.                 |
+| `src/process/`            | Starting one command or Git reading, its limit, and stopping its process tree.               |
 | `src/checks/`             | One setup/check round and what a command's result means.                                     |
 | `src/workspace/`          | Preflight, run directory allocation, the working copy, the ledger, and the change summary.   |
 | `src/runs/`               | The order the work happens in: baseline, turns, checks, repair, deadlines, the report.       |

@@ -15,7 +15,7 @@ src/
   cli.ts + cli/       # arguments, help, exit codes, command dispatch, top-level wiring
   config/             # input schemas, defaults, configuration-relative paths
   shared/             # small data contracts, and the one message helper
-  process/            # starting, bounding, and stopping one command
+  process/            # starting, bounding, and stopping one invocation
   checks/             # one setup/check round and what a result means
   workspace/          # Git, retained working copies, the ledger, the change summary
   runs/               # implementation/check/repair coordination and how a run ends

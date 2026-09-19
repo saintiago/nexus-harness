@@ -39,6 +39,9 @@ import type {
   RepairFeedback,
 } from '../shared/types.js';
 import type { PreparedWorkspace } from '../workspace/prepare.js';
+import type { WorkspaceStepStop } from '../workspace/errors.js';
+import { workspaceStopOf } from '../workspace/errors.js';
+import type { SourcePreflight } from '../workspace/preflight.js';
 import { WORKSPACE_IDENTITY } from '../workspace/git.js';
 import { sourceItemFor } from '../workspace/state.js';
 import type {
@@ -107,24 +110,68 @@ export async function runTask(
    * Refuses a run its caller stopped before a run directory existed, naming where
    * it was stopped. Nothing of the run was created and nothing of it ran, so the
    * refusal is thrown to the caller rather than reported as a run that happened —
-   * exactly as an expired task time is, and for the same reason.
+   * exactly as an expired task time is, and for the same reason. What stopped the
+   * last check the run made is named when there is something to name: a Git
+   * reading that was stopped there says so, with whether its stop was confirmed,
+   * even though the run itself left nothing behind to report it in.
    */
-  const refuseCancelled = (where: string): RunCancelledError =>
+  const refuseCancelled = (where: string, detail?: string, cause?: unknown): RunCancelledError =>
     new RunCancelledError(
       [
         `the run was stopped by its caller ${where}, before any run directory was allocated.`,
+        ...(detail === undefined ? [] : [`What was running when it arrived: ${detail}`]),
         'No run directory, no working copy, and no report were created: there is nothing to inspect and nothing to reuse, and no command and no coding turn was started.',
       ].join('\n'),
+      { cause },
     );
 
   if (stopped()) {
     throw refuseCancelled('before the source repository was checked');
   }
 
-  const source = await dependencies.preflight({
-    repoPath: request.repoPath,
-    workDir: request.workDir,
-  });
+  /**
+   * The source check's Git readings are bounded like everything else the run
+   * spends its time on: each reading runs under what is left of the run's task
+   * time when it starts, and the run's stop request stops one that is running. A
+   * check stopped there is reported as the stop it is — a cancellation, or the
+   * deadline — rather than as a refusal of the source it never finished reading.
+   */
+  let source: SourcePreflight;
+  try {
+    source = await dependencies.preflight({
+      repoPath: request.repoPath,
+      workDir: request.workDir,
+      bounds: {
+        deadlineMs,
+        now: dependencies.now,
+        ...(callerStop === undefined ? {} : { stop: callerStop }),
+      },
+    });
+  } catch (cause) {
+    const gitStop = workspaceStopOf(cause);
+    if (gitStop?.kind === 'cancelled' || (gitStop?.kind === undefined && stopped())) {
+      throw refuseCancelled(
+        'while the source repository was being checked',
+        workspaceStopOf(cause) === null ? undefined : oneLine(messageOf(cause)),
+        cause,
+      );
+    }
+    if (workspaceStopOf(cause) !== null) {
+      // The reading was stopped at the limit it was given, which was the task
+      // time that was left: that is the limit that expired, and nothing of the
+      // run exists yet to report it in.
+      throw new RunTimeoutError(
+        [
+          `the run's task time limit of ${String(taskLimitMs)} ms expired while the source repository was being checked, before any run directory was allocated.`,
+          `The check was stopped there: ${oneLine(messageOf(cause))}`,
+          'No run directory, no working copy, and no report were created: there is nothing to inspect and nothing to reuse, and no command and no coding turn was started.',
+          `Run the task again with more than ${String(config.taskTimeoutMinutes)} minutes of task time available.`,
+        ].join('\n'),
+        { cause },
+      );
+    }
+    throw cause;
+  }
 
   if (stopped()) {
     throw refuseCancelled('while the source repository was being checked');
@@ -175,6 +222,13 @@ export async function runTask(
 
   let workspace: PreparedWorkspace | null = null;
   let preparationProblem: string | null = null;
+  /**
+   * The stop preparation recorded, when it was a Git step the harness stopped:
+   * the run's cancellation or its timeout then carries whether that stop was
+   * confirmed, so an unconfirmed one stops automatic intake and reuse instead of
+   * being rounded down to a clean end.
+   */
+  let preparationStop: WorkspaceStepStop | null = null;
   const continued = request.continuedWorkspace;
   if (continued !== undefined) {
     // A continued attempt works in the workspace that already exists: the same
@@ -219,6 +273,7 @@ export async function runTask(
       // what was created is kept, and the report records the facts it has instead
       // of describing a working copy that was never made.
       preparationProblem = messageOf(cause);
+      preparationStop = workspaceStopOf(cause);
       await dependencies.appendRunLog(
         timeline,
         `workspace preparation failed: ${oneLine(preparationProblem)}`,
@@ -267,7 +322,10 @@ export async function runTask(
   const { endRun, endTimedOut, endStopped, callerStopped, timedOut, roundStop } = finalizer;
 
   if (workspace === null) {
-    if (stopped()) {
+    if (
+      preparationStop?.kind === 'cancelled' ||
+      (preparationStop?.kind === undefined && stopped())
+    ) {
       // Preparation was stopped by the caller's request, not by Git: the report
       // keeps the preparation problem it has, and the cancellation says why the
       // run ended there. Nothing was checked and no turn was started.
@@ -275,12 +333,13 @@ export async function runTask(
         cause: callerStopped(
           'preparation of the working copy',
           'the run was stopped by its caller while the working copy was being prepared, so no check and no coding turn was started',
+          preparationStop ?? undefined,
         ),
         baseline: null,
         attempts: [],
       });
     }
-    if (remainingMs() <= 0) {
+    if (preparationStop !== null || remainingMs() <= 0) {
       // Preparation stopped because the run's own deadline had passed, not
       // because Git failed. The report keeps the preparation problem it has,
       // and the timeout says which limit was responsible.
@@ -288,6 +347,9 @@ export async function runTask(
         limit: 'task',
         phase: 'preparation of the working copy',
         limitMs: taskLimitMs,
+        ...(preparationStop === null
+          ? {}
+          : { termination: preparationStop.termination, problem: preparationStop.problem }),
       });
       return endTimedOut({
         reason:
@@ -316,7 +378,10 @@ export async function runTask(
    * is what the run ends for — a rejection on the way out never replaces the
    * reason the run actually stopped. A setting that plainly cannot be written
    * ends the run here, with a report, rather than letting a turn run with an
-   * unknown commit identity.
+   * unknown commit identity. Each setting is written by a Git invocation bounded
+   * by what is left of the task time and stopped with the run, so a stalled Git
+   * cannot hold this phase either, and a stop it could not confirm is carried
+   * into the run's own evidence.
    */
   const identityPhase = "the working copy's Git identity";
   if (stopped()) {
@@ -341,25 +406,40 @@ export async function runTask(
   }
 
   let identityProblem: string | null = null;
+  /** The stop the identity step recorded, when a Git invocation was stopped there. */
+  let identityStop: WorkspaceStepStop | null = null;
   try {
-    await dependencies.configureWorkspaceIdentity(workspace.workspacePath);
+    await dependencies.configureWorkspaceIdentity(workspace.workspacePath, {
+      deadlineMs,
+      now: dependencies.now,
+      ...(callerStop === undefined ? {} : { stop: callerStop }),
+    });
   } catch (cause) {
     identityProblem = messageOf(cause);
+    identityStop = workspaceStopOf(cause);
   }
   // The stop the run observed while the phase ran is read first, then the
   // deadline: what it returned or rejected with does not decide the status.
-  if (stopped()) {
+  if (identityStop?.kind === 'cancelled' || (identityStop?.kind === undefined && stopped())) {
     return endStopped({
       cause: callerStopped(
         identityPhase,
         "the run was stopped by its caller while the working copy's Git identity was being configured, so no check and no coding turn was started",
+        identityStop ?? undefined,
       ),
       baseline: null,
       attempts: [],
     });
   }
-  if (remainingMs() <= 0) {
-    const evidence = timedOut({ limit: 'task', phase: identityPhase, limitMs: taskLimitMs });
+  if (identityStop !== null || remainingMs() <= 0) {
+    const evidence = timedOut({
+      limit: 'task',
+      phase: identityPhase,
+      limitMs: taskLimitMs,
+      ...(identityStop === null
+        ? {}
+        : { termination: identityStop.termination, problem: identityStop.problem }),
+    });
     return endTimedOut({
       reason:
         "the run's task deadline expired while the working copy's Git identity was being configured, so no check and no coding turn was started",

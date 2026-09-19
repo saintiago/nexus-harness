@@ -16,7 +16,7 @@
 import { spawn } from 'node:child_process';
 import { getEventListeners } from 'node:events';
 import { existsSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { runCheckRound } from '../src/checks/round.js';
@@ -2413,6 +2413,89 @@ describe('a run that runs out of task time', () => {
     );
   }, 60_000);
 
+  it('carries a stop preparation could not confirm into the cancellation it reports', async () => {
+    const fixture = await createFixture();
+    const controller = new AbortController();
+    const agent = fakeAgent(fixture);
+    const reason = 'the clone was still running 5000 ms after it was stopped';
+
+    const result = await runTask(
+      { ...request(fixture, configuration(fixture)), stop: controller.signal },
+      dependencies(agent.turn, {
+        // Preparation was stopped because the run was, and the Git step it was
+        // stopped with could not be confirmed stopped: the run reports that
+        // limitation instead of a clean cancellation, because what the step was
+        // writing may still be written to and must not be reused.
+        prepareWorkspace: async () => {
+          controller.abort();
+          throw new WorkspaceError('the clone did not finish', {
+            stop: { termination: 'unconfirmed', problem: reason },
+          });
+        },
+      }),
+    );
+
+    expect(result.status).toBe('cancelled');
+    expect(result.workspace).toBeNull();
+    expect(result.cancellation?.phase).toBe('preparation of the working copy');
+    expect(result.cancellation?.termination).toBe('unconfirmed');
+    expect(result.cancellation?.problem).toBe(reason);
+    expect(agent.requests).toEqual([]);
+
+    const report = await readReport(result.reportPath);
+    expect(report.status).toBe('cancelled');
+    expect(report.cancellation).toEqual(result.cancellation);
+    expect(report.workspace.prepared).toBe(false);
+    const timeline = timelineMessages(await readText(report.runLog));
+    expect(
+      timeline.some(
+        (message) =>
+          message.startsWith('cancelled: ') &&
+          message.includes(`termination unconfirmed: ${reason}`),
+      ),
+    ).toBe(true);
+  }, 60_000);
+
+  it('carries an unconfirmed deadline stop from preparation into the timeout it reports', async () => {
+    const fixture = await createFixture();
+    const clock = testClock();
+    const config = configuration(fixture, { taskTimeoutMinutes: 1 });
+    const agent = fakeAgent(fixture);
+    const reason = 'the clone had not ended 5000 ms after it was stopped';
+
+    const result = await runTask(
+      request(fixture, config),
+      dependencies(agent.turn, {
+        now: clock.now,
+        // Preparation spent the whole minute and was stopped at the deadline,
+        // without the harness confirming that the Git it stopped had ended.
+        prepareWorkspace: async () => {
+          clock.advance(minutes(1));
+          throw new WorkspaceError('the clone did not finish', {
+            stop: { termination: 'unconfirmed', problem: reason },
+          });
+        },
+      }),
+    );
+
+    expect(result.status).toBe('failed');
+    expect(result.workspace).toBeNull();
+    expect(result.timeout?.phase).toBe('preparation of the working copy');
+    expect(result.timeout?.termination).toBe('unconfirmed');
+    expect(result.timeout?.problem).toBe(reason);
+    expect(agent.requests).toEqual([]);
+
+    const report = await readReport(result.reportPath);
+    expect(report.timeout).toEqual(result.timeout);
+    const timeline = timelineMessages(await readText(report.runLog));
+    expect(
+      timeline.some(
+        (message) =>
+          message.startsWith('timeout: ') && message.includes(`termination unconfirmed: ${reason}`),
+      ),
+    ).toBe(true);
+  }, 60_000);
+
   it('refuses a run whose task time is gone before a run directory exists', async () => {
     const fixture = await createFixture();
     const clock = testClock();
@@ -2439,7 +2522,19 @@ describe('a run that runs out of task time', () => {
     await expect(attempt).rejects.toThrow(
       /No run directory, no working copy, and no report were created/,
     );
-    expect(preflights).toEqual([{ repoPath: fixture.repo, workDir: fixture.workDir }]);
+    // The check is the run's own: it is given the task deadline and the clock
+    // each reading's limit is read from, and no stop request (the request has
+    // none), so a stalled reading cannot outlive the run's deadline.
+    expect(preflights).toEqual([
+      {
+        repoPath: fixture.repo,
+        workDir: fixture.workDir,
+        bounds: {
+          deadlineMs: CLOCK_START.getTime() + minutes(1),
+          now: expect.any(Function),
+        },
+      },
+    ]);
     expect(agent.requests).toEqual([]);
     // Refused rather than reported: no run directory was made, so no report was
     // invented for a run that never started.
@@ -2509,6 +2604,60 @@ async function expectNoPendingTimers(timers: TimerSpy): Promise<void> {
  * T09.
  */
 describe('a run the caller stops', () => {
+  for (const phase of ['preflight', 'preparation', 'identity'] as const) {
+    it.each(['timeout', 'cancelled'] as const)(
+      `retains Git's %s and cleanup evidence from ${phase} without relying on the clock`,
+      async (kind) => {
+        const fixture = await createFixture();
+        const agent = fakeAgent(fixture);
+        const error = new WorkspaceError('Git stopped but its owned tree did not end', {
+          stop: {
+            kind,
+            timeoutMs: 25,
+            termination: 'unconfirmed',
+            problem: 'owned Git tree still running',
+          },
+        });
+        const fail = async (): Promise<never> => {
+          throw error;
+        };
+        const parts =
+          phase === 'preflight'
+            ? { preflight: fail }
+            : phase === 'preparation'
+              ? { prepareWorkspace: fail }
+              : { configureWorkspaceIdentity: fail };
+        const pending = runTask(
+          request(fixture, configuration(fixture)),
+          dependencies(agent.turn, {
+            ...parts,
+            now: () => new Date('2026-09-19T12:00:00.000Z'),
+          }),
+        );
+        if (phase === 'preflight') {
+          await expect(pending).rejects.toBeInstanceOf(
+            kind === 'timeout' ? RunTimeoutError : RunCancelledError,
+          );
+          await expect(pending).rejects.toMatchObject({ cause: error });
+          expect(existsSync(fixture.workDir)).toBe(false);
+        } else {
+          const result = await pending;
+          expect(result.status).toBe(kind === 'timeout' ? 'failed' : 'cancelled');
+          expect(result.timeout ?? result.cancellation).toMatchObject({
+            termination: 'unconfirmed',
+            problem: 'owned Git tree still running',
+          });
+          const report = await readReport(result.reportPath);
+          expect(report.timeout ?? report.cancellation).toEqual(
+            result.timeout ?? result.cancellation,
+          );
+          expect(report.changes.inspected).toBe(false);
+        }
+        expect(agent.requests).toEqual([]);
+      },
+    );
+  }
+
   it('refuses a run that was stopped before it started, and allocates nothing', async () => {
     const fixture = await createFixture();
     const config = configuration(fixture);
@@ -3040,7 +3189,13 @@ describe('the collaborators a run is given', () => {
     expect(result.reason).toBe('every configured check passed after the implementation turn');
     expect(result.reportPath).toBe(path.join(run.runDir, 'result.json'));
 
-    expect(preflights).toEqual([{ repoPath, workDir }]);
+    expect(preflights).toEqual([
+      {
+        repoPath,
+        workDir,
+        bounds: { deadlineMs: clock.getTime() + minutes(60), now: expect.any(Function) },
+      },
+    ]);
     expect(allocations).toEqual([workDir]);
     // The working copy was given its commit identity before the baseline ran.
     expect(identities).toEqual([workspace.workspacePath]);
@@ -3190,6 +3345,38 @@ describe('what a run records about the working copy it left', () => {
     expect(timeline.some((message) => message.startsWith('changed path:'))).toBe(false);
     expect(timeline.join('\n')).not.toContain('the working copy matches the recorded base');
     expect(timeline.at(-1)).toMatch(/^final status: failed, /);
+  }, 60_000);
+
+  it('records a diagnostic when the final comparison cannot be made', async () => {
+    const fixture = await createFixture();
+    const agent = fakeAgent(fixture);
+
+    const result = await runTask(
+      request(fixture, configuration(fixture)),
+      dependencies(agent.turn, {
+        // The working copy loses its repository before the run's final reading:
+        // the comparison cannot be made, and the run records that as a
+        // diagnostic rather than waiting for an answer or claiming no changes.
+        runCheckRound: async (asked) => {
+          await rm(path.join(asked.cwd, '.git'), { recursive: true, force: true });
+          return { outcome: 'passed', setup: [], checks: [], problem: null };
+        },
+      }),
+    );
+
+    // The run itself is decided by its checks, which passed; the comparison is
+    // what could not be made, and the report says so.
+    expect(result.status).toBe('passed');
+    expect(result.changes.inspected).toBe(false);
+    expect(result.changes.problem).toMatch(/could not be compared with its recorded base/);
+    expect(result.changes.paths).toEqual([]);
+
+    const report = await readReport(result.reportPath);
+    expect(report.changes).toEqual(result.changes);
+    const timeline = timelineMessages(await readText(report.runLog));
+    expect(timeline).toContain(`changes: unavailable, ${result.changes.problem}`);
+    expect(timeline.join('\n')).not.toContain('the working copy matches the recorded base');
+    expect(timeline.at(-1)).toMatch(/^final status: passed, /);
   }, 60_000);
 });
 

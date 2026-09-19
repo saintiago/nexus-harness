@@ -26,6 +26,7 @@ import type {
 } from '../shared/types.js';
 import type { PreparedWorkspace, PrepareWorkspaceBounds } from '../workspace/prepare.js';
 import type { PreflightRequest, SourcePreflight } from '../workspace/preflight.js';
+import type { GitRunBounds } from '../workspace/git.js';
 import type { ContinuedWorkspace } from '../workspace/reopen.js';
 import type { RunDirectory } from '../workspace/run-directory.js';
 import type { WorkspaceAttempt, WorkspaceSourceItem } from '../workspace/state.js';
@@ -232,7 +233,12 @@ export interface AgentTurnResult {
  * other of these, and a test hands it its own instead.
  */
 export interface RunnerDependencies {
-  /** Reads the source repository and the output location; allocates nothing. */
+  /**
+   * Reads the source repository and the output location; allocates nothing. Its
+   * Git readings are bounded by the `bounds` the request carries: the run's own
+   * task deadline and clock, so each reading runs under what is left of the run
+   * when it starts, and the run's stop request.
+   */
   readonly preflight: (request: PreflightRequest) => Promise<SourcePreflight>;
   /** Allocates `<workDir>/<runId>` with its `workspace` and `logs` directories. */
   readonly allocateRunDirectory: (workDir: string) => Promise<RunDirectory>;
@@ -253,11 +259,19 @@ export interface RunnerDependencies {
    * (`WORKSPACE_IDENTITY`, `src/workspace/git.ts`) before anything runs in it, so
    * the coding turns that follow can make small local commits without an ambient
    * Git identity. It touches that clone's own `.git/config` and never the
-   * machine's global or system configuration. A failure is a
-   * {@link WorkspaceError}-style rejection the runner reports as the failed run
-   * it is, rather than proceeding with an unknown identity.
+   * machine's global or system configuration. Each setting it writes is a
+   * bounded Git invocation, run under `bounds` — the run's task deadline, its
+   * clock, and its own stop request — so each setting runs under what is left of
+   * the run when it starts, and a stalled Git cannot hold this phase past
+   * either. A failure is a {@link WorkspaceError}-style rejection the runner
+   * reports as the failed run it is, rather than proceeding with an unknown
+   * identity; one that was stopped carries that stop, so a run whose Git could
+   * not be confirmed stopped says so.
    */
-  readonly configureWorkspaceIdentity: (workspacePath: string) => Promise<void>;
+  readonly configureWorkspaceIdentity: (
+    workspacePath: string,
+    bounds: GitRunBounds,
+  ) => Promise<void>;
   /** Runs one setup/check round in the working copy. */
   readonly runCheckRound: (request: CheckRoundRequest) => Promise<CheckRoundResult>;
   /**

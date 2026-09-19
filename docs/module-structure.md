@@ -38,7 +38,8 @@ src/
     errors.ts                     (10)    `messageOf`: the one message helper
   process/
     launch.ts                     (167)  how one command is started (executable, args, Windows shims)
-    command.ts                    (326)  one bounded command invocation, its logs, and its result
+    invocation.ts                 (291)  one bounded process invocation, its output, and its stop
+    command.ts                    (106)  one configured command: its two log files and its result
     stop.ts                       (90)   stopping a process tree this harness started, and the grace
   checks/
     round.ts                      (295)  one setup/check round; what a command's result means
@@ -49,7 +50,7 @@ src/
     changes.ts                    (80)   the final change summary and its review warnings
   workspace/
     errors.ts                     (8)    WorkspaceError
-    git.ts                        (143)  git invocation (never a shell) and small path helpers
+    git.ts                        (296)  git invocation (never a shell), its bounds, path helpers
     status.ts                     (56)   reading `git status --porcelain -z`
     preflight.ts                  (153)  preflightSource: a usable source checkout, a safe output path
     run-directory.ts              (166)  allocateRunDirectory and the run/workspace paths
@@ -145,13 +146,16 @@ further would separate one decision from itself: `runs/runner.ts` (the loop), `s
 
 - **Owns:** everything about starting and ending an operating-system process. `launch.ts` decides how
   an executable plus literal arguments is started, including the Windows `.cmd`/`.bat` interpreter
-  case and the argument contents it refuses. `command.ts` runs one bounded invocation, records its
-  outcome, and writes its two log files. `stop.ts` stops a process tree the harness started and waits
-  for it.
+  case and the argument contents it refuses. `invocation.ts` runs one bounded invocation: it starts
+  the executable, stops it and everything it started when its limit expires or the caller's stop
+  arrives, and says how it ended and whether that stop was confirmed. `command.ts` runs one
+  configured command through it and writes the two log files its output goes to. `stop.ts` stops a
+  process tree the harness started and waits for it.
 - **Does not own:** the meaning of a command's result (`checks/round.ts`), what a round does with it
   (`runs/`), or any vendor's invocation (`agents/codex/`). Nothing here knows about tasks, runs, or
   Jira.
-- **Entry points:** `planLaunch` (`process/launch.ts`); `RunCommandRequest`, `runCommand`
+- **Entry points:** `planLaunch` (`process/launch.ts`); `InvocationRequest`, `InvocationResult`,
+  `runInvocation` (`process/invocation.ts`); `RunCommandRequest`, `runCommand`
   (`process/command.ts`); `requestTreeStop`, `collectHostUtilityWords`, `HostUtilityWords`, `within`,
   `STOP_GRACE_MS` (`process/stop.ts`).
 
@@ -191,6 +195,10 @@ further would separate one decision from itself: `runs/runner.ts` (the loop), `s
   the branch its ledger records; `changes.ts` reads what the copy differs from its base by; `git.ts`
   and `status.ts` are the plumbing they share, including the repository-local commit identity
   (`configureWorkspaceIdentity`) a run writes into a working copy before any check or coding turn.
+  Every Git invocation is bounded and stopped through `process/`: a run's phases give it what is
+  the run's deadline and clock — each reading runs under what is left of the task time when it
+  starts — and the run's stop request, and a reading without a run deadline runs under a finite
+  default bound (`git.ts`), so a stalled Git cannot hold the harness past either.
 - **Does not own:** the coding turns, the checks, the report, or the policy that decides whether an
   item continues a workspace (that is `sources/eligibility.ts`). The ledger is derived state: a run's
   own report stays the authority on what the run did.
@@ -200,9 +208,10 @@ further would separate one decision from itself: `runs/runner.ts` (the loop), `s
   `PrepareWorkspaceBounds`, `prepareWorkspace` (`workspace/prepare.ts`); `WorkspaceAttempt`,
   `WorkspaceState`, `workspaceStatePath`, `readWorkspaceState`, `recordWorkspaceAttempt`
   (`workspace/state.ts`); `ContinuedWorkspace`, `WorkspaceResolution`, `resolveWorkspace`,
-  `reopenWorkspace` (`workspace/reopen.ts`); `WORKSPACE_IDENTITY`, `configureWorkspaceIdentity`
-  (`workspace/git.ts`); `inspectWorkspaceChanges` (`workspace/changes.ts`); `WorkspaceError`
-  (`workspace/errors.ts`).
+  `reopenWorkspace` (`workspace/reopen.ts`); `WORKSPACE_IDENTITY`, `configureWorkspaceIdentity`,
+  `runGit`, `GitRunBounds`, `GitResult`, `GIT_COMMAND_TIMEOUT_MS` (`workspace/git.ts`);
+  `inspectWorkspaceChanges` (`workspace/changes.ts`); `WorkspaceError`, `WorkspaceStepStop`,
+  `workspaceStopOf` (`workspace/errors.ts`).
 
 ### `runs/`
 

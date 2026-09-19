@@ -12,6 +12,7 @@ import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { messageOf } from '../shared/errors.js';
 import { WorkspaceError } from './errors.js';
+import type { WorkspaceStepStop } from './errors.js';
 import { canonicalPath, isSameOrInside } from './git.js';
 
 /** A run directory allocated for one invocation, before any work is placed in it. */
@@ -62,12 +63,16 @@ function assertUsableRunId(runId: string): void {
 /**
  * The run directory of a failure. Allocation and preparation keep whatever they
  * created: an incomplete run is never resumed, reused, overwritten, or removed
- * on its own, and the message says where the surviving directory is.
+ * on its own, and the message says where the surviving directory is. A step the
+ * harness itself stopped carries its stop — at the run's deadline, or because
+ * the run's caller stopped it — so the caller that reports why the run ended can
+ * say whether that stop was confirmed.
  */
 export function incompleteRunError(
   run: RunDirectory,
   problem: string,
   cause?: unknown,
+  stop: WorkspaceStepStop | null = null,
 ): WorkspaceError {
   return new WorkspaceError(
     [
@@ -75,7 +80,7 @@ export function incompleteRunError(
       `The incomplete run directory was kept for inspection: "${run.runDir}"`,
       'Nothing in it was overwritten or removed.',
     ].join('\n'),
-    { cause },
+    { cause, stop },
   );
 }
 

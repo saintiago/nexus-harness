@@ -250,6 +250,41 @@ export async function installFakeRuntime(
   };
 }
 
+/**
+ * The stand-in `git`, stored as a real file so that it can be read and reviewed:
+ * the lowest boundary every Git invocation the harness makes has, exactly as the
+ * stand-in `codex` is the lowest boundary of a coding turn. A test puts its
+ * directory first on `PATH` to make the harness's own Git invocations reach it,
+ * and reads the records it writes in {@link FakeGitState.dir}.
+ */
+const FAKE_GIT = path.join(repoRoot, 'tests', 'fixtures', 'fake-git.mjs');
+
+/** Where the stand-in `git` keeps the record of what it was asked to do. */
+export interface FakeGitState {
+  /** The directory holding one record per invocation, named by its id. */
+  readonly dir: string;
+}
+
+/**
+ * Puts an executable named `git` in a directory of its own, backed by
+ * tests/fixtures/fake-git.mjs. Nothing in `src/` knows it exists: the harness's
+ * Git invocations resolve `git` from `PATH`, so a test decides what they run by
+ * putting this directory there.
+ */
+export async function installFakeGit(parent: string): Promise<{
+  readonly bin: string;
+  readonly shim: string;
+  readonly state: FakeGitState;
+}> {
+  const bin = path.join(parent, 'fake-git-bin');
+  const stateDir = path.join(parent, 'fake-git-state');
+  await mkdir(bin, { recursive: true });
+  await mkdir(stateDir, { recursive: true });
+  const shim = await writeShim(bin, 'git', FAKE_GIT);
+
+  return { bin, shim, state: { dir: stateDir } };
+}
+
 /** Where the stand-in `gh` keeps its records and the pull requests it holds. */
 export interface FakeGhState {
   /** Directory holding both records. */
