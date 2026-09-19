@@ -1,0 +1,95 @@
+# nexus-flash.config.toml — the native Codex layer a Nexus Flash turn runs under.
+#
+# Install it by copying this file into the Codex home under its own name, and point the Flash
+# launch prefix at it:
+#
+#   Copy-Item examples\nexus-flash.config.toml $env:USERPROFILE\.codex\nexus-flash.config.toml
+#   ...\codex.exe --profile nexus-flash --model deepseek-flash
+#
+# A profile file is a layer, not a replacement: Codex reads config.toml and then this file, so a
+# personal turn that does not name this profile is untouched, and the operator's connections and
+# plugins stay exactly as they are. The adapter still appends its own
+# `--ask-for-approval never exec --sandbox danger-full-access --json -`, so a turn's permission
+# selection is unchanged.
+#
+# The model lines mirror <Codex home>\deepseek.config.toml. A profile cannot include another
+# profile, so when that file changes, mirror the change here.
+
+model = "deepseek-flash"
+model_provider = "deepseek"
+model_reasoning_effort = "max"
+# One search service: the Tavily MCP server below. This also stops the provider's own web search
+# from being defaulted to "live" by the full-access sandbox the adapter selects.
+web_search = "disabled"
+model_catalog_json = "C:/Users/User/.codex/deepseek-models.json"
+# A Nexus turn is one non-interactive invocation, so its first tool catalog must already be
+# complete: wait for each optional MCP server's own startup timeout instead of the 1 s default
+# grace.
+mcp_optional_startup_grace_ms = 0
+
+[model_providers.deepseek]
+name = "DeepSeek"
+base_url = "https://api.deepseek.com"
+wire_api = "responses"
+env_key = "DEEPSEEK_API_KEY"
+requires_openai_auth = false
+
+# ---------------------------------------------------------------------------------------------
+# Research tools. This block is identical in nexus-astra.config.toml; keep the two files in step.
+# ---------------------------------------------------------------------------------------------
+
+# OpenAI developer documentation: search and read developers.openai.com, platform.openai.com, and
+# learn.chatgpt.com. Public server, no credential. https://developers.openai.com/learn/docs-mcp
+[mcp_servers.openaiDeveloperDocs]
+url = "https://developers.openai.com/mcp"
+
+# Context7: current, version-specific library documentation. The API key is optional — without it
+# the server still answers, at lower rate limits. The key itself never belongs in this file: the
+# client reads it from the environment variable named here. https://context7.com/docs/overview
+[mcp_servers.context7]
+url = "https://mcp.context7.com/mcp"
+bearer_token_env_var = "CONTEXT7_API_KEY"
+
+# Tavily: the one web-search service (search and page extraction). Requires a personal API key in
+# the environment variable named here. https://docs.tavily.com/documentation/mcp
+[mcp_servers.tavily]
+url = "https://mcp.tavily.com/mcp/"
+bearer_token_env_var = "TAVILY_API_KEY"
+
+# ---------------------------------------------------------------------------------------------
+# Connector apps: GitHub only. Every other app/connector — Gmail, Google Drive, Google Calendar,
+# and anything the operator connects later — is off for a turn that names this profile, while the
+# operator's personal turns keep all of them. The GitHub entry is the connector id its installed
+# plugin declares (github@openai-curated-remote/.app.json); `codex plugin list` prints the plugin,
+# and `codex mcp list` prints the servers.
+# ---------------------------------------------------------------------------------------------
+
+[apps._default]
+enabled = false
+
+# GitHub. The two switches block the tools the connector itself flags as destructive or
+# open-world, which is how this version separates its write tools from its read tools; they are a
+# tool selection, not a sandbox, and publication remains the harness's own delivery step.
+[apps.connector_76869538009648d5b282a4bb21c3d157]
+enabled = true
+destructive_enabled = false
+open_world_enabled = false
+
+# The personal-service plugins also bundle their own MCP servers, independently of the app
+# surface above; a Nexus turn does not get those either. `codex plugin list` prints the exact
+# plugin ids if the marketplace id ever changes.
+[plugins."gmail@openai-curated-remote".mcp_servers.gmail]
+enabled = false
+
+[plugins."google-drive@openai-curated-remote".mcp_servers.google-drive]
+enabled = false
+
+# Keep the personal services out of the "available plugins" suggestions a new turn is given as
+# well. Add an entry here for any personal service the operator connects later.
+[tool_suggest]
+disabled_tools = [
+  { type = "plugin", id = "gmail@openai-curated-remote" },
+  { type = "plugin", id = "google-drive@openai-curated-remote" },
+  { type = "plugin", id = "google-calendar@openai-curated-remote" },
+  { type = "plugin", id = "slack@openai-curated-remote" },
+]
