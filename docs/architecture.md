@@ -4,6 +4,8 @@ One TypeScript CLI application, a few modules, and local files. No services, fra
 
 **Revision: 2026-09-16 — task input sources, Jira first; service-account authentication.** Extend the existing application; do not replace completed modules. [spec.md](spec.md) defines behavior, [WORKFLOW.md](WORKFLOW.md) defines inputs, and [implement-task-source-connectors.md](implement-task-source-connectors.md) is the implementation assignment. Preserve the earlier Codex-launch extension. These documents describe requested changes, not evidence that they are implemented.
 
+**Revision: 2026-09-19 — optional GitHub delivery.** One optional, configured step may push a passed source attempt's branch and open or update its pull request with Git and `gh`, before that attempt's result is published. It is its own small module, it runs commands through the existing process launcher, it keeps no delivery state, and it never merges. [spec.md](spec.md) §7 defines the behavior and [WORKFLOW.md](WORKFLOW.md) §8 the input.
+
 ## 1. Keep the existing application
 
 Retain the modules introduced by the completed tasks:
@@ -20,6 +22,7 @@ src/
   reporting/          # result.json and log persistence
   sources/            # the source contract, receipts, guidance, the coordinator
   sources/jira/       # the Jira Cloud connector
+  delivery/           # the optional GitHub step: push a passed attempt, manage its pull request
   agents/codex/       # Codex CLI invocation and normalized turn results
 ```
 
@@ -40,9 +43,12 @@ cli → runner → workspace
              → agent
              → checks
              → report
+cli → delivery (the optional GitHub step, used by a source command)
 ```
 
 Only `agents/codex/` talks to a coding runtime. Only `workspace/` handles Git/working-copy preparation. Only `process/` starts or stops a process, and `checks/round.ts` says what a configured command's result means. Report file writes belong in `reporting/`.
+
+`delivery/github.ts` is the one module that pushes a branch or drives `gh`. It starts every command through `process/`, refuses a working copy that still holds uncommitted work, treats GitHub as the record of whether a pull request exists, and never merges, force-pushes, or changes an issue's state. The CLI builds it from the configuration and hands it to the source coordinator; the runner never sees it, and a run without it behaves exactly as before.
 
 `config.ts` validates the optional `agent` object, supplies the legacy default when it is omitted, and applies the path rules in WORKFLOW. CLI composition passes the effective selection to the existing agent adapter. The runner does not interpret profiles, model IDs, credentials, CLI events, or provider APIs.
 
@@ -77,7 +83,7 @@ Follow the specification's [Rely on Git](spec.md#rely-on-git) principle. `worksp
 
 Prefer reading facts from Git over maintaining equivalent harness state. Store references only where a concrete caller needs them; do not build a second version-control system through custom checkpoint catalogs, duplicated commit graphs, or mandatory per-attempt HEAD tracking. Workspace safety and exclusive execution are harness responsibilities; additional rules about how an agent arranges its local commits require an explicit behavioral task.
 
-Mechanically, that means: before any check or coding turn runs, the runner gives the working copy a repository-local commit identity (`user.name`, `user.email`, and commit signing disabled), so a turn can commit without an ambient Git identity and no global or system Git setting is written. `reopenWorkspace` verifies the branch its ledger records; a `HEAD` ahead of the recorded base is ordinary local work, not a refusal. Every attempt keeps the workspace's recorded base as the comparison base, and a continued run's report carries that base rather than a source checkout that may have advanced since. The workspace clone has no remote: a turn can commit locally, and there is no default destination to push to.
+Mechanically, that means: before any check or coding turn runs, the runner gives the working copy a repository-local commit identity (`user.name`, `user.email`, and commit signing disabled), so a turn can commit without an ambient Git identity and no global or system Git setting is written. `reopenWorkspace` verifies the branch its ledger records; a `HEAD` ahead of the recorded base is ordinary local work, not a refusal. Every attempt keeps the workspace's recorded base as the comparison base, and a continued run's report carries that base rather than a source checkout that may have advanced since. The workspace clone has no remote: a turn can commit locally, and there is no default destination to push to. When a delivery step is configured, the harness itself pushes a passed attempt's branch by URL and still adds no remote, so nothing turns that one push into a destination a later turn could use.
 
 ### Configurable launch, one implemented runtime
 
@@ -124,7 +130,7 @@ Retain `result.json`, the append-only `logs/run.log`, separate command stdout/st
 
 Record the effective agent runtime and non-secret launch prefix once in the report and lifecycle log. This is configured launch information, not proof of the upstream model that served a response. Do not parse native profile files in production merely to populate provider/model labels, and never copy their contents or environment values into reports.
 
-The result remains an output artifact, not a database or service API. Source-triggered runs add optional source provenance and `source-task.json`, containing the normalized Task and source reference, written before target commands execute. Existing file-task output remains compatible. Intake owns only the small lock/receipts described below; do not add distributed leases, journals, event sourcing, a general run registry, or migrations of old reports.
+The result remains an output artifact, not a database or service API. Source-triggered runs add optional source provenance and `source-task.json`, containing the normalized Task and source reference, written before target commands execute. Existing file-task output remains compatible. A configured delivery step adds its own command logs and the published pull request body to the run's log directory after the report was written; the report itself is never rewritten, and no delivery state is stored anywhere. Intake owns only the small lock/receipts described below; do not add distributed leases, journals, event sourcing, a general run registry, or migrations of old reports.
 
 ## 6. Tooling and growth
 
@@ -132,7 +138,7 @@ Keep npm, strict TypeScript, ESLint, Prettier, Vitest, Zod, the existing dev run
 
 Add Claude Code only as a later concrete adapter with its own invocation/event parser and tests. Share existing process-lifetime code where useful; keep vendor types out of the runner. Do not build it, accept it in validation, or add a throwing placeholder now.
 
-Jira intake is the current addition. PR publication, CI observation, stronger isolation, parallel work, provider routing, and dashboards remain deferred. Keep one application until an actual feature requires otherwise.
+Jira intake and the optional GitHub delivery step are the current additions. Merging a delivered pull request, CI observation, stronger isolation, parallel work, provider routing, and dashboards remain deferred. Keep one application until an actual feature requires otherwise.
 
 ## 7. Small task-source boundary
 
@@ -187,6 +193,8 @@ interface TaskSource {
 
 This interface supports future concrete sources without a plugin loader, class inheritance, capability negotiation, or speculative optional methods. An actual later source can use a remote marker instead of Jira's status transition while preserving the same coordinator contract.
 
+Delivery is neither a source nor a connector: it is one optional step of the source command, in `src/delivery/github.ts`. The Jira connector never pushes a branch or opens a pull request, and the coordinator knows only the small `Delivery` function it was handed.
+
 ## 8. Coordinator and local files
 
 Load/freeze configuration once per invocation. Pass the same trusted repository/config and effective agent to each ordinary run; each run still has its own generated ID, task deadline, and bounded repairs, and a fresh attempt clones the workspace it works in. A continuation reopens the workspace its pointer label names, keeps that workspace's recorded base as the comparison base, and may start from a red baseline; a first attempt may not. Queue tasks do not select repositories or share mutable working copies.
@@ -215,7 +223,7 @@ A receipt needs only `version: 1`, source reference, reservation timestamp, and 
 
 Store the source reference with the normal result and lifecycle log. Keep intake diagnostics in the terminal and relevant receipts; do not add another persistent logging platform. Logs/errors from HTTP must be sanitized. If run creation fails before a real RunResult exists, retain the reservation/error and stop; do not invent a failed result or run ID.
 
-Preserve the coding outcome even when source feedback fails. The coordinator, not the runner, decides the source command's nonzero exit and records failed delivery. Manual retries/recovery are documented in WORKFLOW. There is no cross-machine coordination, automatic replay, or crash recovery.
+Preserve the coding outcome even when source feedback fails. The coordinator, not the runner, decides the source command's nonzero exit and records failed delivery. A configured delivery step runs between the run and that feedback; a failure there keeps the run's own report as it was written and stops intake the same way, and the retry is the same operator decision. Manual retries/recovery are documented in WORKFLOW. There is no cross-machine coordination, automatic replay, or crash recovery.
 
 ## 9. Jira-specific implementation
 

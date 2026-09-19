@@ -16,7 +16,9 @@ Task → working copy → coding agent → checks → result
                           └── repair ─┘
 ```
 
-The coding agent implements and repairs; ordinary application code decides when to check, retry the code change, or stop. The runner produces a retained working copy and a local report, not a PR, merge, or deployment: a coding turn may make small local commits in the working copy, and the harness never pushes, merges, publishes, or otherwise integrates that work. A commit is the turn's own local arrangement of its work, never evidence that a check passed.
+The coding agent implements and repairs; ordinary application code decides when to check, retry the code change, or stop. The runner produces a retained working copy and a local report, not a PR, merge, or deployment: a coding turn may make small local commits in the working copy, and the harness itself never merges or otherwise integrates that work. A commit is the turn's own local arrangement of its work, never evidence that a check passed.
+
+By default nothing leaves the machine either: the harness does not push or publish a run's changes. One optional step, enabled only by an explicit `delivery` configuration and run by the harness itself, may push a **passed** attempt's branch and open or update its pull request (§7). A coding turn never performs it, it never merges, force-pushes, or marks an issue `Done`, and everything else below is unchanged when no delivery step is configured.
 
 Codex CLI remains the only implemented coding runtime. Allow its launch prefix to be configured so an operator can select a native profile or model without changing the runner. DeepSeek through Codex is the immediate integration target. The coding assistant used to build this repository is a separate choice.
 
@@ -33,11 +35,11 @@ Keep harness state limited to what execution and reporting need. A report or wor
 1. Read task/configuration JSON and a local Git repository path. Validate inputs, normalize the optional agent selection, and keep the loaded task/configuration fixed for the run.
 2. Create a unique run directory. A fresh attempt clones the source repository's committed `HEAD` into a new workspace and uses a dedicated local branch there; a continuation reopens the workspace its pointer label names, on its recorded branch and base. Require a clean source checkout so uncommitted work is not silently omitted. Never reset or edit the source checkout.
 3. Run configured setup and checks before the agent. A failing baseline stops a fresh attempt with a clear explanation; a continuation may start red, because its workspace may already carry failed work, and only its post-turn round decides.
-4. Ask the selected agent invocation to implement the task in the retained working copy. Supply the task, acceptance criteria, and relevant target-repository instructions. The turn works with a repository-local Git identity and is asked to commit small, meaningful pieces as it goes; those commits stay in the retained copy and are never pushed, merged, or published.
+4. Ask the selected agent invocation to implement the task in the retained working copy. Supply the task, acceptance criteria, and relevant target-repository instructions. The turn works with a repository-local Git identity and is asked to commit small, meaningful pieces as it goes; those commits stay in the retained copy. Nothing pushes, merges, or publishes them except the optional delivery step of a passed attempt, which the harness — never the coding turn — performs (§7).
    The turn's runtime is launched with write access to that copy, its Git metadata included, so staging and committing are possible; the harness still makes no commit of its own.
 5. Wait for the agent to finish and stop its managed mutating processes. Run setup again, then all configured checks from the harness. Agent-reported success is not a check result.
 6. After an ordinary completed red check round, send observed failure output back to the same selected agent and repeat step 5 while repairs remain. A setup/launch/authentication/protocol error or timeout stops the run rather than starting a code-repair loop.
-7. Save the report and retain the working copy, whether the run passes or fails. Human review and subsequent delivery happen outside this version.
+7. Save the report and retain the working copy, whether the run passes or fails. Human review and delivery happen outside this version, except for the optional delivery step: when the configuration selects one, a passed attempt is delivered after its run's report is written and before its result is published (§7).
 
 Run checks sequentially. Ordinary nonzero check results are repair feedback; a check that could not execute is not a pass. Do not keep coding after every check succeeds.
 
@@ -99,7 +101,7 @@ Retain files by default; cleanup is manual. A crash can leave an incomplete dire
 
 This is a trusted local developer tool, not a secure multi-tenant execution platform. A separate clone protects the source checkout from ordinary edits; it is not a sandbox.
 
-Use only approved repositories and commands. Do not supply production/publishing credentials, interpolate task text into shell strings, or log secrets. Refuse unsafe source/output overlap. Setup and tests execute project code too; do not describe them as harmless data processing.
+Use only approved repositories and commands. Do not supply production/publishing credentials, interpolate task text into shell strings, or log secrets. Refuse unsafe source/output overlap. Setup and tests execute project code too; do not describe them as harmless data processing. A configured delivery step is the one deliberate exception to "nothing is published": it writes the attempt's branch and pull request to the destination repository with the operator's own Git and `gh` credentials, so configure it only for a repository and account an unattended harness may write to (§7).
 
 Keep the command plan outside the task working copy. Instruct the agent not to weaken tests or tooling to manufacture a pass; highlight test/tooling/configuration changes in the final summary. `passed` means configured checks passed, not that every acceptance criterion is proven or the changes are safe to ship. Human diff review remains required.
 
@@ -161,13 +163,13 @@ The local lock/receipt protects one consumer using the same retained `workDir`. 
 
 ### Jira feedback and completion
 
-Use existing workflow statuses, defaulting to `To Do → In Progress → In Review`. `In Review` means **the local attempt ended and needs human attention**, for `passed`, `failed`, and `cancelled` alike. A result comment must state the exact outcome; never represent a failed attempt as completed implementation. Do not automatically set `Done`, push, merge, publish, or otherwise integrate the changes: the local commits a coding turn made stay in the retained workspace.
+Use existing workflow statuses, defaulting to `To Do → In Progress → In Review`. `In Review` means **the local attempt ended and needs human attention**, for `passed`, `failed`, and `cancelled` alike. A result comment must state the exact outcome; never represent a failed attempt as completed implementation. Do not automatically set `Done` or merge anything. Without a configured delivery step the local commits a coding turn made stay in the retained workspace; with one, a passed attempt was delivered first, and the result comment carries the pull request URL (§7). Nothing else about the changes leaves the machine.
 
 Discover available transitions for the issue and select a unique transition by its target status, not by assuming a status ID is a transition ID. If a workflow requires additional fields or offers no unambiguous transition, report that limitation rather than changing the workflow. [J2]
 
-Save local results first. Post one compact result comment with run ID, observed outcome/reason, check summary, repairs used, and local artifact locations; mark paths as local, not downloadable Jira attachments. Exclude transcripts, diffs, environment variables, tokens, and native provider configuration. Then move to review only if the issue is still in the running status; respect subsequent human status changes. Jira comments use ADF. [J3]
+Save local results first. Post one compact result comment with run ID, observed outcome/reason, check summary, repairs used, local artifact locations, and — when the attempt was delivered — its pull request URL; mark paths as local, not downloadable Jira attachments. Exclude transcripts, diffs, environment variables, tokens, and native provider configuration. Then move to review only if the issue is still in the running status; respect subsequent human status changes. Jira comments use ADF. [J3]
 
-A delivery failure keeps the original local run outcome and a separate `feedback: failed` receipt entry. Record whether a comment was acknowledged before a later transition failed. Do not blindly resend comments after an ambiguous response. No automatic outbox/reconciliation loop in this increment.
+A feedback failure keeps the original local run outcome and a separate `feedback: failed` receipt entry. Record whether a comment was acknowledged before a later transition failed. Do not blindly resend comments after an ambiguous response. No automatic outbox/reconciliation loop in this increment.
 
 ### Errors, shutdown, and retries
 
@@ -183,13 +185,34 @@ Store `.intake/lock/` and `.intake/receipts/<identity-hash>.json` under `workDir
 
 Rework is ordinary: move an attempted issue back to the ready status and the harness continues the workspace its pointer label names — same clone, same recorded base, a new run directory and report, and a baseline that may be red. Merely editing or reopening an issue does not erase its receipt or its pointer. To deliberately start over — a first attempt in a new workspace — create a new Jira task, or stop the watcher, inspect/stop prior processes, retain the run artifacts, remove the pointer label, remove only that issue's receipt, and restore its ready status. Preserve `.intake` when cleaning old run directories.
 
-## 7. Current increment and later work
+## 7. Optional GitHub delivery
+
+Delivery is a harness/operator operation, off unless the configuration selects it, and it never runs a coding turn. It is configured by one optional strict `delivery` object — the only implemented type is `"github"` — and an absent object means the local-only behavior described everywhere else ([WORKFLOW.md](WORKFLOW.md) §8).
+
+After a **passed** attempt, and before that attempt's result is published, the harness delivers the working copy the run left:
+
+1. A working copy that still holds uncommitted work — staged, unstaged, or untracked — is refused. Nothing is committed, stashed, or discarded on the turn's behalf; the failure names the paths and says what to do.
+2. A branch with no commit beyond the workspace's recorded base is not delivered. A passed attempt that changed nothing has nothing to publish, which is reported rather than turned into a delivery to make.
+3. Otherwise the workspace's own branch is pushed to the configured destination repository, as it is and never with force.
+4. The pull request is found in that repository by head branch and base branch; one is created only when none exists, and an existing one is updated with the same body: the item's reference and URL, the task, the actual check summary, and the run ID.
+
+The published result comment then carries the pull request URL, so Jira links to what was delivered.
+
+Delivery never merges a pull request, never marks an issue `Done`, never force-pushes, never rewrites a run's report, and keeps no delivery database: GitHub is the record of whether a pull request exists.
+
+A delivery failure is not a coding failure. The run's own report, logs, and check evidence stay exactly as they were written; the receipt records the delivery problem; intake stops for a human; and no coding turn is started to repair a publishing failure. A retry is an operator decision: fix the cause, move the issue back to the ready status, and the harness continues the same workspace and branch, so the retry finds the existing pull request instead of creating a second one.
+
+Delivery applies to a source-triggered attempt, whose workspace and branch survive across attempts. A file-task run creates a fresh clone and branch every time, so there is no stable branch to deliver and `run --task` stays local even when the object is configured.
+
+Delivery uses the operator's own Git and `gh` authentication; the configured repository and base branch are trusted local inputs, like the configured commands, and no GitHub credential is stored by the harness. A destination the harness cannot write to fails with what Git or `gh` said rather than falling back to anything else.
+
+## 8. Current increment and later work
 
 **Keep:** the existing workspace/check/report loop, file-task CLI, configurable Codex adapter and DeepSeek profile selection, offline tests, logging, deadlines, cancellation, and retained artifacts. Inspect actual code and preserve user changes. The production harness still never configures the user's coding-provider account.
 
 **Implemented by this increment:** optional source configuration; a small source contract; Jira Cloud mapping, discovery, claim, and result feedback; list/run/watch commands; a single-consumer lock and local receipts; offline tests and an opt-in Jira exercise. Do not require Jira credentials for existing file-task commands or ordinary validation. The later workspace-continuation increment builds on it: see [implement-workspace-continuation.md](implement-workspace-continuation.md).
 
-**Later, only when needed:** another concrete task source, real Claude Code adapter, webhooks, parallel consumers, dependency scheduling, PR publication, CI feedback, stronger isolation, or remote recovery. Add another connector without changing Task or the coding loop; do not ship a placeholder connector now.
+**Later, only when needed:** another concrete task source, real Claude Code adapter, webhooks, parallel consumers, dependency scheduling, automatic merging, CI feedback, stronger isolation, or remote recovery. The optional GitHub delivery step of §7 opens or updates a pull request and stops there; merging, and reacting to CI on the pull request, stay outside the harness. Add another connector without changing Task or the coding loop; do not ship a placeholder connector now.
 
 Regression verification must retain baseline failure, pass without repair, repair then pass, repair exhaustion, execution/auth/protocol errors, timeout/cancellation, retained workspace/logs, and unchanged source. Add source tests without weakening those cases. Default tests must not call Jira or a real LLM. T16 is not considered passed by mocked connector tests.
 

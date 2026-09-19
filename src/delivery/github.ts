@@ -194,11 +194,11 @@ function parsePullRequestList(output: string): readonly PullRequestMatch[] {
     throw new DeliveryError(
       `gh pr list did not answer with JSON (${messageOf(cause)}): ${JSON.stringify(
         output.trim().slice(0, DIAGNOSTIC_LIMIT),
-      )}`,
+      )}.`,
     );
   }
   if (!Array.isArray(value)) {
-    throw new DeliveryError('gh pr list did not answer with a list of pull requests');
+    throw new DeliveryError('gh pr list did not answer with a list of pull requests.');
   }
   return value.map((entry) => {
     if (
@@ -206,7 +206,9 @@ function parsePullRequestList(output: string): readonly PullRequestMatch[] {
       entry === null ||
       typeof (entry as { url?: unknown }).url !== 'string'
     ) {
-      throw new DeliveryError('gh pr list answered with an entry that carries no pull request URL');
+      throw new DeliveryError(
+        'gh pr list answered with an entry that carries no pull request URL.',
+      );
     }
     return { url: (entry as { url: string }).url };
   });
@@ -267,7 +269,7 @@ export function createGitHubDelivery(
     } catch (cause) {
       throw new DeliveryError(
         `the output of a delivery command could not be read from ${result.stdoutPath}: ` +
-          messageOf(cause),
+          `${messageOf(cause)}.`,
       );
     }
   };
@@ -327,7 +329,7 @@ export function createGitHubDelivery(
       if (!Number.isSafeInteger(commits) || commits < 0) {
         throw new DeliveryError(
           `git rev-list answered with something that is not a commit count: ` +
-            JSON.stringify((await stdoutOf(counted)).trim().slice(0, DIAGNOSTIC_LIMIT)),
+            `${JSON.stringify((await stdoutOf(counted)).trim().slice(0, DIAGNOSTIC_LIMIT))}.`,
         );
       }
       if (commits === 0) {
@@ -391,7 +393,7 @@ export function createGitHubDelivery(
         await writeFile(bodyFile, pullRequestBody(request), 'utf8');
       } catch (cause) {
         throw new DeliveryError(
-          `the pull request body could not be written to ${bodyFile}: ${messageOf(cause)}`,
+          `the pull request body could not be written to ${bodyFile}: ${messageOf(cause)}.`,
         );
       }
 

@@ -72,10 +72,10 @@ export interface CliContext {
   fetch?: typeof fetch;
   /**
    * The delivery step's own outward boundaries, when a caller needs to stand in
-   * for one of them: the destination's push URL, the environment `git` and `gh`
-   * are started with, or the bounded command runner. The process's own
-   * environment and the configured repository's HTTPS URL when a caller gives
-   * none: nothing in production substitutes them.
+   * for one of them: the destination's push URL, or the environment `git` and
+   * `gh` are started with. The configured repository's HTTPS URL and the
+   * process's own environment when a caller gives none: nothing in production
+   * substitutes them.
    */
   deliveryParts?: GitHubDeliveryParts;
 }

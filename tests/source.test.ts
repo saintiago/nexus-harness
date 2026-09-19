@@ -751,7 +751,7 @@ describe('a finite source run', () => {
 
 describe('delivering a passed attempt', () => {
   /** A run that passed in a working copy the delivery step can be handed. */
-  function passedRun(task: Task, call: number, runDir: string): RunTaskResult {
+  async function passedRun(_task: Task, _call: number, runDir: string): Promise<RunTaskResult> {
     return resultFor(
       runDir,
       'passed',
@@ -807,7 +807,7 @@ describe('delivering a passed attempt', () => {
     const fixture = createFixture({
       workDir,
       scans: [[candidateFor('1'), candidateFor('2')]],
-      run: (task, call, runDir) =>
+      run: async (task, _call, runDir) =>
         resultFor(runDir, task.id === 'SAM1-1' ? 'failed' : 'cancelled'),
       delivery: {
         deliver: async (request) => {
@@ -1816,9 +1816,7 @@ async function gitOrFail(args: readonly string[], cwd: string): Promise<void> {
 }
 
 /** A clean repository with one commit and a config that points at a Jira queue. */
-async function createTarget(
-  options: { readonly delivery?: boolean } = {},
-): Promise<{
+async function createTarget(options: { readonly delivery?: boolean } = {}): Promise<{
   directory: string;
   repo: string;
   configPath: string;
@@ -2278,7 +2276,9 @@ describe('the source commands through the CLI', () => {
       expect(report.status).toBe('passed');
 
       // The receipt carries the delivery failure into the next attempt.
-      const receipt = await readReceipt(receiptFilePath(target.workDir, refFor('10011', 'SAM1-11')));
+      const receipt = await readReceipt(
+        receiptFilePath(target.workDir, refFor('10011', 'SAM1-11')),
+      );
       expect(receipt?.outcome).toBe('passed');
       expect(receipt?.problem).toContain('delivery:');
       expect(receipt?.problem).toContain('MARKER.md');
@@ -2317,7 +2317,10 @@ describe('the source commands through the CLI', () => {
         runAgentTurn: async (request) => {
           await writeFile(path.join(request.workspacePath, 'MARKER.md'), 'done\n', 'utf8');
           await gitOrFail(['add', '--all'], request.workspacePath);
-          await gitOrFail(['commit', '--quiet', '--message', 'write the marker'], request.workspacePath);
+          await gitOrFail(
+            ['commit', '--quiet', '--message', 'write the marker'],
+            request.workspacePath,
+          );
           return { summary: 'wrote and committed the marker' };
         },
       };

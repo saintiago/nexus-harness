@@ -6,8 +6,10 @@ CLI to implement the task, reruns the checks, gives the runtime the observed fai
 within a bounded allowance, and keeps the working copy, the logs, and a final report on your disk.
 
 Nothing leaves your machine except the coding turns themselves — a clone is made locally, the
-configured commands run locally, and the harness never pushes, publishes, or integrates anything: a
-coding turn may make small local commits, and they stay in the retained working copy.
+configured commands run locally, and the harness never pushes, publishes, or integrates anything by
+default: a coding turn may make small local commits, and they stay in the retained working copy. One
+optional, explicitly configured delivery step can push a passed attempt's branch and open or update
+its GitHub pull request; it never merges, and without that configuration nothing changes.
 
 **This README is the operating document.** The supplied documents stay authoritative for the
 contracts they define: [docs/WORKFLOW.md](docs/WORKFLOW.md) for the JSON inputs and the run
@@ -359,8 +361,35 @@ artifact paths, and the issue moves to the review status. `In Review` means "a l
 finished and needs a human", not success. The check summary names the last round that ran, and says
 so in as many words when the run was stopped before any round followed its last turn: a stopped turn
 has no checks to report, and the round the run started with is not one. **Nothing here moves an
-issue to Done**, and the harness never pushes, merges, or publishes anything: local commits a
-coding turn makes stay in the retained workspace.
+issue to Done**, and the harness merges nothing: without a delivery step, local commits a coding
+turn makes stay in the retained workspace, and the comment says so.
+
+**Delivering a passed attempt (optional).** Add a `delivery` object to have the harness push a
+**passed** attempt's branch and open — or update — its pull request, so the work reaches GitHub
+without you doing it by hand:
+
+```json
+{
+  "delivery": {
+    "type": "github",
+    "repository": "your-org/your-repo",
+    "baseBranch": "main"
+  }
+}
+```
+
+The step runs after the attempt passed and before Jira is told the result, so the result comment
+carries the pull request URL. The destination's `gh` has to be authenticated for an account that may
+write there (`gh auth status`, and `gh auth setup-git` so Git can use those credentials); the
+harness stores no GitHub credential and never runs a login flow. A working copy that still holds
+uncommitted files is **refused**, not committed for you, and a branch with no commit beyond the
+workspace's base has nothing to publish. The pull request is found by repository, head branch, and
+base branch — one is created only when none exists, and later committed work updates the same branch
+and the same pull request, because a continued attempt reuses the workspace and its branch. The
+harness never merges it and never marks the issue Done. Delivery applies to source attempts only: a
+`run --task` invocation clones afresh every time, so it has no stable branch to deliver and stays
+local. `docs/WORKFLOW.md` §8 is the contract; delivery command output and the published body are
+kept in the run's own `logs/` directory.
 
 **Nothing runs twice by accident.** `.intake/receipts/<hash>.json` under `workDir` records each
 attempted issue by its immutable ID, and a receipt is created **before** the issue is claimed. A
@@ -390,8 +419,8 @@ whole `.intake` directory to fix one task.
 Scans are periodic and pause during a batch, so a new issue is picked up on the next scan rather
 than instantly. `source list` and `source run` report a failed read and exit nonzero; `source watch`
 retries one with a bounded backoff that respects the server's `Retry-After`. An authentication,
-workflow, uncertain-write, or delivery failure stops intake for a human instead of being retried
-behind your back. A fresh run still clones the source checkout's committed `HEAD` **as it is then**;
+workflow, uncertain-write, GitHub-delivery, or result-feedback failure stops intake for a human
+instead of being retried behind your back. A fresh run still clones the source checkout's committed `HEAD` **as it is then**;
 a continued attempt instead works in the workspace its pointer names, and the commits and
 uncommitted changes the earlier attempts left there are still in it.
 
@@ -551,6 +580,9 @@ Read this before pointing a run at anything you care about.
 - **Do not use production or publishing credentials.** Configure a disposable account for the
   runtime. A coding turn reads your repository's content and sends it to the provider as part of
   the task, and nothing here is designed to hold a credential you would not paste into a prompt.
+  The one credential a delivery step uses is the operator's own `gh`/Git one, and it is the reason
+  to configure delivery only for a repository you would let an unattended harness write to: a passed
+  attempt's branch is pushed there and its pull request is opened or updated, without asking again.
 - **A `passed` run still needs human review.** `passed` means the configured checks exited `0` for
   the retained working copy, and nothing more: it is not a statement that the change is correct, and
   it is not an audit. The harness does not decide whether a changed test still tests the right
@@ -561,11 +593,14 @@ Read this before pointing a run at anything you care about.
   Jira continuation is different: moving an attempted issue back to the ready status starts another
   attempt in the workspace its pointer names, against that workspace's recorded base, but it
   resumes no stopped process and recovers nothing automatically.
-- **The harness never pushes, merges, or publishes anything.** The working copy is given a
-  repository-local commit identity (`Nexus Agent <nexus@local>`, commit signing disabled) and its
-  turns are asked to commit small pieces as they go — but those commits are the turn's own doing,
-  local to the retained workspace. No remote is added, so there is no default push destination, and
-  no pull request is opened or merged. Nothing here integrates the work for you.
+- **The harness pushes nothing unless you configure delivery, and it never merges.** The working
+  copy is given a repository-local commit identity (`Nexus Agent <nexus@local>`, commit signing
+  disabled) and its turns are asked to commit small pieces as they go — but those commits are the
+  turn's own doing, local to the retained workspace, and no remote is added, so there is no default
+  push destination. With a `delivery` object configured, the harness itself pushes a **passed**
+  attempt's branch to the repository you named and opens or updates its pull request; it never
+  force-pushes, never merges, never marks an issue Done, and never publishes anywhere else. Nothing
+  here integrates the work for you.
 - **Run directories and workspaces are kept, not cleaned up.** They accumulate: a run holds its logs
   and its report, and a workspace holds a full clone. Remove them by hand when you have read them.
 - **An interrupted or crashed run can leave an incomplete run directory.** A run directory can exist
@@ -591,10 +626,11 @@ Read this before pointing a run at anything you care about.
   Issue text is context for the coding turn and for review; it can never choose a repository,
   a command, an environment variable, or a limit — but the turn still reads it and can act on its
   content inside the working copy.
-- **Not implemented, and not planned here:** pull-request publication, a provider registry,
-  workflow engines, background services, webhooks, parallel consumers, and a second coding runtime.
-  There is exactly one runtime interface (the Codex CLI), exactly one loop, and exactly one
-  implemented task source (Jira).
+- **Not implemented, and not planned here:** automatic merging, CI observation on a delivered pull
+  request, a provider registry, workflow engines, background services, webhooks, parallel consumers,
+  and a second coding runtime. Delivery opens or updates a pull request and stops there; a human
+  merges it. There is exactly one runtime interface (the Codex CLI), exactly one loop, exactly one
+  implemented task source (Jira), and exactly one optional delivery step (GitHub).
 
 ## What is verified, and what is not
 
@@ -620,6 +656,15 @@ Read this before pointing a run at anything you care about.
   attempt reopening the workspace its pointer label names and keeping its recorded base, the
   per-attempt run directories and ledger, the escalation ladder's tiers, the guidance a continued
   attempt is told, and the refusal of an attempted issue that names no workspace to continue.
+- the optional GitHub delivery step, against disposable Git repositories with a local bare
+  destination and a stand-in `gh` on `PATH`: the branch really moves to the destination, the pull
+  request is created with the issue reference and the check summary, a repeated delivery finds and
+  updates the same pull request instead of creating a second one, a workspace that still holds
+  uncommitted work is refused with an actionable message and nothing is pushed, and a refused `gh`
+  invocation fails with what it said while the run's own report and logs stay as they were. The
+  source CLI path runs the same way, including the link the issue's comment then carries, and a
+  configuration without `delivery` still asks GitHub for nothing. Nothing there needs a GitHub
+  account, a token, or a network.
 
 **Verified live (`npm run test:live`) on 2026-09-16, through the DeepSeek launch this checkout
 selects:** Codex CLI 0.154.0 answered a read-only connectivity probe, and both exercises then passed
@@ -690,6 +735,11 @@ and only a read.
   disposable repository, the exact-byte marker assertion, the restart check, and the watch cycle —
   has not run, and no live watch, restart, or failure path has been exercised. Mocked tests are not
   evidence for the parts that have not run;
+- **any live GitHub delivery.** The delivery step is verified offline against disposable Git
+  repositories and a stand-in `gh` on `PATH`; no branch has been pushed to github.com and no pull
+  request has been created by the harness here. The commands follow `gh`'s documented interface,
+  but the live push, the live create-or-update decision, and a live authentication failure have not
+  been exercised;
 - behaviour on a runtime version other than the 0.154.0 interface this adapter was written against,
   and any runtime-reported model identity: a profile or model name in a report is launch
   information, not proof of which upstream model served a response.
@@ -851,6 +901,7 @@ is the full tree, the placement rules, and the steps for adding a source or a ru
 | `src/reporting/`          | `result.json`, the logs under `<runDir>/logs`, and the change summary.                       |
 | `src/sources/`            | The task-source contract, receipts, eligibility, guidance, and the serial coordinator.       |
 | `src/sources/jira/`       | The Jira Cloud connector: HTTP, search, reads, transitions, comments, the ADF reader.        |
+| `src/delivery/`           | The optional GitHub step: push a passed attempt's branch, create or update its pull request. |
 | `src/agents/codex/`       | The coding runtime: one turn through the Codex CLI, normalized for the runner.               |
 
 `src/cli.ts` (and `src/cli/`) depends on the modules below it; nothing depends on `cli.ts`. Helper
@@ -862,6 +913,10 @@ The intake boundary is the `TaskSource` contract in `src/sources/contract.ts`. T
 ordinary data and functions, the runner never imports Jira, and the source command in `src/cli/`
 selects the connector with one explicit branch on `source.type`: a second source would be a concrete
 adapter plus configuration and CLI wiring, not a change to `Task` or to the loop.
+
+Delivery is not a source and not a connector: `src/delivery/github.ts` is one optional step the
+source command hands to the coordinator, and it starts its `git` and `gh` commands through the same
+bounded runner every configured command uses.
 
 `.prettierignore` excludes the supplied `AGENTS.md` and `docs/` so those design documents stay
 byte-for-byte as written.
@@ -905,8 +960,9 @@ operator's own `gh` credentials, once the check is green —
   configuration to copy.
 - [docs/GIT-WORKFLOW.md](docs/GIT-WORKFLOW.md) — how changes to this repository are made: one
   `task/<name>` branch per task, merged into `main` through a pull request. It is about this
-  repository only; a harness run never pushes, merges, or publishes anything in a target repository,
-  and the commits a coding turn makes there stay in the retained workspace.
+  repository only; a harness run never merges anything in a target repository, and without a
+  configured delivery step it pushes and publishes nothing either — the commits a coding turn makes
+  there stay in the retained workspace.
 
 ## Next task
 

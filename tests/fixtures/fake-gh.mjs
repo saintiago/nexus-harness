@@ -85,9 +85,7 @@ if (argv[0] !== 'pr') {
   if (failure === 'list') {
     fail('HTTP 401: Bad credentials (https://api.github.com/graphql)');
   } else {
-    process.stdout.write(
-      `${JSON.stringify(pullRequests.map((pull) => ({ url: pull.url })))}\n`,
-    );
+    process.stdout.write(`${JSON.stringify(pullRequests.map((pull) => ({ url: pull.url })))}\n`);
   }
 } else if (argv[1] === 'create') {
   const repo = optionValue('--repo');
