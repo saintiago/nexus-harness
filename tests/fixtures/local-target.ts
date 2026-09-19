@@ -853,7 +853,10 @@ async function askBeacon(
  * within the grace below counts as still there — a process that is there but not
  * answering is still there — so nothing is quietly reported as stopped.
  */
-export async function fixtureProcessGone(state: FakeState, token: string): Promise<boolean> {
+export async function fixtureProcessGone(
+  state: { readonly dir: string },
+  token: string,
+): Promise<boolean> {
   return (await askBeacon(state.dir, token, 5000)) === 'silent';
 }
 

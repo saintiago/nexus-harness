@@ -19,6 +19,14 @@ import { messageOf } from '../shared/errors.js';
  */
 export const STOP_GRACE_MS = 5000;
 
+/**
+ * How much of a host utility's own words a failed stop repeats. `taskkill` says
+ * why it failed — `ERROR: The process "1234" not found.` for a PID nothing holds
+ * — and that reason is what tells a stop that reached nothing because the
+ * process had already ended apart from one that was refused for another cause.
+ */
+const MAX_UTILITY_DIAGNOSTIC_CHARS = 200;
+
 /** Waits for `work`, but no longer than `ms`; says whether it finished in time. */
 export function within(work: Promise<void>, ms: number): Promise<boolean> {
   return new Promise((resolve) => {
@@ -28,6 +36,19 @@ export function within(work: Promise<void>, ms: number): Promise<boolean> {
       resolve(true);
     });
   });
+}
+
+/** A failed utility's own explanation, flattened and bounded, or nothing. */
+function utilityDiagnostic(collected: string): string {
+  const flat = collected.replace(/\s+/g, ' ').trim();
+  if (flat === '') {
+    return '';
+  }
+  const bounded =
+    flat.length <= MAX_UTILITY_DIAGNOSTIC_CHARS
+      ? flat
+      : `${flat.slice(0, MAX_UTILITY_DIAGNOSTIC_CHARS)} [truncated]`;
+  return `: ${bounded}`;
 }
 
 /** Runs one host utility to completion and reports why it failed, if it did. */
@@ -43,17 +64,35 @@ function runHostUtility(executable: string, args: readonly string[]): Promise<st
 
     let utility;
     try {
-      utility = spawn(executable, [...args], { stdio: 'ignore', windowsHide: true });
+      utility = spawn(executable, [...args], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
+      });
     } catch (cause) {
       done(`"${executable}" could not be run: ${messageOf(cause)}`);
       return;
     }
 
+    let output = '';
+    const note = (chunk: string): void => {
+      if (output.length < MAX_UTILITY_DIAGNOSTIC_CHARS) {
+        output += chunk;
+      }
+    };
+    utility.stdout?.setEncoding('utf8');
+    utility.stdout?.on('data', note);
+    utility.stderr?.setEncoding('utf8');
+    utility.stderr?.on('data', note);
+
     // A utility that cannot even be started — no `taskkill` on this host's
     // PATH, say — is a failed stop, never a silent one.
     utility.on('error', (cause) => done(`"${executable}" could not be run: ${messageOf(cause)}`));
     utility.on('close', (code) => {
-      done(code === 0 ? null : `"${executable}" exited with code ${String(code)}`);
+      done(
+        code === 0
+          ? null
+          : `"${executable}" exited with code ${String(code)}${utilityDiagnostic(output)}`,
+      );
     });
   });
 }
