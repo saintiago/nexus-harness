@@ -38,6 +38,7 @@ import { diffPosition, positionFindings, renderDiff } from '../src/reviews/diff.
 import { appJwt, resolveAppPrivateKey } from '../src/reviews/github.js';
 import { parseVerdict, reviewPrompt } from '../src/reviews/reviewer.js';
 import { allocateReviewDirectory, scanReviews, watchReviews } from '../src/reviews/scan.js';
+import { SourceError } from '../src/sources/contract.js';
 import type { SourceCandidate, SourceTask } from '../src/sources/contract.js';
 import { receiptFilePath, reserveReceipt } from '../src/sources/receipts.js';
 import type { SourceRef, Task } from '../src/shared/types.js';
@@ -747,10 +748,44 @@ describe('one review scan', () => {
     const summary = await scanReviews(fixture.context);
     expect(summary).toMatchObject({ outcome: 'completed', scanned: 0, reviewed: 0 });
   });
+
+  it('treats a discovery stopped by the caller as the cancellation it is', async () => {
+    const workDir = await createTempDir();
+    const stop = new AbortController();
+    const context: ReviewScanContext = {
+      queue: {
+        list: async () => {
+          stop.abort(new Error('interrupt'));
+          throw new SourceError(
+            'fatal',
+            'the request was stopped by the caller before it answered',
+          );
+        },
+        prepare: async () => null,
+      },
+      repository: fakeRepository().repository,
+      reviewer: async () => ({
+        summary: null,
+        verdict: null,
+        problem: 'not used',
+        logPath: 'log',
+      }),
+      workDir,
+      login: LOGIN,
+      checkName: CHECK_NAME,
+      reviewerTimeoutMs: 60_000,
+      io: { out: () => undefined, err: () => undefined },
+      stop: stop.signal,
+      now: () => new Date(),
+      sleep: async () => undefined,
+    };
+
+    await expect(scanReviews(context)).resolves.toMatchObject({ outcome: 'cancelled' });
+  });
 });
 
 describe('the review watch', () => {
-  it('scans again after the poll interval until it is stopped', async () => {
+  it('waits out the poll interval, and a stop during the wait starts no further scan', async () => {
     const workDir = await createTempDir();
     const stop = new AbortController();
     let scans = 0;
@@ -798,7 +833,56 @@ describe('the review watch', () => {
     waits[0]?.();
     const summary = await watching;
 
+    expect(scans).toBe(1);
+    expect(summary.outcome).toBe('cancelled');
+  });
+
+  it('backs off after a failed scan, never shortens a server-directed wait, and resets on success', async () => {
+    const workDir = await createTempDir();
+    const stop = new AbortController();
+    const waits: number[] = [];
+    const errors: string[] = [];
+    let scans = 0;
+    const context: ReviewScanContext = {
+      queue: {
+        list: async () => {
+          scans += 1;
+          if (scans === 1) {
+            throw new ReviewError('api', 'the search answered HTTP 429', {
+              retryAfterMs: 120_000,
+            });
+          }
+          return [];
+        },
+        prepare: async () => null,
+      },
+      repository: fakeRepository().repository,
+      reviewer: async () => ({
+        summary: null,
+        verdict: null,
+        problem: 'not used',
+        logPath: 'log',
+      }),
+      workDir,
+      login: LOGIN,
+      checkName: CHECK_NAME,
+      reviewerTimeoutMs: 60_000,
+      io: { out: () => undefined, err: (text) => errors.push(text) },
+      stop: stop.signal,
+      now: () => new Date(),
+      sleep: async (ms) => {
+        waits.push(ms);
+        if (waits.length === 2) {
+          stop.abort(new Error('stop watching'));
+        }
+      },
+    };
+
+    const summary = await watchReviews({ ...context, pollIntervalMs: 5_000 });
+
     expect(scans).toBe(2);
+    expect(waits).toEqual([120_000, 5_000]);
+    expect(errors.join('\n')).toContain('will try again in 120s');
     expect(summary.outcome).toBe('cancelled');
   });
 });
@@ -984,6 +1068,8 @@ function fakeWorld(options: {
   const githubCalls: FakeWorld['githubCalls'] = [];
   const publishedReviews: Array<Record<string, unknown>> = [];
   const publishedChecks: Array<Record<string, unknown>> = [];
+  /** The app-owned check runs this fake world now holds, as GitHub would. */
+  const createdChecks: Array<{ name: string; headSha: string; conclusion: string }> = [];
   const issues = options.issues;
   const reviews: Array<{ login: string; state: string; commitId: string }> = [
     ...(options.reviews ?? []),
@@ -1144,6 +1230,15 @@ function fakeWorld(options: {
             conclusion: 'success',
             app: { id: 15368 },
           },
+          ...createdChecks
+            .filter((check) => check.headSha === headSha)
+            .map((check, index) => ({
+              id: 100 + index,
+              name: check.name,
+              status: 'completed',
+              conclusion: check.conclusion,
+              app: { id: 5001141 },
+            })),
         ],
       });
     }
@@ -1176,6 +1271,11 @@ function fakeWorld(options: {
     if (method === 'POST' && path === `/repos/${REPOSITORY}/check-runs`) {
       const body = JSON.parse(String(init.body)) as Record<string, unknown>;
       publishedChecks.push(body);
+      createdChecks.push({
+        name: String(body['name']),
+        headSha: String(body['head_sha']),
+        conclusion: String(body['conclusion']),
+      });
       return json(
         {
           id: 105912854704,
@@ -1406,6 +1506,7 @@ describe('the review command through the CLI', () => {
       expect(second.code).toBe(EXIT_OK);
       expect(second.out).toContain('unchanged  1');
       expect(world.publishedReviews).toHaveLength(1);
+      expect(world.publishedChecks).toHaveLength(1);
       expect(await fakeTurns(fixture.runtime.state)).toHaveLength(1);
     },
   );

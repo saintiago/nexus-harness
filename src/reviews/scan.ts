@@ -667,7 +667,18 @@ export async function scanReviews(
   limit?: number,
 ): Promise<ReviewSummary> {
   const summary = emptySummary('completed');
-  const candidates = await context.queue.list(context.stop);
+  let candidates: readonly SourceCandidate[];
+  try {
+    candidates = await context.queue.list(context.stop);
+  } catch (cause) {
+    // A discovery stopped mid-request is the caller's stop, not a failed read:
+    // the scan is cancelled, and nothing is reported as a problem.
+    if (context.stop.aborted) {
+      summary.outcome = 'cancelled';
+      return summary;
+    }
+    throw cause;
+  }
 
   for (const candidate of candidates) {
     if (context.stop.aborted) {
@@ -738,27 +749,42 @@ export async function scanReviews(
 /**
  * Watch: scan, wait, and scan again until the caller stops it. A scan that
  * could not be made at all — Jira or GitHub unreachable — is reported and
- * retried after the poll interval; a missing App credential or a refused
- * installation stops the watch instead, because every later scan would fail the
- * same way.
+ * retried after a bounded backoff that never shortens a server-directed wait; a
+ * successful scan resets that wait to the configured poll interval. A missing
+ * App credential or a refused installation stops the watch instead, because
+ * every later scan would fail the same way.
  */
 export async function watchReviews(options: ReviewWatchOptions): Promise<ReviewSummary> {
+  const MAX_BACKOFF_MS = 5 * 60_000;
   let last = emptySummary('completed');
+  let backoffMs = options.pollIntervalMs;
   for (;;) {
+    if (options.stop.aborted) {
+      return { ...last, outcome: 'cancelled' };
+    }
+    let waitMs = options.pollIntervalMs;
     try {
       last = await scanReviews(options);
+      backoffMs = options.pollIntervalMs;
     } catch (cause) {
+      if (options.stop.aborted) {
+        return { ...last, outcome: 'cancelled' };
+      }
       if (stopsBatch(cause)) {
         throw cause;
       }
+      const retryAfter =
+        cause instanceof SourceError || cause instanceof ReviewError ? cause.retryAfterMs : null;
+      waitMs = Math.max(backoffMs, retryAfter ?? 0);
+      backoffMs = Math.min(backoffMs * 2, MAX_BACKOFF_MS);
       options.io.err(
-        `review scan failed: ${messageOf(cause)}; the next scan will try again after the poll ` +
-          'interval',
+        `review scan failed: ${messageOf(cause)}; the next scan will try again in ` +
+          `${String(Math.max(1, Math.round(waitMs / 1000)))}s`,
       );
     }
     if (options.stop.aborted || last.outcome === 'cancelled') {
       return { ...last, outcome: 'cancelled' };
     }
-    await options.sleep(options.pollIntervalMs, options.stop);
+    await options.sleep(waitMs, options.stop);
   }
 }
