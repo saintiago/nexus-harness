@@ -320,4 +320,19 @@ describe('the GitHub delivery step', () => {
     expect(await fakeGhCalls(fixture.gh)).toEqual([]);
     expect(destinationHasBranch(fixture)).toBe(false);
   });
+
+  it('says what is unknown when the harness stops a delivery command', async () => {
+    const fixture = await createFixture();
+
+    const failure = await withFakeGhOnPath(fixture.bin, async () =>
+      refusal(async () => await fixture.delivery.deliver(requestFor(fixture), AbortSignal.abort())),
+    );
+
+    expect(failure).toBeInstanceOf(DeliveryError);
+    expect(failure.message).toContain('was stopped');
+    expect(failure.message).toContain('how far the delivery got is unknown');
+    // Nothing was asked of GitHub, and nothing was pushed.
+    expect(await fakeGhCalls(fixture.gh)).toEqual([]);
+    expect(destinationHasBranch(fixture)).toBe(false);
+  });
 });

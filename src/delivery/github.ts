@@ -254,6 +254,16 @@ export function createGitHubDelivery(
         `${what} could not be started: ${result.launchError ?? 'no reason was recorded'}. ${hint}`,
       );
     }
+    if (result.outcome === 'stopped' || result.outcome === 'timed-out') {
+      // The harness ended this command, not the destination: the delivery may
+      // have got part-way, and only GitHub can say how far.
+      throw new DeliveryError(
+        `${what} ${result.outcome === 'stopped' ? 'was stopped' : 'ran past its limit'}, so how ` +
+          'far the delivery got is unknown. Check the destination repository before retrying; a ' +
+          'later attempt pushes the same branch and finds an existing pull request instead of ' +
+          'creating a second one.',
+      );
+    }
     const diagnostic = await commandDiagnostic(result);
     throw new DeliveryError(
       `${what} failed (${result.outcome}` +
