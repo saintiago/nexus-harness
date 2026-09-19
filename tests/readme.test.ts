@@ -28,8 +28,8 @@ import { existsSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { loadHarnessConfig, loadTask, resolveWorkDir } from '../src/config.js';
-import type { RunReport } from '../src/types.js';
+import { loadHarnessConfig, loadTask, resolveWorkDir } from '../src/config/load.js';
+import type { RunReport } from '../src/shared/types.js';
 import {
   BUILT_CLI,
   FEATURE_IMPLEMENTED,

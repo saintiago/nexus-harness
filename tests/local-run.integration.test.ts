@@ -68,22 +68,17 @@ import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { runCheckRound } from '../src/checks.js';
-import {
-  agentLogPath,
-  appendRunLog,
-  openAgentLog,
-  runLogPath,
-  writeRunReport,
-} from '../src/report.js';
-import { runTask } from '../src/runner.js';
+import { runCheckRound } from '../src/checks/round.js';
+import { agentLogPath, appendRunLog, openAgentLog, runLogPath } from '../src/reporting/logs.js';
+import { writeRunReport } from '../src/reporting/report.js';
 import type {
   AgentTurnRequest,
   AgentTurnResult,
   RunnerDependencies,
   RunTaskRequest,
   RunTaskResult,
-} from '../src/runner.js';
+} from '../src/runs/contracts.js';
+import { runTask } from '../src/runs/runner.js';
 import type {
   AttemptEvidence,
   CheckRoundResult,
@@ -91,14 +86,12 @@ import type {
   HarnessConfig,
   RunReport,
   Task,
-} from '../src/types.js';
-import {
-  allocateRunDirectory,
-  prepareWorkspace,
-  preflightSource,
-  recordWorkspaceAttempt,
-} from '../src/workspace.js';
-import type { PreparedWorkspace } from '../src/workspace.js';
+} from '../src/shared/types.js';
+import type { PreparedWorkspace } from '../src/workspace/prepare.js';
+import { prepareWorkspace } from '../src/workspace/prepare.js';
+import { preflightSource } from '../src/workspace/preflight.js';
+import { allocateRunDirectory } from '../src/workspace/run-directory.js';
+import { recordWorkspaceAttempt } from '../src/workspace/state.js';
 import { cleanupTempDirectories, createTempDir, writeJsonFile } from './support.js';
 
 /**

@@ -20,23 +20,13 @@ import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { EXIT_CANCELLED, EXIT_INPUT_ERROR, EXIT_OK, runCli } from '../src/cli.js';
-import type { CliContext, InterruptSignals } from '../src/cli.js';
-import { ReportError, summarizeChanges } from '../src/report.js';
-import type { RunTaskResult } from '../src/runner.js';
-import { RunCancelledError } from '../src/runner.js';
-import {
-  SourceError,
-  SourceFeedbackError,
-  acquireIntakeLock,
-  intakeLockPath,
-  listSource,
-  readReceipt,
-  receiptFilePath,
-  reserveReceipt,
-  runSource,
-  watchSource,
-} from '../src/source.js';
+import { runCli } from '../src/cli.js';
+import { EXIT_CANCELLED, EXIT_INPUT_ERROR, EXIT_OK } from '../src/cli/context.js';
+import type { CliContext, InterruptSignals } from '../src/cli/context.js';
+import { summarizeChanges } from '../src/reporting/changes.js';
+import { ReportError } from '../src/reporting/errors.js';
+import type { RunTaskResult } from '../src/runs/contracts.js';
+import { RunCancelledError } from '../src/runs/contracts.js';
 import type {
   SourceCandidate,
   SourceComment,
@@ -44,14 +34,17 @@ import type {
   SourceRunOutcome,
   SourceTask,
   TaskSource,
-} from '../src/source.js';
+} from '../src/sources/contract.js';
+import { SourceError, SourceFeedbackError } from '../src/sources/contract.js';
+import { runSource, watchSource } from '../src/sources/coordinator.js';
+import { listSource } from '../src/sources/list.js';
 import {
-  allocateRunDirectory,
-  prepareWorkspace,
-  preflightSource,
-  workspaceStatePath,
-} from '../src/workspace.js';
-import type { RunDirectory } from '../src/workspace.js';
+  acquireIntakeLock,
+  intakeLockPath,
+  readReceipt,
+  receiptFilePath,
+  reserveReceipt,
+} from '../src/sources/receipts.js';
 import type {
   AttemptEvidence,
   AttemptKind,
@@ -63,7 +56,12 @@ import type {
   RunStatus,
   SourceRef,
   Task,
-} from '../src/types.js';
+} from '../src/shared/types.js';
+import { prepareWorkspace } from '../src/workspace/prepare.js';
+import { preflightSource } from '../src/workspace/preflight.js';
+import { allocateRunDirectory } from '../src/workspace/run-directory.js';
+import type { RunDirectory } from '../src/workspace/run-directory.js';
+import { workspaceStatePath } from '../src/workspace/state.js';
 import {
   cleanupTempDirectories,
   createTempDir,

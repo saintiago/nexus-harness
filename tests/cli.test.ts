@@ -29,12 +29,14 @@ import { existsSync } from 'node:fs';
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { EXIT_CANCELLED, EXIT_INPUT_ERROR, EXIT_OK, EXIT_USAGE, runCli } from '../src/cli.js';
-import type { CliContext, InterruptSignals } from '../src/cli.js';
-import { ReportError } from '../src/report.js';
-import type { AgentTurnRequest, RunnerDependencies } from '../src/runner.js';
-import type { RunReport } from '../src/types.js';
-import { WorkspaceError, preflightSource } from '../src/workspace.js';
+import { runCli } from '../src/cli.js';
+import { EXIT_CANCELLED, EXIT_INPUT_ERROR, EXIT_OK, EXIT_USAGE } from '../src/cli/context.js';
+import type { CliContext, InterruptSignals } from '../src/cli/context.js';
+import { ReportError } from '../src/reporting/errors.js';
+import type { AgentTurnRequest, RunnerDependencies } from '../src/runs/contracts.js';
+import type { RunReport } from '../src/shared/types.js';
+import { WorkspaceError } from '../src/workspace/errors.js';
+import { preflightSource } from '../src/workspace/preflight.js';
 import {
   cleanupTempDirectories,
   createTempDir,

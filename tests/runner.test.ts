@@ -19,27 +19,18 @@ import { existsSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { runCheckRound } from '../src/checks.js';
-import type { CheckRoundRequest } from '../src/checks.js';
-import { agentLogPath, appendRunLog, openAgentLog, writeRunReport } from '../src/report.js';
-import type { RunReportRequest } from '../src/report.js';
-import { RunCancelledError, RunTimeoutError, runTask } from '../src/runner.js';
-import type { AgentTurnRequest, AgentTurnResult, RunnerDependencies } from '../src/runner.js';
-import {
-  WorkspaceError,
-  allocateRunDirectory,
-  prepareWorkspace,
-  preflightSource,
-  recordWorkspaceAttempt,
-  readWorkspaceState,
-  reopenWorkspace,
-} from '../src/workspace.js';
+import { runCheckRound } from '../src/checks/round.js';
+import type { CheckRoundRequest } from '../src/checks/round.js';
+import { agentLogPath, appendRunLog, openAgentLog } from '../src/reporting/logs.js';
+import { writeRunReport } from '../src/reporting/report.js';
+import type { RunReportRequest } from '../src/reporting/report.js';
+import { RunCancelledError, RunTimeoutError } from '../src/runs/contracts.js';
 import type {
-  PreparedWorkspace,
-  PreflightRequest,
-  RunDirectory,
-  SourcePreflight,
-} from '../src/workspace.js';
+  AgentTurnRequest,
+  AgentTurnResult,
+  RunnerDependencies,
+} from '../src/runs/contracts.js';
+import { runTask } from '../src/runs/runner.js';
 import type {
   CheckRoundResult,
   Command,
@@ -49,7 +40,16 @@ import type {
   RunReport,
   Task,
   TerminationOutcome,
-} from '../src/types.js';
+} from '../src/shared/types.js';
+import { WorkspaceError } from '../src/workspace/errors.js';
+import { prepareWorkspace } from '../src/workspace/prepare.js';
+import type { PreparedWorkspace } from '../src/workspace/prepare.js';
+import { preflightSource } from '../src/workspace/preflight.js';
+import type { PreflightRequest, SourcePreflight } from '../src/workspace/preflight.js';
+import { reopenWorkspace } from '../src/workspace/reopen.js';
+import { allocateRunDirectory } from '../src/workspace/run-directory.js';
+import type { RunDirectory } from '../src/workspace/run-directory.js';
+import { readWorkspaceState, recordWorkspaceAttempt } from '../src/workspace/state.js';
 import { cleanupTempDirectories, createTempDir } from './support.js';
 
 afterEach(cleanupTempDirectories);

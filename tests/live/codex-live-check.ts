@@ -76,16 +76,16 @@ import { mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { CODEX_EXECUTABLE } from '../../src/agent.js';
-import { planLaunch } from '../../src/checks.js';
-import { ConfigError, loadHarnessConfig } from '../../src/config.js';
+import { CODEX_EXECUTABLE } from '../../src/agents/codex/runtime.js';
+import { ConfigError, loadHarnessConfig } from '../../src/config/load.js';
+import { planLaunch } from '../../src/process/launch.js';
 import type {
   AgentSelection,
   AttemptEvidence,
   CheckRoundResult,
   CommandResult,
   RunReport,
-} from '../../src/types.js';
+} from '../../src/shared/types.js';
 
 /** Every assertion held. */
 export const EXIT_OK = 0;

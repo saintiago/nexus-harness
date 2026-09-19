@@ -30,7 +30,7 @@ import { existsSync } from 'node:fs';
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { loadHarnessConfig, loadTask, resolveWorkDir } from '../src/config.js';
+import { loadHarnessConfig, loadTask, resolveWorkDir } from '../src/config/load.js';
 import {
   EXIT_FAILED,
   EXIT_OK,

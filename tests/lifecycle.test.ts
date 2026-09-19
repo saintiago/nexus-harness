@@ -28,17 +28,17 @@ import { existsSync, statSync } from 'node:fs';
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { runCheckRound, runCommand } from '../src/checks.js';
-import { appendRunLog, openAgentLog, writeRunReport } from '../src/report.js';
-import { runTask } from '../src/runner.js';
-import type { AgentTurnResult, RunnerDependencies } from '../src/runner.js';
-import {
-  allocateRunDirectory,
-  prepareWorkspace,
-  preflightSource,
-  recordWorkspaceAttempt,
-} from '../src/workspace.js';
-import type { Command, HarnessConfig, RunReport, Task } from '../src/types.js';
+import { runCheckRound } from '../src/checks/round.js';
+import { runCommand } from '../src/process/command.js';
+import { appendRunLog, openAgentLog } from '../src/reporting/logs.js';
+import { writeRunReport } from '../src/reporting/report.js';
+import type { AgentTurnResult, RunnerDependencies } from '../src/runs/contracts.js';
+import { runTask } from '../src/runs/runner.js';
+import type { Command, HarnessConfig, RunReport, Task } from '../src/shared/types.js';
+import { prepareWorkspace } from '../src/workspace/prepare.js';
+import { preflightSource } from '../src/workspace/preflight.js';
+import { allocateRunDirectory } from '../src/workspace/run-directory.js';
+import { recordWorkspaceAttempt } from '../src/workspace/state.js';
 import { cleanupTempDirectories, createTempDir } from './support.js';
 
 /**
