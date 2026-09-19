@@ -807,6 +807,22 @@ describe('the review watch', () => {
 // Configuration and the App key
 // ---------------------------------------------------------------------------
 
+/** The review object of the fixture configuration, before any override. */
+function standardReview(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    type: 'github',
+    repository: REPOSITORY,
+    app: {
+      appId: 5001141,
+      installationId: 163007360,
+      privateKeyPathEnv: 'NEXUS_LENS_KEY_PATH',
+      login: LOGIN,
+    },
+    reviewer: { runtime: 'codex', command: ['codex', '--profile', 'nexus-astra'] },
+    ...overrides,
+  };
+}
+
 function reviewConfig(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     ...documentedConfig,
@@ -819,18 +835,7 @@ function reviewConfig(overrides: Record<string, unknown> = {}): Record<string, u
       projectKey: 'SAM1',
       tokenEnv: 'JIRA_API_TOKEN',
     },
-    review: {
-      type: 'github',
-      repository: REPOSITORY,
-      app: {
-        appId: 5001141,
-        installationId: 163007360,
-        privateKeyPathEnv: 'NEXUS_LENS_KEY_PATH',
-        login: LOGIN,
-      },
-      reviewer: { runtime: 'codex', command: ['codex', '--profile', 'nexus-astra'] },
-      ...(overrides['review'] as Record<string, unknown> | undefined),
-    },
+    review: standardReview(overrides['review'] as Record<string, unknown> | undefined),
     ...(overrides['extra'] as Record<string, unknown> | undefined),
   };
 }
@@ -1464,6 +1469,57 @@ describe('the review command through the CLI', () => {
     expect(world.githubCalls).toEqual([]);
     expect(world.publishedReviews).toEqual([]);
     expect(world.publishedChecks).toEqual([]);
+  });
+
+  it('reports a missing Jira credential before it contacts anything', async () => {
+    const directory = await createTempDir();
+    const configPath = await writeJsonFile(directory, 'harness.review.json', {
+      ...reviewConfig(),
+      workDir: './runs',
+    } as Record<string, unknown>);
+    const out: string[] = [];
+    const err: string[] = [];
+    const world = fakeWorld({ issues: [] });
+    const previous = process.env.JIRA_API_TOKEN;
+    delete process.env.JIRA_API_TOKEN;
+    try {
+      const code = await runCli(['review', 'scan', '--config', configPath], {
+        cwd: directory,
+        io: { out: (text) => out.push(text), err: (text) => err.push(text) },
+        fetch: world.fetch,
+      });
+      expect(code).toBe(EXIT_INPUT_ERROR);
+    } finally {
+      if (previous !== undefined) {
+        process.env.JIRA_API_TOKEN = previous;
+      }
+    }
+    expect(err.join('\n')).toContain('JIRA_API_TOKEN is missing or blank');
+    expect(world.jiraCalls).toEqual([]);
+    expect(world.githubCalls).toEqual([]);
+  });
+
+  it('reports an unavailable reviewer launch as inconclusive, without approving', async () => {
+    const world = fakeWorld({
+      issues: [sourceIssue(['harness-ws-run-20260919100148-e48a9ab0'])],
+    });
+    const fixture = await reviewCommandFixture({
+      world,
+      config: {
+        review: standardReview({
+          reviewer: { runtime: 'codex', command: ['definitely-not-a-real-codex-xyz'] },
+        }),
+      },
+    });
+
+    const result = await fixture.run();
+
+    expect(result.code).toBe(EXIT_INPUT_ERROR);
+    expect(result.err).toContain('could not be started');
+    expect(result.err).not.toContain('approved');
+    expect(world.publishedReviews).toEqual([]);
+    expect(world.publishedChecks).toEqual([]);
+    expect(world.issues[0]?.status).toBe('In Review');
   });
 
   it('reports an API failure without approving and without a coding rerun', async () => {

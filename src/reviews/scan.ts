@@ -39,6 +39,7 @@ import type {
 } from './contract.js';
 import { ReviewError } from './contract.js';
 import { positionFindings } from './diff.js';
+import { REVIEW_INPUT_FILE, REVIEWER_LOG_FILE } from './reviewer.js';
 
 /** How many review-directory collisions one allocation may skip before giving up. */
 const MAX_REVIEW_ID_ATTEMPTS = 5;
@@ -48,10 +49,6 @@ const MAX_LOG_LINE_CHARS = 400;
 export const REVIEW_LOG_FILE = 'review.log';
 /** The record every reviewer attempt writes beside its evidence. */
 export const REVIEW_RECORD_FILE = 'review.json';
-/** The reviewer turn's own log file, as `reviewer.ts` names it too. */
-const REVIEWER_LOG_FILE = 'reviewer.log';
-/** The evidence file every reviewer attempt is given. */
-const REVIEW_INPUT_FILE = 'input.md';
 
 /** One reviewer attempt's own evidence directory. */
 export interface ReviewDirectory {
