@@ -8,7 +8,7 @@
  * is counted, because an interface that is not the one this adapter was written
  * for is exactly what an incomplete completion has to be reported as.
  */
-import type { TerminationOutcome } from '../../shared/types.js';
+import type { AgentActivity, TerminationOutcome } from '../../shared/types.js';
 
 /** What one runtime process reported about itself, as this adapter reads it. */
 export interface RuntimeReport {
@@ -77,4 +77,82 @@ export function failureText(event: Record<string, unknown>): string | null {
   }
   const message = event['message'];
   return typeof message === 'string' && message.trim() !== '' ? message : null;
+}
+
+/** How much of a command or a message one activity line keeps. */
+const MAX_ACTIVITY_CHARS = 400;
+
+/** One runtime string flattened onto one line, bounded, or `null` for no text. */
+function activityText(value: unknown): string | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const flat = value.replace(/\s+/g, ' ').trim();
+  if (flat === '') {
+    return null;
+  }
+  return flat.length <= MAX_ACTIVITY_CHARS ? flat : `${flat.slice(0, MAX_ACTIVITY_CHARS)}…`;
+}
+
+/** One entry of a `file_change` item's `changes` array, as an activity line. */
+function changeActivity(change: unknown): AgentActivity | null {
+  if (typeof change !== 'object' || change === null) {
+    return null;
+  }
+  const record = change as Record<string, unknown>;
+  const path = activityText(record['path']);
+  if (path === null) {
+    return null;
+  }
+  const kind = activityText(record['kind']);
+  return { kind: 'change', text: kind === null ? path : `${kind} ${path}` };
+}
+
+/**
+ * What one `item.started` or `item.completed` event says the turn is doing, as
+ * activity lines for the terminal, or an empty list when it says nothing this
+ * display knows how to show.
+ *
+ * The two event kinds carry the same item at different moments, so what is read
+ * depends on both: a command is announced when it starts and its result reported
+ * when it ends, while a message and a file change are only read once complete.
+ * Everything else — reasoning, plans, event types this adapter does not know —
+ * is deliberately not an activity line.
+ */
+export function itemActivities(eventType: string, item: unknown): readonly AgentActivity[] {
+  if (typeof item !== 'object' || item === null) {
+    return [];
+  }
+  const record = item as Record<string, unknown>;
+  switch (record['type']) {
+    case 'command_execution': {
+      if (eventType === 'item.started') {
+        const command = activityText(record['command']);
+        return command === null ? [] : [{ kind: 'command', text: command }];
+      }
+      if (eventType !== 'item.completed') {
+        return [];
+      }
+      const exitCode = record['exit_code'];
+      if (typeof exitCode === 'number') {
+        return [{ kind: 'result', text: `exit ${String(exitCode)}` }];
+      }
+      const status = activityText(record['status']);
+      return [{ kind: 'result', text: status ?? 'finished' }];
+    }
+    case 'agent_message': {
+      const text = eventType === 'item.completed' ? activityText(record['text']) : null;
+      return text === null ? [] : [{ kind: 'message', text }];
+    }
+    case 'file_change': {
+      if (eventType !== 'item.completed' || !Array.isArray(record['changes'])) {
+        return [];
+      }
+      return record['changes']
+        .map((change) => changeActivity(change))
+        .filter((activity): activity is AgentActivity => activity !== null);
+    }
+    default:
+      return [];
+  }
 }

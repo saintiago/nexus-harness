@@ -304,6 +304,24 @@ export type RunStatus = 'passed' | 'failed' | 'cancelled';
 export type AttemptKind = 'implementation' | 'repair';
 
 /**
+ * One line of what a coding turn is doing, as the terminal's activity pane shows
+ * it: the runtime's own event stream, normalized and bound to a single line.
+ *
+ * It is presentation only. What a turn did is in its agent log and is decided by
+ * the harness's own checks; an activity line is never evidence, never reaches a
+ * report, and nothing in a run's outcome depends on one.
+ */
+export interface AgentActivity {
+  /** What the line is, so a display can label it. */
+  readonly kind: 'message' | 'command' | 'result' | 'change';
+  /**
+   * The text, as the runtime reported it. It is not sanitized and not bounded:
+   * the display that owns the terminal flattens it and fits it to its width.
+   */
+  readonly text: string;
+}
+
+/**
  * What one top-level coding turn left behind: the agent's own account of it, and
  * the checks the harness observed for itself afterwards.
  *

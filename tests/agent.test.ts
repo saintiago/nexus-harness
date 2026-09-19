@@ -37,7 +37,13 @@ import { appendRunLog, openAgentLog } from '../src/reporting/logs.js';
 import { writeRunReport } from '../src/reporting/report.js';
 import { runTask } from '../src/runs/runner.js';
 import type { AgentTurnRequest, RunnerDependencies } from '../src/runs/contracts.js';
-import type { CommandResult, HarnessConfig, RunReport, Task } from '../src/shared/types.js';
+import type {
+  AgentActivity,
+  CommandResult,
+  HarnessConfig,
+  RunReport,
+  Task,
+} from '../src/shared/types.js';
 import { configureWorkspaceIdentity } from '../src/workspace/git.js';
 import { prepareWorkspace } from '../src/workspace/prepare.js';
 import { preflightSource } from '../src/workspace/preflight.js';
@@ -875,6 +881,31 @@ describe('the launch every turn is given', () => {
 });
 
 describe('how a turn ends, and what it reports', () => {
+  it('reports what the turn is doing to the display it was given, as it goes', async () => {
+    const fixture = await createFixture();
+    const reported: AgentActivity[] = [];
+    const turn = await openTurn(fixture, {
+      onActivity: (activity) => reported.push(activity),
+    });
+
+    const result = await runCodexTurn(
+      turn.request,
+      standInRuntime(fixture, { summary: 'I changed the file.' }),
+    );
+    await turn.close();
+
+    expect(result.summary).toBe('I changed the file.');
+    // The command announced when it started, then the completed message: what
+    // the pane draws, and nothing the adapter invented.
+    expect(reported).toEqual([
+      { kind: 'command', text: 'npm test' },
+      { kind: 'message', text: 'I changed the file.' },
+    ]);
+    // The activity lines are a copy for the display, never a replacement for
+    // the turn's own record: the log still holds the whole event stream.
+    expect(await readTurnLog(turn)).toContain('"type":"turn.completed"');
+  }, 60_000);
+
   it('reports a completed turn as the agent’s own summary, and nothing more', async () => {
     const fixture = await createFixture();
     const turn = await openTurn(fixture);

@@ -19,7 +19,7 @@ import { within } from '../../process/stop.js';
 import type { AgentTurnRequest, AgentTurnResult } from '../../runs/contracts.js';
 import { messageOf } from '../../shared/errors.js';
 import type { TerminationOutcome } from '../../shared/types.js';
-import { agentMessage, failureText, parseEvent } from './events.js';
+import { agentMessage, failureText, itemActivities, parseEvent } from './events.js';
 import type { RuntimeOutcome, RuntimeReport } from './events.js';
 import { promptFor } from './prompt.js';
 import { CODEX_EXEC_ARGUMENTS, codexRuntime } from './runtime.js';
@@ -124,6 +124,13 @@ export async function runCodexTurn(
     /** Held by the run's stop request for exactly as long as this turn runs. */
     let onStop: (() => void) | null = null;
 
+    /** Lets a display, when one is attached, follow what the turn is doing. */
+    const reportActivity = (type: string, item: unknown): void => {
+      for (const activity of itemActivities(type, item)) {
+        request.onActivity?.(activity);
+      }
+    };
+
     /**
      * Reads one line of the runtime's event stream. Event types this adapter
      * does not know are ignored on purpose — the interface is read for what the
@@ -156,6 +163,11 @@ export async function runCodexTurn(
           if (message !== null) {
             report.summary = message;
           }
+          reportActivity(event['type'], event['item']);
+          return;
+        }
+        case 'item.started': {
+          reportActivity(event['type'], event['item']);
           return;
         }
         case 'turn.completed':
