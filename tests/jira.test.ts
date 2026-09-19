@@ -1144,6 +1144,46 @@ describe('publishing the result', () => {
     );
   });
 
+  it('reports a delivery failure beside the run outcome, without claiming nothing was published', async () => {
+    const http = fakeHttp((call) => {
+      if (call.url.includes('/comment')) {
+        return json({ id: '9003' });
+      }
+      if (call.url.includes('/transitions')) {
+        return json(TRANSITIONS_TO_REVIEW);
+      }
+      return json(issue({ status: 'In Progress' }));
+    });
+    const source = createJiraSource(jiraConfig(), TOKEN, { fetch: http.fetch });
+
+    await source.complete(
+      PREPARED,
+      outcome({
+        status: 'passed',
+        deliveryFailure: 'git push failed: authentication required',
+      }),
+      new AbortController().signal,
+    );
+
+    const comment = http.calls.find((call) => call.url.includes('/comment'));
+    const body = comment?.body as {
+      body: { content: Array<{ content?: Array<{ text: string }> }> };
+    };
+    const paragraphs = body.body.content.map((node) => node.content?.[0]?.text ?? '');
+    const text = paragraphs.join('\n');
+    // The run's own outcome is still what the issue hears, with the publishing
+    // failure beside it.
+    expect(paragraphs[0]).toContain('finished: passed');
+    expect(text).toContain('Delivery: the optional GitHub step failed');
+    expect(text).toContain('git push failed: authentication required');
+    // Nothing claims nothing was pushed, and nothing claims a delivery: only
+    // the destination can say how far the failed publication got.
+    expect(text).not.toContain('nor the harness pushes');
+    expect(text).not.toContain('Pull request:');
+    expect(text).toContain('may have only partly happened');
+    expect(text).toContain('check the destination repository');
+  });
+
   it('never moves an issue to Done and never rewrites its description', async () => {
     const http = fakeHttp((call) => {
       if (call.url.includes('/comment')) {

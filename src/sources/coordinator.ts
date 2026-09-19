@@ -51,6 +51,7 @@ function runOutcome(
   result: RunTaskResult,
   attempt?: SourceRunOutcome['attempt'],
   pullRequest?: DeliveredPullRequest | null,
+  deliveryFailure?: string | null,
 ): SourceRunOutcome {
   return {
     runId: result.run.runId,
@@ -62,7 +63,15 @@ function runOutcome(
     reportPath: result.reportPath,
     ...(attempt === undefined ? {} : { attempt }),
     ...(pullRequest === null || pullRequest === undefined ? {} : { pullRequest }),
+    ...(deliveryFailure === null || deliveryFailure === undefined ? {} : { deliveryFailure }),
   };
+}
+
+/** What a failed publication wrote into the receipt, and what it acknowledged. */
+function feedbackFailure(cause: unknown): { problem: string; commentId: string | null } {
+  return cause instanceof SourceFeedbackError
+    ? { problem: cause.message, commentId: cause.commentId }
+    : { problem: messageOf(cause), commentId: null };
 }
 
 /**
@@ -272,6 +281,73 @@ async function deliverPassed(
       sourceRef: item.ref,
     },
     stop,
+  );
+}
+
+/**
+ * A passed attempt whose delivery failed: the issue is still told the outcome
+ * the run produced, with the publication failure beside it, so a finished task
+ * is not left in the running status where a Jira-only coordinator would never
+ * see it. Then intake stops for a human.
+ *
+ * Ordering is the point: the delivery problem is recorded first, so a Jira
+ * failure here cannot cost the run its local evidence. The feedback itself is
+ * the same bounded, best-effort path a stopped run's result takes.
+ *
+ * Retrying the publication is an operator step with ordinary `git` and `gh` in
+ * the retained workspace — not another attempt. Moving the issue back to the
+ * ready status starts a new coding run, which is rework, never a delivery retry
+ * (docs/WORKFLOW.md §8).
+ */
+async function reportDeliveryFailure(
+  context: SourceContext,
+  file: string,
+  item: SourceTask,
+  run: RunTaskResult,
+  attempt: SourceRunOutcome['attempt'],
+  problem: string,
+  state: BatchState,
+): Promise<Step> {
+  const { source, io, stop } = context;
+  const key = item.ref.key;
+
+  await updateReceipt(file, { problem: `delivery: ${problem}` });
+  const feedbackStop = stop.aborted ? AbortSignal.timeout(FEEDBACK_DEADLINE_MS) : stop;
+  try {
+    await source.complete(item, runOutcome(run, attempt, null, problem), feedbackStop);
+  } catch (cause) {
+    const failure = feedbackFailure(cause);
+    await updateReceipt(file, {
+      feedback: 'failed',
+      problem: `delivery: ${problem}; feedback: ${failure.problem}`,
+      ...(failure.commentId === null ? {} : { commentId: failure.commentId }),
+    });
+    return stopWith(
+      state,
+      `${key}: the run is kept as passed (report ${run.reportPath}), but delivering it failed ` +
+        `and the issue could not be told either, so intake stops for inspection. The delivery ` +
+        `failed with: ${problem} Publishing that failed with: ${failure.problem} The local ` +
+        'report, logs, and receipt are kept as they were written; retrying the publication is ' +
+        'an operator step with git and gh in the retained workspace, never another attempt.',
+    );
+  }
+
+  await updateReceipt(file, { feedback: 'sent' });
+  io.out(`${key}: result published and moved to review, carrying its delivery failure`);
+  const workspace = run.workspace;
+  return stopWith(
+    state,
+    `${key}: the run is kept as passed (report ${run.reportPath}) and the issue was told that ` +
+      `outcome, with the delivery failure, so it is not left in the running status. Intake ` +
+      `stops because delivering it failed: ${problem} Retrying the publication is an operator ` +
+      'step, not another attempt: check the destination repository first (a push or a pull ' +
+      'request creation that failed may already have taken effect), then push the branch and ' +
+      'open or update the pull request by hand with git and gh from ' +
+      (workspace === null
+        ? 'the retained workspace.'
+        : `the retained workspace ${workspace.workspacePath} (branch ${workspace.branch}).`) +
+      ' Moving the issue back to the ready status is not that retry: it starts a new coding run ' +
+      'in the same workspace.',
   );
 }
 
@@ -554,8 +630,9 @@ async function attempt(
     // What a passed attempt produced is delivered before the issue is told it
     // passed, so the published result can carry the pull request it produced. A
     // delivery failure is not a coding failure: the run's own report and logs
-    // stay exactly as they were written, the receipt records what failed, and
-    // intake stops for a human instead of starting another attempt
+    // stay exactly as they were written, the issue is still told the outcome
+    // the run produced with the failure beside it, the receipt records what
+    // failed, and intake stops for a human instead of starting another attempt
     // (docs/WORKFLOW.md §8).
     let pullRequest: DeliveredPullRequest | null = null;
     if (run.status === 'passed' && context.delivery !== undefined) {
@@ -568,15 +645,18 @@ async function attempt(
         try {
           pullRequest = await deliverPassed(context.delivery, item, run, stop);
         } catch (cause) {
-          const problem = messageOf(cause);
-          await updateReceipt(file, { problem: `delivery: ${problem}` });
-          return stopWith(
+          return await reportDeliveryFailure(
+            context,
+            file,
+            item,
+            run,
+            {
+              number: attempt,
+              of: ladder.length,
+              tier: tier.name,
+            },
+            messageOf(cause),
             state,
-            `${item.ref.key}: the run is kept as passed (report ${run.reportPath}), but delivering ` +
-              `it failed, so intake stops for inspection: ${problem} Fix the cause and move the ` +
-              'issue back to the ready status to retry: the same workspace and branch are ' +
-              'continued, and a retry finds an existing pull request on GitHub instead of ' +
-              'creating a duplicate. This failure starts no coding turn of its own.',
           );
         }
         io.out(
@@ -604,10 +684,7 @@ async function attempt(
       await updateReceipt(file, { feedback: 'sent' });
       io.out(`${item.ref.key}: result published and moved to review`);
     } catch (cause) {
-      const failure =
-        cause instanceof SourceFeedbackError
-          ? { problem: cause.message, commentId: cause.commentId }
-          : { problem: messageOf(cause), commentId: null };
+      const failure = feedbackFailure(cause);
       await updateReceipt(file, {
         feedback: 'failed',
         problem: `feedback: ${failure.problem}`,

@@ -140,6 +140,13 @@ export interface SourceRunOutcome {
    * (docs/WORKFLOW.md §8).
    */
   readonly pullRequest?: DeliveredPullRequest;
+  /**
+   * Why the configured delivery step failed, when it did: the run's own outcome
+   * above is still what happened, and this is the publication failure reported
+   * beside it. Absent when delivery is disabled, the run did not pass, or the
+   * delivery step completed (docs/WORKFLOW.md §8).
+   */
+  readonly deliveryFailure?: string;
 }
 
 /**

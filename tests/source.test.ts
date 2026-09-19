@@ -828,7 +828,7 @@ describe('delivering a passed attempt', () => {
     ]);
   });
 
-  it('stops intake and keeps the passed run when delivery fails', async () => {
+  it('tells the issue the passed outcome and the delivery failure, then stops intake', async () => {
     const workDir = await createTempDir();
     const fixture = createFixture({
       workDir,
@@ -844,13 +844,60 @@ describe('delivering a passed attempt', () => {
 
     expect(summary.outcome).toBe('stopped');
     expect(summary.problem).toContain('authentication required');
-    expect(summary.problem).toContain('ready status to retry');
-    // The run's own evidence was already written and is kept as it is.
-    expect(fixture.completions).toEqual([]);
+    // The retry advice is an operator step, never a return to the ready status
+    // that would start a coding run to repair a publishing failure.
+    expect(summary.problem).toContain('check the destination repository');
+    expect(summary.problem).toContain('starts a new coding run');
+    expect(summary.problem).not.toContain('ready status to retry');
+
+    // The run's own evidence is kept as it was written, and the issue is still
+    // told the outcome that run produced, with the failure beside it, so a
+    // finished passed task is not left in the running status.
+    expect(fixture.completions).toHaveLength(1);
+    expect(fixture.completions[0]?.outcome).toMatchObject({
+      status: 'passed',
+      reason: 'every configured check passed after the implementation turn',
+      checks: 'no check round was completed for this run',
+      reportPath: path.join(workDir, 'run-1', 'result.json'),
+      runDir: path.join(workDir, 'run-1'),
+      deliveryFailure: 'git push failed: authentication required',
+    });
+    expect(fixture.completions[0]?.outcome.pullRequest).toBeUndefined();
     const receipt = await readReceipt(receiptFilePath(workDir, refFor('1')));
     expect(receipt?.outcome).toBe('passed');
     expect(receipt?.resultPath).toBe(path.join(workDir, 'run-1', 'result.json'));
+    expect(receipt?.feedback).toBe('sent');
     expect(receipt?.problem).toContain('delivery: git push failed: authentication required');
+  });
+
+  it('keeps the local evidence when the delivery failure cannot be told to the issue', async () => {
+    const workDir = await createTempDir();
+    const fixture = createFixture({
+      workDir,
+      run: passedRun,
+      delivery: {
+        deliver: async () => {
+          throw new DeliveryError('git push failed: authentication required');
+        },
+      },
+      complete: () => {
+        throw new Error('Jira is unreachable');
+      },
+    });
+
+    const summary = await runSource(fixture.context, null);
+
+    expect(summary.outcome).toBe('stopped');
+    expect(summary.problem).toContain('git push failed: authentication required');
+    expect(summary.problem).toContain('Jira is unreachable');
+    // A Jira failure here costs the run nothing: its report, its outcome, and
+    // the delivery problem stay in the receipt exactly as they were written.
+    const receipt = await readReceipt(receiptFilePath(workDir, refFor('1')));
+    expect(receipt?.outcome).toBe('passed');
+    expect(receipt?.resultPath).toBe(path.join(workDir, 'run-1', 'result.json'));
+    expect(receipt?.feedback).toBe('failed');
+    expect(receipt?.problem).toContain('delivery: git push failed: authentication required');
+    expect(receipt?.problem).toContain('feedback: Jira is unreachable');
   });
 
   it('publishes normally when the configured step finds nothing to deliver', async () => {
@@ -2224,7 +2271,7 @@ describe('the source commands through the CLI', () => {
     }
   });
 
-  it('refuses to deliver a passed attempt that left uncommitted work', async () => {
+  it('refuses a passed attempt that left uncommitted work, and still tells the issue', async () => {
     const target = await createTarget({ delivery: true });
     const jira = fakeJira([
       {
@@ -2266,7 +2313,9 @@ describe('the source commands through the CLI', () => {
       expect(result.out).toContain('uncommitted changes');
       expect(result.out).toContain('MARKER.md');
       expect(result.out).toContain('never commits or discards');
-      expect(result.out).toContain('ready status to retry');
+      // The retry is an operator step with git and gh, not a return to the
+      // ready status, which would start a coding run instead.
+      expect(result.out).toContain('starts a new coding run');
 
       // The run's own evidence is a passing run, exactly as it was written.
       const runDir = await onlyRunDirectory(target.workDir);
@@ -2283,11 +2332,18 @@ describe('the source commands through the CLI', () => {
       expect(receipt?.problem).toContain('delivery:');
       expect(receipt?.problem).toContain('MARKER.md');
 
-      // Nothing was pushed, GitHub was not asked, and the issue is not told a
-      // result that does not exist.
+      // Nothing was pushed and GitHub was not asked, because the refusal comes
+      // before the push; the issue is still told the passed outcome the run
+      // produced, with the delivery failure beside it, so a passed task is not
+      // left in the running status where a Jira-only coordinator cannot see it.
       expect(await fakeGhCalls(destination.state)).toEqual([]);
-      expect(jira.comments).toEqual([]);
-      expect(jira.issues[0]?.status).toBe('In Progress');
+      expect(jira.comments).toHaveLength(1);
+      expect(jira.comments[0]).toContain('finished: passed');
+      expect(jira.comments[0]).toContain('Delivery:');
+      expect(jira.comments[0]).toContain('MARKER.md');
+      expect(jira.comments[0]).not.toContain('Pull request:');
+      expect(jira.comments[0]).not.toContain('nor the harness pushes');
+      expect(jira.issues[0]?.status).toBe('In Review');
     } finally {
       if (previous === undefined) {
         delete process.env.JIRA_API_TOKEN;
