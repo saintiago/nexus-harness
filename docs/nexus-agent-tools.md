@@ -22,8 +22,13 @@ never a tool an agent may call.
 | --- | --- | --- | --- |
 | GitHub, for reading | the operator's existing `github@openai-curated-remote` connector app | the connection already in place | none added; the account the connector is already connected with |
 | OpenAI developer documentation | the hosted Docs MCP server [D1] | `https://developers.openai.com/mcp` | none |
-| Library documentation | Context7 [C1] | `https://mcp.context7.com/mcp` | `CONTEXT7_API_KEY`, optional |
-| Web search and page extraction | Tavily MCP [T1] | `https://mcp.tavily.com/mcp/` | `TAVILY_API_KEY` |
+| Library documentation | Context7 [C1] | `https://mcp.context7.com/mcp` | none; a `CONTEXT7_API_KEY` raises the limits |
+| Web search and page extraction | Tavily MCP [T1] | `https://mcp.tavily.com/mcp/` with `X-Tavily-Access-Mode: keyless` | none; a `TAVILY_API_KEY` raises the limits |
+
+No credential is required for that default set: the Docs server is public, Context7 answers
+anonymous requests, and the Tavily entry selects the provider's supported keyless access mode with
+the header above. The two API keys are optional, private upgrades to each service's own rate limits
+(§3), and their absence cannot fail a Nexus turn.
 
 GitHub is kept, not duplicated: the connector the operator already has stays enabled and is pointed
 at reading. The profile blocks the tools the connector itself flags destructive or open-world —
@@ -91,12 +96,14 @@ Copy-Item examples\nexus-flash.config.toml (Join-Path $codexHome 'nexus-flash.co
 Copy-Item examples\nexus-astra.config.toml (Join-Path $codexHome 'nexus-astra.config.toml')
 ```
 
-2. **Store the credentials privately.** `TAVILY_API_KEY` is required for the web-search capability
-   (create a key at <https://tavily.com>); `CONTEXT7_API_KEY` is optional and only raises
-   Context7's rate limits. Both belong in the environment the harness itself is started in — never
-   in a file in this repository, and never in a launch argument, because the launch prefix is
-   recorded in `result.json` and `logs/run.log`. For the current PowerShell session and for future
-   terminals:
+2. **Credentials are optional, and only for a service you have a key for.** Nothing the profiles
+   activate needs one: the Docs server is public, Context7 answers anonymous requests, and
+   Tavily's keyless access mode is the default. A key is an upgrade to that service's own rate
+   limits — Tavily's free key (<https://tavily.com>) or a Context7 key
+   (<https://context7.com/dashboard>) — and it belongs in the environment the harness itself is
+   started in: never in a file in this repository, and never in a launch argument, because the
+   launch prefix is recorded in `result.json` and `logs/run.log`. For the current PowerShell
+   session and for future terminals:
 
 ```powershell
 $secure = Read-Host "Tavily API key" -AsSecureString
@@ -106,7 +113,24 @@ $env:TAVILY_API_KEY = $key
 Remove-Variable secure, key
 ```
 
-   Repeat with `CONTEXT7_API_KEY` if you have a Context7 key. This persists the value for future
+   Repeat with `CONTEXT7_API_KEY` for a Context7 key. Then uncomment the matching line in *both*
+   installed profile files, which carry the authenticated form ready to enable:
+
+```toml
+[mcp_servers.context7]
+url = "https://mcp.context7.com/mcp"
+bearer_token_env_var = "CONTEXT7_API_KEY"
+```
+
+```toml
+[mcp_servers.tavily]
+url = "https://mcp.tavily.com/mcp/"
+http_headers = { "X-Tavily-Access-Mode" = "keyless" }
+bearer_token_env_var = "TAVILY_API_KEY"
+```
+
+   A valid Tavily key takes precedence over the keyless header [T2], so that header stays as it
+   is; with no key set, the uncommented default keeps working. This persists the value for future
    terminals and sets it in the current process; like the Jira token in [WORKFLOW.md](WORKFLOW.md)
    §7 it is a user environment variable, not an encrypted vault — processes running as the same
    user may be able to read it. Existing runs are unaffected; new runs inherit the variable
@@ -186,15 +210,18 @@ Short, and run once per tier; it is not a model-by-tool matrix.
 
 ```powershell
 codex --profile nexus-flash mcp list
+codex --profile nexus-flash mcp get tavily --json
 codex --profile nexus-astra mcp list
+codex --profile nexus-astra mcp get tavily --json
 ```
 
    Each must list `openaiDeveloperDocs` (`https://developers.openai.com/mcp`), `context7`
-   (`https://mcp.context7.com/mcp`, bearer token env var `CONTEXT7_API_KEY`), and `tavily`
-   (`https://mcp.tavily.com/mcp/`, bearer token env var `TAVILY_API_KEY`) beside the servers the
-   Codex home already had. Optionally, `codex --profile nexus-flash debug prompt-input "hello"`
-   prints the prompt a new turn would receive: Gmail, Google Drive, Google Calendar, and Slack must
-   not appear in it.
+   (`https://mcp.context7.com/mcp`), and `tavily` (`https://mcp.tavily.com/mcp/`) beside the
+   servers the Codex home already had, and `mcp list` must show **no** bearer token env var on any
+   of them. The two `mcp get tavily --json` calls are what show the `"X-Tavily-Access-Mode":
+   "keyless"` header, which `mcp list` does not print. Optionally, `codex --profile nexus-flash
+   debug prompt-input "hello"` prints the prompt a new turn would receive: Gmail, Google Drive,
+   Google Calendar, and Slack must not appear in it.
 
 2. **One new session per tier.** Start `codex --profile nexus-flash` (and later
    `codex --profile nexus-astra`) — the same interactive CLI a person would use; `/mcp` shows the
@@ -208,8 +235,8 @@ codex --profile nexus-astra mcp list
      quote the source".
    - Context7: "use Context7 for the current API of a library I know, and name the library id it
      resolved".
-   - Tavily: "search the web for today's date in Europe/Madrid and extract one page that says
-     it".
+   - Tavily: "search the web for today's date in Europe/Madrid and extract one page that says it"
+     — the keyless default answers this, and a rate-limit message is the one thing to look for.
 
    Record one line per capability: the tool that ran, and whether it returned or what it said.
 
@@ -219,10 +246,13 @@ codex --profile nexus-astra mcp list
 
 5. **Repeat steps 2–4 once with the Astra profile.** One session per tier is the whole check:
    Astra uses the OpenAI account the CLI is already logged in with, Flash uses
-   `DEEPSEEK_API_KEY`, and both read `TAVILY_API_KEY` (and `CONTEXT7_API_KEY` when it is set).
+   `DEEPSEEK_API_KEY`, and neither tier needs a research credential: both read `TAVILY_API_KEY`
+   and `CONTEXT7_API_KEY` only when the operator set them.
 
-A green configuration check is not evidence that a live tool call works, and a missing
-`TAVILY_API_KEY` is an operator setup step, not a defect in a Nexus turn.
+A green configuration check is not evidence that a live tool call works. An unset
+`TAVILY_API_KEY` or `CONTEXT7_API_KEY` is not a setup blocker: the smoke runs on the anonymous
+Context7 and keyless Tavily defaults, and only the services' rate limits change when a key is
+added.
 
 ## 5. What was verified when this document was written, and what was not
 
@@ -231,7 +261,11 @@ operator's Codex home:
 
 - the two example profiles parse as Codex configuration and, layered in a temporary Codex home,
   `codex --profile nexus-flash mcp list` and `codex --profile nexus-astra mcp list` print exactly
-  the three servers above with their expected URLs and bearer-token environment variables;
+  the three servers above with their expected URLs and **no** bearer-token environment variable;
+- the corrected defaults were re-checked the same way: `codex --profile nexus-flash mcp get
+  context7 --json` and `codex --profile nexus-flash mcp get tavily --json` (and the same pair for
+  `nexus-astra`) report `bearer_token_env_var: null` for Context7 and the `X-Tavily-Access-Mode:
+  keyless` header on Tavily, so a missing key cannot fail either server's startup;
 - a profile name with no file is silently ignored on this CLI version — `codex --profile
   definitely-not-there mcp list` printed only the base servers and exited 0 — which is why the
   smoke procedure checks the servers rather than the launch's exit code;
@@ -249,16 +283,23 @@ operator's Codex home:
 
 Not verified, and reported as such rather than assumed:
 
-- the profiles are **not installed** in this machine's Codex home, and no Nexus launch prefix has
-  been changed: that is the operator step above, deliberately outside this working copy;
-- no live session has run with these profiles: no MCP server has been connected, no
-  `TAVILY_API_KEY` or `CONTEXT7_API_KEY` has been exercised, no GitHub read has been made through
-  the profile, and the absence of the personal connectors in a real session is not proven — that is
-  what the smoke procedure is for;
-- the Tavily remote server is configured to take its key as a bearer token, which the provider's
-  documentation allows alongside the URL form; if the smoke shows it refused, the fallback is the
-  provider's local server, which reads the same variable: `command = "npx"`,
-  `args = ["-y", "tavily-mcp@0.1.3"]`, `env_vars = ["TAVILY_API_KEY"]`;
+- this repository neither installs the profiles nor changes a launch prefix: §3 is the operator's
+  step, deliberately outside this working copy, and nothing in the harness reads these files;
+- no live session has run from this checkout: no MCP server has been connected, the anonymous
+  Context7 and keyless Tavily paths and the optional keyed ones have not been exercised here, no
+  GitHub read has been made through the profile, and the absence of the personal connectors in a
+  real session is not proven — that is what the smoke procedure is for;
+- the one live smoke reported so far, a bounded read-only Flash session the coordinator ran on
+  2026-09-19 against the profiles' earlier revision, confirmed the GitHub read and the OpenAI Docs
+  lookup, exposed no callable Gmail, Google Drive, or Slack tools, and had Context7 and Tavily fail
+  only because that revision required the two credentials above — the failure these defaults
+  remove. The corrected defaults have not been smoke-tested yet, and the next smoke is their
+  evidence;
+- the optional Tavily keyed form relies on the provider's statement that its remote MCP accepts the
+  API key in the `Authorization` header and that a valid key takes precedence over the keyless
+  header [T2]. If a smoke run ever shows it refused, the provider's local server reads the same
+  variable: `command = "npx"`, `args = ["-y", "tavily-mcp@0.1.3"]`,
+  `env_vars = ["TAVILY_API_KEY"]`;
 - the profiles were written against this machine's plugin marketplace ids
   (`gmail@openai-curated-remote` and so on). `codex plugin list` prints the exact ids; if a future
   marketplace renames one, mirror the two `[plugins."…".mcp_servers.…]` tables and the
@@ -266,8 +307,8 @@ Not verified, and reported as such rather than assumed:
 
 ## References
 
-The configuration uses the documented Codex profile, MCP, app, and suggestion settings; the three
-capability endpoints are the providers' own documentation.
+The configuration uses the documented Codex profile, MCP, app, and suggestion settings; the
+capability endpoints and their keyless or anonymous defaults are the providers' own documentation.
 
 [P1]: https://learn.chatgpt.com/docs/config-file/config-advanced#profiles
 [M1]: https://learn.chatgpt.com/docs/extend/mcp
@@ -275,3 +316,4 @@ capability endpoints are the providers' own documentation.
 [D1]: https://developers.openai.com/learn/docs-mcp
 [C1]: https://context7.com/docs/overview
 [T1]: https://docs.tavily.com/documentation/mcp
+[T2]: https://docs.tavily.com/documentation/keyless

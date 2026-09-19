@@ -744,10 +744,11 @@ and only a read.
 - **the Nexus research-tool profiles.** [docs/nexus-agent-tools.md](docs/nexus-agent-tools.md)
   defines two native Codex profile layers for the Flash and Astra launches. Their TOML and the MCP
   servers they name were checked with the installed CLI 0.154.0 in a temporary Codex home, and the
-  suggestion deny-list through equivalent `-c` overrides; nothing has been installed into this
-  machine's Codex home, no launch prefix selects them, no `TAVILY_API_KEY` or `CONTEXT7_API_KEY`
-  has been exercised, and no live session has confirmed the four capabilities or the absence of
-  the personal connectors;
+  suggestion deny-list through equivalent `-c` overrides. This repository installs none of them and
+  changes no launch prefix, and no live session has run from this checkout: the four capabilities
+  on their credential-free defaults (anonymous Context7, keyless Tavily), the optional keyed forms,
+  and the absence of the personal connectors in a real session are not proven here. The operator's
+  new-session smoke is what confirms them;
 - behaviour on a runtime version other than the 0.154.0 interface this adapter was written against,
   and any runtime-reported model identity: a profile or model name in a report is launch
   information, not proof of which upstream model served a response.
@@ -812,9 +813,10 @@ single non-interactive turn on this platform and needs no extra client library i
   `<Codex home>/nexus-astra.config.toml` — carries that tier's model selection, adds the OpenAI
   Docs MCP server, Context7 and Tavily, and keeps every connector app except GitHub out of the
   turn. [docs/nexus-agent-tools.md](docs/nexus-agent-tools.md) has the two copy-ready files, the
-  launch-prefix change, the private environment variables, and a short new-session smoke
-  procedure. The checkout's own `harness.config.json` does not select those profiles: they are
-  operator-native configuration the harness never reads or writes.
+  launch-prefix change, the optional private credentials — neither is needed: Context7 answers
+  anonymously and Tavily's keyless mode is the default — and a short new-session smoke procedure.
+  The checkout's own `harness.config.json` does not select those profiles: they are operator-native
+  configuration the harness never reads or writes.
 - **Observed limitations, stated rather than smoothed over:**
   - `codex exec`'s **exit codes are not documented**. The adapter therefore does not read an exit
     code as meaning anything by itself: it reads the event stream, and every other ending — a
