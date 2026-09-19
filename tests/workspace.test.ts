@@ -526,7 +526,7 @@ describe('a workspace that outlives its run', () => {
     }
 
     // A ledger written before identities were recorded: the same content without
-    // the sourceItem field, and a partially written one is no better.
+    // the sourceItem field, which is the recorded absence of an identity.
     const firstAttempt = {
       runId: prepared.runId,
       outcome: 'failed',
@@ -542,30 +542,24 @@ describe('a workspace that outlives its run', () => {
       createdAt: ledger.createdAt,
       attempts: [firstAttempt],
     };
-    const partialIdentity = {
-      ...withoutIdentity,
-      sourceItem: { type: 'jira', scope: FIXTURE_SOURCE_ITEM.scope },
-    };
 
-    for (const legacy of [withoutIdentity, partialIdentity]) {
-      await writeFile(
-        workspaceStatePath(fixture.workDir, prepared.workspaceId),
-        `${JSON.stringify(legacy)}\n`,
-        'utf8',
-      );
+    await writeFile(
+      workspaceStatePath(fixture.workDir, prepared.workspaceId),
+      `${JSON.stringify(withoutIdentity)}\n`,
+      'utf8',
+    );
 
-      const resolved = await resolveWorkspace(fixture.workDir, prepared.workspaceId, {
-        sourceItem: FIXTURE_SOURCE_ITEM,
-        sourceRoot: prepared.sourceRoot,
-      });
+    const resolved = await resolveWorkspace(fixture.workDir, prepared.workspaceId, {
+      sourceItem: FIXTURE_SOURCE_ITEM,
+      sourceRoot: prepared.sourceRoot,
+    });
 
-      expect(resolved.ok).toBe(false);
-      if (!resolved.ok) {
-        expect(resolved.problem).toContain('records no source item identity');
-        expect(resolved.problem).toContain('"sourceItem"');
-        expect(resolved.problem).toContain(firstAttempt.reportPath);
-        expect(resolved.problem).toContain('never adopts or migrates');
-      }
+    expect(resolved.ok).toBe(false);
+    if (!resolved.ok) {
+      expect(resolved.problem).toContain('records no source item identity');
+      expect(resolved.problem).toContain('"sourceItem"');
+      expect(resolved.problem).toContain(firstAttempt.reportPath);
+      expect(resolved.problem).toContain('never adopts or migrates');
     }
 
     // The repair the refusal names makes the same workspace continuable again.
@@ -579,6 +573,91 @@ describe('a workspace that outlives its run', () => {
       sourceRoot: prepared.sourceRoot,
     });
     expect(repaired.workspacePath).toBe(prepared.workspacePath);
+  });
+
+  it('refuses a ledger it did not write: unsupported versions, identities, and attempts are never reused', async () => {
+    const fixture = await createRepository();
+    const prepared = await prepareRun(fixture);
+    const ledger = await readWorkspaceState(fixture.workDir, prepared.workspaceId);
+    if (ledger === null) {
+      throw new Error('the fixture workspace has no ledger');
+    }
+    const ledgerPath = workspaceStatePath(fixture.workDir, prepared.workspaceId);
+    const attempt = {
+      runId: prepared.runId,
+      outcome: 'failed',
+      endedAt: '2026-01-01T00:00:00.000Z',
+      reportPath: `/runs/${prepared.runId}/result.json`,
+    };
+    const written = {
+      version: 1,
+      workspaceId: ledger.workspaceId,
+      sourceRoot: ledger.sourceRoot,
+      baseCommit: ledger.baseCommit,
+      branch: ledger.branch,
+      createdAt: ledger.createdAt,
+      sourceItem: FIXTURE_SOURCE_ITEM,
+      attempts: [attempt],
+    };
+
+    // Each record below is one this harness never writes: an unsupported
+    // version, an identity of the wrong shape, and an attempt whose fields a
+    // continuation and its guidance would read. None is cast into something
+    // usable, and none is repaired or migrated automatically.
+    const unreadable: readonly { readonly ledger: unknown; readonly problem: string }[] = [
+      {
+        ledger: { ...written, version: 2 },
+        problem: 'version',
+      },
+      {
+        ledger: { ...written, sourceItem: { type: 'jira', scope: FIXTURE_SOURCE_ITEM.scope } },
+        problem: 'sourceItem.id',
+      },
+      {
+        ledger: {
+          ...written,
+          attempts: [{ ...attempt, outcome: 'green' }],
+        },
+        problem: 'attempts.0.outcome',
+      },
+      {
+        ledger: { ...written, attempts: [{ runId: prepared.runId }] },
+        problem: 'attempts.0.endedAt',
+      },
+    ];
+
+    for (const entry of unreadable) {
+      await writeFile(ledgerPath, `${JSON.stringify(entry.ledger)}\n`, 'utf8');
+
+      const resolved = await resolveWorkspace(fixture.workDir, prepared.workspaceId, {
+        sourceItem: FIXTURE_SOURCE_ITEM,
+        sourceRoot: prepared.sourceRoot,
+      });
+
+      expect(resolved.ok).toBe(false);
+      if (!resolved.ok) {
+        // The refusal names the file and the field, and never tells an operator
+        // to add a value that is already there or to treat the record as absent.
+        expect(resolved.problem).toContain(ledgerPath);
+        expect(resolved.problem).toContain(entry.problem);
+        expect(resolved.problem).not.toContain('records no source item identity');
+      }
+      await expect(
+        reopenWorkspace(fixture.workDir, prepared.workspaceId, {
+          sourceItem: FIXTURE_SOURCE_ITEM,
+          sourceRoot: prepared.sourceRoot,
+        }),
+      ).rejects.toThrow(/cannot be continued/);
+    }
+
+    // A record this harness did write is read again: refusing the malformed ones
+    // above is a check on their shape, not a refusal of the workspace.
+    await writeFile(ledgerPath, `${JSON.stringify(written)}\n`, 'utf8');
+    const reopened = await reopenWorkspace(fixture.workDir, prepared.workspaceId, {
+      sourceItem: FIXTURE_SOURCE_ITEM,
+      sourceRoot: prepared.sourceRoot,
+    });
+    expect(reopened.attempt).toBe(2);
   });
 });
 
