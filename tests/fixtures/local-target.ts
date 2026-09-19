@@ -12,14 +12,13 @@
  * 2. The coding runtime: an executable named `codex` in a directory this module
  *    puts first on the `PATH` of the CLI it starts. The production adapter
  *    resolves `codex` from `PATH` and starts it with the adapter's own arguments
- *    — `--ask-for-approval never --strict-config exec`, the harness-owned
- *    permission profile, `--json -` (or with the target's own configured prefix
- *    in front of them) — so the only thing that is not the real runtime is the
- *    program that name resolves to: a real process that reads the real prompt
- *    from standard input, works in the real working copy, and writes the
- *    documented event stream. Nothing in `src/` knows it exists: there is no flag
- *    to reach it, and a CLI invocation that would not have run a runtime runs
- *    nothing.
+ *    — `--ask-for-approval never exec --sandbox danger-full-access --json -` (or
+ *    with the target's own configured prefix in front of them) — so the only
+ *    thing that is not the real runtime is the program that name resolves to: a
+ *    real process that reads the real prompt from standard input, works in the
+ *    real working copy, and writes the documented event stream. Nothing in
+ *    `src/` knows it exists: there is no flag to reach it, and a CLI invocation
+ *    that would not have run a runtime runs nothing.
  * 3. The built CLI, as a process: `node dist/cli.js`, the file `npm start` runs,
  *    started with its own environment and working directory.
  */

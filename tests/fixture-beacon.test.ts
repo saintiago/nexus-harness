@@ -28,14 +28,9 @@ const FIXTURE = path.join(repoRoot, 'tests', 'fixtures', 'fake-codex.mjs');
 const ADAPTER_ARGUMENTS = [
   '--ask-for-approval',
   'never',
-  '--strict-config',
   'exec',
-  '-c',
-  "permissions.nexus-workspace={description='Nexus coding turn: read everywhere, write only the " +
-    "retained working copy and temporary directories',filesystem={':root'='read'," +
-    "':workspace_roots'='write',':tmpdir'='write',':slash_tmp'='write'}}",
-  '-c',
-  "default_permissions='nexus-workspace'",
+  '--sandbox',
+  'danger-full-access',
   '--json',
   '-',
 ];

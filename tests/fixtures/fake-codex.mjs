@@ -3,11 +3,11 @@
  *
  * It is a real program that a real `codex` name resolves to, on the `PATH` of the
  * CLI the suite starts. The production adapter starts it exactly as it starts the
- * real runtime — `codex --ask-for-approval never --strict-config exec`, the
- * harness-owned permission profile, `--json -`, prompt on standard input — so
- * nothing in `src/` knows this file exists and no flag reaches it. Everything
- * above this boundary is real: the CLI process, its argument parsing, Git, the
- * target's own commands, the filesystem, the reports.
+ * real runtime — `codex --ask-for-approval never exec --sandbox danger-full-access
+ * --json -`, prompt on standard input — so nothing in `src/` knows this file
+ * exists and no flag reaches it. Everything above this boundary is real: the CLI
+ * process, its argument parsing, Git, the target's own commands, the filesystem,
+ * the reports.
  *
  * It works in the working copy it was started in and speaks the documented event
  * stream on standard output. Two records are kept for the suite to read back:

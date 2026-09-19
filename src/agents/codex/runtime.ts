@@ -16,88 +16,47 @@ export const CODEX_EXECUTABLE = 'codex';
 
 /**
  * How the runtime is invoked, as the documented `codex exec` form: never ask a
- * human for approval, write events to standard output as JSON Lines, keep writes
- * inside the working copy, and read the prompt from standard input. The working
- * root is the directory the process is started in, so it is not named here — it
- * would be a path on a command line, and only a Windows `.cmd` shim would have
- * to refuse it.
+ * human for approval, write events to standard output as JSON Lines, run the
+ * model-generated commands unsandboxed, and read the prompt from standard
+ * input. The working root is the directory the process is started in, so it is
+ * not named here — it would be a path on a command line, and only a Windows
+ * `.cmd` shim would have to refuse it.
  *
  * These are the adapter's own arguments and are not configurable: a configured
  * launch prefix is prepended to them and cannot replace them
- * (docs/WORKFLOW.md §1, "Agent contract"). A run is unattended, so an action
- * outside the turn's own permission policy has to fail the turn instead of
- * waiting for an approval nobody is there to give; nothing here bypasses the
- * policy or retries with a weaker one.
+ * (docs/WORKFLOW.md §1, "Agent contract"). The launch is fixed for every turn
+ * of a run: no retry, no fallback, and no widening after a failed turn.
  *
- * The write the harness needs is *inside* the retained working copy, Git
- * metadata included, and the installed CLI's legacy `--sandbox workspace-write`
- * does not grant it: that policy projects the working copy as a writable root
- * with its repository metadata carved out as read-only, so a turn cannot stage
- * or commit — `git add` fails on `.git/index.lock`. A scoped permission profile
- * states the same intent without that carveout, so the adapter defines one and
- * selects it through `-c` overrides: reads stay unrestricted, writes stay
- * confined to the working copy and to the system temporary directories, and
- * everything else is refused. The profile belongs to this invocation, so no
- * operator profile or global configuration has to change.
- *
- * `--strict-config` is the adapter's own argument too, and it is what makes an
- * unsupported permission configuration a visible failure: a CLI that did not
- * know `permissions` or `default_permissions` would otherwise ignore the
- * overrides silently and run under whatever policy its own defaults select.
- * With it, an unrecognized override is refused (`unknown configuration field
- * ... in -c/--config override`) before any turn starts, so the run fails rather
- * than quietly falling back to a broader or different policy. The legacy
- * `--sandbox` flag is deliberately not used: on this CLI it is an override that
- * wins over permission profiles, which is how the read-only `.git` carveout
- * would come back.
+ * `danger-full-access` is an explicit, documented choice, not a hidden one: a
+ * turn has to be able to stage and commit inside the retained working copy, and
+ * no narrower policy this CLI and platform pair was shown to grant it. The
+ * `workspace-write` policy — in its legacy `--sandbox` spelling and in its
+ * native `permissions`/`default_permissions` spelling — projects that copy with
+ * its Git metadata carved out read-only, so `git add` fails on
+ * `.git/index.lock` (HARN-2; reproduced by hand with the installed CLI,
+ * HARN-10). A turn therefore runs with the same unrestricted file and network
+ * access the harness's own configured `setup` and `checks` commands already
+ * have; README "Safety" states what that means, and no scoped variant is
+ * attempted.
  *
  * `--ask-for-approval never` is the CLI's global option and, on the installed
  * CLI (0.154.0), it is only accepted *before* the `exec` subcommand: the same
  * flag after `exec` is refused with `unexpected argument '--ask-for-approval'`.
  * It therefore sits at the front of the adapter's own arguments rather than
- * beside the permission overrides, and the launch prefix is still used exactly
- * as configured, with everything here appended to it.
+ * beside the policy, and the launch prefix is still used exactly as configured,
+ * with everything here appended to it. A run is unattended: the policy is
+ * `never`, so nothing waits for an approval nobody is there to give.
  */
-/** The name of the permission profile every turn defines and selects. */
-export const PERMISSION_PROFILE_NAME = 'nexus-workspace';
-/**
- * The permission profile the adapter defines, as a TOML value for the CLI's `-c`
- * configuration override: read anywhere, write only the working copy (which is
- * what the `:workspace_roots` entry names, Git metadata included) and the system
- * temporary directories. Anything else is outside the profile, and the runtime
- * refuses it rather than asking a human who is not there.
- *
- * The TOML here is written with literal strings and literal table keys (`'...'`)
- * on purpose: a basic string would put double quotes into the argument, and on
- * Windows a `codex.cmd` shim cannot be handed an argument like that at all
- * (`src/process/launch.ts` refuses it rather than altering it), which would break
- * every operator whose installed runtime is the npm `.cmd` shim.
- */
-export const PERMISSION_PROFILE_OVERRIDE =
-  `permissions.${PERMISSION_PROFILE_NAME}=` +
-  "{description='Nexus coding turn: read everywhere, write only the retained working copy " +
-  "and temporary directories',filesystem={':root'='read',':workspace_roots'='write'," +
-  "':tmpdir'='write',':slash_tmp'='write'}}";
-/** The override that makes {@link PERMISSION_PROFILE_OVERRIDE} the turn's policy. */
-export const DEFAULT_PERMISSIONS_OVERRIDE = `default_permissions='${PERMISSION_PROFILE_NAME}'`;
-/** The permission overrides, in the order the adapter passes them to the CLI. */
-export const PERMISSION_PROFILE_ARGUMENTS: readonly string[] = [
-  '-c',
-  PERMISSION_PROFILE_OVERRIDE,
-  '-c',
-  DEFAULT_PERMISSIONS_OVERRIDE,
-];
 /**
  * The complete suffix the adapter appends to the configured launch prefix, in
- * the order the CLI receives it; why each part is there, and why the legacy
- * `--sandbox` flag is not, is the comment above.
+ * the order the CLI receives it; why each part is there is the comment above.
  */
 export const CODEX_EXEC_ARGUMENTS: readonly string[] = [
   '--ask-for-approval',
   'never',
-  '--strict-config',
   'exec',
-  ...PERMISSION_PROFILE_ARGUMENTS,
+  '--sandbox',
+  'danger-full-access',
   '--json',
   '-',
 ];

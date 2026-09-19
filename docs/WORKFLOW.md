@@ -81,12 +81,12 @@ Here `--profile` chooses native configuration and `--model` explicitly selects t
 The adapter appends its existing suffix and supplies the task prompt on stdin:
 
 ```text
-codex --profile deepseek --model deepseek-flash --ask-for-approval never --strict-config exec -c permissions.nexus-workspace={...} -c default_permissions='nexus-workspace' --json -
+codex --profile deepseek --model deepseek-flash --ask-for-approval never exec --sandbox danger-full-access --json -
 ```
 
-The permission part is not configurability: it is the adapter's own fixed suffix. Each turn defines and selects a scoped Codex permission profile in the same invocation, so reads stay unrestricted and writes stay inside the working copy the runtime is started in — its Git metadata included, which is what lets the turn stage and commit — plus the system temporary directories. Nothing wider is used, nothing has to be added to the operator's global configuration or model profiles, and the legacy `--sandbox` flag is deliberately absent because it overrides permission profiles and carves `.git` back out as read-only. `--strict-config` keeps a runtime that does not understand the overrides a visible failure instead of a silently ignored configuration.
+The execution part is not configurability: it is the adapter's own fixed suffix. Each turn runs unsandboxed (`--sandbox danger-full-access`) and unattended (`--ask-for-approval never`, so nothing waits for a prompt), because a turn must be able to stage and commit in the retained working copy and the narrower `workspace-write` policy — in its `--sandbox` spelling or its native permission-profile spelling — leaves that copy's Git metadata read-only on Windows, where `git add` fails on `.git/index.lock` (HARN-2, HARN-10). That policy is an explicit, documented choice, not a hidden fallback: the suffix is the same for every turn, and nothing widens after a failure. A turn has the same file and network reach as the harness's own configured `setup` and `checks` commands; README "Safety" states that plainly.
 
-Do not put `exec`, a prompt, redirection, a shell expression, or an end-of-options `--` into the configured prefix. Do not use prefix options/wrappers that redirect the working directory, replace structured output, or override the adapter's execution/permission controls. This is a trusted launcher contract, not a general CLI policy language. Note that on Windows a runtime installed as a `.cmd` shim is handed the adapter's arguments through `cmd.exe`, which cannot carry a double quote or a percent sign; the adapter's own arguments therefore contain neither.
+Do not put `exec`, a prompt, redirection, a shell expression, or an end-of-options `--` into the configured prefix. Do not use prefix options/wrappers that redirect the working directory, replace structured output, or override the adapter's execution/permission controls. This is a trusted launcher contract, not a general CLI policy language.
 
 ### Agent launch and path rules
 
@@ -150,7 +150,7 @@ Do not require `CODEX_API_KEY`, an OpenAI login, or `auth.json` as universal pre
 
 Keep live tests outside default discovery, `npm test`, `npm run validate`, and CI. See the setup task for offline prerequisite tests and T16 evidence.
 
-The launcher's permission policy has its own opt-in, by-hand verification in README "Coding runtime": a disposable repository where a real turn commits its work, a sibling sentinel outside the working copy is refused, and the retained clone is inspected afterwards. It is not part of `npm run test:live`, and it is not evidence until it has been run.
+The launch also has a by-hand commit check in README "Coding runtime": a disposable repository where a real turn commits its work, with the retained clone inspected afterwards. It is not part of `npm test`, `npm run validate`, or CI, and it is not evidence until it has been run.
 
 ## 4. Loop semantics
 

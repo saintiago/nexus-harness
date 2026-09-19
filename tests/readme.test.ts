@@ -28,10 +28,6 @@ import { existsSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import {
-  DEFAULT_PERMISSIONS_OVERRIDE,
-  PERMISSION_PROFILE_OVERRIDE,
-} from '../src/agents/codex/runtime.js';
 import { loadHarnessConfig, loadTask, resolveWorkDir } from '../src/config/load.js';
 import type { RunReport } from '../src/shared/types.js';
 import {
@@ -408,12 +404,9 @@ describe('the documented disposable example', () => {
       expect(turns[0]?.argv).toEqual([
         '--ask-for-approval',
         'never',
-        '--strict-config',
         'exec',
-        '-c',
-        PERMISSION_PROFILE_OVERRIDE,
-        '-c',
-        DEFAULT_PERMISSIONS_OVERRIDE,
+        '--sandbox',
+        'danger-full-access',
         '--json',
         '-',
       ]);

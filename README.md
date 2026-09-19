@@ -522,15 +522,14 @@ rm -rf /tmp/nexus-demo                                        # nothing was clea
 Read this before pointing a run at anything you care about.
 
 - **Configured commands execute target-project code.** `setup` and `checks` are started as real
-  processes, in the working copy, with your user's privileges and no sandbox. The runtime's own
-  permission profile constrains the _runtime's_ file writes: reads anywhere, writes only inside the
-  working copy it is started in (Git metadata included, which is what lets a turn stage and commit)
-  and the system temporary directories, and no `--sandbox` flag (the legacy flag would override the
-  profile and carve `.git` back out as read-only). The harness always adds
-  `--ask-for-approval never`: an unattended run never waits for a prompt, so an action the profile
-  does not allow fails the turn instead of pausing for you. Neither the profile nor the approval
-  setting constrains your configured commands. Treat a target project's configuration the way you
-  would treat a script you are about to run.
+  processes, in the working copy, with your user's privileges and no sandbox. The coding turn is
+  **unsandboxed too**: it runs with `--sandbox danger-full-access` and `--ask-for-approval never`, so
+  it can read and write anywhere your user can, exactly like a configured command. That is a
+  deliberate, documented choice, not a fallback — the narrower `workspace-write` policy this CLI
+  offers on Windows leaves the working copy's `.git` read-only, so a turn cannot stage or commit its
+  work (`git add` fails on `.git/index.lock`; HARN-2). An unattended run still never waits for a
+  prompt. Treat a target project's configuration the way you would treat a script you are about to
+  run.
 - **A clone is not a sandbox.** The working copy is a separate directory and a separate branch, so
   your source checkout is not where the work happens — but the code in it runs as you, and it can
   write anywhere your user can.
@@ -611,8 +610,10 @@ the live check's own output, which this document does not restate. A deliberatel
 way (`run-20260916194015-9fce84bf`): a disposable task asking the turn to write
 `C:\Users\User\nexus-sandbox-probe.txt` produced three refused attempts
 (`System.UnauthorizedAccessException`, access denied), no file on disk, and a turn that reported the
-refusal and ended normally — nothing hung waiting for an approval nobody was there to give. It is a
-Codex CLI + DeepSeek result: not OpenAI-backed inference, and not Claude Code.
+refusal and ended normally — nothing hung waiting for an approval nobody was there to give. That
+exercise belongs to the sandboxed launch of that date: the unsandboxed launch this checkout now
+selects does not refuse such a write, and nothing re-verifies the older claim here. It is a Codex
+CLI + DeepSeek result: not OpenAI-backed inference, and not Claude Code.
 
 `npm run test:live` builds `dist/` and then runs `tests/live/codex-live-check.ts`: it prepares two
 disposable repositories, drives the built CLI against them with the selected runtime, and reads back
@@ -650,13 +651,11 @@ and only a read.
 
 **Not verified anywhere yet:**
 
-- **any live turn through the permission profile this checkout selects.** The profile's text is
-  accepted by the installed CLI's own configuration parser (offline, with `--strict-config`, and
-  with a deliberately invalid provider so no call could be made), and the adapter's launch is
-  asserted offline — but no live run has yet asked that runtime to stage and commit with this
-  launcher. The live evidence above predates this launch: it was produced with the old
-  `--sandbox workspace-write` suffix, whose read-only `.git` carveout is exactly what the profile
-  replaces. The hand verification in "Coding runtime" is what closes that gap.
+- **any live turn through the unsandboxed launch this checkout selects.** All of the live evidence
+  above predates it: it was produced with the previous `--sandbox workspace-write` suffix, and no
+  live run has yet asked a runtime started this way to stage and commit. The offline suite pins the
+  adapter's arguments; only the by-hand check in "Coding runtime" — a real turn asked to commit —
+  can close that gap, and it is not evidence until it has been run and read.
 - any live coding turn on Linux or macOS, and any macOS behaviour at all;
 - live runs through a provider other than the one configured on this machine, and any profile or
   gateway the operator has not installed;
@@ -677,43 +676,35 @@ single non-interactive turn on this platform and needs no extra client library i
 
 - **Interface:** `codex exec` (`@openai/codex`, version **0.154.0** when this was written, which
   publishes a `win32-x64` build). The adapter invokes exactly
-  `<your launch prefix> --ask-for-approval never --strict-config exec -c <permission profile> -c default_permissions='nexus-workspace' --json -`,
+  `<your launch prefix> --ask-for-approval never exec --sandbox danger-full-access --json -`,
   started **in the working copy**, with the prompt written to standard input. `--json` makes the
   runtime write one JSON event per line to standard output; its progress goes to standard error; the
   turn ends when the runtime exits. Nothing is interpolated and no shell is involved beyond what a
   Windows `.cmd` shim already requires.
-- **The permission policy is the harness's own.** Each turn defines and selects a scoped profile in
-  the same invocation: `permissions.nexus-workspace={description='...',filesystem={':root'='read',':workspace_roots'='write',':tmpdir'='write',':slash_tmp'='write'}}`
-  and `default_permissions='nexus-workspace'`, passed as `-c` configuration overrides. Reads stay
-  unrestricted, writes are the working copy the runtime is started in — which is where its Git
-  metadata lives, so `git add` and `git commit` work — plus the system temporary directories, and
-  everything else is refused. Nothing has to be added to your global configuration, your model
-  profiles, or an operator profile, and the profile is not a bypass: no
-  `--dangerously-bypass-approvals-and-sandbox`, no `danger-full-access`, no automatic approval
-  service, and no fallback. The legacy `--sandbox workspace-write` flag is deliberately not used,
-  because on this CLI it overrides permission profiles and projects the working copy with its
-  repository metadata carved out read-only — which is exactly the bug this profile replaces. The
-  profile is written with TOML literal strings (`'...'`) and no double quote or percent sign
-  anywhere, because a `codex.cmd` shim cannot be handed an argument containing one
-  (`src/process/launch.ts` refuses such an argument rather than altering it).
-- **Non-interactive by construction.** `--ask-for-approval never` is the adapter's own argument, not
-  a profile setting and not a configuration field, so a run never waits for a human: an action the
-  profile does not allow fails the turn and stops the run. `--strict-config` is the adapter's own
-  argument as well: a CLI that does not recognize a permission override refuses the run loudly
-  (`unknown configuration field ... in -c/--config override`) instead of silently ignoring it and
-  running under its own defaults. On the installed CLI the approval option is accepted **before**
-  the `exec` subcommand and rejected after it (`unexpected argument '--ask-for-approval'`), which is
-  why it leads the adapter's own arguments rather than sitting beside the `-c` overrides.
+- **The turn is deliberately unsandboxed.** `--sandbox danger-full-access` is the adapter's own
+  explicit selection, not a hidden fallback: a turn has to be able to stage and commit in the
+  retained working copy, and the narrower `workspace-write` policy — in its `--sandbox` spelling and
+  in its native `permissions`/`default_permissions` spelling — leaves that copy's Git metadata
+  read-only on this Windows installation, where `git add` fails on `.git/index.lock` (reproduced by
+  hand with the installed CLI; HARN-2, HARN-10). Model-generated commands therefore run the way your
+  `setup` and `checks` run: as you, with no sandbox and no network carve-out. The suffix is the same
+  for every turn; there is no `--dangerously-bypass-approvals-and-sandbox`, no retry with a wider
+  policy, and no automatic approval service.
+- **Non-interactive by construction.** `--ask-for-approval never` is the adapter's own argument, so a
+  run never waits for a human: a turn that would ask for an approval is refused instead of pausing,
+  and the failure stops the run. On the installed CLI the approval option is accepted **before** the
+  `exec` subcommand and rejected after it (`unexpected argument '--ask-for-approval'`), which is why
+  it leads the adapter's own arguments rather than sitting beside `--sandbox`.
 - **Official references consulted:** [Non-interactive mode](https://learn.chatgpt.com/docs/non-interactive-mode),
   [CLI commands and flags](https://learn.chatgpt.com/docs/developer-commands?surface=cli) (`exec`,
-  `--json`, `-c/--config`, `--strict-config`, `--sandbox`, `-o/--output-last-message`, `resume`),
+  `--json`, `--sandbox`, `-o/--output-last-message`, `resume`),
   [permissions](https://learn.chatgpt.com/docs/permissions) and
   [agent approvals and security](https://learn.chatgpt.com/docs/agent-approvals-security) for the
-  permission-profile contract, [AGENTS.md](https://learn.chatgpt.com/docs/agent-configuration/agents-md),
-  and the `openai/codex` documentation served through the Context7 MCP server. `resume` and
-  `--output-last-message` exist and are deliberately unused: every top-level turn is one fresh
-  invocation, so continuing a session can never quietly buy extra turns. `--sandbox` also exists and
-  is deliberately unused, for the reason given above.
+  permission and sandbox model the policy sits in,
+  [AGENTS.md](https://learn.chatgpt.com/docs/agent-configuration/agents-md), and the `openai/codex`
+  documentation served through the Context7 MCP server. `resume` and `--output-last-message` exist
+  and are deliberately unused: every top-level turn is one fresh invocation, so continuing a session
+  can never quietly buy extra turns.
 - **Local setup and authentication (yours to do, outside this repository):**
   `npm install --global @openai/codex`, then `codex login` (or `codex login --with-api-key`, or set
   `CODEX_API_KEY`) for the ordinary OpenAI-backed defaults. Credentials live where the CLI keeps
@@ -744,60 +735,78 @@ single non-interactive turn on this platform and needs no extra client library i
     npm packaging for the `win32-x64` optional dependency has had reported breakage (for example
     `openai/codex` issues #12931 and #17432). If `codex` is missing or will not start, the run
     fails with a launch error naming the executable; that is a stop, not something to retry.
-  - The runtime's sandbox has network access **off** by default, so a turn cannot install packages.
-    `setup` commands run outside that sandbox and are the right place for installs.
+  - The unsandboxed turn can reach the network, as your own shell can: the harness does not rely on
+    a turn being unable to install something. `setup` remains the place for installs — it runs
+    before the turns, and its failure stops the run before any paid work.
   - `--cd` is not used: the working root is the process's own working directory, so a working-copy
     path that a Windows shim cannot carry as an argument can never fail a turn.
-- **Verify the permission policy once, by hand (opt-in).** The offline suite proves what the adapter
-  sends and what the installed CLI's configuration parser accepts; only a real launch proves what
-  the installed runtime enforces. After a change to the launch, run both steps once, with the
-  account and configuration this machine uses. Neither is part of `npm test`, `npm run validate`, or
-  CI, and neither is a claim that any of this has already been run.
+- **Verify the launch once, by hand (opt-in).** The offline suite proves what the adapter sends; only
+  a real launch proves what the installed runtime and platform do with it. After a change to the
+  launch, run both steps once, with the account and configuration this machine uses. Neither is part
+  of `npm test`, `npm run validate`, or CI, and neither is a claim that either has already been run.
 
   1. `npm run test:live -- --config harness.config.json` — the opt-in live check. It drives the built
      CLI against two disposable repositories with the selected launch and reads its assertions out
      of the retained working copies. Its repair exercise is a second coding turn in the same
-     retained working copy, so both a fresh launch and a later launch run under the profile.
-  2. The commit-and-refusal exercise below, which asks a real turn to commit its work and to write a
-     sibling sentinel outside the working copy — the part no offline test can decide. Keep the
-     `agent` block your own `harness.config.json` selects; the example uses the checked-in DeepSeek
-     selection.
+     retained working copy, so a fresh launch and a later launch over one clone both run.
+  2. The commit check below: a real turn asked to change a tracked file and commit it — the part no
+     offline test can decide about a real runtime. Run it from this repository's checkout: it takes
+     the `agent` block from this checkout's `harness.config.json`, and its source, the run's output
+     root, and the probe's own files are three separate paths outside any system temp directory.
 
 ```powershell
-$probe = Join-Path $env:TEMP 'nexus-permission-probe'
-New-Item -ItemType Directory -Force "$probe\src" | Out-Null
-Set-Content "$probe\src\hello.txt" 'hello'
-git -C $probe init -q
-git -C $probe config user.email probe@local
-git -C $probe config user.name probe
-git -C $probe add -A
-git -C $probe commit -qm base
+$probe  = Join-Path $env:USERPROFILE ("nexus-harness-probe-" + (Get-Date -Format 'yyyyMMdd-HHmmss'))
+$source = Join-Path $probe 'source'
+New-Item -ItemType Directory -Force (Join-Path $source 'src') | Out-Null
+Set-Content (Join-Path $source 'src\committed.txt') 'placeholder'
+git -C $source init -q
+git -C $source config user.email probe@local
+git -C $source config user.name probe
+git -C $source add -A
+git -C $source commit -qm base
+
+# `workDir` resolves against this file, so the run's output is a sibling of the
+# source, not inside it. The checks pass on the clean baseline and after the
+# turn's commit, and go red if the turn leaves its edit uncommitted. The agent
+# block is added through ConvertFrom-Json/ConvertTo-Json, which escapes the
+# Windows paths in it instead of pasting them into a hand-written string.
+$config = @'
+{ "workDir": "./run", "maxRepairs": 0, "taskTimeoutMinutes": 20, "commandTimeoutMinutes": 5,
+  "setup": [],
+  "checks": [
+    ["git", "ls-files", "--error-unmatch", "src/committed.txt"],
+    ["git", "diff", "--quiet", "HEAD"]
+  ],
+  "agent": null }
+'@ | ConvertFrom-Json
+$config.agent = (Get-Content harness.config.json -Raw | ConvertFrom-Json).agent
+$config | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $probe 'probe.config.json')
+
 @'
-{ "workDir": "./.harness-runs", "maxRepairs": 0, "taskTimeoutMinutes": 20, "commandTimeoutMinutes": 5,
-  "setup": [], "checks": [["git", "diff", "--quiet"], ["git", "diff", "--cached", "--quiet"]],
-  "agent": { "runtime": "codex", "command": ["codex", "--profile", "deepseek", "--model", "deepseek-flash"] } }
-'@ | Set-Content "$probe\probe.config.json"
-@'
-{ "id": "permission-probe", "title": "Commit inside the retained working copy",
-  "description": "Create src/committed.txt whose only line is: committed by the coding turn. Stage and commit it with the message 'probe: commit from the coding turn'. Then try to create SENTINELPATH, a path outside this working copy, and report whether the write was refused. Change nothing else, and do not work around a refusal.",
-  "acceptanceCriteria": ["src/committed.txt holds the required line.", "The commit 'probe: commit from the coding turn' is on the current branch.", "git status --porcelain is empty.", "No file exists at the sentinel path outside this working copy."] }
-'@.Replace('SENTINELPATH', "$probe\.harness-runs\sentinel.txt") | Set-Content "$probe\probe.task.json"
-npm start -- run --repo $probe --config "$probe\probe.config.json" --task "$probe\probe.task.json"
+{ "id": "commit-probe", "title": "Commit inside the retained working copy",
+  "description": "Replace the only line of src/committed.txt with: committed by the coding turn. Stage and commit the change with the message 'probe: commit from the coding turn'. Change nothing else.",
+  "acceptanceCriteria": ["src/committed.txt holds the required line and is committed.", "The commit 'probe: commit from the coding turn' is on the current branch.", "git status --porcelain is empty."] }
+'@ | Set-Content (Join-Path $probe 'probe.task.json')
+
+npm run build
+npm start -- run --repo $source --config (Join-Path $probe 'probe.config.json') --task (Join-Path $probe 'probe.task.json')
 ```
 
 ```powershell
-$clone = (Get-Item "$probe\.harness-runs\workspaces\*" | Select-Object -First 1).FullName
-git -C $clone log --oneline -2                     # the baseline, then the turn's own commit
-git -C $clone log -1 --format='%an <%ae>'          # Nexus Agent <nexus@local>
-git -C $clone status --porcelain                   # empty: the turn's work is committed
-Test-Path "$probe\.harness-runs\sentinel.txt"      # False: the write outside the working copy was refused
+$clone = (Get-Item (Join-Path $probe 'run\workspaces\*') | Select-Object -First 1).FullName
+git -C $clone log --oneline -2                          # the baseline, then the turn's own commit
+git -C $clone log -1 --format='%s | %an <%ae>'          # the message, and Nexus Agent <nexus@local>
+git -C $clone show HEAD:src/committed.txt               # the line the turn committed
+git -C $clone status --porcelain --untracked-files=all  # empty: the turn left nothing behind
 ```
 
-A run that ends `passed` with both commits present, a clean worktree, and no sentinel is the
-evidence; a run that cannot commit fails its own checks and stops. `source run` continues an
-existing clone across runs by its `harness-ws-*` pointer (docs/WORKFLOW.md §6) and launches turns
-through the same adapter, so the launch is the one verified here. Nothing cleans the probe up:
-delete its directory when you have read what you need from it.
+The checks decide whether an edit was left uncommitted; a commit is read from `git show` and
+`git log` above, not inferred from a clean diff — `git diff` would never show an untracked file, so
+the example makes the turn change a file that is tracked from the start. A turn that cannot stage or
+commit (the HARN-2 failure) leaves its edit visible and stops the run. Continuing a workspace reuses
+the same launch: the repair exercise in step 1 is already a later turn in one retained copy, and
+`source run` continues a clone across runs through the issue's `harness-ws-*` pointer
+(docs/WORKFLOW.md §6). Nothing cleans `$probe` up.
 
 ## Module ownership
 

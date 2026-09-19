@@ -78,7 +78,8 @@ export function promptFor(request: AgentTurnRequest): string {
       '  or other tooling to make the work look finished. Fix the cause, not the way it is checked.',
       '- Do not change how the project is built or checked, and do not touch the harness that started',
       '  you: its configuration and the commands it runs live outside this working copy, and they are',
-      '  not yours to change. Writes outside this working copy are refused by the sandbox.',
+      '  not yours to change. This turn is not sandboxed, so nothing else stops a write outside it:',
+      '  do not make one.',
       `- Do not modify the source checkout this copy came from (${sourceRoot}), or any other` +
         ' checkout, and do not push, open pull requests, publish packages, deploy, or upload the work',
       '  anywhere: this turn’s work stays in this working copy.',
