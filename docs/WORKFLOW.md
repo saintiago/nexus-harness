@@ -257,10 +257,12 @@ project = "SAM1"
 AND issuetype = "Task"
 AND labels = "harness-task"
 AND status = "To Do"
-ORDER BY created ASC, key ASC
+ORDER BY priority DESC, created ASC, key ASC
 ```
 
 Do not expose arbitrary JQL parsing/composition or a timestamp cursor in this increment. Using a different label is enough to isolate a disposable test queue. The label plus ready status is an explicit authorization to spend agent capacity in the trusted configured repository.
+
+Jira's priority scheme resolves `priority DESC`, so the highest-priority ready issue comes first, with the oldest creation and then the issue key breaking ties. Jira does the sorting and the connector keeps the order of the answer across pages, whatever the issue keys would suggest: a priority change takes effect on the next scan and never reorders an active task or a batch that was already discovered.
 
 ## 6. Jira issue convention
 
