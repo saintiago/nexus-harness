@@ -28,7 +28,7 @@ import { hostSignals } from './signals.js';
 /** How the terminal is told a completed run ended, and where it left things. */
 function describeOutcome(result: RunTaskResult, maxRepairs: number): string {
   const { run, workspace, status, reason } = result;
-  return [
+  const lines = [
     `run ${run.runId}: ${status}`,
     `  reason     ${reason}`,
     `  repairs    ${String(result.repairsUsed)} of ${String(maxRepairs)} repair turns used`,
@@ -37,7 +37,14 @@ function describeOutcome(result: RunTaskResult, maxRepairs: number): string {
       ? '  workspace  no working copy was prepared (see the reason above)'
       : `  workspace  ${workspace.workspacePath} (branch ${workspace.branch})`,
     `  report     ${result.reportPath}`,
-  ].join('\n');
+  ];
+  // A required save that failed is named here rather than left in the timeline:
+  // the run's own evidence is kept, and the ledger a later attempt would read
+  // does not hold this attempt.
+  if (result.workspaceLedgerProblem !== null) {
+    lines.push(`  ledger     ${result.workspaceLedgerProblem}`);
+  }
+  return lines.join('\n');
 }
 
 /** The documented exit code of a run that reached a status. */

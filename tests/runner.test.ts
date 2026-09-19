@@ -52,7 +52,11 @@ import type { WorkspaceExpectation } from '../src/workspace/reopen.js';
 import { reopenWorkspace } from '../src/workspace/reopen.js';
 import { allocateRunDirectory } from '../src/workspace/run-directory.js';
 import type { RunDirectory } from '../src/workspace/run-directory.js';
-import { readWorkspaceState, recordWorkspaceAttempt } from '../src/workspace/state.js';
+import {
+  readWorkspaceState,
+  recordWorkspaceAttempt,
+  workspaceStatePath,
+} from '../src/workspace/state.js';
 import { cleanupTempDirectories, createTempDir } from './support.js';
 
 afterEach(cleanupTempDirectories);
@@ -788,6 +792,67 @@ describe('a run that continues a workspace', () => {
     const ledger = await readWorkspaceState(fixture.workDir, workspaceId);
     expect(ledger?.attempts.map((attempt) => attempt.outcome)).toEqual(['passed', 'passed']);
     expect(ledger?.attempts[1]?.runId).toBe(result.run.runId);
+  }, 120_000);
+});
+
+describe('a run whose attempt cannot be recorded in its workspace ledger', () => {
+  it('keeps the report and its check evidence, and names the ledger that did not record it', async () => {
+    const fixture = await createFixture();
+    const agent = fakeAgent(fixture);
+    const failure = 'the ledger could not be replaced: the file is read-only';
+
+    const result = await runTask(
+      request(fixture, configuration(fixture)),
+      dependencies(agent.turn, {
+        recordWorkspaceAttempt: async () => {
+          throw new WorkspaceError(failure);
+        },
+      }),
+    );
+
+    expect(result.status).toBe('passed');
+    const workspaceId = result.workspace?.workspaceId ?? '';
+    const ledgerPath = workspaceStatePath(fixture.workDir, workspaceId);
+    expect(result.workspaceLedgerProblem).toContain(ledgerPath);
+    expect(result.workspaceLedgerProblem).toContain(failure);
+
+    // Nothing the run observed is lost to the failed save: the report, the check
+    // round that decided the run, and the working copy are all where they were
+    // written.
+    const report = await readReport(result.reportPath);
+    expect(report.status).toBe('passed');
+    expect(report.attempts.at(-1)?.checks?.outcome).toBe('passed');
+    expect(await readText(path.join(result.workspace?.workspacePath ?? '', 'app.txt'))).toBe(
+      `${BASELINE_TEXT}${IMPLEMENTED_TEXT}`,
+    );
+    const timeline = await readText(report.runLog);
+    expect(timeline).toContain('workspace ledger: this attempt could not be recorded');
+    // And the ledger really does not hold the attempt: the failure is reported
+    // rather than rounded into a save that succeeded.
+    const ledger = await readWorkspaceState(fixture.workDir, workspaceId);
+    expect(ledger?.attempts).toEqual([]);
+  }, 120_000);
+
+  it('records the attempt and reports no problem when the save succeeds', async () => {
+    const fixture = await createFixture();
+    const agent = fakeAgent(fixture);
+    // A red baseline ends this run before any coding turn, so the assertion is
+    // about the attempt record a normal ending writes.
+    const config = configuration(fixture, {
+      checks: [command(fixture, 'check-1', 'need', 'app.txt', 'text the baseline does not have')],
+    });
+
+    const result = await runTask(request(fixture, config), dependencies(agent.turn));
+
+    expect(result.status).toBe('failed');
+    expect(result.workspaceLedgerProblem).toBeNull();
+    const ledger = await readWorkspaceState(fixture.workDir, result.workspace?.workspaceId ?? '');
+    expect(ledger?.attempts).toHaveLength(1);
+    expect(ledger?.attempts[0]).toMatchObject({
+      runId: result.run.runId,
+      outcome: 'failed',
+      reportPath: result.reportPath,
+    });
   }, 120_000);
 });
 

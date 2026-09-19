@@ -637,6 +637,25 @@ async function attempt(
           );
     }
 
+    // The workspace's own ledger is what the next attempt reads for its attempt
+    // number, its tier, and its guidance. A record that could not be written is
+    // not a detail to log and climb past: this attempt keeps its report, its
+    // logs, and its working copy, and intake stops here rather than starting
+    // another automatic attempt against a ledger that does not hold this one
+    // (docs/spec.md §6: local persistence failures stop intake).
+    if (run.workspaceLedgerProblem !== null) {
+      await updateReceipt(file, { problem: `workspace ledger: ${run.workspaceLedgerProblem}` });
+      return stopWith(
+        state,
+        `${item.ref.key}: the attempt's own report, logs, and working copy are kept (report ` +
+          `${run.reportPath}), but its workspace ledger could not be updated with this attempt, ` +
+          `so its result was not published and no further automatic attempt is started against ` +
+          `it: ${run.workspaceLedgerProblem} Fix the ledger by hand ` +
+          '(docs/implement-workspace-continuation.md), then move the issue back to the ready ' +
+          'status to continue the same workspace.',
+      );
+    }
+
     // What a passed attempt produced is delivered before the issue is told it
     // passed, so the published result can carry the pull request it produced. A
     // delivery failure is not a coding failure: the run's own report and logs

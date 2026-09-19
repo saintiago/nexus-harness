@@ -320,6 +320,17 @@ export interface RunTaskResult {
    * summarizing the working copy again.
    */
   readonly changes: ChangeSummary;
+  /**
+   * Why the attempt could not be recorded in its workspace ledger, or `null`
+   * when it was. The ledger is what a later attempt reads for its attempt
+   * number, its tier, and its guidance, so a save that failed is never treated
+   * as one that succeeded: the run's report, logs, and working copy are kept as
+   * they were written, this field names the ledger path and what failed, and a
+   * caller that would continue the workspace automatically — the source intake's
+   * escalation ladder above all — must stop instead of starting another attempt
+   * against a ledger that does not hold this one (docs/spec.md §6).
+   */
+  readonly workspaceLedgerProblem: string | null;
   /** The written final report: `<runDir>/result.json`. */
   readonly reportPath: string;
 }

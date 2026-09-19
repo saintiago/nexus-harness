@@ -170,6 +170,7 @@ function resultFor(
   reason = `the run ended ${status}`,
   cancellation: { termination: 'confirmed' | 'unconfirmed'; problem: string | null } | null = null,
   workspace: PreparedWorkspace | null = null,
+  workspaceLedgerProblem: string | null = null,
 ): RunTaskResult {
   return {
     run: runDirectoryAt(runDir),
@@ -190,6 +191,7 @@ function resultFor(
           }
         : null,
     changes: summarizeChanges({ baseCommit: 'base', paths: [] }),
+    workspaceLedgerProblem,
     reportPath: path.join(runDir, 'result.json'),
   };
 }
@@ -1255,6 +1257,51 @@ describe('the escalation ladder', () => {
     expect(fixture.requests.map((request) => request.tier)).toEqual(['flash']);
     expect(fixture.completions).toHaveLength(1);
   });
+
+  it('stops the climb when the attempt could not be recorded in its workspace ledger', async () => {
+    const workDir = await createTempDir();
+    const ledgerPath = workspaceStatePath(workDir, 'run-1');
+    const fixture = createFixture({
+      workDir,
+      tiers: TIERS,
+      scans: [[candidateFor('1')]],
+      run: (_task, _call, runDir) =>
+        Promise.resolve(
+          resultFor(
+            runDir,
+            'failed',
+            'the checks after the implementation turn did not pass',
+            null,
+            preparedWorkspaceFor(runDir),
+            `the workspace ledger ("${ledgerPath}") could not be updated with this attempt: ` +
+              'the file could not be replaced: the disk is read-only',
+          ),
+        ),
+    });
+
+    const summary = await runSource(fixture.context, null);
+
+    // The ladder stops instead of climbing: the next attempt would read this
+    // workspace's ledger for its number, its tier, and its guidance, and the
+    // ledger does not hold the attempt that just ran.
+    expect(summary.outcome).toBe('stopped');
+    expect(summary.attempted).toBe(1);
+    expect(fixture.requests).toHaveLength(1);
+    expect(fixture.completions).toEqual([]);
+    // The operator gets the failed path, what failed, and where the run's own
+    // evidence was kept.
+    expect(summary.problem).toContain(ledgerPath);
+    expect(summary.problem).toContain('the disk is read-only');
+    expect(summary.problem).toContain(path.join(workDir, 'run-1', 'result.json'));
+    expect(summary.problem).toContain('no further automatic attempt');
+    // The receipt keeps the real local result and records the failed save.
+    const receipt = await readReceipt(receiptFilePath(workDir, refFor('1')));
+    expect(receipt?.outcome).toBe('failed');
+    expect(receipt?.resultPath).toBe(path.join(workDir, 'run-1', 'result.json'));
+    expect(receipt?.feedback).toBe('pending');
+    expect(receipt?.problem).toContain('workspace ledger:');
+    expect(receipt?.problem).toContain(ledgerPath);
+  });
 });
 
 describe('an issue that points at a workspace', () => {
@@ -1539,6 +1586,32 @@ describe('an issue that points at a workspace', () => {
     expect(reason).toContain('"sourceItem"');
     expect(reason).toContain(`/runs/${workspaceId}/result.json`);
     expect(reason).toContain('never adopts or migrates');
+    expect(fixture.log).not.toContain('claim:SAM1-2');
+    expect(fixture.log).not.toContain('run:SAM1-2');
+  });
+
+  it('refuses a ledger this harness did not write, before any claim', async () => {
+    const workDir = await createTempDir();
+    const { workspaceId, sourceRoot } = await preparedWorkspaceOnDisk(workDir);
+    const ledgerPath = workspaceStatePath(workDir, workspaceId);
+    const written = JSON.parse(await readFile(ledgerPath, 'utf8')) as Record<string, unknown>;
+    // An unsupported version is not read as version 1, and nothing is migrated
+    // into place: the issue is refused with the file and the reason.
+    await writeFile(ledgerPath, `${JSON.stringify({ ...written, version: 2 })}\n`, 'utf8');
+    const fixture = createFixture({
+      workDir,
+      scans: [[candidateFor('2', 'SAM1-2')]],
+      prepare: (candidate) => preparedFor(candidate, [workspaceId]),
+      preflight: () => Promise.resolve({ sourceRoot, baseCommit: 'base' }),
+    });
+
+    const summary = await runSource(fixture.context, null);
+
+    expect(summary).toMatchObject({ outcome: 'completed', attempted: 0, refused: 1 });
+    const reason = fixture.refusals[0]?.reason ?? '';
+    expect(reason).toContain('cannot be read');
+    expect(reason).toContain(ledgerPath);
+    expect(reason).toContain('version');
     expect(fixture.log).not.toContain('claim:SAM1-2');
     expect(fixture.log).not.toContain('run:SAM1-2');
   });

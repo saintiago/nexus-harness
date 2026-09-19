@@ -88,6 +88,13 @@ written before identities were recorded, or by a run that did not come from a so
 with the repair: add a `sourceItem` object to that ledger, taking `type`, `scope`, `id`, and `key`
 from the workspace's own first attempt report (`sourceRef` there records them), and scan again.
 
+The ledger is read as the record this harness wrote, not as loose JSON: its version must be 1, an
+identity it records must carry all four of its fields, and every attempt entry must carry the run
+ID, outcome, end, and report path that the guidance and the next attempt's number are read from. A
+record of another shape — an unsupported version, a partially written identity, an attempt with a
+field missing or of the wrong kind — is refused before anything is read through it, and is never
+repaired, migrated, or read as something it is not.
+
 ## Eligibility
 
 | pointer labels (as the item was just re-read) | receipt | decision |
@@ -128,6 +135,11 @@ moved to the review status. Nothing local is created for it.
   attempt writes the workspace's repository-local commit identity (Nexus Agent \<nexus@local\>,
   commit signing disabled) before its checks and turns run, so a continuation commits under the same
   identity as the attempts before it.
+- An attempt is recorded in its workspace's ledger as it ends. If that record cannot be written, the
+  attempt keeps its report, its logs, and its working copy, its receipt records the failed path, and
+  intake stops instead of climbing the ladder or taking the next issue, with no result published for
+  the attempt: the next attempt's number, its tier, and its guidance are all read from that ledger,
+  so none is started from one that does not hold the attempt that ran.
 - The workspace must not be deleted while an issue points at it.
 
 ## Attempts and escalation
