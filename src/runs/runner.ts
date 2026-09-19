@@ -130,10 +130,10 @@ export async function runTask(
 
   /**
    * The source check's Git readings are bounded like everything else the run
-   * spends its time on: its own remaining task time is the limit, and the run's
-   * stop request stops one that is running. A check stopped there is reported as
-   * the stop it is — a cancellation, or the deadline — rather than as a refusal
-   * of the source it never finished reading.
+   * spends its time on: each reading runs under what is left of the run's task
+   * time when it starts, and the run's stop request stops one that is running. A
+   * check stopped there is reported as the stop it is — a cancellation, or the
+   * deadline — rather than as a refusal of the source it never finished reading.
    */
   let source: SourcePreflight;
   try {
@@ -141,7 +141,8 @@ export async function runTask(
       repoPath: request.repoPath,
       workDir: request.workDir,
       bounds: {
-        timeoutMs: Math.max(1, remainingMs()),
+        deadlineMs,
+        now: dependencies.now,
         ...(callerStop === undefined ? {} : { stop: callerStop }),
       },
     });
@@ -402,7 +403,8 @@ export async function runTask(
   let identityStop: WorkspaceStepStop | null = null;
   try {
     await dependencies.configureWorkspaceIdentity(workspace.workspacePath, {
-      timeoutMs: Math.max(1, remainingMs()),
+      deadlineMs,
+      now: dependencies.now,
       ...(callerStop === undefined ? {} : { stop: callerStop }),
     });
   } catch (cause) {

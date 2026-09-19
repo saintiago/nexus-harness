@@ -44,7 +44,7 @@ Setup/check commands remain nonempty string arrays with a nonblank executable fi
 
 All setup/check commands execute in the retained task working copy. Load configuration once before execution. Credential values and coding-provider account setup are not JSON fields. Source configuration names environment variables; it never contains the Jira token itself.
 
-The harness's own Git steps are bounded too, and are not configuration: inside a run each one gets what is left of `taskTimeoutMinutes` and the run's own stop request, and a reading with no deadline to spend — the source preflight, a continuation's branch check, the final comparison — runs under a fixed finite bound (docs/spec.md §3). A Git stopped at its bound is reported as that stop, with whether it was confirmed.
+The harness's own Git steps are bounded too, and are not configuration: inside a run each reading runs under what is left of `taskTimeoutMinutes` when it starts, with the run's own stop request, and a reading with no deadline to spend — the source preflight, a continuation's branch check, the final comparison — runs under a fixed finite bound (docs/spec.md §3). A Git stopped at its bound is reported as that stop, with whether it was confirmed.
 
 ### Agent contract
 

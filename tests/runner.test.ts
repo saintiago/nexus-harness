@@ -2522,14 +2522,17 @@ describe('a run that runs out of task time', () => {
     await expect(attempt).rejects.toThrow(
       /No run directory, no working copy, and no report were created/,
     );
-    // The check is the run's own: it is given what is left of the task time as
-    // the bound its Git readings run under, and no stop request (the request has
+    // The check is the run's own: it is given the task deadline and the clock
+    // each reading's limit is read from, and no stop request (the request has
     // none), so a stalled reading cannot outlive the run's deadline.
     expect(preflights).toEqual([
       {
         repoPath: fixture.repo,
         workDir: fixture.workDir,
-        bounds: { timeoutMs: minutes(1) },
+        bounds: {
+          deadlineMs: CLOCK_START.getTime() + minutes(1),
+          now: expect.any(Function),
+        },
       },
     ]);
     expect(agent.requests).toEqual([]);
@@ -3132,7 +3135,13 @@ describe('the collaborators a run is given', () => {
     expect(result.reason).toBe('every configured check passed after the implementation turn');
     expect(result.reportPath).toBe(path.join(run.runDir, 'result.json'));
 
-    expect(preflights).toEqual([{ repoPath, workDir, bounds: { timeoutMs: minutes(60) } }]);
+    expect(preflights).toEqual([
+      {
+        repoPath,
+        workDir,
+        bounds: { deadlineMs: clock.getTime() + minutes(60), now: expect.any(Function) },
+      },
+    ]);
     expect(allocations).toEqual([workDir]);
     // The working copy was given its commit identity before the baseline ran.
     expect(identities).toEqual([workspace.workspacePath]);

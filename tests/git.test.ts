@@ -317,9 +317,11 @@ describe('a Git command under a bound', () => {
     const source = await createSource();
     const fake = await installFakeGit(source.parent);
     const started = Date.now();
+    // A frozen clock keeps the bound the harness hands over exact.
+    const clock = new Date();
 
     const result = await withFakeGit(fake, { id: 'hang', mode: 'hang' }, () =>
-      runGit(['status'], source.repo, { timeoutMs: 3000 }),
+      runGit(['status'], source.repo, { deadlineMs: clock.getTime() + 3000, now: () => clock }),
     );
     const record = await readFakeGitRecord(fake.state, 'hang');
     registerFixture(record);
@@ -344,13 +346,43 @@ describe('a Git command under a bound', () => {
     await expectGone(record.child ?? 0);
   }, 60_000);
 
+  it('gives each reading what is left of the run, not the budget its step started with', async () => {
+    const source = await createSource();
+    const fake = await installFakeGit(source.parent);
+    // The run's deadline is two seconds away, and a second and a half passes
+    // between the two readings: the second runs under what is left of the
+    // deadline — half a second — and not under the whole budget the first had.
+    const clock = new Date();
+    const bounds = { deadlineMs: clock.getTime() + 2000, now: () => clock };
+
+    const first = await withFakeGit(fake, { id: 'first', mode: 'hang' }, () =>
+      runGit(['status'], source.repo, bounds),
+    );
+    registerFixture(await readFakeGitRecord(fake.state, 'first'));
+    clock.setTime(clock.getTime() + 1500);
+    const second = await withFakeGit(fake, { id: 'second', mode: 'hang' }, () =>
+      runGit(['status'], source.repo, bounds),
+    );
+    registerFixture(await readFakeGitRecord(fake.state, 'second'));
+
+    expect(first.outcome).toBe('timed-out');
+    expect(first.timeoutMs).toBe(2000);
+    expect(second.outcome).toBe('timed-out');
+    expect(second.timeoutMs).toBe(500);
+  }, 60_000);
+
   it('stops a hanging command when the run is stopped, and says which stop it was', async () => {
     const source = await createSource();
     const fake = await installFakeGit(source.parent);
     const controller = new AbortController();
+    const clock = new Date();
 
     const pending = withFakeGit(fake, { id: 'cancelled', mode: 'hang' }, () =>
-      runGit(['status'], source.repo, { timeoutMs: 60_000, stop: controller.signal }),
+      runGit(['status'], source.repo, {
+        deadlineMs: clock.getTime() + 60_000,
+        now: () => clock,
+        stop: controller.signal,
+      }),
     );
     const record = await readFakeGitRecord(fake.state, 'cancelled');
     registerFixture(record);
@@ -379,13 +411,17 @@ describe('a Git command under a bound', () => {
       const fake = await installFakeGit(source.parent);
       const previousPath = process.env.PATH;
       const previousConfig = process.env.FAKE_GIT;
+      const clock = new Date();
       process.env.PATH = `${fake.bin}${path.delimiter}${previousPath ?? ''}`;
       process.env.FAKE_GIT = JSON.stringify({
         stateDir: fake.state.dir,
         mode: 'hang',
         id: 'stubborn',
       });
-      const pending = runGit(['status'], source.repo, { timeoutMs: 3000 });
+      const pending = runGit(['status'], source.repo, {
+        deadlineMs: clock.getTime() + 3000,
+        now: () => clock,
+      });
       const record = await readFakeGitRecord(fake.state, 'stubborn');
       registerFixture(record);
 
@@ -421,12 +457,13 @@ describe('workspace steps that use Git', () => {
     const run = await allocateRunDirectory(source.workDir);
     const fake = await installFakeGit(source.parent);
     const started = Date.now();
+    const clock = new Date();
 
     const error = await failureOf(() =>
       withFakeGit(fake, { id: 'prepare', mode: 'hang' }, () =>
         prepareWorkspace(run, preflight, {
-          deadlineMs: Date.now() + 3000,
-          now: () => new Date(),
+          deadlineMs: clock.getTime() + 3000,
+          now: () => clock,
         }),
       ),
     );
@@ -458,10 +495,14 @@ describe('workspace steps that use Git', () => {
   it('ends a final comparison that hangs at its bound, with the stop it recorded', async () => {
     const prepared = await createPreparedWorkspace();
     const fake = await installFakeGit(prepared.parent);
+    const clock = new Date();
 
     const error = await failureOf(() =>
       withFakeGit(fake, { id: 'inspect', mode: 'hang' }, () =>
-        inspectWorkspaceChanges(prepared.workspace, { timeoutMs: 3000 }),
+        inspectWorkspaceChanges(prepared.workspace, {
+          deadlineMs: clock.getTime() + 3000,
+          now: () => clock,
+        }),
       ),
     );
     const record = await readFakeGitRecord(fake.state, 'inspect');

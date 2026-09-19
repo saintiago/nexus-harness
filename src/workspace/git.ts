@@ -8,14 +8,15 @@
  * source never rewrites its index. Git is invoked nowhere else.
  *
  * Every Git invocation is bounded and stoppable, through the same process
- * runner the configured commands use (`process/invocation.ts`): a run's phases
- * give it what is left of the task time and the run's own stop request, and a
- * reading that happens outside a run — a source preflight, a workspace
- * verification before a continuation, the final reading of what a run left
- * behind — gives it {@link GIT_COMMAND_TIMEOUT_MS} and the caller's stop
- * request when there is one. A stalled Git therefore ends at its applicable
- * bound rather than holding the harness, and the result says which bound it was
- * and whether the tree it started was confirmed stopped.
+ * runner the configured commands use (`process/invocation.ts`): a run's own
+ * phases give it the run's deadline and clock, so each reading runs under what
+ * is left of the task time when that reading starts, and the run's own stop
+ * request; a reading that happens without a run deadline — a source command's
+ * preflight, a workspace verification before a continuation, the final reading
+ * of what a run left behind — runs under {@link GIT_COMMAND_TIMEOUT_MS} instead,
+ * with the caller's stop request when there is one. A stalled Git therefore ends
+ * at its applicable bound rather than holding the harness, and the result says
+ * which bound it was and whether the tree it started was confirmed stopped.
  */
 import { realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
@@ -52,10 +53,23 @@ const MAX_LISTED_PATHS = 3;
  */
 export const GIT_COMMAND_TIMEOUT_MS = 5 * 60_000;
 
-/** How one Git invocation is bounded: a limit, and the run's stop request when there is one. */
+/**
+ * How the Git readings of one step are bounded.
+ *
+ * A step inside a run gives the run's task deadline and the clock it is read
+ * with: every invocation the step makes then runs under what is left of the run
+ * when that invocation starts, so a step that reads several times — the source
+ * check reads up to four times, the commit identity writes three settings —
+ * never spends more than the run has left. A step with no run deadline to spend
+ * leaves both out, and every invocation then runs under
+ * {@link GIT_COMMAND_TIMEOUT_MS}. Both are given together, or neither is; a step
+ * carries the run's own stop request when it has one.
+ */
 export interface GitRunBounds {
-  /** The limit, in milliseconds; omitted means {@link GIT_COMMAND_TIMEOUT_MS}. */
-  readonly timeoutMs?: number;
+  /** The run's task deadline, in epoch milliseconds. */
+  readonly deadlineMs?: number;
+  /** The clock the deadline is read with — the same clock the run itself uses. */
+  readonly now?: () => Date;
   /**
    * Asked to stop the invocation, and everything it started, when the run is
    * stopped by its caller. A request that has already arrived stops the
@@ -127,7 +141,7 @@ export async function runGit(
 ): Promise<GitResult> {
   let stdout = '';
   let stderr = '';
-  const timeoutMs = Math.max(1, Math.floor(bounds.timeoutMs ?? GIT_COMMAND_TIMEOUT_MS));
+  const timeoutMs = limitMsOf(bounds);
   const result = await runInvocation({
     command: ['git', ...args],
     cwd,
@@ -161,6 +175,19 @@ export async function runGit(
     terminationProblem: result.terminationProblem,
     timeoutMs: result.timeoutMs,
   };
+}
+
+/**
+ * The limit one invocation runs under: what is left of the run's task deadline
+ * when the invocation starts, or the finite default when the step has no run
+ * deadline to spend. It is read again for every invocation, so a step that makes
+ * several readings cannot hand the later ones a limit the run no longer has.
+ */
+function limitMsOf(bounds: GitRunBounds): number {
+  if (bounds.deadlineMs === undefined || bounds.now === undefined) {
+    return GIT_COMMAND_TIMEOUT_MS;
+  }
+  return Math.max(1, Math.floor(bounds.deadlineMs - bounds.now().getTime()));
 }
 
 /**
@@ -237,7 +264,9 @@ export const WORKSPACE_IDENTITY: readonly (readonly [string, string])[] = [
  * clone's own `.git/config`; the caller's Git configuration is never touched. A
  * setting that cannot be written is a {@link WorkspaceError} naming the working
  * copy and the setting, so an attempt never runs a coding turn with an unknown
- * commit identity.
+ * commit identity. The bounds are the run's own, exactly as preparation's are:
+ * a setting the harness has to stop carries its stop, so a caller that reports
+ * why the run ended can say whether that stop was confirmed.
  */
 export async function configureWorkspaceIdentity(
   workspacePath: string,

@@ -196,8 +196,9 @@ further would separate one decision from itself: `runs/runner.ts` (the loop), `s
   and `status.ts` are the plumbing they share, including the repository-local commit identity
   (`configureWorkspaceIdentity`) a run writes into a working copy before any check or coding turn.
   Every Git invocation is bounded and stopped through `process/`: a run's phases give it what is
-  left of the task time and the run's stop request, and a reading without a run deadline runs under
-  a finite default bound (`git.ts`), so a stalled Git cannot hold the harness past either.
+  the run's deadline and clock — each reading runs under what is left of the task time when it
+  starts — and the run's stop request, and a reading without a run deadline runs under a finite
+  default bound (`git.ts`), so a stalled Git cannot hold the harness past either.
 - **Does not own:** the coding turns, the checks, the report, or the policy that decides whether an
   item continues a workspace (that is `sources/eligibility.ts`). The ledger is derived state: a run's
   own report stays the authority on what the run did.

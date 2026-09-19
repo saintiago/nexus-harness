@@ -193,10 +193,11 @@ caller supplies.
 - `taskTimeoutMinutes` bounds the **whole run**: setup, coding turns, and checks together.
 - `commandTimeoutMinutes` bounds each **single** configured command, capped by the task time left
   when it starts — the remaining task time always wins.
-- Every Git step is bounded too: inside a run it gets the remaining task time and the run's own
-  stop request, and a reading outside one — the source preflight, a continuation's branch check, the
-  final comparison — runs under a fixed finite bound. A Git stopped at its limit is reported as that
-  stop, with whether it was confirmed, instead of being waited for.
+- Every Git step is bounded too: inside a run each reading gets what is left of the task time when
+  it starts, and the run's own stop request; a reading with no run deadline to spend — the source
+  preflight, a continuation's branch check, the final comparison — runs under a fixed finite bound.
+  A Git stopped at its limit is reported as that stop, with whether it was confirmed, instead of
+  being waited for.
 - A limit that expires is a **`failed` run** with a `timeout` record saying which limit expired, in
   which phase, and whether the execution it stopped was confirmed to have ended. It is never
   reported as a red check round, and an exit code the harness cut short means nothing either way.

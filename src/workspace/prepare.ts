@@ -243,12 +243,14 @@ export interface PrepareWorkspaceBounds {
  *
  * Preparation is bounded by the run's remaining task time, and by the run's own
  * stop request when it has one: both are read again before each step, and a step
- * is not started once either has arrived. Every Git step runs under both, too:
- * one that is already running is stopped with the tree it started, at the
- * deadline or when the run is stopped, rather than left to hold the run past
- * them. A Git stopped mid-write can leave a partial clone, which is why what it
- * wrote is kept for inspection and never reused — and why the stop it recorded,
- * confirmed or not, travels back to the caller that reports why the run ended.
+ * is not started once either has arrived. Every Git invocation a step makes runs
+ * under both as well, with its limit read from the run's clock when that
+ * invocation starts: one that is already running is stopped with the tree it
+ * started, at the deadline or when the run is stopped, rather than left to hold
+ * the run past them. A Git stopped mid-write can leave a partial clone, which is
+ * why what it wrote is kept for inspection and never reused — and why the stop
+ * it recorded, confirmed or not, travels back to the caller that reports why the
+ * run ended.
  *
  * `sourceItem` is the external item this workspace is being created for, when
  * the run came from a source: the identity every later pointer label is checked
@@ -266,14 +268,13 @@ export async function prepareWorkspace(
   const branch = `${RUN_BRANCH_PREFIX}${run.runId}`;
 
   /**
-   * What the step that is about to start is given: what is left of the run's
-   * task time, in milliseconds, or the reason the step must not start at all.
-   * The run's own stop request is read first: a caller who stopped the run is
-   * told that, rather than told about a deadline in the same window. The limit
-   * it returns bounds that step's Git invocation, so the step a deadline expires
-   * inside is stopped with the tree it started instead of being left to finish.
+   * The bounds the step that is about to start runs under: the run's own task
+   * deadline and clock, which every Git invocation of that step reads when it
+   * starts, and the run's stop request — or the reason the step must not start at
+   * all. The run's own stop request is read first: a caller who stopped the run
+   * is told that, rather than told about a deadline in the same window.
    */
-  const startBudget = (step: string): number => {
+  const startBudget = (step: string): GitRunBounds => {
     if (bounds.stop?.aborted === true) {
       throw new WorkspaceError(
         [
@@ -283,52 +284,30 @@ export async function prepareWorkspace(
         ].join('\n'),
       );
     }
-    const remaining = bounds.deadlineMs - bounds.now().getTime();
-    if (remaining > 0) {
-      return Math.max(1, remaining);
+    if (bounds.deadlineMs - bounds.now().getTime() > 0) {
+      return {
+        deadlineMs: bounds.deadlineMs,
+        now: bounds.now,
+        ...(bounds.stop === undefined ? {} : { stop: bounds.stop }),
+      };
     }
+    const overdue = bounds.now().getTime() - bounds.deadlineMs;
     throw new WorkspaceError(
       [
-        `the run's task deadline passed ${String(-remaining)} ms before ${step}, so preparation stopped there.`,
+        `the run's task deadline passed ${String(overdue)} ms before ${step}, so preparation stopped there.`,
         'What preparation had already written is kept in the run directory, but it is not a usable ' +
           'working copy and must not be reused.',
       ].join('\n'),
     );
   };
 
-  /**
-   * The bounds of the step that was just given its budget: that limit, and the
-   * run's own stop request when it has one.
-   */
-  const stepBounds = (timeoutMs: number): GitRunBounds => ({
-    timeoutMs,
-    ...(bounds.stop === undefined ? {} : { stop: bounds.stop }),
-  });
-
   try {
     startBudget('the destination check');
     await assertWorkspaceDestinationEmpty(run);
-    await assertSourceAtRecordedBase(
-      source,
-      stepBounds(startBudget('reading the source repository')),
-    );
-    await cloneCommittedObjects(
-      run,
-      source,
-      stepBounds(startBudget('cloning the committed objects')),
-    );
-    await createRunBranch(
-      run,
-      branch,
-      source.baseCommit,
-      stepBounds(startBudget('creating the run branch')),
-    );
-    await assertRecordedWorkspace(
-      run,
-      source,
-      branch,
-      stepBounds(startBudget('verifying the working copy')),
-    );
+    await assertSourceAtRecordedBase(source, startBudget('reading the source repository'));
+    await cloneCommittedObjects(run, source, startBudget('cloning the committed objects'));
+    await createRunBranch(run, branch, source.baseCommit, startBudget('creating the run branch'));
+    await assertRecordedWorkspace(run, source, branch, startBudget('verifying the working copy'));
   } catch (cause) {
     throw incompleteRunError(run, messageOf(cause), cause, workspaceStopOf(cause));
   }
