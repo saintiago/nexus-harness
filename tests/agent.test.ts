@@ -101,9 +101,10 @@ async function waitUntilGone(pid: number, timeoutMs = 10_000): Promise<boolean> 
 
 /**
  * Every stand-in runtime still running is asked to end by itself, and waited
- * for, before the temporary directories are removed: a process that still holds
- * its working directory open would keep the directory from being removed, and
- * would outlive the test that started it.
+ * for, before the temporary directories are removed: a process the test started
+ * must not outlive it, and a removal that races one is a failure the test did not
+ * find (measured on the host this was written for: a working directory on its
+ * own does not refuse the removal, so waiting is about the process, not a lock).
  *
  * A recorded process is released rather than stopped, and a stop is only the
  * last resort for one whose own beacon still answers. A PID is not an identity
@@ -128,14 +129,25 @@ afterEach(async () => {
   }
 
   for (const one of registered) {
+    // The release is asked of the process itself: its own beacon stops answering
+    // when it has ended, where a PID would only say that *something* holds the
+    // number now.
     await waitForBeaconSilence(one, 5_000);
+    // Read, never named: this waits out a process that is still exiting, and a
+    // recycled PID that answers it can only cost this wait, never a signal.
+    if (await waitUntilGone(one.pid, 5_000)) {
+      continue;
+    }
     // Names the PID only while the beacon that process recorded still answers
     // for it; a record without a token is never named again.
-    await endFixtureTree({
+    const stopped = await endFixtureTree({
       pid: one.pid,
       token: one.token,
       beaconDirectory: one.beaconDirectory,
     });
+    if (stopped) {
+      await waitUntilGone(one.pid);
+    }
   }
   await cleanupTempDirectories();
 });

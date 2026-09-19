@@ -31,7 +31,7 @@ import { createRequire } from 'node:module';
 import { connect } from 'node:net';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { createTempDir, repoRoot, writeJsonFile } from '../support.js';
+import { createTempDir, removeWithRetry, repoRoot, writeJsonFile } from '../support.js';
 
 /**
  * The shared fixture beacon module, as a URL a fixture program written into a
@@ -912,17 +912,7 @@ export async function endFixtureTree(record: FixtureProcessRecord): Promise<bool
 
 /** Removes a fixture directory, tolerating a file another process still holds. */
 export async function removeDirectory(directory: string, attempts = 5): Promise<void> {
-  for (let attempt = 1; ; attempt += 1) {
-    try {
-      await rm(directory, { recursive: true, force: true });
-      return;
-    } catch (cause) {
-      if (attempt >= attempts) {
-        throw cause;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 100 * attempt));
-    }
-  }
+  await removeWithRetry(async () => rm(directory, { recursive: true, force: true }), attempts);
 }
 
 // ---------------------------------------------------------------------------
