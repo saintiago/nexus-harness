@@ -312,7 +312,7 @@ continuation that cannot be returned is refused before it is claimed. Nothing he
 force-updates, adopts a branch, or discards a commit, and the delivery step's own exact-revision
 check is unchanged.
 
-**Corrected in HARN-35, second repair.** The first attempt above left one case open: the strict
+**Corrected in HARN-35, during its repair.** The first attempt above left one case open: the strict
 reading applied only to a checkout that was not on its recorded branch, so a retained workspace
 whose own recorded branch held uncommitted work still started another coding turn on it. A coding
 turn is now started only from the workspace's own committed state: the reading a caller makes

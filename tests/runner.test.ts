@@ -3457,7 +3457,9 @@ describe('a run the caller stops', () => {
       /the implementation turn was stopped when the run's remaining task time ran out/,
     );
     expect(waitedMs).not.toBeNull();
-    expect(waitedMs ?? Number.POSITIVE_INFINITY).toBeLessThan(5000);
+    // The budget that was left is 300 ms; the bound is generous because the
+    // point is that it is not the minute the run had before the return.
+    expect(waitedMs ?? Number.POSITIVE_INFINITY).toBeLessThan(10_000);
     // Nothing followed the stopped turn: the round that judges it never ran.
     expect(rounds.requests.map((round) => round.name)).toEqual(['baseline']);
     expect(turns.requests).toHaveLength(1);

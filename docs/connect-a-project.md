@@ -193,7 +193,10 @@ From here Nexus is autonomous, one ticket at a time, and needs no further setup:
    the claim, and the `harness-ws-<workspaceId>` pointer label on the issue.
 2. The baseline round runs `setup` and every `check`; a red baseline stops a fresh attempt before
    any coding turn. A green baseline starts the implementation turn, and a completed red round
-   starts repair turns within the shared ladder instead of giving up.
+   starts repair turns within the shared ladder instead of giving up. Every turn is asked to finish
+   with the work it wants the next turn to build on committed: a working copy left holding
+   uncommitted work stops the run before the next agent, names the paths, and leaves finishing them
+   by hand to the operator.
 3. A passed attempt is delivered: its branch is pushed and its pull request opened or updated with
    the operator's own Git/`gh` credential.
 4. Native auto-merge is armed for that exact head before Nexus Lens reviews it, and the review
