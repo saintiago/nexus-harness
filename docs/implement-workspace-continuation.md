@@ -149,9 +149,13 @@ moved to the review status. Nothing local is created for it.
   expected to be red, and refusing to start would make continuation useless. A baseline that could
   not be executed still stops the run, unchanged.
 - Only the post-turn round decides the outcome.
-- Attempts commit locally, so the branch is expected to move forward from the recorded base. The
-  attempt refuses a checkout that is not on the branch the ledger records; the recorded base, not
-  `HEAD`, is what the report compares against.
+- Attempts commit locally, so the branch is expected to move forward from the recorded base. A
+  checkout is returned to the branch the ledger records before every coding turn and before the
+  round that judges it: a clean checkout on a branch of its own whose commit descends from that
+  branch is fast-forwarded to it and checked out, the committing branch keeps its commit, and a
+  dirty, detached, divergent, or branchless checkout stops before the turn or the check with the
+  branch names and the manual action. Nothing is reset, force-updated, or discarded. The recorded
+  base, not `HEAD`, is what the report compares against.
 - A coding turn is encouraged to commit small, meaningful pieces locally as it works. Every
   attempt writes the workspace's repository-local commit identity (Nexus Agent \<nexus@local\>,
   commit signing disabled) before its checks and turns run, so a continuation commits under the same
@@ -278,10 +282,30 @@ ledgers written before this change are read as they are, and the published attem
 rung within the cycle's own ladder. The reviewer is a separate, independent selection and is
 untouched by this change.
 
+**Corrected in HARN-35.** A coding turn works with Git write access, metadata included, so it can
+commit on a branch of its own and leave the checkout there. Nothing used to read that: a repair turn
+started wherever the turn before it had left the checkout, and a continuation refused a workspace
+whose checkout was on any other branch. Both made the safe delivery refusal — what would be
+published is the recorded branch, and what the checks validated is the checkout
+([spec.md](spec.md) §7) — the end of the road, and only a person could reconcile the two branches.
+Now a checkout that is not on the branch its ledger records is read against what it would take to
+return it: it must be clean (no staged, unstaged, or untracked path), and the commit it is at must
+descend from the recorded branch's tip. When both hold, the recorded branch is fast-forwarded to
+that commit and checked out — in that order — before every coding turn and before the round that
+judges it, so a continuation and a repair turn start on the immutable recorded branch, the commit
+the turn made stays on the branch it made it on, and the revision the checks validate is the
+revision a delivery step publishes. Everything else stops before the turn, the check, or the
+delivery, naming both branch names and what an operator can do by hand: a dirty checkout, a
+detached HEAD, a commit the recorded branch does not descend from, and a recorded branch the
+workspace does not hold. `reopenWorkspace` reads the same standing without changing anything, so a
+continuation that cannot be returned is refused before it is claimed. Nothing here resets,
+force-updates, adopts a branch, or discards a commit, and the delivery step's own exact-revision
+check is unchanged.
+
 ## Verification
 
 - Offline: workspace allocation and resolution, reopening a workspace whose attempts committed,
-  refusal when the checkout is not on its recorded branch, the eligibility table, the
+  refusal when the checkout cannot be returned to its recorded branch, the eligibility table, the
   red-baseline exception, the tier loop and its cycle-local index (a continuation whose earlier cycle
   spent the whole ladder starts again at the first tier with the returned guidance; a run that ended
   before any coding turn climbs nothing; a rung whose allowance is unspent does not hand over to the
@@ -298,6 +322,16 @@ untouched by this change.
   reopening unchanged, and a ticket whose key changes still continuing the workspace its pointer
   names; `npm run validate` green, on Linux as well as Windows for anything that touches process or
   path handling.
+  The return to the recorded branch is covered on its own: a clean branch of a turn's own whose
+  commit descends from the recorded branch is returned to it — the recorded branch takes the
+  commit, the branch the turn made keeps it, and a dirty checkout on the recorded branch itself is
+  left exactly as it is — while a dirty branch of a turn's own, a commit the recorded branch does
+  not descend from, a detached checkout, and a recorded branch the workspace does not hold are each
+  refused with both branch names and the manual action and move nothing. The same coverage exists
+  through the runner (a repair turn asked to work after the implementation turn left a branch of its
+  own, and a red branch of its own that stops the run before any check after the turn) and through a
+  source batch (a passed return delivered on the revision the checks validated, and a dirty branch
+  of a turn's own stopped and told to the issue).
 - Live: **partly run, 2026-09-19.** A real Jira-driven continuation has happened: run
   `run-20260919115244-4ff8eedf` claimed HARN-2, reopened workspace `run-20260919100148-e48a9ab0`
   (same clone, same recorded base `36f62fd`, attempt 2), and the attempt's work is the local commit

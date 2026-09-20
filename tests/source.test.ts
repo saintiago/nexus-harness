@@ -5083,7 +5083,11 @@ describe('the source commands through the CLI', () => {
             ['commit', '--quiet', '--message', 'write the marker'],
             request.workspacePath,
           );
-          await writeFile(path.join(request.workspacePath, 'notes.md'), 'never committed\n', 'utf8');
+          await writeFile(
+            path.join(request.workspacePath, 'notes.md'),
+            'never committed\n',
+            'utf8',
+          );
           return { summary: 'left a dirty branch of its own' };
         },
       };

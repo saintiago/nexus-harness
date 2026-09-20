@@ -257,6 +257,12 @@ read from the checkout `--repo` names, so the repository a run clones describes 
    **continuation** — a source issue moved back to the ready status whose pointer label names a
    workspace this machine has — reopens that clone instead of making a new one, on its recorded
    branch and base, keeping the local commits and uncommitted changes earlier attempts left.
+   A checkout a turn left on a branch of its own is read against that recorded branch: when it is
+   clean and its commit descends from the recorded branch's tip, the harness fast-forwards the
+   recorded branch to it and checks it out — the commit stays on the branch the turn made it on —
+   and a dirty, detached, divergent, or branchless checkout stops the run before the next turn or
+   check with both branch names and what to do by hand. Nothing is reset, force-updated, or
+   discarded.
 4. **The baseline round**: every `setup` command, then every `checks` command, in the order the
    configuration lists them. A red baseline stops a fresh run before any coding turn — the task is
    not attempted on a project that is already failing. A continuation may start red, because its
@@ -267,7 +273,9 @@ read from the checkout `--repo` names, so the repository a run clones describes 
    same selection, and every turn is asked to make small, meaningful local commits and to finish
    with the relevant work committed where practical. A commit is not a check result: the round below
    decides.
-6. **A post-agent round** after every turn: `setup` again, then every check.
+6. **A post-agent round** after every turn: `setup` again, then every check. The checkout is
+   returned to its recorded branch before the round reads it, so the checks judge the revision that
+   branch holds.
 7. **The final report**, written once, plus the change summary of the retained working copy.
 
 The run ends at the first of: a green round, a red round with no repair allowance left, a failure
@@ -567,11 +575,16 @@ uncommitted files is **refused**, not committed for you, and a branch with no co
 workspace's base has nothing to publish. A working copy left checked out at another revision than
 its recorded branch is **refused** as well: what would be pushed is the recorded branch, and what
 the checks validated is the revision the copy is at, so nothing is switched or adopted and the
-failure names both revisions. The pull request is found by repository, head branch, and
-base branch — the one open match is updated, a closed or merged one is refused instead of edited,
-and one is created only when no match exists at all. Later committed work updates the same branch
-and the same pull request, because a continued attempt reuses the workspace and its branch. The
-delivery step itself never merges the pull request, force-pushes, or changes Jira status. The
+failure names both revisions. Before the checks that judge a turn, the run returns a clean checkout
+to its recorded branch when it can — a fast-forward and a checkout, with the commit a turn made on a
+branch of its own kept on that branch — and a dirty, detached, divergent, or branchless checkout
+stops the run before any check, with both branch names and what to do by hand; that is what keeps
+the validated revision and the published branch the same. The pull request is found by repository,
+head branch, and base branch — the one open match is updated, a closed or merged one is refused
+instead of edited, and one is created only when no match exists at all. Later committed work
+updates the same branch and the same pull request, because a continued attempt reuses the workspace
+and its branch. The delivery step itself never merges the pull request, force-pushes, or changes
+Jira status. The
 separately configured review-to-completion path can carry it further: once the current head carries
 the configured approval and check, it works through native GitHub auto-merge, verifies the
 configured post-merge workflows on the merge commit, and moves the item to Done; a definitive
@@ -1183,7 +1196,13 @@ Read this before pointing a run at anything you care about.
   workspace, with the refusals that keep an existing name safe (a name another item's workspace, a
   directory or ledger without trustworthy ownership, or this ticket's own unpointed workspace
   already holds), a changed display key still continuing the workspace its pointer names, and an
-  existing `run-*` pointer reopening unchanged.
+  existing `run-*` pointer reopening unchanged. The branch a checkout is on is covered too, with
+  real temporary Git repositories: a repair turn starts on the branch its workspace records after
+  the implementation turn committed on a branch of its own, a clean commit that descends from the
+  recorded branch is returned to it — the recorded branch takes the commit and the branch the turn
+  made keeps it — an implementation turn that leaves a dirty, divergent, detached, or branchless
+  checkout stops the run before any check with both branch names and the manual action, and a
+  continuation whose checkout cannot be returned is refused before it is claimed.
 - the optional GitHub delivery step, against disposable Git repositories with a local bare
   destination and a stand-in `gh` on `PATH`: the branch really moves to the destination, the pull
   request is created with the issue reference and the check summary, a repeated delivery finds and
@@ -1191,7 +1210,10 @@ Read this before pointing a run at anything you care about.
   uncommitted work is refused with an actionable message and nothing is pushed, and a refused `gh`
   invocation fails with what it said while the run's own report and logs stay as they were. The
   source CLI path runs the same way, including the link the issue's comment then carries, and a
-  configuration without `delivery` still asks GitHub for nothing. Nothing there needs a GitHub
+  configuration without `delivery` still asks GitHub for nothing. It is also covered end to end
+  after a turn committed on a branch of its own: the recorded branch is returned to the revision
+  the checks validated, and the pull request carries exactly that revision; a turn that leaves a
+  checkout the run cannot return stops before any check and pushes nothing. Nothing there needs a GitHub
   account, a token, or a network.
 - the optional Nexus Lens review path, against a fake Jira queue, a fake GitHub API, and a real
   generated RSA test key (`tests/reviews.test.ts`): eligibility and the pointer-to-branch pull

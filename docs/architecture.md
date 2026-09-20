@@ -21,6 +21,20 @@ check reconciliation. It validates containment and ledger ownership against the 
 source identity and the connected project's canonical local root; it never reopens the coding
 checkout for a turn or changes its ledger.
 
+**Revision: 2026-09-20 — a repair turn stays on the recorded branch.** A coding turn can commit on a
+branch of its own and leave the checkout there, and the harness's checks and delivery are about the
+branch the workspace's ledger records. `workspace/branch.ts` is the one module that reads a
+checkout against that branch and returns it: a clean checkout whose commit descends from the
+recorded branch's tip is fast-forwarded to it and checked out, with the committing branch keeping
+its commit, and a dirty, detached, divergent, or branchless checkout is refused with both branch
+names and the manual action. The runner does that before every coding turn and before the round
+that judges it, and `workspace/reopen.ts` verifies the same standing read-only before a
+continuation is claimed. Nothing is reset, force-updated, adopted, or discarded, and
+`delivery/github.ts` still refuses a recorded branch that is not the revision the checks validated
+(HARN-17). [spec.md](spec.md) §2 and §7 define the behavior, [WORKFLOW.md](WORKFLOW.md) §4, §6, and
+§8 the input, and [implement-workspace-continuation.md](implement-workspace-continuation.md) the
+contract.
+
 ## 1. Keep the existing application
 
 Retain the modules introduced by the completed tasks:
@@ -32,7 +46,7 @@ src/
   shared/             # small data contracts, and the one message helper
   process/            # starting, bounding, and stopping one invocation
   checks/             # one setup/check round and what a result means
-  workspace/          # Git, retained working copies, the ledger, the change summary
+  workspace/          # Git, retained working copies, the ledger, the recorded branch, the change summary
   runs/               # implementation/check/repair coordination and how a run ends
   reporting/          # result.json and log persistence
   sources/            # the source contract, receipts, guidance, the coordinator
@@ -67,7 +81,7 @@ cli → queue (the serial loop: the intake step, the review scan, the completion
 
 Only `agents/codex/` talks to a coding runtime. Only `workspace/` prepares the working copies a coding attempt runs in; `reviews/view.ts` reuses the same bounded Git invocation (`workspace/git.ts`) to pin the read-only repository view a reviewer inspects. Only `process/` starts or stops a process, and `checks/round.ts` says what a configured command's result means. Report file writes belong in `reporting/`.
 
-`delivery/github.ts` is the one module that pushes a branch or drives `gh`. It starts every command through `process/`, refuses a working copy that still holds uncommitted work, refuses to publish a recorded branch that is not the revision the working copy is checked out at — the checks validated that working copy — treats GitHub as the record of whether a pull request exists, and never merges, force-pushes, or changes an issue's state. The CLI builds it from the configuration and hands it to the source coordinator; the runner never sees it, and a run without it behaves exactly as before.
+`delivery/github.ts` is the one module that pushes a branch or drives `gh`. It starts every command through `process/`, refuses a working copy that still holds uncommitted work, refuses to publish a recorded branch that is not the revision the working copy is checked out at — the checks validated that working copy, and the runner returns a clean checkout to the recorded branch before those checks, so this refusal is the boundary for a state that could not be returned — treats GitHub as the record of whether a pull request exists, and never merges, force-pushes, or changes an issue's state. The CLI builds it from the configuration and hands it to the source coordinator; the runner never sees it, and a run without it behaves exactly as before.
 
 `reviews/` is the one module that reviews a ticket's pull request, and the only one that talks to GitHub as a GitHub App. `github.ts` owns the App JWT, the installation token, and the repository reads and writes; `view.ts` owns the local repository view the reviewer inspects: it clones the ticket's retained workspace, detaches the clone, pins it at the reviewed head, and checks after the turn that it is still that clean snapshot; `reviewer.ts` owns the reviewer prompt, the one bounded Codex turn that answers it, and the verdict file it validates; `diff.ts` owns how a finding is positioned in the pull request's diff; `scan.ts` owns one scan or watch, the ticket's own intake receipt when this output directory holds one, the view's preparation and post-turn check, and what it publishes; `contract.ts` is the ordinary data and failures they share, including the `ReviewViewSource` boundary the scan uses. The CLI builds it from the configuration, the Jira connection, and the two credentials the configuration names. It never claims a Jira item, transitions one, or posts a comment, it never opens the working copy a coding attempt used, and the runner never sees it.
 
@@ -113,7 +127,7 @@ Follow the specification's [Rely on Git](spec.md#rely-on-git) principle. `worksp
 
 Prefer reading facts from Git over maintaining equivalent harness state. Store references only where a concrete caller needs them; do not build a second version-control system through custom checkpoint catalogs, duplicated commit graphs, or mandatory per-attempt HEAD tracking. Workspace safety and exclusive execution are harness responsibilities; additional rules about how an agent arranges its local commits require an explicit behavioral task.
 
-Mechanically, that means: before any check or coding turn runs, the runner gives the working copy a repository-local commit identity (`user.name`, `user.email`, and commit signing disabled), so a turn can commit without an ambient Git identity and no global or system Git setting is written. `reopenWorkspace` verifies the branch its ledger records; a `HEAD` ahead of the recorded base is ordinary local work, not a refusal. Every attempt keeps the workspace's recorded base as the comparison base, and a continued run's report carries that base rather than a source checkout that may have advanced since. The workspace clone has no remote: a turn can commit locally, and there is no default destination to push to. When a delivery step is configured, the harness itself pushes a passed attempt's branch by URL and still adds no remote, so nothing turns that one push into a destination a later turn could use.
+Mechanically, that means: before any check or coding turn runs, the runner gives the working copy a repository-local commit identity (`user.name`, `user.email`, and commit signing disabled), so a turn can commit without an ambient Git identity and no global or system Git setting is written. `reopenWorkspace` verifies the branch its ledger records, accepting a clean branch of a turn's own that descends from it because the runner returns the checkout to that branch before the first coding turn (`workspace/branch.ts`); a `HEAD` ahead of the recorded base is ordinary local work, not a refusal. Every attempt keeps the workspace's recorded base as the comparison base, and a continued run's report carries that base rather than a source checkout that may have advanced since. The workspace clone has no remote: a turn can commit locally, and there is no default destination to push to. When a delivery step is configured, the harness itself pushes a passed attempt's branch by URL and still adds no remote, so nothing turns that one push into a destination a later turn could use.
 
 ### Configurable launch, one implemented runtime
 

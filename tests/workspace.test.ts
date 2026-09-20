@@ -721,9 +721,7 @@ describe('a retained checkout that left its recorded branch', () => {
 
   /** The branch the checkout is on, or `''` when it is on no branch. */
   async function currentBranchOf(workspacePath: string): Promise<string> {
-    return (
-      await gitOrFail(['symbolic-ref', '--quiet', '--short', 'HEAD'], workspacePath)
-    ).trim();
+    return (await gitOrFail(['symbolic-ref', '--quiet', '--short', 'HEAD'], workspacePath)).trim();
   }
 
   /**
@@ -799,7 +797,9 @@ describe('a retained checkout that left its recorded branch', () => {
     // force-updated, or discarded.
     expect(await currentBranchOf(prepared.workspacePath)).toBe(prepared.branch);
     expect(
-      (await gitOrFail(['rev-parse', `refs/heads/${prepared.branch}`], prepared.workspacePath)).trim(),
+      (
+        await gitOrFail(['rev-parse', `refs/heads/${prepared.branch}`], prepared.workspacePath)
+      ).trim(),
     ).toBe(revision);
     expect(
       (await gitOrFail(['rev-parse', 'refs/heads/task/side'], prepared.workspacePath)).trim(),
@@ -877,7 +877,9 @@ describe('a retained checkout that left its recorded branch', () => {
       'work the turn never committed\n',
     );
     expect(
-      (await gitOrFail(['rev-parse', `refs/heads/${prepared.branch}`], prepared.workspacePath)).trim(),
+      (
+        await gitOrFail(['rev-parse', `refs/heads/${prepared.branch}`], prepared.workspacePath)
+      ).trim(),
     ).toBe(prepared.baseCommit);
   });
 
@@ -912,7 +914,9 @@ describe('a retained checkout that left its recorded branch', () => {
       (await gitOrFail(['rev-parse', 'refs/heads/task/side'], prepared.workspacePath)).trim(),
     ).toBe(revision);
     expect(
-      (await gitOrFail(['rev-parse', `refs/heads/${prepared.branch}`], prepared.workspacePath)).trim(),
+      (
+        await gitOrFail(['rev-parse', `refs/heads/${prepared.branch}`], prepared.workspacePath)
+      ).trim(),
     ).toBe(recorded);
   });
 
@@ -947,7 +951,9 @@ describe('a retained checkout that left its recorded branch', () => {
     expect(reopened.attempt).toBe(1);
     expect(await currentBranchOf(prepared.workspacePath)).toBe('task/side');
     expect(
-      (await gitOrFail(['rev-parse', `refs/heads/${prepared.branch}`], prepared.workspacePath)).trim(),
+      (
+        await gitOrFail(['rev-parse', `refs/heads/${prepared.branch}`], prepared.workspacePath)
+      ).trim(),
     ).toBe(prepared.baseCommit);
     expect(await headOf(prepared.workspacePath)).toBe(revision);
   });

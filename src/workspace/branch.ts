@@ -204,7 +204,7 @@ async function inspectOtherBranch(
       problem:
         `the retained workspace "${workspacePath}" is on branch "${current}", not on its recorded ` +
         `branch "${branch}", and it holds uncommitted changes (${listPaths(leftovers)}), so the ` +
-        'harness has no clean checkout to switch: it never commits or discards a checkout\'s ' +
+        "harness has no clean checkout to switch: it never commits or discards a checkout's " +
         'leftovers, and never switches or force-updates a dirty one. Commit or remove those paths ' +
         `by hand in the retained workspace, then return the checkout to "${branch}" — the commit ` +
         `it is at (${revision}) stays on branch "${current}" and nothing is lost — or move the ` +
@@ -267,13 +267,14 @@ async function inspectOtherBranch(
  * Returns the checkout of `workspacePath` to the branch its ledger records,
  * without losing anything, or refuses with why and what an operator can do.
  *
- * The recorded branch is fast-forwarded to the checkout's own commit and that
- * branch is checked out, in that order: the branch only ever moves forward to a
- * commit that already contains it, the commit the checkout was at stays on the
- * branch it was made on, and nothing is reset, force-updated, or discarded. A
- * checkout that is already on the recorded branch is left exactly as it is,
- * uncommitted changes included, because that is the ordinary state a
- * continuation reopens (docs/implement-workspace-continuation.md).
+ * The recorded branch is checked out and then fast-forwarded to the checkout's
+ * own commit — checkout first, so a checkout Git refuses leaves the working copy
+ * where it was. The branch only ever moves forward, to a commit that already
+ * contains it; the commit the checkout was at stays on the branch it was made
+ * on; and nothing is reset, force-updated, or discarded. A checkout that is
+ * already on the recorded branch is left exactly as it is, uncommitted changes
+ * included, because that is the ordinary state a continuation reopens
+ * (docs/implement-workspace-continuation.md).
  */
 export async function returnToRecordedBranch(
   workspacePath: string,

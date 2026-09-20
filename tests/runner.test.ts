@@ -1123,9 +1123,7 @@ describe('a working copy a coding turn commits in', () => {
 describe('a working copy a turn leaves on a branch of its own', () => {
   /** The branch a checkout is on, or `''` when it is on no branch. */
   async function branchOf(workspacePath: string): Promise<string> {
-    return (
-      await gitOrFail(['symbolic-ref', '--quiet', '--short', 'HEAD'], workspacePath)
-    ).trim();
+    return (await gitOrFail(['symbolic-ref', '--quiet', '--short', 'HEAD'], workspacePath)).trim();
   }
 
   /** The commit a ref points at in the fixture's own Git environment. */
@@ -1133,7 +1131,7 @@ describe('a working copy a turn leaves on a branch of its own', () => {
     return (await gitOrFail(['rev-parse', '--verify', ref], workspacePath)).trim();
   }
 
- it('returns a repair turn to the recorded branch, keeping the earlier commit', async () => {
+  it('returns a repair turn to the recorded branch, keeping the earlier commit', async () => {
     const fixture = await createFixture([{ file: 'target.txt', text: IMPLEMENTED_TEXT }]);
     const starts: string[] = [];
     const agent: RunnerDependencies['runAgentTurn'] = async (request) => {
@@ -1190,9 +1188,7 @@ describe('a working copy a turn leaves on a branch of its own', () => {
       side,
     );
     expect(await commitOf(workspacePath, 'HEAD')).toBe(side);
-    expect((await git(['merge-base', '--is-ancestor', side, 'HEAD'], workspacePath)).code).toBe(
-      0,
-    );
+    expect((await git(['merge-base', '--is-ancestor', side, 'HEAD'], workspacePath)).code).toBe(0);
     // The repair turn's work is there too: the recorded branch holds the commit
     // the implementation turn made, and the repair turn added to it.
     expect(await readText(path.join(workspacePath, 'target.txt'))).toBe(

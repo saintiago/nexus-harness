@@ -387,9 +387,7 @@ export async function reopenWorkspace(
   // checkout to the recorded branch before its first coding turn.
   const standing = await inspectBranchStanding(workspace.workspacePath, workspace.branch, bounds);
   if (standing.kind === 'refused') {
-    throw new WorkspaceError(
-      `workspace ${workspaceId} cannot be continued: ${standing.problem}`,
-    );
+    throw new WorkspaceError(`workspace ${workspaceId} cannot be continued: ${standing.problem}`);
   }
   return workspace;
 }
