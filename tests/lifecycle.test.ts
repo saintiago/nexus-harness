@@ -975,12 +975,32 @@ describe('a run its caller stops, for real', () => {
     expect(await sourceState(fixture.repo)).toEqual(before);
   }, 90_000);
 
-  // Windows-only by construction: this scenario defeats the stop by emptying
-  // PATH, so the harness cannot find `taskkill` — the utility Windows stops a
-  // tree with. On POSIX the harness signals the invocation's process group
-  // directly (`process.kill(-pid)`), which needs no utility to be found, so the
-  // stop succeeds and there is nothing unconfirmed to report. The confirmed
-  // stop every platform can reach is covered by the tests above.
+  /**
+   * The one directory this host's PATH resolves `git` from. The unconfirmed-stop
+   * test narrows PATH to it rather than emptying PATH: the harness still has to
+   * reach Git between the turn and the checks — it returns the checkout to the
+   * branch the workspace records (HARN-35) — while the utility Windows stops a
+   * process tree with (`taskkill`, in the system directory) is out of reach,
+   * which is what makes the stop unconfirmable.
+   */
+  function gitDirectoryOnPath(): string {
+    const names = process.platform === 'win32' ? ['git.exe', 'git.cmd', 'git.bat'] : ['git'];
+    for (const entry of (process.env.PATH ?? '').split(path.delimiter)) {
+      for (const name of names) {
+        if (entry !== '' && existsSync(path.join(entry, name))) {
+          return entry;
+        }
+      }
+    }
+    throw new Error('this host has no git executable on PATH');
+  }
+
+  // Windows-only by construction: this scenario defeats the stop by narrowing
+  // PATH to Git alone, so the harness cannot find `taskkill` — the utility
+  // Windows stops a tree with. On POSIX the harness signals the invocation's
+  // process group directly (`process.kill(-pid)`), which needs no utility to be
+  // found, so the stop succeeds and there is nothing unconfirmed to report. The
+  // confirmed stop every platform can reach is covered by the tests above.
   it.skipIf(process.platform !== 'win32')(
     'reports a stop it could not confirm, and never calls the copy safe to reuse',
     async () => {
@@ -1005,7 +1025,7 @@ describe('a run its caller stops, for real', () => {
             'the checks will hang\n',
             'utf8',
           );
-          process.env.PATH = '';
+          process.env.PATH = gitDirectoryOnPath();
           return { summary: 'the implementation turn made the checks hang' };
         }),
       );
