@@ -71,7 +71,7 @@ src/
     feedback.ts                   (30)   the failed commands one repair turn is given
   sources/
     contract.ts                   (298)  TaskSource, the ordinary source data and errors, pointer labels
-    receipts.ts                   (238)  the intake lock and one receipt per attempted item
+    receipts.ts                   (238)  the per-project intake lock and one receipt per attempted item
     eligibility.ts                (81)   what an item is: a first attempt, a continuation, or a refusal
     guidance.ts                   (60)   what an attempt is told, bounded: the thread and earlier attempts
     coordinator.ts                (775)  runSource and watchSource: discovery, the ladder, publication
@@ -149,7 +149,7 @@ further would separate one decision from itself: `runs/runner.ts` (the loop), `s
 - **Does not own:** CLI option parsing (`cli/options.ts`), credentials, or any default that is not
   documented in WORKFLOW sections 1 and 5.
 - **Entry points:** `loadHarnessConfig`, `loadTask`, `resolveWorkDir`, `resolveAgentSelection`,
-  `escalationTiers`, `ConfigError` (`config/load.ts`); `harnessConfigSchema`, `taskSchema`,
+  `escalationTiers`, `projectLockNamespace`, `ConfigError` (`config/load.ts`); `harnessConfigSchema`, `taskSchema`,
   `sourceSchema`, `JIRA_SOURCE_DEFAULTS`, `MIN_POLL_INTERVAL_SECONDS`, `DEFAULT_AGENT_SELECTION`
   (`config/schema.ts`).
 
@@ -267,8 +267,9 @@ further would separate one decision from itself: `runs/runner.ts` (the loop), `s
   contract and the ordinary source data (`SourceRef`, `SourceCandidate`, `SourceTask`,
   `SourceComment`, `SourceRunOutcome`, `SourceSummary`, `SourceError`, `SourceFeedbackError`), plus
   the pointer label helpers (`WORKSPACE_POINTER_PREFIX`, `workspacePointerLabel`,
-  `parseWorkspacePointers`). `receipts.ts` is the only retained intake state: one exclusive lock and
-  one receipt per attempted item, keyed by the item's immutable identity. `eligibility.ts` decides
+  `parseWorkspacePointers`). `receipts.ts` is the only retained intake state: one exclusive lock per
+  connected project — named by the namespace `config/load.ts` derives from the composed identity —
+  and one receipt per attempted item, keyed by the item's immutable identity. `eligibility.ts` decides
   what an item is — a first attempt, a continuation of the workspace its pointer names, or a refusal —
   and `guidance.ts` renders what an attempt is told from the item's own thread and its earlier
   attempts, bounded. `coordinator.ts` discovers a finite batch, reserves, claims, climbs the
@@ -379,8 +380,8 @@ further would separate one decision from itself: `runs/runner.ts` (the loop), `s
   idle watch waits for the next ticket without starting an agent.
 - **Does not own:** any phase's implementation. It imports no connector and no credential, starts no
   agent, merges nothing itself, and keeps no state across invocations. `src/cli/queue-command.ts` is
-  what builds the four phases, resolves the three credentials, and holds the one intake lock for the
-  whole invocation.
+  what builds the four phases, resolves the three credentials, and holds the connected project's
+  intake lock for the whole invocation.
 - **Entry points:** `runQueue`, `QueueLoopContext`, `QueueRunMode`, `QueueSummary`,
   `QueueTicket`, `QueueReviewOutcome`, `QueueCompletionOutcome`, `QueueIo` (`queue/loop.ts`).
 

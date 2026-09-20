@@ -110,6 +110,8 @@ What needs both sides is composed in this order, and nothing is guessed:
 
 Missing, malformed, and mismatched configuration all fail **before anything is claimed or run**, with the file, the field, and — for a cross-file problem — both paths named. `check-config` validates and prints the composition without creating anything.
 
+`workDir` is Nexus-wide storage policy, not the queue boundary: one harness configuration and one `workDir` can serve several connected projects. Each composed project gets its own intake lock under the shared output directory, named by a stable hash of that project's own connection identity — its Jira type, canonical site, cloud ID and project key, and its GitHub destination repository. No credential, local path, or display name takes part, and changing a project's queue tuning (issue type, label, statuses, ordering, poll interval, base branch) does not change the lock it holds. Two consumers of one connected project and `workDir` are refused; two different connected projects may consume their own queues concurrently. [spec.md](spec.md) §6 owns the behavior, and §11 the queue that relies on it.
+
 ### Fields
 
 Four harness fields and two project fields are required; the rest are optional, each in the file that owns it. Reject unknown top-level/nested fields and invalid types rather than coercing them, and refuse a field in the other file with where it belongs. Source commands require the project's `source`; ordinary file-task commands do not construct it or require its credentials. A review requires the project's `source` and `delivery`, because it reviews through that same connection the pull request that project delivered. Without `delivery` nothing is pushed or published, whatever else the configuration says.
@@ -118,7 +120,7 @@ In the Nexus-wide harness configuration:
 
 | Field | Meaning and validation |
 | --- | --- |
-| `workDir` | Nonblank output directory. Resolve relative to this file, not the target repo. |
+| `workDir` | Nonblank output directory. Resolve relative to this file, not the target repo. One `workDir` may serve several connected projects; their queues lock per project, not per output directory. |
 | `maxRepairs` | Nonnegative integer; additional coding turns after implementation. |
 | `taskTimeoutMinutes` | Positive integer; total run time limit. |
 | `commandTimeoutMinutes` | Positive integer; per setup/check command limit, capped by remaining task time. |
@@ -916,6 +918,15 @@ harness configuration — and each is validated by the loader exactly as its own
 
 A composed configuration with no `source`, no reviewer, or a `delivery` without `completion` is
 refused with what is missing — and which file it belongs to — before any credential is resolved.
+
+For its whole invocation, including idle watch waits, a queue holds the connected project's intake
+lock under `workDir` — not a lock on the output directory. A second `queue run`/`queue watch` for
+the same project and `workDir` is refused with the lock's owner diagnostic, while a queue for a
+different connected project starts normally under the same `workDir` and harness configuration.
+That concurrency boundary is verified offline — a second consumer of one project and `workDir` is
+refused, and a different connected project runs under the same storage root — and no live
+concurrent exercise of two real project queues has been run. [spec.md](spec.md) §6 and §11 own the
+behavior.
 
 ### Credentials
 

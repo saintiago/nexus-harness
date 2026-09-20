@@ -109,7 +109,7 @@ workspace keeps the name its pointer fixed even if the item's key changes later:
       ...                        # distinct command stdout/stderr and later turns
   workspaces/<workspaceId>/       # the retained clone, on branch harness/<workspaceId>
   workspaces/<workspaceId>.json   # the workspace ledger: base, branch, attempts
-  .intake/                        # source intake only: the lock and per-issue receipts
+  .intake/                        # source intake only: the per-project locks and per-issue receipts
 ```
 
 The report retains task/run IDs, source path and base commit, workspace path, times, repairs used, status/reason, and check results grouped by baseline and implementation/repair attempt. Keep arguments, exit/signal/timeout information, log locations, and final change-review warnings. Never overwrite earlier failure evidence. A continued workspace reports the base its own ledger recorded, which stays the comparison base for every attempt even when the source checkout has advanced since; only a fresh run records the base that preflight selected then.
@@ -170,7 +170,7 @@ Repository, checks, setup, agent, and limits remain trusted local inputs. `Verif
 
 ### Reservation and duplicate prevention
 
-For `source run` and `source watch`, perform existing source/output safety preflight before any output write or remote claim. Take an exclusive local lock for the normalized `workDir`; only one intake consumer may use it at a time. Recheck source checkout safety before each new attempt.
+For `source run` and `source watch`, perform existing source/output safety preflight before any output write or remote claim. Take an exclusive local lock for the connected project under the normalized `workDir`; the namespace is a stable hash of the project's composed connection identity — its source type, canonical Jira site, cloud ID and project key, and its GitHub destination repository — so one consumer per connected project is admitted while two different connected projects may consume their own queues under one `workDir` and one Nexus-wide harness configuration. No credential, local path, or display name is part of that namespace, and queue tuning (issue type, label, statuses, ordering, poll interval, base branch) does not change it. Recheck source checkout safety before each new attempt.
 
 For each prepared valid issue:
 
@@ -182,7 +182,7 @@ For each prepared valid issue:
 
 A claim rejected because the issue changed **before any mutation request was sent** may release only its newly created receipt and skip. After any mutation attempt, error, timeout, or uncertain response, keep the receipt and stop intake for operator inspection. A crash-reserved issue is never resumed or rerun automatically.
 
-The local lock/receipt protects one consumer using the same retained `workDir`. Jira status transitions are not a distributed lock. Running consumers on different machines or with different work directories against the same queue is unsupported; there is no global exactly-once guarantee.
+The lock and receipts protect the retained `workDir`: the lock admits one consumer per connected project under it, and a receipt keeps the same immutable item from being attempted twice in that directory. Jira status transitions are not a distributed lock. Running consumers on different machines, or with different `workDir`s against the same queue, is unsupported; there is no global exactly-once guarantee.
 
 ### Jira feedback and completion
 
@@ -206,7 +206,7 @@ On interrupt, stop polling and claiming immediately, cancel the active run throu
 
 ### Minimal retained intake state
 
-Store `.intake/lock/` and `.intake/receipts/<identity-hash>.json` under `workDir`, outside target workspaces. A receipt contains source identity, reservation time, and any known real run/result/feedback details. The initial creation is exclusive; subsequent replacements are atomic. Corrupt/unknown receipt formats must fail closed, not be treated as absence. This is duplicate prevention, not a new run registry or resumable workflow engine.
+Store `.intake/locks/<connected-project-namespace>/` and `.intake/receipts/<identity-hash>.json` under `workDir`, outside target workspaces. The lock directory holds its owner metadata and is never broken automatically; a project whose queue is retuned keeps the same namespace, and a different connected project holds a different one. A receipt contains source identity, reservation time, and any known real run/result/feedback details. The initial creation is exclusive; subsequent replacements are atomic. Corrupt/unknown receipt formats must fail closed, not be treated as absence. This is duplicate prevention, not a new run registry or resumable workflow engine.
 
 The workspace ledger is read the same way: it must be version 1 and hold the identity and attempt entries this harness writes, and a record of another shape — an unsupported version, a partially written identity, an attempt whose fields are missing, of the wrong kind, or ending at a value that is not a timestamp this harness writes — is refused before it is reused rather than repaired, migrated, or read as something it is not. An attempt that cannot be recorded in its workspace's ledger is a failed save, not a quiet success: its report and working copy are kept, the failed path is reported, and intake stops instead of continuing the workspace from state that does not hold the attempt.
 
@@ -238,9 +238,9 @@ Delivery uses the operator's own Git and `gh` authentication; the configured rep
 
 **Keep:** the existing workspace/check/report loop, file-task CLI, configurable Codex adapter and DeepSeek profile selection, offline tests, logging, deadlines, cancellation, and retained artifacts. Inspect actual code and preserve user changes. The production harness still never configures the user's coding-provider account.
 
-**Implemented by this increment:** optional source configuration; a small source contract; Jira Cloud mapping, discovery, claim, and result feedback; list/run/watch commands; a single-consumer lock and local receipts; offline tests and an opt-in Jira exercise. Do not require Jira credentials for existing file-task commands or ordinary validation. The later workspace-continuation increment builds on it: see [implement-workspace-continuation.md](implement-workspace-continuation.md).
+**Implemented by this increment:** optional source configuration; a small source contract; Jira Cloud mapping, discovery, claim, and result feedback; list/run/watch commands; a per-connected-project single-consumer lock and local receipts; offline tests and an opt-in Jira exercise. Do not require Jira credentials for existing file-task commands or ordinary validation. The later workspace-continuation increment builds on it: see [implement-workspace-continuation.md](implement-workspace-continuation.md).
 
-**Later, only when needed:** another concrete task source, real Claude Code adapter, webhooks, parallel consumers, dependency scheduling, automatic merging, stronger isolation, or remote recovery. The optional GitHub delivery step of §7 opens or updates a pull request and stops there. Merging and reacting to CI on the pull request happen only through the explicitly configured completion path of §10, which the serial queue of §11 composes into one lifecycle per ticket; without it they stay outside the harness. Add another connector without changing Task or the coding loop; do not ship a placeholder connector now.
+**Later, only when needed:** another concrete task source, real Claude Code adapter, webhooks, parallel consumers of one project's queue, dependency scheduling, automatic merging, stronger isolation, or remote recovery. The optional GitHub delivery step of §7 opens or updates a pull request and stops there. Merging and reacting to CI on the pull request happen only through the explicitly configured completion path of §10, which the serial queue of §11 composes into one lifecycle per ticket; without it they stay outside the harness. Add another connector without changing Task or the coding loop; do not ship a placeholder connector now.
 
 **Implemented by the review increment:** the optional Nexus-wide `reviewer` object and the `review scan` / `review watch` commands of §9 below. They add no field to Task, no change to the coding loop, and no new process: a scan reads the Jira queue through the connected project's `source`, starts the configured reviewer as one bounded turn, and publishes a native GitHub review and an app-owned check run on the repository that project delivers to. Merging, Jira completion, and coordinator decisions remain outside it.
 
@@ -353,7 +353,7 @@ standalone one-item commands are unchanged.
 
 ### Shape
 
-This stays a small foreground control loop over existing modules: no database, durable queue, scheduler, detached background process, webhook system, workflow engine, multi-repository coordinator, or general dependency graph. One queue invocation per output directory holds the existing intake lock for its whole life, including while it waits in watch mode, so a second consumer of the same output directory is refused rather than interleaved; there is still no cross-machine coordination.
+This stays a small foreground control loop over existing modules: no database, durable queue, scheduler, detached background process, webhook system, workflow engine, multi-repository coordinator, or general dependency graph. One queue invocation holds the connected project's intake lock under its output directory for its whole life, including while it waits in watch mode, so a second consumer of the same connected project and `workDir` is refused rather than interleaved, while a queue for a different connected project may run under the same `workDir` and harness configuration; there is still no cross-machine coordination, and the storage root itself is not locked.
 
 One limitation is worth stating: a ticket whose pull request GitHub has already merged cannot be repaired in place, because the delivery step refuses to edit a merged pull request. A repair attempt after an unsuccessful post-merge workflow therefore ends with that refusal as an actionable stop rather than a second pull request; splitting such a repair into a new ticket is an operator decision.
 

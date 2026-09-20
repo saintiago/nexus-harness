@@ -100,6 +100,13 @@ App, login and check; and a completed item's outcomes must differ from the revie
 in. Every refusal names both paths and the field. The configuration shape this contract replaced is
 refused the same way: its project fields are reported as belonging to the project configuration.
 
+One Nexus installation can connect several projects: the same `nexus.config.json` and the same
+`workDir` serve all of them, and each project's own `nexus.project.json` names its queue and
+destination. Their intake locks are separate — a stable hash of the connected project's own
+identity, never a credential or a display name — so a second consumer of one project and `workDir`
+is refused while two different connected projects may work their own queues concurrently
+([docs/WORKFLOW.md](docs/WORKFLOW.md) §1, [docs/spec.md](docs/spec.md) §6).
+
 `docs/nexus.config.example.json` is a credential-free Nexus-wide example,
 `docs/nexus.project.example.json` a credential-free project example, and this repository's own
 `nexus.project.json` is what it commits for itself. `examples/task.json` is the task example. Their
@@ -314,7 +321,8 @@ completion, and never names a report that does not exist.
 
 ```
 <workDir>/
-  .intake/                       source intake: the one-consumer lock and the per-issue receipts
+  .intake/                       source intake: the per-project consumer locks and the per-issue
+                                 receipts
   runs/<runId>/
     result.json                  the final report, written last
     logs/
@@ -573,8 +581,13 @@ published body are kept in the run's own `logs/` directory.
 attempted issue by its immutable ID, and a receipt is created **before** the issue is claimed. A
 receipt survives a restart, and editing or reopening the issue does not clear it. Nor is a receipt
 the whole story: what happens next is decided by the pointer label below — a receipt with no
-pointer refuses the issue instead of silently repeating it. The single `.intake/lock/` directory
-makes sure only one consumer uses an output directory; it is never broken automatically.
+pointer refuses the issue instead of silently repeating it. The
+`.intake/locks/<connected-project-namespace>/` directory makes sure only one consumer takes tickets
+for a connected project under that output directory; it is never broken automatically. The
+namespace is the stable hash of the project's own composed identity — its Jira site, cloud ID and
+project key, and its GitHub destination repository — so two different connected projects may
+consume their own queues under one `workDir` and one harness configuration, while a second consumer
+of the same project and `workDir` is refused with that lock's ownership diagnostic.
 
 **Where an issue's work lives is written on the issue.** The run that creates a workspace adds one
 `harness-ws-<workspaceId>` label, before any coding turn, and a later attempt only ever reads it.
@@ -828,9 +841,12 @@ Anything a person has to decide — a failed or cancelled attempt, a delivery fa
 no usable verdict, a merge or post-merge workflow still pending at its deadline, a conflict, an
 authentication or API failure, an unsupported transition, a checkout that is not ready — exits
 nonzero with the ticket's evidence kept. The blocked ticket is never skipped for another one. One
-queue invocation holds the intake lock for its whole life, including while it waits, and it keeps
+queue invocation holds its connected project's intake lock for its whole life, including while it
+waits, so a second queue for the same project and `workDir` is refused while a queue for a
+different connected project may run under the same `workDir` and harness configuration. It keeps
 no database, scheduler, daemon, or durable queue: Jira's status, the pointer label, GitHub's native
-state, and the existing receipts are what a restart reads.
+state, and the existing receipts are what a restart reads. No two real project queues have been run
+concurrently yet; the boundary is verified offline, as the lock's own regressions below state.
 
 **One stated limit.** A ticket whose pull request GitHub has already merged cannot be repaired in
 place: the delivery step refuses to edit a merged pull request, so a repair after an unsuccessful
@@ -1074,11 +1090,17 @@ Read this before pointing a run at anything you care about.
 - **One run at a time per source repository.** The harness takes no lock: two runs over the same
   repository, with the same output directory or the same working tree, can interfere with each
   other's work.
-- **`source` commands add one small lock, and it only covers one output directory.** A
-  `.intake/lock/` under `workDir` keeps two consumers out of the _same_ output directory; it is not
-  a distributed lock, and two watchers with different `workDir`s against the same Jira queue are
+- **`source` commands add one small lock per connected project.** `.intake/locks/<namespace>/`
+  under `workDir` keeps two consumers of the _same connected project_ out of one output directory,
+  while two different connected projects may consume their own queues under it concurrently. It is
+  not a distributed lock: two watchers with different `workDir`s against the same Jira queue are
   unsupported. Jira statuses are not a lease either: there is no exactly-once guarantee across
   machines, and the receipts only protect the directory they live in.
+- **A queue from a revision before this one keeps the old lock path.** A consumer that predates the
+  per-project namespace holds `.intake/lock/` under `workDir`, which names no project; this
+  revision cannot tell which queue it belongs to, so stop that queue before starting the same
+  project's queue from here, and remove the old directory by hand only once its owner has stopped.
+  Locks are never broken automatically.
 - **A ready issue is an authorization to spend agent capacity.** The configured project, issue
   type, label, and ready status are the queue boundary, and the harness does not ask again: put
   only work you would run yourself behind that label, in a project whose issues are trusted input.
@@ -1094,7 +1116,7 @@ Read this before pointing a run at anything you care about.
   it finds. Point the App at a repository whose rules you are prepared to gate with its check.
 - **Not implemented, and not planned here:** automatic merging outside the configured completion
   path, automatic workflow reruns, a provider registry, workflow engines, background services,
-  webhooks, parallel consumers, and a second coding runtime. Without
+  webhooks, parallel consumers of one project's queue, and a second coding runtime. Without
   `delivery`, a passed attempt's work stays local; with `delivery` alone, its branch is pushed and
   its pull request is opened or updated, and the pull request stops there; with review-to-completion
   configured, the deterministic path of [docs/spec.md](docs/spec.md) §10 carries an approved pull
@@ -1124,7 +1146,7 @@ Read this before pointing a run at anything you care about.
   and keys would suggest, the mode read again by the next fresh scan, and a Rank JQL the site
   refuses reported as Jira's bounded error with nothing claimed and no fallback), the description
   format and the mapping onto the existing `Task`, transition selection by target status, the
-  result comment, the per-issue receipt and the one-consumer lock, a finite `source run`, a watch
+  result comment, the per-issue receipt and the per-project intake lock, a finite `source run`, a watch
   cycle that picks up a later issue, and the behaviour of a stop, a failed feedback, and a corrupt
   receipt. Nothing in that suite needs a Jira site, a token, or a network.
 - workspace continuation through the same fakes and real temporary Git repositories: a continued
@@ -1177,7 +1199,9 @@ Read this before pointing a run at anything you care about.
   idle watch that starts no agent and later takes a ticket that appeared, cancellation while idle and
   during an active phase, a pending completion waited out and one that needs a person, infrastructure
   failures, a checkout that cannot be proven ready, restarts that neither rerun a Done ticket nor
-  duplicate a completion effect, the consumer step's single-ticket and lock behaviour, the review
+  duplicate a completion effect, the consumer step's single-ticket and lock behaviour, the
+  same-project lock refusing a second consumer while a different connected project runs under the
+  same `workDir` and harness configuration, the review
   scan and completion pass narrowed to one ticket, and source readiness against real repositories —
   the fast-forward, plus the dirty, diverged, wrong-remote, wrong-branch, and missing-merge refusals
   that leave the checkout untouched. The `queue` command's own refusals (missing objects, a review
@@ -1255,6 +1279,11 @@ and only a read.
   disposable repository, the exact-byte marker assertion, the restart check, and the watch cycle —
   has not run, and no live watch, restart, or failure path has been exercised. Mocked tests are not
   evidence for the parts that have not run;
+- **a live concurrent exercise of two connected project queues under one `workDir`.** The
+  per-project intake lock is verified offline: a second consumer of the same connected project and
+  `workDir` is refused, and a different connected project runs under the same harness
+  configuration and storage root. No two real project queues have been started against a live Jira
+  site at once;
 - **any live Rank-mode intake scan.** The operator's Jira credential has executed enhanced-search
   JQL with `ORDER BY Rank ASC` successfully (2026-09-20), but no `source list` from this harness has
   been compared against that answer yet. Setting `"ordering": "rank"` in the ignored local operator
