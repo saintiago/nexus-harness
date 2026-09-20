@@ -422,14 +422,18 @@ export function escalationTiers(config: HarnessConfig): readonly EscalationTier[
  * (docs/WORKFLOW.md §1, §11).
  */
 export function projectLockNamespace(config: HarnessConfig): string {
+  // These identifiers are case-insensitive at their providers. Preserve the
+  // supplied configuration for callers, but hash one spelling so an equivalent
+  // UUID, Jira key or GitHub owner/name cannot admit a second consumer. The
+  // schema already canonicalizes the Jira site URL before composition.
   const identity = [
     'intake-lock-v1',
     config.source?.type ?? '',
     config.source?.siteUrl ?? '',
-    config.source?.cloudId ?? '',
-    config.source?.projectKey ?? '',
+    config.source?.cloudId.toLowerCase() ?? '',
+    config.source?.projectKey.toUpperCase() ?? '',
     config.delivery?.type ?? '',
-    config.delivery?.repository ?? '',
+    config.delivery?.repository.toLowerCase() ?? '',
   ];
   return createHash('sha256').update(JSON.stringify(identity), 'utf8').digest('hex');
 }

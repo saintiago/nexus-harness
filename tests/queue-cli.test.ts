@@ -951,6 +951,53 @@ describe('the queue command line', () => {
     }
   });
 
+  it.each(['run', 'watch'])(
+    'refuses queue %s with equivalent connection spelling',
+    async (mode) => {
+      const fixture = await cliFixture({ config: queueConfig });
+      const workDir = path.join(path.dirname(fixture.configPath), 'out');
+      const loaded = await loadConfiguration(fixture.configPath, projectConfigFile(fixture.repo));
+      const namespace = projectLockNamespace(loaded.config);
+      const lock = await acquireIntakeLock(workDir, namespace, () => new Date());
+      try {
+        await writeJsonFile(fixture.repo, PROJECT_CONFIG_FILE_NAME, {
+          ...loaded.project,
+          source: {
+            ...loaded.project.source,
+            siteUrl: 'https://EXAMPLE.atlassian.net:443/',
+            cloudId: SOURCE.cloudId.toUpperCase(),
+            projectKey: SOURCE.projectKey.toLowerCase(),
+          },
+          delivery: { ...loaded.project.delivery, repository: 'Saintiago/Nexus-Harness' },
+        });
+        git(fixture.repo, 'add', PROJECT_CONFIG_FILE_NAME);
+        git(fixture.repo, 'commit', '--quiet', '--message', 'equivalent connection spelling');
+
+        // Fail promptly if the lock is bypassed, including in watch mode.
+        const context: CliContext = {
+          ...fixture.context,
+          fetch: async () => {
+            fixture.requests.push('unexpected discovery');
+            throw new Error('equivalent identity must be refused before discovery');
+          },
+        };
+        expect(
+          await runCli(
+            ['queue', mode, '--config', fixture.configPath, '--repo', fixture.repo],
+            context,
+          ),
+        ).toBe(EXIT_INPUT_ERROR);
+        expect(output(fixture)).toContain('another intake consumer holds');
+        expect(output(fixture)).toContain('Inspect that lock and stop its owner');
+        expect(fixture.requests).toEqual([]);
+        expect(fixture.turns()).toBe(0);
+        expect(existsSync(intakeLockPath(workDir, namespace))).toBe(true);
+      } finally {
+        await lock.release();
+      }
+    },
+  );
+
   it('refuses the same project twice while a different project consumes the same workDir', async () => {
     const fixture = await cliFixture({ config: queueConfig });
     const root = path.dirname(fixture.configPath);

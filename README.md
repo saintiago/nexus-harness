@@ -106,6 +106,10 @@ destination. Their intake locks are separate — a stable hash of the connected 
 identity, never a credential or a display name — so a second consumer of one project and `workDir`
 is refused while two different connected projects may work their own queues concurrently
 ([docs/WORKFLOW.md](docs/WORKFLOW.md) §1, [docs/spec.md](docs/spec.md) §6).
+The lock uses the canonical Jira site URL, lowercase cloud UUID and GitHub owner/repository,
+and uppercase Jira project key: equivalent casing cannot start a second consumer. This boundary
+is covered by offline regressions in this change; use it operationally only after the change is
+integrated. No live concurrent-project exercise has been run.
 
 `docs/nexus.config.example.json` is a credential-free Nexus-wide example,
 `docs/nexus.project.example.json` a credential-free project example, and this repository's own

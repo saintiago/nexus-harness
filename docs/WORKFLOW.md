@@ -112,6 +112,13 @@ Missing, malformed, and mismatched configuration all fail **before anything is c
 
 `workDir` is Nexus-wide storage policy, not the queue boundary: one harness configuration and one `workDir` can serve several connected projects. Each composed project gets its own intake lock under the shared output directory, named by a stable hash of that project's own connection identity — its Jira type, canonical site, cloud ID and project key, and its GitHub destination repository. No credential, local path, or display name takes part, and changing a project's queue tuning (issue type, label, statuses, ordering, poll interval, base branch) does not change the lock it holds. Two consumers of one connected project and `workDir` are refused; two different connected projects may consume their own queues concurrently. [spec.md](spec.md) §6 owns the behavior, and §11 the queue that relies on it.
 
+Before hashing, the cloud UUID and GitHub owner/repository are lowercased and the Jira project key
+is uppercased; the Jira site URL is already canonicalized during validation. Equivalent spellings
+therefore hold the same lock without rewriting the configured values used by other callers. The
+offline regressions cover same-project exclusion (including equivalent spellings) and concurrent
+different-project queues. Operators must wait for this change to be integrated before relying on
+that boundary; a live concurrent-project exercise remains unverified.
+
 ### Fields
 
 Four harness fields and two project fields are required; the rest are optional, each in the file that owns it. Reject unknown top-level/nested fields and invalid types rather than coercing them, and refuse a field in the other file with where it belongs. Source commands require the project's `source`; ordinary file-task commands do not construct it or require its credentials. A review requires the project's `source` and `delivery`, because it reviews through that same connection the pull request that project delivered. Without `delivery` nothing is pushed or published, whatever else the configuration says.

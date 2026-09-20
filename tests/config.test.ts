@@ -929,6 +929,50 @@ describe('the connected project lock namespace', () => {
     expect(projectLockNamespace(first)).toMatch(/^[0-9a-f]{64}$/);
   });
 
+  it.each([
+    ['site URL', { siteUrl: 'https://EXAMPLE.atlassian.net:443/' }, 'owner/one'],
+    ['cloud ID', { cloudId: SOURCE.cloudId.toUpperCase() }, 'owner/one'],
+    ['project key', { projectKey: 'sam1' }, 'owner/one'],
+    ['GitHub repository', {}, 'Owner/One'],
+  ])('keeps the same lock for an equivalent %s spelling', async (_name, source, repository) => {
+    const first = await loadProject(
+      projectWith({
+        source: SOURCE,
+        delivery: { type: 'github', repository: 'owner/one', baseBranch: 'main' },
+      }),
+    );
+    const equivalent = await loadProject(
+      projectWith({
+        source: { ...SOURCE, ...source },
+        delivery: { type: 'github', repository, baseBranch: 'main' },
+      }),
+    );
+
+    expect(projectLockNamespace(equivalent)).toBe(projectLockNamespace(first));
+  });
+
+  it.each([
+    ['site', { siteUrl: 'https://another.atlassian.net' }, 'owner/one'],
+    ['cloud ID', { cloudId: 'aaaaaaaa-7d33-4c1d-b03c-db207e537f88' }, 'owner/one'],
+    ['project key', { projectKey: 'HARN' }, 'owner/one'],
+    ['repository', {}, 'owner/two'],
+  ])('distinguishes a different %s independently', async (_name, source, repository) => {
+    const first = await loadProject(
+      projectWith({
+        source: SOURCE,
+        delivery: { type: 'github', repository: 'owner/one', baseBranch: 'main' },
+      }),
+    );
+    const different = await loadProject(
+      projectWith({
+        source: { ...SOURCE, ...source },
+        delivery: { type: 'github', repository, baseBranch: 'main' },
+      }),
+    );
+
+    expect(projectLockNamespace(different)).not.toBe(projectLockNamespace(first));
+  });
+
   it('distinguishes two connected projects that share one harness configuration', async () => {
     const directory = await createTempDir();
     const harnessPath = await writeJsonFile(
