@@ -13,6 +13,9 @@ import { existsSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { runCli } from '../src/cli.js';
+import { EXIT_INPUT_ERROR } from '../src/cli/context.js';
+import { HARNESS_CONFIG_FILE_NAME, PROJECT_CONFIG_FILE_NAME } from '../src/config/paths.js';
 import type { Delivery } from '../src/delivery/github.js';
 import type { QueueLoopContext } from '../src/queue/loop.js';
 import { runQueue } from '../src/queue/loop.js';
@@ -48,7 +51,7 @@ import type { PreparedWorkspace } from '../src/workspace/prepare.js';
 import { writeWorkspaceState } from '../src/workspace/state.js';
 import { createLocalTarget, fakeTurns, git } from './fixtures/local-target.js';
 import type { LocalTarget } from './fixtures/local-target.js';
-import { cleanupTempDirectories, createTempDir } from './support.js';
+import { cleanupTempDirectories, createTempDir, writeJsonFile } from './support.js';
 import { createHttpClient } from '../src/sources/jira/http.js';
 import { createJiraBaselineRecord } from '../src/sources/jira/baseline.js';
 
@@ -689,14 +692,41 @@ interface FakeJira {
   readonly fetch: typeof fetch;
   readonly calls: FetchCall[];
   readonly comments: { id: string; created: string; author: string; body: unknown }[];
+  readonly labels: string[];
   status: string;
 }
 
-function adfParagraphs(paragraphs: readonly string[]): Record<string, unknown> {
+/** A description in the supported convention: a goal and its acceptance criteria. */
+function adfTaskDescription(): Record<string, unknown> {
   return {
     type: 'doc',
     version: 1,
-    content: paragraphs.map((text) => ({ type: 'paragraph', content: [{ type: 'text', text }] })),
+    content: [
+      { type: 'heading', attrs: { level: 2 }, content: [{ type: 'text', text: 'Goal' }] },
+      {
+        type: 'paragraph',
+        content: [{ type: 'text', text: 'Repair the failing baseline and finish the ticket.' }],
+      },
+      {
+        type: 'heading',
+        attrs: { level: 2 },
+        content: [{ type: 'text', text: 'Acceptance criteria' }],
+      },
+      {
+        type: 'bulletList',
+        content: [
+          {
+            type: 'listItem',
+            content: [
+              {
+                type: 'paragraph',
+                content: [{ type: 'text', text: "src/greet.mjs greets with 'Hello, Ada!'." }],
+              },
+            ],
+          },
+        ],
+      },
+    ],
   };
 }
 
@@ -704,9 +734,23 @@ function adfParagraphs(paragraphs: readonly string[]): Record<string, unknown> {
 function fakeJira(status = 'In Progress'): FakeJira {
   const calls: FetchCall[] = [];
   const comments: FakeJira['comments'] = [];
+  const labels = ['harness-task'];
   const targets: Record<string, Record<string, Record<string, unknown>>> = {
     '11': { to: { name: 'To Do' }, fields: {} },
     '12': { to: { name: 'In Review' }, fields: {} },
+    '21': { to: { name: 'In Progress' }, fields: {} },
+  };
+  const transitionsFor = (from: string): readonly Record<string, unknown>[] => {
+    if (from === 'To Do') {
+      return [{ id: '21', name: 'Start work', ...targets['21'] }];
+    }
+    if (from === 'In Progress') {
+      return [
+        { id: '11', name: 'Ready for work', ...targets['11'] },
+        { id: '12', name: 'Send to review', ...targets['12'] },
+      ];
+    }
+    return [{ id: '11', name: 'Ready for work', ...targets['11'] }];
   };
   const state: { status: string } = { status };
   const issue = (): Record<string, unknown> => ({
@@ -714,9 +758,9 @@ function fakeJira(status = 'In Progress'): FakeJira {
     key: ISSUE_KEY,
     fields: {
       summary: 'Repair the failing baseline and finish the ticket',
-      description: adfParagraphs(['Do the thing.']),
+      description: adfTaskDescription(),
       status: { name: state.status },
-      labels: ['harness-task', `harness-ws-${ISSUE_KEY}`],
+      labels: [...labels],
       project: { key: 'HARN' },
       issuetype: { name: 'Task' },
       updated: '2026-09-21T10:00:00.000Z',
@@ -733,13 +777,21 @@ function fakeJira(status = 'In Progress'): FakeJira {
         headers: { 'content-type': 'application/json' },
       });
 
+    if (url.endsWith('/rest/api/3/search/jql')) {
+      return answer({
+        issues: state.status === 'To Do' ? [issue()] : [],
+        isLast: true,
+      });
+    }
     if (url.includes('/comment')) {
       if (method === 'POST') {
         const id = String(comments.length + 1);
         const document = (body as { body?: unknown }).body;
         comments.push({
           id,
-          created: `2026-09-21T10:0${id}:00.000Z`,
+          // The moment it arrived, so a continuation's window (which begins at
+          // the attempt that ended before it) really contains it.
+          created: new Date().toISOString(),
           author: 'Nexus Agent',
           body: document,
         });
@@ -769,14 +821,17 @@ function fakeJira(status = 'In Progress'): FakeJira {
         // client's own `null`-body handling expects.
         return new Response(null, { status: 204 });
       }
-      const available =
-        state.status === 'In Progress'
-          ? [
-              { id: '11', name: 'Ready for work', ...targets['11'] },
-              { id: '12', name: 'Send to review', ...targets['12'] },
-            ]
-          : [{ id: '11', name: 'Ready for work', ...targets['11'] }];
-      return answer({ transitions: available });
+      return answer({ transitions: transitionsFor(state.status) });
+    }
+    if (method === 'PUT') {
+      // The workspace pointer label: added once, as Jira would add it.
+      const update = (body as { update?: { labels?: { add?: unknown }[] } }).update;
+      for (const entry of update?.labels ?? []) {
+        if (typeof entry.add === 'string' && !labels.includes(entry.add)) {
+          labels.push(entry.add);
+        }
+      }
+      return new Response(null, { status: 204 });
     }
     return answer(issue());
   };
@@ -784,6 +839,7 @@ function fakeJira(status = 'In Progress'): FakeJira {
     fetch: impl as unknown as typeof fetch,
     calls,
     comments,
+    labels,
     get status() {
       return state.status;
     },
@@ -1472,4 +1528,141 @@ describe('the serial queue after a baseline diagnosis', () => {
     expect(summary.problem).toContain('no baseline repair is actionable');
     expect(summary.ticket?.ref.key).toBe(ISSUE_KEY);
   });
+});
+
+// ---------------------------------------------------------------------------
+// The source command: the composition the CLI hands the coordinator
+// ---------------------------------------------------------------------------
+
+describe('the diagnosis through `source run`', () => {
+  async function runIn(
+    target: LocalTarget,
+    site: FakeJira,
+    argv: readonly string[],
+  ): Promise<{ readonly code: number; readonly out: string; readonly err: string }> {
+    const out: string[] = [];
+    const err: string[] = [];
+    const code = await runCli(argv, {
+      cwd: target.parent,
+      io: { out: (text) => out.push(text), err: (text) => err.push(text) },
+      fetch: site.fetch,
+    });
+    return { code, out: out.join('\n'), err: err.join('\n') };
+  }
+
+  it('returns the same ticket to To Do and hands the finding to the next claim', async () => {
+    const target = await createLocalTarget({ brokenBaseline: true });
+    const site = fakeJira('To Do');
+
+    // The connected project's own configuration, committed: the queue, the
+    // checks, and the GitHub destination the configured reviewer composes with.
+    // The baseline this project commits is red — exactly HARN-34's situation.
+    await writeJsonFile(target.repo, PROJECT_CONFIG_FILE_NAME, {
+      setup: [[process.execPath, 'tools/prepare.mjs']],
+      checks: [[process.execPath, 'tools/run-checks.mjs']],
+      source: { ...SOURCE_CONFIG },
+      delivery: {
+        type: 'github',
+        repository: 'example-owner/tiny-target',
+        baseBranch: 'main',
+      },
+    });
+    git(target.repo, 'add', '--all');
+    git(target.repo, 'commit', '--quiet', '--message', 'connect the queue');
+    // The harness file the reviewer comes from; no completion object, so the
+    // diagnosis is the only reviewer path configured here.
+    await writeJsonFile(target.configDir, HARNESS_CONFIG_FILE_NAME, {
+      workDir: './runs',
+      maxRepairs: 0,
+      taskTimeoutMinutes: 60,
+      commandTimeoutMinutes: 10,
+      agent: { runtime: 'codex', command: [target.runtimePath] },
+      reviewer: {
+        app: {
+          appId: 123,
+          installationId: 456,
+          privateKeyPathEnv: 'NEXUS_LENS_KEY_PATH',
+          login: 'nexus-lens',
+        },
+        reviewer: { runtime: 'codex', command: [target.runtimePath] },
+        checkName: 'Nexus Lens review',
+      },
+    });
+
+    const previousToken = process.env.JIRA_API_TOKEN;
+    const previousPlan = process.env.FAKE_CODEX;
+    process.env.JIRA_API_TOKEN = 'test-token';
+    process.env.FAKE_CODEX = JSON.stringify({
+      stateDir: target.state.dir,
+      plans: [
+        // The pre-delivery reviewer turn: one finding and nothing else.
+        { finding: JSON.stringify(REPAIR_FINDING) },
+        // The next claim's developer turn: it continues the ticket's own work
+        // and does not repair the baseline it was told about, so the round that
+        // judges it is still red.
+        {
+          edits: [{ file: 'WORK.md', text: 'the ticket work is next\n' }],
+          commit: 'harn-38: start the ticket work',
+          summary: 'the ticket work is next',
+        },
+      ],
+    });
+    const argv = ['source', 'run', '--repo', target.repo, '--config', target.configPath];
+    try {
+      // The first claim: the baseline is red, and the diagnosis returns the
+      // ticket to To Do with one comment. No coding turn ran.
+      const first = await runIn(target, site, argv);
+
+      expect(first.err).toBe('');
+      expect(first.code).toBe(EXIT_INPUT_ERROR);
+      expect(site.status).toBe('To Do');
+      expect(site.comments).toHaveLength(1);
+      expect(site.labels).toContain(`harness-ws-${ISSUE_KEY}`);
+      const diagnosisComment = JSON.stringify(site.comments[0]?.body);
+      expect(diagnosisComment).toContain(`${BASELINE_MARKER_PREFIX}repair:`);
+      expect(diagnosisComment).toContain('Repair guidance');
+      const reviewerTurns = await fakeTurns(target.state);
+      expect(reviewerTurns).toHaveLength(1);
+      expect(reviewerTurns[0]?.prompt).toContain('You are Nexus Lens');
+      expect(reviewerTurns[0]?.prompt).toContain('finding.json');
+
+      // The next claim continues the same workspace and is told the finding:
+      // the developer's own prompt carries the repair guidance.
+      const second = await runIn(target, site, argv);
+
+      const turns = await fakeTurns(target.state);
+      expect(turns).toHaveLength(2);
+      const developer = turns[1]?.prompt ?? '';
+      expect(developer).toContain(`## Task ${ISSUE_KEY}`);
+      expect(developer).toContain('## Guidance for this attempt');
+      expect(developer).toContain('attempt 1');
+      expect(developer).toContain('the baseline checks did not pass');
+      expect(developer).toContain('Repair guidance');
+      expect(developer).toContain(REPAIR_FINDING.repairGuidance);
+      // The round that judged the turn is still red, so delivery is never
+      // reached: the issue is told the failed attempt and waits In Review, and
+      // the failed result carries no pull request.
+      expect(site.status).toBe('In Review');
+      expect(site.comments).toHaveLength(2);
+      const resultComment = JSON.stringify(site.comments[1]?.body);
+      expect(resultComment).toContain('finished: failed');
+      expect(resultComment).not.toContain('Pull request:');
+      expect(second.out).toContain('source completed');
+      expect(second.out).toContain('1 failed');
+      expect(second.out).not.toContain('source stopped');
+      expect(second.code).toBe(EXIT_INPUT_ERROR);
+      expect(existsSync(path.join(target.workDir, 'baseline'))).toBe(true);
+    } finally {
+      if (previousToken === undefined) {
+        delete process.env.JIRA_API_TOKEN;
+      } else {
+        process.env.JIRA_API_TOKEN = previousToken;
+      }
+      if (previousPlan === undefined) {
+        delete process.env.FAKE_CODEX;
+      } else {
+        process.env.FAKE_CODEX = previousPlan;
+      }
+    }
+  }, 60_000);
 });
