@@ -32,6 +32,7 @@ import { connect } from 'node:net';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createTempDir, removeWithRetry, repoRoot, writeJsonFile } from '../support.js';
+import { HARNESS_CONFIG_FILE_NAME, PROJECT_CONFIG_FILE_NAME } from '../../src/config/paths.js';
 
 /**
  * The shared fixture beacon module, as a URL a fixture program written into a
@@ -507,10 +508,15 @@ export interface LocalTarget {
   readonly parent: string;
   /** The source repository: one commit, and a clean checkout of it. */
   readonly repo: string;
-  /** The directory the configuration and task files live in. */
+  /** The directory the Nexus-wide configuration and the task file live in. */
   readonly configDir: string;
-  /** `harness.config.json`, written with this host's own node as the runner. */
+  /** The Nexus-wide `nexus.config.json`, naming this host's own node as the runner. */
   readonly configPath: string;
+  /**
+   * The project configuration the repository commits at its root: what `--repo`
+   * (or `--project`) has the harness read for this target.
+   */
+  readonly projectPath: string;
   /** `task.json`: the task the run is asked to complete. */
   readonly taskPath: string;
   /** The configured output directory, resolved from the configuration file. */
@@ -562,6 +568,16 @@ export async function createLocalTarget(options: LocalTargetOptions = {}): Promi
     'tools/prepare.mjs': PREPARE_SOURCE,
     'tools/run-checks.mjs': RUN_CHECKS_SOURCE,
   };
+  // The project configuration is part of the repository: a connected project
+  // carries it committed at its root, and a run clones the repository it names.
+  files[PROJECT_CONFIG_FILE_NAME] = `${JSON.stringify(
+    {
+      setup: [[process.execPath, 'tools/prepare.mjs']],
+      checks: [[process.execPath, 'tools/run-checks.mjs']],
+    },
+    null,
+    2,
+  )}\n`;
   for (const [name, text] of Object.entries(files)) {
     const file = path.join(repo, name);
     await mkdir(path.dirname(file), { recursive: true });
@@ -579,13 +595,11 @@ export async function createLocalTarget(options: LocalTargetOptions = {}): Promi
   await mkdir(configDir, { recursive: true });
   // The output directory resolves from the configuration file's own directory,
   // so it is written relative to it, as docs/WORKFLOW.md §1 describes.
-  const configPath = await writeJsonFile(configDir, 'harness.config.json', {
+  const configPath = await writeJsonFile(configDir, HARNESS_CONFIG_FILE_NAME, {
     workDir: `./${workDirName}`,
     maxRepairs: options.maxRepairs ?? 2,
     taskTimeoutMinutes: 60,
     commandTimeoutMinutes: 10,
-    setup: [[process.execPath, 'tools/prepare.mjs']],
-    checks: [[process.execPath, 'tools/run-checks.mjs']],
   });
   const taskPath = await writeJsonFile(configDir, 'task.json', {
     id: 'greet-all',
@@ -607,6 +621,7 @@ export async function createLocalTarget(options: LocalTargetOptions = {}): Promi
     repo,
     configDir,
     configPath,
+    projectPath: path.join(repo, PROJECT_CONFIG_FILE_NAME),
     taskPath,
     workDir: path.join(configDir, workDirName),
     bin,

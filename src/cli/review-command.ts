@@ -10,7 +10,8 @@
  * publishes, is decided by the modules below and is printed here.
  */
 import path from 'node:path';
-import { ConfigError, loadHarnessConfig, resolveWorkDir } from '../config/load.js';
+import { ConfigError, loadConfiguration, resolveWorkDir } from '../config/load.js';
+import { projectConfigFile } from '../config/paths.js';
 import type { ReviewScanContext, ReviewSummary } from '../reviews/contract.js';
 import { ReviewError } from '../reviews/contract.js';
 import { createGitHubReviewClient, resolveAppPrivateKey } from '../reviews/github.js';
@@ -100,10 +101,14 @@ async function reviewCommand(
   context: CliContext,
 ): Promise<number> {
   const { cwd, io } = context;
-  const { config: configArgument, limit: limitArgument } = options;
+  const { config: configArgument, project: projectArgument, limit: limitArgument } = options;
 
-  if (configArgument === undefined) {
-    io.err(`error: review ${subcommand} requires ${listOptions(['--config'])}\n${USAGE_HINT}`);
+  if (configArgument === undefined || projectArgument === undefined) {
+    const missing = [
+      configArgument === undefined ? '--config' : undefined,
+      projectArgument === undefined ? '--project' : undefined,
+    ].filter((name): name is string => name !== undefined);
+    io.err(`error: review ${subcommand} requires ${listOptions(missing)}\n${USAGE_HINT}`);
     return EXIT_USAGE;
   }
   let limit: number | undefined;
@@ -118,10 +123,14 @@ async function reviewCommand(
     limit = parsed;
   }
 
+  // A review never opens a working copy: the connected project's root is read
+  // for its configuration only, and the pull request itself is read from
+  // GitHub's own record (docs/WORKFLOW.md §9).
   const configPath = path.resolve(cwd, configArgument);
+  const projectPath = projectConfigFile(path.resolve(cwd, projectArgument));
   let config;
   try {
-    config = await loadHarnessConfig(configPath);
+    config = (await loadConfiguration(configPath, projectPath)).config;
   } catch (cause) {
     if (cause instanceof ConfigError) {
       io.err(`error: ${cause.message}`);
@@ -134,19 +143,22 @@ async function reviewCommand(
   if (review === undefined) {
     io.err(
       [
-        `error: ${configPath} has no "review" object, so there is nothing to review.`,
-        'A review command needs one; docs/WORKFLOW.md section 9 defines it.',
+        `error: the configuration composed from ${configPath} and ${projectPath} has no review ` +
+          'path, so there is nothing to review.',
+        'A review command needs the harness configuration\'s "reviewer" object, and the ' +
+          'project\'s "source" and "delivery"; docs/WORKFLOW.md section 9 defines them.',
       ].join('\n'),
     );
     return EXIT_INPUT_ERROR;
   }
   const source: JiraSourceConfig | undefined = config.source;
   if (source === undefined) {
-    // The schema refuses a review without a source; this is the same refusal
+    // The loader composes a review only with a source; this is the same refusal
     // said where a person reads it, should that ever change.
     io.err(
-      `error: ${configPath} configures a review but no "source": a review scans the Jira tickets ` +
-        'that connection reports as being in review.',
+      `error: the configuration composed from ${configPath} and ${projectPath} gives the ` +
+        'reviewer no "source": a review scans the Jira tickets that connection reports as being ' +
+        'in review.',
     );
     return EXIT_INPUT_ERROR;
   }

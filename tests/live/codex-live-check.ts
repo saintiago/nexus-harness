@@ -10,7 +10,7 @@
  *
  * ## Selecting the runtime
  *
- * `npm run test:live -- --config harness.config.json` runs the exercises with the
+ * `npm run test:live -- --config nexus.config.json` runs the exercises with the
  * agent, repair allowance, and numeric limits that file selects, loaded through
  * the harness's own schema and path rules. The fixture keeps the repository, the
  * output directory, the task, the setup, and the checks its own: a supplied
@@ -78,7 +78,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { CODEX_EXECUTABLE } from '../../src/agents/codex/runtime.js';
-import { ConfigError, loadHarnessConfig } from '../../src/config/load.js';
+import { ConfigError, loadHarnessFile } from '../../src/config/load.js';
+import { HARNESS_CONFIG_FILE_NAME, PROJECT_CONFIG_FILE_NAME } from '../../src/config/paths.js';
 import { planLaunch } from '../../src/process/launch.js';
 import type {
   AgentSelection,
@@ -485,7 +486,7 @@ export interface LiveTarget {
   readonly parent: string;
   /** The source repository the run is given: one commit, and a clean checkout of it. */
   readonly repo: string;
-  /** The configuration file describing this project's own commands. */
+  /** The Nexus-wide configuration file the run is given. */
   readonly configPath: string;
   /** The task file the run is asked to complete. */
   readonly taskPath: string;
@@ -575,6 +576,16 @@ export async function createLiveTarget(options: LiveTargetOptions = {}): Promise
   if (repairFixture) {
     files['tools/live-repair-fixture.mjs'] = REPAIR_FIXTURE_SOURCE;
   }
+  // The project's own configuration is part of the repository it describes: it
+  // carries the fixture's commands, and the run clones it with the checkout.
+  files[PROJECT_CONFIG_FILE_NAME] = `${JSON.stringify(
+    {
+      setup: [[process.execPath, 'tools/prepare.mjs']],
+      checks: [[process.execPath, 'tools/run-checks.mjs']],
+    },
+    null,
+    2,
+  )}\n`;
   for (const [name, text] of Object.entries(files)) {
     const file = path.join(repo, name);
     await mkdir(path.dirname(file), { recursive: true });
@@ -590,7 +601,7 @@ export async function createLiveTarget(options: LiveTargetOptions = {}): Promise
   await mkdir(inputs, { recursive: true });
   // The output directory resolves from the configuration file's own directory
   // and is deliberately outside the source repository (docs/WORKFLOW.md §1, §3).
-  const configPath = path.join(inputs, 'harness.config.json');
+  const configPath = path.join(inputs, HARNESS_CONFIG_FILE_NAME);
   await writeFile(
     configPath,
     `${JSON.stringify(
@@ -599,8 +610,6 @@ export async function createLiveTarget(options: LiveTargetOptions = {}): Promise
         maxRepairs: options.maxRepairs ?? 2,
         taskTimeoutMinutes: options.taskTimeoutMinutes ?? 15,
         commandTimeoutMinutes: options.commandTimeoutMinutes ?? 5,
-        setup: [[process.execPath, 'tools/prepare.mjs']],
-        checks: [[process.execPath, 'tools/run-checks.mjs']],
         ...(options.agent === undefined ? {} : { agent: options.agent }),
       },
       null,
@@ -1154,7 +1163,7 @@ export type VerifierArguments =
   | { readonly ok: false; readonly message: string };
 
 const VERIFIER_USAGE = [
-  'usage: npm run test:live [-- --config harness.config.json]',
+  'usage: npm run test:live [-- --config nexus.config.json]',
   '',
   'Without --config the exercises use the documented default: the ordinary Codex launch',
   "(`codex`), 2 repair turns, and the fixture's own task and command limits.",
@@ -1207,12 +1216,12 @@ const DEFAULT_SELECTION: VerificationSelection = {
 };
 
 /**
- * What the check runs with: the selected configuration's agent, repair
- * allowance, and limits, or the documented defaults. The loaded configuration's
- * project fields are deliberately not returned: the exercises supply their own
- * repository, output directory, task, setup, and checks, and a verifier that ran
- * the configured project's commands would be a different, quieter thing than the
- * one this file documents (docs/WORKFLOW.md §3, "Opt-in live verification").
+ * What the check runs with: the Nexus-wide configuration's agent, repair
+ * allowance, and limits, or the documented defaults. Only the harness
+ * configuration is read — the exercises supply their own repository, output
+ * directory, task, setup, and checks, and a verifier that ran the connected
+ * project's commands would be a different, quieter thing than the one this file
+ * documents (docs/WORKFLOW.md §3, "Opt-in live verification").
  */
 async function selectionFrom(
   configPath: string | null,
@@ -1226,7 +1235,7 @@ async function selectionFrom(
 
   let config;
   try {
-    config = await loadHarnessConfig(path.resolve(configPath));
+    config = await loadHarnessFile(path.resolve(configPath));
   } catch (cause) {
     const said = cause instanceof ConfigError ? cause.message : messageOf(cause);
     return {

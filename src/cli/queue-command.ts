@@ -20,7 +20,8 @@
  * were (docs/WORKFLOW.md §11).
  */
 import path from 'node:path';
-import { ConfigError, escalationTiers, loadHarnessConfig, resolveWorkDir } from '../config/load.js';
+import { ConfigError, escalationTiers, loadConfiguration, resolveWorkDir } from '../config/load.js';
+import { projectConfigFile } from '../config/paths.js';
 import { createGitHubCompletion } from '../delivery/completion.js';
 import { createGitHubDelivery } from '../delivery/github.js';
 import type {
@@ -91,35 +92,40 @@ interface QueueCommandOptions {
  *
  * A queue completes a ticket through a chain of three configured pieces, so a
  * configuration that cannot complete one is refused before any credential is
- * resolved. The loader already refuses a `review` without a `source`, and a
- * `completion` whose repository, App login, App id, or check name disagrees with
- * the configured review; what is left for the queue itself is that all three
- * objects are there, because every other command treats them as optional.
+ * resolved. The loader already refuses a completion policy whose App, login,
+ * or check disagrees with the configured reviewer; what is left for the queue
+ * itself is that all three objects are there, because other commands treat
+ * them as optional.
  */
-function queueConfigurationProblem(config: HarnessConfig, configPath: string): string | null {
+function queueConfigurationProblem(
+  config: HarnessConfig,
+  harnessPath: string,
+  projectPath: string,
+): string | null {
   if (config.source === undefined) {
     return (
-      `${configPath} has no "source" object, so there is no queue to take tickets from ` +
+      `${projectPath} has no "source" object, so there is no queue to take tickets from ` +
       '(docs/WORKFLOW.md section 5).'
-    );
-  }
-  if (config.review === undefined) {
-    return (
-      `${configPath} has no "review" object, so a ticket could never be reviewed before it is ` +
-      'completed. A queue command needs one; docs/WORKFLOW.md section 9 defines it.'
     );
   }
   if (config.delivery === undefined) {
     return (
-      `${configPath} has no "delivery" object, so a passed attempt would stay local and no pull ` +
+      `${projectPath} has no "delivery" object, so a passed attempt would stay local and no pull ` +
       'request could be completed. A queue command needs one; docs/WORKFLOW.md section 8 defines it.'
+    );
+  }
+  if (config.review === undefined) {
+    return (
+      `${harnessPath} has no "reviewer" object, so a ticket could never be reviewed before it is ` +
+      'completed. A queue command needs the Nexus-wide reviewer integration; docs/WORKFLOW.md ' +
+      'section 9 defines it.'
     );
   }
   const delivery = config.delivery;
   const completion = delivery.completion;
   if (completion === undefined) {
     return (
-      `${configPath} configures "delivery" without "delivery.completion", so nothing would ever ` +
+      `${projectPath} configures "delivery" without "delivery.completion", so nothing would ever ` +
       'mark a ticket Done. A queue command needs that object; docs/WORKFLOW.md section 10 defines ' +
       'it.'
     );
@@ -256,11 +262,12 @@ function exitCodeForQueue(summary: QueueSummary): number {
  */
 async function queueCommand(options: QueueCommandOptions, context: CliContext): Promise<number> {
   const { mode, configPath, repoPath } = options;
+  const projectPath = projectConfigFile(repoPath);
   const { io } = context;
 
   let config: HarnessConfig;
   try {
-    config = await loadHarnessConfig(configPath);
+    config = (await loadConfiguration(configPath, projectPath)).config;
   } catch (cause) {
     if (cause instanceof ConfigError) {
       io.err(`error: ${cause.message}`);
@@ -269,7 +276,7 @@ async function queueCommand(options: QueueCommandOptions, context: CliContext): 
     throw cause;
   }
 
-  const problem = queueConfigurationProblem(config, configPath);
+  const problem = queueConfigurationProblem(config, configPath, projectPath);
   if (problem !== null) {
     io.err(`error: ${problem}`);
     return EXIT_INPUT_ERROR;

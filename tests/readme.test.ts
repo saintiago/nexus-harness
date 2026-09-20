@@ -28,7 +28,8 @@ import { existsSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { loadHarnessConfig, loadTask, resolveWorkDir } from '../src/config/load.js';
+import { loadConfiguration, loadTask, resolveWorkDir } from '../src/config/load.js';
+import { HARNESS_CONFIG_FILE_NAME, PROJECT_CONFIG_FILE_NAME } from '../src/config/paths.js';
 import type { RunReport } from '../src/shared/types.js';
 import {
   BUILT_CLI,
@@ -203,8 +204,10 @@ interface Documented {
   readonly parent: string;
   /** Where the document's `/tmp/nexus-demo/tiny-project` is here. */
   readonly project: string;
-  /** Where the document's `harness.config.json` is here. */
+  /** Where the document's Nexus-wide `nexus.config.json` is here. */
   readonly configPath: string;
+  /** Where the project configuration the document commits in the project is. */
+  readonly projectConfigPath: string;
   readonly taskPath: string;
   /** The output directory the document's `workDir` resolves to. */
   readonly workDir: string;
@@ -240,7 +243,8 @@ async function followTheDocument(plans: readonly FakePlan[] = []): Promise<Docum
   return {
     parent,
     project,
-    configPath: path.join(parent, 'harness', 'harness.config.json'),
+    configPath: path.join(parent, 'harness', HARNESS_CONFIG_FILE_NAME),
+    projectConfigPath: path.join(project, PROJECT_CONFIG_FILE_NAME),
     taskPath: path.join(parent, 'harness', 'task.json'),
     workDir: path.join(parent, 'harness'),
     argv: documentedArguments(demo, 'run').map((argument) => withRoots(argument, parent)),
@@ -538,11 +542,13 @@ describe('the claims the README makes about this repository', () => {
   });
 
   it('shows the output the checked-in example inputs really produce', async () => {
-    // The example inputs the document names still load through the harness's own
-    // loader, and mean what the shown block says they mean.
-    const configPath = path.join(repoRoot, 'harness.config.json');
+    // The two example inputs the document names, and this repository's own
+    // project configuration, still compose through the harness's own loader and
+    // mean what the shown block says they mean.
+    const configPath = path.join(repoRoot, 'docs', 'nexus.config.example.json');
+    const projectPath = path.join(repoRoot, PROJECT_CONFIG_FILE_NAME);
     const taskPath = path.join(repoRoot, 'examples', 'task.json');
-    const config = await loadHarnessConfig(configPath);
+    const { config } = await loadConfiguration(configPath, projectPath);
     const task = await loadTask(taskPath);
     const resolved = resolveWorkDir(config, configPath);
 
@@ -560,7 +566,7 @@ describe('the claims the README makes about this repository', () => {
     // path is read as the placeholder the document uses for it — the comparison
     // below must hold wherever the suite runs, on any platform.
     const printed = asDocumentedOutput(run.stdout);
-    const shown = section('`check-config`: validate the two input files');
+    const shown = section('`check-config`: validate the composed configuration');
 
     // Every line the CLI prints is a line the document shows.
     for (const line of printed.split('\n')) {
@@ -583,7 +589,7 @@ describe('the claims the README makes about this repository', () => {
     shows('id', task.id);
     shows('acceptanceCriteria', `${String(task.acceptanceCriteria.length)} item(s)`);
     expect(config.setup).toHaveLength(1);
-    expect(config.checks).toHaveLength(2);
+    expect(config.checks).toHaveLength(1);
   });
 
   it('still describes CI as installing reproducibly and running the gate', async () => {

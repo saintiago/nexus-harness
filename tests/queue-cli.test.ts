@@ -18,7 +18,14 @@ import { EXIT_CANCELLED, EXIT_INPUT_ERROR, EXIT_OK, EXIT_USAGE } from '../src/cl
 import type { CliContext, InterruptSignals } from '../src/cli/context.js';
 import { acquireIntakeLock, intakeLockPath } from '../src/sources/receipts.js';
 import { git, installFakeGhCompletion, fakeCompletionCalls } from './fixtures/local-target.js';
-import { cleanupTempDirectories, createTempDir, writeJsonFile } from './support.js';
+import { HARNESS_CONFIG_FILE_NAME, PROJECT_CONFIG_FILE_NAME } from '../src/config/paths.js';
+import {
+  cleanupTempDirectories,
+  createTempDir,
+  splitConfig,
+  writeJsonFile,
+  type JsonObject,
+} from './support.js';
 
 afterEach(async () => {
   await cleanupTempDirectories();
@@ -38,35 +45,15 @@ const SOURCE = {
   tokenEnv: 'JIRA_API_TOKEN',
 };
 
-/** The review and delivery sides of one queue, as they must agree. */
-function queueConfig(workDir: string): Record<string, unknown> {
+/** The Nexus-wide side of the fixture queue: limits, launch, and reviewer. */
+function queueHarnessConfig(workDir: string): Record<string, unknown> {
   return {
     workDir,
     maxRepairs: 1,
     taskTimeoutMinutes: 5,
     commandTimeoutMinutes: 5,
-    setup: [],
-    checks: [['node', '--version']],
-    delivery: {
-      type: 'github',
-      repository: 'saintiago/nexus-harness',
-      baseBranch: 'main',
-      completion: {
-        lensApp: 'nexus-lens[bot]',
-        lensAppId: 5_001_141,
-        lensCheckName: 'Nexus Lens review',
-        reviewerTokenEnv: 'NEXUS_LENS_TOKEN',
-        postMergeWorkflows: ['ci.yml'],
-        toDoStatus: 'To Do',
-        doneStatus: 'Done',
-        pollIntervalSeconds: 5,
-        deadlineSeconds: 30,
-      },
-    },
-    source: SOURCE,
-    review: {
-      type: 'github',
-      repository: 'saintiago/nexus-harness',
+    agent: { runtime: 'codex', command: ['codex'] },
+    reviewer: {
       app: {
         appId: 5_001_141,
         installationId: 163_007_360,
@@ -76,25 +63,57 @@ function queueConfig(workDir: string): Record<string, unknown> {
       reviewer: { runtime: 'codex', command: ['codex'] },
       checkName: 'Nexus Lens review',
     },
+    completion: {
+      lensApp: 'nexus-lens[bot]',
+      lensAppId: 5_001_141,
+      lensCheckName: 'Nexus Lens review',
+      reviewerTokenEnv: 'NEXUS_LENS_TOKEN',
+      pollIntervalSeconds: 5,
+      deadlineSeconds: 30,
+    },
+  };
+}
+
+/** The connected project's own side: its commands, queue, and destination. */
+function queueProjectConfig(): Record<string, unknown> {
+  return {
+    setup: [],
+    checks: [['node', '--version']],
+    source: SOURCE,
+    delivery: {
+      type: 'github',
+      repository: 'saintiago/nexus-harness',
+      baseBranch: 'main',
+      completion: {
+        postMergeWorkflows: ['ci.yml'],
+        toDoStatus: 'To Do',
+        doneStatus: 'Done',
+      },
+    },
   };
 }
 
 /**
- * The same configuration with one Nexus Lens identity on both sides, which the
- * loader requires when the queue composes the review scan and the completion
- * gate for the pull request it delivered.
+ * The whole fixture queue as one field map, for a test that replaces parts of
+ * it: the fixture itself routes each field to the file that owns it.
+ */
+function queueConfig(workDir: string): Record<string, unknown> {
+  return { ...queueHarnessConfig(workDir), ...queueProjectConfig() };
+}
+
+/**
+ * The same configuration with a different Nexus Lens identity, still one
+ * identity on both sides of the harness configuration: the reviewer that scans
+ * the pull request and the completion gate that requires its check.
  */
 function lensQueueConfig(workDir: string): Record<string, unknown> {
   const config = queueConfig(workDir);
-  const review = config['review'] as Record<string, unknown>;
-  const app = review['app'] as Record<string, unknown>;
+  const reviewer = config['reviewer'] as Record<string, unknown>;
+  const app = reviewer['app'] as Record<string, unknown>;
   app['appId'] = 123;
   app['login'] = 'nexus-lens';
-  review['checkName'] = 'Nexus Lens';
-  const completion = (config['delivery'] as Record<string, unknown>)['completion'] as Record<
-    string,
-    unknown
-  >;
+  reviewer['checkName'] = 'Nexus Lens';
+  const completion = config['completion'] as Record<string, unknown>;
   completion['lensAppId'] = 123;
   completion['lensApp'] = 'nexus-lens';
   completion['lensCheckName'] = 'Nexus Lens';
@@ -127,14 +146,18 @@ async function cliFixture(parts: {
   const root = await createTempDir();
   const repo = path.join(root, 'target');
   mkdirSync(repo, { recursive: true });
+  const workDir = path.join(root, 'out');
+  // The connected project's own configuration is committed with the checkout
+  // the queue prepares and clones from; the Nexus-wide file sits beside it.
+  const config = (parts.config ?? queueConfig)(workDir);
+  const { harness, project } = splitConfig(config as JsonObject);
+  await writeJsonFile(repo, PROJECT_CONFIG_FILE_NAME, project);
   git(repo, 'init', '--quiet', '--initial-branch=main');
   await writeFile(path.join(repo, 'README.md'), 'the target repository\n', 'utf8');
   git(repo, 'add', '--all');
   git(repo, 'commit', '--quiet', '--message', 'baseline');
 
-  const workDir = path.join(root, 'out');
-  const config = (parts.config ?? queueConfig)(workDir);
-  const configPath = await writeJsonFile(root, 'harness.queue.json', config);
+  const configPath = await writeJsonFile(root, HARNESS_CONFIG_FILE_NAME, harness);
 
   // The two tokens and the App key the queue resolves before it runs anything.
   const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
@@ -636,7 +659,6 @@ describe('the queue command line', () => {
       config: (workDir) => {
         const config = queueConfig(workDir);
         delete config['source'];
-        delete config['review'];
         return config;
       },
     });
@@ -648,10 +670,29 @@ describe('the queue command line', () => {
     ).toBe(EXIT_INPUT_ERROR);
     expect(output(withoutSource)).toContain('has no "source" object');
 
+    const withoutDelivery = await cliFixture({
+      config: (workDir) => {
+        const config = queueConfig(workDir);
+        delete config['delivery'];
+        return config;
+      },
+    });
+    expect(
+      await runCli(
+        ['queue', 'run', '--config', withoutDelivery.configPath, '--repo', withoutDelivery.repo],
+        withoutDelivery.context,
+      ),
+    ).toBe(EXIT_INPUT_ERROR);
+    expect(output(withoutDelivery)).toContain('has no "delivery" object');
+    expect(output(withoutDelivery)).toContain(
+      path.join(withoutDelivery.repo, PROJECT_CONFIG_FILE_NAME),
+    );
+    expect(output(withoutDelivery)).not.toContain('has no "reviewer" object');
+
     const withoutReview = await cliFixture({
       config: (workDir) => {
         const config = queueConfig(workDir);
-        delete config['review'];
+        delete config['reviewer'];
         return config;
       },
     });
@@ -661,7 +702,7 @@ describe('the queue command line', () => {
         withoutReview.context,
       ),
     ).toBe(EXIT_INPUT_ERROR);
-    expect(output(withoutReview)).toContain('has no "review" object');
+    expect(output(withoutReview)).toContain('has no "reviewer" object');
 
     const withoutCompletion = await cliFixture({
       config: (workDir) => {
@@ -686,28 +727,11 @@ describe('the queue command line', () => {
     expect(output(withoutCompletion)).toContain('without "delivery.completion"');
   });
 
-  it('refuses a review that does not publish the check the completion gate requires', async () => {
-    const otherRepository = await cliFixture({
-      config: (workDir) => {
-        const config = queueConfig(workDir);
-        (config['review'] as Record<string, unknown>)['repository'] = 'someone/else';
-        return config;
-      },
-    });
-    expect(
-      await runCli(
-        ['queue', 'run', '--config', otherRepository.configPath, '--repo', otherRepository.repo],
-        otherRepository.context,
-      ),
-    ).toBe(EXIT_INPUT_ERROR);
-    // The loader owns this agreement: the queue never sees a configuration in
-    // which the review and the completion path describe different artifacts.
-    expect(output(otherRepository)).toContain('completion Lens identity must match');
-
+  it('refuses a reviewer that does not publish the check the completion gate requires', async () => {
     const otherCheck = await cliFixture({
       config: (workDir) => {
         const config = queueConfig(workDir);
-        (config['review'] as Record<string, unknown>)['checkName'] = 'Something else';
+        (config['completion'] as Record<string, unknown>)['lensCheckName'] = 'Something else';
         return config;
       },
     });
@@ -717,7 +741,24 @@ describe('the queue command line', () => {
         otherCheck.context,
       ),
     ).toBe(EXIT_INPUT_ERROR);
-    expect(output(otherCheck)).toContain('completion Lens identity must match');
+    // The loader owns this agreement: the queue never sees a configuration in
+    // which the reviewer and the completion gate name different artifacts.
+    expect(output(otherCheck)).toContain('must name the same Nexus Lens App, login and check');
+
+    const otherLogin = await cliFixture({
+      config: (workDir) => {
+        const config = queueConfig(workDir);
+        (config['completion'] as Record<string, unknown>)['lensApp'] = 'someone-else[bot]';
+        return config;
+      },
+    });
+    expect(
+      await runCli(
+        ['queue', 'run', '--config', otherLogin.configPath, '--repo', otherLogin.repo],
+        otherLogin.context,
+      ),
+    ).toBe(EXIT_INPUT_ERROR);
+    expect(output(otherLogin)).toContain('must name the same Nexus Lens App, login and check');
   });
 
   it('exits successfully when the queue is empty and claims nothing', async () => {

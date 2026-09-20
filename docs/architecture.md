@@ -10,6 +10,8 @@ One TypeScript CLI application, a few modules, and local files. No services, fra
 
 **Revision: 2026-09-20 — the serial queue.** Two opt-in commands compose the modules above — the Jira source, the retained-workspace runner, the delivery step, the Nexus Lens scan, and the completion pass — into one serial lifecycle per ticket, and add one small module for the source readiness between two workspaces. The loop starts no agent of its own, holds no state of its own, and adds no service, scheduler, or queue: [spec.md](spec.md) §11 defines the behavior and [WORKFLOW.md](WORKFLOW.md) §11 the commands.
 
+**Revision: 2026-09-20 — one harness configuration, one file per connected project.** The configuration split [WORKFLOW.md](WORKFLOW.md) §1 defines is implemented in the existing `src/config/` module: `schema.ts` validates the Nexus-wide harness configuration and the connected project's `nexus.project.json` as two strict documents, `paths.ts` owns the two file names, and `load.ts` composes them into the effective `HarnessConfig` every command already runs on. No other module learns about the split: the runner, the source coordinator, the delivery step, the review scan, and the queue loop take the same configuration object they took before. `check-config` prints both files and what they composed to. [spec.md](spec.md) §2 defines the behavior.
+
 ## 1. Keep the existing application
 
 Retain the modules introduced by the completed tasks:
@@ -62,7 +64,14 @@ Only `agents/codex/` talks to a coding runtime. Only `workspace/` handles Git/wo
 
 `queue/loop.ts` is the one module that decides the order of a serial queue invocation, and it decides nothing else. Its phases are ordinary functions the CLI composed from the modules above — `takeOneItem` in `sources/coordinator.ts` for one ticket through the coding attempt and the delivery step, `scanReviews` in `reviews/scan.ts` narrowed to that ticket, the completion pass in `sources/completion.ts` narrowed to that ticket, and `refreshSource` in `workspace/refresh.ts` for the checkout between two workspaces. It imports no connector, resolves no credential, starts no agent, keeps no state across invocations, and adds no configuration field: `src/cli/queue-command.ts` is where the credentials are resolved, the one intake lock is held for the whole invocation, and the exit code is decided.
 
-`config.ts` validates the optional `agent` object, supplies the legacy default when it is omitted, and applies the path rules in WORKFLOW. CLI composition passes the effective selection to the existing agent adapter. The runner does not interpret profiles, model IDs, credentials, CLI events, or provider APIs.
+`config/` reads two files and composes them: the Nexus-wide harness configuration owns where runs write, the limits, the coding launches, and the reviewer integration; the connected project's `nexus.project.json` owns its setup/checks, its Jira connection, and its GitHub destination. `schema.ts` validates each on its own and refuses a field the other file owns; `load.ts` composes them into the effective configuration, resolves the launch paths against the harness file's directory, and refuses a project completion without the harness completion policy. A review is composed only when the harness declares a reviewer and the project declares both source and delivery; the CLI enforces the selected command's required integrations. The optional `agent` object is validated there, with the documented ordinary Codex launch supplied when it is omitted. CLI composition passes the effective selection to the existing agent adapter; the runner never sees a file, its path, or which file a field came from, and it does not interpret profiles, model IDs, credentials, CLI events, or provider APIs.
+
+Keep the configuration's ownership explicit:
+
+| Concern | File |
+| --- | --- |
+| Output directory, limits, coding launches and tiers, reviewer integration, completion policy | The Nexus-wide harness configuration, named by `--config` |
+| Setup/check commands, the Jira connection, the GitHub destination and its completion outcomes | `nexus.project.json` in the connected repository's root |
 
 Keep these two configuration responsibilities separate:
 

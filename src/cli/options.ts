@@ -7,6 +7,7 @@
  */
 export interface ParsedOptions {
   readonly repo: string | undefined;
+  readonly project: string | undefined;
   readonly config: string | undefined;
   readonly task: string | undefined;
   readonly limit: string | undefined;
@@ -16,14 +17,17 @@ export type OptionParse =
   | { readonly ok: true; readonly options: ParsedOptions }
   | { readonly ok: false; readonly message: string };
 /**
- * The value options each command accepts, mapped to what a value is. `--repo` is
- * a `run`/`source` option and nothing else: `check-config` reads files and has no
- * source repository, so it reports `--repo` as the unknown option it is for that
- * command. `--limit` belongs to `source run` alone, and `--task` is refused on
- * every source command: a source task comes from the source, not from a file.
+ * The value options each command accepts, mapped to what a value is. `--repo`
+ * names the connected project's checkout, and only the commands that clone from
+ * one take it; the read-only commands that need that project's configuration
+ * take `--project` instead, so nothing implies they open a working copy.
+ * `--limit` belongs to `source run` and `review scan`, and `--task` is refused
+ * on every source command: a source task comes from the source, not from a
+ * file.
  */
 export const CHECK_CONFIG_OPTIONS: ReadonlyMap<string, string> = new Map([
   ['--config', 'a path value'],
+  ['--project', 'a path value'],
   ['--task', 'a path value'],
 ]);
 export const RUN_OPTIONS: ReadonlyMap<string, string> = new Map([
@@ -33,6 +37,7 @@ export const RUN_OPTIONS: ReadonlyMap<string, string> = new Map([
 ]);
 export const SOURCE_LIST_OPTIONS: ReadonlyMap<string, string> = new Map([
   ['--config', 'a path value'],
+  ['--project', 'a path value'],
 ]);
 export const SOURCE_RUN_OPTIONS: ReadonlyMap<string, string> = new Map([
   ['--repo', 'a path value'],
@@ -45,10 +50,12 @@ export const SOURCE_WATCH_OPTIONS: ReadonlyMap<string, string> = new Map([
 ]);
 export const REVIEW_SCAN_OPTIONS: ReadonlyMap<string, string> = new Map([
   ['--config', 'a path value'],
+  ['--project', 'a path value'],
   ['--limit', 'a positive integer value'],
 ]);
 export const REVIEW_WATCH_OPTIONS: ReadonlyMap<string, string> = new Map([
   ['--config', 'a path value'],
+  ['--project', 'a path value'],
 ]);
 export const QUEUE_RUN_OPTIONS: ReadonlyMap<string, string> = new Map([
   ['--repo', 'a path value'],
@@ -104,6 +111,7 @@ export function parseOptions(
     ok: true,
     options: {
       repo: values.get('--repo'),
+      project: values.get('--project'),
       config: values.get('--config'),
       task: values.get('--task'),
       limit: values.get('--limit'),

@@ -9,7 +9,8 @@
  * really exists.
  */
 import path from 'node:path';
-import { ConfigError, loadHarnessConfig, loadTask, resolveWorkDir } from '../config/load.js';
+import { ConfigError, loadConfiguration, loadTask, resolveWorkDir } from '../config/load.js';
+import { projectConfigFile } from '../config/paths.js';
 import { ReportError } from '../reporting/errors.js';
 import { RunCancelledError, RunTimeoutError } from '../runs/contracts.js';
 import type { RunTaskRequest, RunTaskResult } from '../runs/contracts.js';
@@ -128,7 +129,8 @@ export async function runCommand(options: ParsedOptions, context: CliContext): P
   }
 
   // CLI paths resolve from the invocation directory; workDir resolves from the
-  // configuration file instead (see resolveWorkDir).
+  // harness configuration file instead (see resolveWorkDir), and the project
+  // configuration is read from the connected repository's own root.
   const repoPath = path.resolve(cwd, repoArgument);
   const configPath = path.resolve(cwd, configArgument);
   const taskPath = path.resolve(cwd, taskArgument);
@@ -136,7 +138,7 @@ export async function runCommand(options: ParsedOptions, context: CliContext): P
   let config: HarnessConfig;
   let task: Task;
   try {
-    config = await loadHarnessConfig(configPath);
+    config = (await loadConfiguration(configPath, projectConfigFile(repoPath))).config;
     task = await loadTask(taskPath);
   } catch (cause) {
     if (cause instanceof ConfigError) {

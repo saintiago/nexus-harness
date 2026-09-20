@@ -1443,7 +1443,7 @@ describe('a run whose baseline passes', () => {
       holdMs: 0,
       logText: 'turn 1: rewriting the configuration it found in the working copy\n',
       extras: [
-        { file: 'harness.config.json', text: workspaceConfig },
+        { file: 'nexus.project.json', text: workspaceConfig },
         { file: 'task.json', text: workspaceTask },
       ],
     });
@@ -1475,7 +1475,7 @@ describe('a run whose baseline passes', () => {
     expect(report.attempts[0]?.checks?.checks.map((entry) => entry.command)).toEqual(config.checks);
 
     // The copies are still in the working copy, exactly as the turn left them.
-    expect(await readText(path.join(result.run.workspacePath, 'harness.config.json'))).toBe(
+    expect(await readText(path.join(result.run.workspacePath, 'nexus.project.json'))).toBe(
       workspaceConfig,
     );
     expect(await readText(path.join(result.run.workspacePath, 'task.json'))).toBe(workspaceTask);

@@ -10,7 +10,8 @@
  */
 
 import { afterEach, describe, expect, it } from 'vitest';
-import { loadHarnessConfig } from '../src/config/load.js';
+import { loadConfiguration } from '../src/config/load.js';
+import { HARNESS_CONFIG_FILE_NAME, PROJECT_CONFIG_FILE_NAME } from '../src/config/paths.js';
 import type { JiraSourceConfig } from '../src/shared/types.js';
 import { SourceError, SourceFeedbackError } from '../src/sources/contract.js';
 import type {
@@ -29,7 +30,8 @@ import { queueJql } from '../src/sources/jira/search.js';
 import {
   cleanupTempDirectories,
   createTempDir,
-  documentedConfig,
+  documentedHarnessConfig,
+  documentedProjectConfig,
   writeJsonFile,
 } from './support.js';
 
@@ -230,11 +232,16 @@ function descriptionFor(...criteria: string[]): Record<string, unknown> {
 
 async function loadSource(raw: Record<string, unknown>): Promise<JiraSourceConfig> {
   const directory = await createTempDir();
-  const file = await writeJsonFile(directory, 'harness.config.json', {
-    ...documentedConfig,
+  const harnessPath = await writeJsonFile(
+    directory,
+    HARNESS_CONFIG_FILE_NAME,
+    documentedHarnessConfig,
+  );
+  const projectPath = await writeJsonFile(directory, PROJECT_CONFIG_FILE_NAME, {
+    ...documentedProjectConfig,
     source: raw,
   });
-  const config = await loadHarnessConfig(file);
+  const { config } = await loadConfiguration(harnessPath, projectPath);
   if (config.source === undefined) {
     throw new Error('the configuration loaded without a source');
   }
@@ -277,8 +284,17 @@ describe('the Jira source configuration', () => {
 
   it('does not give a configuration that names no source one', async () => {
     const directory = await createTempDir();
-    const file = await writeJsonFile(directory, 'harness.config.json', documentedConfig);
-    const config = await loadHarnessConfig(file);
+    const harnessPath = await writeJsonFile(
+      directory,
+      HARNESS_CONFIG_FILE_NAME,
+      documentedHarnessConfig,
+    );
+    const projectPath = await writeJsonFile(
+      directory,
+      PROJECT_CONFIG_FILE_NAME,
+      documentedProjectConfig,
+    );
+    const { config } = await loadConfiguration(harnessPath, projectPath);
 
     expect(config.source).toBeUndefined();
     expect('source' in config).toBe(false);

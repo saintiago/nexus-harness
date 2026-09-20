@@ -1,44 +1,77 @@
-import { writeFile } from 'node:fs/promises';
+/**
+ * The configuration contract: two files with disjoint ownership, composed into
+ * the effective configuration every command runs on (docs/WORKFLOW.md §1).
+ *
+ * The tests below are grouped by what they prove: what each file may contain,
+ * what each file is refused for carrying, what the two must supply to each
+ * other, and that one harness configuration really does serve two different
+ * connected projects.
+ */
+
+import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   ConfigError,
   escalationTiers,
-  loadHarnessConfig,
+  loadConfiguration,
   loadTask,
   resolveWorkDir,
 } from '../src/config/load.js';
+import { HARNESS_CONFIG_FILE_NAME, PROJECT_CONFIG_FILE_NAME } from '../src/config/paths.js';
 import type { HarnessConfig, Task } from '../src/shared/types.js';
 import {
   cleanupTempDirectories,
   createTempDir,
   documentedConfig,
+  documentedHarnessConfig,
+  documentedProjectConfig,
   documentedTask,
   repoRoot,
+  writeConfigPair,
   writeJsonFile,
   type JsonObject,
 } from './support.js';
 
 afterEach(cleanupTempDirectories);
 
-function configWith(overrides: JsonObject): JsonObject {
-  return { ...documentedConfig, ...overrides };
-}
-
-function configWithout(key: keyof typeof documentedConfig): JsonObject {
-  const copy: JsonObject = { ...documentedConfig };
-  delete copy[key];
-  return copy;
-}
-
-async function loadConfig(value: unknown): Promise<HarnessConfig> {
+/** One field map, written as the two files that own its fields. */
+async function loadConfig(fields: JsonObject = documentedConfig): Promise<HarnessConfig> {
   const directory = await createTempDir();
-  return loadHarnessConfig(await writeJsonFile(directory, 'harness.config.json', value));
+  const { harnessPath, projectPath } = await writeConfigPair(directory, directory, fields);
+  return (await loadConfiguration(harnessPath, projectPath)).config;
 }
 
-async function loadTaskValue(value: unknown): Promise<Task> {
+/** One harness configuration, beside the documented project configuration. */
+async function loadHarness(value: unknown): Promise<HarnessConfig> {
   const directory = await createTempDir();
-  return loadTask(await writeJsonFile(directory, 'task.json', value));
+  const harnessPath = await writeJsonFile(directory, HARNESS_CONFIG_FILE_NAME, value);
+  const projectPath = await writeJsonFile(
+    directory,
+    PROJECT_CONFIG_FILE_NAME,
+    documentedProjectConfig,
+  );
+  return (await loadConfiguration(harnessPath, projectPath)).config;
+}
+
+/** One project configuration, beside the documented harness configuration. */
+async function loadProject(value: unknown): Promise<HarnessConfig> {
+  const directory = await createTempDir();
+  const harnessPath = await writeJsonFile(
+    directory,
+    HARNESS_CONFIG_FILE_NAME,
+    documentedHarnessConfig,
+  );
+  const projectPath = await writeJsonFile(directory, PROJECT_CONFIG_FILE_NAME, value);
+  return (await loadConfiguration(harnessPath, projectPath)).config;
+}
+
+function harnessWith(overrides: JsonObject): JsonObject {
+  return { ...documentedHarnessConfig, ...overrides };
+}
+
+function projectWith(overrides: JsonObject): JsonObject {
+  return { ...documentedProjectConfig, ...overrides };
 }
 
 /** Runs `load` expecting a {@link ConfigError}, and returns it. */
@@ -62,46 +95,136 @@ async function expectRejected(load: () => Promise<unknown>, ...problems: RegExp[
 }
 
 describe('the checked-in examples', () => {
-  it('accepts harness.config.json and examples/task.json unchanged', async () => {
-    const config = await loadHarnessConfig(path.join(repoRoot, 'harness.config.json'));
-    // The six required fields are the documented example's own values; the
-    // optional agent object is this checkout's local launch, which is a Codex
-    // invocation that names the native profile and the model it selects.
-    const { agent, ...fields } = config;
-    expect(fields).toEqual(documentedConfig);
-    expect(agent).toEqual(config.agent);
-    expect(config.agent.runtime).toBe('codex');
-    expect(config.agent.command.slice(1)).toEqual([
+  it('composes the harness and project examples this repository carries', async () => {
+    const harnessPath = path.join(repoRoot, 'docs', 'nexus.config.example.json');
+    const projectPath = path.join(repoRoot, PROJECT_CONFIG_FILE_NAME);
+    const loaded = await loadConfiguration(harnessPath, projectPath);
+
+    // The Nexus-wide example's own fields.
+    expect(loaded.harness.maxRepairs).toBe(2);
+    expect(loaded.harness.taskTimeoutMinutes).toBe(60);
+    expect(loaded.harness.commandTimeoutMinutes).toBe(10);
+    expect(loaded.harness.escalation?.map((tier) => tier.name)).toEqual(['flash', 'astra']);
+    expect(loaded.harness.reviewer?.app.login).toBe('nexus-lens[bot]');
+    expect(loaded.harness.completion?.reviewerTokenEnv).toBe('NEXUS_LENS_TOKEN');
+
+    // The launch prefixes are applied as written: a bare `codex` name stays
+    // bare, for the host launcher's own PATH resolution.
+    expect(loaded.config.agent.command[0]).toBe('codex');
+    expect(loaded.config.agent.command.slice(1)).toEqual([
       '--profile',
-      'deepseek',
+      'nexus-flash',
       '--model',
       'deepseek-flash',
     ]);
-    expect(config.agent.command[0] ?? '').not.toBe('');
+    expect(escalationTiers(loaded.config).map((tier) => tier.name)).toEqual(['flash', 'astra']);
+    expect(loaded.config.workDir).toBe('../.harness');
+
+    // This repository's own project configuration, as it composes.
+    expect(loaded.project.source?.projectKey).toBe('HARN');
+    expect(loaded.project.delivery?.repository).toBe('saintiago/nexus-harness');
+    expect(loaded.config.setup).toEqual([['npm', 'ci']]);
+    expect(loaded.config.checks).toEqual([['npm', 'run', 'validate']]);
+    expect(loaded.config.review).toMatchObject({
+      type: 'github',
+      repository: 'saintiago/nexus-harness',
+      checkName: 'Nexus Lens review',
+      app: { appId: 5001141, installationId: 163007360, login: 'nexus-lens[bot]' },
+    });
+    expect(loaded.config.delivery?.completion?.postMergeWorkflows).toEqual(['ci.yml']);
+    expect(loaded.config.delivery?.completion?.doneStatus).toBe('Done');
 
     const task = await loadTask(path.join(repoRoot, 'examples', 'task.json'));
     expect(task).toEqual(documentedTask);
   });
+
+  it('composes the two credential-free examples with each other', async () => {
+    // The project example is a template, so it is read from the docs folder and
+    // written where a connected repository would carry it: its own root.
+    const harnessPath = path.join(repoRoot, 'docs', 'nexus.config.example.json');
+    const template = await readFile(
+      path.join(repoRoot, 'docs', 'nexus.project.example.json'),
+      'utf8',
+    );
+    const directory = await createTempDir();
+    const projectPath = path.join(directory, PROJECT_CONFIG_FILE_NAME);
+    await writeFile(projectPath, template, 'utf8');
+
+    const loaded = await loadConfiguration(harnessPath, projectPath);
+
+    expect(loaded.project.source?.projectKey).toBe('SAM1');
+    expect(loaded.project.delivery?.repository).toBe('owner/name');
+    expect(loaded.config.review?.repository).toBe('owner/name');
+    expect(loaded.config.delivery?.completion?.postMergeWorkflows).toEqual(['ci.yml']);
+    expect(loaded.config.delivery?.completion?.lensApp).toBe('nexus-lens[bot]');
+    // Nothing in the Nexus-wide example comes from the project sample.
+    expect(loaded.config.workDir).toBe('../.harness');
+    expect(loaded.config.checks).toEqual([['npm', 'run', 'validate']]);
+  });
 });
 
 describe('file and JSON errors', () => {
-  it('names the file it could not read', async () => {
+  it('names the harness file it could not read, and what was expected of it', async () => {
     const directory = await createTempDir();
     const missing = path.join(directory, 'absent.json');
+    const projectPath = await writeJsonFile(
+      directory,
+      PROJECT_CONFIG_FILE_NAME,
+      documentedProjectConfig,
+    );
 
-    const error = await rejectionFrom(() => loadHarnessConfig(missing));
+    const error = await rejectionFrom(() => loadConfiguration(missing, projectPath));
 
     expect(error.file).toBe(missing);
     expect(error.message).toContain(missing);
     expect(error.message).toMatch(/cannot be read/);
+    expect(error.message).toContain(HARNESS_CONFIG_FILE_NAME);
   });
 
-  it('names the file with malformed JSON', async () => {
+  it('names the project file it could not read, and where one belongs', async () => {
     const directory = await createTempDir();
-    const broken = path.join(directory, 'harness.config.json');
-    await writeFile(broken, '{ "workDir": }', 'utf8');
+    const harnessPath = await writeJsonFile(
+      directory,
+      HARNESS_CONFIG_FILE_NAME,
+      documentedHarnessConfig,
+    );
+    const missing = path.join(directory, 'connected-project', PROJECT_CONFIG_FILE_NAME);
 
-    const error = await rejectionFrom(() => loadHarnessConfig(broken));
+    const error = await rejectionFrom(() => loadConfiguration(harnessPath, missing));
+
+    expect(error.file).toBe(missing);
+    expect(error.message).toContain(missing);
+    expect(error.message).toMatch(/cannot be read/);
+    expect(error.message).toContain(PROJECT_CONFIG_FILE_NAME);
+  });
+
+  it('names the harness file with malformed JSON', async () => {
+    const directory = await createTempDir();
+    const broken = path.join(directory, HARNESS_CONFIG_FILE_NAME);
+    await writeFile(broken, '{ "workDir": }', 'utf8');
+    const projectPath = await writeJsonFile(
+      directory,
+      PROJECT_CONFIG_FILE_NAME,
+      documentedProjectConfig,
+    );
+
+    const error = await rejectionFrom(() => loadConfiguration(broken, projectPath));
+
+    expect(error.message).toContain(broken);
+    expect(error.message).toMatch(/not valid JSON/);
+  });
+
+  it('names the project file with malformed JSON', async () => {
+    const directory = await createTempDir();
+    const harnessPath = await writeJsonFile(
+      directory,
+      HARNESS_CONFIG_FILE_NAME,
+      documentedHarnessConfig,
+    );
+    const broken = path.join(directory, PROJECT_CONFIG_FILE_NAME);
+    await writeFile(broken, '{ "setup": }', 'utf8');
+
+    const error = await rejectionFrom(() => loadConfiguration(harnessPath, broken));
 
     expect(error.message).toContain(broken);
     expect(error.message).toMatch(/not valid JSON/);
@@ -118,106 +241,213 @@ describe('file and JSON errors', () => {
   });
 });
 
-describe('configuration validation', () => {
+describe('which file owns which field', () => {
+  it('refuses a project field in the harness configuration, naming the project file', async () => {
+    const projectFields: JsonObject = {
+      setup: documentedProjectConfig.setup,
+      checks: documentedProjectConfig.checks,
+      source: {
+        type: 'jira',
+        siteUrl: 'https://example.atlassian.net',
+        cloudId: '9337c4da-7d33-4c1d-b03c-db207e537f88',
+        projectKey: 'SAM1',
+      },
+      delivery: { type: 'github', repository: 'owner/name', baseBranch: 'main' },
+    };
+    for (const [field, value] of Object.entries(projectFields)) {
+      const error = await rejectionFrom(() => loadHarness(harnessWith({ [field]: value })));
+      expect(error.message).toContain(field);
+      expect(error.message).toContain(PROJECT_CONFIG_FILE_NAME);
+      expect(error.message).toMatch(/belongs to the project configuration/);
+    }
+  });
+
+  it('refuses a Nexus-wide field in the project configuration, naming the harness file', async () => {
+    for (const field of [
+      'workDir',
+      'maxRepairs',
+      'taskTimeoutMinutes',
+      'commandTimeoutMinutes',
+      'agent',
+      'escalation',
+      'reviewer',
+      'completion',
+    ]) {
+      const error = await rejectionFrom(() => loadProject(projectWith({ [field]: 'anything' })));
+      expect(error.message).toContain(field);
+      expect(error.message).toMatch(/belongs to the Nexus-wide harness configuration/);
+      expect(error.message).toContain('--config');
+    }
+  });
+
+  it('refuses a combined single-file configuration instead of falling back to it', async () => {
+    // The retired shape: one file carrying both files' fields. It is read as
+    // the harness configuration and refused for every project field it carries,
+    // rather than silently composed or defaulted.
+    const directory = await createTempDir();
+    const harnessPath = await writeJsonFile(directory, HARNESS_CONFIG_FILE_NAME, documentedConfig);
+    const projectPath = await writeJsonFile(
+      directory,
+      PROJECT_CONFIG_FILE_NAME,
+      documentedProjectConfig,
+    );
+
+    const error = await rejectionFrom(() => loadConfiguration(harnessPath, projectPath));
+
+    expect(error.problems).toHaveLength(2);
+    expect(error.message).toMatch(/setup: /);
+    expect(error.message).toMatch(/checks: /);
+  });
+});
+
+describe('harness configuration validation', () => {
+  function harnessWithout(key: keyof typeof documentedHarnessConfig): JsonObject {
+    const copy: JsonObject = { ...documentedHarnessConfig };
+    delete copy[key];
+    return copy;
+  }
+
   const rejections: Array<[name: string, value: JsonObject, problems: RegExp[]]> = [
-    ['a missing required field', configWithout('maxRepairs'), [/maxRepairs/]],
-    ['an unknown field', configWith({ extra: true }), [/Unrecognized key: "extra"/]],
-    ['a null workDir', configWith({ workDir: null }), [/workDir/]],
-    ['a blank workDir', configWith({ workDir: '   ' }), [/workDir must not be blank/]],
-    ['a negative maxRepairs', configWith({ maxRepairs: -1 }), [/maxRepairs must be a nonnegative/]],
-    ['a fractional maxRepairs', configWith({ maxRepairs: 1.5 }), [/maxRepairs must be an integer/]],
-    ['a maxRepairs given as a string', configWith({ maxRepairs: '2' }), [/maxRepairs/]],
+    ['a missing required field', harnessWithout('maxRepairs'), [/maxRepairs/]],
+    ['an unknown field', harnessWith({ extra: true }), [/Unrecognized key: "extra"/]],
+    ['a null workDir', harnessWith({ workDir: null }), [/workDir/]],
+    ['a blank workDir', harnessWith({ workDir: '   ' }), [/workDir must not be blank/]],
+    [
+      'a negative maxRepairs',
+      harnessWith({ maxRepairs: -1 }),
+      [/maxRepairs must be a nonnegative/],
+    ],
+    [
+      'a fractional maxRepairs',
+      harnessWith({ maxRepairs: 1.5 }),
+      [/maxRepairs must be an integer/],
+    ],
+    ['a maxRepairs given as a string', harnessWith({ maxRepairs: '2' }), [/maxRepairs/]],
     [
       'a zero taskTimeoutMinutes',
-      configWith({ taskTimeoutMinutes: 0 }),
+      harnessWith({ taskTimeoutMinutes: 0 }),
       [/taskTimeoutMinutes must be a positive integer/],
     ],
     [
       'a negative commandTimeoutMinutes',
-      configWith({ commandTimeoutMinutes: -5 }),
+      harnessWith({ commandTimeoutMinutes: -5 }),
       [/commandTimeoutMinutes must be a positive integer/],
     ],
-    ['an empty checks list', configWith({ checks: [] }), [/checks: must contain at least one/]],
-    [
-      'a check that is not a command array',
-      configWith({ checks: ['npm test'] }),
-      [/checks\[0\]: must be an array of string arguments/],
-    ],
-    ['a command with no executable', configWith({ checks: [[]] }), [/checks\[0\]/]],
-    [
-      'a blank executable',
-      configWith({ checks: [['  ', 'test']] }),
-      [/checks\[0\]\[0\]: the first item must be a nonblank executable/],
-    ],
-    ['a non-string argument', configWith({ checks: [[123]] }), [/checks\[0\]\[0\]/]],
-    [
-      'a setup entry that is not a command array',
-      configWith({ setup: [{ cmd: 'npm' }] }),
-      [/setup\[0\]: must be an array of string arguments/],
-    ],
-    ['an agent that is not an object', configWith({ agent: 'codex' }), [/agent:/]],
-    ['a null agent', configWith({ agent: null }), [/agent:/]],
+    ['an agent that is not an object', harnessWith({ agent: 'codex' }), [/agent:/]],
+    ['a null agent', harnessWith({ agent: null }), [/agent:/]],
     [
       'an agent without a runtime',
-      configWith({ agent: { command: ['codex'] } }),
+      harnessWith({ agent: { command: ['codex'] } }),
       [/agent\.runtime/],
     ],
-    ['an agent without a command', configWith({ agent: { runtime: 'codex' } }), [/agent\.command/]],
+    [
+      'an agent without a command',
+      harnessWith({ agent: { runtime: 'codex' } }),
+      [/agent\.command/],
+    ],
     [
       'an agent with an unknown field',
-      configWith({ agent: { runtime: 'codex', command: ['codex'], provider: 'deepseek' } }),
+      harnessWith({ agent: { runtime: 'codex', command: ['codex'], provider: 'deepseek' } }),
       [/agent: Unrecognized key: "provider"/],
     ],
     [
       'an unsupported runtime',
-      configWith({ agent: { runtime: 'claude', command: ['claude'] } }),
+      harnessWith({ agent: { runtime: 'claude', command: ['claude'] } }),
       [/agent\.runtime: must be "codex"/],
     ],
     [
       'a runtime that is not the implemented one spelled differently',
-      configWith({ agent: { runtime: 'DeepSeek', command: ['codex'] } }),
+      harnessWith({ agent: { runtime: 'DeepSeek', command: ['codex'] } }),
       [/agent\.runtime/],
     ],
     [
       'an empty agent command',
-      configWith({ agent: { runtime: 'codex', command: [] } }),
+      harnessWith({ agent: { runtime: 'codex', command: [] } }),
       [/agent\.command: must not be empty/],
     ],
     [
       'a blank agent executable',
-      configWith({ agent: { runtime: 'codex', command: ['  ', '--profile', 'deepseek'] } }),
+      harnessWith({ agent: { runtime: 'codex', command: ['  ', '--profile', 'deepseek'] } }),
       [/agent\.command\[0\]: the first item must be a nonblank executable/],
     ],
     [
       'a non-string agent argument',
-      configWith({ agent: { runtime: 'codex', command: ['codex', 7] } }),
+      harnessWith({ agent: { runtime: 'codex', command: ['codex', 7] } }),
       [/agent\.command\[1\]/],
     ],
   ];
 
   for (const [name, value, problems] of rejections) {
     it(`rejects ${name}`, async () => {
-      await expectRejected(() => loadConfig(value), ...problems);
+      await expectRejected(() => loadHarness(value), ...problems);
     });
   }
 
   it('reports every problem at once instead of the first', async () => {
     const error = await rejectionFrom(() =>
-      loadConfig({ ...documentedConfig, maxRepairs: -1, checks: [] }),
+      loadHarness(harnessWith({ maxRepairs: -1, taskTimeoutMinutes: 0 })),
     );
 
     expect(error.problems).toHaveLength(2);
     expect(error.message).toMatch(/maxRepairs/);
+    expect(error.message).toMatch(/taskTimeoutMinutes/);
+  });
+});
+
+describe('project configuration validation', () => {
+  function projectWithout(key: keyof typeof documentedProjectConfig): JsonObject {
+    const copy: JsonObject = { ...documentedProjectConfig };
+    delete copy[key];
+    return copy;
+  }
+
+  const rejections: Array<[name: string, value: JsonObject, problems: RegExp[]]> = [
+    ['a missing setup list', projectWithout('setup'), [/setup/]],
+    ['a missing checks list', projectWithout('checks'), [/checks/]],
+    ['an unknown field', projectWith({ extra: true }), [/Unrecognized key: "extra"/]],
+    ['an empty checks list', projectWith({ checks: [] }), [/checks: must contain at least one/]],
+    [
+      'a check that is not a command array',
+      projectWith({ checks: ['npm test'] }),
+      [/checks\[0\]: must be an array of string arguments/],
+    ],
+    ['a command with no executable', projectWith({ checks: [[]] }), [/checks\[0\]/]],
+    [
+      'a blank executable',
+      projectWith({ checks: [['  ', 'test']] }),
+      [/checks\[0\]\[0\]: the first item must be a nonblank executable/],
+    ],
+    ['a non-string argument', projectWith({ checks: [[123]] }), [/checks\[0\]\[0\]/]],
+    [
+      'a setup entry that is not a command array',
+      projectWith({ setup: [{ cmd: 'npm' }] }),
+      [/setup\[0\]: must be an array of string arguments/],
+    ],
+  ];
+
+  for (const [name, value, problems] of rejections) {
+    it(`rejects ${name}`, async () => {
+      await expectRejected(() => loadProject(value), ...problems);
+    });
+  }
+
+  it('reports every problem at once instead of the first', async () => {
+    const error = await rejectionFrom(() =>
+      loadProject(projectWith({ setup: 'npm ci', checks: [] })),
+    );
+
+    expect(error.problems).toHaveLength(2);
+    expect(error.message).toMatch(/setup/);
     expect(error.message).toMatch(/checks/);
   });
 
   it('accepts an empty setup list, which docs/WORKFLOW.md allows', async () => {
-    const config = await loadConfig(configWith({ setup: [] }));
+    const config = await loadProject(projectWith({ setup: [] }));
     expect(config.setup).toEqual([]);
   });
 
   it('keeps literal empty arguments rather than dropping them', async () => {
-    const config = await loadConfig(configWith({ checks: [['npm', 'run', '--', '']] }));
+    const config = await loadProject(projectWith({ checks: [['npm', 'run', '--', '']] }));
     expect(config.checks).toEqual([['npm', 'run', '--', '']]);
   });
 });
@@ -227,7 +457,7 @@ describe('the optional agent selection', () => {
     const config = await loadConfig(documentedConfig);
 
     // The default launch is a value like any other; it is not a fallback for a
-    // selection that failed, and nothing else in the file can change it.
+    // selection that failed, and nothing in either file can change it.
     expect(config.agent).toEqual({ runtime: 'codex', command: ['codex'] });
   });
 
@@ -242,28 +472,33 @@ describe('the optional agent selection', () => {
       'a literal argument with spaces',
     ];
 
-    const config = await loadConfig(configWith({ agent: { runtime: 'codex', command } }));
+    const config = await loadHarness(harnessWith({ agent: { runtime: 'codex', command } }));
 
     // Nothing is joined, reordered, expanded, or dropped: the harness does not
     // know which of these arguments are paths, and it does not guess.
     expect(config.agent).toEqual({ runtime: 'codex', command });
   });
 
-  it('resolves a relative path-valued executable from the configuration file directory', async () => {
+  it('resolves a relative path-valued executable from the harness file directory', async () => {
     const directory = await createTempDir();
     const nested = path.join(directory, 'inputs');
-    const configPath = await writeJsonFile(
+    const harnessPath = await writeJsonFile(
       nested,
-      'harness.config.json',
-      configWith({
+      HARNESS_CONFIG_FILE_NAME,
+      harnessWith({
         agent: {
           runtime: 'codex',
           command: [path.join('.', 'tools', 'codex-launcher.cmd'), '--profile', 'deepseek'],
         },
       }),
     );
+    const projectPath = await writeJsonFile(
+      directory,
+      PROJECT_CONFIG_FILE_NAME,
+      documentedProjectConfig,
+    );
 
-    const config = await loadHarnessConfig(configPath);
+    const config = (await loadConfiguration(harnessPath, projectPath)).config;
 
     // Resolved once, against the file that named it, and the rest of the prefix
     // is left alone: its arguments are interpreted by the launched program.
@@ -279,15 +514,15 @@ describe('the optional agent selection', () => {
     const directory = await createTempDir();
     const absolute = path.join(directory, 'elsewhere', 'codex.exe');
 
-    const absoluteConfig = await loadConfig(
-      configWith({ agent: { runtime: 'codex', command: [absolute, '--model', 'x'] } }),
+    const absoluteConfig = await loadHarness(
+      harnessWith({ agent: { runtime: 'codex', command: [absolute, '--model', 'x'] } }),
     );
     expect(absoluteConfig.agent.command).toEqual([absolute, '--model', 'x']);
 
     // A bare name is not a path: the host launcher resolves it from PATH, as it
     // resolves the executable of any other configured command.
-    const bareConfig = await loadConfig(
-      configWith({ agent: { runtime: 'codex', command: ['codex', '--model', 'x'] } }),
+    const bareConfig = await loadHarness(
+      harnessWith({ agent: { runtime: 'codex', command: ['codex', '--model', 'x'] } }),
     );
     expect(bareConfig.agent.command).toEqual(['codex', '--model', 'x']);
   });
@@ -308,8 +543,8 @@ describe('the optional escalation ladder', () => {
   });
 
   it('keeps a declared ladder in order, and a rung that names nothing inherits', async () => {
-    const config = await loadConfig(
-      configWith({
+    const config = await loadHarness(
+      harnessWith({
         agent: { runtime: 'codex', command: ['codex', '--profile', 'deepseek'] },
         maxRepairs: 1,
         escalation: [
@@ -338,17 +573,17 @@ describe('the optional escalation ladder', () => {
   });
 
   it('rejects a ladder that is empty, unnamed, or ambiguous', async () => {
-    await expectRejected(() => loadConfig(configWith({ escalation: [] })), /at least one tier/);
+    await expectRejected(() => loadHarness(harnessWith({ escalation: [] })), /at least one tier/);
     await expectRejected(
-      () => loadConfig(configWith({ escalation: [{ name: '  ' }] })),
+      () => loadHarness(harnessWith({ escalation: [{ name: '  ' }] })),
       /escalation\[\]\.name/,
     );
     await expectRejected(
-      () => loadConfig(configWith({ escalation: [{ name: 'pro' }, { name: 'pro' }] })),
+      () => loadHarness(harnessWith({ escalation: [{ name: 'pro' }, { name: 'pro' }] })),
       /distinct/,
     );
     await expectRejected(
-      () => loadConfig(configWith({ escalation: [{ name: 'pro', maxRepairs: -1 }] })),
+      () => loadHarness(harnessWith({ escalation: [{ name: 'pro', maxRepairs: -1 }] })),
       /maxRepairs/,
     );
   });
@@ -361,68 +596,295 @@ describe('the optional delivery step', () => {
     baseBranch: 'main',
   };
 
-  it('is absent when the configuration does not ask for it', async () => {
-    const config = await loadConfig(documentedConfig);
+  it('is absent when the project configuration does not ask for it', async () => {
+    const config = await loadProject(documentedProjectConfig);
 
     expect(config.delivery).toBeUndefined();
   });
 
   it('keeps the destination repository and base branch as they were written', async () => {
-    const config = await loadConfig(configWith({ delivery: gitHub }));
+    const config = await loadProject(projectWith({ delivery: gitHub }));
 
     expect(config.delivery).toEqual(gitHub);
   });
 
   const rejections: Array<[name: string, value: unknown, problems: RegExp[]]> = [
-    ['a delivery that is not an object', configWith({ delivery: 'github' }), [/delivery:/]],
-    ['a null delivery', configWith({ delivery: null }), [/delivery:/]],
+    ['a delivery that is not an object', projectWith({ delivery: 'github' }), [/delivery:/]],
+    ['a null delivery', projectWith({ delivery: null }), [/delivery:/]],
     [
       'a delivery without a type',
-      configWith({ delivery: { repository: 'example-owner/example-repo', baseBranch: 'main' } }),
+      projectWith({ delivery: { repository: 'example-owner/example-repo', baseBranch: 'main' } }),
       [/delivery\.type/],
     ],
     [
       'an unsupported delivery type',
-      configWith({ delivery: { ...gitHub, type: 'gitlab' } }),
+      projectWith({ delivery: { ...gitHub, type: 'gitlab' } }),
       [/delivery\.type: must be "github"/],
     ],
     [
       'a repository given as a URL',
-      configWith({ delivery: { ...gitHub, repository: 'https://github.com/example-owner/x' } }),
+      projectWith({ delivery: { ...gitHub, repository: 'https://github.com/example-owner/x' } }),
       [/delivery\.repository/],
     ],
     [
       'a repository without an owner',
-      configWith({ delivery: { ...gitHub, repository: 'example-repo' } }),
+      projectWith({ delivery: { ...gitHub, repository: 'example-repo' } }),
       [/delivery\.repository/],
     ],
     [
       'a blank base branch',
-      configWith({ delivery: { ...gitHub, baseBranch: '   ' } }),
+      projectWith({ delivery: { ...gitHub, baseBranch: '   ' } }),
       [/delivery\.baseBranch/],
     ],
     [
       'a base branch with whitespace',
-      configWith({ delivery: { ...gitHub, baseBranch: 'release 1' } }),
+      projectWith({ delivery: { ...gitHub, baseBranch: 'release 1' } }),
       [/delivery\.baseBranch/],
     ],
     [
       'a base branch that starts with an option dash',
-      configWith({ delivery: { ...gitHub, baseBranch: '--repo' } }),
+      projectWith({ delivery: { ...gitHub, baseBranch: '--repo' } }),
       [/delivery\.baseBranch/],
     ],
     [
       'an unknown delivery field',
-      configWith({ delivery: { ...gitHub, remote: 'somewhere' } }),
+      projectWith({ delivery: { ...gitHub, remote: 'somewhere' } }),
       [/delivery: Unrecognized key: "remote"/],
     ],
   ];
 
   for (const [name, value, problems] of rejections) {
     it(`rejects ${name}`, async () => {
-      await expectRejected(() => loadConfig(value), ...problems);
+      await expectRejected(() => loadProject(value), ...problems);
     });
   }
+});
+
+describe('composing two files', () => {
+  const JIRA = {
+    type: 'jira',
+    siteUrl: 'https://example.atlassian.net',
+    cloudId: '9337c4da-7d33-4c1d-b03c-db207e537f88',
+    projectKey: 'SAM1',
+    tokenEnv: 'JIRA_API_TOKEN',
+  };
+  const REVIEWER = {
+    app: {
+      appId: 5001141,
+      installationId: 163007360,
+      privateKeyPathEnv: 'NEXUS_LENS_KEY_PATH',
+      login: 'nexus-lens[bot]',
+    },
+    reviewer: { runtime: 'codex', command: ['codex', '--profile', 'nexus-astra'] },
+  };
+  const COMPLETION = {
+    lensApp: 'nexus-lens[bot]',
+    lensAppId: 5001141,
+    lensCheckName: 'Nexus Lens review',
+    reviewerTokenEnv: 'NEXUS_LENS_TOKEN',
+  };
+
+  /** One connected project: its Jira queue and its GitHub destination. */
+  function connectedProject(
+    jiraProjectKey: string,
+    repository: string,
+    workflows: readonly string[],
+  ): JsonObject {
+    return projectWith({
+      source: { ...JIRA, projectKey: jiraProjectKey },
+      delivery: {
+        type: 'github',
+        repository,
+        baseBranch: 'main',
+        completion: { postMergeWorkflows: workflows, toDoStatus: 'To Do', doneStatus: 'Done' },
+      },
+    });
+  }
+
+  it('composes two project configurations with one harness configuration', async () => {
+    const directory = await createTempDir();
+    const harnessPath = await writeJsonFile(
+      directory,
+      HARNESS_CONFIG_FILE_NAME,
+      harnessWith({ reviewer: REVIEWER, completion: COMPLETION }),
+    );
+    const firstPath = await writeJsonFile(
+      path.join(directory, 'first'),
+      PROJECT_CONFIG_FILE_NAME,
+      connectedProject('SAM1', 'owner/first', ['first.yml']),
+    );
+    const secondPath = await writeJsonFile(
+      path.join(directory, 'second'),
+      PROJECT_CONFIG_FILE_NAME,
+      connectedProject('HARN', 'owner/second', ['second.yml', 'second-nightly.yml']),
+    );
+
+    const first = (await loadConfiguration(harnessPath, firstPath)).config;
+    const second = (await loadConfiguration(harnessPath, secondPath)).config;
+
+    // What each project owns differs, and comes from that project's own file.
+    expect(first.source?.projectKey).toBe('SAM1');
+    expect(second.source?.projectKey).toBe('HARN');
+    expect(first.delivery?.repository).toBe('owner/first');
+    expect(second.delivery?.repository).toBe('owner/second');
+    expect(first.delivery?.completion?.postMergeWorkflows).toEqual(['first.yml']);
+    expect(second.delivery?.completion?.postMergeWorkflows).toEqual([
+      'second.yml',
+      'second-nightly.yml',
+    ]);
+    // A review belongs to the repository its own project delivers to.
+    expect(first.review?.repository).toBe('owner/first');
+    expect(second.review?.repository).toBe('owner/second');
+
+    // What the harness configuration owns is the same in both, once composed.
+    expect(first.agent).toEqual(second.agent);
+    expect(first.workDir).toBe(second.workDir);
+    expect(first.maxRepairs).toBe(second.maxRepairs);
+    expect(first.review?.app).toEqual(second.review?.app);
+    expect(first.review?.reviewer).toEqual(second.review?.reviewer);
+    expect(first.review?.checkName).toBe('Nexus Lens review');
+    expect(first.delivery?.completion?.reviewerTokenEnv).toBe('NEXUS_LENS_TOKEN');
+    expect(first.delivery?.completion?.doneStatus).toBe('Done');
+    // Both took the harness configuration's own polling defaults.
+    expect(first.delivery?.completion?.pollIntervalSeconds).toBe(30);
+    expect(second.delivery?.completion?.pollIntervalSeconds).toBe(30);
+  });
+
+  it('composes the reviewer identity and the completion policy consistently', async () => {
+    await expectRejected(
+      () =>
+        loadHarness(
+          harnessWith({ reviewer: REVIEWER, completion: { ...COMPLETION, lensAppId: 999 } }),
+        ),
+      /completion/,
+    );
+    await expectRejected(
+      () =>
+        loadHarness(
+          harnessWith({
+            reviewer: REVIEWER,
+            completion: { ...COMPLETION, lensCheckName: 'Something else' },
+          }),
+        ),
+      /completion/,
+    );
+  });
+
+  it('shares reviewer and completion policy with projects that do not enable review', async () => {
+    const directory = await createTempDir();
+    const harnessPath = await writeJsonFile(
+      directory,
+      HARNESS_CONFIG_FILE_NAME,
+      harnessWith({ reviewer: REVIEWER, completion: COMPLETION }),
+    );
+    const localOnly = await writeJsonFile(
+      path.join(directory, 'local-only'),
+      PROJECT_CONFIG_FILE_NAME,
+      documentedProjectConfig,
+    );
+    const connectionOnly = await writeJsonFile(
+      path.join(directory, 'connection-only'),
+      PROJECT_CONFIG_FILE_NAME,
+      projectWith({ source: JIRA }),
+    );
+
+    const deliveryOnly = await writeJsonFile(
+      path.join(directory, 'delivery-only'),
+      PROJECT_CONFIG_FILE_NAME,
+      projectWith({ delivery: { type: 'github', repository: 'owner/local', baseBranch: 'main' } }),
+    );
+    const connected = await writeJsonFile(
+      path.join(directory, 'connected'),
+      PROJECT_CONFIG_FILE_NAME,
+      connectedProject('SAM1', 'owner/connected', ['ci.yml']),
+    );
+
+    const local = await loadConfiguration(harnessPath, localOnly);
+    const source = await loadConfiguration(harnessPath, connectionOnly);
+    const delivery = await loadConfiguration(harnessPath, deliveryOnly);
+    const full = await loadConfiguration(harnessPath, connected);
+    for (const loaded of [local, source, delivery]) {
+      expect(loaded.config.review).toBeUndefined();
+      expect(loaded.config.delivery?.completion).toBeUndefined();
+      expect(loaded.harness).toEqual(full.harness);
+      expect(loaded.config.agent).toEqual(full.config.agent);
+      expect(loaded.config.checks).toEqual(documentedProjectConfig.checks);
+    }
+    expect(local.config.source).toBeUndefined();
+    expect(local.config.delivery).toBeUndefined();
+    expect(source.config.source?.projectKey).toBe('SAM1');
+    expect(source.config.delivery).toBeUndefined();
+    expect(delivery.config.source).toBeUndefined();
+    expect(delivery.config.delivery?.repository).toBe('owner/local');
+    expect(full.config.review?.repository).toBe('owner/connected');
+    expect(full.config.delivery?.completion?.postMergeWorkflows).toEqual(['ci.yml']);
+  });
+
+  it('refuses a project completion the harness configuration cannot gate', async () => {
+    const directory = await createTempDir();
+    const harnessPath = await writeJsonFile(
+      directory,
+      HARNESS_CONFIG_FILE_NAME,
+      documentedHarnessConfig,
+    );
+    const projectPath = await writeJsonFile(
+      directory,
+      PROJECT_CONFIG_FILE_NAME,
+      connectedProject('SAM1', 'owner/first', ['first.yml']),
+    );
+
+    const error = await rejectionFrom(() => loadConfiguration(harnessPath, projectPath));
+
+    expect(error.file).toBe(harnessPath);
+    expect(error.message).toMatch(/completion: /);
+    expect(error.message).toContain(projectPath);
+  });
+
+  it('refuses completion outcomes that cannot mean anything in the Jira workflow', async () => {
+    const directory = await createTempDir();
+    const harnessPath = await writeJsonFile(
+      directory,
+      HARNESS_CONFIG_FILE_NAME,
+      harnessWith({ reviewer: REVIEWER, completion: COMPLETION }),
+    );
+    const reviewStatus = await writeJsonFile(
+      path.join(directory, 'review-status'),
+      PROJECT_CONFIG_FILE_NAME,
+      projectWith({
+        source: JIRA,
+        delivery: {
+          type: 'github',
+          repository: 'owner/first',
+          baseBranch: 'main',
+          completion: {
+            postMergeWorkflows: ['ci.yml'],
+            toDoStatus: 'In Review',
+            doneStatus: 'Done',
+          },
+        },
+      }),
+    );
+    const sameStatuses = await writeJsonFile(
+      path.join(directory, 'same-statuses'),
+      PROJECT_CONFIG_FILE_NAME,
+      projectWith({
+        source: JIRA,
+        delivery: {
+          type: 'github',
+          repository: 'owner/first',
+          baseBranch: 'main',
+          completion: { postMergeWorkflows: ['ci.yml'], toDoStatus: 'Done', doneStatus: 'Done' },
+        },
+      }),
+    );
+
+    const statusError = await rejectionFrom(() => loadConfiguration(harnessPath, reviewStatus));
+    expect(statusError.file).toBe(reviewStatus);
+    expect(statusError.message).toMatch(/reviewStatus "In Review"/);
+
+    const sameError = await rejectionFrom(() => loadConfiguration(harnessPath, sameStatuses));
+    expect(sameError.message).toMatch(/toDoStatus and doneStatus must be different/);
+  });
 });
 
 describe('task validation', () => {
@@ -434,6 +896,11 @@ describe('task validation', () => {
     const copy: JsonObject = { ...documentedTask };
     delete copy[key];
     return copy;
+  }
+
+  async function loadTaskValue(value: unknown): Promise<Task> {
+    const directory = await createTempDir();
+    return loadTask(await writeJsonFile(directory, 'task.json', value));
   }
 
   const rejections: Array<[name: string, value: JsonObject, problems: RegExp[]]> = [
@@ -467,47 +934,63 @@ describe('task validation', () => {
 });
 
 describe('workDir resolution', () => {
-  it('resolves a relative workDir from the configuration file directory', async () => {
+  it('resolves a relative workDir from the harness file directory', async () => {
     const directory = await createTempDir();
     const nested = path.join(directory, 'nested');
-    const configPath = await writeJsonFile(
+    const harnessPath = await writeJsonFile(
       nested,
-      'harness.config.json',
-      configWith({ workDir: './out' }),
+      HARNESS_CONFIG_FILE_NAME,
+      harnessWith({ workDir: './out' }),
+    );
+    const projectPath = await writeJsonFile(
+      directory,
+      PROJECT_CONFIG_FILE_NAME,
+      documentedProjectConfig,
     );
 
-    const config = await loadHarnessConfig(configPath);
+    const config = (await loadConfiguration(harnessPath, projectPath)).config;
 
-    // The point of the test: resolution must not depend on the process directory.
+    // The point of the test: resolution must not depend on the process directory
+    // or on where the connected project's checkout happens to be.
     expect(process.cwd()).not.toBe(nested);
-    expect(resolveWorkDir(config, configPath)).toBe(path.join(nested, 'out'));
+    expect(resolveWorkDir(config, harnessPath)).toBe(path.join(nested, 'out'));
   });
 
-  it('resolves a parent-relative workDir without leaving the config directory', async () => {
+  it('resolves a parent-relative workDir without leaving the harness directory', async () => {
     const directory = await createTempDir();
     const nested = path.join(directory, 'nested');
-    const configPath = await writeJsonFile(
+    const harnessPath = await writeJsonFile(
       nested,
-      'harness.config.json',
-      configWith({ workDir: '../runs' }),
+      HARNESS_CONFIG_FILE_NAME,
+      harnessWith({ workDir: '../runs' }),
+    );
+    const projectPath = await writeJsonFile(
+      directory,
+      PROJECT_CONFIG_FILE_NAME,
+      documentedProjectConfig,
     );
 
-    const config = await loadHarnessConfig(configPath);
+    const config = (await loadConfiguration(harnessPath, projectPath)).config;
 
-    expect(resolveWorkDir(config, configPath)).toBe(path.join(directory, 'runs'));
+    expect(resolveWorkDir(config, harnessPath)).toBe(path.join(directory, 'runs'));
   });
 
   it('keeps an absolute workDir as given', async () => {
     const directory = await createTempDir();
     const absolute = path.join(directory, 'elsewhere');
-    const configPath = await writeJsonFile(
+    const harnessPath = await writeJsonFile(
       directory,
-      'harness.config.json',
-      configWith({ workDir: absolute }),
+      HARNESS_CONFIG_FILE_NAME,
+      harnessWith({ workDir: absolute }),
+    );
+    const projectPath = await writeJsonFile(
+      path.join(directory, 'project'),
+      PROJECT_CONFIG_FILE_NAME,
+      documentedProjectConfig,
     );
 
-    const config = await loadHarnessConfig(configPath);
+    const config = (await loadConfiguration(harnessPath, projectPath)).config;
 
-    expect(resolveWorkDir(config, configPath)).toBe(absolute);
+    expect(resolveWorkDir(config, harnessPath)).toBe(absolute);
   });
 });

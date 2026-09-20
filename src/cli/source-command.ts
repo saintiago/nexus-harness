@@ -9,7 +9,8 @@
  * abortable sleep, so an interrupt never waits for a poll interval to elapse.
  */
 import path from 'node:path';
-import { ConfigError, escalationTiers, loadHarnessConfig, resolveWorkDir } from '../config/load.js';
+import { ConfigError, escalationTiers, loadConfiguration, resolveWorkDir } from '../config/load.js';
+import { projectConfigFile } from '../config/paths.js';
 import { createGitHubCompletion } from '../delivery/completion.js';
 import { createGitHubDelivery } from '../delivery/github.js';
 import { runTask } from '../runs/runner.js';
@@ -172,10 +173,20 @@ async function sourceCommand(
   context: CliContext,
 ): Promise<number> {
   const { cwd, io } = context;
-  const { config: configArgument, repo: repoArgument, limit: limitArgument } = options;
+  const {
+    config: configArgument,
+    project: projectArgument,
+    repo: repoArgument,
+    limit: limitArgument,
+  } = options;
 
   const missing = [
     configArgument === undefined ? '--config' : undefined,
+    // The preview takes no checkout: it only needs the connected project's own
+    // configuration, which it reads from the directory `--project` names. A
+    // run or watch clones from `--repo` instead, and reads that configuration
+    // from the same checkout it clones from.
+    subcommand === 'list' && projectArgument === undefined ? '--project' : undefined,
     subcommand !== 'list' && repoArgument === undefined ? '--repo' : undefined,
   ].filter((name): name is string => name !== undefined);
   if (missing.length > 0) {
@@ -195,9 +206,13 @@ async function sourceCommand(
   }
 
   const configPath = path.resolve(cwd, configArgument ?? '');
+  const projectRoot = path.resolve(
+    cwd,
+    (subcommand === 'list' ? projectArgument : repoArgument) ?? '',
+  );
   let config: HarnessConfig;
   try {
-    config = await loadHarnessConfig(configPath);
+    config = (await loadConfiguration(configPath, projectConfigFile(projectRoot))).config;
   } catch (cause) {
     if (cause instanceof ConfigError) {
       io.err(`error: ${cause.message}`);
@@ -210,7 +225,8 @@ async function sourceCommand(
   if (sourceConfig === undefined) {
     io.err(
       [
-        `error: ${configPath} has no "source" object, so there is nothing to take tasks from.`,
+        `error: ${projectConfigFile(projectRoot)} has no "source" object, so there is nothing ` +
+          'to take tasks from.',
         'A source command needs one; docs/WORKFLOW.md section 5 defines it.',
       ].join('\n'),
     );

@@ -18,7 +18,14 @@ import type { CliContext } from '../src/cli/context.js';
 import { EXIT_INPUT_ERROR, EXIT_OK } from '../src/cli/context.js';
 import { fakeCompletionCalls, installFakeGhCompletion } from './fixtures/local-target.js';
 import type { FakeCompletionState } from './fixtures/local-target.js';
-import { cleanupTempDirectories, createTempDir, fakeConsole } from './support.js';
+import { HARNESS_CONFIG_FILE_NAME, PROJECT_CONFIG_FILE_NAME } from '../src/config/paths.js';
+import {
+  cleanupTempDirectories,
+  createTempDir,
+  documentedHarnessConfig,
+  fakeConsole,
+  writeJsonFile,
+} from './support.js';
 
 afterEach(cleanupTempDirectories);
 
@@ -30,6 +37,28 @@ async function createRepo(parent: string): Promise<string> {
   const repo = path.join(parent, 'target');
   await mkdir(repo, { recursive: true });
   await writeFile(path.join(repo, 'README.md'), '# target\n', 'utf8');
+  // The connected project's own configuration, committed with the repository.
+  await writeJsonFile(repo, PROJECT_CONFIG_FILE_NAME, {
+    setup: [],
+    checks: [['node', '-e', 'process.exit(0)']],
+    source: {
+      type: 'jira',
+      siteUrl: 'https://example.atlassian.net',
+      cloudId: '9337c4da-7d33-4c1d-b03c-db207e537f88',
+      projectKey: 'HARN',
+      tokenEnv: 'JIRA_API_TOKEN',
+    },
+    delivery: {
+      type: 'github',
+      repository: 'saintiago/nexus-harness',
+      baseBranch: 'main',
+      completion: {
+        postMergeWorkflows: ['ci.yml'],
+        toDoStatus: 'To Do',
+        doneStatus: 'Done',
+      },
+    },
+  });
   const { spawnSync } = await import('node:child_process');
   const run = (args: readonly string[]): void => {
     const result = spawnSync('git', [...args], { cwd: repo, encoding: 'utf8' });
@@ -78,46 +107,22 @@ async function createFixture(
   const workDir = path.join(parent, 'harness');
   const gh = await installFakeGhCompletion(parent);
 
-  const configPath = path.join(parent, 'harness.config.json');
-  await writeFile(
-    configPath,
-    `${JSON.stringify(
-      {
-        workDir,
-        maxRepairs: 0,
-        taskTimeoutMinutes: 5,
-        commandTimeoutMinutes: 1,
-        setup: [],
-        checks: [['node', '-e', 'process.exit(0)']],
-        source: {
-          type: 'jira',
-          siteUrl: 'https://example.atlassian.net',
-          cloudId: '9337c4da-7d33-4c1d-b03c-db207e537f88',
-          projectKey: 'HARN',
-          tokenEnv: 'JIRA_API_TOKEN',
-        },
-        delivery: {
-          type: 'github',
-          repository: 'saintiago/nexus-harness',
-          baseBranch: 'main',
-          completion: {
-            lensApp: 'nexus-lens',
-            lensAppId: 123,
-            lensCheckName: 'Nexus Lens',
-            reviewerTokenEnv: 'NEXUS_LENS_TOKEN',
-            postMergeWorkflows: ['ci.yml'],
-            toDoStatus: 'To Do',
-            doneStatus: 'Done',
-            pollIntervalSeconds: 5,
-            deadlineSeconds: 30,
-          },
-        },
-      },
-      null,
-      2,
-    )}\n`,
-    'utf8',
-  );
+  const configPath = path.join(parent, HARNESS_CONFIG_FILE_NAME);
+  await writeJsonFile(parent, HARNESS_CONFIG_FILE_NAME, {
+    ...documentedHarnessConfig,
+    workDir,
+    maxRepairs: 0,
+    taskTimeoutMinutes: 5,
+    commandTimeoutMinutes: 1,
+    completion: {
+      lensApp: 'nexus-lens',
+      lensAppId: 123,
+      lensCheckName: 'Nexus Lens',
+      reviewerTokenEnv: 'NEXUS_LENS_TOKEN',
+      pollIntervalSeconds: 5,
+      deadlineSeconds: 30,
+    },
+  });
 
   const env: NodeJS.ProcessEnv = {
     ...process.env,

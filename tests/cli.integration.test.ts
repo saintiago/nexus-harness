@@ -316,8 +316,6 @@ describe('the built CLI, end to end', () => {
         maxRepairs: 0,
         taskTimeoutMinutes: 60,
         commandTimeoutMinutes: 10,
-        setup: [[process.execPath, 'tools/prepare.mjs']],
-        checks: [[process.execPath, 'tools/run-checks.mjs']],
         agent: { runtime: 'codex', command: prefix },
       });
 
@@ -768,7 +766,15 @@ describe('the built CLI, end to end', () => {
 
       const checked = await runCli({
         target,
-        argv: ['check-config', '--config', target.configPath, '--task', target.taskPath],
+        argv: [
+          'check-config',
+          '--config',
+          target.configPath,
+          '--project',
+          target.repo,
+          '--task',
+          target.taskPath,
+        ],
       });
       expect(checked.code).toBe(0);
       expect(checked.stderr).toBe('');
@@ -794,7 +800,15 @@ describe('the built CLI, end to end', () => {
       const sentinel = 'sentinel-credential-6c1f9a-never-read';
       const poisoned = await runCli({
         target,
-        argv: ['check-config', '--config', target.configPath, '--task', target.taskPath],
+        argv: [
+          'check-config',
+          '--config',
+          target.configPath,
+          '--project',
+          target.repo,
+          '--task',
+          target.taskPath,
+        ],
         env: {
           CODEX_HOME: notADirectory,
           CODEX_API_KEY: sentinel,

@@ -189,11 +189,11 @@ bearer_token_env_var = "TAVILY_API_KEY"
 
    The ladder shape is [WORKFLOW.md](WORKFLOW.md) §1's; tier names, repair allowances, and whether
    a ladder is used at all stay the operator's decisions. The checked-in
-   [harness.jira.example.json](harness.jira.example.json) already selects `--profile nexus-flash`;
-   the configuration a coordinator actually runs is outside this checkout and is that step's real
-   target.
+   [nexus.config.example.json](nexus.config.example.json) already selects `--profile nexus-flash`;
+   the Nexus-wide configuration a coordinator actually runs is the operator's own `nexus.config.json`
+   outside this checkout, and it is that step's real target.
 
-4. **Validate statically.** `npm run dev -- check-config --config <the Nexus configuration>` reads
+4. **Validate statically.** `npm run dev -- check-config --config <the Nexus configuration> --project <a connected project>` reads
    no credential, contacts nothing, and rejects a malformed launch prefix. It does not look at
    native Codex files, so it cannot prove that the profile exists — Codex will ignore a missing
    one — and step 5 is therefore not optional.

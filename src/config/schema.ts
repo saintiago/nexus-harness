@@ -1,7 +1,16 @@
 /**
- * What a configuration file and a task file may contain, and what an omitted
+ * What each configuration file and a task file may contain, and what an omitted
  * optional field means: the zod schemas, the documented defaults, and nothing
  * that reads a file or resolves a path.
+ *
+ * Configuration is two files with disjoint ownership (docs/WORKFLOW.md §1):
+ * `harnessConfigSchema` describes the Nexus-wide harness configuration an
+ * operator keeps — the output directory, the limits, the coding launches, and
+ * the reviewer integration — and `projectConfigSchema` describes the project
+ * configuration a connected repository carries at its root: its Jira
+ * connection, its GitHub destination, and the commands that decide a task
+ * there. Neither schema accepts a field the other owns; composing the two into
+ * the effective configuration is load.ts's job.
  *
  * Every default here is one docs/WORKFLOW.md documents. A value the file does
  * not supply and the document does not default is a validation problem, never a
@@ -181,7 +190,7 @@ const REPOSITORY_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
  */
 const BRANCH_PATTERN = /^[^\s-][^\s]*$/;
 
-/** Documented defaults of the optional review-to-completion step. */
+/** Documented defaults of the Nexus-wide review-to-completion policy. */
 export const COMPLETION_DEFAULTS = {
   pollIntervalSeconds: 30,
   deadlineSeconds: 30 * 60,
@@ -198,9 +207,12 @@ export const MIN_COMPLETION_POLL_INTERVAL_SECONDS = 5;
 const WORKFLOW_PATTERN = /^(?:[1-9][0-9]*|(?:\.github\/workflows\/)?[A-Za-z0-9_.-]+\.ya?ml)$/;
 
 /**
- * The optional review-to-completion step inside `delivery`. Every field that
- * says who may gate the work is required: nothing is defaulted into a
- * configuration that would then finish an item nobody named a reviewer for.
+ * The optional Nexus-wide review-to-completion policy: which reviewer gates the
+ * work, where its own credential is read from, and how GitHub's merge and
+ * post-merge workflow state is polled. Every field that says who may gate the
+ * work is required — nothing is defaulted into a configuration that would then
+ * finish an item nobody named a reviewer for — and no project-specific outcome
+ * belongs here (docs/WORKFLOW.md §1, §10).
  */
 const completionSchema = z.strictObject({
   lensApp: nonBlankString('lensApp'),
@@ -220,6 +232,25 @@ const completionSchema = z.strictObject({
         ),
       { error: 'reviewerTokenEnv must be separate from the operator credential' },
     ),
+  pollIntervalSeconds: boundedInteger(
+    'pollIntervalSeconds',
+    MIN_COMPLETION_POLL_INTERVAL_SECONDS,
+    `an integer of at least ${String(MIN_COMPLETION_POLL_INTERVAL_SECONDS)} seconds`,
+  ).default(COMPLETION_DEFAULTS.pollIntervalSeconds),
+  deadlineSeconds: boundedInteger(
+    'deadlineSeconds',
+    MIN_COMPLETION_POLL_INTERVAL_SECONDS,
+    `an integer of at least ${String(MIN_COMPLETION_POLL_INTERVAL_SECONDS)} seconds`,
+  ).default(COMPLETION_DEFAULTS.deadlineSeconds),
+});
+
+/**
+ * One project's completion outcomes: which post-merge workflows have to succeed
+ * on the merge commit, and the two Jira statuses an item can end in. These
+ * belong to the project because they name its own CI and its own workflow; the
+ * reviewer identity and the polling bounds above do not.
+ */
+const projectCompletionSchema = z.strictObject({
   postMergeWorkflows: z
     .array(
       z.string({ error: 'postMergeWorkflows entries must be strings' }).regex(WORKFLOW_PATTERN, {
@@ -236,16 +267,6 @@ const completionSchema = z.strictObject({
     }),
   toDoStatus: nonBlankString('toDoStatus'),
   doneStatus: nonBlankString('doneStatus'),
-  pollIntervalSeconds: boundedInteger(
-    'pollIntervalSeconds',
-    MIN_COMPLETION_POLL_INTERVAL_SECONDS,
-    `an integer of at least ${String(MIN_COMPLETION_POLL_INTERVAL_SECONDS)} seconds`,
-  ).default(COMPLETION_DEFAULTS.pollIntervalSeconds),
-  deadlineSeconds: boundedInteger(
-    'deadlineSeconds',
-    MIN_COMPLETION_POLL_INTERVAL_SECONDS,
-    `an integer of at least ${String(MIN_COMPLETION_POLL_INTERVAL_SECONDS)} seconds`,
-  ).default(COMPLETION_DEFAULTS.deadlineSeconds),
 });
 
 /**
@@ -275,11 +296,13 @@ export function checkCompletionStatuses(
 }
 
 /**
- * The optional delivery step. `"github"` is the only implemented type: a
- * placeholder for a delivery service nobody has written would be a way to
- * accept a configuration the harness cannot honour (docs/WORKFLOW.md §8).
+ * The optional delivery step of one project. `"github"` is the only implemented
+ * type: a placeholder for a delivery service nobody has written would be a way
+ * to accept a configuration the harness cannot honour (docs/WORKFLOW.md §8).
+ * The repository named here is both what a passed attempt is pushed to and what
+ * the Nexus-wide reviewer reviews: one project has one GitHub destination.
  */
-const githubDeliverySchema = z.strictObject({
+const projectDeliverySchema = z.strictObject({
   type: z.literal('github', {
     error:
       'must be "github": pushing a branch with Git and managing its pull request with gh is the ' +
@@ -294,13 +317,10 @@ const githubDeliverySchema = z.strictObject({
   baseBranch: z.string({ error: 'baseBranch must be a string' }).regex(BRANCH_PATTERN, {
     error: 'baseBranch must be a branch name without whitespace, such as "main"',
   }),
-  completion: completionSchema.optional(),
+  completion: projectCompletionSchema.optional(),
 });
 
-/** Validates one `delivery` object: the documented optional field of a config. */
-export const deliverySchema = githubDeliverySchema;
-
-/** Documented defaults of the optional GitHub `review` object. */
+/** Documented defaults of the Nexus-wide `reviewer` object. */
 export const REVIEW_DEFAULTS = {
   checkName: 'Nexus Lens review',
 } as const;
@@ -324,42 +344,47 @@ const githubReviewAppSchema = z.strictObject({
 });
 
 /**
- * The optional review path. `"github"` is the only implemented type: a
- * placeholder for a publisher nobody has written would be a way to accept a
- * configuration the harness cannot honour (docs/WORKFLOW.md §9). The reviewer is
- * an explicit launch of its own, so a review never runs the tier that
- * implemented the ticket.
+ * The Nexus-wide reviewer integration: which GitHub App publishes the reviews
+ * and their check runs, and which launch answers them. It carries no repository
+ * — the project configuration names the one repository each review belongs to —
+ * and no credential: `app.privateKeyPathEnv` names the environment variable
+ * holding the App key's path, and only a review command reads it
+ * (docs/WORKFLOW.md §9).
  */
-const githubReviewSchema = z.strictObject({
-  type: z.literal('github', {
-    error:
-      'must be "github": publishing a native GitHub review and its app-owned check run is the ' +
-      'only review path this harness implements, so another type is rejected rather than ' +
-      'accepted as a placeholder',
-  }),
-  repository: z.string({ error: 'review.repository must be a string' }).regex(REPOSITORY_PATTERN, {
-    error:
-      'review.repository must be the destination on github.com as "owner/name": no host, no URL, ' +
-      'and no path',
-  }),
+const reviewerSchema = z.strictObject({
   app: githubReviewAppSchema,
   reviewer: agentSchema,
-  checkName: nonBlankString('review.checkName').default(REVIEW_DEFAULTS.checkName),
+  checkName: nonBlankString('reviewer.checkName').default(REVIEW_DEFAULTS.checkName),
 });
 
-/** Validates one `review` object: the documented optional field of a config. */
-export const reviewSchema = githubReviewSchema;
+/**
+ * The project configuration a connected repository carries at its root: the
+ * commands that decide a task in that repository, its Jira connection, and its
+ * GitHub destination. Nothing Nexus-wide belongs here — no launch, no limit, no
+ * output directory, and no reviewer identity (docs/WORKFLOW.md §1).
+ */
+export const projectConfigSchema = z.strictObject({
+  setup: z.array(commandSchema, { error: 'must be an array of command arrays' }),
+  checks: z
+    .array(commandSchema, { error: 'must be an array of command arrays' })
+    .min(1, { error: 'must contain at least one command' }),
+  source: jiraSourceSchema.optional(),
+  delivery: projectDeliverySchema.optional(),
+});
 
+/**
+ * The Nexus-wide harness configuration an operator keeps: where runs write,
+ * how much time and repair they get, which coding launches they use, and the
+ * reviewer integration that follows them. It names no repository, no Jira
+ * connection, and no project command; composing it with one project
+ * configuration is load.ts's job (docs/WORKFLOW.md §1).
+ */
 export const harnessConfigSchema = z
   .strictObject({
     workDir: nonBlankString('workDir'),
     maxRepairs: boundedInteger('maxRepairs', 0, 'a nonnegative integer'),
     taskTimeoutMinutes: boundedInteger('taskTimeoutMinutes', 1, 'a positive integer'),
     commandTimeoutMinutes: boundedInteger('commandTimeoutMinutes', 1, 'a positive integer'),
-    setup: z.array(commandSchema, { error: 'must be an array of command arrays' }),
-    checks: z
-      .array(commandSchema, { error: 'must be an array of command arrays' })
-      .min(1, { error: 'must contain at least one command' }),
     agent: agentSchema.optional(),
     escalation: z
       .array(
@@ -379,36 +404,63 @@ export const harnessConfigSchema = z
         error: 'escalation tier names must be distinct: two tiers with one name are one tier',
       })
       .optional(),
-    delivery: deliverySchema.optional(),
-    source: sourceSchema.optional(),
-    review: reviewSchema.optional(),
+    reviewer: reviewerSchema.optional(),
+    completion: completionSchema.optional(),
   })
-  .superRefine((config, ctx) => {
-    const completion = config.delivery?.completion;
-    if (completion === undefined || config.source === undefined) return;
-    if (
-      config.review !== undefined &&
-      (config.review.repository !== config.delivery?.repository ||
-        config.review.app.appId !== completion.lensAppId ||
-        config.review.app.login !== completion.lensApp ||
-        config.review.checkName !== completion.lensCheckName)
-    )
-      ctx.addIssue({
-        code: 'custom',
-        message:
-          'completion Lens identity must match the configured review repository, app and check',
-        path: ['delivery', 'completion'],
-      });
-    const problem = checkCompletionStatuses(config.source.reviewStatus, completion);
-    if (problem !== null)
-      ctx.addIssue({ code: 'custom', message: problem, path: ['delivery', 'completion'] });
-  })
-  .refine((config) => config.review === undefined || config.source !== undefined, {
-    error:
-      'review requires the Jira connection described by "source": a review scans the tickets ' +
-      'that connection reports as being in review, and it carries no connection of its own',
-    path: ['review'],
-  });
+  .refine(
+    (config) =>
+      config.reviewer === undefined ||
+      config.completion === undefined ||
+      (config.reviewer.app.appId === config.completion.lensAppId &&
+        config.reviewer.app.login === config.completion.lensApp &&
+        config.reviewer.checkName === config.completion.lensCheckName),
+    {
+      error:
+        'the reviewer integration and the completion policy must name the same Nexus Lens App, ' +
+        'login and check: otherwise the completion gate would require a check the configured ' +
+        'reviewer never publishes',
+      path: ['completion'],
+    },
+  );
+
+/** The validated contents of a Nexus-wide harness configuration file. */
+export type HarnessFileConfig = z.infer<typeof harnessConfigSchema>;
+
+/** The validated contents of one connected project's configuration file. */
+export type ProjectFileConfig = z.infer<typeof projectConfigSchema>;
+
+/**
+ * The fields the project configuration owns. A harness configuration that
+ * carries one is refused with where it belongs, rather than only as an
+ * unrecognized key (docs/WORKFLOW.md §1).
+ */
+export const PROJECT_OWNED_FIELDS = ['setup', 'checks', 'source', 'delivery'] as const;
+
+/**
+ * The fields the Nexus-wide harness configuration owns; a project configuration
+ * that carries one is refused the same way.
+ */
+export const HARNESS_OWNED_FIELDS = [
+  'workDir',
+  'maxRepairs',
+  'taskTimeoutMinutes',
+  'commandTimeoutMinutes',
+  'agent',
+  'escalation',
+  'reviewer',
+  'completion',
+] as const;
+
+/**
+ * Which of `owned` this document carries. The loader asks before validating, so
+ * a field that moved between the two files is reported as belonging to the
+ * other one instead of as a typo.
+ */
+export function misplacedFields(document: unknown, owned: readonly string[]): string[] {
+  if (typeof document !== 'object' || document === null || Array.isArray(document)) return [];
+  const keys = new Set(Object.keys(document));
+  return owned.filter((name) => keys.has(name));
+}
 
 /**
  * The launch the harness uses when the configuration names none: the installed

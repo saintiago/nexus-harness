@@ -70,20 +70,96 @@ CLI from TypeScript sources through `tsx` if you would rather not build.
 `npm start -- --help` prints the full usage text, and `npm start -- run` with a missing option
 prints a usage error and exits `2`.
 
-## `check-config`: validate the two input files
+## Configuration: one harness file, one file per connected project
+
+Configuration is **two files**, and each field has exactly one owner
+([docs/WORKFLOW.md](docs/WORKFLOW.md) §1):
+
+- **The Nexus-wide harness configuration** — the file every command is given as `--config`. It says
+  how this installation runs work: `workDir`, the limits (`maxRepairs`, `taskTimeoutMinutes`,
+  `commandTimeoutMinutes`), the coding launches (`agent`, `escalation`), and the reviewer that
+  follows them (`reviewer`, `completion`). It names no repository, no Jira connection, and no
+  project command.
+- **The project configuration** — `nexus.project.json` at a connected repository's root, committed
+  with that repository. It says what that repository is: `setup` and `checks` (the commands that
+  decide a task there), its Jira queue (`source`), and its GitHub destination and completion
+  outcomes (`delivery`, `delivery.completion`). It carries no launch, no limit, and no reviewer
+  identity.
+
+The two are **composed, not layered**: neither file may carry a field the other owns, no field is
+defaulted from one into the other, and what the two say about each other is refused rather than
+guessed — a review belongs to the repository its own project delivers to and is enabled only when
+the harness declares a reviewer and the project declares both Jira and delivery. Local-only and
+Jira-only projects use the same harness file with no review path. The reviewer and the completion
+gate must name the same Nexus Lens
+App, login and check; and a completed item's outcomes must differ from the review status it started
+in. Every refusal names both paths and the field. The configuration shape this contract replaced is
+refused the same way: its project fields are reported as belonging to the project configuration.
+
+`docs/nexus.config.example.json` is a credential-free Nexus-wide example,
+`docs/nexus.project.example.json` a credential-free project example, and this repository's own
+`nexus.project.json` is what it commits for itself. `examples/task.json` is the task example. Their
+formats are defined in [docs/WORKFLOW.md](docs/WORKFLOW.md) §1–2; that document is the contract —
+this README does not restate it.
+
+### Connecting a new repository
+
+1. Add `nexus.project.json` to the repository's root — copy `docs/nexus.project.example.json` — with
+   its own `setup` and `checks`, its Jira connection, and, when its passed attempts should be
+   delivered and completed, its `delivery` object. None of the Nexus-wide settings are repeated in
+   it: the launches, the limits, and the reviewer stay in the one harness file. For a local-only
+   project, only `setup` and `checks` are needed; adding `source` enables Jira intake without
+   requiring delivery. Shared reviewer policy does not require either project setting.
+2. Commit it. The harness reads it from the checkout `--repo` names (and from the root `--project`
+   names for the read-only commands), so it has to be part of what a run clones.
+3. Make sure the credentials it _names_ are in the operator's environment: the Jira token under
+   `source.tokenEnv`, the operator's own `gh`/Git login for delivery. No credential goes into either
+   file.
+4. Validate both files before the first run:
+   `npm start -- check-config --config <harness config> --project <the repository>`.
+
+### Migrating an installation onto this split
+
+The retired single file is no longer read. Split it: the Nexus-wide fields become the operator's own
+`nexus.config.json` (gitignored in the operator's checkout, and what `--config` now names), and the
+project fields become a committed `nexus.project.json` in the connected repository's root. That is
+exactly what this repository did for itself: its `nexus.project.json` carries the Jira queue, the
+delivery destination, and the one command its CI runs, while the reviewer, the launches, and the
+limits moved into the operator's harness file — start from
+[docs/nexus.config.example.json](docs/nexus.config.example.json), which holds this installation's
+tiers, reviewer, and completion policy, and set `workDir` and the launcher's own path for the
+machine. The retired filename stays ignored so a leftover copy cannot make the checkout dirty, and
+the queue's invocation becomes `npm start -- queue run --repo . --config nexus.config.json`.
+
+## `check-config`: validate the composed configuration
 
 ```sh
-npm start -- check-config --config harness.config.json --task examples/task.json
+npm start -- check-config --config docs/nexus.config.example.json --project . --task examples/task.json
 ```
 
 ```
-check-config: /home/you/project/harness.config.json is valid
+check-config: /home/you/project/docs/nexus.config.example.json is valid
   workDir                /home/you/project/.harness (resolved from this file)
   maxRepairs             2
   taskTimeoutMinutes     60
   commandTimeoutMinutes  10
+  escalation             2 tier(s): flash, astra
+  reviewer               github app 5001141 installation 163007360 as nexus-lens[bot], check "Nexus Lens review", key path environment variable NEXUS_LENS_PRIVATE_KEY_PATH
+  reviewer launch        codex codex --profile nexus-astra --model gpt-6-astra
+  completion             reviewer nexus-lens[bot] (App 5001141), check "Nexus Lens review", credential environment variable NEXUS_LENS_TOKEN, poll 30s, deadline 1800s
+check-config: /home/you/project/nexus.project.json is valid
   setup                  1 command
-  checks                 2 commands
+  checks                 1 command
+  source                 jira https://malton-family.atlassian.net project HARN
+  source queue           issuetype Task, label harness-task, To Do -> In Progress -> In Review
+  source ordering        priority: Jira priority DESC, then created ASC, then the issue key
+  source polling         30s, token environment variable JIRA_API_TOKEN
+  delivery               github saintiago/nexus-harness -> main
+  delivery completion    reviewer nexus-lens[bot] (App 5001141), check Nexus Lens review, credential environment variable NEXUS_LENS_TOKEN
+  delivery completion    post-merge workflows ci.yml, fail -> To Do, verified -> Done, poll 30s, deadline 1800s
+  review                 github saintiago/nexus-harness as nexus-lens[bot], app 5001141 installation 163007360
+  review scanning        In Review, check "Nexus Lens review", key path environment variable NEXUS_LENS_PRIVATE_KEY_PATH
+  review reviewer        codex codex --profile nexus-astra --model gpt-6-astra
 check-config: /home/you/project/examples/task.json is valid
   id                     example-001
   title                  Add a greeting function
@@ -92,26 +168,27 @@ check-config: /home/you/project/examples/task.json is valid
 
 Every path it prints is the one it really read: `/home/you/project` stands for the checkout you run
 this in, and the resolved `workDir` is spelled out so you can see where a run would write before you
-start one. `check-config` is **static**. It creates no directory, runs no configured command,
-contacts no provider, needs no credentials, and reads no native profile or authentication file.
-Inputs are rejected rather than repaired: unknown keys, wrong types, blank text, invalid limits,
-malformed command arrays, an unsupported `agent` runtime, and an empty or blank `agent` command all
-fail with the file and field named, and no value is coerced or interpolated. The path rules for an
-`agent` executable are applied exactly as a run would apply them, though the resolved prefix is not
-printed. A configuration that selects `delivery` or `review` prints those selections too — the
-repository, queue, check name, and ids, and the _name_ of the variable that holds a credential,
-never a credential value. Exit codes: `0` both files are valid, `1` a file could not be read or is invalid, `2` a
-missing or unknown option. `--task` is optional: without it, the configuration alone is validated —
-which is what a `source` command needs, and what you run before pointing the harness at a Jira queue.
-
-`harness.config.json` and `examples/task.json` are the working examples; their format is defined in
-[docs/WORKFLOW.md](docs/WORKFLOW.md) §1–2. That document is the contract — this README does not
-restate it.
+start one. `--config` names the Nexus-wide harness configuration, `--project` the connected
+project's root, and `--task` adds that file. `check-config` is **static**. It creates no directory,
+runs no configured command, contacts no provider, needs no credentials, and reads no native profile
+or authentication file. Inputs are rejected rather than repaired: unknown keys, wrong types, blank
+text, invalid limits, malformed command arrays, an unsupported `agent` runtime, and an empty or
+blank `agent` command all fail with the file and field named, and no value is coerced or
+interpolated. A field in the wrong file, a project completion without harness completion policy,
+and every other mismatch fail the same way — before anything runs. The path rules for a
+launch executable are applied exactly as a command would apply them, though the coding prefix is not
+printed. What the two files compose prints too — the repository, queue, check name, and ids, and the
+_name_ of the variable that holds a credential, never a credential value. Exit codes: `0` both files
+are valid and compose, `1` a file could not be read, is invalid, or does not compose, `2` a missing or
+unknown option. `--task` is optional: without it the two configuration files are validated alone —
+which is what a `source` command needs, and what you run before pointing the harness at a Jira
+queue.
 
 ### Selecting the launch
 
-The six required fields describe the task and the commands that decide it. The optional `agent`
-object selects what the coding turns are started with:
+The task is decided by the connected project's `setup` and `checks` commands and by the Nexus-wide
+limits. The optional `agent` object of the harness configuration selects what the coding turns are
+started with:
 
 ```json
 {
@@ -133,8 +210,8 @@ credential in it**: keys belong in the environment the runtime inherits (for the
 §5).
 
 Path rules for the executable: a bare name (`codex`) is resolved from `PATH` by the host launcher; a
-relative path **containing a separator** resolves against the configuration file's own directory,
-once, before anything runs; an absolute path is used as supplied. The remaining arguments are opaque
+relative path **containing a separator** resolves against the harness configuration file's own
+directory, once, before anything runs; an absolute path is used as supplied. The remaining arguments are opaque
 — the harness does not guess which are paths, expand `~`, `$HOME`, or `%VARIABLE%`, or join the
 prefix into a shell string. Omitting `agent` entirely means `{"runtime": "codex", "command":
 ["codex"]}`, which uses your ordinary Codex defaults.
@@ -142,12 +219,14 @@ prefix into a shell string. Omitting `agent` entirely means `{"runtime": "codex"
 ## `run`: the workspace, check, and repair loop
 
 ```sh
-npm start -- run --repo ../target-project --config harness.config.json --task examples/task.json
+npm start -- run --repo ../target-project --config nexus.config.json --task examples/task.json
 ```
 
 Everything the run needs is loaded and validated **before anything is started**, and the loaded
 configuration and task stay fixed for the whole run: nothing the working copy, the runtime, or the
-target project writes can change which commands decide the result. Then:
+target project writes can change which commands decide the result. The project configuration is
+read from the checkout `--repo` names, so the repository a run clones describes its own `setup` and
+`checks`. Then:
 
 1. **Preflight.** The source repository must be a clean Git checkout with a commit; the output
    directory must not be inside it.
@@ -155,8 +234,8 @@ target project writes can change which commands decide the result. Then:
    **workspace**, `<workDir>/workspaces/<workspaceId>`, holding the working copy beside it, with a
    ledger at `workspaces/<workspaceId>.json` recording its base, branch, and attempts. A fresh
    run's `workspaceId` is its own run ID; a continuation reuses the workspace its issue's pointer
-   label names. `workDir` comes from the configuration file and resolves from that file's own
-   directory.
+   label names. `workDir` comes from the harness configuration file and resolves from that file's
+   own directory.
 3. **A working copy**: a clone of the source at its recorded base commit, in that workspace, on a
    dedicated branch `harness/<workspaceId>`. Only committed content is inherited. The clone is
    given a repository-local Git identity (`Nexus Agent <nexus@local>`, commit signing disabled)
@@ -290,22 +369,24 @@ and posts a compact result back. Only the intake is new: the working copy, the c
 turns, the repairs, the deadline, the logs, and the report are the ones described above.
 
 ```sh
-# Static: validates the configuration, the source object included. No credential, no network.
-npm start -- check-config --config harness.jira.config.json
+# Static: validates the composed configuration, the project's queue included. No credential, no network.
+npm start -- check-config --config nexus.config.json --project ../target-project
 
 # Read-only preview: contacts Jira, claims nothing, starts no run, costs no coding turns.
-npm start -- source list --config harness.jira.config.json
+npm start -- source list --config nexus.config.json --project ../target-project
 
 # One finite batch, run sequentially. --limit bounds fresh attempts, not the whole queue.
-npm start -- source run --repo ../target-project --config harness.jira.config.json --limit 1
+npm start -- source run --repo ../target-project --config nexus.config.json --limit 1
 
 # Scan, run the batch, wait, and scan again until you stop it (Ctrl+C).
-npm start -- source watch --repo ../target-project --config harness.jira.config.json
+npm start -- source watch --repo ../target-project --config nexus.config.json
 ```
 
-`source list` needs only `--config`. `source run` and `source watch` also need `--repo`, which is
-the one repository every fetched issue is bound to, and they reject `--task`: a source task comes
-from Jira, not from a file. The whole batch is discovered **before** any issue is claimed, and the
+`source list` needs `--config` and `--project`, because it reads the connected project's
+configuration without opening a working copy. `source run` and `source watch` take `--repo`
+instead: it is the one repository every fetched issue is bound to, and the checkout the project
+configuration is read from. Every source command rejects `--task`: a source task comes from Jira,
+not from a file. The whole batch is discovered **before** any issue is claimed, and the
 runs are strictly sequential. Jira decides the order, and the preview prints the issues in that same
 discovered order. With the default `"ordering": "priority"` the highest-priority ready issue comes
 first, then the oldest creation, then the issue key. With `"ordering": "rank"` the board's own
@@ -315,7 +396,8 @@ answer as the batch order: it never sorts locally, never reads Rank values, and 
 two orders. A Priority or Rank change takes effect on the next fresh scan and never reorders an
 active task or a batch that was already discovered.
 
-The queue is the configuration's `source` object, and nothing else:
+The queue is the connected project's `source` object, and nothing else — the repository carries it,
+so the same Nexus-wide harness file can serve several projects with different queues:
 
 ```json
 {
@@ -342,14 +424,14 @@ the harness never falls back to Priority, never guesses a board order, never cal
 board API, and never writes Rank. `check-config` prints the intake order it validated
 (`source ordering  priority: Jira priority DESC, then created ASC, then the issue key`, or the same
 line with `rank: Jira Rank ASC` in its place) without contacting Jira. `docs/WORKFLOW.md` §5 is the
-contract; `docs/harness.jira.example.json` is a credential-free example, and
+contract; `docs/nexus.project.example.json` is a credential-free example, and
 `examples/jira-description.md` shows the description format an issue must use.
 
 **Running the harness on this repository itself** works, as long as the checkout is clean and the
-output stays outside it: the operator's live config sits at the repository root as
-`harness.jira.config.json`, is gitignored (an untracked file would make this checkout dirty for
-preflight), and points `workDir` at a sibling directory — `../nexus-jira-runs` — so no run
-directory is ever created inside the source.
+output stays outside it: this repository commits its own `nexus.project.json`, and the operator's
+Nexus-wide file sits in the checkout as `nexus.config.json`, gitignored (an untracked file would
+make this checkout dirty for preflight), pointing `workDir` at a sibling directory —
+`../nexus-jira-runs` — so no run directory is ever created inside the source.
 
 **Authentication is a service account, not your account.** Create a Jira service account, give it
 access to the project, and create an **API token** with the classic scopes `read:jira-work` and
@@ -435,7 +517,7 @@ or writes them.
 
 ```sh
 # One finite batch with the ladder: Flash first, Astra only if Flash's checks stay red.
-npm start -- source run --repo ../target-project --config harness.jira.config.json --limit 1
+npm start -- source run --repo ../target-project --config nexus.config.json --limit 1
 ```
 
 **Delivering a passed attempt (optional).** Add a `delivery` object to have the harness push a
@@ -522,36 +604,36 @@ uncommitted changes the earlier attempts left there are still in it.
 
 ## `review`: reviews of In Review tickets through Nexus Lens
 
-The optional `review` object turns on the second half of the Jira-driven loop: the tickets the
-harness has already worked — the ones the same `source` connection reports as **In Review** — are
-reviewed automatically, and each verdict is published to GitHub as one native review plus one
-app-owned check run. It is off unless the configuration asks for it, and it is read-only on Jira: it
-claims nothing, moves nothing, posts no comment, and never marks an issue Done.
+The optional Nexus-wide `reviewer` object turns on the second half of the Jira-driven loop: the
+tickets the harness has already worked — the ones the connected project's `source` connection
+reports as **In Review** — are reviewed automatically, and each verdict is published to GitHub as
+one native review plus one app-owned check run. It is off unless the harness configuration asks for
+it, and it is read-only on Jira: it claims nothing, moves nothing, posts no comment, and never marks
+an issue Done. The repository whose pull requests are reviewed is the one the project's `delivery`
+names, so the two can never describe different artifacts.
 
 ```sh
-# Static: validates the review object too. No credential, no network.
-npm start -- check-config --config harness.jira.config.json
+# Static: validates the reviewer and the project it composes with. No credential, no network.
+npm start -- check-config --config nexus.config.json --project ../target-project
 
 # One finite pass over the tickets in the configured review status.
-npm start -- review scan --config harness.jira.config.json
+npm start -- review scan --config nexus.config.json --project ../target-project
 
 # One pass, then keep scanning with the source's interval until stopped (Ctrl+C).
-npm start -- review watch --config harness.jira.config.json
+npm start -- review watch --config nexus.config.json --project ../target-project
 
 # Bound the paid reviewer turns one pass starts: a ticket already reviewed costs none.
-npm start -- review scan --config harness.jira.config.json --limit 1
+npm start -- review scan --config nexus.config.json --project ../target-project --limit 1
 ```
 
-The configuration is one strict object; `docs/harness.review.example.json` is a credential-free
+The reviewer is one strict Nexus-wide object; `docs/nexus.config.example.json` is a credential-free
 example to copy, [docs/WORKFLOW.md](docs/WORKFLOW.md) §9 is the field contract, and
 [docs/spec.md](docs/spec.md) §9 is the behaviour. For this installation the App is `nexus-lens`
 (app id `5001141`, installation `163007360`) and the reviewer is the Astra profile:
 
 ```json
 {
-  "review": {
-    "type": "github",
-    "repository": "your-org/your-repo",
+  "reviewer": {
     "app": {
       "appId": 5001141,
       "installationId": 163007360,
@@ -561,15 +643,21 @@ example to copy, [docs/WORKFLOW.md](docs/WORKFLOW.md) §9 is the field contract,
     "reviewer": {
       "runtime": "codex",
       "command": ["codex", "--profile", "nexus-astra", "--model", "gpt-6-astra"]
-    }
+    },
+    "checkName": "Nexus Lens review"
   }
 }
 ```
 
+That object belongs to the Nexus-wide harness configuration: the App, the reviewer launch, and the
+check's name are installation-wide. Which repository is reviewed is not: it is the connected
+project's own `delivery.repository`, which is also where its passed attempts are pushed.
+
 **What one pass does.** A ticket is eligible when it is in the `source` connection's review status
 with the configured project, issue type, and label, it carries exactly one valid
 `harness-ws-<workspaceId>` pointer label, and exactly one open pull request in `repository` has the
-head branch `harness/<workspaceId>`. A ticket whose local intake receipt records a failed or
+head branch `harness/<workspaceId>` — the repository the ticket's project `delivery` names. A
+ticket whose local intake receipt records a failed or
 cancelled attempt — or a reservation with no finished attempt — is reported too: a review approves
 work, and a pull request that predates the failure is not the successful code awaiting approval.
 Anything else — no pointer, two pointers, no pull request, more than one match — is reported and
@@ -640,20 +728,22 @@ next workspace in between.
 
 ```sh
 # Static: validates the objects the queue needs too. No credential, no network.
-npm start -- check-config --config harness.queue.config.json
+npm start -- check-config --config nexus.config.json --project ../target-project
 
 # Finite: finish tickets until a fresh scan finds no eligible one, then exit 0.
-npm start -- queue run --repo ../target-project --config harness.queue.config.json
+npm start -- queue run --repo ../target-project --config nexus.config.json
 
 # One foreground process that waits for the next eligible ticket (Ctrl+C stops it).
-npm start -- queue watch --repo ../target-project --config harness.queue.config.json
+npm start -- queue watch --repo ../target-project --config nexus.config.json
 ```
 
-A queue command needs three objects to be configured: `source` (the Jira queue it takes from),
-`review` (the Nexus Lens path), and `delivery` **with** `delivery.completion` (the destination and
-the path that ends a ticket). The loader already requires those objects to agree — same repository,
-same App, same check name — so a configuration that could never complete a ticket is refused before
-any credential is resolved. The queue uses the Jira service-account token and the App's private
+A queue command needs three objects to be configured: the project's `source` (the Jira queue it
+takes from) and `delivery` **with** `delivery.completion` (its destination and the path that ends a
+ticket), and the harness configuration's `reviewer` (the Nexus Lens path). The loader already
+requires them to agree — the review belongs to the delivered repository, and the reviewer and the
+completion gate name the same App, login and check — so a configuration that could never complete a
+ticket is refused before any credential is resolved. The queue uses the Jira service-account token
+and the App's private
 key path, renewing the App installation token for completion evidence reads as needed with the
 same Lens permissions used by reviews. Public post-merge workflow reads need no added Actions
 permission in the token request; inaccessible evidence stops the queue for attention. Only the
@@ -777,19 +867,27 @@ git add --all && git commit --quiet -m 'tiny-project: baseline'
 node tools/run-checks.mjs      # green before any run: 2 of 2 test files passed
 ```
 
-**2. The harness inputs**, outside the project. `workDir` resolves from the configuration file's
+**2. The two configuration files.** The project's own configuration sits at its root and is
+committed with it; the Nexus-wide file sits outside the project, and `workDir` resolves from _its_
 own directory, which is exactly why the output can be kept out of the source repository:
 
 ```sh
+cd /tmp/nexus-demo/tiny-project
+cat > nexus.project.json <<'EOF'
+{
+  "setup": [],
+  "checks": [["node", "tools/run-checks.mjs"]]
+}
+EOF
+git add --all && git commit --quiet -m 'tiny-project: project configuration'
+
 mkdir -p /tmp/nexus-demo/harness && cd /tmp/nexus-demo/harness
-cat > harness.config.json <<'EOF'
+cat > nexus.config.json <<'EOF'
 {
   "workDir": ".",
   "maxRepairs": 2,
   "taskTimeoutMinutes": 30,
-  "commandTimeoutMinutes": 5,
-  "setup": [],
-  "checks": [["node", "tools/run-checks.mjs"]]
+  "commandTimeoutMinutes": 5
 }
 EOF
 cat > task.json <<'EOF'
@@ -806,13 +904,13 @@ cat > task.json <<'EOF'
   ]
 }
 EOF
-node /path/to/nexus/dist/cli.js check-config --config harness.config.json --task task.json
+node /path/to/nexus/dist/cli.js check-config --config nexus.config.json --project /tmp/nexus-demo/tiny-project --task task.json
 ```
 
 **3. Run it.** From a checkout of this repository, after `npm ci && npm run build`:
 
 ```sh
-npm start -- run --repo /tmp/nexus-demo/tiny-project --config /tmp/nexus-demo/harness/harness.config.json --task /tmp/nexus-demo/harness/task.json
+npm start -- run --repo /tmp/nexus-demo/tiny-project --config /tmp/nexus-demo/harness/nexus.config.json --task /tmp/nexus-demo/harness/task.json
 ```
 
 **4. What it prints.** Progress lines come from the run's own timeline as it goes, then:
@@ -1037,12 +1135,13 @@ what the runs left behind.
 
 ```sh
 npm run test:live                                    # the ordinary Codex launch, documented defaults
-npm run test:live -- --config harness.config.json    # the agent, limits, and allowance that file selects
+npm run test:live -- --config nexus.config.json      # the agent, limits, and allowance that file selects
 ```
 
-With `--config`, the verifier loads the file through the harness's own schema and path rules and
-uses its `agent`, `maxRepairs`, `taskTimeoutMinutes`, and `commandTimeoutMinutes`. Its disposable
-repository, output directory, task, setup, and checks stay its own: your configured project's
+With `--config`, the verifier loads the Nexus-wide file through the harness's own schema and path
+rules and uses its `agent`, `maxRepairs`, `taskTimeoutMinutes`, and `commandTimeoutMinutes`. Its
+disposable repository, output directory, task, setup, and checks stay its own — they are the
+fixture's project configuration, which the verifier writes itself — so the connected project's
 commands are never run and its `workDir` is never written to. A configuration that allows no repair
 turn is refused before any paid work, because this verifier exists to exercise a real repair.
 
@@ -1056,7 +1155,8 @@ gate is verified offline in `tests/live-verifier.test.ts`, including that `npm t
 `npm run validate`, and CI never reach the live entry point at all.
 
 **Verified live for Jira reads on 2026-09-17**, against the operator's own queue (`HARN`, on a site
-whose default language is not English): `npm run dev -- source list --config harness.jira.config.json`
+whose default language is not English): `npm run dev -- source list --config nexus.config.json
+--project .`
 read the real queue through the scoped service-account token and listed `HARN-1`. The first run
 reported it `stale`: the queue's JQL matched the canonical names (`To Do`, `Task`) while the site
 answered with translated ones (`待办`, `任务`), because the client left the language to `fetch`, which
@@ -1158,8 +1258,8 @@ single non-interactive turn on this platform and needs no extra client library i
   runtime untouched. **Authentication is never part of a task file, a configuration file, or this
   repository's code**, and nothing the adapter reads is copied into a log, a timeline, or a report:
   no key, no token, and no environment dump is persisted anywhere.
-- **Selecting another Codex-backed provider**, as the checked-in `harness.config.json` does for
-  DeepSeek on this machine: keep your ordinary Codex defaults for `codex` and add a native profile
+- **Selecting another Codex-backed provider**, as this installation's operator `nexus.config.json`
+  does for DeepSeek on this machine: keep your ordinary Codex defaults for `codex` and add a native profile
   for the other provider, so nothing has to be restored afterwards. The profile is
   `<Codex home>/deepseek.config.toml` (`model`, `model_provider`, `model_catalog_json`, and a
   `[model_providers.deepseek]` table with `base_url`, `wire_api`, and `env_key`), the catalog is
@@ -1176,8 +1276,8 @@ single non-interactive turn on this platform and needs no extra client library i
   turn. [docs/nexus-agent-tools.md](docs/nexus-agent-tools.md) has the two copy-ready files, the
   launch-prefix change, the optional private credentials — neither is needed: Context7 answers
   anonymously and Tavily's keyless mode is the default — and a short new-session smoke procedure.
-  The checkout's own `harness.config.json` does not select those profiles: they are operator-native
-  configuration the harness never reads or writes.
+  The Nexus-wide harness configuration this checkout is run with does not select those profiles:
+  they are operator-native configuration the harness never reads or writes.
 - **Observed limitations, stated rather than smoothed over:**
   - `codex exec`'s **exit codes are not documented**. The adapter therefore does not read an exit
     code as meaning anything by itself: it reads the event stream, and every other ending — a
@@ -1200,13 +1300,13 @@ single non-interactive turn on this platform and needs no extra client library i
   launch, run both steps once, with the account and configuration this machine uses. Neither is part
   of `npm test`, `npm run validate`, or CI, and neither is a claim that either has already been run.
 
-  1. `npm run test:live -- --config harness.config.json` — the opt-in live check. It drives the built
+  1. `npm run test:live -- --config nexus.config.json` — the opt-in live check. It drives the built
      CLI against two disposable repositories with the selected launch and reads its assertions out
      of the retained working copies. Its repair exercise is a second coding turn in the same
      retained working copy, so a fresh launch and a later launch over one clone both run.
   2. The commit check below: a real turn asked to change a tracked file and commit it — the part no
      offline test can decide about a real runtime. Run it from this repository's checkout: it takes
-     the `agent` block from this checkout's `harness.config.json`, and its source, the run's output
+     the `agent` block from the operator's `nexus.config.json`, and its source, the run's output
      root, and the probe's own files are three separate paths outside any system temp directory.
 
 ```powershell
@@ -1214,6 +1314,17 @@ $probe  = Join-Path $env:USERPROFILE ("nexus-harness-probe-" + (Get-Date -Format
 $source = Join-Path $probe 'source'
 New-Item -ItemType Directory -Force (Join-Path $source 'src') | Out-Null
 Set-Content (Join-Path $source 'src\committed.txt') 'placeholder'
+
+# The connected project owns the commands that decide a task in it: they are
+# committed with the source, and a run reads them from the checkout it clones.
+@'
+{ "setup": [],
+  "checks": [
+    ["git", "ls-files", "--error-unmatch", "src/committed.txt"],
+    ["git", "diff", "--quiet", "HEAD"]
+  ] }
+'@ | Set-Content (Join-Path $source 'nexus.project.json')
+
 git -C $source init -q
 git -C $source config user.email probe@local
 git -C $source config user.name probe
@@ -1227,14 +1338,9 @@ git -C $source commit -qm base
 # Windows paths in it instead of pasting them into a hand-written string.
 $config = @'
 { "workDir": "./run", "maxRepairs": 0, "taskTimeoutMinutes": 20, "commandTimeoutMinutes": 5,
-  "setup": [],
-  "checks": [
-    ["git", "ls-files", "--error-unmatch", "src/committed.txt"],
-    ["git", "diff", "--quiet", "HEAD"]
-  ],
   "agent": null }
 '@ | ConvertFrom-Json
-$config.agent = (Get-Content harness.config.json -Raw | ConvertFrom-Json).agent
+$config.agent = (Get-Content nexus.config.json -Raw | ConvertFrom-Json).agent
 $config | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $probe 'probe.config.json')
 
 @'
@@ -1343,10 +1449,11 @@ operator's own `gh` credentials, once the check is green —
   still needs a task.
 - [docs/module-structure.md](docs/module-structure.md) — the `src/` layout as it stands, and the
   rules for placing new code in it.
-- [docs/harness.jira.example.json](docs/harness.jira.example.json) — a credential-free source
-  configuration to copy.
-- [docs/harness.review.example.json](docs/harness.review.example.json) — a credential-free
-  configuration with the optional Nexus Lens `review` object, to copy beside a source.
+- [docs/nexus.config.example.json](docs/nexus.config.example.json) — a credential-free Nexus-wide
+  harness configuration to copy: the limits, the launches, and the Nexus Lens reviewer.
+- [docs/nexus.project.example.json](docs/nexus.project.example.json) — a credential-free project
+  configuration to copy into a connected repository's root: its commands, its Jira queue, and its
+  GitHub destination.
 - [docs/nexus-agent-tools.md](docs/nexus-agent-tools.md) — the two native Codex profile files that
   give a Nexus turn GitHub (read), the OpenAI Docs MCP server, Context7 and Tavily, and keep the
   personal connectors out, with the operator setup and the new-session smoke procedure.

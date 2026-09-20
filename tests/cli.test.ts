@@ -41,12 +41,18 @@ import {
   cleanupTempDirectories,
   createTempDir,
   documentedConfig,
+  documentedHarnessConfig,
+  documentedProjectConfig,
   documentedTask,
   fakeConsole,
   repoRoot,
   screenAfter,
+  splitConfig,
+  writeConfigPair,
   writeJsonFile,
+  type JsonObject,
 } from './support.js';
+import { HARNESS_CONFIG_FILE_NAME, PROJECT_CONFIG_FILE_NAME } from '../src/config/paths.js';
 
 afterEach(cleanupTempDirectories);
 
@@ -118,15 +124,43 @@ function runProcess(args: readonly string[], cwd: string): Promise<ProcessResult
   });
 }
 
-/** Writes a valid config and task pair into a fresh temporary directory. */
+/**
+ * Writes one field map as the two configuration files a command reads, plus the
+ * task file, into a fresh temporary directory. The connected project's own
+ * configuration sits in the same directory, which is also what `--project`
+ * names for the read-only commands.
+ */
 async function writeInputs(
   config: unknown = documentedConfig,
   task: unknown = documentedTask,
-): Promise<{ directory: string; configPath: string; taskPath: string }> {
+): Promise<{
+  directory: string;
+  configPath: string;
+  projectPath: string;
+  taskPath: string;
+}> {
   const directory = await createTempDir();
-  const configPath = await writeJsonFile(directory, 'harness.config.json', config);
+  const { harness, project } = splitConfig(config as JsonObject);
+  const configPath = await writeJsonFile(directory, HARNESS_CONFIG_FILE_NAME, harness);
+  const projectPath = await writeJsonFile(directory, PROJECT_CONFIG_FILE_NAME, project);
   const taskPath = await writeJsonFile(directory, 'task.json', task);
-  return { directory, configPath, taskPath };
+  return { directory, configPath, projectPath, taskPath };
+}
+
+/** The argv of a `check-config` from `cwd`, with every path as given. */
+function checkConfigArgv(parts: {
+  readonly config: string;
+  readonly project: string;
+  readonly task?: string;
+}): string[] {
+  return [
+    'check-config',
+    '--config',
+    parts.config,
+    '--project',
+    parts.project,
+    ...(parts.task === undefined ? [] : ['--task', parts.task]),
+  ];
 }
 
 function pause(ms: number): Promise<void> {
@@ -202,11 +236,19 @@ async function gitOrThrow(args: readonly string[], cwd: string): Promise<string>
   return result.stdout;
 }
 
-/** A clean Git repository with one commit: the source a run starts from. */
-async function createSourceRepository(parent: string, name = 'target-project'): Promise<string> {
+/**
+ * A clean Git repository with one commit: the source a run starts from, with the
+ * project configuration a connected repository carries committed at its root.
+ */
+async function createSourceRepository(
+  parent: string,
+  project: JsonObject = documentedProjectConfig,
+  name = 'target-project',
+): Promise<string> {
   const repo = path.join(parent, name);
   await mkdir(repo, { recursive: true });
   await writeFile(path.join(repo, 'README.md'), '# target project\n', 'utf8');
+  await writeJsonFile(repo, PROJECT_CONFIG_FILE_NAME, project);
   await gitOrThrow(['init', '--quiet', '--initial-branch=main'], repo);
   await gitOrThrow(['add', '--all'], repo);
   await gitOrThrow(['commit', '--quiet', '--message', 'target: baseline'], repo);
@@ -272,11 +314,24 @@ async function createRunFixture(
   } = {},
 ): Promise<RunFixture> {
   const parent = await createTempDir();
-  const source = await createSourceRepository(parent);
   const outDir = path.join(parent, 'out');
   const sentinel = path.join(parent, 'sentinel.txt');
   const probe = path.join(parent, 'probe.cjs');
   await writeFile(probe, PROBE_SOURCE, 'utf8');
+
+  // The fixture's fields, routed to the file that owns each of them: the
+  // project's own commands are committed in the repository a run clones, and
+  // the Nexus-wide settings live beside it.
+  const { harness, project } = splitConfig({
+    workDir: './out',
+    maxRepairs: 2,
+    taskTimeoutMinutes: 30,
+    commandTimeoutMinutes: 5,
+    setup: [],
+    checks: [GREEN_CHECK],
+    ...parts.config,
+  } as JsonObject);
+  const source = await createSourceRepository(parent, project);
 
   const calls: AgentTurnRequest[] = [];
   const agent: RunnerDependencies['runAgentTurn'] =
@@ -288,15 +343,7 @@ async function createRunFixture(
 
   const configDirectory = parts.configDirectory ?? parent;
   await mkdir(configDirectory, { recursive: true });
-  const configPath = await writeJsonFile(configDirectory, 'harness.config.json', {
-    workDir: './out',
-    maxRepairs: 2,
-    taskTimeoutMinutes: 30,
-    commandTimeoutMinutes: 5,
-    setup: [],
-    checks: [GREEN_CHECK],
-    ...parts.config,
-  });
+  const configPath = await writeJsonFile(configDirectory, HARNESS_CONFIG_FILE_NAME, harness);
   const taskPath = await writeJsonFile(parent, 'task.json', documentedTask);
 
   return {
@@ -394,26 +441,97 @@ describe('help', () => {
     expect(signals.registered).toBe(0);
     expect([process.listenerCount('SIGINT'), process.listenerCount('SIGTERM')]).toEqual(before);
   });
+
+  it('composes two different projects with the same harness configuration', async () => {
+    const directory = await createTempDir();
+    const configPath = await writeJsonFile(directory, HARNESS_CONFIG_FILE_NAME, {
+      ...documentedHarnessConfig,
+      workDir: './.harness',
+    });
+    // One project per queue, each carrying its own repository and its own
+    // commands, and sharing the one Nexus-wide file beside them.
+    const first = await writeJsonFile(path.join(directory, 'first'), PROJECT_CONFIG_FILE_NAME, {
+      setup: [],
+      checks: [['node', '--version']],
+      source: {
+        type: 'jira',
+        siteUrl: 'https://example.atlassian.net',
+        cloudId: '9337c4da-7d33-4c1d-b03c-db207e537f88',
+        projectKey: 'SAM1',
+      },
+      delivery: {
+        type: 'github',
+        repository: 'example-owner/first-project',
+        baseBranch: 'main',
+      },
+    });
+    const second = await writeJsonFile(path.join(directory, 'second'), PROJECT_CONFIG_FILE_NAME, {
+      setup: [],
+      checks: [
+        ['npm', 'run', 'lint'],
+        ['npm', 'test'],
+      ],
+      source: {
+        type: 'jira',
+        siteUrl: 'https://example.atlassian.net',
+        cloudId: '9337c4da-7d33-4c1d-b03c-db207e537f88',
+        projectKey: 'HARN',
+      },
+      delivery: {
+        type: 'github',
+        repository: 'example-owner/second-project',
+        baseBranch: 'main',
+      },
+    });
+
+    const firstRun = await run(
+      checkConfigArgv({ config: configPath, project: path.dirname(first) }),
+    );
+    const secondRun = await run(
+      checkConfigArgv({ config: configPath, project: path.dirname(second) }),
+    );
+
+    expect(firstRun.code).toBe(EXIT_OK);
+    expect(secondRun.code).toBe(EXIT_OK);
+    // Each project's own queue, repository, and commands, composed with the one
+    // harness configuration's own values.
+    expect(firstRun.out).toContain('project SAM1');
+    expect(firstRun.out).toContain('github example-owner/first-project -> main');
+    expect(firstRun.out).toContain('checks                 1 command');
+    expect(secondRun.out).toContain('project HARN');
+    expect(secondRun.out).toContain('github example-owner/second-project -> main');
+    expect(secondRun.out).toContain('checks                 2 commands');
+    for (const printed of [firstRun.out, secondRun.out]) {
+      expect(printed).toContain(
+        `maxRepairs             ${String(documentedHarnessConfig.maxRepairs)}`,
+      );
+      expect(printed).toContain(path.join(directory, '.harness'));
+    }
+  });
 });
 
 describe('check-config', () => {
-  it('validates the checked-in config and task files', async () => {
-    const result = await run([
-      'check-config',
-      '--config',
-      'harness.config.json',
-      '--task',
-      'examples/task.json',
-    ]);
+  it('validates the checked-in examples and task file', async () => {
+    const result = await run(
+      checkConfigArgv({
+        config: path.join('docs', 'nexus.config.example.json'),
+        project: '.',
+        task: path.join('examples', 'task.json'),
+      }),
+    );
 
     expect(result.err).toBe('');
     expect(result.code).toBe(EXIT_OK);
     expect(result.out).toContain(path.join(repoRoot, '.harness'));
+    // This repository's own project configuration, as it composes.
+    expect(result.out).toContain('saintiago/nexus-harness');
     expect(result.out).toContain('example-001');
   });
 
-  it('validates a configuration on its own, without --task', async () => {
-    const result = await run(['check-config', '--config', 'harness.config.json']);
+  it('validates the two configurations on their own, without --task', async () => {
+    const result = await run(
+      checkConfigArgv({ config: path.join('docs', 'nexus.config.example.json'), project: '.' }),
+    );
 
     expect(result.err).toBe('');
     expect(result.code).toBe(EXIT_OK);
@@ -422,7 +540,7 @@ describe('check-config', () => {
   });
 
   it('validates a source configuration without contacting it', async () => {
-    const { configPath } = await writeInputs({
+    const { directory, configPath } = await writeInputs({
       ...documentedConfig,
       source: {
         type: 'jira',
@@ -435,7 +553,7 @@ describe('check-config', () => {
       },
     });
 
-    const result = await run(['check-config', '--config', configPath]);
+    const result = await run(checkConfigArgv({ config: configPath, project: directory }));
 
     expect(result.err).toBe('');
     expect(result.code).toBe(EXIT_OK);
@@ -447,7 +565,7 @@ describe('check-config', () => {
   });
 
   it('prints the configured intake order without contacting Jira', async () => {
-    const { configPath } = await writeInputs({
+    const { directory, configPath } = await writeInputs({
       ...documentedConfig,
       source: {
         type: 'jira',
@@ -459,7 +577,7 @@ describe('check-config', () => {
       },
     });
 
-    const result = await run(['check-config', '--config', configPath]);
+    const result = await run(checkConfigArgv({ config: configPath, project: directory }));
 
     expect(result.err).toBe('');
     expect(result.code).toBe(EXIT_OK);
@@ -468,7 +586,7 @@ describe('check-config', () => {
   });
 
   it('prints the delivery selection without contacting GitHub', async () => {
-    const { configPath } = await writeInputs({
+    const { directory, configPath } = await writeInputs({
       ...documentedConfig,
       delivery: {
         type: 'github',
@@ -477,7 +595,7 @@ describe('check-config', () => {
       },
     });
 
-    const result = await run(['check-config', '--config', configPath]);
+    const result = await run(checkConfigArgv({ config: configPath, project: directory }));
 
     expect(result.err).toBe('');
     expect(result.code).toBe(EXIT_OK);
@@ -485,8 +603,8 @@ describe('check-config', () => {
     expect(result.out).toContain('example-owner/example-repo');
   });
 
-  it('prints the completion selection without resolving the reviewer credential', async () => {
-    const { configPath } = await writeInputs({
+  it('prints the composed completion selection without resolving its credential', async () => {
+    const { directory, configPath } = await writeInputs({
       ...documentedConfig,
       source: {
         type: 'jira',
@@ -495,15 +613,17 @@ describe('check-config', () => {
         projectKey: 'SAM1',
         tokenEnv: 'NEXUS_CHECK_CONFIG_MUST_NOT_RESOLVE_THIS',
       },
+      completion: {
+        lensApp: 'nexus-lens',
+        lensAppId: 123,
+        lensCheckName: 'Nexus Lens',
+        reviewerTokenEnv: 'NEXUS_LENS_TOKEN',
+      },
       delivery: {
         type: 'github',
         repository: 'example-owner/example-repo',
         baseBranch: 'main',
         completion: {
-          lensApp: 'nexus-lens',
-          lensAppId: 123,
-          lensCheckName: 'Nexus Lens',
-          reviewerTokenEnv: 'NEXUS_LENS_TOKEN',
           postMergeWorkflows: ['ci.yml'],
           toDoStatus: 'To Do',
           doneStatus: 'Done',
@@ -511,7 +631,7 @@ describe('check-config', () => {
       },
     });
 
-    const result = await run(['check-config', '--config', configPath]);
+    const result = await run(checkConfigArgv({ config: configPath, project: directory }));
 
     expect(result.err).toBe('');
     expect(result.code).toBe(EXIT_OK);
@@ -524,9 +644,14 @@ describe('check-config', () => {
   });
 
   it('accepts the --option=value form', async () => {
-    const { configPath, taskPath } = await writeInputs();
+    const { directory, configPath, taskPath } = await writeInputs();
 
-    const result = await run(['check-config', `--config=${configPath}`, `--task=${taskPath}`]);
+    const result = await run([
+      'check-config',
+      `--config=${configPath}`,
+      `--project=${directory}`,
+      `--task=${taskPath}`,
+    ]);
 
     expect(result.code).toBe(EXIT_OK);
     expect(result.out).toContain(configPath);
@@ -538,7 +663,9 @@ describe('check-config', () => {
       workDir: './out',
     });
 
-    const result = await run(['check-config', '--config', configPath, '--task', taskPath]);
+    const result = await run(
+      checkConfigArgv({ config: configPath, project: directory, task: taskPath }),
+    );
 
     expect(result.code).toBe(EXIT_OK);
     expect(result.out).toContain(path.join(directory, 'out'));
@@ -546,12 +673,14 @@ describe('check-config', () => {
   });
 
   it('reports an invalid configuration, naming the file and field', async () => {
-    const { configPath, taskPath } = await writeInputs({
+    const { directory, configPath, taskPath } = await writeInputs({
       ...documentedConfig,
       maxRepairs: -1,
     });
 
-    const result = await run(['check-config', '--config', configPath, '--task', taskPath]);
+    const result = await run(
+      checkConfigArgv({ config: configPath, project: directory, task: taskPath }),
+    );
 
     expect(result.code).toBe(EXIT_INPUT_ERROR);
     expect(result.err).toContain(configPath);
@@ -562,13 +691,13 @@ describe('check-config', () => {
   it('reports an unreadable task file', async () => {
     const { directory, configPath } = await writeInputs();
 
-    const result = await run([
-      'check-config',
-      '--config',
-      configPath,
-      '--task',
-      path.join(directory, 'absent.json'),
-    ]);
+    const result = await run(
+      checkConfigArgv({
+        config: configPath,
+        project: directory,
+        task: path.join(directory, 'absent.json'),
+      }),
+    );
 
     expect(result.code).toBe(EXIT_INPUT_ERROR);
     expect(result.err).toMatch(/cannot be read/);
@@ -587,7 +716,9 @@ describe('check-config', () => {
       'utf8',
     );
 
-    const configPath = await writeJsonFile(directory, 'harness.config.json', {
+    // Both configuration files, the probe included, live in the same directory:
+    // whether check-config creates the output directory is what this proves.
+    const { harnessPath: configPath, projectPath } = await writeConfigPair(directory, directory, {
       ...documentedConfig,
       workDir: './.harness',
       setup: [[process.execPath, probe]],
@@ -597,14 +728,16 @@ describe('check-config', () => {
 
     const before = [process.listenerCount('SIGINT'), process.listenerCount('SIGTERM')];
     const signals = recordingSignals();
-    const result = await run(['check-config', '--config', configPath, '--task', taskPath], {
-      signals,
-    });
+    const result = await run(
+      checkConfigArgv({ config: configPath, project: directory, task: taskPath }),
+      { signals },
+    );
 
     expect(result.code).toBe(EXIT_OK);
     expect(existsSync(probe)).toBe(true);
     expect(existsSync(sentinel)).toBe(false);
     expect(existsSync(path.join(directory, '.harness'))).toBe(false);
+    expect(existsSync(projectPath)).toBe(true);
     // Nothing static installs a way to stop a run, because it starts none.
     expect(signals.registered).toBe(0);
     expect([process.listenerCount('SIGINT'), process.listenerCount('SIGTERM')]).toEqual(before);
@@ -634,7 +767,7 @@ describe('usage errors', () => {
     ['a run with no options at all', ['run'], /--repo, --config and --task/],
     [
       'a run without --repo',
-      ['run', '--config', 'harness.config.json', '--task', 'examples/task.json'],
+      ['run', '--config', 'nexus.config.json', '--task', 'examples/task.json'],
       /--repo/,
     ],
     [
@@ -711,7 +844,7 @@ describe('run path resolution', () => {
     const result = await run(
       runArgv({
         repo: '../target-project',
-        config: '../harness.config.json',
+        config: '../nexus.config.json',
         task: '../task.json',
       }),
       {
@@ -787,7 +920,7 @@ describe('run', () => {
     const fixture = await createRunFixture();
 
     const result = await run(
-      runArgv({ repo: 'target-project', config: 'harness.config.json', task: 'task.json' }),
+      runArgv({ repo: 'target-project', config: 'nexus.config.json', task: 'task.json' }),
       { cwd: fixture.parent, dependencies: fixture.dependencies },
     );
 
@@ -829,6 +962,53 @@ describe('run', () => {
     expect(fixture.calls[0]?.sourceRoot).toBe(fixture.source);
   });
 
+  it('validates and runs a local project with the shared reviewer and completion policy', async () => {
+    const policy = JSON.parse(
+      await readFile(path.join(repoRoot, 'docs', 'nexus.config.example.json'), 'utf8'),
+    ) as JsonObject;
+    const fixture = await createRunFixture({
+      config: { reviewer: policy['reviewer'], completion: policy['completion'] },
+    });
+    const validation = await run([
+      'check-config',
+      '--config',
+      fixture.configPath,
+      '--project',
+      fixture.source,
+    ]);
+    expect(validation.code).toBe(EXIT_OK);
+    expect(validation.err).toBe('');
+    expect(validation.out).toContain('reviewer               github app');
+    expect(validation.out).not.toContain('  review                 github');
+    expect(validation.out).not.toContain('  delivery               github');
+    expect(existsSync(fixture.outDir)).toBe(false);
+
+    const source = await run([
+      'source',
+      'list',
+      '--config',
+      fixture.configPath,
+      '--project',
+      fixture.source,
+    ]);
+    expect(source.code).toBe(EXIT_INPUT_ERROR);
+    expect(source.err).toContain('has no "source" object');
+    expect(source.err).toContain(path.join(fixture.source, PROJECT_CONFIG_FILE_NAME));
+    expect(existsSync(fixture.outDir)).toBe(false);
+
+    const result = await run(
+      runArgv({ repo: fixture.source, config: fixture.configPath, task: fixture.taskPath }),
+      { dependencies: fixture.dependencies },
+    );
+    expect(result.code).toBe(EXIT_OK);
+    expect(result.err).toBe('');
+    const { report } = await readRun(fixture.outDir);
+    expect(report.status).toBe('passed');
+    expect('sourceRef' in report).toBe(false);
+    expect(existsSync(path.join(fixture.outDir, '.intake'))).toBe(false);
+    expect(fixture.calls).toHaveLength(1);
+  });
+
   it('ignores a configured source: no credential, no intake state, no provenance', async () => {
     const fixture = await createRunFixture({
       config: {
@@ -844,7 +1024,7 @@ describe('run', () => {
     });
 
     const result = await run(
-      runArgv({ repo: 'target-project', config: 'harness.config.json', task: 'task.json' }),
+      runArgv({ repo: 'target-project', config: 'nexus.config.json', task: 'task.json' }),
       { cwd: fixture.parent, dependencies: fixture.dependencies },
     );
 
@@ -868,7 +1048,7 @@ describe('run', () => {
     });
 
     const result = await run(
-      runArgv({ repo: 'target-project', config: 'harness.config.json', task: 'task.json' }),
+      runArgv({ repo: 'target-project', config: 'nexus.config.json', task: 'task.json' }),
       { cwd: fixture.parent, dependencies: fixture.dependencies },
     );
 
@@ -900,7 +1080,7 @@ describe('run', () => {
     });
 
     const result = await run(
-      runArgv({ repo: 'target-project', config: 'harness.config.json', task: 'task.json' }),
+      runArgv({ repo: 'target-project', config: 'nexus.config.json', task: 'task.json' }),
       { cwd: fixture.parent, dependencies: fixture.dependencies },
     );
 
@@ -919,13 +1099,17 @@ describe('run', () => {
     const fixture = await createRunFixture({
       agent: async (request) => {
         fixture.calls.push(request);
-        // What the target project does to the two input files while a run is in
+        // What the target project does to the input files while a run is in
         // progress: nothing it writes can change which commands decide the run.
-        await writeJsonFile(fixture.parent, 'harness.config.json', {
-          workDir: './out',
-          maxRepairs: 2,
+        // The Nexus-wide file and the working copy's own project configuration
+        // are both rewritten, and neither is read again.
+        await writeJsonFile(fixture.parent, 'nexus.config.json', {
+          workDir: './rewritten',
+          maxRepairs: 0,
           taskTimeoutMinutes: 30,
           commandTimeoutMinutes: 5,
+        });
+        await writeJsonFile(request.workspacePath, PROJECT_CONFIG_FILE_NAME, {
           setup: [],
           checks: [[process.execPath, '-e', 'process.exit(1)']],
         });
@@ -939,7 +1123,7 @@ describe('run', () => {
     });
 
     const result = await run(
-      runArgv({ repo: 'target-project', config: 'harness.config.json', task: 'task.json' }),
+      runArgv({ repo: 'target-project', config: 'nexus.config.json', task: 'task.json' }),
       { cwd: fixture.parent, dependencies: fixture.dependencies },
     );
 
@@ -955,7 +1139,7 @@ describe('run', () => {
     const fixture = await createRunFixture();
 
     const result = await run(
-      runArgv({ repo: 'target-project', config: 'harness.config.json', task: 'task.json' }),
+      runArgv({ repo: 'target-project', config: 'nexus.config.json', task: 'task.json' }),
       {
         cwd: fixture.parent,
         dependencies: {
@@ -985,7 +1169,7 @@ describe('run', () => {
     const fixture = await createRunFixture();
 
     const result = await run(
-      runArgv({ repo: 'target-project', config: 'harness.config.json', task: 'task.json' }),
+      runArgv({ repo: 'target-project', config: 'nexus.config.json', task: 'task.json' }),
       {
         cwd: fixture.parent,
         dependencies: {
@@ -1046,7 +1230,7 @@ describe('the activity pane under the run status', () => {
     const console = fakeConsole({ columns: 80, rows: 24 });
 
     const result = await run(
-      runArgv({ repo: 'target-project', config: 'harness.config.json', task: 'task.json' }),
+      runArgv({ repo: 'target-project', config: 'nexus.config.json', task: 'task.json' }),
       {
         cwd: fixture.parent,
         dependencies: fixture.dependencies,
@@ -1078,7 +1262,7 @@ describe('the activity pane under the run status', () => {
     const fixture = await createRunFixture({ agent: reportingAgent() });
 
     const result = await run(
-      runArgv({ repo: 'target-project', config: 'harness.config.json', task: 'task.json' }),
+      runArgv({ repo: 'target-project', config: 'nexus.config.json', task: 'task.json' }),
       { cwd: fixture.parent, dependencies: fixture.dependencies },
     );
 
@@ -1094,7 +1278,7 @@ describe('the activity pane under the run status', () => {
     const console = fakeConsole({ columns: 80, rows: 24 });
 
     const result = await run(
-      runArgv({ repo: 'target-project', config: 'harness.config.json', task: 'task.json' }),
+      runArgv({ repo: 'target-project', config: 'nexus.config.json', task: 'task.json' }),
       {
         cwd: fixture.parent,
         dependencies: fixture.dependencies,
@@ -1118,7 +1302,7 @@ describe('the activity pane under the run status', () => {
     const console = fakeConsole({ columns: 80, rows: 24, color: false });
 
     const result = await run(
-      runArgv({ repo: 'target-project', config: 'harness.config.json', task: 'task.json' }),
+      runArgv({ repo: 'target-project', config: 'nexus.config.json', task: 'task.json' }),
       {
         cwd: fixture.parent,
         dependencies: fixture.dependencies,
@@ -1149,7 +1333,7 @@ describe('the activity pane under the run status', () => {
     const console = fakeConsole({ columns: 100, rows: 24 });
 
     const result = await run(
-      runArgv({ repo: 'target-project', config: 'harness.config.json', task: 'task.json' }),
+      runArgv({ repo: 'target-project', config: 'nexus.config.json', task: 'task.json' }),
       {
         cwd: fixture.parent,
         dependencies: fixture.dependencies,
@@ -1208,7 +1392,7 @@ describe('the activity pane under the run status', () => {
     const console = fakeConsole({ columns: 80, rows: 24 });
 
     const result = await run(
-      runArgv({ repo: 'target-project', config: 'harness.config.json', task: 'task.json' }),
+      runArgv({ repo: 'target-project', config: 'nexus.config.json', task: 'task.json' }),
       {
         cwd: fixture.parent,
         dependencies: fixture.dependencies,
@@ -1239,7 +1423,7 @@ describe('the activity pane under the run status', () => {
     const console = fakeConsole({ columns: 80, rows: 24 });
 
     const result = await run(
-      runArgv({ repo: 'target-project', config: 'harness.config.json', task: 'task.json' }),
+      runArgv({ repo: 'target-project', config: 'nexus.config.json', task: 'task.json' }),
       {
         cwd: fixture.parent,
         dependencies: fixture.dependencies,
@@ -1275,7 +1459,7 @@ describe('the activity pane under the run status', () => {
     const console = fakeConsole({ columns: 80, rows: 24 });
 
     const running = run(
-      runArgv({ repo: 'target-project', config: 'harness.config.json', task: 'task.json' }),
+      runArgv({ repo: 'target-project', config: 'nexus.config.json', task: 'task.json' }),
       {
         cwd: fixture.parent,
         signals,
@@ -1315,21 +1499,21 @@ describe('the terminal’s color request', () => {
 describe('run refusals', () => {
   it('refuses an invalid configuration before starting anything', async () => {
     const fixture = await createRunFixture();
-    await writeJsonFile(fixture.parent, 'harness.config.json', {
-      ...documentedConfig,
+    // The Nexus-wide file carries the invalid limit; the connected project's
+    // own probes stay where they are, and nothing may run.
+    await writeJsonFile(fixture.parent, 'nexus.config.json', {
+      ...documentedHarnessConfig,
       maxRepairs: -1,
       workDir: './out',
-      setup: [[process.execPath, fixture.probe, fixture.sentinel]],
-      checks: [[process.execPath, fixture.probe, fixture.sentinel]],
     });
 
     const result = await run(
-      runArgv({ repo: 'target-project', config: 'harness.config.json', task: 'task.json' }),
+      runArgv({ repo: 'target-project', config: 'nexus.config.json', task: 'task.json' }),
       { cwd: fixture.parent, dependencies: fixture.dependencies },
     );
 
     expect(result.code).toBe(EXIT_INPUT_ERROR);
-    expect(result.err).toContain(path.join(fixture.parent, 'harness.config.json'));
+    expect(result.err).toContain(path.join(fixture.parent, 'nexus.config.json'));
     expect(result.err).toMatch(/maxRepairs/);
     expect(result.out).toBe('');
     expect(fixture.calls).toEqual([]);
@@ -1342,7 +1526,7 @@ describe('run refusals', () => {
     await writeFile(path.join(fixture.parent, 'task.json'), '{ "id": "example-001", }', 'utf8');
 
     const result = await run(
-      runArgv({ repo: 'target-project', config: 'harness.config.json', task: 'task.json' }),
+      runArgv({ repo: 'target-project', config: 'nexus.config.json', task: 'task.json' }),
       { cwd: fixture.parent, dependencies: fixture.dependencies },
     );
 
@@ -1355,20 +1539,18 @@ describe('run refusals', () => {
   it('refuses a dirty source repository without running any command or turn', async () => {
     const fixture = await createRunFixture();
     // A probe the run would have to execute to make its sentinel appear: it is
-    // configured here, and it must never get the chance to run.
-    const probeConfig = {
-      workDir: './out',
-      maxRepairs: 2,
-      taskTimeoutMinutes: 30,
-      commandTimeoutMinutes: 5,
+    // the connected project's own setup and check, committed here so the only
+    // reason it cannot run is the dirty checkout below.
+    await writeJsonFile(fixture.source, PROJECT_CONFIG_FILE_NAME, {
       setup: [[process.execPath, fixture.probe, fixture.sentinel]],
       checks: [[process.execPath, fixture.probe, fixture.sentinel]],
-    };
-    await writeJsonFile(fixture.parent, 'harness.config.json', probeConfig);
+    });
+    await gitOrThrow(['add', '--all'], fixture.source);
+    await gitOrThrow(['commit', '--quiet', '--message', 'probe: record a run'], fixture.source);
     await writeFile(path.join(fixture.source, 'uncommitted.txt'), 'work in progress\n', 'utf8');
 
     const result = await run(
-      runArgv({ repo: 'target-project', config: 'harness.config.json', task: 'task.json' }),
+      runArgv({ repo: 'target-project', config: 'nexus.config.json', task: 'task.json' }),
       { cwd: fixture.parent, dependencies: fixture.dependencies },
     );
 
@@ -1390,8 +1572,6 @@ describe('run refusals', () => {
       maxRepairs: 2,
       taskTimeoutMinutes: 30,
       commandTimeoutMinutes: 5,
-      setup: [],
-      checks: [GREEN_CHECK],
     });
 
     const result = await run(
@@ -1408,10 +1588,14 @@ describe('run refusals', () => {
 
   it('refuses a source that is not a repository', async () => {
     const fixture = await createRunFixture();
-    await mkdir(path.join(fixture.parent, 'not-a-repository'), { recursive: true });
+    // A plain directory that carries the project configuration a connected
+    // repository would, so the refusal is about Git, not about the file.
+    const plain = path.join(fixture.parent, 'not-a-repository');
+    await mkdir(plain, { recursive: true });
+    await writeJsonFile(plain, PROJECT_CONFIG_FILE_NAME, documentedProjectConfig);
 
     const result = await run(
-      runArgv({ repo: 'not-a-repository', config: 'harness.config.json', task: 'task.json' }),
+      runArgv({ repo: 'not-a-repository', config: 'nexus.config.json', task: 'task.json' }),
       { cwd: fixture.parent, dependencies: fixture.dependencies },
     );
 
@@ -1473,7 +1657,7 @@ describe('interrupts', () => {
     const signals = recordingSignals();
 
     const running = run(
-      runArgv({ repo: 'target-project', config: 'harness.config.json', task: 'task.json' }),
+      runArgv({ repo: 'target-project', config: 'nexus.config.json', task: 'task.json' }),
       { cwd: fixture.parent, signals, dependencies: fixture.dependencies },
     );
 
@@ -1514,7 +1698,7 @@ describe('interrupts', () => {
     };
 
     const result = await run(
-      runArgv({ repo: 'target-project', config: 'harness.config.json', task: 'task.json' }),
+      runArgv({ repo: 'target-project', config: 'nexus.config.json', task: 'task.json' }),
       { cwd: fixture.parent, signals, dependencies: fixture.dependencies },
     );
 
@@ -1539,7 +1723,7 @@ describe('interrupts', () => {
     // No signals seam: this uses the real one, so the counts below are the
     // process's own signal listeners, installed by the CLI and nothing else.
     const result = await run(
-      runArgv({ repo: 'target-project', config: 'harness.config.json', task: 'task.json' }),
+      runArgv({ repo: 'target-project', config: 'nexus.config.json', task: 'task.json' }),
       { cwd: fixture.parent, dependencies: fixture.dependencies },
     );
 
@@ -1573,7 +1757,9 @@ describe('as a process', () => {
         cli,
         'check-config',
         '--config',
-        'harness.config.json',
+        'docs/nexus.config.example.json',
+        '--project',
+        '.',
         '--task',
         'examples/task.json',
       ],
@@ -1585,10 +1771,18 @@ describe('as a process', () => {
   });
 
   it('exits 1 on invalid input', async () => {
-    const { configPath, taskPath } = await writeInputs({ ...documentedConfig, checks: [] });
+    const { directory, configPath, taskPath } = await writeInputs({
+      ...documentedConfig,
+      checks: [],
+    });
 
     const result = await runProcess(
-      ['--import', 'tsx', cli, 'check-config', '--config', configPath, '--task', taskPath],
+      [
+        '--import',
+        'tsx',
+        cli,
+        ...checkConfigArgv({ config: configPath, project: directory, task: taskPath }),
+      ],
       repoRoot,
     );
 
