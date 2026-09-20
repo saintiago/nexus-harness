@@ -91,10 +91,16 @@ Nexus will write without creating it.
    ([WORKFLOW.md](WORKFLOW.md) §9).
 7. **The post-merge workflows, and the statuses they lead to.** Name every workflow that has to
    succeed after the merge — a workflow file name (`ci.yml` or `.github/workflows/ci.yml`) or a
-   numeric workflow ID — as a `push` run on the delivery repository's base branch. A name that
-   never matches a run for the merge commit means the ticket never reaches Done. Also name the two
-   statuses a completion outcome lands in: `toDoStatus` for definitive findings, `doneStatus` for a
-   verified completion; neither may equal the other or `source.reviewStatus`
+   numeric workflow ID — as a `push` run on the delivery repository's base branch. **The current
+   queue path requires a public repository with publicly readable post-merge workflow evidence.**
+   Its completion reader uses the Nexus Lens App installation token with the review permissions
+   above; it requests no Actions access. Private-repository workflow evidence is not supported by
+   this path. Confirm public visibility before launching; if the project is private, stop and
+   ask the Nexus operator about that limitation rather than changing repository visibility or
+   the shared configuration. A workflow name that never matches a run for the merge commit means
+   the ticket never reaches Done. Also name the two statuses a completion outcome lands in:
+   `toDoStatus` for definitive findings, `doneStatus` for a verified completion; neither may equal
+   the other or `source.reviewStatus`
    ([WORKFLOW.md](WORKFLOW.md) §10).
 8. **Credentials in the environment — names in the files, values only in the environment.** The
    shell that starts Nexus needs:
@@ -220,6 +226,7 @@ refusal by deleting a lock; resolve the other consumer first ([WORKFLOW.md](WORK
 | Jira refuses the search because Rank is unavailable | `"ordering": "rank"` requires the project's issues to be ranked on a board and the service account to be allowed to read Rank. Fix the board or the access, or switch to `"ordering": "priority"`; the harness never falls back to Priority by itself. |
 | Delivery or review refused (`gh auth status`, no commit to publish, a dirty or wrongly checked-out workspace, no open pull request) | Delivery needs the operator's authenticated `gh`/Git account with write access to the destination repository and base branch, and a retained workspace that is clean, on its recorded branch, and holds a commit beyond its base. Review needs the Nexus Lens App installed on that repository, the key path readable, and exactly one open pull request for the ticket's branch. Uncommitted work is refused, never committed for you. |
 | Completion keeps waiting, or reports an unsuccessful post-merge workflow | The names in `delivery.completion.postMergeWorkflows` must match workflows that really run for `push` on `delivery.baseBranch` on this repository — the exact file name or numeric ID. Check the repository's Actions tab for a run on the merge commit. A definitive failure returns the ticket to `toDoStatus`; a run that never appears leaves it In Review. |
+| Completion cannot read post-merge workflow evidence | The current queue path requires publicly readable workflow evidence from a public repository: its Lens installation token requests no Actions permission. Operator GitHub access and a successful `source list` do not prove that this reader can access workflows. Inaccessible evidence stops the queue for attention and leaves the ticket In Review; it does not prove CI failed or authorize repair. Ask the Nexus operator to resolve the unsupported connection; do not change repository visibility, substitute operator credentials, or edit the shared configuration to bypass it ([WORKFLOW.md](WORKFLOW.md) §11). |
 | `queue run` refuses before it starts: the shared file has no `reviewer` object, or the project's `delivery` has no `completion` | The queue needs the whole path — the project's `source` and `delivery.completion`, and the shared configuration's `reviewer`. `check-config` alone does not require them, so it can be green while a queue command is refused. Ask the operator for the missing installation-level objects, and add only `delivery.completion` in the project file; never copy the reviewer into it. |
 | `check-config` refuses a field and names the other file | Field ownership: `workDir`, the limits, `agent`/`escalation`, `reviewer`, and `completion` belong to the shared configuration; `setup`, `checks`, `source`, and `delivery` belong to `nexus.project.json`. Correct the project file only; ask the Nexus operator to make any required shared-file correction. Do not duplicate the field or work around the refusal. |
 
