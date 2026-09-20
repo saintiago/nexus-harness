@@ -286,6 +286,15 @@ export interface SourceContext {
   /** The retained output directory the receipts and runs live under. */
   readonly workDir: string;
   /**
+   * The stable namespace the connected project's intake lock is named by, as
+   * the composed configuration derives it (`projectLockNamespace` in
+   * `src/config/load.ts`). Two consumers of the same connected project and
+   * `workDir` share it; two different connected projects under one `workDir`
+   * do not, so they may consume their own queues concurrently
+   * (docs/spec.md §6).
+   */
+  readonly lockNamespace: string;
+  /**
    * The escalation ladder, at least one rung: attempt N of a workspace runs
    * rung N, clamped to the last. `escalationTiers(config)` is how the CLI reads
    * it (docs/implement-workspace-continuation.md).

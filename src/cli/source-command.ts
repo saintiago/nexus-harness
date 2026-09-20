@@ -9,7 +9,13 @@
  * abortable sleep, so an interrupt never waits for a poll interval to elapse.
  */
 import path from 'node:path';
-import { ConfigError, escalationTiers, loadConfiguration, resolveWorkDir } from '../config/load.js';
+import {
+  ConfigError,
+  escalationTiers,
+  loadConfiguration,
+  projectLockNamespace,
+  resolveWorkDir,
+} from '../config/load.js';
 import { projectConfigFile } from '../config/paths.js';
 import { createGitHubCompletion } from '../delivery/completion.js';
 import { createGitHubDelivery } from '../delivery/github.js';
@@ -363,6 +369,7 @@ async function sourceCommand(
     const intake: SourceContext = {
       source: connector,
       workDir,
+      lockNamespace: projectLockNamespace(config),
       // The ladder the coordinator climbs: what the configuration declares, or
       // the single ordinary rung built from `agent` and `maxRepairs`.
       tiers: escalationTiers(config),
