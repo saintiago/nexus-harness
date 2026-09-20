@@ -75,7 +75,7 @@ src/
     receipts.ts                   (238)  the per-project intake lock and one receipt per attempted item
     eligibility.ts                (81)   what an item is: a first attempt, a continuation, or a refusal
     guidance.ts                   (60)   what an attempt is told, bounded: the thread and earlier attempts
-    baseline.ts                   (351)  the pre-delivery diagnosis: one marker comment, one status move
+    baseline.ts                   (364)  the pre-delivery diagnosis: one marker comment, one status move
     coordinator.ts                (775)  runSource and watchSource: discovery, the ladder, publication
     list.ts                       (88)   the read-only `source list` preview
     jira/
@@ -98,7 +98,7 @@ src/
     github.ts                     (726)  the App JWT, the installation token, and the repository calls
     diff.ts                       (134)  the pull request's diff, and where a finding is positioned
     reviewer.ts                   (402)  the reviewer prompt, the one bounded turn, and the verdict file
-    baseline.ts                   (521)  the pre-delivery reviewer turn, its prompt, and its finding file
+    baseline.ts                   (538)  the pre-delivery reviewer turn, its prompt, and its finding file
     scan.ts                       (790)  one scan or watch: eligibility, dedup, publishing, evidence
   queue/
     loop.ts                       (370)  the serial control loop: one current ticket, one phase at a time
