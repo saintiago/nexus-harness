@@ -295,7 +295,7 @@ A pass keeps the commands it runs under `<workDir>/completion-logs/<issueId>` an
 
 ### One ticket, one phase at a time
 
-The loop keeps one current ticket and one active phase. It takes at most one ticket from a fresh scan of the configured ready queue, in the source's own priority order, runs its coding attempt and the delivery step, arms native auto-merge for the delivered head before the review can publish the final required check, reviews that ticket's pull request with the configured reviewer, and carries the delivered pull request through §10 to a verified resolution or back to the ready status. It never starts work for a different ticket while the current one is In Progress or In Review, and coding and review turns never overlap: the arm step, the review scan and the completion pass are narrowed to the ticket's immutable identity, and no phase is started before the previous one has finished.
+The loop keeps one current ticket and one active phase. It takes at most one ticket from a fresh scan of the configured ready queue, in the Jira order the source's own `ordering` selects (Jira's Priority field by default, or the board's native Rank), runs its coding attempt and the delivery step, arms native auto-merge for the delivered head before the review can publish the final required check, reviews that ticket's pull request with the configured reviewer, and carries the delivered pull request through §10 to a verified resolution or back to the ready status. An `ordering` change is read by the next fresh scan only: it never interrupts or reorders an active ticket, a same-ticket repair continuation, or a batch Jira already returned. It never starts work for a different ticket while the current one is In Progress or In Review, and coding and review turns never overlap: the arm step, the review scan and the completion pass are narrowed to the ticket's immutable identity, and no phase is started before the previous one has finished.
 
 ### Repair before unrelated work
 
@@ -324,7 +324,8 @@ In Progress and In Review items. In Progress ownership must be resolved by an op
 both modes before unrelated work. One In Review item resumes only its scoped review and completion
 lifecycle, including the existing admission's merged-PR recovery. Multiple In Review items stop
 for attention. Ready items carrying retained workspace pointers resume before unrelated new work,
-in Jira's native order among repairs. The queue never adopts or resets workspaces.
+in the source's own configured order among repairs — Jira's Priority field by default, the board's
+native Rank when `ordering` asks for it. The queue never adopts or resets workspaces.
 
 Queue completion evidence reads obtain a current installation token through the existing Lens App
 authentication boundary, which renews expiring tokens with the same installed Lens permission set

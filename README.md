@@ -306,10 +306,14 @@ npm start -- source watch --repo ../target-project --config harness.jira.config.
 `source list` needs only `--config`. `source run` and `source watch` also need `--repo`, which is
 the one repository every fetched issue is bound to, and they reject `--task`: a source task comes
 from Jira, not from a file. The whole batch is discovered **before** any issue is claimed, and the
-runs are strictly sequential. Jira decides the order with its own Priority field: highest priority
-first, then the oldest creation, then the issue key. The harness takes that order as the batch order,
-so a priority change in Jira takes effect at the next scan and never reorders an active task or a
-batch that was already discovered.
+runs are strictly sequential. Jira decides the order, and the preview prints the issues in that same
+discovered order. With the default `"ordering": "priority"` the highest-priority ready issue comes
+first, then the oldest creation, then the issue key. With `"ordering": "rank"` the board's own
+manual order decides — `ORDER BY Rank ASC`, then the same creation and key tie-breakers — so moving
+an issue on the board steers what the next fresh scan offers. Either way the harness takes Jira's
+answer as the batch order: it never sorts locally, never reads Rank values, and never combines the
+two orders. A Priority or Rank change takes effect on the next fresh scan and never reorders an
+active task or a batch that was already discovered.
 
 The queue is the configuration's `source` object, and nothing else:
 
@@ -321,17 +325,25 @@ The queue is the configuration's `source` object, and nothing else:
     "cloudId": "9337c4da-7d33-4c1d-b03c-db207e537f88",
     "projectKey": "SAM1",
     "label": "harness-task",
+    "ordering": "priority",
     "pollIntervalSeconds": 30
   }
 }
 ```
 
 `issueType` (`Task`), `label` (`harness-task`), `readyStatus` (`To Do`), `runningStatus`
-(`In Progress`), `reviewStatus` (`In Review`), `pollIntervalSeconds` (`30`, at least `5`), and
-`tokenEnv` (`JIRA_API_TOKEN`) have the documented defaults, so the minimum is `type`, `siteUrl`,
-`cloudId`, and `projectKey`. `docs/WORKFLOW.md` §5 is the contract; `docs/harness.jira.example.json`
-is a credential-free example, and `examples/jira-description.md` shows the description format an
-issue must use.
+(`In Progress`), `reviewStatus` (`In Review`), `ordering` (`priority`), `pollIntervalSeconds`
+(`30`, at least `5`), and `tokenEnv` (`JIRA_API_TOKEN`) have the documented defaults, so the minimum
+is `type`, `siteUrl`, `cloudId`, and `projectKey`. `ordering` accepts exactly `"priority"` and
+`"rank"`: any other value, an explicit `null`, or a value of the wrong type is an input error, never
+a default and never a coercion. A site that refuses Rank JQL — the field is unavailable or the
+service account may not view it — fails that scan with Jira's own bounded error and starts no task:
+the harness never falls back to Priority, never guesses a board order, never calls the Jira Agile
+board API, and never writes Rank. `check-config` prints the intake order it validated
+(`source ordering  priority: Jira priority DESC, then created ASC, then the issue key`, or the same
+line with `rank: Jira Rank ASC` in its place) without contacting Jira. `docs/WORKFLOW.md` §5 is the
+contract; `docs/harness.jira.example.json` is a credential-free example, and
+`examples/jira-description.md` shows the description format an issue must use.
 
 **Running the harness on this repository itself** works, as long as the checkout is clean and the
 output stays outside it: the operator's live config sits at the repository root as
@@ -642,7 +654,8 @@ the command contract and [docs/spec.md](docs/spec.md) §11 the behaviour.
 
 What one invocation does:
 
-1. **One current ticket.** A fresh scan of the configured ready queue, in its own priority order,
+1. **One current ticket.** A fresh scan of the configured ready queue, in the source's own configured
+   order (Jira's Priority field by default, the board's native Rank with `"ordering": "rank"`),
    offers at most one ticket; it is claimed and run through the same workspace/check/repair loop,
    ladder included, and delivered as a pull request.
 2. **Arm, then review, then completion.** As soon as the pull request is delivered or updated, the
@@ -936,11 +949,14 @@ Read this before pointing a run at anything you care about.
   and the runtime adapter's own contract — including that a repair turn is handed the failures the
   harness observed.
 - the Jira intake path, against a fake Jira REST API v3 boundary: the gateway route and Bearer
-  header, the queue JQL and its pagination, the description format and the mapping onto the existing
-  `Task`, transition selection by target status, the result comment, the per-issue receipt and the
-  one-consumer lock, a finite `source run`, a watch cycle that picks up a later issue, and the
-  behaviour of a stop, a failed feedback, and a corrupt receipt. Nothing in that suite needs a Jira
-  site, a token, or a network.
+  header, the queue JQL and its pagination, both configured intake orders (the default Priority JQL
+  and the Rank JQL, with the answer's order kept across pages whatever priorities, creation times,
+  and keys would suggest, the mode read again by the next fresh scan, and a Rank JQL the site
+  refuses reported as Jira's bounded error with nothing claimed and no fallback), the description
+  format and the mapping onto the existing `Task`, transition selection by target status, the
+  result comment, the per-issue receipt and the one-consumer lock, a finite `source run`, a watch
+  cycle that picks up a later issue, and the behaviour of a stop, a failed feedback, and a corrupt
+  receipt. Nothing in that suite needs a Jira site, a token, or a network.
 - workspace continuation through the same fakes and real temporary Git repositories: a continued
   attempt reopening the workspace its pointer label names and keeping its recorded base, the
   per-attempt run directories and ledger, the escalation ladder's tiers — the tier's own launch, each
@@ -1055,6 +1071,12 @@ and only a read.
   disposable repository, the exact-byte marker assertion, the restart check, and the watch cycle —
   has not run, and no live watch, restart, or failure path has been exercised. Mocked tests are not
   evidence for the parts that have not run;
+- **any live Rank-mode intake scan.** The operator's Jira credential has executed enhanced-search
+  JQL with `ORDER BY Rank ASC` successfully (2026-09-20), but no `source list` from this harness has
+  been compared against that answer yet. Setting `"ordering": "rank"` in the ignored local operator
+  config and comparing the printed `source list` order with the Jira Rank JQL response is an
+  **operator step** — a configuration change, not part of a coding turn — and the offline
+  regressions only prove the JQL and the order handling against a fake site;
 - **any live GitHub delivery.** The delivery step is verified offline against disposable Git
   repositories and a stand-in `gh` on `PATH`; no branch has been pushed to github.com and no pull
   request has been created by the harness here. The commands follow `gh`'s documented interface,

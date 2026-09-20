@@ -7,7 +7,7 @@
  */
 import path from 'node:path';
 import { ConfigError, loadHarnessConfig, loadTask, resolveWorkDir } from '../config/load.js';
-import type { Command, HarnessConfig, Task } from '../shared/types.js';
+import type { Command, HarnessConfig, JiraOrdering, Task } from '../shared/types.js';
 import { EXIT_INPUT_ERROR, EXIT_OK, EXIT_USAGE } from './context.js';
 import type { CliContext } from './context.js';
 import { USAGE_HINT } from './help.js';
@@ -15,6 +15,16 @@ import type { ParsedOptions } from './options.js';
 
 function commandCount(commands: readonly Command[]): string {
   return `${commands.length} ${commands.length === 1 ? 'command' : 'commands'}`;
+}
+
+/**
+ * The configured intake order, as the field it puts first and the deterministic
+ * tie-breakers Jira applies after it (docs/WORKFLOW.md §5).
+ */
+function describeOrdering(ordering: JiraOrdering): string {
+  return ordering === 'rank'
+    ? 'rank: Jira Rank ASC, then created ASC, then the issue key'
+    : 'priority: Jira priority DESC, then created ASC, then the issue key';
 }
 
 function describeConfig(config: HarnessConfig, configPath: string, workDir: string): string {
@@ -46,6 +56,7 @@ function describeConfig(config: HarnessConfig, configPath: string, workDir: stri
       `  source                 jira ${source.siteUrl} project ${source.projectKey}`,
       `  source queue           issuetype ${source.issueType}, label ${source.label}, ` +
         `${source.readyStatus} -> ${source.runningStatus} -> ${source.reviewStatus}`,
+      `  source ordering        ${describeOrdering(source.ordering)}`,
       `  source polling         ${String(source.pollIntervalSeconds)}s, token environment variable ${source.tokenEnv}`,
     );
   }

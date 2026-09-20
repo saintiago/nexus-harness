@@ -13,6 +13,7 @@ const config: JiraSourceConfig = {
   readyStatus: 'To Do',
   runningStatus: 'In Progress',
   reviewStatus: 'In Review',
+  ordering: 'priority',
   pollIntervalSeconds: 5,
   tokenEnv: 'JIRA_TOKEN',
 };

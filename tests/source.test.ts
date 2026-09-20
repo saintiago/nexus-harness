@@ -2845,6 +2845,8 @@ async function createTarget(
     readonly markerCheck?: boolean;
     /** The escalation ladder the configuration declares, when a test wants one. */
     readonly escalation?: readonly EscalationTier[];
+    /** The intake order the source configuration selects; the default when omitted. */
+    readonly ordering?: 'priority' | 'rank';
   } = {},
 ): Promise<{
   directory: string;
@@ -2888,6 +2890,7 @@ async function createTarget(
       siteUrl: SCOPE,
       cloudId: '9337c4da-7d33-4c1d-b03c-db207e537f88',
       projectKey: 'SAM1',
+      ...(options.ordering === undefined ? {} : { ordering: options.ordering }),
       pollIntervalSeconds: 5,
       tokenEnv: 'JIRA_API_TOKEN',
     },
@@ -4265,6 +4268,102 @@ describe('the source commands through the CLI', () => {
       expect(existsSync(target.workDir)).toBe(false);
     } finally {
       if (previous !== undefined) {
+        process.env.JIRA_API_TOKEN = previous;
+      }
+    }
+  });
+
+  it('takes the ticket Jira’s Rank order put first, not the smallest key', async () => {
+    const target = await createTarget({ ordering: 'rank' });
+    const jira = fakeJira([
+      {
+        id: '10013',
+        key: 'SAM1-13',
+        summary: 'The board’s first ready ticket',
+        status: 'To Do',
+        updated: '2026-09-19T11:00:00.000Z',
+      },
+      {
+        id: '10011',
+        key: 'SAM1-11',
+        summary: 'The board’s second ready ticket',
+        status: 'To Do',
+        updated: '2026-09-16T11:00:00.000Z',
+      },
+    ]);
+    const previous = process.env.JIRA_API_TOKEN;
+    process.env.JIRA_API_TOKEN = 'test-token';
+
+    try {
+      const dependencies: CliContext['dependencies'] = {
+        runAgentTurn: async (request) => {
+          await writeFile(path.join(request.workspacePath, 'MARKER.md'), 'done\n', 'utf8');
+          return { summary: 'wrote the marker' };
+        },
+      };
+      const result = await runSourceCli(
+        ['source', 'run', '--repo', target.repo, '--config', target.configPath, '--limit', '1'],
+        target.directory,
+        { fetch: jira.fetch, dependencies },
+      );
+
+      expect(result.code).toBe(EXIT_OK);
+      // Rank mode asks Jira for the board's own order and takes the first ticket
+      // of that answer as-is: the smaller key waits for a later scan instead.
+      const search = jira.calls.find((call) => call.url.endsWith('/search/jql'));
+      expect((search?.body as { jql: string }).jql).toContain(
+        'ORDER BY Rank ASC, created ASC, key ASC',
+      );
+      expect(jira.issues.find((issue) => issue.status === 'In Review')?.key).toBe('SAM1-13');
+      expect(jira.issues.find((issue) => issue.key === 'SAM1-11')?.status).toBe('To Do');
+    } finally {
+      if (previous === undefined) {
+        delete process.env.JIRA_API_TOKEN;
+      } else {
+        process.env.JIRA_API_TOKEN = previous;
+      }
+    }
+  });
+
+  it('returns Jira’s refusal of Rank JQL and starts no task', async () => {
+    const target = await createTarget({ ordering: 'rank' });
+    const calls: Array<{ readonly method: string; readonly url: string }> = [];
+    const refuseRank = async (input: string | URL | Request, init: RequestInit = {}) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      calls.push({ method: init.method ?? 'GET', url });
+      return new Response(
+        JSON.stringify({
+          errorMessages: ['Field Rank does not exist or you do not have permission to view it'],
+        }),
+        { status: 400, headers: { 'content-type': 'application/json' } },
+      );
+    };
+    const previous = process.env.JIRA_API_TOKEN;
+    process.env.JIRA_API_TOKEN = 'test-token';
+
+    try {
+      const result = await runSourceCli(
+        ['source', 'run', '--repo', target.repo, '--config', target.configPath],
+        target.directory,
+        { fetch: refuseRank as unknown as typeof fetch },
+      );
+
+      expect(result.code).toBe(EXIT_INPUT_ERROR);
+      // The bounded answer Jira gave is reported, and nothing else happened: one
+      // search was sent, no Priority scan was tried instead, no run directory or
+      // workspace exists, and no issue was read, claimed, commented on, or moved.
+      expect(result.out).toContain('source stopped');
+      expect(result.out).toContain('discovery failed');
+      expect(result.out).toContain('HTTP 400');
+      expect(result.out).toContain('Field Rank does not exist');
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.url).toContain('/rest/api/3/search/jql');
+      expect(existsSync(path.join(target.workDir, 'runs'))).toBe(false);
+      expect(existsSync(path.join(target.workDir, 'workspaces'))).toBe(false);
+    } finally {
+      if (previous === undefined) {
+        delete process.env.JIRA_API_TOKEN;
+      } else {
         process.env.JIRA_API_TOKEN = previous;
       }
     }

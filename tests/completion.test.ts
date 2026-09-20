@@ -74,6 +74,7 @@ const SOURCE: JiraSourceConfig = {
   readyStatus: 'To Do',
   runningStatus: 'In Progress',
   reviewStatus: 'In Review',
+  ordering: 'priority',
   pollIntervalSeconds: 30,
   tokenEnv: 'JIRA_API_TOKEN',
 };

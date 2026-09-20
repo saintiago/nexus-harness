@@ -39,6 +39,7 @@
     "cloudId": "9337c4da-7d33-4c1d-b03c-db207e537f88",
     "projectKey": "SAM1",
     "label": "harness-task",
+    "ordering": "priority",
     "pollIntervalSeconds": 30,
     "tokenEnv": "JIRA_API_TOKEN"
   },

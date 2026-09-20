@@ -5,7 +5,7 @@
  *
  * Search results can lag, so they are candidates, not claims.
  */
-import type { JiraSourceConfig } from '../../shared/types.js';
+import type { JiraOrdering, JiraSourceConfig } from '../../shared/types.js';
 import type { SourceCandidate } from '../contract.js';
 import type { HttpClient } from './http.js';
 import { malformed, parseIssue, refFor } from './issue.js';
@@ -21,9 +21,23 @@ function jqlLiteral(value: string): string {
 }
 
 /**
+ * The one ORDER BY clause a configured ordering mode asks for. Both modes leave
+ * the sorting to Jira and break ties the same deterministic way: an older
+ * creation time first, then the issue key. Rank is asked for on its own — an
+ * issue's Priority value never outranks the board's order, and LexoRank values
+ * are never read back or reinterpreted locally (docs/WORKFLOW.md §5).
+ */
+function orderByClause(ordering: JiraOrdering): string {
+  return ordering === 'rank'
+    ? 'ORDER BY Rank ASC, created ASC, key ASC'
+    : 'ORDER BY priority DESC, created ASC, key ASC';
+}
+
+/**
  * The configured queue, as the documented JQL: the project, the issue type, the
  * label, and the ready status, with a deterministic order: Jira's own Priority
- * field first, then the oldest creation, then the issue key. Jira sorts; this
+ * field first by default, or the board's native Rank when the configuration
+ * selects it — then the oldest creation, then the issue key. Jira sorts; this
  * function only asks for the order, and `listEligibleIssues` keeps the answer's
  * order. No arbitrary JQL and no timestamp cursor: the configured values are the
  * whole queue definition (docs/WORKFLOW.md §5).
@@ -34,7 +48,7 @@ export function queueJql(config: JiraSourceConfig): string {
     `AND issuetype = ${jqlLiteral(config.issueType)}`,
     `AND labels = ${jqlLiteral(config.label)}`,
     `AND status = ${jqlLiteral(config.readyStatus)}`,
-    'ORDER BY priority DESC, created ASC, key ASC',
+    orderByClause(config.ordering),
   ].join(' ');
 }
 /**

@@ -36,7 +36,12 @@ export interface IssueNote {
   readonly text: string;
 }
 
-/** The In Review queue's JQL: the same boundary as the ready queue, one status over. */
+/**
+ * The In Review queue's JQL: the same boundary as the ready queue, one status
+ * over. It keeps this fixed deterministic order of its own — completing an item
+ * is not intake, so `source.ordering` (the ready queue's Rank or Priority
+ * choice) is deliberately not read here (docs/WORKFLOW.md §5).
+ */
 export function reviewQueueJql(config: JiraSourceConfig): string {
   const quote = (value: string): string => `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
   return [
