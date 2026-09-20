@@ -680,7 +680,10 @@ The queue is the configured project, issue type, and label in the `source`'s **r
    not hold, a clone that fails, or a view that is not clean.
 6. The `reviewer` launch runs as **one bounded turn** in its own evidence directory under
    `<workDir>/reviews/<reviewId>/`, one directory above the view (`repo/`), with the same
-   adapter, the same non-interactive launch, and the same task timeout a run gets. Review turns
+   adapter, the same non-interactive launch, and the same task timeout a run gets. The working
+   directory is deliberately not the checkout: a runtime started inside the reviewed tree would
+   load the pull request's own `AGENTS.md` files as instructions that govern the turn, and those
+   are evidence the reviewer reads from the view, never commands it obeys. Review turns
    add `codex exec --skip-git-repo-check` because the evidence directory itself is not a Git
    repository; coding turns keep the repository check. The prompt carries the ticket, the pull
    request's identity and head/base commits, the CI evidence, the view's location, and the
@@ -780,6 +783,10 @@ reviewers. GitHub cannot atomically compare the current head and submit a review
 the check's head SHA pin every publication to the reviewed commit even if the head moves after
 the final read. Operators must verify the corrected path with a live App review and gate check;
 offline tests do not establish native approval eligibility, auto-merge, or useful review quality.
+The reviewer's repository view also ties a scan to the machine that ran the ticket: the ticket's
+retained workspace has to be under the configured `workDir`, holding the reviewed head and its
+base commit. Do not delete or move a workspace whose pull request is still awaiting review — a
+scan that cannot pin one reports the ticket for coordinator attention instead of reviewing it.
 
 ## 10. Review-to-completion — optional, across both files
 

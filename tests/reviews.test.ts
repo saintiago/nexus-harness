@@ -2158,7 +2158,8 @@ describe('the review command through the CLI', () => {
       if (truncated) {
         expect(result.out).toContain('attention  1');
         const log = await readFile(path.join(fixture.cwd, 'runs', 'reviews', 'review.log'), 'utf8');
-        expect(log).toContain('changed-file list is truncated');
+        expect(log).toContain('changed-file list GitHub reports');
+        expect(log).toContain('is truncated');
         expect(log).toContain('coordinator');
         expect(log).toContain('no reviewer turn');
       }
@@ -2387,10 +2388,11 @@ describe('the review command through the CLI', () => {
       expect(result.code).toBe(EXIT_OK);
       const turns = await fakeTurns(fixture.runtime.state);
       expect(turns).toHaveLength(1);
-      // The offending line is nowhere in the initial context...
+      // The blocking line is nowhere in the initial context...
       expect(turns[0]?.prompt).not.toContain('return names;');
-      // ...and the reviewer's own tools find it in the pinned view, from which
-      // the blocking finding is published as one inline comment on the head.
+      // ...and the turn's own working directory carries a real repository view
+      // pinned at the head, which is where a reviewer's read tools find it: the
+      // finding about that line is published as one inline comment on the head.
       const view = path.join(turns[0]?.cwd ?? '', REVIEW_VIEW_DIRECTORY);
       expect(git(view, 'show', `HEAD:${REVIEWED_FILE}`)).toBe(REVIEWED_SOURCE);
       expect(world.publishedReviews[0]).toMatchObject({
@@ -2700,6 +2702,14 @@ function neverStopped(): AbortSignal {
   return new AbortController().signal;
 }
 
+/**
+ * The working-tree assertions read the view through the harness's own check
+ * where cleanliness is what matters: the fixtures' Git runs with an isolated
+ * configuration (`gitEnvironment`), while the harness runs with the host's, so
+ * on a host that sets `core.autocrlf` a freshly checked-out view is clean for
+ * the harness and rewritten for a fixture-only `git status`. The head, the
+ * content and the missing-remote assertions do not depend on that difference.
+ */
 describe('the reviewer’s repository view', () => {
   it('pins a clean snapshot at the reviewed head, holding the base commit', async () => {
     const workspace = await viewWorkspace();

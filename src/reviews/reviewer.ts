@@ -409,8 +409,10 @@ export function createReviewerTurn(parts: ReviewerParts): ReviewerTurn {
  * One reviewer invocation: its input, the repository view it inspects, its
  * launch, and the verdict it writes. The view was prepared and checked by the
  * scan; this function only hands its location to the prompt and runs the turn
- * in the evidence directory beside it, so the reviewer's own working directory
- * never is the repository it reviews.
+ * in the evidence directory beside it. The working directory is deliberately
+ * not the checkout: a runtime started inside the reviewed tree would take the
+ * pull request's own `AGENTS.md` files as instructions that govern the turn,
+ * and they are evidence to review, never commands to obey.
  */
 async function reviewTurn(
   request: ReviewerTurnRequest,

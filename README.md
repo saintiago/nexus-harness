@@ -693,7 +693,9 @@ head with the change's base commit in it. The view holds no credential of any ki
 private key and the installation token stay with Nexus — and the reviewer reads files, history
 and diffs there with ordinary read tools. The scan also reads the head's check runs and combined
 status, and runs the configured reviewer as **one bounded turn** in its own evidence directory
-under `<workDir>/reviews/`, one directory above the view. The reviewer never
+under `<workDir>/reviews/`, one directory above the view — deliberately not inside the checkout,
+so the pull request's own `AGENTS.md` files stay evidence the reviewer reads, not instructions that
+govern its turn. The reviewer never
 changes the view, implements fixes, commits, pushes, merges, or edits the ticket: it writes one
 verdict which the harness validates. `REQUEST_CHANGES` needs at least one finding and is published
 with inline file/line comments where the pull request's own diff can position them; `APPROVE` is
@@ -745,7 +747,10 @@ identity: installation tokens are restricted to the configured repository and re
 `delivery` still pushes and opens pull requests with your own `git` and `gh` login, and
 the harness stores no GitHub credential. Start with `review scan --limit 1` and inspect the review,
 the check run, and the evidence under `<workDir>/reviews/` before letting `review watch` run
-unattended.
+unattended. The scan also needs the ticket's own retained workspace under that `workDir`, on the
+machine running it: that is what the reviewer's view is cloned from. Do not delete or move a
+workspace whose pull request is still awaiting review — a review that cannot be given a pinned
+view reports the ticket for attention instead of reviewing it.
 
 **What the review commands leave alone.** A review publishes the verdict and its app-owned check and
 stops there: it never merges, enables auto-merge, verifies a merge, or changes Jira, and no
