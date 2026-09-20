@@ -529,6 +529,12 @@ export async function runTask(
    * action, rather than starting a turn or a check on a checkout the workspace
    * does not hold.
    *
+   * `requireClean` is what a coding turn adds to that: it starts from the
+   * workspace's own committed state, so uncommitted work — on the recorded
+   * branch included — ends the run before the agent rather than being handed to
+   * it. The round that judges a turn does not ask for it: what the turn left,
+   * uncommitted work included, is what that round is for.
+   *
    * `null` means the checkout is on its recorded branch and the caller may go
    * on. The reading and the return are bounded like the commit identity: what is
    * left of the run's task time, the run's clock, and the run's own stop
@@ -540,17 +546,24 @@ export async function runTask(
     readonly phase: string;
     /** What the phase could not start, as the reason reads it. */
     readonly without: string;
+    /** Whether the state the phase needs holds no uncommitted work. */
+    readonly requireClean: boolean;
     readonly baseline: CheckRoundResult | null;
     readonly attempts: readonly AttemptEvidence[];
   }): Promise<RunTaskResult | null> => {
     let problem: string | null = null;
     let stop: WorkspaceStepStop | null = null;
     try {
-      const returned = await dependencies.returnToRecordedBranch(workspacePath, workspaceBranch, {
-        deadlineMs,
-        now: dependencies.now,
-        ...(callerStop === undefined ? {} : { stop: callerStop }),
-      });
+      const returned = await dependencies.returnToRecordedBranch(
+        workspacePath,
+        workspaceBranch,
+        {
+          deadlineMs,
+          now: dependencies.now,
+          ...(callerStop === undefined ? {} : { stop: callerStop }),
+        },
+        { requireClean: parts.requireClean },
+      );
       if (returned.changed) {
         await dependencies.appendRunLog(
           timeline,
@@ -591,11 +604,17 @@ export async function runTask(
       });
     }
     if (problem !== null) {
+      // What the phase needed is named with the failure: the round that reads a
+      // turn's work needs the recorded branch, and a coding turn needs that same
+      // branch with no uncommitted work under it.
       return endRun({
         status: 'failed',
-        reason:
-          `the checkout could not be returned to the branch this workspace records ` +
-          `("${workspaceBranch}"), so ${parts.without}: ${oneLine(problem)}`,
+        reason: parts.requireClean
+          ? `the working copy is not in the state a coding turn starts from — the branch this ` +
+            `workspace records ("${workspaceBranch}"), with no uncommitted work — so ` +
+            `${parts.without}: ${oneLine(problem)}`
+          : `the checkout could not be returned to the branch this workspace records ` +
+            `("${workspaceBranch}"), so ${parts.without}: ${oneLine(problem)}`,
         baseline: parts.baseline,
         attempts: parts.attempts,
         timeout: null,
@@ -700,33 +719,50 @@ export async function runTask(
         attempts,
       });
     }
-    const left = remainingMs();
-    if (left <= 0) {
-      const evidence = timedOut({
-        limit: 'task',
-        phase: nameTurn(kind, turn),
-        limitMs: taskLimitMs,
-      });
-      return endTimedOut({
+    /**
+     * The deadline expired before the turn this loop is at: no turn is started,
+     * no check runs after one, and the evidence names the limit. Read here and
+     * again after the checkout has been settled, because that step is part of
+     * the same budget.
+     */
+    const expiredBeforeTurn = (): Promise<RunTaskResult> =>
+      endTimedOut({
         reason: `the run's task deadline expired before ${describeTurn(kind, turn)} was started, so no further turn and no check was run`,
         baseline,
         attempts,
-        evidence,
+        evidence: timedOut({
+          limit: 'task',
+          phase: nameTurn(kind, turn),
+          limitMs: taskLimitMs,
+        }),
       });
+    if (remainingMs() <= 0) {
+      return expiredBeforeTurn();
     }
 
-    // The turn starts on the branch its workspace records. An earlier attempt,
-    // or an earlier rung of this cycle, may have left the checkout on a branch
-    // of its own, and returning it here is what makes every continuation and
-    // every repair turn the recorded branch's own work (HARN-35).
+    // The turn starts on the branch its workspace records, and from the
+    // workspace's own committed state. An earlier attempt, or an earlier rung of
+    // this cycle, may have left the checkout on a branch of its own, or left
+    // work it never committed, and settling that here is what makes every
+    // continuation and every repair turn the recorded branch's own work
+    // (HARN-35).
     const beforeTurn = await settleBranch({
       phase: `the checkout before ${describeTurn(kind, turn)}`,
       without: `${describeTurn(kind, turn)} was not started`,
+      requireClean: true,
       baseline,
       attempts,
     });
     if (beforeTurn !== null) {
       return beforeTurn;
+    }
+
+    // The turn's own budget is read now, after the checkout was settled: the
+    // return above is Git work the run spent its time on, and a turn that was
+    // given a budget read before it would be handed time the run no longer has.
+    const left = remainingMs();
+    if (left <= 0) {
+      return expiredBeforeTurn();
     }
 
     // The coding turn, awaited to completion: the checks that follow it must
@@ -919,6 +955,10 @@ export async function runTask(
     const beforeRound = await settleBranch({
       phase: `the checkout before the checks after ${describeTurn(kind, turn)}`,
       without: `no check ran after ${describeTurn(kind, turn)}`,
+      // The round reads what the turn left, uncommitted work included: that is
+      // what the attempt is judged on, and the delivery step is what refuses to
+      // publish a working copy that still holds it.
+      requireClean: false,
       baseline,
       attempts,
     });

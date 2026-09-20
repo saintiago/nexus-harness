@@ -421,6 +421,14 @@ interface FakeTurn {
     readonly text: string;
     readonly message: string;
   }[];
+  /**
+   * A message the turn commits its whole working copy with, once its own process
+   * has finished: everything it changed is staged and committed, the way a real
+   * turn finishes the work it wants the next turn to build on. A turn is followed
+   * by another coding turn only from committed state (HARN-35), so a plan whose
+   * turn the run repairs names this.
+   */
+  readonly commit?: string;
   /** Text it writes to its agent log before its process starts. */
   readonly logText?: string;
   /** How long its process stays alive while it works, in milliseconds. */
@@ -514,7 +522,12 @@ function fakeAgent(
           throw new Error(`the coding turn's own process exited ${String(result.code)}`);
         }
         if (plan.failWith !== undefined) {
+          // A turn that did not finish does not commit its work: what it left is
+          // exactly what the run keeps for it.
           throw new Error(plan.failWith);
+        }
+        if (plan.commit !== undefined) {
+          await commitEverything(agentRequest.workspacePath, plan.commit);
         }
         return { summary: plan.summary ?? `the implementation turn edited ${file}` };
       } finally {
@@ -531,6 +544,40 @@ interface RecordedEvent {
   readonly agentActive?: boolean;
   /** Whether a command decided it passed. */
   readonly passed?: boolean;
+}
+
+/**
+ * Commits everything a stand-in turn left in `workspacePath`, under the identity
+ * the run configured there: the state a turn the run goes on to repair has to
+ * look like (HARN-35). A turn whose working copy already matches what is
+ * committed has nothing to add, and that is not a failure: the state it was asked
+ * for already holds.
+ */
+async function commitEverything(workspacePath: string, message: string): Promise<void> {
+  const staged = await runProcess('git', ['add', '--all'], {
+    cwd: workspacePath,
+    env: workspaceCommitEnvironment(),
+  });
+  if (staged.code !== 0) {
+    throw new Error(`the turn could not stage its work: ${staged.stderr.trim()}`);
+  }
+  const changed = await runProcess('git', ['diff', '--cached', '--quiet'], {
+    cwd: workspacePath,
+    env: workspaceCommitEnvironment(),
+  });
+  if (changed.code === 0) {
+    return;
+  }
+  if (changed.code !== 1) {
+    throw new Error(`the turn could not read its staged work: ${changed.stderr.trim()}`);
+  }
+  const committed = await runProcess('git', ['commit', '--quiet', '--message', message], {
+    cwd: workspacePath,
+    env: workspaceCommitEnvironment(),
+  });
+  if (committed.code !== 0) {
+    throw new Error(`the turn could not commit its work: ${committed.stderr.trim()}`);
+  }
 }
 
 /** Every record the fixture processes wrote, in the order they wrote them. */
@@ -737,6 +784,7 @@ describe('a run that continues a workspace', () => {
     const firstAgent = fakeAgent(fixture, {
       file: 'first-only.txt',
       text: 'from the first attempt\n',
+      commit: 'tiny-001: a file only this clone has',
     });
     const first = await runTask(
       { ...request(fixture, configuration(fixture)), sourceRef: SOURCE_REF },
@@ -902,9 +950,11 @@ describe('a working copy a coding turn commits in', () => {
 
   it('configures the identity for a continuation that did not go through reopenWorkspace', async () => {
     const fixture = await createFixture();
+    // The first attempt commits its own work: a coding turn is only ever started
+    // from the workspace's own committed state (HARN-35).
     const first = await runTask(
       request(fixture, configuration(fixture)),
-      dependencies(fakeAgent(fixture).turn),
+      dependencies(fakeAgent(fixture, { commit: 'tiny-001: the implementation' }).turn),
     );
     const workspace = first.workspace;
     expect(workspace).not.toBeNull();
@@ -1320,6 +1370,9 @@ describe('a continued run whose source checkout moved on', () => {
           message: 'tiny-001: attempt one checkpoint',
         },
       ],
+      // Everything the attempt left is committed, because the next run is only
+      // started from the workspace's own committed state (HARN-35).
+      commit: 'tiny-001: attempt one finishes what it wrote',
     });
     const first = await runTask(
       { ...request(fixture, configuration(fixture)), sourceRef: SOURCE_REF },
@@ -1365,10 +1418,11 @@ describe('a continued run whose source checkout moved on', () => {
     expect(report.source.baseCommit).toBe(workspace.baseCommit);
     expect(report.changes.baseCommit).toBe(workspace.baseCommit);
     // The whole diff against that base: an earlier attempt's commit and a dirty
-    // leftover are both visible.
+    // leftover are both visible — a path the earlier attempt committed and this
+    // attempt added to again holds both states.
     const states = new Map(report.changes.paths.map((entry) => [entry.path, entry.states]));
     expect(states.get('committed.txt')).toEqual(['committed']);
-    expect(states.get('app.txt')).toEqual(['unstaged']);
+    expect(states.get('app.txt')).toEqual(['committed', 'unstaged']);
   }, 120_000);
 });
 
@@ -1693,6 +1747,9 @@ describe('the bounded repair loop', () => {
       {
         mode: 'replace',
         text: 'broken by the implementation turn\n',
+        // The turn commits what it leaves: the run goes on to repair it, and a
+        // repair turn only follows a committed working copy (HARN-35).
+        commit: 'tiny-001: the implementation, as it stands',
         holdMs: 0,
         summary: 'done — every test passes',
       },
@@ -1807,8 +1864,14 @@ describe('the bounded repair loop', () => {
   it('spends at most maxRepairs additional turns and reports the exhausted allowance', async () => {
     const fixture = await createFixture();
     // Every turn breaks what the check verifies, so every round is red and the
-    // allowance is what ends the run.
-    const agent = fakeAgent(fixture, { mode: 'replace', text: 'still broken\n', holdMs: 0 });
+    // allowance is what ends the run. Every turn also commits what it leaves, so
+    // the repair turn that follows each one starts from committed state (HARN-35).
+    const agent = fakeAgent(fixture, {
+      mode: 'replace',
+      text: 'still broken\n',
+      commit: 'tiny-001: still broken, but committed',
+      holdMs: 0,
+    });
 
     const result = await runTask(
       request(fixture, configuration(fixture)),
@@ -1895,7 +1958,12 @@ describe('the bounded repair loop', () => {
     const fixture = await createFixture();
     const agent = fakeAgent(
       fixture,
-      { mode: 'replace', text: 'broken by the implementation turn\n', holdMs: 0 },
+      {
+        mode: 'replace',
+        text: 'broken by the implementation turn\n',
+        commit: 'tiny-001: the broken implementation',
+        holdMs: 0,
+      },
       {
         2: {
           failWith: 'the coding runtime exited unexpectedly',
@@ -1971,7 +2039,12 @@ describe('the bounded repair loop', () => {
     // repair closes the gate, so the round after it cannot run at all.
     const agent = fakeAgent(
       fixture,
-      { mode: 'replace', text: 'broken by the implementation turn\n', holdMs: 0 },
+      {
+        mode: 'replace',
+        text: 'broken by the implementation turn\n',
+        commit: 'tiny-001: the implementation before the repair',
+        holdMs: 0,
+      },
       {
         2: {
           mode: 'replace',

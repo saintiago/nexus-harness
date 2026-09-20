@@ -12,6 +12,16 @@
  * commit descends from the recorded branch's tip, which is fast-forwarded to it
  * and checked out.
  *
+ * A turn is also asked to work from the workspace's own committed state, not
+ * from leftovers an earlier turn never committed: what a turn starts from is
+ * the revision the checks judge and a delivery publishes, so a caller that is
+ * about to start one requires the checkout to be clean as well
+ * ({@link BranchRead}), on the recorded branch included, and stops with the
+ * branch and the paths when it is not. The round that judges a turn still reads
+ * what the turn left, uncommitted work included — that is what the attempt is
+ * being judged on, and the delivery step's own clean-checkout refusal is the
+ * boundary for publishing it.
+ *
  * Everything else stops instead of being forced. A checkout holding uncommitted
  * changes, a detached HEAD, a commit the recorded branch does not descend
  * from, and a recorded branch the workspace does not hold are each refused with
@@ -58,6 +68,24 @@ export type BranchReturn =
       /** The commit the recorded branch was fast-forwarded to. */
       readonly revision: string;
     };
+
+/**
+ * How strictly a caller needs the checkout read. A caller that is about to
+ * start a coding turn passes `requireClean`, because a turn works from the
+ * workspace's own committed state: uncommitted work — staged, unstaged, or
+ * untracked — stops it there, on the recorded branch included, rather than
+ * being handed on to another agent. A caller that is about to read what a turn
+ * left leaves it out, because that working copy is what its round is there to
+ * judge.
+ */
+export interface BranchRead {
+  /**
+   * Refuse a checkout that holds uncommitted work, even when it is on the
+   * branch its ledger records. Off by default, because reading a working copy a
+   * turn has just written is the ordinary case a check round is for.
+   */
+  readonly requireClean?: boolean;
+}
 
 /**
  * How a checkout's state is read: the working tree with the same reading the
@@ -119,12 +147,15 @@ async function readCommit(
  *
  * Every reading is bounded like the harness's other Git steps, and a reading
  * the harness had to stop is reported as the stop it was rather than as a
- * statement about the checkout.
+ * statement about the checkout. `read` says how strictly the checkout has to
+ * stand: a caller about to start a coding turn requires a clean one
+ * ({@link BranchRead}), and a caller about to read what a turn left does not.
  */
 export async function inspectBranchStanding(
   workspacePath: string,
   branch: string,
   bounds: GitRunBounds = {},
+  read: BranchRead = {},
 ): Promise<BranchStanding> {
   const unusable = unusableBranchName(branch);
   if (unusable !== null) {
@@ -141,10 +172,13 @@ export async function inspectBranchStanding(
   }
   const current = symbolic.stdout.trim();
   if (symbolic.code === 0) {
-    if (current === branch) {
+    if (current !== branch) {
+      return await inspectOtherBranch(workspacePath, branch, current, bounds);
+    }
+    if (read.requireClean !== true) {
       return { kind: 'on-branch' };
     }
-    return await inspectOtherBranch(workspacePath, branch, current, bounds);
+    return await inspectRecordedBranch(workspacePath, branch, bounds);
   }
 
   // A detached HEAD names no branch, so which branch the work belongs on is a
@@ -158,6 +192,61 @@ export async function inspectBranchStanding(
       'a detached checkout on its own: check out the recorded branch by hand once the detached ' +
       'commit is the work to keep, or move the workspace aside',
   };
+}
+
+/**
+ * The standing of a checkout that is on the branch its ledger records, for a
+ * caller that needs the state a coding turn starts from: the workspace's own
+ * committed state, so staged, unstaged, or untracked work stops the run here
+ * rather than being handed to another agent.
+ */
+async function inspectRecordedBranch(
+  workspacePath: string,
+  branch: string,
+  bounds: GitRunBounds,
+): Promise<BranchStanding> {
+  const leftovers = await leftoversOf(workspacePath, bounds);
+  if (leftovers.length === 0) {
+    return { kind: 'on-branch' };
+  }
+  const revision = await readCommit(
+    workspacePath,
+    'HEAD^{commit}',
+    `the commit of "${workspacePath}"`,
+    bounds,
+  );
+  return {
+    kind: 'refused',
+    problem:
+      `the retained workspace "${workspacePath}" is on the branch its ledger records, "${branch}"` +
+      (revision === '' ? '' : ` (at ${revision})`) +
+      `, and it holds uncommitted changes (${listPaths(leftovers)}), so no coding turn is started ` +
+      "on it: a turn is asked to work from the workspace's own committed state, and the harness " +
+      "never commits, stashes, or discards a checkout's leftovers. Commit or remove those paths by " +
+      `hand in the retained workspace, then continue the work on "${branch}" again, or move the ` +
+      'workspace aside',
+  };
+}
+
+/**
+ * The paths a checkout holds uncommitted, read exactly as the delivery step
+ * reads them, so a checkout this module calls clean is one delivery would accept
+ * as clean too.
+ */
+async function leftoversOf(
+  workspacePath: string,
+  bounds: GitRunBounds,
+): Promise<readonly string[]> {
+  const status = await runGit([...STATUS_ARGS], workspacePath, bounds);
+  if (status.outcome !== 'exited') {
+    throw gitFailure(`the state of "${workspacePath}" could not be read`, status);
+  }
+  if (status.code !== 0) {
+    throw new WorkspaceError(
+      `the state of "${workspacePath}" cannot be read: ${firstLine(status.stderr)}`,
+    );
+  }
+  return statusEntries(status.stdout).map((entry) => entry.path);
 }
 
 /**
@@ -188,16 +277,7 @@ async function inspectOtherBranch(
     };
   }
 
-  const status = await runGit([...STATUS_ARGS], workspacePath, bounds);
-  if (status.outcome !== 'exited') {
-    throw gitFailure(`the state of "${workspacePath}" could not be read`, status);
-  }
-  if (status.code !== 0) {
-    throw new WorkspaceError(
-      `the state of "${workspacePath}" cannot be read: ${firstLine(status.stderr)}`,
-    );
-  }
-  const leftovers = statusEntries(status.stdout).map((entry) => entry.path);
+  const leftovers = await leftoversOf(workspacePath, bounds);
   if (leftovers.length > 0) {
     return {
       kind: 'refused',
@@ -273,15 +353,18 @@ async function inspectOtherBranch(
  * contains it; the commit the checkout was at stays on the branch it was made
  * on; and nothing is reset, force-updated, or discarded. A checkout that is
  * already on the recorded branch is left exactly as it is, uncommitted changes
- * included, because that is the ordinary state a continuation reopens
- * (docs/implement-workspace-continuation.md).
+ * included — that is the ordinary state a round reads after a turn
+ * (docs/implement-workspace-continuation.md) — unless the caller requires a
+ * clean checkout ({@link BranchRead}), which is how a coding turn is only ever
+ * started from the workspace's own committed state.
  */
 export async function returnToRecordedBranch(
   workspacePath: string,
   branch: string,
   bounds: GitRunBounds = {},
+  read: BranchRead = {},
 ): Promise<BranchReturn> {
-  const standing = await inspectBranchStanding(workspacePath, branch, bounds);
+  const standing = await inspectBranchStanding(workspacePath, branch, bounds, read);
   if (standing.kind === 'refused') {
     throw new WorkspaceError(standing.problem);
   }

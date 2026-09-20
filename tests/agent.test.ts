@@ -254,6 +254,13 @@ interface StandInConfig {
   readonly text?: string;
   /** Whether that write replaces the file or appends to it. */
   readonly write?: 'append' | 'replace';
+  /**
+   * A message the stand-in commits its whole working copy with once it has made
+   * its change. The harness starts no coding turn from a working copy that still
+   * holds uncommitted work (HARN-35), so a turn whose run asks another turn to
+   * follow it names this.
+   */
+  readonly commit?: string;
   /** How long it stays alive after reporting, in milliseconds. */
   readonly holdMs?: number;
   /** The session it reports having opened. */
@@ -309,6 +316,32 @@ const STAND_IN_SOURCE = [
   "      config.text ?? '',",
   "      config.write === 'replace' ? {} : { flag: 'a' },",
   '    );',
+  '  }',
+  '',
+  '  // A turn that commits its work: the next coding turn of its run only ever',
+  '  // starts from committed state (HARN-35).',
+  "  if (typeof config.commit === 'string' && config.commit !== '') {",
+  "    const { execFileSync } = await import('node:child_process');",
+  "    const git = (args) => execFileSync('git', args, {",
+  '      cwd: process.cwd(),',
+  "      stdio: ['ignore', 'pipe', 'pipe'],",
+  '      timeout: 30000,',
+  '    });',
+  "    git(['add', '--all']);",
+  '    let staged = true;',
+  '    try {',
+  "      execFileSync('git', ['diff', '--cached', '--quiet'], {",
+  '        cwd: process.cwd(),',
+  "        stdio: 'ignore',",
+  '        timeout: 30000,',
+  '      });',
+  '      staged = false;',
+  '    } catch (cause) {',
+  '      staged = cause?.status === 1;',
+  '    }',
+  '    if (staged) {',
+  "      git(['commit', '--quiet', '--message', config.commit]);",
+  '    }',
   '  }',
   '',
   "  event({ type: 'thread.started', thread_id: config.session ?? 'session-1' });",
@@ -1291,7 +1324,14 @@ describe('the runner, the real checks, and the real adapter together', () => {
           standInRuntime(
             fixture,
             asked.turn === 1
-              ? { file: 'app.txt', text: REWRITTEN_TEXT, write: 'replace' }
+              ? {
+                  file: 'app.txt',
+                  text: REWRITTEN_TEXT,
+                  write: 'replace',
+                  // The repair turn follows this one, and it is only started
+                  // from the working copy's committed state (HARN-35).
+                  commit: 'tiny-001: the implementation, as it stands',
+                }
               : { file: 'app.txt', text: BASELINE_TEXT, write: 'replace' },
             {
               command: prefix,
@@ -1337,11 +1377,14 @@ describe('the runner, the real checks, and the real adapter together', () => {
       dependencies(
         runtimeByTurn(fixture, (turn) => ({
           // The implementation turn breaks the line the check needs, and the
-          // repair turn puts it back. Each reports a session of its own.
+          // repair turn puts it back. Each reports a session of its own, and the
+          // first commits what it leaves, because the repair turn after it only
+          // starts from committed state (HARN-35).
           session: `session-${String(turn)}`,
           file: 'app.txt',
           text: turn === 1 ? REWRITTEN_TEXT : BASELINE_TEXT,
           write: 'replace',
+          ...(turn === 1 ? { commit: 'tiny-001: the broken implementation' } : {}),
           summary: `turn ${String(turn)} is done.`,
         })),
       ),
@@ -1376,6 +1419,9 @@ describe('the runner, the real checks, and the real adapter together', () => {
           file: 'app.txt',
           text: turn === 1 ? REWRITTEN_TEXT : BASELINE_TEXT,
           write: 'replace',
+          // The first turn commits the state it leaves, which is what the second
+          // turn's run starts from (HARN-35).
+          ...(turn === 1 ? { commit: 'tiny-001: the implementation, as it stands' } : {}),
           summary: `turn ${String(turn)} is done.`,
         })),
       ),
@@ -1386,8 +1432,8 @@ describe('the runner, the real checks, and the real adapter together', () => {
     // The first turn of a fresh working copy and the later turn that continues
     // it in the same copy are launched by the same adapter, in turn, with the
     // one fixed unsandboxed policy: neither falls back to the operator's own
-    // defaults or to a narrower one, and the second one can stage and commit
-    // what the first one left behind.
+    // defaults or to a narrower one, and the second one starts from the commit
+    // the first one left behind.
     const starts = (await recordsOf(fixture)).filter((record) => record.event === 'start');
     expect(starts).toHaveLength(2);
     for (const start of starts) {

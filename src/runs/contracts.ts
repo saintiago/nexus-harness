@@ -26,7 +26,7 @@ import type {
 } from '../shared/types.js';
 import type { PreparedWorkspace, PrepareWorkspaceBounds } from '../workspace/prepare.js';
 import type { PreflightRequest, SourcePreflight } from '../workspace/preflight.js';
-import type { BranchReturn } from '../workspace/branch.js';
+import type { BranchRead, BranchReturn } from '../workspace/branch.js';
 import type { GitRunBounds } from '../workspace/git.js';
 import type { ContinuedWorkspace } from '../workspace/reopen.js';
 import type { RunDirectory, WorkspacePlacement } from '../workspace/run-directory.js';
@@ -303,8 +303,11 @@ export interface RunnerDependencies {
    * not descend from the recorded branch, or a recorded branch the workspace
    * does not hold — rejects with the branch names and the manual action, never
    * with a reset, a force update, or an adopted branch (HARN-35). A checkout
-   * already on its recorded branch is left exactly as it is, uncommitted
-   * changes included.
+    * already on its recorded branch is left exactly as it is, uncommitted
+   * changes included — unless `read` requires a clean one, which is what the
+   * call before a coding turn does: a turn starts from the workspace's own
+   * committed state, and uncommitted work stops the run before the agent
+   * instead of being handed to it.
    *
    * It is bounded by `bounds` exactly as the commit identity is: the run's task
    * deadline, its clock, and its own stop request, so a stalled Git cannot hold
@@ -315,6 +318,7 @@ export interface RunnerDependencies {
     workspacePath: string,
     branch: string,
     bounds: GitRunBounds,
+    read?: BranchRead,
   ) => Promise<BranchReturn>;
   /** Runs one setup/check round in the working copy. */
   readonly runCheckRound: (request: CheckRoundRequest) => Promise<CheckRoundResult>;

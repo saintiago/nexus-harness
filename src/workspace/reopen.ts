@@ -13,7 +13,10 @@
  * commit descends from the recorded branch's tip is accepted — the runner
  * fast-forwards and checks out the recorded branch before the first turn — and
  * a dirty, detached, divergent, or branchless checkout is refused here, before
- * anything is claimed, with the branch names and the manual action.
+ * anything is claimed, with the branch names and the manual action. The
+ * checkout must be clean on the recorded branch as well: a coding turn is
+ * started only from the workspace's own committed state, so a workspace left
+ * with uncommitted work is refused here rather than handed on to an agent.
  *
  * A pointer label is untrusted text on the issue, so resolving it checks more
  * than that it names a directory: the id must be a usable workspace id (a
@@ -384,8 +387,12 @@ export async function reopenWorkspace(
 
   // The checkout is only read here, never changed: a continuation is verified
   // before anything is claimed, and the run it starts is what returns the
-  // checkout to the recorded branch before its first coding turn.
-  const standing = await inspectBranchStanding(workspace.workspacePath, workspace.branch, bounds);
+  // checkout to the recorded branch before its first coding turn. It is read
+  // strictly, because no coding turn is started from a working copy that still
+  // holds uncommitted work.
+  const standing = await inspectBranchStanding(workspace.workspacePath, workspace.branch, bounds, {
+    requireClean: true,
+  });
   if (standing.kind === 'refused') {
     throw new WorkspaceError(`workspace ${workspaceId} cannot be continued: ${standing.problem}`);
   }

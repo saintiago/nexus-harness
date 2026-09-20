@@ -23,6 +23,13 @@
  * sequential — the harness runs one coding turn at a time — so the plan a turn
  * follows is the one at the index of the turns already recorded.
  *
+ * A plan's `edits` and `removes` are the turn's working copy changes, left
+ * uncommitted by default — the round after the turn judges them, and a plan that
+ * is the last turn of its run needs nothing more. A plan whose turn is followed
+ * by another coding turn names its `commit` message, and the stand-in commits
+ * everything the turn changed: the harness starts no turn from a working copy
+ * that still holds uncommitted work (HARN-35).
+ *
  * Signals are recorded and ignored, so that the interrupt a test sends to the CLI
  * cannot end this turn by itself: the behaviour under test is that the *harness*
  * stops the runtime it started, and a stand-in that died of the interrupt would
@@ -44,7 +51,7 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { beaconAnswers, randomToken, startBeacon } from './beacon.mjs';
@@ -151,6 +158,34 @@ async function run(prompt) {
     rmSync(path.join(process.cwd(), file), { force: true });
   }
   record('edits-written', { files: (plan.edits ?? []).map((edit) => edit.file) });
+
+  // A turn that commits its work: the harness starts no further turn from a
+  // working copy that still holds uncommitted work, so a plan that stands in for
+  // a turn whose work the round after it judges — and a repair turn that follows —
+  // names the commit message here. Everything the turn changed is committed, the
+  // same way the harness's own instructions ask a real turn to commit.
+  if (typeof plan.commit === 'string' && plan.commit !== '') {
+    const git = (args) =>
+      execFileSync('git', args, {
+        cwd: process.cwd(),
+        encoding: 'utf8',
+        timeout: 30_000,
+        windowsHide: true,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+    git(['add', '--all']);
+    const staged = spawnSync('git', ['diff', '--cached', '--quiet'], {
+      cwd: process.cwd(),
+      timeout: 30_000,
+      windowsHide: true,
+    });
+    if (staged.status === 1) {
+      git(['commit', '--quiet', '--message', plan.commit]);
+      record('committed', { message: plan.commit });
+    } else if (staged.status !== 0) {
+      throw new Error(`the turn could not read its own staged changes: ${String(staged.status)}`);
+    }
+  }
 
   if (plan.reviewInspection !== undefined) {
     const inspection = plan.reviewInspection;
