@@ -2219,12 +2219,16 @@ describe('an issue that points at a workspace', () => {
       },
     ];
 
+    // Each refusal happens before the workspace is reopened or an item is
+    // reserved. Prepare the real Git workspace once, then derive each invalid
+    // ledger from its original contents instead of repeating clone setup.
+    const workDir = await createTempDir();
+    const { workspaceId, sourceRoot } = await preparedWorkspaceOnDisk(workDir);
+    const ledgerPath = workspaceStatePath(workDir, workspaceId);
+    const written = JSON.parse(await readFile(ledgerPath, 'utf8')) as Record<string, unknown>;
     for (const entry of cases) {
-      const workDir = await createTempDir();
-      const { workspaceId, sourceRoot } = await preparedWorkspaceOnDisk(workDir);
-      const ledgerPath = workspaceStatePath(workDir, workspaceId);
-      const written = JSON.parse(await readFile(ledgerPath, 'utf8')) as Record<string, unknown>;
-      await writeFile(ledgerPath, `${JSON.stringify(entry.change(written))}\n`, 'utf8');
+      const invalidLedger = `${JSON.stringify(entry.change(written))}\n`;
+      await writeFile(ledgerPath, invalidLedger, 'utf8');
       const fixture = createFixture({
         workDir,
         scans: [[candidateFor('2', 'SAM1-2')]],
@@ -2241,6 +2245,8 @@ describe('an issue that points at a workspace', () => {
       expect(reason).toContain(entry.problem);
       expect(fixture.log).not.toContain('claim:SAM1-2');
       expect(fixture.log).not.toContain('run:SAM1-2');
+      expect(existsSync(receiptFilePath(workDir, refFor('2', 'SAM1-2')))).toBe(false);
+      expect(await readFile(ledgerPath, 'utf8')).toBe(invalidLedger);
     }
   });
 
