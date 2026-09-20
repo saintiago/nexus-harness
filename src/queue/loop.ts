@@ -95,9 +95,7 @@ export interface QueueLoopContext {
   /** Review the current ticket's pull request with the configured reviewer. */
   readonly review: (request: { readonly ticket: QueueTicket }) => Promise<QueueReviewOutcome>;
   /** Carry the current ticket's delivered pull request to Done or back to To Do. */
-  readonly complete: (
-    request: { readonly ticket: QueueTicket },
-  ) => Promise<QueueCompletionOutcome>;
+  readonly complete: (request: { readonly ticket: QueueTicket }) => Promise<QueueCompletionOutcome>;
   /**
    * Prepare the local target repository for the next workspace: the configured
    * base branch, the expected delivery repository, a clean checkout, and only a
@@ -267,7 +265,9 @@ export async function runQueue(
         return cancelled();
       }
       if (completion.state === 'attention') {
-        return stopped(`${ticket.ref.key}: the completion path needs a person: ${completion.detail}`);
+        return stopped(
+          `${ticket.ref.key}: the completion path needs a person: ${completion.detail}`,
+        );
       }
 
       if (completion.state === 'done') {

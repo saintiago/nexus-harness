@@ -246,10 +246,7 @@ function exitCodeForQueue(summary: QueueSummary): number {
  * complete a ticket, resolve the credentials its phases need, hold the intake
  * lock for the whole run, and hand the serial loop its four ordinary phases.
  */
-async function queueCommand(
-  options: QueueCommandOptions,
-  context: CliContext,
-): Promise<number> {
+async function queueCommand(options: QueueCommandOptions, context: CliContext): Promise<number> {
   const { mode, configPath, repoPath } = options;
   const { io } = context;
 
@@ -274,7 +271,11 @@ async function queueCommand(
   const reviewConfig = config.review;
   const deliveryConfig = config.delivery;
   const completionConfig = deliveryConfig?.completion;
-  if (reviewConfig === undefined || deliveryConfig === undefined || completionConfig === undefined) {
+  if (
+    reviewConfig === undefined ||
+    deliveryConfig === undefined ||
+    completionConfig === undefined
+  ) {
     throw new Error('unreachable: the queue configuration was checked above');
   }
 
@@ -410,7 +411,15 @@ async function queueCommand(
           stop: stop.signal,
           preflight: preflightSource,
           delivery,
-          run: ({ task, sourceRef, stop: runStop, tier, continuedWorkspace, onWorkspaceReady, guidance }) => {
+          run: ({
+            task,
+            sourceRef,
+            stop: runStop,
+            tier,
+            continuedWorkspace,
+            onWorkspaceReady,
+            guidance,
+          }) => {
             const agent = tier?.agent ?? config.agent;
             const dependencies = composeDependencies(
               context,
@@ -593,9 +602,7 @@ async function releaseQueueLock(
   try {
     await lock.release();
   } catch (cause) {
-    io.err(
-      `the intake lock "${lock.dir}" was left in place for inspection: ${messageOf(cause)}`,
-    );
+    io.err(`the intake lock "${lock.dir}" was left in place for inspection: ${messageOf(cause)}`);
   }
 }
 

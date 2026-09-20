@@ -21,13 +21,7 @@
  */
 import path from 'node:path';
 import { WorkspaceError } from './errors.js';
-import {
-  assertExistingDirectory,
-  canonicalPath,
-  firstLine,
-  gitFailure,
-  runGit,
-} from './git.js';
+import { assertExistingDirectory, canonicalPath, firstLine, gitFailure, runGit } from './git.js';
 import type { GitRunBounds } from './git.js';
 import { assertCleanCheckout } from './preflight.js';
 
@@ -108,10 +102,7 @@ function namesRepository(url: string, expectedUrl: string): boolean {
 }
 
 /** The real root of the checkout, refused when it is missing or bare. */
-async function resolveCheckoutRoot(
-  requested: string,
-  bounds: GitRunBounds,
-): Promise<string> {
+async function resolveCheckoutRoot(requested: string, bounds: GitRunBounds): Promise<string> {
   const resolved = path.resolve(requested);
   assertExistingDirectory(resolved);
 
@@ -194,9 +185,7 @@ async function findRemote(
     throw new WorkspaceError(
       [
         `"${sourceRoot}" has no remote for the delivery repository "${repository}".`,
-        names.length === 0
-          ? 'It has no remotes at all.'
-          : `Its remotes are: ${names.join(', ')}.`,
+        names.length === 0 ? 'It has no remotes at all.' : `Its remotes are: ${names.join(', ')}.`,
         `The queue fetches and fast-forwards the configured base branch from "${expectedUrl}", so it`,
         'will not guess which remote is the delivery repository. Add the expected remote, or point',
         'the delivery configuration at the repository this checkout really tracks.',
@@ -355,7 +344,11 @@ export async function refreshSource(
 
   let moved = false;
   if (previousHead !== merged) {
-    const fastForward = await runGit(['merge', '--ff-only', '--no-edit', merged], sourceRoot, bounds);
+    const fastForward = await runGit(
+      ['merge', '--ff-only', '--no-edit', merged],
+      sourceRoot,
+      bounds,
+    );
     if (fastForward.outcome !== 'exited' || fastForward.code !== 0) {
       throw gitFailure(
         `fast-forwarding "${sourceRoot}" to the verified merge commit "${merged}" failed`,
