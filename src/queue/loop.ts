@@ -114,7 +114,7 @@ export interface QueueLoopContext {
   /**
    * Take at most one ticket and carry it through the coding attempt and its
    * delivery. `only` names the ticket a repair must continue; `null` asks for a
-   * fresh eligibility scan, in the source's own priority order.
+   * fresh eligibility scan, in the source's own configured order.
    */
   readonly consume: (request: { readonly only: QueueTicket | null }) => Promise<SourceTake>;
   /**

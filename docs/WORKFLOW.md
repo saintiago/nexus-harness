@@ -216,6 +216,7 @@ A complete example for the current test queue is:
     "cloudId": "9337c4da-7d33-4c1d-b03c-db207e537f88",
     "projectKey": "SAM1",
     "label": "harness-task",
+    "ordering": "priority",
     "pollIntervalSeconds": 30
   }
 }
@@ -236,6 +237,7 @@ This example selects the native profile's default model. Preserve your existing 
 | `readyStatus` | Optional nonblank name, default `"To Do"`. |
 | `runningStatus` | Optional nonblank name, default `"In Progress"`. |
 | `reviewStatus` | Optional nonblank name, default `"In Review"`. |
+| `ordering` | Optional, exactly `"priority"` (default) or `"rank"`. Which Jira field orders the ready queue: the site's own Priority field, or the board's native Rank so manual board order decides what the next fresh scan offers. Nothing else is accepted — no other value, no null, no coercion — and both modes keep the deterministic tie-breakers. |
 | `pollIntervalSeconds` | Optional integer at least 5, default 30. Delay after a completed scan/batch, not a promised event-delivery latency. |
 | `tokenEnv` | Optional environment-variable name, default `"JIRA_API_TOKEN"`. The variable contains the Jira service-account API token. |
 
@@ -269,9 +271,19 @@ AND status = "To Do"
 ORDER BY priority DESC, created ASC, key ASC
 ```
 
+With `"ordering": "rank"`, the same queue asks Jira for the board's own order instead, and for nothing else:
+
+```jql
+ORDER BY Rank ASC, created ASC, key ASC
+```
+
 Do not expose arbitrary JQL parsing/composition or a timestamp cursor in this increment. Using a different label is enough to isolate a disposable test queue. The label plus ready status is an explicit authorization to spend agent capacity in the trusted configured repository.
 
-Jira's priority scheme resolves `priority DESC`, so the highest-priority ready issue comes first, with the oldest creation and then the issue key breaking ties. Jira does the sorting and the connector keeps the order of the answer across pages, whatever the issue keys would suggest: a priority change takes effect on the next scan and never reorders an active task or a batch that was already discovered.
+Jira's priority scheme resolves `priority DESC`, so the highest-priority ready issue comes first, with the oldest creation and then the issue key breaking ties. In rank mode the board's native `Rank` is the primary order across the ready issues — an issue's Priority value never outranks it — and creation time and the issue key are the deterministic tie-breakers Jira applies after it. The two orders are never combined, and Rank values are never fetched, read back, or reinterpreted locally: this connector asks for an order, it never computes one.
+
+In both modes Jira does the sorting and the connector keeps the order of the answer across pages, whatever the issue keys would suggest. A Priority or Rank change takes effect on the next fresh scan — each scan reads the configured mode, so a `queue run` or `queue watch` picks up a changed `ordering` on its scan after the change — and it never reorders an active ticket, a same-ticket repair continuation, or a batch that was already discovered.
+
+A site that refuses `Rank` (the field is unavailable, the service account may not view it, or the queue's board does not rank the issues) fails the scan with Jira's own bounded error and starts no task. There is no fallback to Priority, no guessed board order, no Jira Agile board API call, and no Rank write: fix the access or set `"ordering": "priority"`, which keeps the pre-HARN-20 behavior.
 
 ## 6. Jira issue convention
 
@@ -336,7 +348,7 @@ npm run dev -- source watch --repo ../target-project --config harness.jira.confi
 
 `source list` needs only `--config`. `source run` and `source watch` require `--repo` and `--config`; reject `--task` on source commands. `--limit` is a positive integer accepted only by `source run`, counting the attempts it starts — a first attempt or a continuation — not receipted skips, refusals, or invalid descriptions. Omitting it means the complete finite discovered batch. Watch has no lifetime task limit in this increment.
 
-The source preview prints each issue's disposition, key, title, URL, and one detail line. The dispositions are `valid` (unattempted, and a run would create its workspace), `continuable` (the detail names the workspace ID and the attempt number a run would continue), `refused` (why it will not be acted on: a receipt with no pointer, a pointer that is not a generated workspace id, a pointer this machine cannot resolve, a pointer that names another item's, site's, or repository's workspace, a pointer whose workspace or ledger resolves out of the workspaces directory through a junction or symbolic link, a workspace whose ledger records no item identity, or more than one pointer), `invalid` (the task-description problem), and `stale` (no longer eligible when re-read). A continuation's detail carries only that workspace ID and attempt number — the receipt path and its recorded result are not repeated there; a refusal may quote the receipt's own one-line summary in its reason. An existing receipt is read before the item is mapped, and the pointer labels are judged only after the item has been re-read: the decision uses the labels that read observed, never the ones the search result that discovered the issue carried. The preview takes no `--repo`, so it cannot check the repository a workspace was cloned from; an attempt checks that before it reserves. An old attempt is not made runnable by an edited description. No directory creation, locks, remote writes, or process launches are allowed in preview.
+The source preview prints each issue's disposition, key, title, URL, and one detail line, in the order the configured `ordering` asked Jira for — the preview keeps Jira's answer as it arrived across pages and never re-sorts it, exactly as an attempt's batch does. The dispositions are `valid` (unattempted, and a run would create its workspace), `continuable` (the detail names the workspace ID and the attempt number a run would continue), `refused` (why it will not be acted on: a receipt with no pointer, a pointer that is not a generated workspace id, a pointer this machine cannot resolve, a pointer that names another item's, site's, or repository's workspace, a pointer whose workspace or ledger resolves out of the workspaces directory through a junction or symbolic link, a workspace whose ledger records no item identity, or more than one pointer), `invalid` (the task-description problem), and `stale` (no longer eligible when re-read). A continuation's detail carries only that workspace ID and attempt number — the receipt path and its recorded result are not repeated there; a refusal may quote the receipt's own one-line summary in its reason. An existing receipt is read before the item is mapped, and the pointer labels are judged only after the item has been re-read: the decision uses the labels that read observed, never the ones the search result that discovered the issue carried. The preview takes no `--repo`, so it cannot check the repository a workspace was cloned from; an attempt checks that before it reserves. An old attempt is not made runnable by an edited description. No directory creation, locks, remote writes, or process launches are allowed in preview. A `source list` under a refused Rank JQL prints Jira's bounded error and exits nonzero; it never lists a Priority-ordered fallback.
 
 `source run` exits 0 for an empty queue or when all new attempts pass and feedback succeeds, with only harmless stale, refused, or still-receipted skips. Invalid task descriptions, failed/cancelled runs, claim/API errors, and failed feedback give a nonzero result; a valid later issue can still run after an ordinary task failure. Fatal integration/local-state/process-cleanup errors stop the batch immediately. Print a compact count/result summary and real artifact/receipt paths, not only a generic success message.
 

@@ -1096,7 +1096,7 @@ function sameTicket(ref: SourceRef, wanted: SourceRef): boolean {
 export interface SourceTakeRequest {
   /**
    * The ticket a repair continues. Absent means a fresh eligibility scan, and
-   * the first ticket the source's own priority order offers.
+   * the first ticket the source's own configured order offers.
    */
   readonly only?: QueueTicket;
   /**
@@ -1109,7 +1109,7 @@ export interface SourceTakeRequest {
 
 /**
  * One `queue` consumer step: a fresh eligibility scan that takes **at most one**
- * ticket — the ticket `only` names, or the first one the source's own priority
+ * ticket — the ticket `only` names, or the first one the source's own configured
  * order offers — and carries it through the coding attempt, the escalation
  * ladder, and the delivery step, exactly as a finite batch does.
  *
