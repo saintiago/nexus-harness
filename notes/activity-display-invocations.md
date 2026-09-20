@@ -25,10 +25,11 @@ launched, so `run`, `source run|watch`, `review scan|watch`, and
 `queue run|watch` all behave the same way. A pane starts empty, so a repair turn,
 a review, and the next ticket's implementation inherit no row of the invocation
 before them, and only the invocation running right now is cursor-managed. The
-boundary is one row of the pane, so a pane too narrow for the whole thing gives
-up the phase's wording first and the fences second; the role and the ticket — what
-tells two consecutive panes apart — are the last to go, and a boundary that would
-still not fit is fitted like any other row.
+boundary is ordinary output above the pane. A narrow terminal gives up the
+phase's wording first and the fences second; the complete role and ticket remain,
+wrapping if necessary. Only the activity rows below the boundary count toward
+cursor movement, so redrawing them cannot erase a wrapped boundary. Boundary
+fields have their control characters sanitized just like activity text.
 
 When an invocation ends its pane is finalized: it is erased where it stood and
 its retained rows are written into the timeline as that invocation's own
@@ -40,7 +41,8 @@ itself, and the same fitted, sanitized rows as before.
 Ordinary lifecycle output — the timeline the CLI echoes, the outcome block, and
 the messages that go to the error stream — is stamped with the same compact local
 `HH:mm:ss`, one read per emission and one stamp per logical line, so a multi-line
-block keeps its wording and gains a time on every line. A redirected,
+block keeps its wording and gains a time on every line, including blank and
+whitespace-only lines. LF and CRLF delimit logical lines consistently. A redirected,
 noninteractive, too narrow, or too short terminal gets the boundaries and the
 stamps with no cursor or color sequence at all; `NO_COLOR` now selects the same
 plain output (corrected during the review repair below). The reporter stays presentation only: the

@@ -257,7 +257,7 @@ function paneDisplay(
   const ordinary = (text: string, emit: (line: string) => void, condense: boolean): void => {
     const stamp = displayTime(now());
     const lines: string[] = [];
-    for (const logical of text.split('\n')) {
+    for (const logical of text.split(/\r?\n/)) {
       const shown = condense ? interactiveProgress(logical) : logical;
       if (shown === null) {
         continue;
@@ -280,7 +280,7 @@ function paneDisplay(
   /** Writes one ordinary block with no pane on screen to draw under it. */
   const standalone = (text: string, emit: (line: string) => void): void => {
     const stamp = displayTime(now());
-    for (const logical of text.split('\n')) {
+    for (const logical of text.split(/\r?\n/)) {
       emit(stampLine(logical, stamp));
     }
   };
@@ -358,8 +358,8 @@ function paneDisplay(
     },
     beginInvocation: (invocation) => {
       // The boundary is one emission with one time: what opens a pane reads as
-      // one row of the timeline, fitted to the pane's own width, because a
-      // boundary that wrapped would break the cursor work this display does.
+      // logical line of the timeline. It may wrap above the activity rows:
+      // only those rows are counted or erased by the cursor-managed pane.
       const boundary = boundaryLine(invocation, displayTime(now()), width);
       if (closed) {
         write(`${boundary}\n`);
@@ -477,7 +477,7 @@ function plainDisplay(io: CliIo, now: () => Date): ActivityDisplay {
   /** One block as stamped ordinary lines, whatever the stream it goes to. */
   const printed = (text: string, write: (line: string) => void): void => {
     const stamp = displayTime(now());
-    for (const line of text.split('\n')) {
+    for (const line of text.split(/\r?\n/)) {
       write(stampLine(line, stamp));
     }
   };
@@ -501,12 +501,11 @@ function plainDisplay(io: CliIo, now: () => Date): ActivityDisplay {
 }
 
 /**
- * One logical line with the stamp of the emission it belongs to. An empty line
- * has nothing to stamp and stays the empty line it was: a block keeps its own
- * shape, and no row is invented for it.
+ * One logical line with the stamp of the emission it belongs to, including an
+ * empty or whitespace-only line. The text after the prefix stays unchanged.
  */
 function stampLine(line: string, stamp: string): string {
-  return line.trim() === '' ? line : `${stamp} ${line}`;
+  return `${stamp} ${line}`;
 }
 
 /**
@@ -516,10 +515,10 @@ function stampLine(line: string, stamp: string): string {
  * next-ticket panes stay distinguishable in scrollback.
  *
  * A pane too narrow for the whole row gives up its details before its identity:
- * what the phase called itself goes first, then the fences, and only a pane that
- * cannot hold the role and the ticket either is fitted like any other row. The
- * role and the ticket are what tell two consecutive panes apart, so they are the
- * last thing to go.
+ * what the phase called itself goes first, then the fences. The role and ticket
+ * are never truncated: if necessary this ordinary timeline line wraps above the
+ * pane. Cursor movement counts only activity rows below it, so later redraws
+ * cannot erase any part of the boundary.
  */
 function boundaryLine(invocation: ActivityInvocation, stamp: string, width?: number): string {
   const ticket = nonBlank(invocation.ticket);
@@ -530,12 +529,12 @@ function boundaryLine(invocation: ActivityInvocation, stamp: string, width?: num
     return full;
   }
   const namedOnly = `${stamp} ---- ${named} ----`;
-  return stringWidth(namedOnly) <= width ? namedOnly : truncate(`${stamp} ${named}`, width);
+  return stringWidth(namedOnly) <= width ? namedOnly : `${stamp} ${named}`;
 }
 
-/** A value as the nonblank text it holds, or `null` when it holds none. */
+/** A boundary field as safe nonblank terminal text, or `null` when empty. */
 function nonBlank(value: string | null | undefined): string | null {
-  const trimmed = (value ?? '').trim();
+  const trimmed = flatten(value ?? '');
   return trimmed === '' ? null : trimmed;
 }
 

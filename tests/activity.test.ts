@@ -698,6 +698,99 @@ describe('the invocation timeline', () => {
     { name: 'no-color', size: { ...FULL_TERMINAL, color: false } },
     { name: 'narrow', size: { columns: 10, rows: 24 } },
     { name: 'short', size: { columns: 80, rows: 3 } },
+  ])('stamps all logical lifecycle lines on a $name terminal', ({ size, name }) => {
+    const terminal = fakeConsole(size);
+    const io = size === undefined ? { out: terminal.io.out, err: terminal.io.err } : terminal.io;
+    let second = 0;
+    const pane = createActivityDisplay(io, () => new Date(2026, 8, 20, 9, 41, second++));
+    pane.beginInvocation({ role: 'developer', ticket: 'HARN-26' });
+    pane.activity({ kind: 'message', text: 'working' });
+    const lines = ['first line', '', '  ', '  indented line', ''];
+    const block = lines.join('\r\n');
+    pane.line(block);
+    pane.error(block);
+    pane.close();
+    pane.line(lines.join('\n'));
+    pane.error(lines.join('\n'));
+
+    // Blank lines, indentation and trailing logical lines survive unchanged
+    // after their one prefix. Each block reads the clock once on both streams,
+    // including after close; CRLF never leaves a cursor-moving carriage return.
+    expect(second).toBe(6);
+    expect(terminal.chunks.join('')).not.toContain('\r');
+    expect(screenAfter(terminal.chunks)).toEqual([
+      '09:41:00 ---- developer: HARN-26 ----',
+      '09:41:01 agent: working',
+      ...[2, 3, 4, 5].flatMap((at) => lines.map((line) => `09:41:0${String(at)} ${line}`)),
+    ]);
+    for (const at of [2, 3, 4, 5]) {
+      expect(terminal.chunks.join('')).toContain(
+        lines.map((line) => `09:41:0${String(at)} ${line}\n`).join(''),
+      );
+    }
+    if (name !== 'interactive') expect(terminal.chunks.join('')).not.toContain('\u001b');
+  });
+
+  it.each([
+    { columns: 20, ticket: 'HARN-26' },
+    { columns: 24, ticket: 'HARN-26' },
+    { columns: 80, ticket: `LONGPROJECT${'X'.repeat(60)}-26` },
+  ])('preserves complete identities across wrapping at $columns columns', ({ columns, ticket }) => {
+    const terminal = fakeConsole({ columns, rows: 24 });
+    const pane = createActivityDisplay(terminal.io, CLOCK);
+    let frozen: readonly string[] = [];
+    for (const invocation of [
+      { role: 'developer', ticket },
+      { role: 'reviewer', ticket },
+      { role: 'developer', ticket: `${ticket}0` },
+    ] as const) {
+      const start = terminal.chunks.length;
+      pane.beginInvocation(invocation);
+      // No truncation, even when the timestamp, role and ticket cannot fit in
+      // one row. This boundary is ordinary output above the managed activity.
+      expect(terminal.chunks.slice(start).join('')).toBe(
+        `${STAMP} ${invocation.role}: ${invocation.ticket}\n`,
+      );
+      const beforeActivity = screenAfter(terminal.chunks, columns);
+      expect(beforeActivity.slice(0, frozen.length)).toEqual(frozen);
+      expect(beforeActivity.length - frozen.length).toBeGreaterThan(1);
+      for (let index = 0; index < 25; index += 1) {
+        pane.activity({ kind: 'message', text: String(index) });
+        const screen = screenAfter(terminal.chunks, columns);
+        expect(screen.slice(0, beforeActivity.length)).toEqual(beforeActivity);
+        expect(screen.length - beforeActivity.length).toBe(Math.min(index + 1, 20));
+      }
+      const retained = screenAfter(terminal.chunks, columns);
+      pane.endInvocation();
+      expect(screenAfter(terminal.chunks, columns)).toEqual(retained);
+      pane.line('done');
+      frozen = [...retained, `${STAMP} done`];
+      expect(screenAfter(terminal.chunks, columns)).toEqual(frozen);
+    }
+    pane.close();
+    expect(screenAfter(terminal.chunks, columns)).toEqual(frozen);
+  });
+
+  it.each([true, false])('sanitizes boundary fields with interactive=%s', (interactive) => {
+    const terminal = fakeConsole(FULL_TERMINAL);
+    const io = interactive ? terminal.io : { out: terminal.io.out, err: terminal.io.err };
+    const pane = createActivityDisplay(io, CLOCK);
+    pane.beginInvocation({
+      role: 'developer',
+      ticket: '\u001b[2JHARN-26\u0007',
+      phase: '\u001b]0;title\u0007repair\r\nturn 2',
+    });
+    pane.endInvocation();
+    pane.close();
+    expect(terminal.chunks.join('')).toBe(`${boundary('developer', 'HARN-26', 'repair turn 2')}\n`);
+  });
+
+  it.each([
+    { name: 'interactive', size: FULL_TERMINAL },
+    { name: 'redirected', size: undefined },
+    { name: 'no-color', size: { ...FULL_TERMINAL, color: false } },
+    { name: 'narrow', size: { columns: 10, rows: 24 } },
+    { name: 'short', size: { columns: 80, rows: 3 } },
   ])('preserves interleaved lifecycle order on a $name terminal', ({ size, name }) => {
     const terminal = fakeConsole(size);
     const io = size === undefined ? { out: terminal.io.out, err: terminal.io.err } : terminal.io;
