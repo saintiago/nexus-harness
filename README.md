@@ -6,10 +6,14 @@ CLI to implement the task, reruns the checks, gives the runtime the observed fai
 within a bounded allowance, and keeps the working copy, the logs, and a final report on your disk.
 
 Nothing leaves your machine except the coding turns themselves — a clone is made locally, the
-configured commands run locally, and the harness never pushes, publishes, or integrates anything by
-default: a coding turn may make small local commits, and they stay in the retained working copy. One
-optional, explicitly configured delivery step can push a passed attempt's branch and open or update
-its GitHub pull request; it never merges, and without that configuration nothing changes.
+configured commands run locally, and by default the harness pushes, publishes, and integrates
+nothing: a coding turn may make small local commits, and they stay in the retained working copy.
+Two independently optional, explicitly configured steps let the harness's own deterministic path
+act instead. `delivery` pushes a passed attempt's branch and opens or updates its GitHub pull
+request; review-to-completion may then arm native GitHub auto-merge, verify the configured
+post-merge workflows, and move the Jira item to Done ([docs/spec.md](docs/spec.md) §7 and §10,
+[docs/WORKFLOW.md](docs/WORKFLOW.md) §8 and §10). A coding turn never performs any of it, and a
+configuration that enables neither step changes nothing.
 
 **This README is the operating document.** The supplied documents stay authoritative for the
 contracts they define: [docs/WORKFLOW.md](docs/WORKFLOW.md) for the JSON inputs and the run
@@ -471,9 +475,14 @@ written. Both stop intake and keep the local result — the report, the logs, an
 with the receipt saying what failed. `In Review` means "a local attempt finished and needs a
 human", not success. The check summary names the last round that ran, and says so in as many words
 when the run was stopped before any round followed its last turn: a stopped turn has no checks to
-report, and the round the run started with is not one. **Nothing here moves an issue to Done**, and
-the harness merges nothing: without a delivery step, local commits a coding turn makes stay in the
-retained workspace, and the comment says so.
+report, and the round the run started with is not one. Without delivery or review-to-completion,
+nothing here moves an issue to Done and no pull request is merged: local commits a coding turn makes
+stay in the retained workspace, and the comment says so. When delivery is configured the comment
+carries the pull request URL, and when review-to-completion is configured the same source command's
+bounded completion pass may carry an approved pull request through native auto-merge and the
+configured post-merge workflows to `Done` — or return the item to its To Do status with the
+findings ([docs/spec.md](docs/spec.md) §10, [docs/WORKFLOW.md](docs/WORKFLOW.md) §10). A coding turn
+does none of it.
 
 **A ladder: a cheaper tier first, a stronger one after it.** The optional `escalation` array
 declares tiers tried in order inside one claim, each with its own launch and repair allowance:
@@ -546,10 +555,19 @@ failure names both revisions. The pull request is found by repository, head bran
 base branch — the one open match is updated, a closed or merged one is refused instead of edited,
 and one is created only when no match exists at all. Later committed work updates the same branch
 and the same pull request, because a continued attempt reuses the workspace and its branch. The
-harness never merges it and never marks the issue Done. Delivery applies to source attempts only: a
-`run --task` invocation clones afresh every time, so it has no stable branch to deliver and stays
-local. `docs/WORKFLOW.md` §8 is the contract; delivery command output and the published body are
-kept in the run's own `logs/` directory.
+delivery step itself never merges the pull request, force-pushes, or changes Jira status. The
+separately configured review-to-completion path can carry it further: once the current head carries
+the configured approval and check, it works through native GitHub auto-merge, verifies the
+configured post-merge workflows on the merge commit, and moves the item to Done; a definitive
+finding returns it to the To Do status instead. GitHub performs the merge under branch protection,
+and the queue arms auto-merge before the reviewer publishes the final required check (see
+[`queue`](#queue-run-the-whole-queue-serially) below). Without that configuration the pull request
+waits for the operator loop. Delivery applies to source attempts
+only: a `run --task` invocation clones afresh every time, so it has no stable branch to deliver and
+stays local. [docs/spec.md](docs/spec.md) §7 and [docs/WORKFLOW.md](docs/WORKFLOW.md) §8 are the
+delivery contract, and [docs/spec.md](docs/spec.md) §10 with
+[docs/WORKFLOW.md](docs/WORKFLOW.md) §10 the completion contract; delivery command output and the
+published body are kept in the run's own `logs/` directory.
 
 **Nothing runs twice by accident.** `.intake/receipts/<hash>.json` under `workDir` records each
 attempted issue by its immutable ID, and a receipt is created **before** the issue is claimed. A
@@ -608,9 +626,15 @@ The optional Nexus-wide `reviewer` object turns on the second half of the Jira-d
 tickets the harness has already worked — the ones the connected project's `source` connection
 reports as **In Review** — are reviewed automatically, and each verdict is published to GitHub as
 one native review plus one app-owned check run. It is off unless the harness configuration asks for
-it, and it is read-only on Jira: it claims nothing, moves nothing, posts no comment, and never marks
-an issue Done. The repository whose pull requests are reviewed is the one the project's `delivery`
-names, so the two can never describe different artifacts.
+it, and the review commands themselves are read-only on Jira: they claim nothing, move nothing, post
+no comment, and never mark an issue Done. The separately configured completion path
+([docs/spec.md §10](docs/spec.md#10-optional-review-to-completion),
+[docs/WORKFLOW.md §10](docs/WORKFLOW.md#10-review-to-completion--optional-across-both-files)) may
+move an item to Done only after it verifies the merge and every configured post-merge workflow
+succeeded. A current-head request for changes or a definitive failed required PR check can instead
+return the item to To Do before merge; an unsuccessful post-merge workflow also returns it to To Do,
+with findings and its workspace pointer preserved. The repository whose pull requests are reviewed
+is the one the project's `delivery` names, so the two can never describe different artifacts.
 
 ```sh
 # Static: validates the reviewer and the project it composes with. No credential, no network.
@@ -710,13 +734,16 @@ the harness stores no GitHub credential. Start with `review scan --limit 1` and 
 the check run, and the evidence under `<workDir>/reviews/` before letting `review watch` run
 unattended.
 
-**What stays outside.** Nothing here merges, enables auto-merge, verifies a merge, or marks an issue
-Done, and no CI result is interpreted: CI is a separate merge requirement. The coordinator — the
-`queue run`/`queue watch` loop of [§11](docs/spec.md) below, or a person — enables auto-merge where
-it is supported, verifies the merged outcome, marks Done only for confirmed integration, and returns
-code changes, CI failures, and conflicts to the ready status with the retained pointer and concrete
-findings. A pending CI run and an infrastructure or authentication failure stay In Review for
-diagnosis rather than triggering code repair.
+**What the review commands leave alone.** A review publishes the verdict and its app-owned check and
+stops there: it never merges, enables auto-merge, verifies a merge, or changes Jira, and no
+pull-request CI result is interpreted as part of the review — CI remains a separate merge
+requirement. Carrying an approved pull request further is the independently optional
+review-to-completion path ([docs/spec.md](docs/spec.md) §10, [docs/WORKFLOW.md](docs/WORKFLOW.md)
+§10): with `delivery.completion` configured, the deterministic completion pass arms native GitHub
+auto-merge, verifies the configured post-merge workflows, and moves the item to Done, or returns it
+to To Do with the findings and its retained pointer. Without that configuration, the pull request
+waits for a person. A pending CI run and an infrastructure or authentication failure stay In Review
+for diagnosis rather than triggering code repair.
 
 ## `queue`: run the whole queue serially
 
@@ -995,14 +1022,18 @@ Read this before pointing a run at anything you care about.
   Jira continuation is different: moving an attempted issue back to the ready status starts another
   attempt in the workspace its pointer names, against that workspace's recorded base, but it
   resumes no stopped process and recovers nothing automatically.
-- **The harness pushes nothing unless you configure delivery, and it never merges.** The working
-  copy is given a repository-local commit identity (`Nexus Agent <nexus@local>`, commit signing
-  disabled) and its turns are asked to commit small pieces as they go — but those commits are the
-  turn's own doing, local to the retained workspace, and no remote is added, so there is no default
-  push destination. With a `delivery` object configured, the harness itself pushes a **passed**
-  attempt's branch to the repository you named and opens or updates its pull request; it never
-  force-pushes, never merges, never marks an issue Done, and never publishes anywhere else. Nothing
-  here integrates the work for you.
+- **By default the harness pushes nothing and integrates nothing; only explicitly configured
+  optional steps do, and never a coding turn.** The working copy is given a repository-local commit
+  identity (`Nexus Agent <nexus@local>`, commit signing disabled) and its turns are asked to commit
+  small pieces as they go — but those commits are the turn's own doing, local to the retained
+  workspace, and no remote is added, so there is no default push destination. With a `delivery`
+  object configured, the harness itself pushes a **passed** attempt's branch to the repository you
+  named and opens or updates its pull request; it never force-pushes and never edits a closed or
+  merged pull request. With review-to-completion also configured, the deterministic completion path
+  may arm native GitHub auto-merge — GitHub performs the merge under branch protection — verify the
+  configured post-merge workflows on the merge commit, and move the Jira item to Done; it never
+  force-pushes, bypasses protection, reruns a workflow, or publishes anywhere else. Without those
+  steps, nothing here integrates the work for you.
 - **Run directories and workspaces are kept, not cleaned up.** They accumulate: a run holds its logs
   and its report, and a workspace holds a full clone. Remove them by hand when you have read them.
 - **An interrupted or crashed run can leave an incomplete run directory.** A run directory can exist
@@ -1035,12 +1066,17 @@ Read this before pointing a run at anything you care about.
   started in, never in JSON, a task, or a log; the reviewer turn runs with the same unsandboxed
   reach a coding turn has, is told not to change anything, and is never merged or asked to fix what
   it finds. Point the App at a repository whose rules you are prepared to gate with its check.
-- **Not implemented, and not planned here:** automatic merging, CI observation on a delivered pull
-  request, a provider registry, workflow engines, background services, webhooks, parallel consumers,
-  and a second coding runtime. Delivery opens or updates a pull request and stops there; reviews
-  record a verdict and stop there; a human or the coordinator merges. There is exactly one runtime
-  interface (the Codex CLI), exactly one loop, exactly one implemented task source (Jira), exactly
-  one optional delivery step (GitHub), and exactly one optional review path.
+- **Not implemented, and not planned here:** automatic merging outside the configured completion
+  path, automatic workflow reruns, a provider registry, workflow engines, background services,
+  webhooks, parallel consumers, and a second coding runtime. Without
+  `delivery`, a passed attempt's work stays local; with `delivery` alone, its branch is pushed and
+  its pull request is opened or updated, and the pull request stops there; with review-to-completion
+  configured, the deterministic path of [docs/spec.md](docs/spec.md) §10 carries an approved pull
+  request through native auto-merge and the configured post-merge workflows to Jira Done, or
+  returns it to To Do with findings. Reviews record a verdict and stop there. There is exactly one
+  runtime interface (the Codex CLI), exactly one loop, exactly one implemented task source (Jira),
+  exactly one optional delivery step (GitHub), exactly one optional review path, and exactly one
+  optional completion path.
 
 ## What is verified, and what is not
 
@@ -1459,9 +1495,12 @@ operator's own `gh` credentials, once the check is green —
   personal connectors out, with the operator setup and the new-session smoke procedure.
 - [docs/GIT-WORKFLOW.md](docs/GIT-WORKFLOW.md) — how changes to this repository are made: one
   `task/<name>` branch per task, merged into `main` through a pull request. It is about this
-  repository only; a harness run never merges anything in a target repository, and without a
-  configured delivery step it pushes and publishes nothing either — the commits a coding turn makes
-  there stay in the retained workspace.
+  repository only. In a harness run, the commits a coding turn makes there stay in the retained
+  workspace, and by default the harness pushes and publishes nothing; when the connected project
+  configures the optional delivery and completion steps, the harness's deterministic integration
+  path — never a coding turn — pushes the passed branch, opens or updates its pull request, arms
+  native auto-merge, verifies the configured post-merge workflows, and transitions Jira, as
+  [docs/spec.md](docs/spec.md) §7 and §10 define.
 
 ## Next task
 
@@ -1472,9 +1511,11 @@ explicit no-approval policy, and the Jira task source with `source list`, `sourc
 implemented and verified offline. The optional Nexus Lens review path — the `review` object and
 the `review scan` / `review watch` commands, one reviewer turn per unreviewed head, and the native
 review plus app-owned check the merge gate can require from this App — is implemented and verified
-offline; it is opt-in, read-only on Jira, and nothing in it merges or marks an issue Done. The
-serial queue — `queue run`, `queue watch`, the completion path they drive, and the source-readiness
-step between tickets — is implemented and verified offline; it starts no agent beyond the configured
+offline; it is opt-in, read-only on Jira, and the review commands themselves never merge, enable
+auto-merge, or change Jira status. The completion path below performs those configured operations,
+and only when the operator configures it. The serial queue — `queue run`, `queue watch`, the
+completion path they drive, and the source-readiness step between tickets — is implemented and
+verified offline; it starts no agent beyond the configured
 coding and reviewer turns, keeps no state of its own, and has no live evidence against a real queue,
 App installation, or auto-merge. Jira work now keeps its name too: a newly claimed ticket's workspace
 is named after its canonical key (`HARN-23`), the pointer label names the same string, and every
@@ -1489,11 +1530,12 @@ next real piece of work is the **supervised live Jira exercise**, still not run:
 service-account token, a disposable target repository, and an operator who has inspected the queue
 before the first paid call, and its restart, watch, and failure steps have no live evidence. The
 bounded visible-terminal exercise of the serial queue against the configured Nexus Jira repository
-is now the operator step that will produce it: the coordinator's work — observing CI, enabling
-GitHub auto-merge where it is supported, verifying the merge outcome, marking an issue Done only for
-confirmed integration, and returning code changes, CI failures, and conflicts to the ready status —
-is built as the deterministic loop of [docs/spec.md](docs/spec.md) §11, but no live `review scan`
-against the real App installation and no live queue run have happened. After that, a second coding adapter (Claude
+is now the operator step that will produce it: that work is built as the deterministic completion
+path and serial queue of [docs/spec.md](docs/spec.md) §10 and §11, which arms native GitHub
+auto-merge, verifies the merge and every configured post-merge workflow, marks Done only for
+confirmed integration, and returns code changes, CI failures, and conflicts to the ready status.
+No live `review scan` against the real App installation and no live queue run have happened. After
+that, a second coding adapter (Claude
 Code, with its own invocation
 and event parser and its own tests — a Claude launcher behind the Codex parser would be a bug), live
 turns on POSIX hosts, and stronger isolation before unattended runs of untrusted repositories.
@@ -1505,7 +1547,8 @@ Nothing here builds them ahead of a task that needs them.
 approval through native squash auto-merge and successful configured post-merge workflows to
 Jira Done. The separate `review scan`/`review watch` commands still own review judgment.
 Completion runs after source batches, starts no reviewer or coding agent, and leaves
-completion disabled configurations unchanged. See [the completion configuration](docs/WORKFLOW.md#10-review-to-completion--optional-inside-delivery).
+completion disabled configurations unchanged. See [the completion configuration](docs/WORKFLOW.md#10-review-to-completion--optional-across-both-files)
+and [the completion behaviour](docs/spec.md#10-optional-review-to-completion).
 
 Only the per-PR `enablePullRequestAutoMerge` GraphQL mutation uses the operator credential.
 Read operations use the separately configured reader/reviewer token. Configure the Lens
