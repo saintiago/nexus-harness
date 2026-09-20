@@ -60,9 +60,11 @@ check-config is static: it creates nothing, runs no configured command, contacts
 provider or source, resolves no credential, and needs none. It validates the
 Nexus-wide harness configuration, the connected project's own configuration, and
 with \`--task\` that file too; nothing is defaulted from the single-file example
-this contract replaced. A field in the wrong file, a project that cannot supply
-what the Nexus-wide reviewer needs, and every other mismatch fail before anything
-runs, with both paths and the field named.
+this contract replaced. A field in the wrong file, a project completion without
+harness completion policy, and every other mismatch fail before anything runs,
+with both paths and the field named. Shared reviewer policy enables review only
+for projects declaring both source and delivery; local-only projects use the same
+harness file without enabling review.
 
 run prepares a working copy of the source repository, runs the connected project's
 setup and checks, asks the coding runtime to implement the task, reruns the checks,

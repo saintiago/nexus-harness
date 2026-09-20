@@ -770,12 +770,12 @@ describe('composing two files', () => {
     );
   });
 
-  it('refuses a Nexus-wide reviewer that the project cannot support', async () => {
+  it('shares reviewer and completion policy with projects that do not enable review', async () => {
     const directory = await createTempDir();
     const harnessPath = await writeJsonFile(
       directory,
       HARNESS_CONFIG_FILE_NAME,
-      harnessWith({ reviewer: REVIEWER }),
+      harnessWith({ reviewer: REVIEWER, completion: COMPLETION }),
     );
     const localOnly = await writeJsonFile(
       path.join(directory, 'local-only'),
@@ -788,15 +788,36 @@ describe('composing two files', () => {
       projectWith({ source: JIRA }),
     );
 
-    const localError = await rejectionFrom(() => loadConfiguration(harnessPath, localOnly));
-    expect(localError.file).toBe(localOnly);
-    expect(localError.message).toMatch(/source: /);
-    expect(localError.message).toMatch(/delivery: /);
-    expect(localError.message).toContain(harnessPath);
+    const deliveryOnly = await writeJsonFile(
+      path.join(directory, 'delivery-only'),
+      PROJECT_CONFIG_FILE_NAME,
+      projectWith({ delivery: { type: 'github', repository: 'owner/local', baseBranch: 'main' } }),
+    );
+    const connected = await writeJsonFile(
+      path.join(directory, 'connected'),
+      PROJECT_CONFIG_FILE_NAME,
+      connectedProject('SAM1', 'owner/connected', ['ci.yml']),
+    );
 
-    const partialError = await rejectionFrom(() => loadConfiguration(harnessPath, connectionOnly));
-    expect(partialError.message).toMatch(/delivery: /);
-    expect(partialError.message).not.toMatch(/source: /);
+    const local = await loadConfiguration(harnessPath, localOnly);
+    const source = await loadConfiguration(harnessPath, connectionOnly);
+    const delivery = await loadConfiguration(harnessPath, deliveryOnly);
+    const full = await loadConfiguration(harnessPath, connected);
+    for (const loaded of [local, source, delivery]) {
+      expect(loaded.config.review).toBeUndefined();
+      expect(loaded.config.delivery?.completion).toBeUndefined();
+      expect(loaded.harness).toEqual(full.harness);
+      expect(loaded.config.agent).toEqual(full.config.agent);
+      expect(loaded.config.checks).toEqual(documentedProjectConfig.checks);
+    }
+    expect(local.config.source).toBeUndefined();
+    expect(local.config.delivery).toBeUndefined();
+    expect(source.config.source?.projectKey).toBe('SAM1');
+    expect(source.config.delivery).toBeUndefined();
+    expect(delivery.config.source).toBeUndefined();
+    expect(delivery.config.delivery?.repository).toBe('owner/local');
+    expect(full.config.review?.repository).toBe('owner/connected');
+    expect(full.config.delivery?.completion?.postMergeWorkflows).toEqual(['ci.yml']);
   });
 
   it('refuses a project completion the harness configuration cannot gate', async () => {

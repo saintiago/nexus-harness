@@ -1267,14 +1267,14 @@ describe('the review configuration', () => {
     expect(config.review?.reviewer.command[0]).toBe(path.join(directory, 'bin', 'astra'));
   });
 
-  it('refuses a Nexus-wide reviewer the project cannot support, and a bad App field', async () => {
+  it('leaves review inactive without a source and still refuses invalid reviewer fields', async () => {
     const directory = await createTempDir();
     const withoutSource = { ...projectConfig() };
     delete withoutSource['source'];
     const first = await writeFixtureConfig(directory, {}, withoutSource);
-    await expect(loadConfiguration(first.harnessPath, first.projectPath)).rejects.toThrow(
-      /configures the Nexus Lens reviewer/,
-    );
+    const loaded = await loadConfiguration(first.harnessPath, first.projectPath);
+    expect(loaded.config.review).toBeUndefined();
+    expect(loaded.config.delivery?.repository).toBe(REPOSITORY);
 
     const badApp = await writeFixtureConfig(directory, {
       reviewer: fixtureReviewer({ app: { appId: 0 } }),
@@ -2134,20 +2134,28 @@ describe('the review command through the CLI', () => {
     expect(errors.join('\n')).toContain('unknown option "--limit"');
   });
 
-  it('refuses the Nexus-wide reviewer when the project has no Jira connection', async () => {
-    const directory = await createTempDir();
-    const project = { ...projectConfig() };
-    delete project['source'];
-    const { harnessPath: configPath } = await writeFixtureConfig(directory, {}, project);
-    const err: string[] = [];
-    const code = await runCli(['review', 'scan', '--config', configPath, '--project', directory], {
-      cwd: directory,
-      io: { out: () => undefined, err: (text) => err.push(text) },
-    });
-    expect(code).toBe(EXIT_INPUT_ERROR);
-    expect(err.join('\n')).toContain('configures the Nexus Lens reviewer');
-    expect(err.join('\n')).toContain(path.join(directory, PROJECT_CONFIG_FILE_NAME));
-  });
+  it.each(['source', 'delivery'])(
+    'refuses a review command when the project has no %s',
+    async (field) => {
+      const directory = await createTempDir();
+      const project = { ...projectConfig() };
+      delete project[field];
+      const { harnessPath: configPath } = await writeFixtureConfig(directory, {}, project);
+      const err: string[] = [];
+      const code = await runCli(
+        ['review', 'scan', '--config', configPath, '--project', directory],
+        {
+          cwd: directory,
+          io: { out: () => undefined, err: (text) => err.push(text) },
+        },
+      );
+      expect(code).toBe(EXIT_INPUT_ERROR);
+      expect(err.join('\n')).toContain('has no review path');
+      expect(err.join('\n')).toContain(`"${field}"`);
+      expect(err.join('\n')).toContain(configPath);
+      expect(err.join('\n')).toContain(path.join(directory, PROJECT_CONFIG_FILE_NAME));
+    },
+  );
 
   it('prints the review selection in check-config, without resolving its key', async () => {
     const directory = await createTempDir();

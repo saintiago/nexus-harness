@@ -92,10 +92,10 @@ interface QueueCommandOptions {
  *
  * A queue completes a ticket through a chain of three configured pieces, so a
  * configuration that cannot complete one is refused before any credential is
- * resolved. The loader already refuses a Nexus-wide reviewer that the project
- * cannot support, and a completion policy whose App, login, or check disagrees
- * with the configured reviewer; what is left for the queue itself is that all
- * three objects are there, because every other command treats them as optional.
+ * resolved. The loader already refuses a completion policy whose App, login,
+ * or check disagrees with the configured reviewer; what is left for the queue
+ * itself is that all three objects are there, because other commands treat
+ * them as optional.
  */
 function queueConfigurationProblem(
   config: HarnessConfig,
@@ -108,17 +108,17 @@ function queueConfigurationProblem(
       '(docs/WORKFLOW.md section 5).'
     );
   }
+  if (config.delivery === undefined) {
+    return (
+      `${projectPath} has no "delivery" object, so a passed attempt would stay local and no pull ` +
+      'request could be completed. A queue command needs one; docs/WORKFLOW.md section 8 defines it.'
+    );
+  }
   if (config.review === undefined) {
     return (
       `${harnessPath} has no "reviewer" object, so a ticket could never be reviewed before it is ` +
       'completed. A queue command needs the Nexus-wide reviewer integration; docs/WORKFLOW.md ' +
       'section 9 defines it.'
-    );
-  }
-  if (config.delivery === undefined) {
-    return (
-      `${projectPath} has no "delivery" object, so a passed attempt would stay local and no pull ` +
-      'request could be completed. A queue command needs one; docs/WORKFLOW.md section 8 defines it.'
     );
   }
   const delivery = config.delivery;

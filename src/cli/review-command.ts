@@ -153,7 +153,7 @@ async function reviewCommand(
   }
   const source: JiraSourceConfig | undefined = config.source;
   if (source === undefined) {
-    // The schema refuses a review without a source; this is the same refusal
+    // The loader composes a review only with a source; this is the same refusal
     // said where a person reads it, should that ever change.
     io.err(
       `error: the configuration composed from ${configPath} and ${projectPath} gives the ` +

@@ -5,8 +5,8 @@
  *
  * It is static: it creates nothing, runs nothing, contacts nothing, and resolves
  * no credential. What it validates is the composition the commands run on, so a
- * project field in the wrong file, a project that cannot supply what the
- * Nexus-wide reviewer needs, and every other mismatch is reported here first.
+ * project field in the wrong file, a project completion without harness-wide
+ * completion policy, and every other mismatch is reported here first.
  */
 import path from 'node:path';
 import { ConfigError, loadConfiguration, loadTask, resolveWorkDir } from '../config/load.js';

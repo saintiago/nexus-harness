@@ -88,9 +88,10 @@ Configuration is **two files**, and each field has exactly one owner
 
 The two are **composed, not layered**: neither file may carry a field the other owns, no field is
 defaulted from one into the other, and what the two say about each other is refused rather than
-guessed — a review belongs to the repository its own project delivers to, so a harness configuration
-that declares the Nexus-wide reviewer can only be used with projects that declare their Jira
-connection and that destination; the reviewer and the completion gate must name the same Nexus Lens
+guessed — a review belongs to the repository its own project delivers to and is enabled only when
+the harness declares a reviewer and the project declares both Jira and delivery. Local-only and
+Jira-only projects use the same harness file with no review path. The reviewer and the completion
+gate must name the same Nexus Lens
 App, login and check; and a completed item's outcomes must differ from the review status it started
 in. Every refusal names both paths and the field. The configuration shape this contract replaced is
 refused the same way: its project fields are reported as belonging to the project configuration.
@@ -106,7 +107,9 @@ this README does not restate it.
 1. Add `nexus.project.json` to the repository's root — copy `docs/nexus.project.example.json` — with
    its own `setup` and `checks`, its Jira connection, and, when its passed attempts should be
    delivered and completed, its `delivery` object. None of the Nexus-wide settings are repeated in
-   it: the launches, the limits, and the reviewer stay in the one harness file.
+   it: the launches, the limits, and the reviewer stay in the one harness file. For a local-only
+   project, only `setup` and `checks` are needed; adding `source` enables Jira intake without
+   requiring delivery. Shared reviewer policy does not require either project setting.
 2. Commit it. The harness reads it from the checkout `--repo` names (and from the root `--project`
    names for the read-only commands), so it has to be part of what a run clones.
 3. Make sure the credentials it _names_ are in the operator's environment: the Jira token under
@@ -171,8 +174,8 @@ runs no configured command, contacts no provider, needs no credentials, and read
 or authentication file. Inputs are rejected rather than repaired: unknown keys, wrong types, blank
 text, invalid limits, malformed command arrays, an unsupported `agent` runtime, and an empty or
 blank `agent` command all fail with the file and field named, and no value is coerced or
-interpolated. A field in the wrong file, a project that cannot supply what the Nexus-wide reviewer
-needs, and every other mismatch fail the same way — before anything runs. The path rules for a
+interpolated. A field in the wrong file, a project completion without harness completion policy,
+and every other mismatch fail the same way — before anything runs. The path rules for a
 launch executable are applied exactly as a command would apply them, though the coding prefix is not
 printed. What the two files compose prints too — the repository, queue, check name, and ids, and the
 _name_ of the variable that holds a credential, never a credential value. Exit codes: `0` both files

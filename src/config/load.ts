@@ -12,9 +12,9 @@
  * Inputs are rejected rather than repaired: no value is coerced, no key is
  * ignored, no environment variable is interpolated, and no field is defaulted
  * beyond the documented ones. Which file owns a field is part of the contract,
- * so a field in the wrong file, a project that cannot supply what the harness
- * configuration's reviewer and completion policy need, and every other mismatch
- * are refused with both paths and the field named. The schemas themselves live
+ * so a field in the wrong file, a project completion without a harness-wide
+ * completion policy, and every other mismatch are refused with the relevant
+ * paths and field named. The schemas themselves live
  * in schema.ts; this module reads files, applies them, and resolves the
  * path-valued fields against the harness configuration's own directory.
  */
@@ -311,28 +311,6 @@ function compose(
   const source = project.source;
   const projectCompletion = delivery?.completion;
 
-  // A review reviews the repository its project delivers to, through the Jira
-  // connection that project scans: without both there is nothing to review, so
-  // the Nexus-wide reviewer cannot be in force for this project.
-  if (reviewer !== undefined && (source === undefined || delivery === undefined)) {
-    throw new ConfigError(projectPath, [
-      ...(source === undefined
-        ? [
-            `source: ${harnessPath} configures the Nexus Lens reviewer, whose scans read the ` +
-              'project\u2019s Jira connection, and this project configuration declares none. Add ' +
-              '"source" here, or remove "reviewer" from the harness configuration',
-          ]
-        : []),
-      ...(delivery === undefined
-        ? [
-            `delivery: ${harnessPath} configures the Nexus Lens reviewer, whose reviews belong ` +
-              'to the repository a project delivers to, and this project configuration declares ' +
-              'none. Add "delivery" here, or remove "reviewer" from the harness configuration',
-          ]
-        : []),
-    ]);
-  }
-
   // The project names the workflows and the statuses; the harness-wide policy
   // names the reviewer that gates them. One without the other is not a
   // completion.
@@ -379,8 +357,11 @@ function compose(
           ...(completion === undefined ? {} : { completion }),
         };
 
+  // The shared reviewer is available only to projects with both a Jira queue
+  // and a GitHub destination. Local-only and source-only projects can use the
+  // same harness policy; review/queue commands enforce their own requirements.
   const review: GitHubReviewConfig | undefined =
-    reviewer === undefined || delivery === undefined
+    reviewer === undefined || source === undefined || delivery === undefined
       ? undefined
       : {
           type: 'github',

@@ -962,6 +962,53 @@ describe('run', () => {
     expect(fixture.calls[0]?.sourceRoot).toBe(fixture.source);
   });
 
+  it('validates and runs a local project with the shared reviewer and completion policy', async () => {
+    const policy = JSON.parse(
+      await readFile(path.join(repoRoot, 'docs', 'nexus.config.example.json'), 'utf8'),
+    ) as JsonObject;
+    const fixture = await createRunFixture({
+      config: { reviewer: policy['reviewer'], completion: policy['completion'] },
+    });
+    const validation = await run([
+      'check-config',
+      '--config',
+      fixture.configPath,
+      '--project',
+      fixture.source,
+    ]);
+    expect(validation.code).toBe(EXIT_OK);
+    expect(validation.err).toBe('');
+    expect(validation.out).toContain('reviewer               github app');
+    expect(validation.out).not.toContain('  review                 github');
+    expect(validation.out).not.toContain('  delivery               github');
+    expect(existsSync(fixture.outDir)).toBe(false);
+
+    const source = await run([
+      'source',
+      'list',
+      '--config',
+      fixture.configPath,
+      '--project',
+      fixture.source,
+    ]);
+    expect(source.code).toBe(EXIT_INPUT_ERROR);
+    expect(source.err).toContain('has no "source" object');
+    expect(source.err).toContain(path.join(fixture.source, PROJECT_CONFIG_FILE_NAME));
+    expect(existsSync(fixture.outDir)).toBe(false);
+
+    const result = await run(
+      runArgv({ repo: fixture.source, config: fixture.configPath, task: fixture.taskPath }),
+      { dependencies: fixture.dependencies },
+    );
+    expect(result.code).toBe(EXIT_OK);
+    expect(result.err).toBe('');
+    const { report } = await readRun(fixture.outDir);
+    expect(report.status).toBe('passed');
+    expect('sourceRef' in report).toBe(false);
+    expect(existsSync(path.join(fixture.outDir, '.intake'))).toBe(false);
+    expect(fixture.calls).toHaveLength(1);
+  });
+
   it('ignores a configured source: no credential, no intake state, no provenance', async () => {
     const fixture = await createRunFixture({
       config: {

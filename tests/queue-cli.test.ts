@@ -659,7 +659,6 @@ describe('the queue command line', () => {
       config: (workDir) => {
         const config = queueConfig(workDir);
         delete config['source'];
-        delete config['reviewer'];
         return config;
       },
     });
@@ -670,6 +669,25 @@ describe('the queue command line', () => {
       ),
     ).toBe(EXIT_INPUT_ERROR);
     expect(output(withoutSource)).toContain('has no "source" object');
+
+    const withoutDelivery = await cliFixture({
+      config: (workDir) => {
+        const config = queueConfig(workDir);
+        delete config['delivery'];
+        return config;
+      },
+    });
+    expect(
+      await runCli(
+        ['queue', 'run', '--config', withoutDelivery.configPath, '--repo', withoutDelivery.repo],
+        withoutDelivery.context,
+      ),
+    ).toBe(EXIT_INPUT_ERROR);
+    expect(output(withoutDelivery)).toContain('has no "delivery" object');
+    expect(output(withoutDelivery)).toContain(
+      path.join(withoutDelivery.repo, PROJECT_CONFIG_FILE_NAME),
+    );
+    expect(output(withoutDelivery)).not.toContain('has no "reviewer" object');
 
     const withoutReview = await cliFixture({
       config: (workDir) => {
