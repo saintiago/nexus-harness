@@ -91,7 +91,7 @@ function commentParagraphs(
     `Repairs used: ${String(outcome.repairsUsed)}`,
     `Local artifacts on the machine that ran this harness (local paths, not Jira attachments): ` +
       `run directory ${oneLine(outcome.runDir)}; report ${oneLine(outcome.reportPath)}`,
-    closingParagraph(pullRequest?.url, deliveryFailure, climbs),
+    closingParagraph(pullRequest?.url, deliveryFailure, climbs, outcome.completionEnabled === true),
   ];
 }
 
@@ -106,6 +106,7 @@ function closingParagraph(
   pullRequestUrl: string | undefined,
   deliveryFailure: string | undefined,
   climbs: boolean,
+  completionEnabled: boolean,
 ): string {
   if (climbs) {
     return (
@@ -116,6 +117,8 @@ function closingParagraph(
       'marks an issue Done.'
     );
   }
+  if (pullRequestUrl !== undefined && completionEnabled)
+    return 'The attempt was delivered for Nexus Lens review. The configured completion path can request native auto-merge and resolve this issue only after verified integration and successful post-merge workflows; coding and repair remain separate runs.';
   if (pullRequestUrl !== undefined) {
     return (
       "The harness pushed this attempt's branch and opened or updated the pull request above. " +

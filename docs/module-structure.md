@@ -495,3 +495,9 @@ boundary.
   never configuration: it cannot become a command, a path, a repository, or a limit.
 - A module has one responsibility. If a file needs two paragraphs to say what it owns, it is two
   modules - that rule is what produced this tree, and it is how the next split should be chosen.
+
+
+The optional completion path adds `delivery/completion.ts` and `delivery/gate.ts` for
+GitHub reads and native auto-merge arming, `sources/completion.ts` for the bounded pass,
+and `sources/jira/completion.ts` for Jira feedback. It starts no agent and creates no
+workflow engine or service.

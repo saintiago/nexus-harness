@@ -30,6 +30,16 @@ function describeConfig(config: HarnessConfig, configPath: string, workDir: stri
   const { delivery, source, review } = config;
   if (delivery !== undefined) {
     lines.push(`  delivery               github ${delivery.repository} -> ${delivery.baseBranch}`);
+    if (delivery.completion !== undefined) {
+      const completion = delivery.completion;
+      lines.push(
+        `  delivery completion    reviewer ${completion.lensApp} (App ${String(completion.lensAppId)}), check ${completion.lensCheckName}, ` +
+          `credential environment variable ${completion.reviewerTokenEnv}`,
+        `  delivery completion    post-merge workflows ${completion.postMergeWorkflows.join(', ')}, ` +
+          `fail -> ${completion.toDoStatus}, verified -> ${completion.doneStatus}, ` +
+          `poll ${String(completion.pollIntervalSeconds)}s, deadline ${String(completion.deadlineSeconds)}s`,
+      );
+    }
   }
   if (source !== undefined) {
     lines.push(

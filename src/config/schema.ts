@@ -8,7 +8,7 @@
  * silent guess.
  */
 import { z } from 'zod';
-import type { AgentSelection } from '../shared/types.js';
+import type { AgentSelection, CompletionConfig } from '../shared/types.js';
 
 /** A string that is present and contains something other than whitespace. */
 function nonBlankString(field: string): z.ZodString {
@@ -173,6 +173,99 @@ const REPOSITORY_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
  */
 const BRANCH_PATTERN = /^[^\s-][^\s]*$/;
 
+/** Documented defaults of the optional review-to-completion step. */
+export const COMPLETION_DEFAULTS = {
+  pollIntervalSeconds: 30,
+  deadlineSeconds: 30 * 60,
+} as const;
+
+/** The smallest delay between two completion polls, in seconds. */
+export const MIN_COMPLETION_POLL_INTERVAL_SECONDS = 5;
+
+/**
+ * One identifier for an expected post-merge GitHub Actions workflow: the file
+ * name, the path under `.github/workflows`, or the numeric workflow ID. It is
+ * one literal value and carries no option-like prefix.
+ */
+const WORKFLOW_PATTERN = /^(?:[1-9][0-9]*|(?:\.github\/workflows\/)?[A-Za-z0-9_.-]+\.ya?ml)$/;
+
+/**
+ * The optional review-to-completion step inside `delivery`. Every field that
+ * says who may gate the work is required: nothing is defaulted into a
+ * configuration that would then finish an item nobody named a reviewer for.
+ */
+const completionSchema = z.strictObject({
+  lensApp: nonBlankString('lensApp'),
+  lensAppId: boundedInteger('lensAppId', 1, 'a positive integer'),
+  lensCheckName: nonBlankString('lensCheckName'),
+  reviewerTokenEnv: z
+    .string({ error: 'reviewerTokenEnv must be a string' })
+    .regex(TOKEN_ENV_PATTERN, {
+      error:
+        'reviewerTokenEnv must be an environment-variable name such as "NEXUS_LENS_TOKEN": ' +
+        'the reviewer credential never appears in the configuration file',
+    })
+    .refine(
+      (name) =>
+        !['GH_TOKEN', 'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN'].includes(
+          name.toUpperCase(),
+        ),
+      { error: 'reviewerTokenEnv must be separate from the operator credential' },
+    ),
+  postMergeWorkflows: z
+    .array(
+      z.string({ error: 'postMergeWorkflows entries must be strings' }).regex(WORKFLOW_PATTERN, {
+        error:
+          'postMergeWorkflows entries must be a workflow file name such as "ci.yml", a path ' +
+          'such as ".github/workflows/ci.yml", or a numeric workflow ID',
+      }),
+      { error: 'postMergeWorkflows must be an array of workflow identifiers' },
+    )
+    .min(1, {
+      error:
+        'postMergeWorkflows must name at least one expected post-merge workflow: an empty list ' +
+        'is not evidence that CI passed',
+    }),
+  toDoStatus: nonBlankString('toDoStatus'),
+  doneStatus: nonBlankString('doneStatus'),
+  pollIntervalSeconds: boundedInteger(
+    'pollIntervalSeconds',
+    MIN_COMPLETION_POLL_INTERVAL_SECONDS,
+    `an integer of at least ${String(MIN_COMPLETION_POLL_INTERVAL_SECONDS)} seconds`,
+  ).default(COMPLETION_DEFAULTS.pollIntervalSeconds),
+  deadlineSeconds: boundedInteger(
+    'deadlineSeconds',
+    MIN_COMPLETION_POLL_INTERVAL_SECONDS,
+    `an integer of at least ${String(MIN_COMPLETION_POLL_INTERVAL_SECONDS)} seconds`,
+  ).default(COMPLETION_DEFAULTS.deadlineSeconds),
+});
+
+/**
+ * The one validation a completion object cannot express field by field: moving
+ * an item out of review has to mean something, so both of its outcomes differ
+ * from the review status it starts in and from each other.
+ */
+export function checkCompletionStatuses(
+  reviewStatus: string,
+  completion: CompletionConfig,
+): string | null {
+  const same = (left: string, right: string): boolean =>
+    left.trim().toLowerCase() === right.trim().toLowerCase();
+  if (same(completion.toDoStatus, completion.doneStatus)) {
+    return (
+      'toDoStatus and doneStatus must be different statuses: a failed outcome and a completed ' +
+      'one cannot end in the same place'
+    );
+  }
+  if (same(completion.toDoStatus, reviewStatus) || same(completion.doneStatus, reviewStatus)) {
+    return (
+      `toDoStatus and doneStatus must differ from the source's reviewStatus "${reviewStatus}": ` +
+      'otherwise a completion outcome would look like the state it started in'
+    );
+  }
+  return null;
+}
+
 /**
  * The optional delivery step. `"github"` is the only implemented type: a
  * placeholder for a delivery service nobody has written would be a way to
@@ -193,6 +286,7 @@ const githubDeliverySchema = z.strictObject({
   baseBranch: z.string({ error: 'baseBranch must be a string' }).regex(BRANCH_PATTERN, {
     error: 'baseBranch must be a branch name without whitespace, such as "main"',
   }),
+  completion: completionSchema.optional(),
 });
 
 /** Validates one `delivery` object: the documented optional field of a config. */
@@ -280,6 +374,26 @@ export const harnessConfigSchema = z
     delivery: deliverySchema.optional(),
     source: sourceSchema.optional(),
     review: reviewSchema.optional(),
+  })
+  .superRefine((config, ctx) => {
+    const completion = config.delivery?.completion;
+    if (completion === undefined || config.source === undefined) return;
+    if (
+      config.review !== undefined &&
+      (config.review.repository !== config.delivery?.repository ||
+        config.review.app.appId !== completion.lensAppId ||
+        config.review.app.login !== completion.lensApp ||
+        config.review.checkName !== completion.lensCheckName)
+    )
+      ctx.addIssue({
+        code: 'custom',
+        message:
+          'completion Lens identity must match the configured review repository, app and check',
+        path: ['delivery', 'completion'],
+      });
+    const problem = checkCompletionStatuses(config.source.reviewStatus, completion);
+    if (problem !== null)
+      ctx.addIssue({ code: 'custom', message: problem, path: ['delivery', 'completion'] });
   })
   .refine((config) => config.review === undefined || config.source !== undefined, {
     error:

@@ -262,3 +262,15 @@ Resolve the configured service-account token once when constructing the connecto
 [A4]: https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issue-comments/
 [A5]: https://developer.atlassian.com/cloud/jira/platform/apis/document/structure/
 [A6]: https://developer.atlassian.com/cloud/jira/platform/rate-limiting/
+
+
+## Optional completion ownership
+
+`delivery/completion.ts` reads native GitHub evidence and requests only the explicit
+`enablePullRequestAutoMerge` mutation; `delivery/gate.ts` interprets check and workflow
+results. `sources/completion.ts` runs a bounded completion pass after a source batch.
+`sources/jira/completion.ts` owns fresh issue reads, comment deduplication and native
+transition discovery. Completion never imports or starts a reviewer or coding runtime.
+The reader/reviewer token is separate from the trusted operator credential used only
+to arm auto-merge. See spec §10 and WORKFLOW §10 for this opt-in exception to the
+default no-merge/no-Done behavior.

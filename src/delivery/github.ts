@@ -178,7 +178,7 @@ function pullRequestBody(request: DeliveryRequest): string {
     `Harness run: ${oneLine(request.runId)}`,
     '',
     'The passed attempt was delivered from its retained working copy; this pull request is not a',
-    'merge, and the harness does not mark the issue Done.',
+    'merge. Only the separately configured completion path can verify integration and mark the issue Done.',
     '',
   ].join('\n');
 }

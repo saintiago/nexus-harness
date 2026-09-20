@@ -8,6 +8,8 @@ This is a human-readable reference, **not runtime configuration**. The applicati
 
 **Revision: 2026-09-19 — optional Nexus Lens reviews.** Add independent optional `review`, defined in §9, and the `review scan` and `review watch` commands it enables: with it, the tickets the configured Jira connection reports as being in review are reviewed through one explicitly configured reviewer profile, and each verdict is published as a native GitHub review plus one app-owned check run. Without it, nothing changes: no App credential is read, GitHub is never contacted, and no reviewer turn runs. [spec.md](spec.md) §9 defines the behavior and [architecture.md](architecture.md) §2 the module.
 
+**Completion exception:** the no-merge/no-Done defaults below are superseded only by the explicitly configured path in §10. The review commands themselves remain read/review-only.
+
 ## 1. Configuration
 
 Keep the existing `harness.config.json` shape valid:
@@ -352,6 +354,8 @@ A required local save that fails is not rounded into a success either: if an att
 
 A local receipt prevents a second attempt from starting by accident across polling and restart. Changing the issue does not clear that receipt: the pointer label, not the receipt, decides what happens next. Returning the issue to the ready status with a valid pointer starts another attempt in the same workspace — it does not create a fresh clone or clear the receipt. **Rework happens in the same workspace**: the run that creates a workspace writes the pointer label `harness-ws-<workspaceId>` on the issue once, before any coding turn, and an issue in the ready status whose pointer resolves on this machine is continued — same clone, same recorded base, a new run directory and report, and a baseline round that may be red. Every attempt reads the issue's own thread as context: a continuation reads what was added since the last attempt ended, a first attempt reads the whole thread, and a continuation is also told what its ledger records of the attempts before it (tier, outcome, reason). Neither the criteria nor the configured checks change. One attempt is run per configured `escalation` tier, in order, inside the same claim; a failed attempt climbs to the next tier, and only when the ladder is spent does the issue end in the review status. An attempted issue with no pointer, a pointer this machine cannot resolve, and an issue carrying two pointers are **refused**: one comment naming the reason, the issue moved to the review status, and nothing claimed and nothing run. So are a pointer that is not a generated workspace id, a pointer whose workspace or ledger resolves out of `<workDir>/workspaces` through a junction or symbolic link (the refusal names the link and says to move the workspace's real directory back onto the layout's path), a workspace whose ledger records another item, site, or repository, a workspace whose ledger records no item identity, and a workspace whose ledger is not one this harness wrote (an unsupported version, a partially written identity, or an attempt entry of the wrong shape — an end that is not a timestamp this harness writes included; the refusal names the file and the field): the comment names the reason and, for a legacy ledger, the manual repair — add the ledger's `sourceItem` (`type`, `scope`, `id`, `key`, from the workspace's first attempt report, whose `sourceRef` records them) and scan again; nothing adopts or migrates a workspace by itself. A workspace is looked for at `<workDir>/workspaces/<workspaceId>` and nowhere else: a `workDir` written before this increment is upgraded by hand, and the ledger there, not the path an older report records, says where the clone is. To deliberately start over instead — a first attempt in a new workspace — either create a new task, or stop the watcher, inspect/stop prior processes, retain prior artifacts, remove the pointer label if the issue carries one, remove only the printed receipt file for the issue, and restore the issue to its ready status. Never clear the entire `.intake` directory to fix one task. Inspect a leftover lock and stop its owner before manually removing it; a stale-looking timestamp is insufficient. [docs/implement-workspace-continuation.md](implement-workspace-continuation.md) is the contract, including the upgrade steps and a note on the defects that are still separate tasks.
 
+Every API read is bounded by the item deadline; an expired read has a separate ten-second budget for its attention comment. Native APIs do not offer a transaction across GitHub and Jira: both are re-read immediately before writes, and a concurrent human edit during a request remains an external race.
+
 ### Operator setup
 
 1. In Atlassian Administration, create/select a service account and grant it Jira app access. Add it to the queue project/space with a role that can browse work items, transition them, and add comments. Then create an **API token** credential, choose Jira scopes `read:jira-work` and `write:jira-work`, pick an expiry, and copy the token when shown. Service-account tokens cannot be recovered later. [W1]
@@ -424,6 +428,8 @@ The step runs after an attempt passed, in that attempt's retained workspace, and
 5. The result comment the issue receives then carries `Pull request: <url>`.
 
 Delivery never merges a pull request and never marks an issue `Done`. It writes the pull request body to `<runDir>/logs/delivery-pull-request-body.md` and keeps every command's output in the same logs directory (`delivery-*.stdout.log`, `delivery-*.stderr.log`), so what was published is reviewable beside the run's other evidence. Each delivery command is bounded; an over-long one is stopped like any other harness command.
+
+Every API read is bounded by the item deadline; an expired read has a separate ten-second budget for its attention comment. Native APIs do not offer a transaction across GitHub and Jira: both are re-read immediately before writes, and a concurrent human edit during a request remains an external race.
 
 ### Operator setup
 
@@ -611,6 +617,8 @@ integration, and returning code changes, CI failures, and conflicts to the ready
 coordinator's decisions and are **outside this increment**. A pending CI run, or an infrastructure
 or authentication failure, stays in review for diagnosis rather than triggering code repair.
 
+Every API read is bounded by the item deadline; an expired read has a separate ten-second budget for its attention comment. Native APIs do not offer a transaction across GitHub and Jira: both are re-read immediately before writes, and a concurrent human edit during a request remains an external race.
+
 ### Operator setup
 
 1. Create the GitHub App (the installation this repository uses is `nexus-lens`, app id
@@ -651,6 +659,66 @@ reviewers. GitHub cannot atomically compare the current head and submit a review
 the check's head SHA pin every publication to the reviewed commit even if the head moves after
 the final read. Operators must verify the corrected path with a live App review and gate check;
 offline tests do not establish native approval eligibility, auto-merge, or useful review quality.
+
+## 10. Review-to-completion — optional, inside `delivery`
+
+Completion is off unless `delivery` carries it. With it, the harness carries an In Review item's delivered pull request the rest of the way — once the Nexus Lens reviewer has approved it — and marks the item Done only after GitHub really merged that reviewed head and every configured post-merge workflow on the base branch succeeded. Without it, nothing about §8 changes: the pull request waits for a person.
+
+```json
+{
+  "delivery": {
+    "type": "github",
+    "repository": "owner/name",
+    "baseBranch": "main",
+    "completion": {
+      "lensApp": "nexus-lens[bot]",
+      "lensAppId": 5001141,
+      "lensCheckName": "Nexus Lens review",
+      "reviewerTokenEnv": "NEXUS_LENS_TOKEN",
+      "postMergeWorkflows": ["ci.yml"],
+      "toDoStatus": "To Do",
+      "doneStatus": "Done"
+    }
+  }
+}
+```
+
+| Field | Contract |
+| --- | --- |
+| `lensApp` | Required. The login GitHub attributes the pull request review to. A review from anyone else is not that reviewer's verdict. |
+| `lensAppId` | Required positive GitHub App ID. The latest Lens check must be owned by this App, match the reviewed head, and link to the native review. |
+| `lensCheckName` | Required. The app-owned check the approval has to be backed by on the same head, for example `"Nexus Lens"`. |
+| `reviewerTokenEnv` | Required environment-variable name holding the **reviewer's own** credential, for example `"NEXUS_LENS_TOKEN"`. It is deliberately not the operator's Git/`gh` credential: the reviewer's token reads the reviewer's verdict and never enables auto-merge, and the operator's credential never reaches the reviewer. The value is never a configuration field. |
+| `postMergeWorkflows` | Required nonempty array. Each entry is a stable workflow file (`"ci.yml"` or `".github/workflows/ci.yml"`) or a numeric workflow ID. An empty or missing list is refused: it is not evidence that CI passed. |
+| `toDoStatus` | Required status a definitively failed outcome returns the item to (default intent `"To Do"`). It must differ from the review status and from `doneStatus`. |
+| `doneStatus` | Required status a verified completion moves the item to (default intent `"Done"`). Reached only after the merge and every configured post-merge workflow succeeded. |
+| `pollIntervalSeconds` | Optional integer at least 5, default 30. Delay between two reads of GitHub's merge and workflow state. |
+| `deadlineSeconds` | Optional integer at least 5, default 1800. How long one item may stay pending in one pass before an attention comment is posted and the item is left In Review. |
+
+### What the completion path does
+
+After a `source run` batch, and after each `source watch` scan, one bounded pass reads the configured queue's In Review items. For each one it re-reads the item, takes the single workspace pointer it carries, and looks up the one **open** pull request for that workspace's branch, the configured repository, and the configured base branch. A pass never claims an item, never changes what the batch itself did, and never starts a coding turn.
+
+1. **The reviewer gate.** It requires a completed `APPROVE` review by `lensApp` on the pull request's **current head**, and a successful `lensCheckName` check on that same head. The head is re-read immediately before every mutation. A current-head `REQUEST_CHANGES` decision, with its associated failed Lens check, is a finding: one concise comment naming the review link or the failed check, and the item returns to `toDoStatus` with its workspace pointer preserved, so the ordinary source consumer can take the next repair attempt in the same workspace.
+2. **Arming.** With the operator's own `gh` credential the harness calls the GraphQL `enablePullRequestAutoMerge` mutation with `mergeMethod: SQUASH`. That is a per-pull-request request to enable **native** auto-merge, not a merge: GitHub enforces branch protection and every required check and performs the merge itself. A conflict, a branch-protection refusal, or an authentication/permission failure is reported as an operator problem and the item stays In Review — those are not established coding findings.
+3. **The merge.** The harness waits, bounded by `pollIntervalSeconds` and `deadlineSeconds`, until GitHub reports that exact pull request merged, with the approved head as its source, the configured base branch, and a merge commit SHA. An armed request, pending pull request checks, a closed pull request, or an absent branch is not a merge. A definitive failed required pull request check is a finding (one comment naming the check and linking its evidence, then back to `toDoStatus`); a mergeability or infrastructure problem stays In Review.
+4. **Post-merge CI.** Every configured workflow must have a run for event `push`, on the configured base branch, for that exact merge commit SHA, and the **latest attempt** must be `completed`/`success`. A run that has not appeared, or is queued or in progress, is pending and waits. A failed, cancelled, timed-out, action-required, stale, skipped, or neutral latest result is a definitive unsuccessful outcome: one comment naming each unsuccessful workflow, its conclusion, and its links, and the item returns to `toDoStatus`. The merge is never rolled back. If the deadline expires with work still pending, the harness posts one attention comment and leaves the item In Review — no failure conclusion was observed.
+5. **Completion.** Only after the verified merge and every configured post-merge workflow succeeded does the harness post one evidence-based resolution comment of at most 120 words — what changed or what the investigation concluded, the successful post-merge main workflow, any material limitation, and the pull request and workflow links — and then move the item to `doneStatus` through native transition discovery.
+
+### Recovery, and what is not merged
+
+The local admission file is written before arming and identifies only the PR/head and wait start, not an outcome. Merged PRs without that admission are not backfilled. Jira changelog entries distinguish a human reopening from a transition retry. GitHub's merged state and the configured post-merge runs are authoritative, and the item's own Jira thread is the record of what was already written. A comment carries a marker, so a repeated pass or a restart finds the comment it already wrote instead of writing a second one; a status move is made only while the item is really still in review. After a restart, a merge confirmed but with post-merge CI absent, pending, or unsuccessful keeps waiting or reports attention without a duplicate comment; if the comment exists but the status move did not arrive, only the transition is retried after re-reading Jira. An item that a person moved out of In Review is not touched. A comment or transition failure never starts an agent: returning an item to `toDoStatus` merely makes the normal source consumer eligible to take the next repair attempt.
+
+Nothing in this path merges, force-pushes, reruns a workflow, or bypasses protection. The harness never gives the reviewer the operator credential, never lets the reviewer's token arm anything, and never treats an approval, an armed request, or a green run on another commit as evidence of this merge.
+
+Every API read is bounded by the item deadline; an expired read has a separate ten-second budget for its attention comment. Native APIs do not offer a transaction across GitHub and Jira: both are re-read immediately before writes, and a concurrent human edit during a request remains an external race.
+
+### Operator setup
+
+1. `gh` must be authenticated as the **operator** account that may enable auto-merge on the destination repository (the same account §8 already uses), and branch protection must require the checks you mean to gate on.
+2. Put the **Nexus Lens reviewer's** own credential in the environment variable `reviewerTokenEnv` names. It must be a different credential from the operator's: the reviewer/reader token only reads GitHub evidence, and the operator's is what asks GitHub for auto-merge. Neither is written to the configuration, a report, or a log.
+3. Name at least one post-merge workflow that really runs for `push` on the base branch, for example `"ci.yml"` for this repository's own gate.
+4. `check-config` prints the effective `delivery` line before anything runs; the completion object is validated with it.
 
 ## External references
 

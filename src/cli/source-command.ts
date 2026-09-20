@@ -10,15 +10,23 @@
  */
 import path from 'node:path';
 import { ConfigError, escalationTiers, loadHarnessConfig, resolveWorkDir } from '../config/load.js';
+import { createGitHubCompletion } from '../delivery/completion.js';
 import { createGitHubDelivery } from '../delivery/github.js';
 import { runTask } from '../runs/runner.js';
 import type { HarnessConfig, JiraSourceConfig } from '../shared/types.js';
 import { SourceError } from '../sources/contract.js';
-import type { SourceContext, SourceSummary } from '../sources/contract.js';
+import type {
+  CompletionRun,
+  CompletionRunSummary,
+  SourceContext,
+  SourceSummary,
+} from '../sources/contract.js';
+import { createCompletionPass, createCompletionRun } from '../sources/completion.js';
 import { runSource, watchSource } from '../sources/coordinator.js';
 import type { SourceWatchOptions } from '../sources/coordinator.js';
+import { createJiraCompletionSource } from '../sources/jira/completion.js';
 import { createJiraSource } from '../sources/jira/connector.js';
-import { resolveJiraToken } from '../sources/jira/http.js';
+import { createHttpClient, resolveJiraToken } from '../sources/jira/http.js';
 import { listSource } from '../sources/list.js';
 import type { SourceListEntry } from '../sources/list.js';
 import { WorkspaceError } from '../workspace/errors.js';
@@ -66,6 +74,32 @@ function environmentWithout(environment: NodeJS.ProcessEnv, name: string): NodeJ
   return copy;
 }
 
+/**
+ * The Nexus Lens reviewer's own credential, resolved from the one environment
+ * variable the completion configuration names. It is deliberately a different
+ * variable from the operator's GitHub credential: the reviewer's token reads the
+ * reviewer's verdict and never enables auto-merge, and the operator's credential
+ * never reaches the reviewer (docs/WORKFLOW.md §10). A missing or blank variable
+ * is refused before anything runs, with the variable named and no value echoed.
+ */
+function resolveReviewerToken(
+  name: string,
+): { token: string; problem: null } | { token: ''; problem: string } {
+  const raw = process.env[name];
+  const token = typeof raw === 'string' ? raw.trim() : '';
+  if (token === '') {
+    return {
+      token: '',
+      problem:
+        `the environment variable ${name} is missing or blank. The delivery completion path ` +
+        'reads the Nexus Lens reviewer credential from it; it is a different variable from the ' +
+        "operator's own Git/gh credential, which the harness never uses to read the reviewer's " +
+        'verdict.',
+    };
+  }
+  return { token, problem: null };
+}
+
 /** A `--limit` value: a positive integer, or nothing this command accepts. */
 function parseLimit(value: string): number | null {
   if (!/^[1-9][0-9]*$/.test(value)) {
@@ -89,7 +123,10 @@ function exitCodeForSource(summary: SourceSummary): number {
 }
 
 /** A compact count of what one source batch did, and anything it could not. */
-function describeSourceSummary(summary: SourceSummary): string {
+function describeSourceSummary(
+  summary: SourceSummary,
+  completion: CompletionRunSummary | null,
+): string {
   const lines = [
     `source ${summary.outcome}`,
     `  attempts   ${String(summary.attempted)} reserved: ${String(summary.passed)} passed, ` +
@@ -98,6 +135,17 @@ function describeSourceSummary(summary: SourceSummary): string {
       `${String(summary.invalid)} invalid task description(s), ` +
       `${String(summary.refused)} refused and told why`,
   ];
+  if (completion !== null) {
+    lines.push(
+      `  completed  ${String(completion.done)} finished with a verified merge, ` +
+        `${String(completion.toDo)} returned to the To Do status with findings, ` +
+        `${String(completion.attention)} needing a person, ` +
+        `${String(completion.observed)} left In Review`,
+    );
+    if (completion.problem !== null) {
+      lines.push(`  completion ${completion.problem}`);
+    }
+  }
   if (summary.problem !== null) {
     lines.push(`  problem    ${summary.problem}`);
   }
@@ -185,11 +233,9 @@ async function sourceCommand(
   }
 
   const workDir = resolveWorkDir(config, configPath);
-  const connector = createJiraSource(
-    sourceConfig,
-    token,
-    context.fetch === undefined ? {} : { fetch: context.fetch },
-  );
+  const jiraParts = context.fetch === undefined ? {} : { fetch: context.fetch };
+  const jiraHttp = createHttpClient(sourceConfig, token, jiraParts);
+  const connector = createJiraSource(sourceConfig, token, jiraParts, jiraHttp);
 
   // One display for the whole invocation: every attempt of every issue writes
   // its progress and its activity through it, so the pane that sits under the
@@ -249,7 +295,11 @@ async function sourceCommand(
     // Jira credential variable, and the same effective agent selection a
     // file-task run would use.
     const repoPath = path.resolve(cwd, repoArgument ?? '');
-    const childEnvironment = environmentWithout(process.env, sourceConfig.tokenEnv);
+    const operatorEnvironment = environmentWithout(process.env, sourceConfig.tokenEnv);
+    const childEnvironment =
+      config.delivery?.completion === undefined
+        ? operatorEnvironment
+        : environmentWithout(operatorEnvironment, config.delivery.completion.reviewerTokenEnv);
     // Delivery is built only when the configuration asks for it, and its
     // commands inherit the same environment a coding turn does: everything
     // except the Jira credential variable (docs/WORKFLOW.md §8).
@@ -262,6 +312,40 @@ async function sourceCommand(
             env: deliveryParts.env ?? childEnvironment,
           });
 
+    // The review-to-completion pass is built only when the configuration asks
+    // for it. It reads the Nexus Lens reviewer's verdict with the reviewer's own
+    // environment variable and asks GitHub to arm auto-merge with the operator's
+    // credential: the two are never swapped, and neither is written anywhere
+    // (docs/WORKFLOW.md §10).
+    let completion: CompletionRun | undefined;
+    const deliveryConfig = config.delivery;
+    const completionConfig = deliveryConfig?.completion;
+    if (deliveryConfig !== undefined && completionConfig !== undefined) {
+      const reviewer = resolveReviewerToken(completionConfig.reviewerTokenEnv);
+      if (reviewer.problem !== null) {
+        activeIo.err(`error: ${reviewer.problem}`);
+        return EXIT_INPUT_ERROR;
+      }
+      const completionParts = context.completionParts ?? {};
+      completion = createCompletionRun(
+        createCompletionPass({
+          config: completionConfig,
+          repository: deliveryConfig.repository,
+          baseBranch: deliveryConfig.baseBranch,
+          source: createJiraCompletionSource(sourceConfig, jiraHttp),
+          actions: createGitHubCompletion(completionConfig, reviewer.token, {
+            ...completionParts,
+            env: completionParts.env ?? childEnvironment,
+          }),
+          workDir,
+          io: activeIo,
+          now: () => new Date(),
+          sleep: abortableSleep,
+        }),
+        activeIo,
+      );
+    }
+
     const intake: SourceContext = {
       source: connector,
       workDir,
@@ -273,6 +357,7 @@ async function sourceCommand(
       stop: stop.signal,
       preflight: preflightSource,
       ...(delivery === undefined ? {} : { delivery }),
+      ...(completion === undefined ? {} : { completion }),
       run: ({
         task,
         sourceRef,
@@ -329,7 +414,7 @@ async function sourceCommand(
     // The pane belongs to the invocation, not to one run: it is taken away
     // before the batch's summary, so that summary reads as ordinary output.
     pane.close();
-    activeIo.out(describeSourceSummary(summary));
+    activeIo.out(describeSourceSummary(summary, summary.completion));
     return exitCodeForSource(summary);
   } catch (cause) {
     pane.close();

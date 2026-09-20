@@ -164,6 +164,60 @@ export interface GitHubDeliveryConfig {
   readonly repository: string;
   /** Base branch a delivered pull request targets, for example `main`. */
   readonly baseBranch: string;
+  /**
+   * The optional review-to-completion step: arming native GitHub auto-merge for
+   * a pull request the Nexus Lens reviewer approved, then waiting for GitHub's
+   * own merge and for the configured post-merge workflows on the merge commit
+   * before the source item is moved to Done (docs/spec.md §8). Absent means a
+   * delivered pull request still waits for a human, exactly as before.
+   */
+  readonly completion?: CompletionConfig;
+}
+
+/**
+ * Validated `delivery.completion` object: the opt-in review-to-completion path.
+ *
+ * It names the Nexus Lens reviewer whose current-head verdict is the gate, at
+ * least one post-merge workflow that must succeed on the merge commit, the two
+ * Jira statuses the item can end in, and the environment variable the reviewer's
+ * own credential is read from. It carries no credential itself, and the harness
+ * never merges a pull request: the operator's GitHub credential authenticates one
+ * per-pull-request request to enable native auto-merge, and GitHub enforces branch
+ * protection and performs the merge (docs/WORKFLOW.md §10).
+ */
+export interface CompletionConfig {
+  /**
+   * Owner of the reviewed artifacts: the login GitHub attributes the pull
+   * request review to. Reviews from anyone else are not that reviewer's verdict.
+   */
+  readonly lensApp: string;
+  readonly lensAppId: number;
+  /**
+   * Name of the app-owned status check the gate requires on the same commit as
+   * the review, for example `Nexus Lens`.
+   */
+  readonly lensCheckName: string;
+  /**
+   * Name of the environment variable holding the Nexus Lens reviewer's own
+   * credential. It is deliberately a different variable from the operator's
+   * Git/`gh` credential: it is used to read the reviewer's verdict, never to
+   * enable auto-merge, and the operator's credential never reaches the reviewer.
+   */
+  readonly reviewerTokenEnv: string;
+  /**
+   * Expected post-merge GitHub Actions workflows, each by stable workflow file
+   * (`.github/workflows/ci.yml` or `ci.yml`) or numeric workflow ID. At least
+   * one is required: an empty list is not evidence that CI passed.
+   */
+  readonly postMergeWorkflows: readonly string[];
+  /** Jira status a definitively failed outcome returns the item to. */
+  readonly toDoStatus: string;
+  /** Jira status the item reaches only after a verified merge and green CI. */
+  readonly doneStatus: string;
+  /** Delay between polls of GitHub's merge and workflow state, in seconds. */
+  readonly pollIntervalSeconds: number;
+  /** How long one item may stay pending before an attention comment is posted. */
+  readonly deadlineSeconds: number;
 }
 
 /**

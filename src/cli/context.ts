@@ -7,6 +7,7 @@
  * and no run.
  */
 import type { GitHubDeliveryParts } from '../delivery/github.js';
+import type { GitHubCompletionParts } from '../delivery/completion.js';
 import type { RunnerDependencies } from '../runs/contracts.js';
 
 /** The run passed, or the CLI printed what it was asked for. */
@@ -100,4 +101,11 @@ export interface CliContext {
    * substitutes them.
    */
   deliveryParts?: GitHubDeliveryParts;
+  /**
+   * The review-to-completion step's own outward boundaries, when a caller needs
+   * to stand in for one of them: the GitHub CLI to run, or the environment its
+   * commands inherit. `gh` from `PATH` and the process's own environment when a
+   * caller gives none: nothing in production substitutes them.
+   */
+  completionParts?: GitHubCompletionParts;
 }

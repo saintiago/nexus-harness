@@ -8,6 +8,8 @@
 
 **Revision: 2026-09-19 — optional Nexus Lens reviews.** The review contract in §9 is implemented: an opt-in `review scan` / `review watch` path that reviews the pull requests of tickets the configured Jira connection reports as being in review, as an explicitly configured reviewer profile, and publishes one native GitHub review plus one app-owned check run per reviewed head. It is read-only on Jira and touches no working copy; [WORKFLOW.md](WORKFLOW.md) §9 owns its inputs and [architecture.md](architecture.md) §2 its module.
 
+**Completion exception:** the no-merge/no-Done defaults below are superseded only by the explicitly configured path in §10. The review commands themselves remain read/review-only.
+
 ## 1. Goal
 
 Turn an explicit development task into locally checked changes, with as little coordination code as possible:
@@ -259,6 +261,24 @@ The smallest native signal that identifies Nexus Lens is that app-owned check ru
 ### Deduplication and retained evidence
 
 A head that already carries a completed review by the App's configured login whose `commit_id` is that same head is not reviewed again, and no reviewer turn is started; a later commit is a new head and is reviewed again. That native review metadata is the deduplication record: there is no check registry, delivery database, local lock, or second coding consumer. Each reviewer turn keeps its evidence (`input.md`, `reviewer.log`, `verdict.json`, and `review.json`) under `<workDir>/reviews/`, the scan appends one line per outcome to `<workDir>/reviews/review.log`, and nothing is published into a working copy. The scan never changes Jira: it claims and transitions nothing, posts no comment, and never marks an issue `Done`.
+
+## 10. Optional review-to-completion
+
+Completion is a second, independently optional step inside `delivery`: `delivery.completion`. Absent means §7 alone and an In Review item waits for a person. Present, it carries reviewed source work from an approved pull request through **native GitHub auto-merge** and the configured post-merge workflows on `main` to a verified Jira resolution, without a coordinator or a coding turn in between. It changes nothing about the blanket no-merge/no-`Done` rule above for a configuration that does not enable it.
+
+The configuration names the Nexus Lens reviewer (`lensApp`, `lensAppId`, `lensCheckName`), the environment variable holding that reviewer's own credential (`reviewerTokenEnv`), at least one expected post-merge workflow (`postMergeWorkflows`), the two Jira statuses an item can end in (`toDoStatus`, `doneStatus`), and its polling bounds. An empty or missing workflow list, or a status that is not distinct from the review status or from the other outcome, is refused rather than treated as evidence.
+
+The reviewer's credential is deliberately a different environment variable from the operator's `gh`/Git credential. The reviewer's token reads the reviewer's verdict and never enables auto-merge; the operator's credential authenticates the one per-pull-request arming request and never reaches the reviewer. The harness never merges, force-pushes, reruns a workflow, or bypasses protection: `enablePullRequestAutoMerge` with `mergeMethod: SQUASH` asks GitHub to merge once branch protection and every required check allow it, and only GitHub's own merged state is trusted.
+
+One pass reads the In Review items of the configured queue and, for each of them, the single open pull request its workspace pointer's branch has. It proceeds on an approval from the configured reviewer on the **current** head, backed by a successful check of the configured name on that same head; the head is re-read immediately before every mutation. It then:
+
+1. Arms squash auto-merge with the operator credential, and waits, bounded by its interval and deadline, for GitHub to report that exact pull request **merged**, with the approved head as its source, the configured base branch, and a merge commit SHA. An armed request, pending pull request checks, a closed pull request, or an absent branch is not a merge.
+2. Requires every configured post-merge workflow to have a run for event `push`, on the configured base branch, for that exact merge commit SHA; the **latest attempt** must be completed with conclusion `success`. A run that has not appeared, or is queued or in progress, is pending and waits; a deadline that expires with work still pending posts one attention comment and leaves the item In Review.
+3. Posts one resolution comment of at most 120 words naming what was delivered or concluded, the successful post-merge main workflow, material limitations, and the pull request and workflow links, and then moves the item to `doneStatus` through native transition discovery.
+
+A current-head `REQUEST_CHANGES` decision from that reviewer, a definitive failed required PR check, and a post-merge workflow that concluded unsuccessfully are conclusive findings: one concise comment naming the review or the failed check or workflow with its conclusion and link, and the item returns to `toDoStatus` with its workspace pointer untouched, so the ordinary source consumer may take the next repair attempt. A merge that GitHub has already made is never rolled back.
+
+Everything else — missing or inconclusive review evidence, an approval or a check on another head, a closed or ambiguous pull request, a conflict, a refused auto-merge, an authentication or permission failure, a check whose relationship to a decision is unclear — is reported for operator attention and left `In Review`. A person's status change is respected: an item that left the review status is not touched. Recovery is deterministic and agent-free: GitHub's merged state and the configured post-merge runs are authoritative, comment markers in the item's own thread are what prevents a second comment, and a status move is made only while the item is really still in review, so a restart retries only what did not happen. Nothing here starts a coding turn.
 
 ## Jira API references
 

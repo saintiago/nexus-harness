@@ -1248,3 +1248,28 @@ Code, with its own invocation
 and event parser and its own tests — a Claude launcher behind the Codex parser would be a bug), live
 turns on POSIX hosts, and stronger isolation before unattended runs of untrusted repositories.
 Nothing here builds them ahead of a task that needs them.
+
+## Optional review-to-completion
+
+`delivery.completion` explicitly enables the agent-free path from a current-head Nexus Lens
+approval through native squash auto-merge and successful configured post-merge workflows to
+Jira Done. The separate `review scan`/`review watch` commands still own review judgment.
+Completion runs after source batches, starts no reviewer or coding agent, and leaves
+completion disabled configurations unchanged. See [the completion configuration](docs/WORKFLOW.md#10-review-to-completion--optional-inside-delivery).
+
+Only the per-PR `enablePullRequestAutoMerge` GraphQL mutation uses the operator credential.
+Read operations use the separately configured reader/reviewer token. Configure the Lens
+bot login, numeric App ID and check name to match `review.app` and `review.checkName`.
+The latest completed review must match the current head and the app-owned check must link
+to that review. A failed required PR check or unsuccessful post-merge workflow returns the
+same issue to To Do with findings and its workspace pointer preserved. Conflicts and
+infrastructure failures stay In Review.
+
+GitHub merged state and the expected push workflows on the exact merge commit are authoritative.
+The Jira comment marker deduplicates writes; it never substitutes for those checks.
+The local admission file records only the PR/head being followed and the polling deadline,
+before arming, so a restart can identify a PR that disappeared from the open list. Historical
+merged PRs without that admission are not backfilled.
+
+Offline tests exercise the API and Jira recovery paths. A live protected-repository and Jira
+completion exercise has not been run; it remains separate operator verification.
