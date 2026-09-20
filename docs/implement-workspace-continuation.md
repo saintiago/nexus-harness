@@ -310,12 +310,14 @@ continuation and a repair turn start on the immutable recorded branch, the commi
 stays on the branch it made it on, and the revision the checks validate is the revision a delivery
 step publishes. Everything else stops before the turn, the check, or the
 delivery, naming both branch names and what an operator can do by hand: a dirty checkout, a
-detached HEAD, a commit the recorded branch does not descend from, a recorded branch the
-workspace does not hold, and a local file the checkout ignores that the return would write over —
-that last one is refused with the file's bytes kept, the paths Git named, and the branch names.
-`reopenWorkspace` reads the same standing without changing anything, so a continuation that cannot
-be returned is refused before it is claimed. Nothing here resets, force-updates, adopts a branch,
-or discards a commit, and the delivery step's own exact-revision check is unchanged.
+detached HEAD, a commit the recorded branch does not descend from, and a recorded branch the
+workspace does not hold. A local file the checkout ignores that the return would write over stops
+the run the same way — it is refused with the file's bytes kept, the paths Git named, and the
+branch names — though that refusal belongs to the return, so a claimed attempt stops before the
+turn or the check rather than being refused before the claim. `reopenWorkspace` reads the same
+standing without changing anything, so a continuation that cannot be returned is refused before it
+is claimed. Nothing here resets, force-updates, adopts a branch, or discards a commit, and the
+delivery step's own exact-revision check is unchanged.
 
 **Corrected in HARN-35, during its repair.** The first attempt above left one case open: the strict
 reading applied only to a checkout that was not on its recorded branch, so a retained workspace

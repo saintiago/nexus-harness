@@ -949,7 +949,10 @@ describe('a retained checkout that left its recorded branch', () => {
     // Git runs hooks after a merge, and a hook can leave the recorded branch
     // wherever it likes while the command still exits 0. The return reads its
     // own result back instead of trusting that exit code, so what it reports is
-    // the state that really exists rather than the one it asked for.
+    // the state that really exists rather than the one it asked for. The hooks
+    // path is pinned in the workspace's own configuration so a developer's
+    // global setting cannot decide whether the fixture's hook runs.
+    await gitOrFail(['config', 'core.hooksPath', '.git/hooks'], prepared.workspacePath);
     await writeFile(
       path.join(prepared.workspacePath, '.git', 'hooks', 'post-merge'),
       `#!/bin/sh\ngit update-ref refs/heads/${prepared.branch} ${prepared.baseCommit}\n`,
