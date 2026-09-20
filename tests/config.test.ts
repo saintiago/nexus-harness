@@ -8,7 +8,7 @@
  * connected projects.
  */
 
-import { writeFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
@@ -136,6 +136,30 @@ describe('the checked-in examples', () => {
 
     const task = await loadTask(path.join(repoRoot, 'examples', 'task.json'));
     expect(task).toEqual(documentedTask);
+  });
+
+  it('composes the two credential-free examples with each other', async () => {
+    // The project example is a template, so it is read from the docs folder and
+    // written where a connected repository would carry it: its own root.
+    const harnessPath = path.join(repoRoot, 'docs', 'nexus.config.example.json');
+    const template = await readFile(
+      path.join(repoRoot, 'docs', 'nexus.project.example.json'),
+      'utf8',
+    );
+    const directory = await createTempDir();
+    const projectPath = path.join(directory, PROJECT_CONFIG_FILE_NAME);
+    await writeFile(projectPath, template, 'utf8');
+
+    const loaded = await loadConfiguration(harnessPath, projectPath);
+
+    expect(loaded.project.source?.projectKey).toBe('SAM1');
+    expect(loaded.project.delivery?.repository).toBe('owner/name');
+    expect(loaded.config.review?.repository).toBe('owner/name');
+    expect(loaded.config.delivery?.completion?.postMergeWorkflows).toEqual(['ci.yml']);
+    expect(loaded.config.delivery?.completion?.lensApp).toBe('nexus-lens[bot]');
+    // Nothing in the Nexus-wide example comes from the project sample.
+    expect(loaded.config.workDir).toBe('../.harness');
+    expect(loaded.config.checks).toEqual([['npm', 'run', 'validate']]);
   });
 });
 
