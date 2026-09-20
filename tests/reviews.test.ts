@@ -283,6 +283,7 @@ interface FakeRepositoryOptions {
   readonly checks?: readonly AppCheckRun[];
   readonly findError?: ReviewError;
   readonly evidenceError?: ReviewError;
+  readonly readPullRequestError?: Error;
   readonly publishReviewError?: ReviewError;
   readonly publishCheckError?: ReviewError;
   /** The head the pull request carries when it is re-read before publishing. */
@@ -326,6 +327,9 @@ function fakeRepository(options: FakeRepositoryOptions = {}): FakeRepository {
     },
     readPullRequest: async () => {
       calls.readPullRequests += 1;
+      if (options.readPullRequestError !== undefined) {
+        throw options.readPullRequestError;
+      }
       if (pullRequest === null) {
         return null;
       }
@@ -943,6 +947,87 @@ describe('one review scan', () => {
     expect(summary).toMatchObject({ scanned: 1, reviewed: 1, reviewerRuns: 1, attention: 0 });
     expect(fixture.output.join('\n')).toContain('--limit 1 reached');
     expect(repository.calls.publishedReviews).toHaveLength(1);
+  });
+
+  it.each(['source', 'pull request'] as const)(
+    'counts the paid turn and keeps its record when the post-turn %s read fails',
+    async (failedRead) => {
+      const failure =
+        failedRead === 'source'
+          ? new SourceError('retryable-read', 'Jira re-read unavailable')
+          : new ReviewError('api', 'GitHub re-read unavailable');
+      const repository = fakeRepository({
+        ...(failedRead === 'pull request' ? { readPullRequestError: failure } : {}),
+      });
+      const preparedKeys: string[] = [];
+      const fixture = await scanFixture({
+        repository,
+        candidates: [candidateFor('HARN-3'), candidateFor('HARN-4')],
+        prepare: (candidate, call) => {
+          preparedKeys.push(candidate.ref.key);
+          if (failedRead === 'source' && call === 2) {
+            throw failure;
+          }
+          return preparedFor(candidate.ref.key);
+        },
+      });
+
+      expect(await scanReviews(fixture.context, 1)).toMatchObject({
+        outcome: 'completed',
+        scanned: 1,
+        reviewerRuns: 1,
+        attention: 1,
+        reviewed: 0,
+        approved: 0,
+      });
+      expect(fixture.reviewerRuns).toHaveLength(1);
+      expect(preparedKeys).toEqual(['HARN-3', 'HARN-3']);
+      expect(repository.calls.readPullRequests).toBe(failedRead === 'source' ? 0 : 1);
+      expect(repository.calls.publishedReviews).toEqual([]);
+      expect(repository.calls.publishedChecks).toEqual([]);
+      expect(fixture.output.join('\n')).toContain('--limit 1 reached');
+      expect(fixture.errors.join('\n')).toContain(failure.message);
+      const directories = await reviewDirectories(fixture.workDir);
+      expect(directories).toHaveLength(1);
+      const dir = path.join(fixture.workDir, 'reviews', directories[0]!);
+      expect(JSON.parse(await readFile(path.join(dir, 'review.json'), 'utf8'))).toMatchObject({
+        disposition: 'attention',
+        verdict: null,
+        review: null,
+        check: null,
+        problem: expect.stringContaining(failure.message),
+        pullRequest: { headSha: HEAD },
+        reviewerLog: path.join(dir, 'reviewer.log'),
+        input: path.join(dir, 'input.md'),
+      });
+    },
+  );
+
+  it.each([
+    ['source', new SourceError('fatal', 'Jira authentication failed')],
+    ['pull request', new ReviewError('auth', 'GitHub authentication failed')],
+    ['pull request', new ReviewError('fatal', 'GitHub client cannot proceed')],
+    ['source', new Error('unexpected source error')],
+    ['pull request', new Error('unexpected repository error')],
+  ] as const)('still stops on a post-turn %s failure: %s', async (failedRead, failure) => {
+    const repository = fakeRepository({
+      ...(failedRead === 'pull request' ? { readPullRequestError: failure } : {}),
+    });
+    const fixture = await scanFixture({
+      repository,
+      candidates: [candidateFor('HARN-3'), candidateFor('HARN-4')],
+      prepare: (candidate, call) => {
+        if (failedRead === 'source' && call === 2) {
+          throw failure;
+        }
+        return preparedFor(candidate.ref.key);
+      },
+    });
+
+    await expect(scanReviews(fixture.context, 1)).rejects.toBe(failure);
+    expect(fixture.reviewerRuns).toHaveLength(1);
+    expect(repository.calls.publishedReviews).toEqual([]);
+    expect(repository.calls.publishedChecks).toEqual([]);
   });
 
   it('reports no work for an empty queue', async () => {

@@ -551,10 +551,23 @@ async function reviewWithTurn(
   // The verdict belongs to the head it was made against: both the pull request
   // and the ticket are re-read before anything is published, and a head that
   // moved — or a ticket that left review — is never approved by a stale result.
-  const rechecked = await context.queue.prepare(
-    { ref: item.ref, title: item.task.title } satisfies SourceCandidate,
-    context.stop,
-  );
+  // Read failures here still spent a reviewer turn: record them in this attempt
+  // so the outer pre-turn error handling cannot lose the scan's paid-turn count.
+  let rechecked: SourceTask | null;
+  try {
+    rechecked = await context.queue.prepare(
+      { ref: item.ref, title: item.task.title } satisfies SourceCandidate,
+      context.stop,
+    );
+  } catch (cause) {
+    if (stopsBatch(cause) || !(cause instanceof SourceError || cause instanceof ReviewError)) {
+      throw cause;
+    }
+    return await attentionResult(
+      `the ticket could not be rechecked before publication: ${messageOf(cause)}`,
+      true,
+    );
+  }
   if (
     rechecked === null ||
     rechecked.ref.updatedAt !== item.ref.updatedAt ||
@@ -567,7 +580,18 @@ async function reviewWithTurn(
     );
   }
 
-  const current = await context.repository.readPullRequest(pullRequest.number, context.stop);
+  let current: OpenPullRequest | null;
+  try {
+    current = await context.repository.readPullRequest(pullRequest.number, context.stop);
+  } catch (cause) {
+    if (stopsBatch(cause) || !(cause instanceof SourceError || cause instanceof ReviewError)) {
+      throw cause;
+    }
+    return await attentionResult(
+      `the pull request could not be rechecked before publication: ${messageOf(cause)}`,
+      true,
+    );
+  }
   if (current === null) {
     return await attentionResult(
       `the pull request ${pullRequest.url} is no longer open, so the verdict for ${head} was not ` +
