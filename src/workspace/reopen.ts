@@ -258,7 +258,8 @@ export async function takenWorkspaceNameProblem(
   } catch (cause) {
     return (
       `the name it would give its new workspace, ${workspaceId}, cannot be resolved to a place ` +
-      `this harness keeps workspaces: ${messageOf(cause)}`
+      `this harness keeps workspaces: ${messageOf(cause)}. Move the workspace's real directory ` +
+      'where the layout says it lives, or move it aside, and scan again'
     );
   }
   // As for a pointer label: a ledger whose resolved path leaves the workspaces

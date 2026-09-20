@@ -2297,6 +2297,102 @@ describe('an issue that points at a workspace', () => {
 });
 
 // ---------------------------------------------------------------------------
+// The name a fresh claim would use
+// ---------------------------------------------------------------------------
+
+describe('a workspace name a fresh claim would use', () => {
+  it('refuses a name whose directory is a junction out of the workspaces directory', async (context) => {
+    const workDir = await createTempDir();
+    const outside = await createTempDir();
+    // The name the ticket key prefers is held by a directory that only looks
+    // like it is inside the workspaces root: a name is never followed through a
+    // junction, exactly as a pointer label is not.
+    const workspacePath = path.join(workDir, 'workspaces', 'SAM1-2');
+    await mkdir(path.dirname(workspacePath), { recursive: true });
+    try {
+      await symlink(outside, workspacePath, 'junction');
+    } catch (cause) {
+      // Junctions need no elevation on Windows; a host that cannot make one
+      // cannot show what this test is about.
+      if (process.platform === 'win32') {
+        throw cause;
+      }
+      context.skip();
+      return;
+    }
+    const fixture = createFixture({
+      workDir,
+      scans: [[candidateFor('2', 'SAM1-2')]],
+      prepare: (candidate) => ({
+        ...preparedFor(candidate),
+        preferredWorkspaceId: 'SAM1-2',
+      }),
+    });
+
+    const summary = await runSource(fixture.context, null);
+
+    expect(summary).toMatchObject({ outcome: 'completed', attempted: 0, refused: 1 });
+    const reason = fixture.refusals[0]?.reason ?? '';
+    expect(reason).toContain('SAM1-2');
+    expect(reason).toMatch(/junction or symbolic link/);
+    expect(reason).toMatch(/Move the workspace's real directory/);
+    expect(fixture.log).not.toContain('claim:SAM1-2');
+    expect(fixture.log).not.toContain('run:SAM1-2');
+    expect(existsSync(receiptFilePath(workDir, refFor('2', 'SAM1-2')))).toBe(false);
+  });
+
+  it('refuses a name a ledger holds without a directory, and creates nothing', async () => {
+    const workDir = await createTempDir();
+    // A ledger without its clone: no attempt may write over the record, and no
+    // directory is created for the run that would have used the name.
+    await mkdir(path.join(workDir, 'workspaces'), { recursive: true });
+    await writeFile(workspaceStatePath(workDir, 'SAM1-2'), '{"version":1}\n', 'utf8');
+    const fixture = createFixture({
+      workDir,
+      scans: [[candidateFor('2', 'SAM1-2')]],
+      prepare: (candidate) => ({
+        ...preparedFor(candidate),
+        preferredWorkspaceId: 'SAM1-2',
+      }),
+    });
+
+    const summary = await runSource(fixture.context, null);
+
+    expect(summary).toMatchObject({ outcome: 'completed', attempted: 0, refused: 1 });
+    const reason = fixture.refusals[0]?.reason ?? '';
+    expect(reason).toContain('a ledger at');
+    expect(reason).toMatch(/is not one this harness wrote/);
+    expect(await readFile(workspaceStatePath(workDir, 'SAM1-2'), 'utf8')).toBe('{"version":1}\n');
+    expect(existsSync(path.join(workDir, 'runs'))).toBe(false);
+    expect(fixture.log).not.toContain('claim:SAM1-2');
+    expect(fixture.log).not.toContain('run:SAM1-2');
+  });
+
+  it('leaves a held name alone and the item refused, without a run', async () => {
+    const workDir = await createTempDir();
+    const held = path.join(workDir, 'workspaces', 'SAM1-2');
+    await mkdir(held, { recursive: true });
+    await writeFile(path.join(held, 'PRIVATE.txt'), 'someone else\n', 'utf8');
+    const fixture = createFixture({
+      workDir,
+      scans: [[candidateFor('2', 'SAM1-2')]],
+      prepare: (candidate) => ({
+        ...preparedFor(candidate),
+        preferredWorkspaceId: 'SAM1-2',
+      }),
+    });
+
+    const summary = await runSource(fixture.context, null);
+
+    expect(summary).toMatchObject({ outcome: 'completed', attempted: 0, refused: 1 });
+    expect(fixture.refusals[0]?.reason).toMatch(/no ledger/);
+    expect(await readFile(path.join(held, 'PRIVATE.txt'), 'utf8')).toBe('someone else\n');
+    expect(existsSync(path.join(workDir, 'runs'))).toBe(false);
+    expect(fixture.requests).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // The preview
 // ---------------------------------------------------------------------------
 

@@ -256,8 +256,14 @@ stated under "Verification" below.
   id, another item's, site's, or repository's workspace, a workspace directory or ledger whose
   resolved path leaves the workspaces directory through a junction or symbolic link (owned
   temporary fixtures, refused as a refusal rather than an exception), and a ledger with no item
-  identity — all against fakes; `npm run validate` green, on Linux as well as Windows for anything
-  that touches process or path handling.
+  identity — all against fakes; the naming a first attempt prefers — the ticket key as the
+  workspace's directory and pointer label, the generated id when a caller has no preference or the
+  preferred name cannot be one, a continuation that creates no directory beside the clone it
+  reopens, the refusals a name already held draws (another item's workspace, a directory or ledger
+  without trustworthy ownership, and this item's own unpointed workspace), a legacy `run-*` pointer
+  reopening unchanged, and a ticket whose key changes still continuing the workspace its pointer
+  names; `npm run validate` green, on Linux as well as Windows for anything that touches process or
+  path handling.
 - Live: **partly run, 2026-09-19.** A real Jira-driven continuation has happened: run
   `run-20260919115244-4ff8eedf` claimed HARN-2, reopened workspace `run-20260919100148-e48a9ab0`
   (same clone, same recorded base `36f62fd`, attempt 2), and the attempt's work is the local commit
@@ -265,4 +271,6 @@ stated under "Verification" below.
   workspace — its first attempt recorded, the pointer label set, the issue moved back to the ready
   status, and the next attempt continuing that workspace rather than cloning a new one — and any
   live watch, restart, or failure scenario. The queue read recorded in [README.md](../README.md) is
-  not this exercise either.
+  not this exercise either. Nor has a live run claimed a ticket since the naming change: no real
+  Jira workspace has yet been created under a ticket key, and no live scenario has exercised a
+  held name or a changed key, so the offline coverage above is all the evidence there is for them.
