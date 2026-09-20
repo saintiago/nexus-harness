@@ -354,15 +354,15 @@ function paneDisplay(
     },
     beginInvocation: (invocation) => {
       // The boundary is one emission with one time: what opens a pane reads as
-      // one row of the timeline, and a pane that wrapped it would break the
-      // cursor work this display is doing.
-      const boundary = boundaryLine(invocation, displayTime(now()));
+      // one row of the timeline, fitted to the pane's own width, because a
+      // boundary that wrapped would break the cursor work this display does.
+      const boundary = boundaryLine(invocation, displayTime(now()), width);
       if (closed) {
         write(`${boundary}\n`);
         return;
       }
       finalize();
-      write(`${truncate(boundary, width)}\n`);
+      write(`${boundary}\n`);
     },
     endInvocation: () => {
       if (!closed) {
@@ -510,12 +510,23 @@ function stampLine(line: string, stamp: string): string {
  * the ticket when one is known, and what the phase calls itself. It is a row of
  * the timeline in its own right, so consecutive developer, reviewer, and
  * next-ticket panes stay distinguishable in scrollback.
+ *
+ * A pane too narrow for the whole row gives up its details before its identity:
+ * what the phase called itself goes first, then the fences, and only a pane that
+ * cannot hold the role and the ticket either is fitted like any other row. The
+ * role and the ticket are what tell two consecutive panes apart, so they are the
+ * last thing to go.
  */
-function boundaryLine(invocation: ActivityInvocation, stamp: string): string {
+function boundaryLine(invocation: ActivityInvocation, stamp: string, width?: number): string {
   const ticket = nonBlank(invocation.ticket);
   const phase = nonBlank(invocation.phase);
   const named = ticket === null ? invocation.role : `${invocation.role}: ${ticket}`;
-  return `${stamp} ---- ${named}${phase === null ? '' : ` — ${phase}`} ----`;
+  const full = `${stamp} ---- ${named}${phase === null ? '' : ` — ${phase}`} ----`;
+  if (width === undefined || stringWidth(full) <= width) {
+    return full;
+  }
+  const namedOnly = `${stamp} ---- ${named} ----`;
+  return stringWidth(namedOnly) <= width ? namedOnly : truncate(`${stamp} ${named}`, width);
 }
 
 /** A value as the nonblank text it holds, or `null` when it holds none. */

@@ -839,6 +839,28 @@ describe('the invocation timeline', () => {
       `${STAMP} HARN-3: Nexus Lens approved it`,
     ]);
   });
+
+  it('keeps the role and the ticket on a pane too narrow for the whole boundary', () => {
+    // 40 columns hold the role and the ticket but not the phase's own wording;
+    // 31 columns hold neither the phase nor the fences.
+    const cases = [
+      { columns: 40, expected: `${STAMP} ---- developer: HARN-26 ----` },
+      { columns: 31, expected: `${STAMP} developer: HARN-26` },
+    ];
+    for (const { columns, expected } of cases) {
+      const terminal = fakeConsole({ columns, rows: 24 });
+      const pane = createActivityDisplay(terminal.io, CLOCK);
+      pane.beginInvocation({
+        role: 'developer',
+        ticket: 'HARN-26',
+        phase: 'implementation turn',
+      });
+      pane.close();
+
+      expect(screenAfter(terminal.chunks, columns)).toEqual([expected]);
+      expect(stringWidth(expected)).toBeLessThan(columns);
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

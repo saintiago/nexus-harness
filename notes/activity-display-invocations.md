@@ -24,7 +24,11 @@ the developer pane around the coding turn the runner launched, and
 launched, so `run`, `source run|watch`, `review scan|watch`, and
 `queue run|watch` all behave the same way. A pane starts empty, so a repair turn,
 a review, and the next ticket's implementation inherit no row of the invocation
-before them, and only the invocation running right now is cursor-managed.
+before them, and only the invocation running right now is cursor-managed. The
+boundary is one row of the pane, so a pane too narrow for the whole thing gives
+up the phase's wording first and the fences second; the role and the ticket — what
+tells two consecutive panes apart — are the last to go, and a boundary that would
+still not fit is fitted like any other row.
 
 When an invocation ends its pane is finalized: it is erased where it stood and
 its retained rows are written into the timeline as that invocation's own
@@ -72,7 +76,7 @@ the README shows them.
 ## Full validation
 
 `npm run validate` passed formatting, lint, typecheck, build, and the full suite:
-31 files, 1009 tests passed, 2 existing platform skips.
+31 files, 1012 tests passed, 2 existing platform skips.
 
 ## Bounded Windows synthetic check
 
