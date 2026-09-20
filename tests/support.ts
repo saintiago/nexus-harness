@@ -50,8 +50,9 @@ export function fakeConsole(
 /**
  * What a terminal would show after these writes, as the lines it holds: a line
  * is created by `\n` or wrapping at `columns`, `ESC[<n>A` moves up physical
- * rows, `ESC[J` erases from the cursor down, and an `ESC[<params>m` styling
- * sequence changes no cell — as on a real terminal, a highlight is not text.
+ * rows, `ESC[J` erases from the cursor down, `ESC[K` erases from the cursor to
+ * the end of the line it is on, and an `ESC[<params>m` styling sequence changes
+ * no cell — as on a real terminal, a highlight is not text.
  * Model newline's terminal CRLF translation and whole grapheme cell widths.
  * This only handles the sequences the pane emits; it is not a general terminal
  * emulator.
@@ -62,7 +63,7 @@ export function screenAfter(chunks: readonly string[], columns = Infinity): read
   let row = 0;
   let column = 0;
   const graphemes = new Intl.Segmenter();
-  const tokens = /\u001b\[(\d+)A|\u001b\[J|\u001b\[[0-9;]*m|\n|[^\u001b\n]+/g;
+  const tokens = /\u001b\[(\d+)A|\u001b\[J|\u001b\[[012]?K|\u001b\[[0-9;]*m|\n|[^\u001b\n]+/g;
 
   for (const match of chunks.join('').matchAll(tokens)) {
     const token = match[0];
@@ -73,6 +74,19 @@ export function screenAfter(chunks: readonly string[], columns = Infinity): read
     }
     if (token === '\u001b[J') {
       screen.length = row;
+      continue;
+    }
+    if (token.endsWith('K')) {
+      // Erase in line: the bare form and `0` clear from the cursor to the end
+      // of the line, `1` clears up to the cursor, and `2` clears the whole
+      // line. The cursor does not move, so the cell it stands at decides how
+      // much of the line survives.
+      const parameter = token.slice(2, -1);
+      if (parameter === '2') {
+        screen[row] = '';
+      } else if (parameter !== '1') {
+        screen[row] = wholeCellsWithin(screen[row] ?? '', column);
+      }
       continue;
     }
     if (token.startsWith('\u001b[')) {
@@ -95,6 +109,21 @@ export function screenAfter(chunks: readonly string[], columns = Infinity): read
     }
   }
   return screen;
+}
+
+/** The leading graphemes of one line that fit inside `cells` terminal cells. */
+function wholeCellsWithin(line: string, cells: number): string {
+  let kept = '';
+  let used = 0;
+  for (const { segment } of new Intl.Segmenter().segment(line)) {
+    const width = stringWidth(segment);
+    if (used + width > cells) {
+      break;
+    }
+    kept += segment;
+    used += width;
+  }
+  return kept;
 }
 /* eslint-enable no-control-regex */
 
