@@ -110,6 +110,14 @@ export interface HarnessConfig {
 }
 
 /**
+ * How a Jira source orders its ready queue: the site's own Priority field, or
+ * the board's native Rank. Both modes let Jira do the sorting — the connector
+ * keeps the order it is handed, pages included — and creation time and the issue
+ * key are tie-breakers only (docs/WORKFLOW.md §5).
+ */
+export type JiraOrdering = 'priority' | 'rank';
+
+/**
  * Validated `source` object for the one implemented connector, Jira Cloud.
  *
  * It carries no credential: {@link JiraSourceConfig.tokenEnv} names the
@@ -137,6 +145,13 @@ export interface JiraSourceConfig {
   readonly runningStatus: string;
   /** Status a finished attempt is moved to, for human review. */
   readonly reviewStatus: string;
+  /**
+   * Which Jira field orders the ready queue: the site's Priority field
+   * (default), or the board's native Rank so manual board ordering decides what
+   * a fresh scan offers next. It never combines the two, and the harness never
+   * fetches Rank values to sort them itself (docs/WORKFLOW.md §5).
+   */
+  readonly ordering: JiraOrdering;
   /** Delay after a completed scan/batch in watch mode, in seconds. */
   readonly pollIntervalSeconds: number;
   /** Name of the environment variable holding the API token. Never the value. */

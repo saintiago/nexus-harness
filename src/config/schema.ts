@@ -58,6 +58,7 @@ export const JIRA_SOURCE_DEFAULTS = {
   readyStatus: 'To Do',
   runningStatus: 'In Progress',
   reviewStatus: 'In Review',
+  ordering: 'priority',
   pollIntervalSeconds: 30,
   tokenEnv: 'JIRA_API_TOKEN',
 } as const;
@@ -135,6 +136,13 @@ const jiraSourceSchema = z
     readyStatus: nonBlankString('readyStatus').default(JIRA_SOURCE_DEFAULTS.readyStatus),
     runningStatus: nonBlankString('runningStatus').default(JIRA_SOURCE_DEFAULTS.runningStatus),
     reviewStatus: nonBlankString('reviewStatus').default(JIRA_SOURCE_DEFAULTS.reviewStatus),
+    ordering: z
+      .enum(['priority', 'rank'], {
+        error:
+          'ordering must be "priority" or "rank": "priority" asks Jira for its own Priority ' +
+          'field first, and "rank" asks for the board\'s native Rank order',
+      })
+      .default(JIRA_SOURCE_DEFAULTS.ordering),
     pollIntervalSeconds: boundedInteger(
       'pollIntervalSeconds',
       MIN_POLL_INTERVAL_SECONDS,
