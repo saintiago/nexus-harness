@@ -109,10 +109,9 @@ export function positionFindings(
 
   for (const finding of findings) {
     const file = byPath.get(finding.path);
+    const patch = file !== undefined && patchIsComplete(file) ? file.patch : null;
     const position =
-      finding.line === null || file === undefined || !patchIsComplete(file)
-        ? null
-        : diffPosition(file.patch ?? '', finding.line);
+      finding.line === null || patch === null ? null : diffPosition(patch, finding.line);
     if (position === null || file === undefined) {
       unpositioned.push(finding);
       continue;
