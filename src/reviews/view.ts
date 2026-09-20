@@ -24,7 +24,7 @@ import type { ReviewView, ReviewViewSource } from './contract.js';
 
 /**
  * The directory inside one review's evidence directory the view is checked out
- * in. The reviewer runs here; its verdict and logs stay in the parent directory.
+ * in. The reviewer runs in the parent directory and reads this view by explicit path.
  */
 export const REVIEW_VIEW_DIRECTORY = 'repo';
 

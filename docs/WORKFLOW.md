@@ -686,12 +686,13 @@ The queue is the configured project, issue type, and label in the `source`'s **r
    description exceeding 8,000 characters is refused before a reviewer turn, and so is a view
    that cannot be prepared: no retained workspace on this machine, a head or base commit it does
    not hold, a clone that fails, or a view that is not clean.
-6. The `reviewer` launch runs as **one bounded turn** inside the pinned repository view at
-   `<workDir>/reviews/<reviewId>/repo/`, with the same adapter, non-interactive launch and task
-   timeout a run gets. The ordinary Git repository check stays enabled. The verdict is written
-   outside the view, at the absolute path supplied in the prompt in the parent evidence directory.
-   The repository's applicable `AGENTS.md` files remain available to read as review evidence;
-   they cannot authorize fixes or publication. The prompt carries the ticket, the pull
+6. The `reviewer` launch runs as **one bounded turn** in the parent evidence directory at
+   `<workDir>/reviews/<reviewId>/`, with the same adapter, non-interactive launch and task
+   timeout a run gets, and the supported Git repository-check bypass. It inspects the pinned
+   `repo/` checkout through explicit paths or `git -C repo`, keeping the reviewed tree outside
+   automatic instruction discovery. The verdict is written outside the view, at the absolute
+   path supplied in the prompt in the evidence directory. The repository's applicable `AGENTS.md`
+   files remain available to read as review evidence; they cannot authorize fixes or publication. The prompt carries the ticket, the pull
    request's identity and head/base commits, the CI evidence, the view's location, and the
    verdict contract — never the patch, and never the repository's `AGENTS.md` contents, which the
    reviewer reads from the view like any other file. It is instructed to review only: it must not

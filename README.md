@@ -1270,8 +1270,8 @@ and only a read.
   `716f73d5130874bcfba31dc96745208995da64ac`, whose 147,666-character diff exceeded the
   removed guard. That turn inspected the pinned repository with Git/file tools and published an
   attributable request-changes review and failed App check. This checkout's follow-up corrections
-  (detecting ignored writes, launching inside the pinned checkout, and exercising actual reads in
-  deterministic tests) have offline coverage only. The original observed case, HARN-24's PR #47,
+  (detecting ignored writes, launching from the parent evidence directory to keep reviewed
+  instructions from governing the turn, and exercising actual reads in deterministic tests) have offline coverage only. The original observed case, HARN-24's PR #47,
   had all 39 file patches but was refused at 325,809 rendered characters. Replaying that exact
   case and rechecking the corrected runtime with a real reviewer remain operator steps; this
   coding turn cannot use provider accounts or publish reviews. The operator must

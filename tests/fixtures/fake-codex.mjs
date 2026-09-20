@@ -158,13 +158,16 @@ async function run(prompt) {
     try {
       // This is executed by the runtime process in its actual working directory,
       // not by the test after the turn. Both ordinary read boundaries must work.
-      const committed = execFileSync('git', ['show', `HEAD:${inspection.file}`], {
+      const committed = execFileSync('git', ['-C', 'repo', 'show', `HEAD:${inspection.file}`], {
         encoding: 'utf8',
         timeout: 10_000,
         windowsHide: true,
         stdio: ['ignore', 'pipe', 'pipe'],
       });
-      const checkedOut = readFileSync(inspection.file, 'utf8').replaceAll('\r\n', '\n');
+      const checkedOut = readFileSync(path.join('repo', inspection.file), 'utf8').replaceAll(
+        '\r\n',
+        '\n',
+      );
       if (checkedOut !== committed.replaceAll('\r\n', '\n')) {
         throw new Error('the required file disagrees with the committed content');
       }
@@ -179,7 +182,7 @@ async function run(prompt) {
         findings: [],
       });
     }
-    writeFileSync(path.join(process.cwd(), '..', 'verdict.json'), verdict, 'utf8');
+    writeFileSync(path.join(process.cwd(), 'verdict.json'), verdict, 'utf8');
   }
 
   const mode = plan.mode ?? 'ok';
