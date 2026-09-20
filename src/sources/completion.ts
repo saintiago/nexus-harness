@@ -135,6 +135,34 @@ function completionLogsDir(workDir: string, issueId: string): string {
 }
 
 /**
+ * Creates one item's completion evidence directory before the first GitHub
+ * command needs it, and names the location when it cannot be created. Every
+ * command this pass runs writes its stdout and stderr files under that
+ * directory, and a command whose directory is missing fails before it can read
+ * anything: a fresh pass, or a restart after an earlier one stopped, begins with
+ * no directory at all. Nothing is armed and nothing is written in Jira when this
+ * fails; the caller reports the location and stops for a person.
+ */
+async function ensureCompletionLogsDir(
+  workDir: string,
+  issueId: string,
+): Promise<{ readonly ready: true } | { readonly ready: false; readonly problem: string }> {
+  const directory = completionLogsDir(workDir, issueId);
+  try {
+    await mkdir(directory, { recursive: true });
+    return { ready: true };
+  } catch (cause) {
+    return {
+      ready: false,
+      problem:
+        `its completion evidence directory "${directory}" could not be created ` +
+        `(${messageOf(cause)}); no GitHub command was run, auto-merge was not armed, and its ` +
+        'Jira status was not changed',
+    };
+  }
+}
+
+/**
  * Records the head auto-merge was armed for, beside the item's other evidence.
  * A later pass reads it to name the merge it is waiting for, so a restart after
  * an uncertain write does not have to guess from the current head.
@@ -851,6 +879,15 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
     }
     const thread = notes;
 
+    // The directory holding this item's command output is created before the
+    // first GitHub read: it is where every command this pass runs writes its
+    // stdout and stderr, and a command whose log directory is absent fails
+    // before it can report anything (docs/WORKFLOW.md §10).
+    const evidence = await ensureCompletionLogsDir(parts.workDir, item.ref.id);
+    if (!evidence.ready) {
+      return { ref, status: 'attention', detail: evidence.problem, commentId: null };
+    }
+
     let context: PullContext | null;
     try {
       context = await contextFor(item, workspaceId, stop);
@@ -944,6 +981,14 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
         ref: candidate.ref,
         status: 'observed',
         detail: 'Ticket left In Review',
+        commentId: null,
+      };
+    const evidence = await ensureCompletionLogsDir(parts.workDir, item.ref.id);
+    if (!evidence.ready)
+      return {
+        ref: candidate.ref,
+        status: 'attention',
+        detail: evidence.problem,
         commentId: null,
       };
     const request = requestFor(item, item.pointers[0] ?? '');
