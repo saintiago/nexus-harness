@@ -31,7 +31,7 @@ import type { ReviewScanContext } from '../src/reviews/contract.js';
 import { scanReviews } from '../src/reviews/scan.js';
 import type { RunTaskResult } from '../src/runs/contracts.js';
 import type { EscalationTier, RunStatus, SourceRef, Task } from '../src/shared/types.js';
-import type { CompletionPassParts, CompletionSource } from '../src/sources/completion.js';
+import type { CompletionPassParts } from '../src/sources/completion.js';
 import { createCompletionPass } from '../src/sources/completion.js';
 import type {
   QueueTicket,
@@ -44,6 +44,7 @@ import type {
 } from '../src/sources/contract.js';
 import { SourceError } from '../src/sources/contract.js';
 import { takeOneItem } from '../src/sources/coordinator.js';
+import type { CompletionSource } from '../src/sources/jira/completion.js';
 import { acquireIntakeLock, intakeLockPath } from '../src/sources/receipts.js';
 import type { PreparedWorkspace } from '../src/workspace/prepare.js';
 import { cleanupTempDirectories, createTempDir } from './support.js';
@@ -1025,7 +1026,7 @@ function completionFixture(candidates: readonly SourceCandidate[]): {
   const seen: string[] = [];
   const source: CompletionSource = {
     listReview: async () => candidates,
-    readItem: async (candidate) => {
+    readItem: async (candidate: SourceCandidate) => {
       seen.push(candidate.ref.key);
       return null;
     },

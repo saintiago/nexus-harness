@@ -12,7 +12,6 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { WorkspaceError } from '../src/workspace/errors.js';
 import { githubRepositoryOf, refreshSource } from '../src/workspace/refresh.js';
 import { git } from './fixtures/local-target.js';
 import { cleanupTempDirectories, createTempDir } from './support.js';

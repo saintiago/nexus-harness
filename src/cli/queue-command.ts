@@ -109,8 +109,10 @@ interface QueueCommandOptions {
  *
  * A queue completes a ticket through a chain of three configured pieces, so a
  * configuration that cannot complete one is refused before any credential is
- * resolved: the review has to publish the very check the completion gate
- * requires, in the very repository the delivery step pushes to.
+ * resolved. The loader already refuses a `review` without a `source`, and a
+ * `completion` whose repository, App login, App id, or check name disagrees with
+ * the configured review; what is left for the queue itself is that all three
+ * objects are there, because every other command treats them as optional.
  */
 function queueConfigurationProblem(config: HarnessConfig, configPath: string): string | null {
   if (config.source === undefined) {
@@ -138,21 +140,6 @@ function queueConfigurationProblem(config: HarnessConfig, configPath: string): s
       `${configPath} configures "delivery" without "delivery.completion", so nothing would ever ` +
       'mark a ticket Done. A queue command needs that object; docs/WORKFLOW.md section 10 defines ' +
       'it.'
-    );
-  }
-  const review = config.review;
-  if (review.repository !== delivery.repository) {
-    return (
-      `the review repository "${review.repository}" is not the delivery repository ` +
-      `"${delivery.repository}". A queue reviews the pull request it delivered, so the two ` +
-      'objects must name the same repository (docs/WORKFLOW.md sections 8 to 10).'
-    );
-  }
-  if (completion.lensCheckName !== review.checkName) {
-    return (
-      `"delivery.completion.lensCheckName" is "${completion.lensCheckName}" but the review ` +
-      `publishes its check as "${review.checkName}", so the completion gate would never see the ` +
-      "reviewer's verdict. Make the two names equal (docs/WORKFLOW.md section 10)."
     );
   }
   return null;
