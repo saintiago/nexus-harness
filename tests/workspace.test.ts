@@ -834,9 +834,10 @@ describe('a retained checkout that left its recorded branch', () => {
   it('leaves a checkout that is already on the recorded branch exactly as it is', async () => {
     const fixture = await createExactByteRepository();
     const prepared = await prepareRun(fixture);
-    // A continuation reopens whatever the earlier attempt left, so uncommitted
-    // work on the recorded branch is ordinary: it is not a reason to switch,
-    // and nothing about it is touched.
+    // The round that judges a turn reads the working copy the turn left, so it
+    // does not ask for a clean one: uncommitted work on the recorded branch is
+    // ordinary there, it is not a reason to switch, and nothing about it is
+    // touched.
     await writeFile(path.join(prepared.workspacePath, 'left.txt'), 'uncommitted\n', 'utf8');
 
     expect(await inspectBranchStanding(prepared.workspacePath, prepared.branch)).toEqual({
@@ -849,6 +850,46 @@ describe('a retained checkout that left its recorded branch', () => {
       'uncommitted\n',
     );
     expect(await headOf(prepared.workspacePath)).toBe(prepared.baseCommit);
+  });
+
+  it('refuses a checkout that holds uncommitted work when a coding turn needs a clean one', async () => {
+    const fixture = await createExactByteRepository();
+    const prepared = await prepareRun(fixture);
+    await writeFile(path.join(prepared.workspacePath, 'left.txt'), 'uncommitted\n', 'utf8');
+
+    // The strict reading is what a caller about to start a coding turn makes: a
+    // turn works from the workspace's own committed state, so the checkout is
+    // refused rather than handed on.
+    const strict = { requireClean: true } as const;
+    const standing = await inspectBranchStanding(
+      prepared.workspacePath,
+      prepared.branch,
+      {},
+      strict,
+    );
+    expect(standing.kind).toBe('refused');
+    if (standing.kind !== 'refused') {
+      return;
+    }
+    // Both names the criterion asks for: the branch the ledger records, the
+    // commit it is at, and the paths that would have to be finished by hand.
+    expect(standing.problem).toContain(`"${prepared.branch}"`);
+    expect(standing.problem).toContain(prepared.baseCommit);
+    expect(standing.problem).toContain('left.txt');
+    expect(standing.problem).toMatch(/Commit or remove those paths by hand/);
+
+    const failure = await refusalOf(() =>
+      returnToRecordedBranch(prepared.workspacePath, prepared.branch, {}, strict),
+    );
+    expect(failure.message).toBe(standing.problem);
+
+    // Nothing moved: the checkout is where the turn left it, with its commit and
+    // its leftover.
+    expect(await currentBranchOf(prepared.workspacePath)).toBe(prepared.branch);
+    expect(await headOf(prepared.workspacePath)).toBe(prepared.baseCommit);
+    expect(await readFile(path.join(prepared.workspacePath, 'left.txt'), 'utf8')).toBe(
+      'uncommitted\n',
+    );
   });
 
   it('refuses a dirty branch of its own, naming both branches and the manual action', async () => {
@@ -970,6 +1011,35 @@ describe('a retained checkout that left its recorded branch', () => {
       }),
     ).rejects.toThrow(
       /cannot be continued: .*task\/side.*recorded branch.*leftover\.txt.*Commit or remove/s,
+    );
+  });
+
+  it('is refused by a continuation when its recorded branch holds uncommitted work', async () => {
+    const fixture = await createExactByteRepository();
+    const prepared = await prepareRun(fixture);
+    // The earlier attempt left work it never committed, on the branch the ledger
+    // records: the next attempt would start another agent on it, and the harness
+    // starts no coding turn from a working copy like that (HARN-35).
+    await writeFile(path.join(prepared.workspacePath, 'left.txt'), 'uncommitted\n', 'utf8');
+
+    await expect(
+      reopenWorkspace(fixture.workDir, prepared.workspaceId, {
+        sourceItem: FIXTURE_SOURCE_ITEM,
+        sourceRoot: prepared.sourceRoot,
+      }),
+    ).rejects.toThrow(
+      new RegExp(
+        `cannot be continued: .*"${prepared.branch}".*left\\.txt.*Commit or remove those paths by hand`,
+        's',
+      ),
+    );
+
+    // Verification is a read: the working copy is exactly where the earlier
+    // attempt left it, so the work can be finished by hand.
+    expect(await currentBranchOf(prepared.workspacePath)).toBe(prepared.branch);
+    expect(await headOf(prepared.workspacePath)).toBe(prepared.baseCommit);
+    expect(await readFile(path.join(prepared.workspacePath, 'left.txt'), 'utf8')).toBe(
+      'uncommitted\n',
     );
   });
 });

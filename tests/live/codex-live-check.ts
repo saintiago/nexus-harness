@@ -401,11 +401,11 @@ function runChecksSource(repairFixture: boolean): string {
  * part of the project's committed check, and does three things: it stays inert
  * unless the environment names an arm file, it waits briefly for that file to
  * appear rather than racing the run that writes it, and it injects exactly once,
-  * by breaking a committed module — and committing the break, because the coding
-  * turn that repairs it starts only from the working copy's committed state
-  * (HARN-35) — so the project's own test fails on its real assertion. What the
-  * repair turn then sees is ordinary check output; what the verifier asserts is
-  * that the module was repaired, not the test.
+ * by breaking a committed module — and committing the break, because the coding
+ * turn that repairs it starts only from the working copy's committed state
+ * (HARN-35) — so the project's own test fails on its real assertion. What the
+ * repair turn then sees is ordinary check output; what the verifier asserts is
+ * that the module was repaired, not the test.
  */
 const REPAIR_FIXTURE_SOURCE = [
   '/**',
@@ -480,7 +480,7 @@ const REPAIR_FIXTURE_SOURCE = [
   "      'commit',",
   "      '--quiet',",
   "      '--message',",
-  "      `${LABEL}: the injected failure`,",
+  '      `${LABEL}: the injected failure`,',
   '    ],',
   "    { stdio: 'ignore' },",
   '  );',

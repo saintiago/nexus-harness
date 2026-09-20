@@ -1357,6 +1357,56 @@ describe('a working copy a turn leaves on a branch of its own', () => {
       'end check-1',
     ]);
   });
+
+  it('stops before the repair turn when the working copy still holds uncommitted work', async () => {
+    const fixture = await createFixture();
+    // The implementation turn breaks what the check verifies and leaves its work
+    // uncommitted, so the round after it is red and the run would repair. It
+    // stops there instead: a repair turn is a coding turn, and no coding turn is
+    // started from a working copy that still holds uncommitted work (HARN-35).
+    const agent = fakeAgent(fixture, {
+      mode: 'replace',
+      text: 'broken, and never committed\n',
+      holdMs: 0,
+    });
+
+    const result = await runTask(
+      request(fixture, configuration(fixture)),
+      dependencies(agent.turn),
+    );
+
+    expect(result.status).toBe('failed');
+    expect(result.reason).toMatch(/the working copy is not in the state a coding turn starts from/);
+    expect(result.reason).toContain(`("${result.workspace?.branch ?? ''}")`);
+    expect(result.reason).toContain('with no uncommitted work');
+    expect(result.reason).toContain('app.txt');
+    expect(result.reason).toMatch(/Commit or remove those paths by hand/);
+
+    // Only the implementation turn ran: the repair turn the red round earned was
+    // never started, and no round ran after the refusal.
+    expect(agent.requests.map((asked) => asked.kind)).toEqual(['implementation']);
+    const report = await readReport(result.reportPath);
+    expect(report.status).toBe('failed');
+    expect(report.repairsUsed).toBe(0);
+    expect(report.attempts).toHaveLength(1);
+    expect(report.attempts[0]?.kind).toBe('implementation');
+    expect(report.attempts[0]?.checks?.outcome).toBe('failed');
+
+    // What the turn left is kept exactly as it was — nothing was committed,
+    // stashed, or discarded, and the checkout never moved — so finishing it by
+    // hand is what the message asks for.
+    const workspacePath = result.workspace?.workspacePath ?? '';
+    expect(await branchOf(workspacePath)).toBe(result.workspace?.branch);
+    expect(await readText(path.join(workspacePath, 'app.txt'))).toContain(
+      'broken, and never committed',
+    );
+    expect(
+      eventOrder(await recordedEvents(fixture)).filter((event) => event === 'start check-1'),
+    ).toHaveLength(2);
+    expect(timelineMessages(await readText(report.runLog)).at(-1)).toMatch(
+      /^final status: failed, the working copy is not in the state a coding turn starts from/,
+    );
+  }, 60_000);
 });
 
 describe('a continued run whose source checkout moved on', () => {
@@ -3366,6 +3416,51 @@ describe('a run the caller stops', () => {
     // needs is released rather than left armed for a turn that has returned.
     await new Promise((resolve) => setTimeout(resolve, 700));
     expect(turns.requests[0]?.stop.aborted).toBe(false);
+  }, 60_000);
+
+  it('gives a turn only the task time the checkout before it left', async () => {
+    const fixture = await createFixture();
+    const clock = testClock();
+    const config = configuration(fixture, { taskTimeoutMinutes: 1 });
+    const rounds = standInRounds(() => passedRound());
+    let waitedMs: number | null = null;
+    const turns = standInTurns(async (asked) => {
+      // The turn waits for the stop the run armed for it, so what it was given
+      // is measured rather than inferred: the return below spends all but 300 ms
+      // of the run's minute, so the stop has to arrive in a moment.
+      const startedAt = Date.now();
+      await awaitStop(asked);
+      waitedMs = Date.now() - startedAt;
+      return { summary: "the turn was stopped by the run's own deadline" };
+    });
+
+    const result = await runTask(
+      request(fixture, config),
+      dependencies(turns.run, {
+        now: clock.now,
+        runCheckRound: rounds.run,
+        returnToRecordedBranch: async () => {
+          // Returning the checkout is real Git work the run spends its own time
+          // on: a turn is given what is left after it, not the budget the run
+          // had before it started.
+          clock.advance(minutes(1) - 300);
+          return { changed: false };
+        },
+      }),
+    );
+
+    // The turn's stop was the run's deadline, and it reached the turn in the
+    // 300 ms that were left rather than in the minute it was never given.
+    expect(result.status).toBe('failed');
+    expect(result.timeout).toMatchObject({ limit: 'task', phase: 'implementation turn' });
+    expect(result.reason).toMatch(
+      /the implementation turn was stopped when the run's remaining task time ran out/,
+    );
+    expect(waitedMs).not.toBeNull();
+    expect(waitedMs ?? Number.POSITIVE_INFINITY).toBeLessThan(5000);
+    // Nothing followed the stopped turn: the round that judges it never ran.
+    expect(rounds.requests.map((round) => round.name)).toEqual(['baseline']);
+    expect(turns.requests).toHaveLength(1);
   }, 60_000);
 });
 

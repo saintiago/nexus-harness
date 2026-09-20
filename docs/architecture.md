@@ -26,10 +26,13 @@ branch of its own and leave the checkout there, and the harness's checks and del
 branch the workspace's ledger records. `workspace/branch.ts` is the one module that reads a
 checkout against that branch and returns it: a clean checkout whose commit descends from the
 recorded branch's tip is fast-forwarded to it and checked out, with the committing branch keeping
-its commit, and a dirty, detached, divergent, or branchless checkout is refused with both branch
-names and the manual action. The runner does that before every coding turn and before the round
-that judges it, and `workspace/reopen.ts` verifies the same standing read-only before a
-continuation is claimed. Nothing is reset, force-updated, adopted, or discarded, and
+its commit, and a detached, divergent, or branchless checkout is refused with both branch names
+and the manual action. A coding turn is also started only from the workspace's own committed
+state: a checkout that still holds uncommitted work is refused rather than handed on, on the
+recorded branch included, while the round that judges a turn still reads what that turn left. The
+runner does all of that before every coding turn and before the round that judges it, and
+`workspace/reopen.ts` verifies the same standing read-only, strictly before a continuation is
+claimed. Nothing is reset, force-updated, adopted, or discarded, and
 `delivery/github.ts` still refuses a recorded branch that is not the revision the checks validated
 (HARN-17). [spec.md](spec.md) §2 and §7 define the behavior, [WORKFLOW.md](WORKFLOW.md) §4, §6, and
 §8 the input, and [implement-workspace-continuation.md](implement-workspace-continuation.md) the
@@ -127,7 +130,7 @@ Follow the specification's [Rely on Git](spec.md#rely-on-git) principle. `worksp
 
 Prefer reading facts from Git over maintaining equivalent harness state. Store references only where a concrete caller needs them; do not build a second version-control system through custom checkpoint catalogs, duplicated commit graphs, or mandatory per-attempt HEAD tracking. Workspace safety and exclusive execution are harness responsibilities; additional rules about how an agent arranges its local commits require an explicit behavioral task.
 
-Mechanically, that means: before any check or coding turn runs, the runner gives the working copy a repository-local commit identity (`user.name`, `user.email`, and commit signing disabled), so a turn can commit without an ambient Git identity and no global or system Git setting is written. `reopenWorkspace` verifies the branch its ledger records, accepting a clean branch of a turn's own that descends from it because the runner returns the checkout to that branch before the first coding turn (`workspace/branch.ts`); a `HEAD` ahead of the recorded base is ordinary local work, not a refusal. Every attempt keeps the workspace's recorded base as the comparison base, and a continued run's report carries that base rather than a source checkout that may have advanced since. The workspace clone has no remote: a turn can commit locally, and there is no default destination to push to. When a delivery step is configured, the harness itself pushes a passed attempt's branch by URL and still adds no remote, so nothing turns that one push into a destination a later turn could use.
+Mechanically, that means: before any check or coding turn runs, the runner gives the working copy a repository-local commit identity (`user.name`, `user.email`, and commit signing disabled), so a turn can commit without an ambient Git identity and no global or system Git setting is written. `reopenWorkspace` verifies the branch its ledger records, accepting a clean branch of a turn's own that descends from it because the runner returns the checkout to that branch before the first coding turn (`workspace/branch.ts`), and refusing a workspace left with uncommitted work — the runner starts no coding turn from one; a `HEAD` ahead of the recorded base is ordinary local work, not a refusal. Every attempt keeps the workspace's recorded base as the comparison base, and a continued run's report carries that base rather than a source checkout that may have advanced since. The workspace clone has no remote: a turn can commit locally, and there is no default destination to push to. When a delivery step is configured, the harness itself pushes a passed attempt's branch by URL and still adds no remote, so nothing turns that one push into a destination a later turn could use.
 
 ### Configurable launch, one implemented runtime
 

@@ -256,13 +256,15 @@ read from the checkout `--repo` names, so the repository a run clones describes 
    before anything runs in it, so the coding turns can commit as they go; nothing is pushed. A
    **continuation** — a source issue moved back to the ready status whose pointer label names a
    workspace this machine has — reopens that clone instead of making a new one, on its recorded
-   branch and base, keeping the local commits and uncommitted changes earlier attempts left.
+   branch and base, keeping the local commits earlier attempts left.
    A checkout a turn left on a branch of its own is read against that recorded branch: when it is
    clean and its commit descends from the recorded branch's tip, the harness fast-forwards the
    recorded branch to it and checks it out — the commit stays on the branch the turn made it on —
-   and a dirty, detached, divergent, or branchless checkout stops the run before the next turn or
-   check with both branch names and what to do by hand. Nothing is reset, force-updated, or
-   discarded.
+   and a detached, divergent, or branchless checkout stops the run before the next turn or check
+   with both branch names and what to do by hand. A coding turn is also started only from the
+   workspace's own committed state: a working copy that still holds uncommitted work stops the run
+   before the agent, with its branch, the paths, and what to do by hand. Nothing is reset,
+   force-updated, or discarded.
 4. **The baseline round**: every `setup` command, then every `checks` command, in the order the
    configuration lists them. A red baseline stops a fresh run before any coding turn — the task is
    not attempted on a project that is already failing. A continuation may start red, because its
@@ -271,8 +273,8 @@ read from the checkout `--repo` names, so the repository a run clones describes 
    the working copy and never asking for approval. The implementation turn is given the task; each
    repair turn is given the failures the harness observed for itself. Every turn of the run uses the
    same selection, and every turn is asked to make small, meaningful local commits and to finish
-   with the relevant work committed where practical. A commit is not a check result: the round below
-   decides.
+   with the work it wants built on committed — the harness starts no further turn from a working
+   copy that still holds uncommitted work. A commit is not a check result: the round below decides.
 6. **A post-agent round** after every turn: `setup` again, then every check. The checkout is
    returned to its recorded branch before the round reads it, so the checks judge the revision that
    branch holds.
@@ -530,9 +532,11 @@ declares tiers tried in order inside one claim, each with its own launch and rep
 ```
 
 Flash runs the implementation and up to two repair turns; only when its post-agent checks are still
-red does Astra run — in the **same retained workspace**, so the earlier commits and uncommitted work
-are still in it — with its own two-repair allowance, and the tier's own launch is what really starts
-and what its report records. Escalation is local to one coding cycle: every claim starts at the first
+red does Astra run — in the **same retained workspace**, so the earlier commits are still in it —
+with its own two-repair allowance, and the tier's own launch is what really starts
+and what its report records. A turn is asked to commit what it wants the next turn to build on: the
+harness starts no further turn from a working copy that still holds uncommitted work, and one left
+that way stops the run for a person instead of climbing. Escalation is local to one coding cycle: every claim starts at the first
 tier, so a ticket that a reviewer's findings, a failed required check, a delivery failure, or a
 failed post-merge workflow sent back to its ready status returns to Flash in its retained workspace,
 with the work and guidance it accumulated, and the workspace's own attempt count never selects a
@@ -577,9 +581,11 @@ its recorded branch is **refused** as well: what would be pushed is the recorded
 the checks validated is the revision the copy is at, so nothing is switched or adopted and the
 failure names both revisions. Before the checks that judge a turn, the run returns a clean checkout
 to its recorded branch when it can — a fast-forward and a checkout, with the commit a turn made on a
-branch of its own kept on that branch — and a dirty, detached, divergent, or branchless checkout
-stops the run before any check, with both branch names and what to do by hand; that is what keeps
-the validated revision and the published branch the same. The pull request is found by repository,
+branch of its own kept on that branch — and a detached, divergent, or branchless checkout stops the
+run before any check, with both branch names and what to do by hand; that is what keeps the
+validated revision and the published branch the same. A coding turn starts only from committed
+state, so a working copy left holding uncommitted work stops the run before the next agent instead
+of being handed to one. The pull request is found by repository,
 head branch, and base branch — the one open match is updated, a closed or merged one is refused
 instead of edited, and one is created only when no match exists at all. Later committed work
 updates the same branch and the same pull request, because a continued attempt reuses the workspace
@@ -651,8 +657,9 @@ than instantly. `source list` and `source run` report a failed read and exit non
 retries one with a bounded backoff that respects the server's `Retry-After`. An authentication,
 workflow, uncertain-write, GitHub-delivery, or result-feedback failure stops intake for a human
 instead of being retried behind your back. A fresh run still clones the source checkout's committed `HEAD` **as it is then**;
-a continued attempt instead works in the workspace its pointer names, and the commits and
-uncommitted changes the earlier attempts left there are still in it.
+a continued attempt instead works in the workspace its pointer names, and the commits the earlier
+attempts left there are still in it. One that left uncommitted work is refused before its next
+coding turn: commit or remove those paths by hand in the workspace and scan again.
 
 ## `review`: reviews of In Review tickets through Nexus Lens
 
@@ -1200,10 +1207,14 @@ Read this before pointing a run at anything you care about.
   real temporary Git repositories: a repair turn starts on the branch its workspace records after
   the implementation turn committed on a branch of its own, a clean commit that descends from the
   recorded branch is returned to it — the recorded branch takes the commit and the branch the turn
-  made keeps it — an implementation turn that leaves a dirty, divergent, detached, or branchless
-  checkout stops the run before any check with both branch names and the manual action, and a
-  continuation of a workspace left on a branch of its own starts on the recorded branch, while one
-  whose checkout cannot be returned is refused before it is claimed.
+  made keeps it — an implementation turn that leaves a divergent, detached, or branchless checkout
+  stops the run before any check with both branch names and the manual action, and a continuation
+  of a workspace left on a branch of its own starts on the recorded branch, while one whose
+  checkout cannot be returned is refused before it is claimed. The state a coding turn may start
+  from is covered as well: a working copy that still holds uncommitted work — on the recorded
+  branch included — stops the run before the next agent, naming the branch and the paths, whether
+  it is a repair turn the red round earned or a continuation, while the reading the round after a
+  turn makes still accepts what that turn left.
 - the optional GitHub delivery step, against disposable Git repositories with a local bare
   destination and a stand-in `gh` on `PATH`: the branch really moves to the destination, the pull
   request is created with the issue reference and the check summary, a repeated delivery finds and

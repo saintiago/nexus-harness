@@ -60,6 +60,7 @@ src/
     prepare.ts                    (305)  prepareWorkspace: the clone, its branch, the ledger it writes
     state.ts                      (129)  the workspace ledger: what a clone is, every attempt in it
     reopen.ts                     (131)  resolveWorkspace/reopenWorkspace: the pointer, the checkout
+    branch.ts                     (267)  the checkout against its recorded branch: read, return, refuse
     refresh.ts                    (376)  source readiness between tickets: fetch, verify, fast-forward only
     changes.ts                    (288)  inspectWorkspaceChanges: what the copy differs from its base by
   runs/
@@ -218,9 +219,10 @@ further would separate one decision from itself: `runs/runner.ts` (the loop), `s
   a clone of the recorded base and writes the ledger `state.ts` owns;
   `reopen.ts` resolves a pointer to a workspace, reads the checkout against the branch its ledger
   records — accepting a clean branch of a turn's own that the runner can return, and refusing one
-  that cannot be returned — and `branch.ts` reads that standing and returns the checkout to the
-  recorded branch with a fast-forward and a checkout, never a reset, a force update, or an adopted
-  branch; `changes.ts` reads what the copy differs from its base by; `git.ts`
+  that cannot be returned or that still holds uncommitted work, because no coding turn is started
+  from a working copy like that — and `branch.ts` reads that standing and returns the checkout to
+  the recorded branch with a fast-forward and a checkout, never a reset, a force update, or an
+  adopted branch; `changes.ts` reads what the copy differs from its base by; `git.ts`
   and `status.ts` are the plumbing they share, including the repository-local commit identity
   (`configureWorkspaceIdentity`) a run writes into a working copy before any check or coding turn.
   Every Git invocation is bounded and stopped through `process/`: a run's phases give it what is
@@ -241,7 +243,7 @@ further would separate one decision from itself: `runs/runner.ts` (the loop), `s
   (`workspace/state.ts`); `refreshSource`, `SourceRefreshRequest`, `SourceRefreshParts`,
   `SourceRefreshResult`, `githubRepositoryOf` (`workspace/refresh.ts`); `ContinuedWorkspace`,
   `WorkspaceResolution`, `resolveWorkspace`,
-  `reopenWorkspace` (`workspace/reopen.ts`); `BranchStanding`, `BranchReturn`,
+  `reopenWorkspace` (`workspace/reopen.ts`); `BranchStanding`, `BranchReturn`, `BranchRead`,
   `inspectBranchStanding`, `returnToRecordedBranch` (`workspace/branch.ts`); `WORKSPACE_IDENTITY`, `configureWorkspaceIdentity`,
   `runGit`, `GitRunBounds`, `GitResult`, `GIT_COMMAND_TIMEOUT_MS` (`workspace/git.ts`);
   `inspectWorkspaceChanges` (`workspace/changes.ts`); `WorkspaceError`, `WorkspaceStepStop`,

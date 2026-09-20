@@ -137,8 +137,10 @@ moved to the review status. Nothing local is created for it.
 
 ## Continuation rules
 
-- The workspace is reopened, not re-cloned: same directory, same branch, and whatever the earlier
-  attempts left in it — local commits and uncommitted changes alike.
+- The workspace is reopened, not re-cloned: same directory, same branch, and the earlier attempts'
+  local commits. Uncommitted work an earlier attempt left is the operator's to finish: the harness
+  starts no coding turn from a working copy that still holds it, and a continuation whose checkout
+  is dirty is refused before it is claimed (see below).
 - A continuation creates no directory of its own beside the workspace it reopens: its evidence is a
   new `runs/<runId>`, and `workspaces/<workspaceId>` stays exactly the clone the pointer names.
   Allocation creates the workspace directory only for the attempt that creates the workspace.
@@ -153,9 +155,15 @@ moved to the review status. Nothing local is created for it.
   checkout is returned to the branch the ledger records before every coding turn and before the
   round that judges it: a clean checkout on a branch of its own whose commit descends from that
   branch is fast-forwarded to it and checked out, the committing branch keeps its commit, and a
-  dirty, detached, divergent, or branchless checkout stops before the turn or the check with the
-  branch names and the manual action. Nothing is reset, force-updated, or discarded. The recorded
-  base, not `HEAD`, is what the report compares against.
+  detached, divergent, or branchless checkout stops before the turn or the check with the branch
+  names and the manual action. Nothing is reset, force-updated, or discarded. The recorded base,
+  not `HEAD`, is what the report compares against.
+- A coding turn starts only from the workspace's own committed state, on the recorded branch
+  included: a checkout that still holds uncommitted work — staged, unstaged, or untracked — stops
+  the run before that turn with the branch, the paths, and the manual action, and nothing is
+  committed, stashed, or discarded for it. The round that judges a turn still reads the working
+  copy that turn left, uncommitted work included: that is what the attempt is judged on, and the
+  delivery step's own clean-checkout refusal is the boundary for publishing it.
 - A coding turn is encouraged to commit small, meaningful pieces locally as it works. Every
   attempt writes the workspace's repository-local commit identity (Nexus Agent \<nexus@local\>,
   commit signing disabled) before its checks and turns run, so a continuation commits under the same
@@ -302,6 +310,20 @@ continuation that cannot be returned is refused before it is claimed. Nothing he
 force-updates, adopts a branch, or discards a commit, and the delivery step's own exact-revision
 check is unchanged.
 
+**Corrected in HARN-35, second repair.** The first attempt above left one case open: the strict
+reading applied only to a checkout that was not on its recorded branch, so a retained workspace
+whose own recorded branch held uncommitted work still started another coding turn on it. A coding
+turn is now started only from the workspace's own committed state: the reading a caller makes
+before a turn (`BranchRead.requireClean`) refuses a checkout that holds staged, unstaged, or
+untracked work — on the recorded branch included — and the run stops there with the branch, the
+commit, the paths, and the manual action. `reopenWorkspace` makes the same strict reading, so a
+continuation of a dirty workspace is refused before it is claimed. The round that judges a turn
+still reads the working copy the turn left, uncommitted work included: the attempt is judged on
+what it really left, and the delivery step's own clean-checkout refusal remains the boundary for
+publishing it. A turn is therefore asked to finish with the work it wants the next turn to build
+on committed, and a dirty working copy is finished by hand — the harness never commits, stashes,
+or discards it for anyone.
+
 ## Verification
 
 - Offline: workspace allocation and resolution, reopening a workspace whose attempts committed,
@@ -324,14 +346,18 @@ check is unchanged.
   path handling.
   The return to the recorded branch is covered on its own: a clean branch of a turn's own whose
   commit descends from the recorded branch is returned to it — the recorded branch takes the
-  commit, the branch the turn made keeps it, and a dirty checkout on the recorded branch itself is
-  left exactly as it is — while a dirty branch of a turn's own, a commit the recorded branch does
-  not descend from, a detached checkout, and a recorded branch the workspace does not hold are each
-  refused with both branch names and the manual action and move nothing. The same coverage exists
-  through the runner (a repair turn asked to work after the implementation turn left a branch of its
-  own, and a red branch of its own that stops the run before any check after the turn) and through a
-  source batch (a passed return delivered on the revision the checks validated, and a dirty branch
-  of a turn's own stopped and told to the issue).
+  commit, and the branch the turn made keeps it — while a dirty branch of a turn's own, a commit
+  the recorded branch does not descend from, a detached checkout, and a recorded branch the
+  workspace does not hold are each refused with both branch names and the manual action and move
+  nothing. The strict reading a coding turn needs is covered too: a checkout that holds uncommitted
+  work is refused whether it is on a branch of its own or on the recorded branch itself, naming the
+  branch and the paths, and a continuation of one is refused before it is claimed — while the
+  reading the round after a turn makes still accepts it, because what the turn left is what that
+  round judges. The same coverage exists through the runner (a repair turn asked to work after the
+  implementation turn left a branch of its own, a red branch of its own that stops the run before
+  any check after the turn, and a red round whose uncommitted work stops the run before the repair
+  turn) and through a source batch (a passed return delivered on the revision the checks validated,
+  and a dirty branch of a turn's own stopped and told to the issue).
 - Live: **partly run, 2026-09-19.** A real Jira-driven continuation has happened: run
   `run-20260919115244-4ff8eedf` claimed HARN-2, reopened workspace `run-20260919100148-e48a9ab0`
   (same clone, same recorded base `36f62fd`, attempt 2), and the attempt's work is the local commit

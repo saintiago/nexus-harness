@@ -303,7 +303,7 @@ export interface RunnerDependencies {
    * not descend from the recorded branch, or a recorded branch the workspace
    * does not hold — rejects with the branch names and the manual action, never
    * with a reset, a force update, or an adopted branch (HARN-35). A checkout
-    * already on its recorded branch is left exactly as it is, uncommitted
+   * already on its recorded branch is left exactly as it is, uncommitted
    * changes included — unless `read` requires a clean one, which is what the
    * call before a coding turn does: a turn starts from the workspace's own
    * committed state, and uncommitted work stops the run before the agent
