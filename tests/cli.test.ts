@@ -461,6 +461,42 @@ describe('check-config', () => {
     expect(result.out).toContain('example-owner/example-repo');
   });
 
+  it('prints the completion selection without resolving the reviewer credential', async () => {
+    const { configPath } = await writeInputs({
+      ...documentedConfig,
+      source: {
+        type: 'jira',
+        siteUrl: 'https://example.atlassian.net',
+        cloudId: '9337c4da-7d33-4c1d-b03c-db207e537f88',
+        projectKey: 'SAM1',
+        tokenEnv: 'NEXUS_CHECK_CONFIG_MUST_NOT_RESOLVE_THIS',
+      },
+      delivery: {
+        type: 'github',
+        repository: 'example-owner/example-repo',
+        baseBranch: 'main',
+        completion: {
+          lensApp: 'nexus-lens',
+          lensCheckName: 'Nexus Lens',
+          reviewerTokenEnv: 'NEXUS_LENS_TOKEN',
+          postMergeWorkflows: ['ci.yml'],
+          toDoStatus: 'To Do',
+          doneStatus: 'Done',
+        },
+      },
+    });
+
+    const result = await run(['check-config', '--config', configPath]);
+
+    expect(result.err).toBe('');
+    expect(result.code).toBe(EXIT_OK);
+    expect(result.out).toContain('delivery completion');
+    expect(result.out).toContain('Nexus Lens');
+    expect(result.out).toContain('NEXUS_LENS_TOKEN');
+    expect(result.out).toContain('ci.yml');
+    expect(result.out).toContain('verified -> Done');
+  });
+
   it('accepts the --option=value form', async () => {
     const { configPath, taskPath } = await writeInputs();
 

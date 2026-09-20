@@ -328,7 +328,7 @@ request itself, never rolls a merge back, and never touches Jira.
   checks, or the coding runtime. Nothing here starts a coding turn, and no
   completion state is persisted outside Jira's own thread and GitHub's own state.
 - **Entry points:** `createCompletionPass`, `CompletionPass`, `CompletionPassParts`,
-  `CompletionOutcome`, `CompletionStatus`, `createCompletionRun`
+  `CompletionOutcome`, `CompletionStatus`, `createCompletionRun`, `mergeWaitDeadline`
   (`sources/completion.ts`); `createJiraCompletionSource`, `CompletionSource`,
   `ReviewItem`, `IssueNote`, `reviewQueueJql`, `listReviewCandidates`,
   `readReviewItem`, `listIssueNotes`, `postIssueComment`, `moveFromReview`,
