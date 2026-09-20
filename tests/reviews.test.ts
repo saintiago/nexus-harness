@@ -1679,6 +1679,8 @@ async function reviewCommandFixture(options: {
       PATH: process.env.PATH,
       FAKE_CODEX: process.env.FAKE_CODEX,
       JIRA_API_TOKEN: process.env.JIRA_API_TOKEN,
+      GH_TOKEN: process.env.GH_TOKEN,
+      GITHUB_TOKEN: process.env.GITHUB_TOKEN,
       NEXUS_LENS_KEY_PATH: process.env.NEXUS_LENS_KEY_PATH,
     };
     process.env.PATH = `${runtime.bin}${path.delimiter}${previous.PATH ?? ''}`;
@@ -1687,6 +1689,8 @@ async function reviewCommandFixture(options: {
       plans: options.plans ?? [],
     });
     process.env.JIRA_API_TOKEN = 'test-token';
+    process.env.GH_TOKEN = 'operator-token';
+    process.env.GITHUB_TOKEN = 'operator-alternate-token';
     if (options.key === null) {
       delete process.env.NEXUS_LENS_KEY_PATH;
     } else {
@@ -1754,7 +1758,14 @@ describe('the review command through the CLI', () => {
       world,
       plans: [
         {
-          inspectEnvironment: ['JIRA_API_TOKEN', 'NEXUS_LENS_KEY_PATH', 'PATH', 'FAKE_CODEX'],
+          inspectEnvironment: [
+            'JIRA_API_TOKEN',
+            'NEXUS_LENS_KEY_PATH',
+            'GH_TOKEN',
+            'GITHUB_TOKEN',
+            'PATH',
+            'FAKE_CODEX',
+          ],
           edits: [{ file: 'verdict.json', text: verdictFile(APPROVE) }],
         },
       ],
@@ -1783,6 +1794,8 @@ describe('the review command through the CLI', () => {
     ]);
     expect(turn.environmentPresent).toEqual({
       JIRA_API_TOKEN: false,
+      GH_TOKEN: false,
+      GITHUB_TOKEN: false,
       NEXUS_LENS_KEY_PATH: false,
       PATH: true,
       FAKE_CODEX: true,

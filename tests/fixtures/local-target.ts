@@ -392,7 +392,7 @@ export async function installFakeGhCompletion(
 
 /** One invocation of the completion stand-in, in the order it happened. */
 export interface FakeCompletionCall {
-  readonly op: 'list' | 'view' | 'reviews' | 'checks' | 'merge' | 'runs';
+  readonly op: 'list' | 'view' | 'reviews' | 'checks' | 'lens' | 'findings' | 'merge' | 'runs';
   readonly argv: readonly string[];
   /** The credential this invocation was made with, as the environment had it. */
   readonly credential: string | null;

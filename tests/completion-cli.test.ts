@@ -102,6 +102,7 @@ async function createFixture(
           baseBranch: 'main',
           completion: {
             lensApp: 'nexus-lens',
+            lensAppId: 123,
             lensCheckName: 'Nexus Lens',
             reviewerTokenEnv: 'NEXUS_LENS_TOKEN',
             postMergeWorkflows: ['ci.yml'],

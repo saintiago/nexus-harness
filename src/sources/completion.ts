@@ -3,8 +3,8 @@
  * that carry a workspace pointer, and for each of them one deterministic
  * handling built only from live GitHub and Jira state.
  *
- * It is not a workflow engine and it keeps no completion state of its own. What
- * happened is read back every time: the item's status and thread in Jira, and the
+ * A local admission records only the PR/head and deadline, never its outcome.
+ * What happened is read back every time: the item's status and thread in Jira, and the
  * pull request in the repository GitHub owns. Comment markers are how a repeated
  * pass or a restart recognises the comment it already wrote — the thread is the
  * record, and a marker that is already there is never written again. A status
@@ -22,7 +22,7 @@
  * quiet, and the item stays In Review. Nothing here starts a coding turn, and
  * nothing here merges anything.
  */
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, rename } from 'node:fs/promises';
 import path from 'node:path';
 import type {
   CompletionActions,
@@ -103,18 +103,6 @@ function markerFor(kind: 'findings' | 'resolution' | 'attention', identity: stri
   return `nexus-completion:${kind}:${identity}`;
 }
 
-/** The marker one comment carries, or `null` when it carries none. */
-function markerOf(note: IssueNote): string | null {
-  return /nexus-completion:[a-z-]+:[^\s|)]+/.exec(note.text)?.[0] ?? null;
-}
-
-/** The kind one marker names, or `null` for a comment that carries none. */
-function markerKind(marker: string | null): 'findings' | 'resolution' | 'attention' | null {
-  const match = /^nexus-completion:(findings|resolution|attention):/.exec(marker ?? '');
-  const kind = match?.[1];
-  return kind === 'findings' || kind === 'resolution' || kind === 'attention' ? kind : null;
-}
-
 /** One line of text, so nothing a source said can become a second line. */
 function oneLine(text: string, limit = LINE_LIMIT): string {
   const flat = text.replace(/\s+/g, ' ').trim();
@@ -149,8 +137,10 @@ async function recordArmedHead(
 ): Promise<void> {
   const directory = completionLogsDir(workDir, issueId);
   await mkdir(directory, { recursive: true });
+  const target = path.join(directory, 'completion-armed-head.json');
+  const temporary = `${target}.tmp`;
   await writeFile(
-    path.join(directory, 'completion-armed-head.json'),
+    temporary,
     `${JSON.stringify({
       head: armed.head,
       number: armed.number,
@@ -159,6 +149,7 @@ async function recordArmedHead(
     })}\n`,
     'utf8',
   );
+  await rename(temporary, target);
 }
 
 /** What a previous pass recorded when it armed auto-merge, when it recorded one. */
@@ -267,10 +258,7 @@ function findingsNote(
         : `Pull request ${pull.url} was merged as ${mergeCommit}; the merge was not rolled back.`,
       ...findings.map(findingLine),
     ],
-    closing:
-      'The workspace that produced this work is preserved. This item is being returned to its To Do ' +
-      'status so the normal source consumer can take the next repair attempt in that workspace. No ' +
-      'coding turn was started here, and no auto-merge request was made for an unverified pull request.',
+    closing: 'Returned to To Do for the normal repair consumer; workspace pointer preserved.',
   };
 }
 
@@ -280,22 +268,35 @@ function resolutionNote(
   pull: PullRequestSnapshot,
   mergeCommit: string,
   workflows: readonly WorkflowOutcome[],
+  reviewBody: string,
+  reviewUrl: string,
 ): NoteBody {
+  const summary = reviewBody.startsWith('Nexus Lens review')
+    ? (reviewBody.split(/\r?\n\r?\n/)[1] ?? reviewBody)
+    : reviewBody;
+  const excerpt = summary.replace(/\s+/g, ' ').trim().split(' ').slice(0, 40).join(' ');
   const links = [
     pull.url,
+    reviewUrl,
     ...workflows
       .map((outcome) => outcome.run?.url)
       .filter((url): url is string => url !== undefined),
   ].filter((link) => link !== '');
   return {
     marker: markerFor('resolution', mergeCommit),
-    heading: `${item.ref.key}: ${oneLine(item.title, 80)}`,
+    heading: `${item.ref.key}: resolved`,
     lines: [],
     closing:
-      `Implemented and merged. Evidence: ${links.join(' | ')}. The pull request was approved at its ` +
-      'current head by Nexus Lens, GitHub merged it with branch protection enforced, and every ' +
-      `configured post-merge main workflow succeeded on merge commit ${mergeCommit}. No unresolved ` +
-      'limitation is recorded; the workspace that produced the work is retained.',
+      `Merged ${oneLine(pull.title || item.title, 120)
+        .split(' ')
+        .slice(0, 12)
+        .join(' ')}. Review summary: ${excerpt}${summary.split(/\s+/).length > 40 ? '…' : ''} ` +
+      `Verified Nexus Lens approval and all ${String(workflows.length)} configured post-merge ${pull.baseRefName} workflows succeeded (${workflows
+        .slice(0, 3)
+        .map((w) => w.identifier)
+        .join(
+          ', ',
+        )}). Verification covers configured CI; scope and limitations follow the linked review. ${links.slice(0, 5).join(' | ')}`,
   };
 }
 
@@ -333,6 +334,8 @@ type Step =
     }
   | {
       readonly kind: 'resolution';
+      readonly reviewBody: string;
+      readonly reviewUrl: string;
       readonly pull: PullRequestSnapshot;
       readonly mergeCommit: string;
       readonly workflows: readonly WorkflowOutcome[];
@@ -343,12 +346,6 @@ interface PullContext {
   readonly item: ReviewItem;
   readonly request: CompletionRequest;
   readonly pull: PullRequestSnapshot;
-}
-
-/** One comment that is already on the thread, and what it settled. */
-interface Settled {
-  readonly commentId: string;
-  readonly kind: 'findings' | 'resolution' | 'attention';
 }
 
 /**
@@ -396,11 +393,32 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
     const waitingSince = (await readArmedHead(parts.workDir, item.ref.id))?.waitingSince ?? null;
     const deadline = mergeWaitDeadline(waitingSince, config.deadlineSeconds, now().getTime());
     for (let waited = 0; ; waited += 1) {
+      if (stop.aborted) return { kind: 'observed', detail: 'Completion was interrupted' };
       const merge: MergeVerdict = await actions.readMerge(request, pull, reviewedHead, stop);
-      if (merge.status === 'complete' && merge.mergeCommit !== null) {
+      const approved = await actions.readGate(
+        request,
+        merge.status === 'pending' ? pull : { ...pull, state: 'MERGED' },
+        stop,
+      );
+      if (merge.status === 'pending' && approved.status === 'failed')
+        return {
+          kind: 'findings',
+          pull,
+          reviewedHead,
+          findings: approved.findings,
+          mergeCommit: null,
+        };
+      if (
+        approved.status === 'attention' ||
+        (merge.status !== 'pending' && approved.status !== 'approved')
+      )
+        return { kind: 'observed', detail: approved.reason };
+      if (merge.status === 'complete' && merge.mergeCommit !== null && approved.review !== null) {
         io.out(`${item.ref.key}: ${merge.reason}`);
         return {
           kind: 'resolution',
+          reviewBody: approved.review.body,
+          reviewUrl: approved.review.url,
           pull,
           mergeCommit: merge.mergeCommit,
           workflows: merge.workflows,
@@ -411,7 +429,7 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
         return {
           kind: 'findings',
           pull,
-          reviewedHead: merge.mergeCommit ?? reviewedHead,
+          reviewedHead,
           findings: merge.workflows
             .filter((outcome) => outcome.state === 'unsuccessful')
             .map((outcome) => ({
@@ -459,7 +477,7 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
         });
         return { kind: 'pending', detail: merge.reason };
       }
-      await sleep(intervalMs, stop);
+      await sleep(Math.min(intervalMs, Math.max(0, deadline - now().getTime())), stop);
     }
   };
 
@@ -509,6 +527,10 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
       };
     }
 
+    if (pull.autoMergeRequest && armed?.head === pull.headRefOid && armed.number === pull.number) {
+      return followMerge(context, armed.head, stop, MERGE_WAIT_ROUNDS);
+    }
+
     let gate: GateVerdict;
     try {
       gate = await actions.readGate(request, pull, stop);
@@ -537,7 +559,7 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
         };
       }
       io.out(`${item.ref.key}: ${gate.reason}; waiting`);
-      await sleep(intervalMs, stop);
+      await sleep(Math.min(intervalMs, Math.max(0, deadline - now().getTime())), stop);
       return await decide(context, stop, deadline);
     }
     if (gate.status === 'failed') {
@@ -563,17 +585,6 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
         detail: 'it left In Review before GitHub was asked to arm anything',
       };
     }
-    try {
-      await actions.enableAutoMerge(request, pull, reviewedHead, stop);
-    } catch (cause) {
-      return {
-        kind: 'attention',
-        detail:
-          `GitHub did not enable auto-merge (${messageOf(cause)}); the item stays In Review and ` +
-          'nothing is assumed about the merge',
-        evidence: [pull.url],
-      };
-    }
     await recordArmedHead(
       parts.workDir,
       item.ref.id,
@@ -584,15 +595,29 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
       {
         head: reviewedHead,
         number: pull.number,
-        waitingSince: armed?.waitingSince ?? now().toISOString(),
+        waitingSince:
+          armed?.head === reviewedHead && armed.number === pull.number
+            ? (armed.waitingSince ?? now().toISOString())
+            : now().toISOString(),
       },
       now,
-    ).catch((cause: unknown) => {
-      io.err(
-        `${item.ref.key}: the approved head could not be recorded beside the completion evidence ` +
-          `(${messageOf(cause)}); GitHub's own head is the one that will be verified`,
-      );
-    });
+    );
+    try {
+      await actions.enableAutoMerge(request, pull, reviewedHead, stop, async () => {
+        const fresh = await source.readItem({ ref: item.ref, title: item.title }, stop);
+        return (
+          fresh !== null && fresh.pointers.length === 1 && fresh.pointers[0] === request.workspaceId
+        );
+      });
+    } catch (cause) {
+      return {
+        kind: 'attention',
+        detail:
+          `GitHub did not enable auto-merge (${messageOf(cause)}); the item stays In Review and ` +
+          'nothing is assumed about the merge',
+        evidence: [pull.url],
+      };
+    }
     io.out(
       `${item.ref.key}: auto-merge enabled for ${pull.url} at approved head ${reviewedHead}; ` +
         'GitHub merges it once its branch protection allows it',
@@ -628,65 +653,6 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
     }
   };
 
-  /** The completion comment already on the thread, when there is one. */
-  const settledComment = (notes: readonly IssueNote[]): Settled | null => {
-    for (const note of notes) {
-      const kind = markerKind(markerOf(note));
-      if (kind !== null) {
-        return { commentId: note.id, kind };
-      }
-    }
-    return null;
-  };
-
-  /** Retries only the status move a comment already on the thread settled. */
-  const resume = async (
-    item: ReviewItem,
-    settled: Settled,
-    stop: AbortSignal,
-  ): Promise<CompletionOutcome> => {
-    const target =
-      settled.kind === 'resolution'
-        ? config.doneStatus
-        : settled.kind === 'findings'
-          ? config.toDoStatus
-          : null;
-    if (target === null) {
-      return {
-        ref: item.ref,
-        status: 'attention',
-        detail: `the attention comment ${settled.commentId} is already on the issue; it stays In Review`,
-        commentId: settled.commentId,
-      };
-    }
-    try {
-      const moved = await source.moveTo(item.ref.id, target, stop);
-      if (moved === 'left-alone') {
-        return {
-          ref: item.ref,
-          status: 'observed',
-          detail: `it is no longer In Review, so the move to "${target}" was not needed`,
-          commentId: settled.commentId,
-        };
-      }
-    } catch (cause) {
-      return {
-        ref: item.ref,
-        status: 'attention',
-        detail:
-          `comment ${settled.commentId} is on the issue but the move to "${target}" failed: ` +
-          `${messageOf(cause)}; the comment will not be written twice`,
-        commentId: settled.commentId,
-      };
-    }
-    return {
-      ref: item.ref,
-      status: settled.kind === 'resolution' ? 'done' : 'to-do',
-      detail: `comment ${settled.commentId} was already there; moved to "${target}"`,
-      commentId: settled.commentId,
-    };
-  };
-
   /**
    * Writes the one comment a step calls for — unless the thread already holds
    * it — and makes the status move that follows. This is the only place a
@@ -695,9 +661,10 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
    */
   const recordStep = async (
     item: ReviewItem,
-    notes: readonly IssueNote[],
+    _notes: readonly IssueNote[],
     step: Step,
     stop: AbortSignal,
+    context: PullContext,
   ): Promise<CompletionOutcome> => {
     const { ref } = item;
     if (step.kind === 'observed' || step.kind === 'pending') {
@@ -710,14 +677,67 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
     }
     const body =
       step.kind === 'resolution'
-        ? resolutionNote(item, step.pull, step.mergeCommit, step.workflows)
+        ? resolutionNote(
+            item,
+            step.pull,
+            step.mergeCommit,
+            step.workflows,
+            step.reviewBody,
+            step.reviewUrl,
+          )
         : step.kind === 'findings'
           ? findingsNote(ref.key, step.pull, step.reviewedHead, step.findings, step.mergeCommit)
           : attentionNote(ref.key, step.evidence[0] ?? ref.url, step.detail, step.evidence);
 
+    const guard = async (): Promise<boolean> => {
+      if (stop.aborted) return false;
+      const currentItem = await source.readItem({ ref, title: item.title }, stop);
+      if (
+        currentItem === null ||
+        currentItem.pointers.length !== 1 ||
+        currentItem.pointers[0] !== context.request.workspaceId
+      )
+        return false;
+      if (step.kind === 'resolution' || (step.kind === 'findings' && step.mergeCommit !== null)) {
+        const approval = await actions.readApprovedHead(context.request, context.pull, stop);
+        if (approval !== context.pull.headRefOid) return false;
+        const merge = await actions.readMerge(context.request, context.pull, approval, stop);
+        if (
+          merge.mergeCommit !== step.mergeCommit ||
+          merge.status !== (step.kind === 'resolution' ? 'complete' : 'workflows-unsuccessful')
+        )
+          return false;
+      } else if (step.kind === 'findings') {
+        if ((await actions.readGate(context.request, context.pull, stop)).status !== 'failed')
+          return false;
+      }
+      const live = await actions.findMergedPullRequest(context.request, context.pull.number, stop);
+      return (
+        live.number === context.pull.number &&
+        live.headRefOid === context.pull.headRefOid &&
+        live.baseRefName === context.request.baseBranch &&
+        live.headRefName === context.request.branch
+      );
+    };
+    const freshNotes = await source.listComments(ref.id, stop);
+    const existing = noteWithMarker(freshNotes, body.marker);
+    if (existing !== null && (await source.leftReviewSince(ref.id, existing.createdAt, stop)))
+      return {
+        ref,
+        status: 'observed',
+        detail: 'Ticket was reopened after this outcome; a different resolution is required',
+        commentId: existing.id,
+      };
+    if (!(await guard()))
+      return {
+        ref,
+        status: 'observed',
+        detail: 'Ticket, head or completion evidence changed; nothing written',
+        commentId: null,
+      };
     let written: { readonly commentId: string | null; readonly existed: boolean };
     try {
-      written = await writeComment(item, body, notes, stop);
+      written = await writeComment(item, body, freshNotes, stop);
     } catch (cause) {
       return {
         ref,
@@ -736,7 +756,7 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
     }
     const target = step.kind === 'resolution' ? config.doneStatus : config.toDoStatus;
     try {
-      const moved = await source.moveTo(item.ref.id, target, stop);
+      const moved = await source.moveTo(item.ref.id, target, stop, guard);
       if (moved === 'left-alone') {
         return {
           ref,
@@ -794,10 +814,8 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
     }
     const workspaceId = item.pointers[0] ?? '';
 
-    // The thread is read before GitHub is. The comment this path already wrote is
-    // the record of what it settled: a repeated pass, or a restart after one
-    // whose status move did not arrive, retries only the move from that. Nothing
-    // is commented twice and no agent is started here.
+    // Refuse an unreadable thread before considering mutations. A comment is
+    // deduplication evidence only; the live GitHub gates are always read again.
     let notes: readonly IssueNote[];
     try {
       notes = await source.listComments(item.ref.id, stop);
@@ -808,10 +826,6 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
         detail: `its thread could not be read, so nothing was written: ${messageOf(cause)}`,
         commentId: null,
       };
-    }
-    const settled = settledComment(notes);
-    if (settled !== null) {
-      return await resume(item, settled, stop);
     }
     const thread = notes;
 
@@ -836,14 +850,20 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
         const request = requestFor(item, workspaceId);
         try {
           const merged = await actions.findMergedPullRequest(request, armed.number, stop);
-          if (merged.state.toUpperCase() === 'MERGED' && merged.headRefOid === armed.head) {
+          if (
+            merged.state.toUpperCase() === 'MERGED' &&
+            merged.headRefOid === armed.head &&
+            merged.headRefName === request.branch &&
+            merged.baseRefName === request.baseBranch &&
+            (await actions.readApprovedHead(request, merged, stop)) === armed.head
+          ) {
             const follow = await followMerge(
               { item, request, pull: merged },
               armed.head,
               stop,
               MERGE_WAIT_ROUNDS,
             );
-            return await recordStep(item, thread, follow, stop);
+            return await recordStep(item, thread, follow, stop, { item, request, pull: merged });
           }
         } catch (cause) {
           return {
@@ -878,7 +898,56 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
       }
       throw cause;
     }
-    return await recordStep(item, thread, step, stop);
+    try {
+      return await recordStep(item, thread, step, stop, context);
+    } catch (cause) {
+      return {
+        ref,
+        status: 'attention',
+        detail: `Completion evidence changed or could not be read: ${messageOf(cause)}`,
+        commentId: null,
+      };
+    }
+  };
+
+  // The logical polling deadline survives passes; this wall-clock bound also stops a
+  // hung GitHub/Jira read. A separate short feedback budget can report that expiry.
+  const reportDeadline = async (
+    candidate: SourceCandidate,
+    stop: AbortSignal,
+  ): Promise<CompletionOutcome> => {
+    const item = await source.readItem(candidate, stop);
+    if (item === null || item.pointers.length !== 1)
+      return {
+        ref: candidate.ref,
+        status: 'observed',
+        detail: 'Ticket left In Review',
+        commentId: null,
+      };
+    const request = requestFor(item, item.pointers[0] ?? '');
+    const admitted = await readArmedHead(parts.workDir, item.ref.id);
+    const pull =
+      admitted?.number == null
+        ? await actions.findPullRequest(request, stop)
+        : await actions.findMergedPullRequest(request, admitted.number, stop);
+    if (pull === null)
+      return {
+        ref: candidate.ref,
+        status: 'attention',
+        detail: 'Completion deadline expired without identifiable PR evidence',
+        commentId: null,
+      };
+    return recordStep(
+      item,
+      [],
+      {
+        kind: 'attention',
+        detail: 'the bounded completion deadline expired without a verified outcome',
+        evidence: [pull.url],
+      },
+      stop,
+      { item, request, pull },
+    );
   };
 
   return {
@@ -889,7 +958,37 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
         if (stop.aborted) {
           break;
         }
-        outcomes.push(await handle(candidate, stop));
+        const deadline = new AbortController();
+        const timer = setTimeout(
+          () => deadline.abort(new Error('Completion deadline expired')),
+          config.deadlineSeconds * 1000,
+        );
+        let outcome: CompletionOutcome;
+        try {
+          outcome = await handle(candidate, AbortSignal.any([stop, deadline.signal]));
+        } catch (cause) {
+          if (!deadline.signal.aborted) throw cause;
+          outcome = {
+            ref: candidate.ref,
+            status: 'attention',
+            detail: 'Completion deadline expired',
+            commentId: null,
+          };
+        } finally {
+          clearTimeout(timer);
+        }
+        if (deadline.signal.aborted && !stop.aborted) {
+          outcome = await reportDeadline(
+            candidate,
+            AbortSignal.any([stop, AbortSignal.timeout(10_000)]),
+          ).catch(() => ({
+            ref: candidate.ref,
+            status: 'attention' as const,
+            detail: 'Completion deadline expired; attention comment could not be confirmed',
+            commentId: null,
+          }));
+        }
+        outcomes.push(outcome);
       }
       return outcomes;
     },

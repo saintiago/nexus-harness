@@ -172,11 +172,10 @@ export async function listIssueNotes(
     }
     const total = typeof answer['total'] === 'number' ? answer['total'] : startAt + comments.length;
     startAt += comments.length;
-    if (comments.length === 0 || startAt >= total) {
-      break;
-    }
+    if (startAt >= total) return notes;
+    if (comments.length === 0) throw malformed('the comment list', 'incomplete page');
   }
-  return notes;
+  throw malformed('the comment list', 'bounded pagination exhausted');
 }
 
 /** One comment body as flat text: the same ADF reader the description uses. */
@@ -190,7 +189,60 @@ function commentText(value: unknown, key: string, token: string): string {
 
 /** The first comment carrying `marker`, or `null` when the thread has none. */
 export function noteWithMarker(notes: readonly IssueNote[], marker: string): IssueNote | null {
-  return notes.find((note) => note.text.includes(marker)) ?? null;
+  return (
+    notes.find((note) => note.text.includes(`${marker}, written by the Nexus harness)`)) ?? null
+  );
+}
+
+/** A completed transition followed by a human reopening is a new cycle, not a retry. */
+async function leftReviewSince(
+  config: JiraSourceConfig,
+  http: HttpClient,
+  id: string,
+  since: string,
+  stop: AbortSignal,
+): Promise<boolean> {
+  const timestamp = Date.parse(since);
+  if (!Number.isFinite(timestamp)) throw malformed('completion comment', 'missing creation time');
+  let startAt = 0;
+  for (let page = 0; page < 20; page++) {
+    const answer = await http.request({
+      method: 'GET',
+      path: `/rest/api/3/issue/${encodeURIComponent(id)}/changelog?startAt=${String(startAt)}&maxResults=100`,
+      signal: stop,
+    });
+    if (!isRecord(answer) || !Array.isArray(answer['values']))
+      throw malformed('issue changelog', 'no values');
+    const values = answer['values'];
+    for (const value of values) {
+      if (
+        !isRecord(value) ||
+        typeof value['created'] !== 'string' ||
+        !Array.isArray(value['items'])
+      )
+        throw malformed('issue changelog', 'missing change fields');
+      if (
+        Date.parse(value['created']) >= timestamp &&
+        value['items'].some(
+          (item) =>
+            isRecord(item) &&
+            item['field'] === 'status' &&
+            typeof item['fromString'] === 'string' &&
+            sameName(item['fromString'], config.reviewStatus) &&
+            item['toString'] !== item['fromString'],
+        )
+      )
+        return true;
+    }
+    startAt += values.length;
+    if (
+      answer['isLast'] === true ||
+      (typeof answer['total'] === 'number' && startAt >= answer['total'])
+    )
+      return false;
+    if (values.length === 0) break;
+  }
+  throw malformed('issue changelog', 'incomplete history');
 }
 
 /** Posts one comment of plain paragraphs and returns the acknowledged comment ID. */
@@ -229,6 +281,7 @@ export async function moveFromReview(
   id: string,
   target: string,
   stop: AbortSignal,
+  beforeWrite?: () => Promise<boolean>,
 ): Promise<'moved' | 'left-alone'> {
   const current = await readIssue(http, id, stop);
   if (current === null || !sameName(current.fields.status, config.reviewStatus)) {
@@ -239,7 +292,17 @@ export async function moveFromReview(
     target,
     `issue ${current.key}: moving it to "${target}"`,
   );
+  const fresh = await readIssue(http, id, stop);
+  if (
+    fresh === null ||
+    !sameName(fresh.fields.status, config.reviewStatus) ||
+    (beforeWrite !== undefined && !(await beforeWrite()))
+  )
+    return 'left-alone';
   await postTransition(http, id, chosen.id, stop);
+  const confirmed = await readIssue(http, id, stop);
+  if (confirmed === null || !sameName(confirmed.fields.status, target))
+    throw new SourceError('uncertain-write', 'Jira did not confirm the completion status');
   return 'moved';
 }
 
@@ -264,13 +327,19 @@ export interface CompletionSource {
   readItem(candidate: SourceCandidate, stop: AbortSignal): Promise<ReviewItem | null>;
   /** Every comment of one item's thread, oldest first. */
   listComments(id: string, stop: AbortSignal): Promise<readonly IssueNote[]>;
+  leftReviewSince(id: string, since: string, stop: AbortSignal): Promise<boolean>;
   /** Posts one comment of plain paragraphs and acknowledges its ID. */
   postComment(id: string, paragraphs: readonly string[], stop: AbortSignal): Promise<string>;
   /**
    * Moves one item to `target`, only while it is still in the review status.
    * `left-alone` means somebody moved it first: that is respected.
    */
-  moveTo(id: string, target: string, stop: AbortSignal): Promise<'moved' | 'left-alone'>;
+  moveTo(
+    id: string,
+    target: string,
+    stop: AbortSignal,
+    beforeWrite?: () => Promise<boolean>,
+  ): Promise<'moved' | 'left-alone'>;
 }
 
 /**
@@ -286,7 +355,13 @@ export async function readReviewItem(
   stop: AbortSignal,
 ): Promise<ReviewItem | null> {
   const issue = await readIssue(http, candidate.ref.id, stop);
-  if (issue === null || !sameName(issue.fields.status, config.reviewStatus)) {
+  if (
+    issue === null ||
+    !sameName(issue.fields.status, config.reviewStatus) ||
+    issue.fields.projectKey !== config.projectKey ||
+    issue.fields.issueType !== config.issueType ||
+    !issue.fields.labels.includes(config.label)
+  ) {
     return null;
   }
   return {
@@ -309,8 +384,10 @@ export function createJiraCompletionSource(
   return {
     listReview: (stop) => listReviewCandidates(config, http, stop),
     readItem: (candidate, stop) => readReviewItem(config, http, candidate, stop),
+    leftReviewSince: (id, since, stop) => leftReviewSince(config, http, id, since, stop),
     listComments: (id, stop) => listIssueNotes(http, id, stop, http.token),
     postComment: (id, paragraphs, stop) => postIssueComment(http, id, paragraphs, stop),
-    moveTo: (id, target, stop) => moveFromReview(config, http, id, target, stop),
+    moveTo: (id, target, stop, beforeWrite) =>
+      moveFromReview(config, http, id, target, stop, beforeWrite),
   };
 }

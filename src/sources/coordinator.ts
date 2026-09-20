@@ -54,8 +54,10 @@ function runOutcome(
   attempt?: SourceRunOutcome['attempt'],
   pullRequest?: DeliveredPullRequest | null,
   deliveryFailure?: string | null,
+  completionEnabled = false,
 ): SourceRunOutcome {
   return {
+    ...(completionEnabled ? { completionEnabled: true } : {}),
     runId: result.run.runId,
     status: result.status,
     reason: result.reason,
@@ -821,6 +823,8 @@ async function attempt(
       run,
       { number: attempt, of: ladder.length, tier: tier.name },
       pullRequest,
+      undefined,
+      context.completion !== undefined,
     );
 
     // Whether another rung follows this attempt. Only an exhausted ordinary red

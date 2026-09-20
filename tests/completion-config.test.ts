@@ -32,6 +32,7 @@ const SOURCE = {
 
 const COMPLETION = {
   lensApp: 'nexus-lens',
+  lensAppId: 123,
   lensCheckName: 'Nexus Lens',
   reviewerTokenEnv: 'NEXUS_LENS_TOKEN',
   postMergeWorkflows: ['ci.yml'],
@@ -102,7 +103,6 @@ describe('delivery with completion', () => {
     const completion = config.delivery?.completion;
     expect(completion).toEqual({
       ...COMPLETION,
-      lensReviewContext: COMPLETION_DEFAULTS.lensReviewContext,
       pollIntervalSeconds: COMPLETION_DEFAULTS.pollIntervalSeconds,
       deadlineSeconds: COMPLETION_DEFAULTS.deadlineSeconds,
     });
@@ -126,6 +126,9 @@ describe('delivery with completion', () => {
       /reviewerTokenEnv must be an environment-variable name/,
     ],
     ['a blank lensCheckName', { lensCheckName: ' ' }, /lensCheckName must not be blank/],
+    ['an operator credential variable', { reviewerTokenEnv: 'GH_TOKEN' }, /separate/],
+    ['a workflow display name', { postMergeWorkflows: ['CI'] }, /workflow file/],
+    ['a zero App ID', { lensAppId: 0 }, /positive integer/],
     ['a blank lensApp', { lensApp: '' }, /lensApp must not be blank/],
     [
       'a blank workflow entry',

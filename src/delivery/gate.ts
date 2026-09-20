@@ -24,6 +24,7 @@ export interface CheckSnapshot {
 /** Conclusions that are not a success, whatever the upstream state calls them. */
 const UNSUCCESSFUL = new Set([
   'FAILURE',
+  'ERROR',
   'FAILED',
   'CANCELLED',
   'CANCELED',
@@ -78,6 +79,8 @@ export function checkPassed(check: CheckSnapshot): boolean {
 /** One workflow run as `gh run list --json` reports it. */
 export interface WorkflowRunSnapshot {
   readonly databaseId: number;
+  readonly runAttempt?: number;
+  readonly headBranch?: string;
   readonly workflowId: number;
   readonly workflowName: string;
   readonly path: string;
@@ -147,7 +150,10 @@ function outcomeFor(identifier: string, runs: readonly WorkflowRunSnapshot[]): W
   // The latest attempt is the highest run ID: GitHub's run list is ordered, but
   // "latest" must not depend on that.
   const latest = matching.reduce((left, right) =>
-    right.databaseId > left.databaseId ? right : left,
+    right.databaseId > left.databaseId ||
+    (right.databaseId === left.databaseId && (right.runAttempt ?? 1) > (left.runAttempt ?? 1))
+      ? right
+      : left,
   );
   const status = latest.status.trim().toLowerCase();
   if (status !== 'completed') {
@@ -164,7 +170,12 @@ function outcomeFor(identifier: string, runs: readonly WorkflowRunSnapshot[]): W
   const conclusion = latest.conclusion?.trim().toUpperCase() ?? '';
   return {
     identifier,
-    state: conclusion === 'SUCCESS' ? 'success' : 'unsuccessful',
+    state:
+      conclusion === 'SUCCESS'
+        ? 'success'
+        : UNSUCCESSFUL.has(conclusion)
+          ? 'unsuccessful'
+          : 'running',
     run: latest,
     conclusion: conclusion === '' ? null : conclusion,
   };

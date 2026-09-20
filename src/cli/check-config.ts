@@ -33,7 +33,7 @@ function describeConfig(config: HarnessConfig, configPath: string, workDir: stri
     if (delivery.completion !== undefined) {
       const completion = delivery.completion;
       lines.push(
-        `  delivery completion    reviewer ${completion.lensApp}, check ${completion.lensCheckName}, ` +
+        `  delivery completion    reviewer ${completion.lensApp} (App ${String(completion.lensAppId)}), check ${completion.lensCheckName}, ` +
           `credential environment variable ${completion.reviewerTokenEnv}`,
         `  delivery completion    post-merge workflows ${completion.postMergeWorkflows.join(', ')}, ` +
           `fail -> ${completion.toDoStatus}, verified -> ${completion.doneStatus}, ` +

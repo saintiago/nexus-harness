@@ -477,6 +477,7 @@ describe('check-config', () => {
         baseBranch: 'main',
         completion: {
           lensApp: 'nexus-lens',
+          lensAppId: 123,
           lensCheckName: 'Nexus Lens',
           reviewerTokenEnv: 'NEXUS_LENS_TOKEN',
           postMergeWorkflows: ['ci.yml'],
@@ -491,6 +492,7 @@ describe('check-config', () => {
     expect(result.err).toBe('');
     expect(result.code).toBe(EXIT_OK);
     expect(result.out).toContain('delivery completion');
+    expect(result.out).toContain('App 123');
     expect(result.out).toContain('Nexus Lens');
     expect(result.out).toContain('NEXUS_LENS_TOKEN');
     expect(result.out).toContain('ci.yml');

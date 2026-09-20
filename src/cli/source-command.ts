@@ -79,7 +79,7 @@ function environmentWithout(environment: NodeJS.ProcessEnv, name: string): NodeJ
  * variable the completion configuration names. It is deliberately a different
  * variable from the operator's GitHub credential: the reviewer's token reads the
  * reviewer's verdict and never enables auto-merge, and the operator's credential
- * never reaches the reviewer (docs/WORKFLOW.md §9). A missing or blank variable
+ * never reaches the reviewer (docs/WORKFLOW.md §10). A missing or blank variable
  * is refused before anything runs, with the variable named and no value echoed.
  */
 function resolveReviewerToken(
@@ -295,7 +295,11 @@ async function sourceCommand(
     // Jira credential variable, and the same effective agent selection a
     // file-task run would use.
     const repoPath = path.resolve(cwd, repoArgument ?? '');
-    const childEnvironment = environmentWithout(process.env, sourceConfig.tokenEnv);
+    const operatorEnvironment = environmentWithout(process.env, sourceConfig.tokenEnv);
+    const childEnvironment =
+      config.delivery?.completion === undefined
+        ? operatorEnvironment
+        : environmentWithout(operatorEnvironment, config.delivery.completion.reviewerTokenEnv);
     // Delivery is built only when the configuration asks for it, and its
     // commands inherit the same environment a coding turn does: everything
     // except the Jira credential variable (docs/WORKFLOW.md §8).
@@ -312,7 +316,7 @@ async function sourceCommand(
     // for it. It reads the Nexus Lens reviewer's verdict with the reviewer's own
     // environment variable and asks GitHub to arm auto-merge with the operator's
     // credential: the two are never swapped, and neither is written anywhere
-    // (docs/WORKFLOW.md §9).
+    // (docs/WORKFLOW.md §10).
     let completion: CompletionRun | undefined;
     const deliveryConfig = config.delivery;
     const completionConfig = deliveryConfig?.completion;

@@ -175,7 +175,6 @@ const BRANCH_PATTERN = /^[^\s-][^\s]*$/;
 
 /** Documented defaults of the optional review-to-completion step. */
 export const COMPLETION_DEFAULTS = {
-  lensReviewContext: 'nexus-lens',
   pollIntervalSeconds: 30,
   deadlineSeconds: 30 * 60,
 } as const;
@@ -188,7 +187,7 @@ export const MIN_COMPLETION_POLL_INTERVAL_SECONDS = 5;
  * name, the path under `.github/workflows`, or the numeric workflow ID. It is
  * one literal value and carries no option-like prefix.
  */
-const WORKFLOW_PATTERN = /^[^\s-][^\s]*$/;
+const WORKFLOW_PATTERN = /^(?:[1-9][0-9]*|(?:\.github\/workflows\/)?[A-Za-z0-9_.-]+\.ya?ml)$/;
 
 /**
  * The optional review-to-completion step inside `delivery`. Every field that
@@ -197,9 +196,7 @@ const WORKFLOW_PATTERN = /^[^\s-][^\s]*$/;
  */
 const completionSchema = z.strictObject({
   lensApp: nonBlankString('lensApp'),
-  lensReviewContext: nonBlankString('lensReviewContext').default(
-    COMPLETION_DEFAULTS.lensReviewContext,
-  ),
+  lensAppId: boundedInteger('lensAppId', 1, 'a positive integer'),
   lensCheckName: nonBlankString('lensCheckName'),
   reviewerTokenEnv: z
     .string({ error: 'reviewerTokenEnv must be a string' })
@@ -207,7 +204,14 @@ const completionSchema = z.strictObject({
       error:
         'reviewerTokenEnv must be an environment-variable name such as "NEXUS_LENS_TOKEN": ' +
         'the reviewer credential never appears in the configuration file',
-    }),
+    })
+    .refine(
+      (name) =>
+        !['GH_TOKEN', 'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN'].includes(
+          name.toUpperCase(),
+        ),
+      { error: 'reviewerTokenEnv must be separate from the operator credential' },
+    ),
   postMergeWorkflows: z
     .array(
       z.string({ error: 'postMergeWorkflows entries must be strings' }).regex(WORKFLOW_PATTERN, {
@@ -374,8 +378,22 @@ export const harnessConfigSchema = z
   .superRefine((config, ctx) => {
     const completion = config.delivery?.completion;
     if (completion === undefined || config.source === undefined) return;
+    if (
+      config.review !== undefined &&
+      (config.review.repository !== config.delivery?.repository ||
+        config.review.app.appId !== completion.lensAppId ||
+        config.review.app.login !== completion.lensApp ||
+        config.review.checkName !== completion.lensCheckName)
+    )
+      ctx.addIssue({
+        code: 'custom',
+        message:
+          'completion Lens identity must match the configured review repository, app and check',
+        path: ['delivery', 'completion'],
+      });
     const problem = checkCompletionStatuses(config.source.reviewStatus, completion);
-    if (problem !== null) ctx.addIssue({ code: 'custom', message: problem, path: ['delivery', 'completion'] });
+    if (problem !== null)
+      ctx.addIssue({ code: 'custom', message: problem, path: ['delivery', 'completion'] });
   })
   .refine((config) => config.review === undefined || config.source !== undefined, {
     error:

@@ -183,7 +183,7 @@ export interface GitHubDeliveryConfig {
  * own credential is read from. It carries no credential itself, and the harness
  * never merges a pull request: the operator's GitHub credential authenticates one
  * per-pull-request request to enable native auto-merge, and GitHub enforces branch
- * protection and performs the merge (docs/WORKFLOW.md §9).
+ * protection and performs the merge (docs/WORKFLOW.md §10).
  */
 export interface CompletionConfig {
   /**
@@ -191,8 +191,7 @@ export interface CompletionConfig {
    * request review to. Reviews from anyone else are not that reviewer's verdict.
    */
   readonly lensApp: string;
-  /** Pull request review context the gate requires, for example `nexus-lens`. */
-  readonly lensReviewContext: string;
+  readonly lensAppId: number;
   /**
    * Name of the app-owned status check the gate requires on the same commit as
    * the review, for example `Nexus Lens`.

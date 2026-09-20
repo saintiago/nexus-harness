@@ -158,6 +158,13 @@ async function reviewCommand(
       process.env,
       source.tokenEnv,
       review.app.privateKeyPathEnv,
+      'GH_TOKEN',
+      'GITHUB_TOKEN',
+      'GH_ENTERPRISE_TOKEN',
+      'GITHUB_ENTERPRISE_TOKEN',
+      ...(config.delivery?.completion === undefined
+        ? []
+        : [config.delivery.completion.reviewerTokenEnv]),
     );
 
     // The review queue is the existing Jira connector read-only, with its

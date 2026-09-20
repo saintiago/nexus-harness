@@ -1,44 +1,8 @@
-/**
- * The stand-in GitHub CLI of the review-to-completion suites.
- *
- * Like tests/fixtures/fake-gh.mjs it is a real program a real `gh` name resolves
- * to, so everything above this boundary is real: the completion step, its
- * bounded command runner, the argument lists it builds, and the command logs it
- * keeps. Nothing in `src/` knows this file exists.
- *
- * It speaks the invocations the completion path makes, and only those:
- *
- *   gh pr list --repo <owner/name> --head <branch> --base <branch> --state open
- *              --limit 20 --json number,url,state,isDraft,headRefName,baseRefName,
- *              headRefOid,mergeCommit
- *   gh pr view <number|url> --repo <owner/name> --json <the same fields>
- *   gh pr reviews <url> --repo <owner/name> --json id,author,state,body,commitId,url
- *   gh pr checks <url> --repo <owner/name> --json name,state,conclusion,link
- *   gh pr merge <url> --repo <owner/name> --auto --squash
- *   gh run list --repo <owner/name> --commit <sha> --event push --branch <branch>
- *              --limit 100 --json databaseId,workflowId,name,path,event,status,
- *              conclusion,headSha,url
- *
- * Anything else is an error, so a completion path that changed its commands
- * without changing this stand-in fails loudly instead of quietly passing.
- *
- * `FAKE_GH` in the environment is
- * `{ "stateDir": "...", "token": "the operator credential", "fail": "<op>" }`.
- * `token` is what this stand-in expects to see in `GH_TOKEN` for every command
- * except `pr reviews`, which is the one invocation the reviewer's own credential
- * makes; a command reaching it with the wrong credential exits 1, so a swapped
- * credential is a failing test rather than a silent pass. `fail` makes one
- * invocation (`list`, `view`, `reviews`, `checks`, `merge`, `runs`) end nonzero
- * with a GitHub-shaped message.
- *
- * "GitHub" is held in three JSON files under the state directory:
- * `pull-requests.json` (one pull request per line),
- * `pr-reviews.json`, `pr-checks.json`, and `workflow-runs.json`. Each call is
- * recorded, one JSON line per invocation, in `calls.jsonl` with the credential
- * it was made with.
+/** Offline gh boundary: actual pr view/checks and REST/GraphQL response shapes.
+ * Only enablePullRequestAutoMerge receives the operator token. Read commands
+ * receive the separate reader token; no command launches a reviewer or agent.
  */
-
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 const config = JSON.parse(process.env.FAKE_GH ?? '{}');
@@ -102,13 +66,9 @@ const pullFor = (repo, selector) => {
  * The credential rule: every invocation except the reviewer's own `pr reviews`
  * read must carry the operator credential, and that one must carry the other.
  */
-const wrongToken = (operation) => {
-  if (expectedToken === null) {
-    return false;
-  }
-  const used = credential();
-  return operation === 'reviews' ? used === expectedToken : used !== expectedToken;
-};
+const wrongToken = (operation) =>
+  expectedToken !== null &&
+  (operation === 'merge' ? credential() !== expectedToken : credential() === expectedToken);
 
 const denied = (operation) =>
   fail(
@@ -116,131 +76,134 @@ const denied = (operation) =>
       `${operation === 'reviews' ? 'operator' : 'reviewer'} credential`,
   );
 
-const op = argv[0] === 'pr' ? argv[1] : argv[0] === 'run' ? 'run' : argv[1];
-if (argv[0] === 'pr' && argv[1] === 'list') {
-  record({ op: 'list', repo: optionValue('--repo'), head: optionValue('--head'), url: null });
-  if (failure === 'list') {
-    fail('HTTP 401: Bad credentials (https://api.github.com/graphql)');
-  } else if (wrongToken('list')) {
-    denied('list');
-  } else {
-    const repo = optionValue('--repo');
-    const head = optionValue('--head');
-    const base = optionValue('--base');
-    const state = (optionValue('--state') ?? 'open').toUpperCase();
-    const matching = jsonLines('pull-requests.json').filter(
-      (pull) =>
-        pull.repo === repo &&
-        pull.headRefName === head &&
-        pull.baseRefName === base &&
-        // `gh pr list --state open` answers with the open ones, plus the fixture
-        // entry that carries `delivered: true` — the pull request this harness
-        // delivered for that branch. GitHub removes a merged one from the open
-        // list, so a test that seeds the merge keeps the delivered entry in the
-        // answer while `gh pr view` reports the state GitHub has now.
-        (state === 'OPEN'
-          ? (pull.state ?? 'OPEN').toUpperCase() === 'OPEN' || pull.delivered === true
-          : (pull.state ?? 'OPEN').toUpperCase() === state),
-    );
-    process.stdout.write(
-      `${JSON.stringify(
-        matching.map((pull) => ({
-          number: pull.number,
-          url: pull.url,
-          // The delivered pull request is what this list answered with; a
-          // fixture that has GitHub merge it in the meantime still carries the
-          // merged state, and `gh pr view` then reports that merge.
-          state: pull.state ?? 'OPEN',
-          isDraft: pull.isDraft ?? false,
-          headRefName: pull.headRefName,
-          baseRefName: pull.baseRefName,
-          headRefOid: pull.headRefOid,
-          mergeCommit: pull.mergeCommit ?? null,
-        })),
-      )}\n`,
-    );
-  }
-} else if (argv[0] === 'pr' && argv[1] === 'view') {
-  const pull = pullFor(optionValue('--repo'), argv[2] ?? null);
-  record({
-    op: 'view',
-    repo: optionValue('--repo'),
-    url: pull?.url ?? argv[2] ?? null,
-    state: pull?.state ?? null,
-    headRefOid: pull?.headRefOid ?? null,
-  });
-  if (failure === 'view') {
-    fail('HTTP 404: Not Found (https://api.github.com/graphql)');
-  } else if (wrongToken('view')) {
-    denied('view');
-  } else if (pull === undefined) {
-    fail(`HTTP 404: Not Found (${String(argv[2] ?? '')})`);
-  } else {
-    process.stdout.write(`${JSON.stringify(pull)}\n`);
-  }
-} else if (argv[0] === 'pr' && argv[1] === 'reviews') {
-  record({ op: 'reviews', repo: optionValue('--repo'), url: argv[2] ?? null });
-  if (failure === 'reviews') {
-    fail('HTTP 500: Internal Server Error (https://api.github.com/graphql)');
-  } else if (wrongToken('reviews')) {
-    denied('reviews');
-  } else {
-    process.stdout.write(`${JSON.stringify(jsonDocument('pr-reviews.json', []))}\n`);
-  }
-} else if (argv[0] === 'pr' && argv[1] === 'checks') {
-  record({ op: 'checks', repo: optionValue('--repo'), url: argv[2] ?? null });
-  if (failure === 'checks') {
-    fail('HTTP 500: Internal Server Error (https://api.github.com/graphql)');
-  } else if (wrongToken('checks')) {
-    denied('checks');
-  } else {
-    process.stdout.write(`${JSON.stringify(jsonDocument('pr-checks.json', []))}\n`);
-  }
-} else if (argv[0] === 'pr' && argv[1] === 'merge') {
-  const pull = pullFor(optionValue('--repo'), argv[2] ?? null);
-  record({
-    op: 'merge',
-    repo: optionValue('--repo'),
-    url: pull?.url ?? argv[2] ?? null,
-    auto: argv.includes('--auto'),
-    squash: argv.includes('--squash'),
-  });
-  if (failure === 'merge') {
-    fail('GraphQL: Pull request is not mergeable (enablePullRequestAutoMerge)');
-  } else if (wrongToken('merge')) {
-    denied('merge');
-  } else if (pull === undefined) {
-    fail(`HTTP 404: Not Found (${String(argv[2] ?? '')})`);
-  } else if (!argv.includes('--auto') || !argv.includes('--squash')) {
-    fail('HTTP 422: auto-merge was not requested as a squash merge');
-  } else {
-    process.stdout.write(`auto-merge enabled for ${pull.url}\n`);
-  }
-} else if (argv[0] === 'run' && argv[1] === 'list') {
-  record({
-    op: 'runs',
-    repo: optionValue('--repo'),
-    commit: optionValue('--commit'),
-    event: optionValue('--event'),
-    branch: optionValue('--branch'),
-  });
-  if (failure === 'runs') {
-    fail('HTTP 500: Internal Server Error (https://api.github.com/graphql)');
-  } else if (wrongToken('runs')) {
-    denied('runs');
-  } else {
-    const commit = optionValue('--commit');
-    const event = optionValue('--event');
-    const branch = optionValue('--branch');
-    const matching = jsonLines('workflow-runs.json').filter(
-      (run) =>
-        run.headSha === commit &&
-        (run.event ?? 'push') === event &&
-        (run.headBranch ?? branch) === branch,
-    );
-    process.stdout.write(`${JSON.stringify(matching)}\n`);
-  }
-} else {
-  process.stderr.write(`fake gh: unsupported command (${String(op)}): ${argv.join(' ')}\n`);
-  process.exitCode = 2;
+const enrich = (p) => ({
+  id: `PR_${p.number}`,
+  mergeable: 'MERGEABLE',
+  title: 'Added fixture ownership checks',
+  body: '',
+  autoMergeRequest: null,
+  ...p,
+});
+const reply = (value) => process.stdout.write(`${JSON.stringify(value)}\n`);
+let operation;
+if (argv[0] === 'pr') operation = argv[1];
+else if (argv[0] === 'api' && argv[1] === 'graphql') operation = 'merge';
+else if (argv[0] === 'api') {
+  const endpoint = argv.find((a) => a.startsWith('repos/')) ?? '';
+  operation = endpoint.endsWith('/comments')
+    ? 'findings'
+    : endpoint.endsWith('/reviews')
+      ? 'reviews'
+      : endpoint.endsWith('/check-runs')
+        ? 'lens'
+        : endpoint.endsWith('/runs')
+          ? 'runs'
+          : null;
 }
+record({ op: operation, auto: operation === 'merge', squash: operation === 'merge' });
+if (failure === operation || (failure === 'checks' && operation === 'lens')) {
+  fail('HTTP 403: GitHub refused the operation');
+} else if (wrongToken(operation)) {
+  denied(operation);
+} else if (operation === 'list') {
+  const list = jsonLines('pull-requests.json').filter(
+    (p) =>
+      p.repo === optionValue('--repo') &&
+      p.headRefName === optionValue('--head') &&
+      p.baseRefName === optionValue('--base') &&
+      p.state === 'OPEN',
+  );
+  reply(list.map(enrich));
+} else if (operation === 'view') {
+  const p = pullFor(optionValue('--repo'), argv[2]);
+  if (!p) fail('HTTP 404');
+  else reply(enrich(p));
+} else if (operation === 'reviews') {
+  reply(
+    jsonDocument('pr-reviews.json', []).map((r) => ({
+      id: r.id,
+      user: r.author,
+      state: r.state,
+      body: r.body,
+      commit_id: r.commitId,
+      html_url: r.url,
+      submitted_at: r.submittedAt ?? '2026-09-20T10:00:00Z',
+    })),
+  );
+} else if (operation === 'findings') {
+  reply(jsonDocument('pr-reviews.json', []).flatMap((r) => r.inlineComments ?? []));
+} else if (operation === 'lens') {
+  const lens = jsonDocument('pr-checks.json', [])
+    .filter((c) => c.name === 'Nexus Lens')
+    .map((c, i) => ({
+      id: c.id ?? 9001 + i,
+      name: c.name,
+      head_sha: c.headSha ?? 'a'.repeat(40),
+      app: { id: c.appId ?? 123 },
+      status: c.state === 'PENDING' ? 'in_progress' : 'completed',
+      conclusion: c.conclusion?.toLowerCase() ?? null,
+      details_url:
+        c.reviewUrl ?? 'https://github.com/saintiago/nexus-harness/pull/29#pullrequestreview-555',
+      html_url: c.link,
+    }));
+  reply({ total_count: lens.length, check_runs: lens });
+} else if (operation === 'checks') {
+  if (!argv.includes('--required') || optionValue('--json') !== 'name,state,link')
+    fail('unsupported check arguments');
+  else {
+    const required = jsonDocument('pr-checks.json', [])
+      .filter((c) => c.required !== false)
+      .map((c) => ({ name: c.name, state: c.state, link: c.link }));
+    reply(required);
+    process.exitCode = required.some((c) => c.state === 'FAILURE')
+      ? 1
+      : required.some((c) => c.state === 'PENDING')
+        ? 8
+        : 0;
+  }
+} else if (operation === 'runs') {
+  // Return all seeded records, even incorrect event/base/SHA. Production must verify every dimension itself.
+  const runs = jsonLines('workflow-runs.json').map((r) => ({
+    id: r.databaseId,
+    workflow_id: r.workflowId,
+    run_attempt: r.runAttempt ?? 1,
+    name: r.name,
+    path: r.path,
+    event: r.event,
+    status: r.status,
+    conclusion: r.conclusion,
+    head_sha: r.headSha,
+    head_branch: r.headBranch,
+    html_url: r.url,
+  }));
+  reply({ total_count: runs.length, workflow_runs: runs });
+} else if (operation === 'merge') {
+  const query = argv.find((a) => a.startsWith('query=')) ?? '';
+  if (
+    !query.includes('enablePullRequestAutoMerge') ||
+    !query.includes('mergeMethod:SQUASH') ||
+    query.includes('mergePullRequest(')
+  )
+    fail('direct merge forbidden');
+  else {
+    const node = (argv.find((a) => a.startsWith('pull=')) ?? '').slice(5);
+    const pulls = jsonLines('pull-requests.json');
+    const p = pulls.find((p) => `PR_${p.number}` === node);
+    if (!p) fail('unknown PR node');
+    else {
+      p.autoMergeRequest = { enabledAt: '2026-09-20T12:00:00Z' };
+      writeFileSync(
+        path.join(stateDir, 'pull-requests.json'),
+        pulls.map((p) => JSON.stringify(p)).join('\n') + '\n',
+      );
+      if (failure === 'merge-uncertain') {
+        fail('HTTP 503: response lost after arming');
+      } else
+        reply({
+          data: {
+            enablePullRequestAutoMerge: { pullRequest: { autoMergeRequest: p.autoMergeRequest } },
+          },
+        });
+    }
+  }
+} else fail(`Unsupported gh invocation: ${argv.join(' ')}`);

@@ -53,7 +53,7 @@ const WORKFLOW_URL = 'https://github.com/saintiago/nexus-harness/actions/runs/42
 
 const COMPLETION: CompletionConfig = {
   lensApp: 'nexus-lens',
-  lensReviewContext: 'nexus-lens',
+  lensAppId: 123,
   lensCheckName: 'Nexus Lens',
   reviewerTokenEnv: 'NEXUS_LENS_TOKEN',
   postMergeWorkflows: ['ci.yml'],
@@ -130,7 +130,6 @@ function mergedPullRequest(overrides: Record<string, unknown> = {}): Record<stri
   return {
     ...ONE_PULL_REQUEST,
     repo: REPOSITORY,
-    delivered: true,
     state: 'MERGED',
     mergeCommit: { oid: MERGE_COMMIT },
     ...overrides,
@@ -159,6 +158,7 @@ interface HeldComment {
 interface FakeJira {
   readonly calls: FetchCall[];
   readonly comments: HeldComment[];
+  readonly history: Record<string, unknown>[];
   /** The issue's current status name, as a transition changes it. */
   status: string;
   /** The labels the issue carries. */
@@ -224,6 +224,7 @@ function fakeJira(): FakeJira {
   const state: FakeJira = {
     calls: [],
     comments: [],
+    history: [],
     status: 'In Review',
     labels: ['harness-task', WORKSPACE_POINTER],
     readFailure: false,
@@ -245,6 +246,7 @@ function fakeJira(): FakeJira {
         headers: { 'content-type': 'application/json' },
       });
 
+    if (url.includes('/changelog?')) return json({ values: state.history, isLast: true });
     if (state.readFailure) {
       return json({ errorMessages: ['Jira is unavailable'] }, 503);
     }
@@ -287,6 +289,10 @@ function fakeJira(): FakeJira {
       const wanted = (body as { transition?: { id?: string } } | undefined)?.transition?.id;
       const chosen = state.targets[Number(wanted ?? '') - 11];
       if (chosen !== undefined) {
+        state.history.push({
+          created: '2026-09-20T11:30:00.000Z',
+          items: [{ field: 'status', fromString: state.status, toString: chosen }],
+        });
         state.status = chosen;
       }
       return new Response(null, { status: 204 });
@@ -379,6 +385,11 @@ async function createFixture(options: FixtureOptions = {}): Promise<Fixture> {
     'utf8',
   );
 
+  if (options.merged === true)
+    await writeFile(
+      path.join(logsDir, 'completion-armed-head.json'),
+      JSON.stringify({ head: HEAD, number: 29, waitingSince: null }),
+    );
   const jira = fakeJira();
   const config: CompletionConfig = { ...COMPLETION, ...options.config };
   return { parent, workDir, logsDir, gh, jira, config };
@@ -476,7 +487,7 @@ describe('review-to-completion', () => {
 
     const outcome = only(await runPass(fixture));
 
-    expect(outcome.status).toBe('done');
+    expect(outcome.status, outcome.detail).toBe('done');
     expect(fixture.jira.status).toBe('Done');
     expect(commentTexts(fixture)).toHaveLength(1);
     const comment = commentTexts(fixture)[0] ?? '';
@@ -492,14 +503,10 @@ describe('review-to-completion', () => {
     // A pull request that is already merged proves its reviewed head from the
     // approval alone: there is no open pull request left to gate, and the merge
     // and its workflows are what is read.
-    expect(calls.map((call) => call.op)).toEqual(['list', 'reviews', 'view', 'runs']);
-    // The reviewer's own read is the only one made with the reviewer's token.
-    expect(
-      calls.filter((call) => call.credential === REVIEWER_TOKEN).map((call) => call.op),
-    ).toEqual(['reviews']);
-    expect(calls.filter((call) => call.credential === OPERATOR_TOKEN).length).toBe(
-      calls.length - 1,
-    );
+    expect(calls.some((call) => call.op === 'reviews')).toBe(true);
+    expect(calls.some((call) => call.op === 'lens')).toBe(true);
+    expect(calls.some((call) => call.op === 'runs')).toBe(true);
+    expect(calls.every((call) => call.credential === REVIEWER_TOKEN)).toBe(true);
   });
 
   it('arms native auto-merge with the operator credential and waits for GitHub to merge', async () => {
@@ -536,14 +543,15 @@ describe('review-to-completion', () => {
       }),
     );
 
-    expect(outcome.status).toBe('done');
+    expect(outcome.status, outcome.detail).toBe('done');
     expect(fixture.jira.status).toBe('Done');
     const calls = await fakeCompletionCalls(fixture.gh);
     const merge = calls.find((call) => call.op === 'merge');
     expect(merge?.credential).toBe(OPERATOR_TOKEN);
     expect(merge?.auto).toBe(true);
     expect(merge?.squash).toBe(true);
-    expect(merge?.argv).toContain('--auto');
+    expect(merge?.argv.join(' ')).toContain('enablePullRequestAutoMerge');
+    expect(merge?.argv.join(' ')).not.toContain('mergePullRequest(');
     // No direct merge: the completion path only ever asks GitHub to arm it.
     expect(calls.some((call) => call.argv.includes('--admin'))).toBe(false);
     expect(
@@ -551,17 +559,21 @@ describe('review-to-completion', () => {
     ).toContain(HEAD);
   });
 
-  it('keeps pending pull request checks In Review without a comment', async () => {
+  it('bounds pending required pull request checks with an attention comment', async () => {
     const fixture = await createFixture({
-      checks: [{ name: 'Nexus Lens', state: 'PENDING', conclusion: null, link: LENS_CHECK_URL }],
+      checks: [
+        LENS_CHECK_PASSED,
+        { name: 'validate', state: 'PENDING', conclusion: null, link: LENS_CHECK_URL },
+      ],
     });
 
     const outcome = only(await runPass(fixture, { clockStepMs: 20_000 }));
 
-    expect(outcome.status).toBe('attention');
+    expect(outcome.status, outcome.detail).toBe('attention');
     expect(fixture.jira.status).toBe('In Review');
     const calls = await fakeCompletionCalls(fixture.gh);
-    expect(calls.some((call) => call.op === 'merge')).toBe(false);
+    expect(calls.filter((call) => call.op === 'merge')).toHaveLength(1);
+    expect(transitions(fixture)).toHaveLength(0);
     expect(commentTexts(fixture)).toHaveLength(1);
     expect(commentTexts(fixture)[0]).toContain('nexus-completion:attention:');
     expect(commentTexts(fixture)[0]).toContain('deadline');
@@ -580,7 +592,7 @@ describe('review-to-completion', () => {
 
     const outcome = only(await runPass(fixture));
 
-    expect(outcome.status).toBe('to-do');
+    expect(outcome.status, outcome.detail).toBe('to-do');
     expect(fixture.jira.status).toBe('To Do');
     expect(commentTexts(fixture)).toHaveLength(1);
     expect(commentTexts(fixture)[0]).toContain(REVIEW_URL);
@@ -591,8 +603,9 @@ describe('review-to-completion', () => {
     expect(calls.some((call) => call.op === 'merge')).toBe(false);
   });
 
-  it('treats a failed Lens check on the current head as a finding', async () => {
+  it('treats a failed Lens check associated with request changes as a finding', async () => {
     const fixture = await createFixture({
+      reviews: [{ ...APPROVED_REVIEW, state: 'CHANGES_REQUESTED' }],
       checks: [
         { name: 'Nexus Lens', state: 'FAILURE', conclusion: 'FAILURE', link: LENS_CHECK_URL },
       ],
@@ -600,10 +613,10 @@ describe('review-to-completion', () => {
 
     const outcome = only(await runPass(fixture));
 
-    expect(outcome.status).toBe('to-do');
+    expect(outcome.status, outcome.detail).toBe('to-do');
     expect(fixture.jira.status).toBe('To Do');
     expect(commentTexts(fixture)[0]).toContain('Nexus Lens');
-    expect(commentTexts(fixture)[0]).toContain(LENS_CHECK_URL);
+    expect(commentTexts(fixture)[0]).toContain(REVIEW_URL);
   });
 
   it('treats a failed required pull request check as a finding naming the check', async () => {
@@ -621,7 +634,7 @@ describe('review-to-completion', () => {
 
     const outcome = only(await runPass(fixture));
 
-    expect(outcome.status).toBe('to-do');
+    expect(outcome.status, outcome.detail).toBe('to-do');
     expect(commentTexts(fixture)[0]).toContain('validate');
     expect(commentTexts(fixture)[0]).toContain('actions/runs/7001');
     const calls = await fakeCompletionCalls(fixture.gh);
@@ -635,7 +648,7 @@ describe('review-to-completion', () => {
 
     const outcome = only(await runPass(fixture));
 
-    expect(outcome.status).toBe('observed');
+    expect(outcome.status, outcome.detail).toBe('observed');
     expect(fixture.jira.status).toBe('In Review');
     expect(commentTexts(fixture)).toHaveLength(0);
     const calls = await fakeCompletionCalls(fixture.gh);
@@ -647,7 +660,7 @@ describe('review-to-completion', () => {
 
     const outcome = only(await runPass(fixture));
 
-    expect(outcome.status).toBe('observed');
+    expect(outcome.status, outcome.detail).toBe('observed');
     expect(fixture.jira.status).toBe('In Review');
     expect(commentTexts(fixture)).toHaveLength(0);
   });
@@ -659,7 +672,7 @@ describe('review-to-completion', () => {
 
     const outcome = only(await runPass(fixture));
 
-    expect(outcome.status).toBe('observed');
+    expect(outcome.status, outcome.detail).toBe('observed');
     expect(fixture.jira.status).toBe('In Review');
     const calls = await fakeCompletionCalls(fixture.gh);
     expect(calls.some((call) => call.op === 'merge')).toBe(false);
@@ -670,7 +683,7 @@ describe('review-to-completion', () => {
 
     const outcome = only(await runPass(fixture));
 
-    expect(outcome.status).toBe('observed');
+    expect(outcome.status, outcome.detail).toBe('observed');
     expect(fixture.jira.status).toBe('In Review');
     expect(commentTexts(fixture)).toHaveLength(0);
   });
@@ -682,7 +695,7 @@ describe('review-to-completion', () => {
 
     const outcome = only(await runPass(fixture));
 
-    expect(outcome.status).toBe('attention');
+    expect(outcome.status, outcome.detail).toBe('attention');
     expect(fixture.jira.status).toBe('In Review');
     const calls = await fakeCompletionCalls(fixture.gh);
     expect(calls.some((call) => call.op === 'merge')).toBe(false);
@@ -693,10 +706,10 @@ describe('review-to-completion', () => {
 
     const outcome = only(await runPass(fixture, { fail: 'merge' }));
 
-    expect(outcome.status).toBe('attention');
+    expect(outcome.status, outcome.detail).toBe('attention');
     expect(fixture.jira.status).toBe('In Review');
     expect(commentTexts(fixture)[0]).toContain('nexus-completion:attention:');
-    expect(commentTexts(fixture)[0]).toContain('not mergeable');
+    expect(commentTexts(fixture)[0]).toContain('operator attention');
   });
 
   it('reports an authentication failure and stays In Review', async () => {
@@ -704,12 +717,12 @@ describe('review-to-completion', () => {
 
     const outcome = only(await runPass(fixture, { fail: 'list' }));
 
-    expect(outcome.status).toBe('attention');
+    expect(outcome.status, outcome.detail).toBe('attention');
     expect(fixture.jira.status).toBe('In Review');
     // The list is what failed, so there is no pull request to point at yet: the
     // pass reports the failure and writes nothing.
     expect(commentTexts(fixture)).toHaveLength(0);
-    expect(outcome.detail).toContain('Bad credentials');
+    expect(outcome.detail).toContain('operator attention');
   });
 
   it('returns a post-merge workflow failure to To Do with its conclusion and link', async () => {
@@ -720,7 +733,7 @@ describe('review-to-completion', () => {
 
     const outcome = only(await runPass(fixture));
 
-    expect(outcome.status).toBe('to-do');
+    expect(outcome.status, outcome.detail).toBe('to-do');
     expect(fixture.jira.status).toBe('To Do');
     const comment = commentTexts(fixture)[0] ?? '';
     expect(comment).toContain('ci.yml');
@@ -744,7 +757,7 @@ describe('review-to-completion', () => {
 
     const outcome = only(await runPass(fixture));
 
-    expect(outcome.status).toBe('to-do');
+    expect(outcome.status, outcome.detail).toBe('to-do');
     expect(fixture.jira.status).toBe('To Do');
     expect(commentTexts(fixture)[0]).toContain(String(conclusion).toUpperCase());
   });
@@ -760,7 +773,7 @@ describe('review-to-completion', () => {
 
     const outcome = only(await runPass(fixture));
 
-    expect(outcome.status).toBe('done');
+    expect(outcome.status, outcome.detail).toBe('done');
     expect(fixture.jira.status).toBe('Done');
   });
 
@@ -773,7 +786,7 @@ describe('review-to-completion', () => {
 
     const outcome = only(await runPass(fixture, { clockStepMs: 20_000 }));
 
-    expect(outcome.status).toBe('attention');
+    expect(outcome.status, outcome.detail).toBe('attention');
     expect(fixture.jira.status).toBe('In Review');
     expect(commentTexts(fixture)[0]).toContain('deadline');
     expect(commentTexts(fixture)[0]).toContain('release.yml');
@@ -788,7 +801,7 @@ describe('review-to-completion', () => {
 
     const outcome = only(await runPass(fixture));
 
-    expect(outcome.status).toBe('done');
+    expect(outcome.status, outcome.detail).toBe('done');
     expect(fixture.jira.status).toBe('Done');
   });
 
@@ -800,7 +813,7 @@ describe('review-to-completion', () => {
 
     const outcome = only(await runPass(fixture, { clockStepMs: 20_000 }));
 
-    expect(outcome.status).toBe('attention');
+    expect(outcome.status, outcome.detail).toBe('attention');
     expect(fixture.jira.status).toBe('In Review');
     expect(commentTexts(fixture)[0]).toContain('no run yet');
   });
@@ -826,7 +839,8 @@ describe('review-to-completion', () => {
     const armed = JSON.parse(
       await readFile(path.join(fixture.logsDir, 'completion-armed-head.json'), 'utf8'),
     ) as { waitingSince?: string };
-    expect(armed.waitingSince).toBe('2026-09-20T12:00:02.000Z');
+    expect(Date.parse(armed.waitingSince ?? '')).toBeGreaterThanOrEqual(start);
+    expect(Date.parse(armed.waitingSince ?? '')).toBeLessThan(start + 5_000);
 
     // A later pass over the same item, far past the deadline, reports the wait
     // once and leaves the item In Review: no failure conclusion was observed.
@@ -843,7 +857,7 @@ describe('review-to-completion', () => {
       await runPass(fixture, { clockStartMs: start + 125_000, clockStepMs: 1_000 }),
     );
     expect(fourth.status).toBe('attention');
-    expect(fourth.detail).toContain('already on the issue');
+    expect(transitions(fixture)).toHaveLength(0);
     expect(commentTexts(fixture)).toHaveLength(1);
   });
 
@@ -859,9 +873,9 @@ describe('review-to-completion', () => {
     fixture.jira.status = 'In Review';
     const second = only(await runPass(fixture));
 
-    expect(second.status).toBe('to-do');
+    expect(second.status).toBe('observed');
     expect(commentTexts(fixture)).toHaveLength(1);
-    expect(transitions(fixture)).toHaveLength(2);
+    expect(transitions(fixture)).toHaveLength(1);
   });
 
   it('resumes a resolution comment whose Done move never arrived', async () => {
@@ -969,10 +983,329 @@ describe('review-to-completion', () => {
     fixture.jira.commentFailure = false;
     const outcome = only(await runPass(fixture));
 
-    expect(outcome.status).toBe('to-do');
+    expect(outcome.status, outcome.detail).toBe('to-do');
     expect(fixture.jira.status).toBe('To Do');
     expect(commentTexts(fixture)).toHaveLength(1);
     expect(transitions(fixture)).toHaveLength(1);
+  });
+
+  it.each([
+    { appId: 999 },
+    { headSha: OTHER_HEAD },
+    { reviewUrl: `${PR_URL}#another-review` },
+    { state: 'FAILURE', conclusion: 'FAILURE' },
+  ])('refuses an unowned, stale, unrelated or contradictory Lens check: %j', async (override) => {
+    const fixture = await createFixture({ checks: [{ ...LENS_CHECK_PASSED, ...override }] });
+    const result = only(await runPass(fixture));
+    expect(result.status).toBe('observed');
+    expect(fixture.jira.comments).toHaveLength(0);
+    expect(transitions(fixture)).toHaveLength(0);
+    expect((await fakeCompletionCalls(fixture.gh)).some((c) => c.op === 'merge')).toBe(false);
+  });
+
+  it('uses the latest review decision even when an older approval is present', async () => {
+    const fixture = await createFixture({
+      reviews: [
+        APPROVED_REVIEW,
+        {
+          ...APPROVED_REVIEW,
+          id: 556,
+          state: 'CHANGES_REQUESTED',
+          body: 'Fix the ownership race.',
+        },
+      ],
+    });
+    expect(only(await runPass(fixture)).status).toBe('to-do');
+    expect(commentTexts(fixture)[0]).toContain('ownership race');
+  });
+
+  it('does not arm twice across restart or an uncertain auto-merge response', async () => {
+    const fixture = await createFixture();
+    await runPass(fixture, { fail: 'merge-uncertain', clockStepMs: 1000 });
+    await runPass(fixture, { clockStepMs: 1000 });
+    expect((await fakeCompletionCalls(fixture.gh)).filter((c) => c.op === 'merge')).toHaveLength(1);
+    expect(fixture.jira.status).toBe('In Review');
+    expect(transitions(fixture)).toHaveLength(0);
+  });
+
+  it('returns a failed required check observed after arming to To Do', async () => {
+    const fixture = await createFixture();
+    const result = only(
+      await runPass(fixture, {
+        clockStepMs: 1000,
+        onSleep: async () => {
+          await writeFile(
+            fixture.gh.checksFile,
+            JSON.stringify([
+              LENS_CHECK_PASSED,
+              { name: 'validate', state: 'FAILURE', link: WORKFLOW_URL },
+            ]),
+          );
+        },
+      }),
+    );
+    expect(result.status, result.detail).toBe('to-do');
+    expect(commentTexts(fixture)[0]).toContain('validate');
+    expect(fixture.jira.labels).toContain(WORKSPACE_POINTER);
+  });
+
+  it('does not return an optional failed check for repair', async () => {
+    const fixture = await createFixture({
+      checks: [
+        LENS_CHECK_PASSED,
+        { name: 'optional', state: 'FAILURE', link: WORKFLOW_URL, required: false },
+      ],
+    });
+    expect(only(await runPass(fixture, { clockStepMs: 1000 })).status).toBe('pending');
+    expect(transitions(fixture)).toHaveLength(0);
+  });
+
+  it('reports conflicts without established coding findings or auto-merge', async () => {
+    const fixture = await createFixture({
+      pulls: [{ ...ONE_PULL_REQUEST, mergeable: 'CONFLICTING' }],
+    });
+    expect(only(await runPass(fixture)).status).toBe('observed');
+    expect(transitions(fixture)).toHaveLength(0);
+    expect((await fakeCompletionCalls(fixture.gh)).some((c) => c.op === 'merge')).toBe(false);
+  });
+
+  it('stops when the PR head moves during polling', async () => {
+    const fixture = await createFixture();
+    const result = only(
+      await runPass(fixture, {
+        clockStepMs: 1000,
+        onSleep: async () => {
+          await writeFile(
+            fixture.gh.pullRequestsFile,
+            JSON.stringify({ ...ONE_PULL_REQUEST, headRefOid: OTHER_HEAD }) + '\n',
+          );
+        },
+      }),
+    );
+    expect(result.status).toBe('attention');
+    expect(transitions(fixture)).toHaveLength(0);
+    expect(commentTexts(fixture)).toHaveLength(0);
+  });
+
+  it.each(['base', 'head', 'missing-merge', 'wrong-sha'])(
+    'does not resolve mismatched merge evidence: %s',
+    async (dimension) => {
+      const fixture = await createFixture({ merged: true });
+      if (dimension === 'wrong-sha')
+        await writeFile(
+          fixture.gh.runsFile,
+          JSON.stringify(workflowRun({ headSha: OTHER_HEAD })) + '\n',
+        );
+      else
+        await writeFile(
+          fixture.gh.pullRequestsFile,
+          JSON.stringify(
+            mergedPullRequest(
+              dimension === 'base'
+                ? { baseRefName: 'release' }
+                : dimension === 'head'
+                  ? { headRefOid: OTHER_HEAD }
+                  : { mergeCommit: null },
+            ),
+          ) + '\n',
+        );
+      await runPass(fixture, { clockStepMs: 20000 });
+      expect(fixture.jira.status).toBe('In Review');
+      expect(transitions(fixture)).toHaveLength(0);
+      expect(commentTexts(fixture).some((c) => c.includes('nexus-completion:resolution'))).toBe(
+        false,
+      );
+    },
+  );
+
+  it.each(['queued', 'in_progress'])(
+    'waits for a post-merge workflow %s without fabricating failure',
+    async (status) => {
+      const fixture = await createFixture({
+        merged: true,
+        runs: [workflowRun({ status, conclusion: null })],
+      });
+      expect(only(await runPass(fixture, { clockStepMs: 1000 })).status).toBe('pending');
+      expect(commentTexts(fixture)).toHaveLength(0);
+      expect(transitions(fixture)).toHaveLength(0);
+    },
+  );
+
+  it('selects the latest attempt of the same run ID', async () => {
+    const fixture = await createFixture({
+      merged: true,
+      runs: [
+        workflowRun({ runAttempt: 2, conclusion: 'failure' }),
+        workflowRun({ runAttempt: 1, conclusion: 'success' }),
+      ],
+    });
+    expect(only(await runPass(fixture)).status).toBe('to-do');
+    expect(commentTexts(fixture)[0]).toContain('FAILURE');
+  });
+
+  it('names every unsuccessful configured workflow in one concise comment', async () => {
+    const fixture = await createFixture({
+      merged: true,
+      config: { postMergeWorkflows: ['ci.yml', 'release.yml'] },
+      runs: [
+        workflowRun({ conclusion: 'failure' }),
+        workflowRun({
+          databaseId: 4243,
+          workflowId: 18,
+          path: '.github/workflows/release.yml',
+          conclusion: 'cancelled',
+        }),
+      ],
+    });
+    expect(only(await runPass(fixture)).status).toBe('to-do');
+    const comments = commentTexts(fixture);
+    expect(comments).toHaveLength(1);
+    expect(comments[0]).toContain('ci.yml');
+    expect(comments[0]).toContain('release.yml');
+    expect(comments[0]).toContain('CANCELLED');
+    expect(comments[0]?.split(/\s+/).length).toBeLessThan(120);
+  });
+
+  it('requires workflow health again even when an old resolution comment exists', async () => {
+    const fixture = await createFixture({ merged: true });
+    fixture.jira.transitionFailure = true;
+    await runPass(fixture);
+    fixture.jira.transitionFailure = false;
+    await writeFile(
+      fixture.gh.runsFile,
+      JSON.stringify(workflowRun({ runAttempt: 2, status: 'queued', conclusion: null })) + '\n',
+    );
+    const before = transitions(fixture).length;
+    expect(only(await runPass(fixture, { clockStepMs: 1000 })).status).toBe('pending');
+    expect(transitions(fixture)).toHaveLength(before);
+    expect(fixture.jira.status).toBe('In Review');
+    expect(commentTexts(fixture)).toHaveLength(1);
+  });
+
+  it('does not backfill a historical merged PR without an admission', async () => {
+    const fixture = await createFixture({ pulls: [mergedPullRequest()] });
+    expect(only(await runPass(fixture)).status).toBe('observed');
+    expect(commentTexts(fixture)).toHaveLength(0);
+    expect(transitions(fixture)).toHaveLength(0);
+  });
+
+  it('respects a human reopening the same resolved merge', async () => {
+    const fixture = await createFixture({ merged: true });
+    expect(only(await runPass(fixture)).status).toBe('done');
+    fixture.jira.status = 'In Review';
+    expect(only(await runPass(fixture)).status).toBe('observed');
+    expect(commentTexts(fixture)).toHaveLength(1);
+    expect(transitions(fixture)).toHaveLength(1);
+  });
+
+  it('can resolve a reopened ticket only for a later different merged result', async () => {
+    const fixture = await createFixture({ merged: true });
+    await runPass(fixture);
+    fixture.jira.status = 'In Review';
+    await writeFile(
+      fixture.gh.pullRequestsFile,
+      JSON.stringify(mergedPullRequest({ mergeCommit: { oid: 'd'.repeat(40) } })) + '\n',
+    );
+    await writeFile(
+      fixture.gh.runsFile,
+      JSON.stringify(workflowRun({ headSha: 'd'.repeat(40) })) + '\n',
+    );
+    expect(only(await runPass(fixture)).status).toBe('done');
+    expect(commentTexts(fixture)).toHaveLength(2);
+  });
+
+  it('recovers a comment accepted by Jira whose response was lost', async () => {
+    const fixture = await createFixture({ merged: true });
+    const original = fixture.jira.fetch;
+    fixture.jira.transitionFailure = true;
+    fixture.jira.fetch = (async (input, init) => {
+      const result = await original(input, init);
+      return init?.method === 'POST' && String(input).endsWith('/comment')
+        ? new Response('{}', { status: 200 })
+        : result;
+    }) as typeof fetch;
+    expect(only(await runPass(fixture)).status).toBe('attention');
+    fixture.jira.fetch = original;
+    fixture.jira.transitionFailure = false;
+    expect(only(await runPass(fixture)).status).toBe('done');
+    expect(commentTexts(fixture)).toHaveLength(1);
+  });
+
+  it('does not repeat a transition that Jira accepted with a lost response', async () => {
+    const fixture = await createFixture({ merged: true });
+    const original = fixture.jira.fetch;
+    fixture.jira.fetch = (async (input, init) => {
+      const result = await original(input, init);
+      return init?.method === 'POST' && String(input).endsWith('/transitions')
+        ? new Response('{}', { status: 503 })
+        : result;
+    }) as typeof fetch;
+    await runPass(fixture);
+    fixture.jira.fetch = original;
+    await runPass(fixture);
+    expect(fixture.jira.status).toBe('Done');
+    expect(commentTexts(fixture)).toHaveLength(1);
+    expect(transitions(fixture)).toHaveLength(1);
+  });
+
+  it.each(['comment', 'transition'])('respects a human status change before %s', async (stage) => {
+    const fixture = await createFixture({ merged: true });
+    const original = fixture.jira.fetch;
+    fixture.jira.fetch = (async (input, init) => {
+      const result = await original(input, init);
+      if (
+        (stage === 'comment' && String(input).includes('/comment?')) ||
+        (stage === 'transition' && init?.method === 'POST' && String(input).endsWith('/comment'))
+      )
+        fixture.jira.status = 'In Progress';
+      return result;
+    }) as typeof fetch;
+    await runPass(fixture);
+    expect(fixture.jira.status).toBe('In Progress');
+    expect(transitions(fixture)).toHaveLength(0);
+    expect(commentTexts(fixture)).toHaveLength(stage === 'comment' ? 0 : 1);
+  });
+
+  it('includes actionable inline Lens findings in the repair comment', async () => {
+    const fixture = await createFixture({
+      reviews: [
+        {
+          ...APPROVED_REVIEW,
+          state: 'CHANGES_REQUESTED',
+          body: 'See inline findings.',
+          inlineComments: [
+            {
+              path: 'src/ownership.ts',
+              body: 'Reverse the ownership comparison before releasing the lock.',
+            },
+          ],
+        },
+      ],
+    });
+    expect(only(await runPass(fixture)).status).toBe('to-do');
+    expect(commentTexts(fixture)[0]).toContain('Reverse the ownership comparison');
+  });
+
+  it('does not treat a completed workflow without a conclusion as failure', async () => {
+    const fixture = await createFixture({
+      merged: true,
+      runs: [workflowRun({ conclusion: null })],
+    });
+    expect(only(await runPass(fixture, { clockStepMs: 1000 })).status).toBe('pending');
+    expect(commentTexts(fixture)).toHaveLength(0);
+    expect(transitions(fixture)).toHaveLength(0);
+  });
+
+  it('never duplicates a comment when Jira returns an incomplete comment listing', async () => {
+    const fixture = await createFixture({ merged: true });
+    const original = fixture.jira.fetch;
+    fixture.jira.fetch = (async (input, init) =>
+      String(input).includes('/comment?')
+        ? new Response(JSON.stringify({ comments: [], total: 1000 }), { status: 200 })
+        : original(input, init)) as typeof fetch;
+    await runPass(fixture);
+    expect(commentTexts(fixture)).toHaveLength(0);
+    expect(transitions(fixture)).toHaveLength(0);
   });
 
   it('runs only GitHub commands: no coding runtime is installed or started', async () => {
@@ -980,11 +1313,12 @@ describe('review-to-completion', () => {
 
     const outcome = only(await runPass(fixture));
 
-    expect(outcome.status).toBe('done');
+    expect(outcome.status, outcome.detail).toBe('done');
     const calls = await fakeCompletionCalls(fixture.gh);
     // Every command the completion path ran was the stand-in `gh`, which records
     // only the `gh` invocations it speaks; nothing here started a runtime.
-    expect(calls.map((call) => call.argv[0])).toEqual(['pr', 'pr', 'pr', 'run']);
+    expect(calls.every((call) => ['pr', 'api'].includes(call.argv[0] ?? ''))).toBe(true);
+    expect(calls.some((call) => call.op === 'merge')).toBe(false);
   });
 });
 

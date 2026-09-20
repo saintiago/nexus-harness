@@ -118,6 +118,8 @@ export interface SourceTask {
  * comment states, and no transcript, environment, or diff.
  */
 export interface SourceRunOutcome {
+  /** Whether a separately configured pass may finish a delivered attempt. */
+  readonly completionEnabled?: boolean;
   readonly runId: string;
   readonly status: RunStatus;
   readonly reason: string;
