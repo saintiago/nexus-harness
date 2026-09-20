@@ -95,12 +95,23 @@ instead of writing it again. A restarted queue therefore resumes a ticket that a
 conclusion returned to the ready status, and it does nothing at all about a ticket that is already
 Done.
 
-One boundary is deliberate: a ticket an interrupted queue left **In Review** is not claimed by a
-later queue invocation. The queue's fresh scan is the ready queue, and an In Review item belongs to
-the deterministic completion path a person can run — `source run`'s post-batch pass carries a
-delivered, approved item the rest of the way — or, if the work has to change, to the operator
-moving it back to its ready status, where the queue's next scan continues the same workspace. The
-queue never adopts, resets, or re-delivers such a ticket by itself.
+Before every fresh claim, including after a restart or an idle poll, the queue searches the
+configured Jira project, type and label for In Progress and In Review work and re-reads each
+candidate. An In Progress item stops the command with an ownership diagnostic; the queue never
+adopts a possibly running consumer. Exactly one In Review item resumes its scoped review and
+completion lifecycle without a coding attempt or a claim. Multiple In Review items require operator
+attention. If its PR is already absent from the open list, the existing completion admission and
+native merge/review/workflow evidence must verify it; absence alone never counts as completion.
+Ready items with retained pointers resume before unrelated fresh work, preserving native order
+among repairs. Done items are never claimed or reviewed again.
+
+The queue obtains completion reader credentials from the same expiring GitHub App installation
+authentication boundary as Lens. Every completion evidence read asks that boundary for a current
+token, including after long coding turns, pending CI and idle waits. Only queue mode requests the
+additional Actions read permission. Auto-merge still uses only the operator credential. The
+`reviewerTokenEnv` setting remains required by the completion schema and is stripped from child
+environments, but queue mode does not require or capture its value; standalone source commands
+retain their existing credential behavior.
 
 ## Limits, stated plainly
 

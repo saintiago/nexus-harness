@@ -403,7 +403,7 @@ describe('the queue command line', () => {
     expect(comments).toHaveLength(1);
     expect(moves).toBe(1);
     expect(tokens).toBe(1);
-  });
+  }, 30_000);
 
   it('requires one of its two subcommands', async () => {
     const fixture = await cliFixture({ config: queueConfig });

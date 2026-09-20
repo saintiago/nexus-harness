@@ -767,14 +767,21 @@ what is missing, before any credential is resolved.
 
 ### Credentials
 
-The queue resolves the same three credentials its phases use, and hands each child only what that
-phase needs: the Jira token named by `source.tokenEnv`, the GitHub App private key path named by
-`review.app.privateKeyPathEnv`, and the Nexus Lens reviewer credential named by
-`delivery.completion.reviewerTokenEnv`. The coding runtime's turns, the configured checks, and the
-operator's own `git`/`gh` commands inherit the environment without the Jira token and without the
-reviewer's token; the reviewer turn inherits it without the Jira token, without the App key path,
-and without the operator's GitHub token variables. Nothing is written to the configuration, a
-report, or a log.
+The queue resolves the Jira token named by `source.tokenEnv` and the App key path named by
+`review.app.privateKeyPathEnv`. Its completion reader obtains a current installation token from
+the existing App client before each GitHub evidence read; that client refreshes tokens near expiry.
+The installation must grant Actions read access for the configured post-merge workflows. Queue
+mode does not use a static token from `delivery.completion.reviewerTokenEnv`; that setting remains
+in the shared completion configuration, and standalone source commands still use it as §10 describes.
+The operator's Git/`gh` credential alone arms auto-merge. Coding turns, checks, and operator commands
+inherit neither the Jira token, App key path, nor the configured reviewer-token variable; reviewer
+turns also exclude operator GitHub tokens. No credential is written to reports or logs.
+
+Before claiming fresh work, the queue discovers authoritative In Progress and In Review work.
+Unresolved In Progress ownership or multiple In Review items stop it for attention. A single
+In Review item resumes its scoped review/completion phases; a merged PR must pass the existing
+admission and native GitHub checks. Retained To Do repairs take precedence over unrelated new
+work. A Done item is never rerun.
 
 ### Exits
 

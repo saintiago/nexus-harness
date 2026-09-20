@@ -628,9 +628,11 @@ A queue command needs three objects to be configured: `source` (the Jira queue i
 `review` (the Nexus Lens path), and `delivery` **with** `delivery.completion` (the destination and
 the path that ends a ticket). The loader already requires those objects to agree — same repository,
 same App, same check name — so a configuration that could never complete a ticket is refused before
-any credential is resolved. The three credentials are the Jira service-account token, the App's
-private key path, and the completion path's own reviewer token; each child gets only the ones its
-phase needs. [docs/WORKFLOW.md](docs/WORKFLOW.md#11-serial-queue--queue-run-and-queue-watch) §11 is
+any credential is resolved. The queue uses the Jira service-account token and the App's private
+key path, renewing the App installation token for completion evidence reads as needed. The App
+needs Actions read access for post-merge workflows; only the operator credential arms auto-merge.
+Queue mode does not require a pre-minted token in `reviewerTokenEnv`. Each child gets only the
+credentials its phase needs. [docs/WORKFLOW.md](docs/WORKFLOW.md#11-serial-queue--queue-run-and-queue-watch) §11 is
 the command contract and [docs/spec.md](docs/spec.md) §11 the behaviour.
 
 What one invocation does:
@@ -668,11 +670,12 @@ place: the delivery step refuses to edit a merged pull request, so a repair afte
 post-merge workflow ends as an actionable stop rather than a second pull request. Turning that into
 a new ticket is an operator decision.
 
-**A second boundary.** A ticket an interrupted queue left In Review is not picked up by the next
-queue invocation: its fresh scan is the ready queue. Finish that ticket with the deterministic
-completion path — `source run`'s post-batch pass carries a delivered, approved item the rest of the
-way — or move it back to its ready status and let the queue's next scan continue the same
-workspace. The queue never adopts, resets, or re-delivers it by itself.
+**Restart recovery.** Before each fresh claim, the queue checks authoritative Jira status for
+unfinished work. It stops on In Progress ownership that an operator must resolve, and resumes a
+single In Review ticket through its scoped review and completion phases. Multiple In Review
+tickets stop for attention. A merged pull request must still pass the existing admission and native
+GitHub checks. Ready tickets with retained workspace pointers resume before unrelated new work;
+Done tickets are never rerun. The queue never adopts or resets a workspace.
 
 ## Try it on a disposable project
 

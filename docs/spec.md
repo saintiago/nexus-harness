@@ -312,7 +312,19 @@ A user interrupt stops the wait or the active bounded phase, starts no next tick
 
 ### Restarts and deduplication
 
-Nothing about the loop survives an invocation in harness state of its own, and nothing needs to. Jira's status, the item's own thread, the workspace pointer label, GitHub's review/check/merge/workflow state, and the existing local receipts are the authorities. A restart therefore resumes a ticket that is really back in its ready status — its preserved pointer deciding where the work continues — does nothing at all about a ticket that is already Done, starts no second consumer, and duplicates no review, comment, transition, or auto-merge request: the existing marker, native-review, and native-merge checks of §9 and §10 are what make that true. A ticket an interrupted invocation left In Review is deliberately not claimed by a later one: the queue's fresh scan is the ready queue, and an In Review item is what the deterministic completion path (§10, run by a `source` command's post-batch pass) or an operator's status change is for. The queue never adopts, resets, or re-delivers such a ticket by itself.
+Nothing about the loop survives an invocation in harness state of its own, and nothing needs to. Jira's status, the item's own thread, the workspace pointer label, GitHub's review/check/merge/workflow state, and the existing local receipts are the authorities. A restart therefore resumes a ticket that is really back in its ready status — its preserved pointer deciding where the work continues — does nothing at all about a ticket that is already Done, starts no second consumer, and duplicates no review, comment, transition, or auto-merge request: the existing marker, native-review, and native-merge checks of §9 and §10 are what make that true.
+
+Before any fresh claim, a queue invocation discovers and re-reads the configured queue's
+In Progress and In Review items. In Progress ownership must be resolved by an operator; it stops
+both modes before unrelated work. One In Review item resumes only its scoped review and completion
+lifecycle, including the existing admission's merged-PR recovery. Multiple In Review items stop
+for attention. Ready items carrying retained workspace pointers resume before unrelated new work,
+in Jira's native order among repairs. The queue never adopts or resets workspaces.
+
+Queue completion evidence reads obtain a current installation token through the existing Lens App
+authentication boundary, which renews expiring tokens. The queue requests Actions read permission
+for post-merge workflows and never freezes a reader token for a long-running process. Operator
+credentials remain exclusive to auto-merge mutations; standalone one-item commands are unchanged.
 
 ### Shape
 
