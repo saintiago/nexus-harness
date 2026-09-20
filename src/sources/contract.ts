@@ -141,8 +141,11 @@ export interface SourceRunOutcome {
   /** The run's own `result.json`. */
   readonly reportPath: string;
   /**
-   * Which attempt of how many this run was, and the tier that ran it: present
-   * when more than one attempt is possible, so the published result says so
+   * Which rung of this cycle's ladder this run was, and the tier that ran it:
+   * present when more than one attempt is possible, so the published result says
+   * so. The number is the attempt's position in the cycle the item was claimed
+   * for; the run's own report and the workspace ledger keep the workspace's
+   * attempt count, which is separate and stays truthful
    * (docs/implement-workspace-continuation.md).
    */
   readonly attempt?: {
@@ -295,9 +298,14 @@ export interface SourceContext {
    */
   readonly lockNamespace: string;
   /**
-   * The escalation ladder, at least one rung: attempt N of a workspace runs
-   * rung N, clamped to the last. `escalationTiers(config)` is how the CLI reads
-   * it (docs/implement-workspace-continuation.md).
+   * The escalation ladder, at least one rung. Every coding cycle — a first claim,
+   * and a claim that continues the workspace a reviewer's findings, a failed
+   * required check, a delivery failure, or a failed post-merge workflow returned
+   * to the ready status — starts again at the first rung, in the same retained
+   * workspace. Only a rung whose own run spent its repair allowance and ended on
+   * an ordinary red check round climbs to the next, and the cycle ends at the
+   * last rung. `escalationTiers(config)` is how the CLI reads it
+   * (docs/implement-workspace-continuation.md).
    */
   readonly tiers: readonly EscalationTier[];
   /** The target repository every fetched task is bound to. */

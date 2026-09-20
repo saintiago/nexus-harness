@@ -315,9 +315,9 @@ export function createRunFinalizer(context: RunFinalizerContext) {
     let workspaceLedgerProblem: string | null = null;
     if (workspace !== null) {
       // The attempt is recorded against the workspace it happened in, so the next
-      // attempt knows how many there have been and which tier comes next. The
-      // report above stays the authority; this is derived state, and a failure to
-      // record it is named here and in the timeline rather than swallowed.
+      // attempt knows how many there have been and what ran before it. The
+      // report above stays the authority; this is derived state, and a failure
+      // to record it is named here and in the timeline rather than swallowed.
       try {
         await dependencies.recordWorkspaceAttempt(request.workDir, workspace.workspaceId, {
           runId: run.runId,
