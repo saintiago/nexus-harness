@@ -33,8 +33,10 @@ limit.
 
 - A **workspace** is the working copy: cloned once, accumulated over attempts, integrated nowhere
   by the harness itself — a configured delivery step may push a passed attempt's branch and open or
-  update its pull request, and never merges ([WORKFLOW.md](WORKFLOW.md) §8) — and retained while an
-  issue points at it.
+  update its pull request ([WORKFLOW.md](WORKFLOW.md) §8), and the independently optional
+  review-to-completion path may then arm native GitHub auto-merge, verify the configured post-merge
+  workflows, and transition Jira ([spec.md](spec.md) §10, [WORKFLOW.md](WORKFLOW.md) §10) — and
+  retained while an issue points at it.
 - A **run** is one attempt: one deadline, one baseline round, its own turns, one verdict, one
   comment. Its report is never rewritten.
 - `workspaceId` is the name of the clone's own directory under `workspaces/`, so the pointer below
@@ -211,14 +213,18 @@ it changes the acceptance criteria or the checks that decide the run.
 
 ## What does not change
 
-- The harness never merges or integrates anything in the target repository, and without a configured
-  delivery step it pushes and publishes nothing either. Local commits are the coding turn's own
-  work: they stay in the retained workspace, and everything there — commits and uncommitted changes
-  together — waits for a human.
+- A coding turn never pushes, publishes, merges, or changes Jira status, and with no configured
+  delivery or completion step the harness pushes and publishes nothing either. Local commits are
+  the coding turn's own work: they stay in the retained workspace until a configured integration
+  step acts. A configured `delivery` pushes a passed attempt's branch and opens or updates its pull
+  request; the independently optional completion path may then arm native GitHub auto-merge, verify
+  the configured post-merge workflows, and transition Jira, as [spec.md](spec.md) §10 and
+  [WORKFLOW.md](WORKFLOW.md) §10 define.
 - One consumer per output directory; the lock is never broken automatically.
 - Receipts stay local, and remain the audit trail and the second-consumer guard.
-- `In Review` still means "an attempt finished and needs a decision", never success, and nothing
-  marks an issue `Done`.
+- `In Review` still means "an attempt finished and needs a decision", never success; only the
+  explicitly configured completion path moves an issue to `Done`, after it verifies the merge and
+  the configured post-merge workflows.
 - Text from Jira is untrusted input: it is context, never configuration.
 
 ## Increments
