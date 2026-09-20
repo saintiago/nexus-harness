@@ -9,6 +9,7 @@
 import { spawn } from 'node:child_process';
 import { existsSync, realpathSync, statSync } from 'node:fs';
 import {
+  chmod,
   lstat,
   mkdir,
   readFile,
@@ -953,15 +954,29 @@ describe('a retained checkout that left its recorded branch', () => {
     // path is pinned in the workspace's own configuration so a developer's
     // global setting cannot decide whether the fixture's hook runs.
     await gitOrFail(['config', 'core.hooksPath', '.git/hooks'], prepared.workspacePath);
+    const hookPath = path.join(prepared.workspacePath, '.git', 'hooks', 'post-merge');
     await writeFile(
-      path.join(prepared.workspacePath, '.git', 'hooks', 'post-merge'),
-      `#!/bin/sh\ngit update-ref refs/heads/${prepared.branch} ${prepared.baseCommit}\n`,
+      hookPath,
+      `#!/bin/sh\ngit update-ref refs/heads/${prepared.branch} ${prepared.baseCommit}\n` +
+        'echo ran > .git/hook-ran.txt\n',
       'utf8',
     );
+    // Git skips a hook that is not executable on a POSIX host, and runs one
+    // either way on Windows: the bit is set so the fixture takes the same path
+    // wherever the suite runs. The marker the hook leaves inside the Git
+    // directory is checked before the refusal is, so a host that skipped the
+    // hook anyway fails on that precondition — which names the reason — rather
+    // than on a refusal the test expected and did not get.
+    await chmod(hookPath, 0o755);
+    const markerPath = path.join(prepared.workspacePath, '.git', 'hook-ran.txt');
 
-    const failure = await refusalOf(() =>
-      returnToRecordedBranch(prepared.workspacePath, prepared.branch),
+    const settled = await returnToRecordedBranch(prepared.workspacePath, prepared.branch).then(
+      () => null,
+      (error: unknown) => error,
     );
+    expect(existsSync(markerPath)).toBe(true);
+    expect(settled).toBeInstanceOf(WorkspaceError);
+    const failure = settled as WorkspaceError;
 
     // The refusal names the branch and the revisions it really found, and it
     // says nothing was reset or discarded.
