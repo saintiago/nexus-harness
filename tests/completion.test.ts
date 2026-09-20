@@ -15,7 +15,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createGitHubCompletion } from '../src/delivery/completion.js';
 import { createCompletionPass, createCompletionRun } from '../src/sources/completion.js';
-import type { CompletionOutcome } from '../src/sources/completion.js';
+import type { ArmOutcome, CompletionOutcome } from '../src/sources/completion.js';
 import { createHttpClient } from '../src/sources/jira/http.js';
 import { createJiraCompletionSource } from '../src/sources/jira/completion.js';
 import { SourceError } from '../src/sources/contract.js';
@@ -46,6 +46,7 @@ const ISSUE_KEY = 'HARN-15';
 const HEAD = 'a'.repeat(40);
 const OTHER_HEAD = 'b'.repeat(40);
 const MERGE_COMMIT = 'c'.repeat(40);
+const THIRD_HEAD = 'd'.repeat(40);
 const PR_URL = `https://github.com/${REPOSITORY}/pull/29`;
 const REVIEW_URL = `${PR_URL}#pullrequestreview-555`;
 const LENS_CHECK_URL = 'https://github.com/saintiago/nexus-harness/runs/9001';
@@ -415,6 +416,10 @@ function passFor(
   parts: {
     readonly reader?: (stop: AbortSignal) => Promise<string>;
     readonly fail?: string;
+    /** Whether the stand-in GitHub refuses to arm a pull request with green required checks. */
+    readonly rejectArmWhenClean?: boolean;
+    /** The required check names the stand-in GitHub uses to decide whether a head is clean. */
+    readonly requiredChecks?: readonly string[];
     readonly reviewsUnknown?: boolean;
     readonly clockStepMs?: number;
     /** Where this pass's clock starts, so several passes can be ordered in time. */
@@ -435,6 +440,8 @@ function passFor(
       stateDir: fixture.gh.dir,
       token: OPERATOR_TOKEN,
       ...(parts.fail === undefined ? {} : { fail: parts.fail }),
+      ...(parts.rejectArmWhenClean === true ? { rejectArmWhenClean: true } : {}),
+      ...(parts.requiredChecks === undefined ? {} : { requiredChecks: [...parts.requiredChecks] }),
     }),
     GH_TOKEN: OPERATOR_TOKEN,
     NEXUS_LENS_TOKEN: REVIEWER_TOKEN,
@@ -476,6 +483,16 @@ function only(outcomes: readonly CompletionOutcome[]): CompletionOutcome {
   const [first] = outcomes;
   if (first === undefined) {
     throw new Error('the pass produced no outcome');
+  }
+  return first;
+}
+
+/** The single arm outcome one pass is expected to have produced. */
+function onlyArm(outcomes: readonly ArmOutcome[]): ArmOutcome {
+  expect(outcomes).toHaveLength(1);
+  const [first] = outcomes;
+  if (first === undefined) {
+    throw new Error('the arm step produced no outcome');
   }
   return first;
 }
@@ -1435,6 +1452,233 @@ describe('review-to-completion', () => {
     // only the `gh` invocations it speaks; nothing here started a runtime.
     expect(calls.every((call) => ['pr', 'api'].includes(call.argv[0] ?? ''))).toBe(true);
     expect(calls.some((call) => call.op === 'merge')).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Arming before the final required gate
+// ---------------------------------------------------------------------------
+
+/**
+ * The race the queue's arm step closes: a delivered pull request can become
+ * clean — every required check green — before the completion phase runs. The
+ * stand-in GitHub refuses to arm such a pull request exactly as production does,
+ * so these tests can tell an early arm from one attempted at completion time.
+ */
+describe('arming native auto-merge before the final gate', () => {
+  it('arms while the final required check is pending, then the green gate uses that arm', async () => {
+    const fixture = await createFixture({
+      pulls: [ONE_PULL_REQUEST],
+      // CI is already green; the reviewer has not published the Lens check, so
+      // the pull request is not yet clean and GitHub can accept the arm.
+      checks: [{ name: 'validate', state: 'SUCCESS', link: WORKFLOW_URL }],
+      reviews: [],
+      runs: [],
+    });
+    const options = {
+      rejectArmWhenClean: true,
+      requiredChecks: ['validate', 'Nexus Lens'],
+      clockStepMs: 1_000,
+    };
+
+    const armed = onlyArm(await passFor(fixture, options).arm(AbortSignal.timeout(30_000)));
+    expect(armed.status, armed.detail).toBe('armed');
+    expect(armed.head).toBe(HEAD);
+    expect(armed.number).toBe(29);
+    expect(
+      (await fakeCompletionCalls(fixture.gh)).filter((call) => call.op === 'merge'),
+    ).toHaveLength(1);
+    const record = JSON.parse(
+      await readFile(path.join(fixture.logsDir, 'completion-armed-head.json'), 'utf8'),
+    ) as { head?: string; number?: number; waitingSince?: string | null };
+    // Arming is not yet waiting for the merge: the reviewer has not run, and
+    // the merge deadline must not start until completion sees a pending merge.
+    expect(record).toMatchObject({ head: HEAD, number: 29, waitingSince: null });
+
+    // The review phase now publishes the final required check. The old
+    // completion ordering would arm here and be refused with "clean status";
+    // this pass verifies the recorded arm instead.
+    await writeFile(fixture.gh.reviewsFile, `${JSON.stringify([APPROVED_REVIEW])}\n`, 'utf8');
+    await writeFile(
+      fixture.gh.checksFile,
+      `${JSON.stringify([
+        { name: 'validate', state: 'SUCCESS', link: WORKFLOW_URL },
+        LENS_CHECK_PASSED,
+      ])}\n`,
+      'utf8',
+    );
+
+    const pending = only(await passFor(fixture, options).run(AbortSignal.timeout(30_000)));
+    expect(pending.status, pending.detail).toBe('pending');
+    expect(fixture.jira.status).toBe('In Review');
+    expect(commentTexts(fixture)).toHaveLength(0);
+    expect(transitions(fixture)).toHaveLength(0);
+    expect(
+      (await fakeCompletionCalls(fixture.gh)).filter((call) => call.op === 'merge'),
+    ).toHaveLength(1);
+    const waited = JSON.parse(
+      await readFile(path.join(fixture.logsDir, 'completion-armed-head.json'), 'utf8'),
+    ) as { waitingSince?: string | null };
+    expect(typeof waited.waitingSince).toBe('string');
+
+    // GitHub merges natively. A restarted pass verifies that merge and its
+    // post-merge workflow and writes the one resolution comment exactly once.
+    await writeFile(
+      fixture.gh.pullRequestsFile,
+      `${JSON.stringify(mergedPullRequest())}\n`,
+      'utf8',
+    );
+    await writeFile(fixture.gh.runsFile, `${JSON.stringify(workflowRun())}\n`, 'utf8');
+    const done = only(await passFor(fixture, options).run(AbortSignal.timeout(30_000)));
+    expect(done.status, done.detail).toBe('done');
+    expect(fixture.jira.status).toBe('Done');
+    expect(commentTexts(fixture)).toHaveLength(1);
+    expect(transitions(fixture)).toHaveLength(1);
+    expect(
+      (await fakeCompletionCalls(fixture.gh)).filter((call) => call.op === 'merge'),
+    ).toHaveLength(1);
+
+    const restarted = only(await passFor(fixture, options).run(AbortSignal.timeout(30_000)));
+    expect(restarted.status).toBe('observed');
+    expect(commentTexts(fixture)).toHaveLength(1);
+    expect(transitions(fixture)).toHaveLength(1);
+    expect(
+      (await fakeCompletionCalls(fixture.gh)).filter((call) => call.op === 'merge'),
+    ).toHaveLength(1);
+  });
+
+  it("re-arms and re-records a repair's new head, without a duplicate on restart", async () => {
+    const fixture = await createFixture({
+      pulls: [ONE_PULL_REQUEST],
+      checks: [{ name: 'validate', state: 'PENDING', link: WORKFLOW_URL }],
+      reviews: [],
+      runs: [],
+    });
+    const options = {
+      rejectArmWhenClean: true,
+      requiredChecks: ['validate', 'Nexus Lens'],
+      clockStepMs: 1_000,
+    };
+
+    const first = onlyArm(await passFor(fixture, options).arm(AbortSignal.timeout(30_000)));
+    expect(first).toMatchObject({ status: 'armed', head: HEAD, number: 29 });
+
+    // The repair pushed a new head and GitHub no longer holds the old arm.
+    await writeFile(
+      fixture.gh.pullRequestsFile,
+      `${JSON.stringify({ ...ONE_PULL_REQUEST, headRefOid: OTHER_HEAD, autoMergeRequest: null })}\n`,
+      'utf8',
+    );
+
+    const repaired = onlyArm(await passFor(fixture, options).arm(AbortSignal.timeout(30_000)));
+    expect(repaired).toMatchObject({ status: 'armed', head: OTHER_HEAD, number: 29 });
+    const record = JSON.parse(
+      await readFile(path.join(fixture.logsDir, 'completion-armed-head.json'), 'utf8'),
+    ) as { head?: string; number?: number };
+    expect(record).toMatchObject({ head: OTHER_HEAD, number: 29 });
+    expect(
+      (await fakeCompletionCalls(fixture.gh)).filter((call) => call.op === 'merge'),
+    ).toHaveLength(2);
+
+    // A restart against the armed repaired head is a verified no-op.
+    const restarted = onlyArm(await passFor(fixture, options).arm(AbortSignal.timeout(30_000)));
+    expect(restarted).toMatchObject({ status: 'armed', head: OTHER_HEAD, number: 29 });
+    expect(
+      (await fakeCompletionCalls(fixture.gh)).filter((call) => call.op === 'merge'),
+    ).toHaveLength(2);
+
+    // GitHub can keep the request enabled across another head. The new head is
+    // verified and re-recorded without a second mutation.
+    await writeFile(
+      fixture.gh.pullRequestsFile,
+      `${JSON.stringify({
+        ...ONE_PULL_REQUEST,
+        headRefOid: THIRD_HEAD,
+        autoMergeRequest: { enabledAt: '2026-09-20T12:05:00Z' },
+      })}\n`,
+      'utf8',
+    );
+    const carried = onlyArm(await passFor(fixture, options).arm(AbortSignal.timeout(30_000)));
+    expect(carried).toMatchObject({ status: 'armed', head: THIRD_HEAD, number: 29 });
+    const carriedRecord = JSON.parse(
+      await readFile(path.join(fixture.logsDir, 'completion-armed-head.json'), 'utf8'),
+    ) as { head?: string; number?: number };
+    expect(carriedRecord).toMatchObject({ head: THIRD_HEAD, number: 29 });
+    expect(
+      (await fakeCompletionCalls(fixture.gh)).filter((call) => call.op === 'merge'),
+    ).toHaveLength(2);
+  });
+
+  it('keeps a clean pull request In Review with actionable evidence instead of assuming a merge', async () => {
+    const fixture = await createFixture({
+      pulls: [ONE_PULL_REQUEST],
+      reviews: [APPROVED_REVIEW],
+      checks: [{ name: 'validate', state: 'SUCCESS', link: WORKFLOW_URL }, LENS_CHECK_PASSED],
+      runs: [],
+    });
+
+    const outcome = only(
+      await runPass(fixture, {
+        rejectArmWhenClean: true,
+        requiredChecks: ['validate', 'Nexus Lens'],
+        clockStepMs: 1_000,
+      }),
+    );
+
+    expect(outcome.status, outcome.detail).toBe('attention');
+    expect(outcome.detail).toContain('clean status');
+    expect(fixture.jira.status).toBe('In Review');
+    expect(transitions(fixture)).toHaveLength(0);
+    expect(commentTexts(fixture)).toHaveLength(1);
+    expect(commentTexts(fixture)[0]).toContain('clean status');
+    expect(commentTexts(fixture)[0]).toContain(PR_URL);
+    // The one attempted request was refused; nothing was merged.
+    expect(
+      (await fakeCompletionCalls(fixture.gh)).filter((call) => call.op === 'merge'),
+    ).toHaveLength(1);
+    expect(await readFile(fixture.gh.pullRequestsFile, 'utf8')).toContain('"state":"OPEN"');
+  });
+
+  it('returns an armed repair to To Do when the current-head Lens result requests changes', async () => {
+    const fixture = await createFixture({
+      pulls: [ONE_PULL_REQUEST],
+      reviews: [
+        { ...APPROVED_REVIEW, state: 'CHANGES_REQUESTED', body: 'Fix the ownership race.' },
+      ],
+      checks: [
+        {
+          name: 'Nexus Lens',
+          state: 'FAILURE',
+          conclusion: 'FAILURE',
+          link: LENS_CHECK_URL,
+          reviewUrl: REVIEW_URL,
+        },
+      ],
+      runs: [],
+    });
+    const options = {
+      rejectArmWhenClean: true,
+      requiredChecks: ['validate', 'Nexus Lens'],
+      clockStepMs: 1_000,
+    };
+
+    // The queue's arm step runs before the review publishes the failing check.
+    const armed = onlyArm(await passFor(fixture, options).arm(AbortSignal.timeout(30_000)));
+    expect(armed).toMatchObject({ status: 'armed', head: HEAD, number: 29 });
+
+    // The completion pass reads the armed record, sees the failed Lens verdict,
+    // and returns the ticket to To Do with its workspace pointer untouched.
+    const outcome = only(await passFor(fixture, options).run(AbortSignal.timeout(30_000)));
+    expect(outcome.status, outcome.detail).toBe('to-do');
+    expect(fixture.jira.status).toBe('To Do');
+    expect(fixture.jira.labels).toContain(WORKSPACE_POINTER);
+    expect(transitions(fixture)).toHaveLength(1);
+    expect(commentTexts(fixture)[0]).toContain('ownership race');
+    // The failed required check is what stops the native merge; the harness
+    // never performs the merge itself.
+    expect(
+      (await fakeCompletionCalls(fixture.gh)).filter((call) => call.op === 'merge'),
+    ).toHaveLength(1);
   });
 });
 

@@ -191,26 +191,44 @@ if (failure === operation || (failure === 'checks' && operation === 'lens')) {
     const p = pulls.find((p) => `PR_${p.number}` === node);
     if (!p) fail('unknown PR node');
     else {
-      p.autoMergeRequest = { enabledAt: '2026-09-20T12:00:00Z' };
-      if (typeof config.mergeOnArm === 'string') {
-        // GitHub performs the merge itself once auto-merge is armed: a test
-        // that wants the merge to land straight away seeds the merge commit
-        // that the configured post-merge workflows ran for.
-        p.state = 'MERGED';
-        p.mergeCommit = { oid: config.mergeOnArm };
+      const checks = jsonDocument('pr-checks.json', []);
+      const requiredNames = Array.isArray(config.requiredChecks) ? config.requiredChecks : null;
+      const clean =
+        requiredNames !== null
+          ? requiredNames.length > 0 &&
+            requiredNames.every((name) =>
+              checks.some((check) => check.name === name && check.state === 'SUCCESS'),
+            )
+          : checks.some((check) => check.required !== false) &&
+            checks
+              .filter((check) => check.required !== false)
+              .every((check) => check.state === 'SUCCESS');
+      if (config.rejectArmWhenClean === true && clean) {
+        // GitHub refuses to arm a pull request whose required checks are
+        // already green: there is nothing left for auto-merge to wait for.
+        fail('HTTP 422: Pull request is in clean status (enablePullRequestAutoMerge)');
+      } else {
+        p.autoMergeRequest = { enabledAt: '2026-09-20T12:00:00Z' };
+        if (typeof config.mergeOnArm === 'string') {
+          // GitHub performs the merge itself once auto-merge is armed: a test
+          // that wants the merge to land straight away seeds the merge commit
+          // that the configured post-merge workflows ran for.
+          p.state = 'MERGED';
+          p.mergeCommit = { oid: config.mergeOnArm };
+        }
+        writeFileSync(
+          path.join(stateDir, 'pull-requests.json'),
+          pulls.map((p) => JSON.stringify(p)).join('\n') + '\n',
+        );
+        if (failure === 'merge-uncertain') {
+          fail('HTTP 503: response lost after arming');
+        } else
+          reply({
+            data: {
+              enablePullRequestAutoMerge: { pullRequest: { autoMergeRequest: p.autoMergeRequest } },
+            },
+          });
       }
-      writeFileSync(
-        path.join(stateDir, 'pull-requests.json'),
-        pulls.map((p) => JSON.stringify(p)).join('\n') + '\n',
-      );
-      if (failure === 'merge-uncertain') {
-        fail('HTTP 503: response lost after arming');
-      } else
-        reply({
-          data: {
-            enablePullRequestAutoMerge: { pullRequest: { autoMergeRequest: p.autoMergeRequest } },
-          },
-        });
     }
   }
 } else fail(`Unsupported gh invocation: ${argv.join(' ')}`);

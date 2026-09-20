@@ -19,6 +19,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { CompletionActions, PullRequestSnapshot } from '../src/delivery/completion.js';
 import type { Delivery } from '../src/delivery/github.js';
 import type {
+  QueueArmOutcome,
   QueueCompletionOutcome,
   QueueLoopContext,
   QueueReviewOutcome,
@@ -147,6 +148,7 @@ interface LoopParts {
   readonly take: (request: {
     readonly only: QueueTicket | null;
   }) => SourceTake | Promise<SourceTake>;
+  readonly arm?: (ticket: QueueTicket) => QueueArmOutcome | Promise<QueueArmOutcome>;
   readonly review?: (ticket: QueueTicket) => QueueReviewOutcome | Promise<QueueReviewOutcome>;
   readonly complete?: (
     ticket: QueueTicket,
@@ -207,6 +209,15 @@ async function runLoop(parts: LoopParts): Promise<LoopRun> {
           takes.push(request.only);
           return parts.take(request);
         }),
+      arm: (request) =>
+        phase(
+          `arm:${request.ticket.ref.key}`,
+          () =>
+            parts.arm?.(request.ticket) ?? {
+              state: 'armed',
+              detail: 'native auto-merge armed',
+            },
+        ),
       review: (request) =>
         phase(
           `review:${request.ticket.ref.key}`,
@@ -245,7 +256,11 @@ describe('the serial queue loop', () => {
       },
     });
     expect(run.summary).toMatchObject({ outcome: 'completed', completed: 1, attempts: 0 });
-    expect(run.log[0]).toBe('+review:SAM1-1');
+    // The arm step runs before the review on a restart too: a head that was
+    // already armed is verified without a second request, and a head that was
+    // not is armed before the reviewer's check can make it clean.
+    expect(run.log[0]).toBe('+arm:SAM1-1');
+    expect(run.log.indexOf('-arm:SAM1-1')).toBeLessThan(run.log.indexOf('+review:SAM1-1'));
     expect(run.overlap()).toBe(false);
   });
 
@@ -313,6 +328,8 @@ describe('the serial queue loop', () => {
     expect(run.log).toEqual([
       '+consume:next',
       '-consume:next',
+      '+arm:SAM1-1',
+      '-arm:SAM1-1',
       '+review:SAM1-1',
       '-review:SAM1-1',
       '+complete:SAM1-1',
@@ -321,6 +338,8 @@ describe('the serial queue loop', () => {
       '-ready:SAM1-1',
       '+consume:next',
       '-consume:next',
+      '+arm:SAM1-2',
+      '-arm:SAM1-2',
       '+review:SAM1-2',
       '-review:SAM1-2',
       '+complete:SAM1-2',
@@ -614,6 +633,55 @@ describe('the serial queue loop', () => {
     expect(run.overlap()).toBe(false);
     expect(run.log.indexOf('-consume:next')).toBeLessThan(run.log.indexOf('+review:SAM1-1'));
     expect(run.log.indexOf('-review:SAM1-1')).toBeLessThan(run.log.indexOf('+complete:SAM1-1'));
+  });
+
+  it('arms each delivered head before its review, and re-arms after a repair', async () => {
+    const ticket = queueTicket('SAM1-1');
+    const armed: string[] = [];
+    let completions = 0;
+    const run = await runLoop({
+      take: once(ticket),
+      arm: () => {
+        armed.push(`head-${String(armed.length + 1)}`);
+        return { state: 'armed', detail: `native auto-merge armed for ${armed.at(-1) ?? ''}` };
+      },
+      complete: () => {
+        completions += 1;
+        return completions === 1
+          ? { state: 'to-do', detail: 'findings published and moved back to "To Do"' }
+          : { state: 'done', detail: `verified merge ${MERGE}`, mergeCommit: MERGE };
+      },
+    });
+
+    // The first delivery is armed before the first review; the repair's new
+    // head is armed again before the second review, not after it.
+    expect(run.summary).toMatchObject({ outcome: 'completed', completed: 1, attempts: 2 });
+    expect(armed).toEqual(['head-1', 'head-2']);
+    const arms = run.log.flatMap((line, index) => (line === '+arm:SAM1-1' ? [index] : []));
+    const reviews = run.log.flatMap((line, index) => (line === '+review:SAM1-1' ? [index] : []));
+    expect(arms).toHaveLength(2);
+    expect(reviews).toHaveLength(2);
+    expect(arms[0] ?? -1).toBeLessThan(reviews[0] ?? -1);
+    expect(arms[1] ?? -1).toBeGreaterThan(run.log.indexOf('+consume:SAM1-1'));
+    expect(arms[1] ?? -1).toBeLessThan(reviews[1] ?? -1);
+  });
+
+  it('stops without reviewing when native auto-merge cannot be armed', async () => {
+    const ticket = queueTicket('SAM1-1');
+    const run = await runLoop({
+      take: () => took(ticket),
+      arm: () => ({
+        state: 'attention',
+        detail:
+          'GitHub did not enable auto-merge: Pull request is in clean status; the item stays In Review',
+      }),
+    });
+
+    expect(run.summary.outcome).toBe('stopped');
+    expect(run.summary.problem).toContain('native auto-merge needs a person');
+    expect(run.summary.problem).toContain('clean status');
+    expect(run.log).not.toContain('+review:SAM1-1');
+    expect(run.log).not.toContain('+complete:SAM1-1');
   });
 
   it('cancels while idle without starting anything', async () => {
