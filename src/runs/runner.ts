@@ -5,11 +5,15 @@
  * loaded configuration through the bounded loop:
  *
  * ```text
- * prepare -> baseline checks -> implementation turn -> post-agent checks
- *                                     ^                     |
- *                                     +---- repair turn <----+
- *                                        (while maxRepairs allows, and only
- *                                         for a completed red round)
+ * prepare -> baseline -> [recorded branch] implementation turn
+ *                              |               ^              |
+ *                              |               |              v
+ *                              |               |     [recorded branch] checks
+ *                              |               |              |
+ *                              |               +--- repair <--+
+ *                              +-> rejected state ends the run
+ *                                 (while maxRepairs allows, and only for a
+ *                                  completed red round)
  * ```
  *
  * The task and the command plan come from the caller and stay in memory: the
@@ -19,6 +23,12 @@
  * feedback, and a round that could not be executed, and a turn that failed, are
  * terminal. Every attempt, and with it the agent's own summary of it, is kept in
  * the result; the agent's account of a turn is never what decides the status.
+ *
+ * Before every coding turn, and before the check round that judges it, the
+ * checkout is returned to the branch its workspace records: a clean checkout on
+ * a branch of its own whose commit descends from that branch is fast-forwarded
+ * and checked out, and a dirty, detached, divergent, or branchless one ends the
+ * run before the turn or the check instead (HARN-35).
  *
  * One deadline, established before preparation and never recomputed, is spent by
  * every phase. A run its caller stops ends as `cancelled` with the evidence it
@@ -486,6 +496,8 @@ export async function runTask(
 
   // Everything below works in the prepared working copy, and keeps it.
   const workspacePath = workspace.workspacePath;
+  /** The branch this workspace's ledger records: what its turns work on. */
+  const workspaceBranch = workspace.branch;
 
   /**
    * One round of the configured plan in the working copy. Every invocation it
@@ -506,6 +518,92 @@ export async function runTask(
       now: dependencies.now,
       stop: callerStop,
     });
+  /**
+   * Returns the checkout to the branch its workspace records before it is read
+   * again (HARN-35). A coding turn has Git write access to its clone, so it can
+   * leave the checkout on a branch of its own with its work committed there;
+   * what the checks judge, and what a delivery step publishes, is the recorded
+   * branch's own revision. A clean checkout whose commit descends from that
+   * branch is fast-forwarded and checked out; a dirty, detached, divergent, or
+   * branchless one ends the run here, with the branch names and the manual
+   * action, rather than starting a turn or a check on a checkout the workspace
+   * does not hold.
+   *
+   * `null` means the checkout is on its recorded branch and the caller may go
+   * on. The reading and the return are bounded like the commit identity: what is
+   * left of the run's task time, the run's clock, and the run's own stop
+   * request, with a stop reported as the stop it was — never as a statement
+   * about the checkout.
+   */
+  const settleBranch = async (parts: {
+    /** The phase the reason and the timeline name, e.g. "the checkout before repair turn 2". */
+    readonly phase: string;
+    /** What the phase could not start, as the reason reads it. */
+    readonly without: string;
+    readonly baseline: CheckRoundResult | null;
+    readonly attempts: readonly AttemptEvidence[];
+  }): Promise<RunTaskResult | null> => {
+    let problem: string | null = null;
+    let stop: WorkspaceStepStop | null = null;
+    try {
+      const returned = await dependencies.returnToRecordedBranch(workspacePath, workspaceBranch, {
+        deadlineMs,
+        now: dependencies.now,
+        ...(callerStop === undefined ? {} : { stop: callerStop }),
+      });
+      if (returned.changed) {
+        await dependencies.appendRunLog(
+          timeline,
+          `checkout returned to branch ${workspaceBranch} at ${returned.revision}, from ${returned.from}`,
+        );
+      }
+    } catch (cause) {
+      problem = messageOf(cause);
+      stop = workspaceStopOf(cause);
+    }
+    // The stop the return observed is read first, then the deadline: what it
+    // rejected with does not decide why the run ended.
+    if (stop?.kind === 'cancelled' || (stop?.kind === undefined && stopped())) {
+      return endStopped({
+        cause: callerStopped(
+          parts.phase,
+          `the run was stopped by its caller while ${parts.phase} was being returned to the ` +
+            `workspace's recorded branch "${workspaceBranch}", so ${parts.without}`,
+          stop ?? undefined,
+        ),
+        baseline: parts.baseline,
+        attempts: parts.attempts,
+      });
+    }
+    if (stop !== null || remainingMs() <= 0) {
+      return endTimedOut({
+        reason:
+          `the run's task deadline expired while ${parts.phase} was being returned to the ` +
+          `workspace's recorded branch "${workspaceBranch}", so ${parts.without}`,
+        baseline: parts.baseline,
+        attempts: parts.attempts,
+        evidence: timedOut({
+          limit: 'task',
+          phase: parts.phase,
+          limitMs: taskLimitMs,
+          ...(stop === null ? {} : { termination: stop.termination, problem: stop.problem }),
+        }),
+      });
+    }
+    if (problem !== null) {
+      return endRun({
+        status: 'failed',
+        reason:
+          `the checkout could not be returned to the branch this workspace records ` +
+          `("${workspaceBranch}"), so ${parts.without}: ${oneLine(problem)}`,
+        baseline: parts.baseline,
+        attempts: parts.attempts,
+        timeout: null,
+        cancellation: null,
+      });
+    }
+    return null;
+  };
   // The baseline: the configured plan, run in the working copy before any coding
   // turn. Only a completed green round lets the run continue.
   if (stopped()) {
@@ -615,6 +713,20 @@ export async function runTask(
         attempts,
         evidence,
       });
+    }
+
+    // The turn starts on the branch its workspace records. An earlier attempt,
+    // or an earlier rung of this cycle, may have left the checkout on a branch
+    // of its own, and returning it here is what makes every continuation and
+    // every repair turn the recorded branch's own work (HARN-35).
+    const beforeTurn = await settleBranch({
+      phase: `the checkout before ${describeTurn(kind, turn)}`,
+      without: `${describeTurn(kind, turn)} was not started`,
+      baseline,
+      attempts,
+    });
+    if (beforeTurn !== null) {
+      return beforeTurn;
     }
 
     // The coding turn, awaited to completion: the checks that follow it must
@@ -788,6 +900,32 @@ export async function runTask(
       });
     }
 
+    // The turn ran, so its own record starts here, without a round yet: a
+    // checkout that cannot be read after it keeps the turn that happened rather
+    // than losing it, and stays with no check round observed after it.
+    const turnEntry: AttemptEvidence = {
+      turn,
+      kind,
+      agentLog: agentLog.path,
+      agentSummary: completed.summary,
+      checks: null,
+    };
+    attempts.push(turnEntry);
+
+    // The turn may have left the checkout on a branch of its own. The checks
+    // that judge it, and a delivery of a passed attempt, are about the revision
+    // the workspace's recorded branch holds, so the checkout is returned to that
+    // branch before the round reads the working copy (HARN-35).
+    const beforeRound = await settleBranch({
+      phase: `the checkout before the checks after ${describeTurn(kind, turn)}`,
+      without: `no check ran after ${describeTurn(kind, turn)}`,
+      baseline,
+      attempts,
+    });
+    if (beforeRound !== null) {
+      return beforeRound;
+    }
+
     // The post-agent round: setup again, then every configured check. The agent's
     // own account of the turn is kept beside these results, never in place of them.
     await dependencies.appendRunLog(
@@ -799,13 +937,7 @@ export async function runTask(
       timeline,
       `post-agent check-round result: ${describeRound(observed)}`,
     );
-    attempts.push({
-      turn,
-      kind,
-      agentLog: agentLog.path,
-      agentSummary: completed.summary,
-      checks: observed,
-    });
+    attempts[attempts.length - 1] = { ...turnEntry, checks: observed };
 
     const phase = `the checks after ${describeTurn(kind, turn)}`;
     const observedStop = roundStop(observed, phase);

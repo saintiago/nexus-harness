@@ -26,6 +26,7 @@ import type {
 } from '../shared/types.js';
 import type { PreparedWorkspace, PrepareWorkspaceBounds } from '../workspace/prepare.js';
 import type { PreflightRequest, SourcePreflight } from '../workspace/preflight.js';
+import type { BranchReturn } from '../workspace/branch.js';
 import type { GitRunBounds } from '../workspace/git.js';
 import type { ContinuedWorkspace } from '../workspace/reopen.js';
 import type { RunDirectory, WorkspacePlacement } from '../workspace/run-directory.js';
@@ -290,6 +291,31 @@ export interface RunnerDependencies {
     workspacePath: string,
     bounds: GitRunBounds,
   ) => Promise<void>;
+  /**
+   * Returns the working copy to the branch its workspace's ledger records
+   * (`returnToRecordedBranch`, `src/workspace/branch.ts`), before every coding
+   * turn starts and before the check round that follows a turn reads it. A
+   * coding turn may leave the checkout on a branch of its own, with its work
+   * committed there; what the checks judge and what a delivery step publishes is
+   * the recorded branch's own revision, so a clean checkout whose commit
+   * descends from the recorded branch's tip is fast-forwarded and checked out,
+   * and everything else — a dirty checkout, a detached HEAD, a commit that does
+   * not descend from the recorded branch, or a recorded branch the workspace
+   * does not hold — rejects with the branch names and the manual action, never
+   * with a reset, a force update, or an adopted branch (HARN-35). A checkout
+   * already on its recorded branch is left exactly as it is, uncommitted
+   * changes included.
+   *
+   * It is bounded by `bounds` exactly as the commit identity is: the run's task
+   * deadline, its clock, and its own stop request, so a stalled Git cannot hold
+   * the run past either, and a stop it recorded travels back with the stop it
+   * is.
+   */
+  readonly returnToRecordedBranch: (
+    workspacePath: string,
+    branch: string,
+    bounds: GitRunBounds,
+  ) => Promise<BranchReturn>;
   /** Runs one setup/check round in the working copy. */
   readonly runCheckRound: (request: CheckRoundRequest) => Promise<CheckRoundResult>;
   /**

@@ -16,6 +16,7 @@ import { writeRunReport } from '../reporting/report.js';
 import { nameTurn } from '../runs/progress.js';
 import type { RunnerDependencies } from '../runs/contracts.js';
 import type { AgentSelection } from '../shared/types.js';
+import { returnToRecordedBranch } from '../workspace/branch.js';
 import { configureWorkspaceIdentity } from '../workspace/git.js';
 import { prepareWorkspace } from '../workspace/prepare.js';
 import { preflightSource } from '../workspace/preflight.js';
@@ -34,6 +35,7 @@ function realDependencies(
     allocateRunDirectory,
     prepareWorkspace,
     configureWorkspaceIdentity,
+    returnToRecordedBranch,
     // A file-task run passes no environment: its commands and its runtime
     // inherit this process's own, exactly as before. A source run passes a copy
     // with the Jira credential variable removed, so a token this harness
@@ -111,6 +113,7 @@ export function composeDependencies(
     prepareWorkspace: replaced.prepareWorkspace ?? real.prepareWorkspace,
     configureWorkspaceIdentity:
       replaced.configureWorkspaceIdentity ?? real.configureWorkspaceIdentity,
+    returnToRecordedBranch: replaced.returnToRecordedBranch ?? real.returnToRecordedBranch,
     runCheckRound: replaced.runCheckRound ?? real.runCheckRound,
     runAgentTurn: async (request) => {
       const turn = replaced.runAgentTurn ?? real.runAgentTurn;
