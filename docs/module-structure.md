@@ -407,8 +407,8 @@ cli/*  ---- the commands: parse, load, compose, print, exit
   |
   +--> delivery/  -------> process/ (bounded commands), workspace/ (Git hygiene)
   |
-  +--> reviews/   -------> agents/codex/, reporting/ (evidence log), workspace/ (pointer ids),
-  |                        sources/contract.ts, shared/
+  +--> reviews/   -------> agents/codex/, reporting/ (evidence log), workspace/ (pointer ids and
+  |                        the view's bounded Git), sources/contract.ts, shared/
   |
   +--> queue/     -------> sources/contract.ts only (the ticket's identity and its take result)
   |
@@ -432,7 +432,8 @@ The rules that keep it acyclic:
   nothing above `sources/` imports a connector except the one command that builds it
   (`cli/source-command.ts`).
 - `reviews/` depends on `agents/codex/` for the reviewer turn, `reporting/` for its evidence log,
-  `workspace/run-directory.ts` for the pointer-id check, `sources/contract.ts` for the ordinary
+  `workspace/run-directory.ts` for the pointer-id check, `workspace/git.ts` for the bounded Git
+  invocation its repository view reuses, `sources/contract.ts` for the ordinary
   queue data, and `shared/`. Its queue is handed to it as functions, so it imports no Jira
   connector; the CLI is the one place that builds it (`cli/review-command.ts`), and nothing else
   imports `reviews/`.

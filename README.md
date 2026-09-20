@@ -1268,7 +1268,11 @@ and only a read.
   defects. These corrections are verified offline with a fake GitHub API and generated test keys;
   no live exercise was run for them, and the repository-view path — the pinned local clone a
   reviewer inspects instead of an assembled patch — is offline evidence too: no live reviewer turn
-  has read a view from this checkout. The operator must separately verify inline findings, check
+  has read a view from this checkout. The observed case behind it — HARN-24's pull request #47,
+  whose 39 files rendered as 325,809 characters and was refused before any reviewer turn ran — is
+  covered offline by a change larger than the old guard reaching the reviewer from a real retained
+  workspace; running the equivalent live turn stays the operator's step. The operator must
+  separately verify inline findings, check
   reconciliation, native approval eligibility, and the configured branch/auto-merge gate. Mocked
   tests do not establish those outcomes or whether review quality reduces coordinator effort;
 - **the Nexus research-tool profiles.** [docs/nexus-agent-tools.md](docs/nexus-agent-tools.md)
