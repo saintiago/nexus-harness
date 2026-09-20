@@ -27,8 +27,9 @@ A terminal whose host asked for no color — `NO_COLOR` set to anything but the
 empty string, read by `consoleContext` — keeps the pane, the timestamps and the
 20-line bound, and drops every styling sequence; the test support's screen
 model now ignores styling sequences for the same reason a real terminal does.
-Redirected output is unchanged from before this task: ordinary lines, no
-timestamp, no escape sequence, no cursor work.
+Redirected output and terminals too small for a pane also receive timestamped
+ordinary lines, with no escape sequence or cursor work. They read the same
+local clock once per entry and preserve the complete sanitized activity text.
 
 ## Focused offline tests
 
@@ -99,3 +100,25 @@ synthetic outcome and paths alone on the screen.
 - The demonstration ran on Windows in a fixed 80 by 24 PTY; resize handling is
   outside the pane, as before, and no visual inspection of every Windows font
   was part of this check.
+
+## Plain-output timestamp repair — 2026-09-20
+
+The initial implementation omitted timestamps in the plain-output fallback.
+That fallback now receives the viewer's clock and prefixes each activity with
+the same local `HH:mm:ss` format, including entries received after close.
+It still emits full sanitized text without color or cursor escapes.
+
+Controlled-clock regressions cover redirected, too-short, and too-narrow output,
+all four activity kinds, midnight rollover, and exactly one clock read per entry.
+The six fallback assertions failed before the repair and passed afterwards.
+The CLI integration test also requires timestamps on redirected activity.
+
+- `npx vitest run tests/activity.test.ts tests/cli.test.ts tests/agent.test.ts tests/source.test.ts`:
+  278 tests passed.
+- `npm run build`: passed.
+- `npm run validate`: formatting, lint, typecheck, build, and all 31 test files
+  passed; 940 tests passed and 2 existing platform skips remained.
+- `node tests/manual/activity-display.mjs`: exit 0 in about seven seconds on
+  Windows, Node 24.14.1, in an 80 by 24 PTY. It exercised 31 synthetic entries
+  and 104 highlighted message draws, with the pane erased before the outcome.
+  No live model or Jira site was used.

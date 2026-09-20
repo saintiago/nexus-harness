@@ -824,8 +824,9 @@ earlier messages stay in order as the work between them scrolls away. Every entr
 row with its timestamp counted, and control characters in runtime text are never written as terminal
 commands. The progress above keeps the task, the phase, and the selected model readable; the startup
 inventory — receipt paths, IDs, hashes, launch arguments — stays in the run log. A redirected, too
-small, or too narrow terminal gets every line as ordinary output instead, with no cursor sequences
-at all; `NO_COLOR` in the environment keeps the pane but drops the highlighting; on every ending the
+small, or too narrow terminal gets every line with its receive timestamp as ordinary output instead,
+with no cursor sequences at all; `NO_COLOR` in the environment keeps the pane but drops the
+highlighting; on every ending the
 pane is taken away before the outcome block above is printed. The full runtime output always stays
 in the turn's own `logs/agent-*.log`.
 

@@ -571,21 +571,24 @@ describe('a terminal that cannot hold a pane', () => {
       { columns: 10, rows: 24 },
     ]) {
       const terminal = fakeConsole(size);
-      const pane = createActivityDisplay(terminal.io);
+      const pane = createActivityDisplay(terminal.io, CLOCK);
       pane.activity({ kind: 'message', text: 'plain, please' });
 
       // Ordinary output, none of the pane's own cursor work.
-      expect(terminal.chunks.join('')).toBe('agent: plain, please\n');
+      expect(terminal.chunks.join('')).toBe(`${STAMP} agent: plain, please\n`);
       pane.close();
     }
   });
 
   it('writes readable ordinary lines, with no cursor sequence, when redirected', () => {
     const out: string[] = [];
-    const pane = createActivityDisplay({
-      out: (text) => out.push(text),
-      err: (text) => out.push(text),
-    });
+    const pane = createActivityDisplay(
+      {
+        out: (text) => out.push(text),
+        err: (text) => out.push(text),
+      },
+      CLOCK,
+    );
     pane.line('run run-1: implementation turn started');
     pane.activity({ kind: 'command', text: 'npm test' });
     pane.activity({ kind: 'message', text: 'the tests are red' });
@@ -594,19 +597,54 @@ describe('a terminal that cannot hold a pane', () => {
 
     expect(out).toEqual([
       'run run-1: implementation turn started',
-      'run: npm test',
-      'agent: the tests are red',
+      stamped('run', 'npm test'),
+      stamped('agent', 'the tests are red'),
     ]);
     expect(out.join('')).not.toContain('\u001b');
   });
 
   it('keeps long redirected Unicode text while sanitizing its controls', () => {
     const out: string[] = [];
-    const pane = createActivityDisplay({ out: (text) => out.push(text), err: () => undefined });
+    const pane = createActivityDisplay(
+      { out: (text) => out.push(text), err: () => undefined },
+      CLOCK,
+    );
     const text = '界👩🏽‍💻e\u0301'.repeat(100);
     pane.activity({ kind: 'message', text: `\u001b[31m${text}\u001b[0m\r\nend\u0007` });
     pane.close();
-    expect(out).toEqual([`agent: ${text} end`]);
+    expect(out).toEqual([`${STAMP} agent: ${text} end`]);
+  });
+
+  it.each([
+    { name: 'redirected', size: undefined },
+    { name: 'too short', size: { columns: 80, rows: 3 } },
+    { name: 'too narrow', size: { columns: 10, rows: 24 } },
+  ])('stamps every $name entry once, including after close', ({ size }) => {
+    const terminal = fakeConsole(size);
+    const clock = testClock(new Date(2026, 8, 20, 23, 59, 59));
+    const io = size === undefined ? { out: terminal.io.out, err: terminal.io.err } : terminal.io;
+    const pane = createActivityDisplay(io, clock.now);
+    expect(clock.reads()).toBe(0);
+    pane.activity({ kind: 'message', text: '\u001b[31mchecking\u001b[0m' });
+    clock.set(new Date(2026, 8, 21, 0, 0, 0));
+    pane.activity({ kind: 'command', text: 'npm test' });
+    clock.set(new Date(2026, 8, 21, 0, 0, 1));
+    pane.activity({ kind: 'result', text: 'exit 0' });
+    pane.line('phase changed');
+    pane.around(() => terminal.io.out('diagnostic'));
+    pane.close();
+    expect(clock.reads()).toBe(3);
+    clock.set(new Date(2026, 8, 21, 0, 0, 2));
+    pane.activity({ kind: 'change', text: 'update src/a.ts' });
+    expect(clock.reads()).toBe(4);
+    expect(terminal.chunks.join('')).toBe(
+      '23:59:59 agent: checking\n' +
+        '00:00:00 run: npm test\n' +
+        '00:00:01 result: exit 0\n' +
+        'phase changed\ndiagnostic\n' +
+        '00:00:02 change: update src/a.ts\n',
+    );
+    expect(terminal.chunks.join('')).not.toContain('\u001b');
   });
 
   it('keeps the full-size bound when the terminal reports no size', () => {

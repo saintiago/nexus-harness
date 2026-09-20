@@ -138,12 +138,12 @@ export function createActivityDisplay(
 ): ActivityDisplay {
   const terminal = io.terminal;
   if (terminal === undefined) {
-    return plainDisplay(io.out);
+    return plainDisplay(io.out, now);
   }
   const height = paneHeight(terminal.rows);
   const columns = terminal.columns ?? FALLBACK_COLUMNS;
   return height === 0 || columns < MIN_COLUMNS
-    ? plainDisplay(io.out)
+    ? plainDisplay(io.out, now)
     : paneDisplay(terminal.write, columns - 1, height, now, terminal.color !== false);
 }
 
@@ -343,9 +343,9 @@ function fitHistory(groups: ActivityGroup[], capacity: number): void {
  * The fallback for a terminal that cannot hold a pane: the same lines, written
  * one per line as ordinary output, without a cursor sequence anywhere. It is
  * also what a redirected stream gets, and it carries no color: the entry as
- * plain text, with nothing for a terminal to interpret.
+ * timestamped plain text, with nothing for a terminal to interpret.
  */
-function plainDisplay(out: (text: string) => void): ActivityDisplay {
+function plainDisplay(out: (text: string) => void, now: () => Date): ActivityDisplay {
   return {
     line: (text) => {
       out(text);
@@ -354,7 +354,7 @@ function plainDisplay(out: (text: string) => void): ActivityDisplay {
       action();
     },
     activity: (activity) => {
-      out(describe(activity));
+      out(`${displayTime(now())} ${describe(activity)}`);
     },
     close: () => undefined,
   };

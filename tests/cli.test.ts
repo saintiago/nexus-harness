@@ -1059,9 +1059,9 @@ describe('the activity pane under the run status', () => {
     );
 
     expect(result.code).toBe(EXIT_OK);
-    expect(result.out).toMatch(/^run: npm test$/m);
-    expect(result.out).toMatch(/^agent: I will change one file\.$/m);
-    expect(result.out).toMatch(/^result: exit 1$/m);
+    expect(result.out).toMatch(/^\d{2}:\d{2}:\d{2} run: npm test$/m);
+    expect(result.out).toMatch(/^\d{2}:\d{2}:\d{2} agent: I will change one file\.$/m);
+    expect(result.out).toMatch(/^\d{2}:\d{2}:\d{2} result: exit 1$/m);
     expect(`${result.out}${result.err}`).not.toContain('\u001b');
   });
 
