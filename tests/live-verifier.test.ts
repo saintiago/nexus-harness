@@ -30,7 +30,8 @@ import { existsSync } from 'node:fs';
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { loadHarnessConfig, loadTask, resolveWorkDir } from '../src/config/load.js';
+import { loadConfiguration, loadTask, resolveWorkDir } from '../src/config/load.js';
+import { HARNESS_CONFIG_FILE_NAME, PROJECT_CONFIG_FILE_NAME } from '../src/config/paths.js';
 import {
   EXIT_FAILED,
   EXIT_OK,
@@ -280,14 +281,16 @@ describe('the entry point, as a process', () => {
   it(
     'refuses a configuration that allows no repair turn, before any paid work',
     async () => {
-      const configPath = await writeJsonFile(await createTempDir(), 'harness.config.json', {
-        workDir: './runs',
-        maxRepairs: 0,
-        taskTimeoutMinutes: 60,
-        commandTimeoutMinutes: 10,
-        setup: [],
-        checks: [[process.execPath, '-e', 'process.exit(97)']],
-      });
+      const configPath = await writeJsonFile(
+        await createTempDir(),
+        HARNESS_CONFIG_FILE_NAME,
+        {
+          workDir: './runs',
+          maxRepairs: 0,
+          taskTimeoutMinutes: 60,
+          commandTimeoutMinutes: 10,
+        },
+      );
 
       const result = await spawnLiveEntry(await isolatedEnvironment(), ['--config', configPath]);
 
@@ -309,15 +312,13 @@ describe('the entry point, as a process', () => {
       const parent = await createTempDir();
       const { bin, shim, state } = await installFakeRuntime(parent);
       const prefix = [shim, '--profile', 'deepseek', '--model', 'deepseek-flash'];
-      const configPath = await writeJsonFile(parent, 'harness.config.json', {
-        // The configured project's own fields are traps rather than targets: the
+      const configPath = await writeJsonFile(parent, HARNESS_CONFIG_FILE_NAME, {
+        // The Nexus-wide output directory is a trap rather than a target: the
         // verifier must run the fixture's commands, in the fixture's directories.
         workDir: path.join(parent, 'a-project-that-must-not-be-touched'),
         maxRepairs: 2,
         taskTimeoutMinutes: 15,
         commandTimeoutMinutes: 5,
-        setup: [[process.execPath, '-e', 'process.exit(97)']],
-        checks: [[process.execPath, '-e', 'process.exit(97)']],
         agent: { runtime: 'codex', command: prefix },
       });
 
@@ -458,7 +459,12 @@ describe('the disposable project', () => {
   it('describes itself with the harness’s own configuration and task contracts', async () => {
     const target = await track(createLiveTarget());
 
-    const config = await loadHarnessConfig(target.configPath);
+    // The fixture is a connected project: the run's configuration is the
+    // Nexus-wide file composed with the project configuration it commits.
+    const { config } = await loadConfiguration(
+      target.configPath,
+      path.join(target.repo, PROJECT_CONFIG_FILE_NAME),
+    );
     expect(resolveWorkDir(config, target.configPath)).toBe(target.workDir);
     expect(config.maxRepairs).toBe(2);
     expect(config.setup).toHaveLength(1);

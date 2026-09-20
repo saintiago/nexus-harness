@@ -27,6 +27,7 @@ import type {
   CompletionConfig,
   EscalationTier,
   GitHubDeliveryConfig,
+  GitHubReviewAppConfig,
   GitHubReviewConfig,
   HarnessConfig,
   Task,
@@ -65,10 +66,37 @@ export class ConfigError extends Error {
 export interface LoadedConfiguration {
   /** The effective, composed configuration every command runs on. */
   readonly config: HarnessConfig;
-  /** What the harness configuration file declared, validated. */
-  readonly harness: HarnessFileConfig;
+  /** What the harness configuration file declared, validated and resolved. */
+  readonly harness: ResolvedHarnessConfig;
   /** What the project configuration file declared, validated. */
   readonly project: ProjectFileConfig;
+}
+
+/**
+ * One harness configuration file, validated and with its launches resolved: the
+ * exact selection a run would start, and the reviewer integration that follows
+ * the connected project (docs/WORKFLOW.md §1, "Agent launch and path rules").
+ */
+export interface ResolvedHarnessConfig {
+  readonly workDir: string;
+  readonly maxRepairs: number;
+  readonly taskTimeoutMinutes: number;
+  readonly commandTimeoutMinutes: number;
+  /** The coding launch, already defaulted and with its executable resolved. */
+  readonly agent: AgentSelection;
+  /** The ladder, with every rung's launch resolved and allowance defaulted. */
+  readonly escalation?: readonly EscalationTier[];
+  /** The Nexus Lens integration, with the reviewer launch resolved. */
+  readonly reviewer?: ResolvedReviewerConfig;
+  /** The review-to-completion policy, unchanged: it names no launch. */
+  readonly completion?: HarnessFileConfig['completion'];
+}
+
+/** The Nexus-wide reviewer integration, with its launch resolved. */
+export interface ResolvedReviewerConfig {
+  readonly app: GitHubReviewAppConfig;
+  readonly reviewer: AgentSelection;
+  readonly checkName: string;
 }
 
 /** Whether an executable names a path rather than a bare program name. */
@@ -182,15 +210,7 @@ export async function loadConfiguration(
   harnessPath: string,
   projectPath: string,
 ): Promise<LoadedConfiguration> {
-  const harnessHint = `the Nexus-wide harness configuration (${HARNESS_CONFIG_FILE_NAME})`;
-  const harnessRaw = await readJson(harnessPath, harnessHint);
-  refuseMisplacedFields(
-    harnessRaw,
-    harnessPath,
-    PROJECT_OWNED_FIELDS,
-    `belongs to the project configuration (${PROJECT_CONFIG_FILE_NAME} in the connected ` +
-      "repository's root), not to the Nexus-wide harness configuration",
-  );
+  const harness = await loadHarnessFile(harnessPath);
 
   const projectHint =
     `the project configuration a connected repository carries at its root ` +
@@ -204,10 +224,72 @@ export async function loadConfiguration(
       'project configuration',
   );
 
-  const harness = parseOrExplain(harnessConfigSchema, harnessRaw, harnessPath);
   const project = parseOrExplain(projectConfigSchema, projectRaw, projectPath);
   const config = compose(harness, project, harnessPath, projectPath);
   return { config, harness, project };
+}
+
+/**
+ * One Nexus-wide harness configuration file on its own: the output directory,
+ * the limits, the coding launches, and the reviewer integration, validated,
+ * defaulted, and with their launch paths resolved. A project field in it is
+ * refused with where it belongs, exactly as through {@link loadConfiguration}.
+ *
+ * Only the opt-in live verifier reads a harness configuration without a
+ * connected project: its disposable fixture supplies the project side itself
+ * (docs/WORKFLOW.md §3, "Opt-in live verification").
+ */
+export async function loadHarnessFile(harnessPath: string): Promise<ResolvedHarnessConfig> {
+  const hint = `the Nexus-wide harness configuration (${HARNESS_CONFIG_FILE_NAME})`;
+  const raw = await readJson(harnessPath, hint);
+  refuseMisplacedFields(
+    raw,
+    harnessPath,
+    PROJECT_OWNED_FIELDS,
+    `belongs to the project configuration (${PROJECT_CONFIG_FILE_NAME} in the connected ` +
+      "repository's root), not to the Nexus-wide harness configuration",
+  );
+  return resolveHarnessFile(parseOrExplain(harnessConfigSchema, raw, harnessPath), harnessPath);
+}
+
+/**
+ * Applies the documented launch-path rules to a whole harness configuration
+ * once, before anything runs: an omitted `agent` is the documented ordinary
+ * Codex launch, a relative path-valued executable resolves against the harness
+ * configuration file's own directory, and a ladder rung that names no launch or
+ * allowance inherits the top-level one.
+ */
+function resolveHarnessFile(
+  harness: HarnessFileConfig,
+  harnessPath: string,
+): ResolvedHarnessConfig {
+  const agent = resolveAgentSelection(harness.agent ?? DEFAULT_AGENT_SELECTION, harnessPath);
+  return {
+    workDir: harness.workDir,
+    maxRepairs: harness.maxRepairs,
+    taskTimeoutMinutes: harness.taskTimeoutMinutes,
+    commandTimeoutMinutes: harness.commandTimeoutMinutes,
+    agent,
+    ...(harness.escalation === undefined
+      ? {}
+      : {
+          escalation: harness.escalation.map((tier) => ({
+            name: tier.name,
+            agent: resolveAgentSelection(tier.agent ?? agent, harnessPath),
+            maxRepairs: tier.maxRepairs ?? harness.maxRepairs,
+          })),
+        }),
+    ...(harness.reviewer === undefined
+      ? {}
+      : {
+          reviewer: {
+            app: harness.reviewer.app,
+            reviewer: resolveAgentSelection(harness.reviewer.reviewer, harnessPath),
+            checkName: harness.reviewer.checkName,
+          },
+        }),
+    ...(harness.completion === undefined ? {} : { completion: harness.completion }),
+  };
 }
 
 /**
@@ -229,7 +311,7 @@ export async function loadEffectiveConfig(
  * mismatch stops the command before it claims anything (docs/WORKFLOW.md §1).
  */
 function compose(
-  harness: HarnessFileConfig,
+  harness: ResolvedHarnessConfig,
   project: ProjectFileConfig,
   harnessPath: string,
   projectPath: string,
@@ -315,16 +397,9 @@ function compose(
           type: 'github',
           repository: delivery.repository,
           app: reviewer.app,
-          reviewer: resolveAgentSelection(reviewer.reviewer, harnessPath),
+          reviewer: reviewer.reviewer,
           checkName: reviewer.checkName,
         };
-
-  const selection = resolveAgentSelection(harness.agent ?? DEFAULT_AGENT_SELECTION, harnessPath);
-  const escalation = harness.escalation?.map((tier) => ({
-    name: tier.name,
-    agent: resolveAgentSelection(tier.agent ?? selection, harnessPath),
-    maxRepairs: tier.maxRepairs ?? harness.maxRepairs,
-  }));
 
   return {
     workDir: harness.workDir,
@@ -333,13 +408,11 @@ function compose(
     commandTimeoutMinutes: harness.commandTimeoutMinutes,
     setup: project.setup,
     checks: project.checks,
-    // An explicit selection is used as it is written, paths resolved; a
-    // selection that was omitted is the documented ordinary Codex launch.
-    agent: selection,
-    // A rung that names no launch of its own runs the top-level one, and one
-    // that names no allowance spends the top-level one: a ladder says what
-    // changes, not everything again.
-    ...(escalation === undefined ? {} : { escalation }),
+    // The launches the harness configuration resolved once: an explicit
+    // selection with its path rules applied, or the documented ordinary Codex
+    // launch; a ladder rung that names nothing inherits the top-level one.
+    agent: harness.agent,
+    ...(harness.escalation === undefined ? {} : { escalation: harness.escalation }),
     // A project without a Jira connection stays without one: a file-task
     // command must not acquire a connector, a credential, or intake state
     // because a field it never asked for was given a default

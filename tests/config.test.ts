@@ -798,11 +798,6 @@ describe('composing two files', () => {
       HARNESS_CONFIG_FILE_NAME,
       harnessWith({ reviewer: REVIEWER, completion: COMPLETION }),
     );
-    const sameOutcomes = await writeJsonFile(
-      directory,
-      PROJECT_CONFIG_FILE_NAME,
-      connectedProject('SAM1', 'owner/first', ['first.yml']),
-    );
     const reviewStatus = await writeJsonFile(
       path.join(directory, 'review-status'),
       PROJECT_CONFIG_FILE_NAME,

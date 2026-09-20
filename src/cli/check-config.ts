@@ -10,8 +10,8 @@
  */
 import path from 'node:path';
 import { ConfigError, loadConfiguration, loadTask, resolveWorkDir } from '../config/load.js';
+import type { ResolvedHarnessConfig } from '../config/load.js';
 import { projectConfigFile } from '../config/paths.js';
-import type { HarnessFileConfig } from '../config/schema.js';
 import type { Command, HarnessConfig, JiraOrdering, Task } from '../shared/types.js';
 import { EXIT_INPUT_ERROR, EXIT_OK, EXIT_USAGE } from './context.js';
 import type { CliContext } from './context.js';
@@ -33,8 +33,15 @@ function describeOrdering(ordering: JiraOrdering): string {
     : 'priority: Jira priority DESC, then created ASC, then the issue key';
 }
 
-/** What the Nexus-wide harness configuration file itself declared. */
-function describeHarness(harness: HarnessFileConfig, harnessPath: string, workDir: string): string {
+/**
+ * What the Nexus-wide harness configuration file declared, as it resolves: the
+ * launches are the ones a command would really start.
+ */
+function describeHarness(
+  harness: ResolvedHarnessConfig,
+  harnessPath: string,
+  workDir: string,
+): string {
   const lines = [
     `check-config: ${harnessPath} is valid`,
     `  workDir                ${workDir} (resolved from this file)`,

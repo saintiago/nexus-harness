@@ -99,10 +99,12 @@ import {
   cleanupTempDirectories,
   createTempDir,
   documentedConfig,
+  documentedHarnessConfig,
   fakeConsole,
   screenAfter,
   writeJsonFile,
 } from './support.js';
+import { HARNESS_CONFIG_FILE_NAME, PROJECT_CONFIG_FILE_NAME } from '../src/config/paths.js';
 
 afterEach(async () => {
   vi.restoreAllMocks();
@@ -3037,29 +3039,14 @@ async function createTarget(
     await mkdir(path.join(repo, 'tools'), { recursive: true });
     await writeFile(path.join(repo, 'tools', 'check.mjs'), MARKER_CHECK_SOURCE, 'utf8');
   }
-  await gitOrFail(['init', '--quiet', '--initial-branch=main'], repo);
-  await gitOrFail(['add', '--all'], repo);
-  await gitOrFail(['commit', '--quiet', '--message', 'baseline'], repo);
-
-  const configPath = await writeJsonFile(directory, 'harness.jira.config.json', {
-    ...documentedConfig,
-    workDir: './runs',
-    maxRepairs: 1,
+  // The connected project's own configuration is committed with it: its Jira
+  // queue, its check, and — when a test asks for one — its GitHub destination.
+  await writeJsonFile(repo, PROJECT_CONFIG_FILE_NAME, {
     setup: [],
     checks:
       options.markerCheck === true
         ? [[process.execPath, 'tools/check.mjs']]
         : [[process.execPath, '-e', 'process.exit(0)']],
-    ...(options.escalation === undefined ? {} : { escalation: options.escalation }),
-    ...(options.delivery === true
-      ? {
-          delivery: {
-            type: 'github',
-            repository: 'example-owner/example-repo',
-            baseBranch: 'main',
-          },
-        }
-      : {}),
     source: {
       type: 'jira',
       siteUrl: SCOPE,
@@ -3069,6 +3056,25 @@ async function createTarget(
       pollIntervalSeconds: 5,
       tokenEnv: 'JIRA_API_TOKEN',
     },
+    ...(options.delivery === true
+      ? {
+          delivery: {
+            type: 'github',
+            repository: 'example-owner/example-repo',
+            baseBranch: 'main',
+          },
+        }
+      : {}),
+  });
+  await gitOrFail(['init', '--quiet', '--initial-branch=main'], repo);
+  await gitOrFail(['add', '--all'], repo);
+  await gitOrFail(['commit', '--quiet', '--message', 'baseline'], repo);
+
+  const configPath = await writeJsonFile(directory, HARNESS_CONFIG_FILE_NAME, {
+    ...documentedHarnessConfig,
+    workDir: './runs',
+    maxRepairs: 1,
+    ...(options.escalation === undefined ? {} : { escalation: options.escalation }),
   });
 
   return { directory, repo, configPath, workDir: path.join(directory, 'runs') };
@@ -3288,7 +3294,7 @@ describe('the source commands through the CLI', () => {
 
     try {
       const result = await runSourceCli(
-        ['source', 'list', '--config', target.configPath],
+        ['source', 'list', '--config', target.configPath, '--project', target.repo],
         target.directory,
         { fetch: jira.fetch },
       );
@@ -4944,18 +4950,30 @@ describe('the source commands through the CLI', () => {
 
   it('refuses a source command without a source or a token, creating nothing', async () => {
     const target = await createTarget();
-    const withoutSource = await writeJsonFile(target.directory, 'plain.json', documentedConfig);
+    // A harness configuration with no Nexus-wide extras, composed with a
+    // project that has no Jira connection of its own: nothing to take tasks
+    // from, which is what the source command has to say.
+    const withoutSource = await writeJsonFile(
+      target.directory,
+      HARNESS_CONFIG_FILE_NAME,
+      documentedHarnessConfig,
+    );
+    const plainProject = path.join(target.directory, 'plain-project');
+    await writeJsonFile(plainProject, PROJECT_CONFIG_FILE_NAME, {
+      setup: [],
+      checks: [['node', '-e', 'process.exit(0)']],
+    });
     const previous = process.env.JIRA_API_TOKEN;
     delete process.env.JIRA_API_TOKEN;
 
     try {
       const missingToken = await runSourceCli(
-        ['source', 'list', '--config', target.configPath],
+        ['source', 'list', '--config', target.configPath, '--project', target.repo],
         target.directory,
         { fetch: fakeJira([]).fetch },
       );
       const missingSource = await runSourceCli(
-        ['source', 'list', '--config', withoutSource],
+        ['source', 'list', '--config', withoutSource, '--project', plainProject],
         target.directory,
         { fetch: fakeJira([]).fetch },
       );

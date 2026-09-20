@@ -19,7 +19,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { runCli } from '../src/cli.js';
 import { EXIT_INPUT_ERROR, EXIT_OK } from '../src/cli/context.js';
 import type { CliContext, InterruptSignals } from '../src/cli/context.js';
-import { loadHarnessConfig } from '../src/config/load.js';
+import { loadConfiguration } from '../src/config/load.js';
+import { HARNESS_CONFIG_FILE_NAME, PROJECT_CONFIG_FILE_NAME } from '../src/config/paths.js';
 import type {
   AppCheckRun,
   OpenPullRequest,
@@ -47,7 +48,8 @@ import type { FakePlan, FakeState } from './fixtures/local-target.js';
 import {
   cleanupTempDirectories,
   createTempDir,
-  documentedConfig,
+  documentedHarnessConfig,
+  documentedProjectConfig,
   writeJsonFile,
 } from './support.js';
 
@@ -1178,11 +1180,9 @@ describe('the review watch', () => {
 // Configuration and the App key
 // ---------------------------------------------------------------------------
 
-/** The review object of the fixture configuration, before any override. */
-function standardReview(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+/** The Nexus-wide reviewer integration of the fixture, before any override. */
+function fixtureReviewer(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
-    type: 'github',
-    repository: REPOSITORY,
     app: {
       appId: 5001141,
       installationId: 163007360,
@@ -1194,11 +1194,21 @@ function standardReview(overrides: Record<string, unknown> = {}): Record<string,
   };
 }
 
-function reviewConfig(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+/** The Nexus-wide harness configuration of the fixture, before any override. */
+function harnessConfig(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
-    ...documentedConfig,
-    setup: [],
+    ...documentedHarnessConfig,
     agent: { runtime: 'codex', command: ['codex'] },
+    reviewer: fixtureReviewer(overrides['reviewer'] as Record<string, unknown> | undefined),
+    ...(overrides['extra'] as Record<string, unknown> | undefined),
+  };
+}
+
+/** The connected project's own configuration of the fixture, before any override. */
+function projectConfig(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    setup: [],
+    checks: documentedProjectConfig.checks,
     source: {
       type: 'jira',
       siteUrl: SCOPE,
@@ -1206,16 +1216,36 @@ function reviewConfig(overrides: Record<string, unknown> = {}): Record<string, u
       projectKey: 'SAM1',
       tokenEnv: 'JIRA_API_TOKEN',
     },
-    review: standardReview(overrides['review'] as Record<string, unknown> | undefined),
+    delivery: { type: 'github', repository: REPOSITORY, baseBranch: 'main' },
     ...(overrides['extra'] as Record<string, unknown> | undefined),
   };
 }
 
+/**
+ * Writes the two configuration files the fixture is made of and returns their
+ * paths: the Nexus-wide harness configuration, and the connected project's own
+ * configuration in the directory a command reads it from.
+ */
+async function writeFixtureConfig(
+  directory: string,
+  harnessOverrides: Record<string, unknown> = {},
+  project: Record<string, unknown> = projectConfig(),
+): Promise<{ harnessPath: string; projectPath: string }> {
+  return {
+    harnessPath: await writeJsonFile(
+      directory,
+      HARNESS_CONFIG_FILE_NAME,
+      harnessConfig(harnessOverrides),
+    ),
+    projectPath: await writeJsonFile(directory, PROJECT_CONFIG_FILE_NAME, project),
+  };
+}
+
 describe('the review configuration', () => {
-  it('accepts the documented review object and defaults the check name', async () => {
+  it('accepts the documented reviewer object and defaults the check name', async () => {
     const directory = await createTempDir();
-    const file = await writeJsonFile(directory, 'harness.json', reviewConfig());
-    const config = await loadHarnessConfig(file);
+    const { harnessPath, projectPath } = await writeFixtureConfig(directory);
+    const { config } = await loadConfiguration(harnessPath, projectPath);
     expect(config.review).toMatchObject({
       type: 'github',
       repository: REPOSITORY,
@@ -1228,50 +1258,43 @@ describe('the review configuration', () => {
 
   it('resolves a relative reviewer executable against the configuration file', async () => {
     const directory = await createTempDir();
-    const file = await writeJsonFile(
-      directory,
-      'harness.json',
-      reviewConfig({
-        review: {
-          reviewer: { runtime: 'codex', command: ['./bin/astra', '--profile', 'x'] },
-        },
+    const { harnessPath, projectPath } = await writeFixtureConfig(directory, {
+      reviewer: fixtureReviewer({
+        reviewer: { runtime: 'codex', command: ['./bin/astra', '--profile', 'x'] },
       }),
-    );
-    const config = await loadHarnessConfig(file);
+    });
+    const { config } = await loadConfiguration(harnessPath, projectPath);
     expect(config.review?.reviewer.command[0]).toBe(path.join(directory, 'bin', 'astra'));
   });
 
-  it('refuses a review without the Jira connection, and a bad App field', async () => {
+  it('refuses a Nexus-wide reviewer the project cannot support, and a bad App field', async () => {
     const directory = await createTempDir();
-    const withoutSource = { ...reviewConfig() };
+    const withoutSource = { ...projectConfig() };
     delete withoutSource['source'];
-    const first = await writeJsonFile(directory, 'no-source.json', withoutSource);
-    await expect(loadHarnessConfig(first)).rejects.toThrow(
-      /review requires the Jira connection described by "source"/,
+    const first = await writeFixtureConfig(directory, {}, withoutSource);
+    await expect(loadConfiguration(first.harnessPath, first.projectPath)).rejects.toThrow(
+      /configures the Nexus Lens reviewer/,
     );
 
-    const badApp = await writeJsonFile(
-      directory,
-      'bad-app.json',
-      reviewConfig({ review: { app: { appId: 0 } } }),
-    );
-    await expect(loadHarnessConfig(badApp)).rejects.toThrow(/app/);
+    const badApp = await writeFixtureConfig(directory, {
+      reviewer: fixtureReviewer({ app: { appId: 0 } }),
+    });
+    await expect(loadConfiguration(badApp.harnessPath, badApp.projectPath)).rejects.toThrow(/app/);
 
-    const unknown = await writeJsonFile(
-      directory,
-      'unknown.json',
-      reviewConfig({ review: { token: 'secret' } }),
+    const unknown = await writeFixtureConfig(directory, {
+      reviewer: fixtureReviewer({ token: 'secret' }),
+    });
+    await expect(loadConfiguration(unknown.harnessPath, unknown.projectPath)).rejects.toThrow(
+      /unrecognized|Unrecognized|token/,
     );
-    await expect(loadHarnessConfig(unknown)).rejects.toThrow(/unrecognized|Unrecognized|token/);
   });
 });
 
 describe('the App private key', () => {
   it('refuses a missing variable, an unreadable file, and a non-RSA key', async () => {
     const directory = await createTempDir();
-    const config = await loadHarnessConfig(
-      await writeJsonFile(directory, 'harness.json', reviewConfig()),
-    );
+    const { harnessPath, projectPath } = await writeFixtureConfig(directory);
+    const { config } = await loadConfiguration(harnessPath, projectPath);
     const review = config.review;
     if (review === undefined) {
       throw new Error('the fixture has no review object');
@@ -1632,7 +1655,10 @@ async function reviewCommandFixture(options: {
   readonly world: FakeWorld;
   readonly plans?: readonly FakePlan[];
   readonly key?: string | null;
-  readonly config?: Record<string, unknown>;
+  /** Nexus-wide harness configuration fields to replace. */
+  readonly harness?: Record<string, unknown>;
+  /** The connected project's own configuration, when a test replaces it. */
+  readonly project?: Record<string, unknown>;
 }): Promise<{
   readonly cwd: string;
   readonly configPath: string;
@@ -1641,13 +1667,19 @@ async function reviewCommandFixture(options: {
   readonly signals: InterruptSignals;
 }> {
   const directory = await createTempDir();
-  const configPath = await writeJsonFile(directory, 'harness.review.json', {
-    ...reviewConfig(),
+  // The fixture's own output directory and limits: a review turn is bounded by
+  // the harness configuration's task timeout, and keeps its evidence there.
+  const configPath = await writeJsonFile(directory, HARNESS_CONFIG_FILE_NAME, {
+    ...harnessConfig(options.harness ?? {}),
     workDir: './runs',
     maxRepairs: 0,
     taskTimeoutMinutes: 5,
-    ...options.config,
   } as Record<string, unknown>);
+  const projectPath = await writeJsonFile(
+    directory,
+    PROJECT_CONFIG_FILE_NAME,
+    options.project ?? projectConfig(),
+  );
   const keyFile = path.join(directory, 'nexus-lens.pem');
   if (options.key !== null) {
     const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
@@ -1703,7 +1735,10 @@ async function reviewCommandFixture(options: {
       signals,
     };
     try {
-      const code = await runCli(['review', 'scan', '--config', configPath], context);
+      const code = await runCli(
+        ['review', 'scan', '--config', configPath, '--project', path.dirname(projectPath)],
+        context,
+      );
       // Child filtering must leave the operator's process environment intact.
       expect(process.env.JIRA_API_TOKEN).toBe('test-token');
       expect(process.env.NEXUS_LENS_KEY_PATH).toBe(options.key === null ? undefined : keyFile);
@@ -1992,21 +2027,21 @@ describe('the review command through the CLI', () => {
 
   it('reports a missing Jira credential before it contacts anything', async () => {
     const directory = await createTempDir();
-    const configPath = await writeJsonFile(directory, 'harness.review.json', {
-      ...reviewConfig(),
-      workDir: './runs',
-    } as Record<string, unknown>);
+    const { harnessPath: configPath } = await writeFixtureConfig(directory);
     const out: string[] = [];
     const err: string[] = [];
     const world = fakeWorld({ issues: [] });
     const previous = process.env.JIRA_API_TOKEN;
     delete process.env.JIRA_API_TOKEN;
     try {
-      const code = await runCli(['review', 'scan', '--config', configPath], {
-        cwd: directory,
-        io: { out: (text) => out.push(text), err: (text) => err.push(text) },
-        fetch: world.fetch,
-      });
+      const code = await runCli(
+        ['review', 'scan', '--config', configPath, '--project', directory],
+        {
+          cwd: directory,
+          io: { out: (text) => out.push(text), err: (text) => err.push(text) },
+          fetch: world.fetch,
+        },
+      );
       expect(code).toBe(EXIT_INPUT_ERROR);
     } finally {
       if (previous !== undefined) {
@@ -2024,8 +2059,8 @@ describe('the review command through the CLI', () => {
     });
     const fixture = await reviewCommandFixture({
       world,
-      config: {
-        review: standardReview({
+      harness: {
+        reviewer: fixtureReviewer({
           reviewer: { runtime: 'codex', command: ['definitely-not-a-real-codex-xyz'] },
         }),
       },
@@ -2073,57 +2108,58 @@ describe('the review command through the CLI', () => {
 
   it('refuses --repo and a bad --limit, the way every command does', async () => {
     const directory = await createTempDir();
-    const configPath = await writeJsonFile(directory, 'harness.review.json', reviewConfig());
+    const { harnessPath: configPath } = await writeFixtureConfig(directory);
     const errors: string[] = [];
     const io = { out: () => undefined, err: (text: string) => errors.push(text) };
 
-    const withRepo = await runCli(['review', 'scan', '--config', configPath, '--repo', directory], {
-      cwd: directory,
-      io,
-    });
+    const withRepo = await runCli(
+      ['review', 'scan', '--config', configPath, '--project', directory, '--repo', directory],
+      { cwd: directory, io },
+    );
     expect(withRepo).toBe(2);
     expect(errors.join('\n')).toContain('unknown option "--repo"');
 
-    const badLimit = await runCli(['review', 'scan', '--config', configPath, '--limit', 'lots'], {
-      cwd: directory,
-      io,
-    });
+    const badLimit = await runCli(
+      ['review', 'scan', '--config', configPath, '--project', directory, '--limit', 'lots'],
+      { cwd: directory, io },
+    );
     expect(badLimit).toBe(2);
     expect(errors.join('\n')).toContain('--limit');
 
-    const watchLimit = await runCli(['review', 'watch', '--config', configPath, '--limit', '1'], {
-      cwd: directory,
-      io,
-    });
+    const watchLimit = await runCli(
+      ['review', 'watch', '--config', configPath, '--project', directory, '--limit', '1'],
+      { cwd: directory, io },
+    );
     expect(watchLimit).toBe(2);
     expect(errors.join('\n')).toContain('unknown option "--limit"');
   });
 
-  it('refuses a review configuration that has no Jira connection', async () => {
+  it('refuses the Nexus-wide reviewer when the project has no Jira connection', async () => {
     const directory = await createTempDir();
-    const config = { ...reviewConfig() };
-    delete config['source'];
-    const configPath = await writeJsonFile(directory, 'bad.json', config);
+    const project = { ...projectConfig() };
+    delete project['source'];
+    const { harnessPath: configPath } = await writeFixtureConfig(directory, {}, project);
     const err: string[] = [];
-    const code = await runCli(['review', 'scan', '--config', configPath], {
-      cwd: directory,
-      io: { out: () => undefined, err: (text) => err.push(text) },
-    });
+    const code = await runCli(
+      ['review', 'scan', '--config', configPath, '--project', directory],
+      { cwd: directory, io: { out: () => undefined, err: (text) => err.push(text) } },
+    );
     expect(code).toBe(EXIT_INPUT_ERROR);
-    expect(err.join('\n')).toContain('review requires the Jira connection described by "source"');
+    expect(err.join('\n')).toContain('configures the Nexus Lens reviewer');
+    expect(err.join('\n')).toContain(path.join(directory, PROJECT_CONFIG_FILE_NAME));
   });
 
   it('prints the review selection in check-config, without resolving its key', async () => {
     const directory = await createTempDir();
-    const configPath = await writeJsonFile(directory, 'harness.review.json', reviewConfig());
+    const { harnessPath: configPath } = await writeFixtureConfig(directory);
     const out: string[] = [];
     const previous = process.env.NEXUS_LENS_KEY_PATH;
     delete process.env.NEXUS_LENS_KEY_PATH;
     try {
-      const code = await runCli(['check-config', '--config', configPath], {
-        cwd: directory,
-        io: { out: (text) => out.push(text), err: () => undefined },
-      });
+      const code = await runCli(
+        ['check-config', '--config', configPath, '--project', directory],
+        { cwd: directory, io: { out: (text) => out.push(text), err: () => undefined } },
+      );
       expect(code).toBe(EXIT_OK);
     } finally {
       if (previous !== undefined) {
