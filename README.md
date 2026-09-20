@@ -1272,6 +1272,11 @@ and only a read.
   whose 39 files rendered as 325,809 characters and was refused before any reviewer turn ran — is
   covered offline by a change larger than the old guard reaching the reviewer from a real retained
   workspace; running the equivalent live turn stays the operator's step. The operator must
+  retain a readable workspace ledger whose immutable source identity and source repository match
+  the ticket and connected project: review now uses intake's ownership validation before PR lookup,
+  including before reconciling an existing approval. The ownership correction is also verified
+  offline; missing or mismatched ledgers need operator inspection of the original attempt evidence.
+  The operator must
   separately verify inline findings, check
   reconciliation, native approval eligibility, and the configured branch/auto-merge gate. Mocked
   tests do not establish those outcomes or whether review quality reduces coordinator effort;

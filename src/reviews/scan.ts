@@ -28,7 +28,9 @@ import { readReceipt, receiptFilePath } from '../sources/receipts.js';
 import type { SourceReceipt } from '../sources/receipts.js';
 import { messageOf } from '../shared/errors.js';
 import type { SourceRef, Task } from '../shared/types.js';
-import { workspaceIdProblem, workspacePathFor } from '../workspace/run-directory.js';
+import { resolveWorkspace } from '../workspace/reopen.js';
+import { workspaceIdProblem } from '../workspace/run-directory.js';
+import { sourceItemFor } from '../workspace/state.js';
 import type {
   OpenPullRequest,
   PublishedCheck,
@@ -298,16 +300,17 @@ async function reviewItem(context: ReviewScanContext, item: SourceTask): Promise
     return attention(ref, pointerProblem);
   }
   const branch = `harness/${workspaceId}`;
-  // Where the ticket's delivered work lives on this machine: the retained
-  // workspace the pointer names, and the source of the reviewer's repository
-  // view. The id is validated above; resolution refuses an alias that would
-  // lead out of the workspaces directory.
-  let workspacePath: string;
-  try {
-    workspacePath = workspacePathFor(context.workDir, workspaceId);
-  } catch (cause) {
-    return attention(ref, messageOf(cause));
+  // A syntactically valid pointer is not proof of ownership. Reuse intake's
+  // read-only ledger and containment checks before even looking up the PR,
+  // including when an existing review would otherwise reconcile a check.
+  const resolved = await resolveWorkspace(context.workDir, workspaceId, {
+    sourceItem: sourceItemFor(ref),
+    sourceRoot: context.sourceRoot,
+  });
+  if (!resolved.ok) {
+    return attention(ref, resolved.problem);
   }
+  const { workspacePath } = resolved.workspace;
 
   let pullRequest: OpenPullRequest | null;
   try {

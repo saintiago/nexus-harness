@@ -394,6 +394,8 @@ export interface ReviewScanContext {
   readonly only?: SourceRef;
   /** The output directory the review evidence and its log live under. */
   readonly workDir: string;
+  /** Canonical connected project root, or null when the caller has no local project. */
+  readonly sourceRoot: string | null;
   /** The App's review login: a completed review only counts when this login wrote it. */
   readonly login: string;
   /** The app-owned check run name the merge gate requires. */

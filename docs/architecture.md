@@ -14,6 +14,11 @@ One TypeScript CLI application, a few modules, and local files. No services, fra
 
 **Revision: 2026-09-20 — the reviewer inspects a pinned repository view.** The review path no longer assembles the pull request's patch into the reviewer's prompt. `reviews/view.ts` clones the ticket's own retained workspace into the review's evidence directory, detaches the clone from it, pins it at the exact reviewed head, and checks it again after the turn; the scan prepares and checks it through the `ReviewViewSource` boundary, so a view that cannot be pinned or that the turn changed publishes nothing. The prompt carries identity, the ticket, the CI evidence and the verdict contract, and the reviewer reads files, history and diffs with its own tools. [spec.md](spec.md) §9 defines the behavior and [WORKFLOW.md](WORKFLOW.md) §9 the input.
 
+The review scan reuses `workspace/reopen.ts`'s read-only `resolveWorkspace` before PR lookup or
+check reconciliation. It validates containment and ledger ownership against the freshly read
+source identity and the connected project's canonical local root; it never reopens the coding
+checkout for a turn or changes its ledger.
+
 ## 1. Keep the existing application
 
 Retain the modules introduced by the completed tasks:

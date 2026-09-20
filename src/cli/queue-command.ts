@@ -404,12 +404,13 @@ async function queueCommand(options: QueueCommandOptions, context: CliContext): 
       // batch: a refused checkout must not leave an intake lock behind. The
       // whole invocation then holds one intake lock, so a second consumer cannot
       // take work while this queue is between tickets or waiting in watch mode.
+      let sourceRoot: string;
       try {
-        await preflightSource({
+        ({ sourceRoot } = await preflightSource({
           repoPath,
           workDir,
           bounds: { stop: stop.signal },
-        });
+        }));
       } catch (cause) {
         if (cause instanceof WorkspaceError) {
           activeIo.err(cause.message);
@@ -553,6 +554,7 @@ async function queueCommand(options: QueueCommandOptions, context: CliContext): 
                 reviewer: reviewerTurn,
                 views: reviewViews(),
                 workDir,
+                sourceRoot,
                 login: reviewConfig.app.login,
                 checkName: reviewConfig.checkName,
                 reviewerTimeoutMs: config.taskTimeoutMinutes * 60_000,

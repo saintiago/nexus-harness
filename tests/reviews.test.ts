@@ -52,6 +52,9 @@ import { SourceError } from '../src/sources/contract.js';
 import type { SourceCandidate, SourceTask } from '../src/sources/contract.js';
 import { receiptFilePath, reserveReceipt } from '../src/sources/receipts.js';
 import type { SourceRef, Task } from '../src/shared/types.js';
+import { canonicalPath } from '../src/workspace/git.js';
+import { sourceItemFor, workspaceStatePath } from '../src/workspace/state.js';
+import type { WorkspaceState } from '../src/workspace/state.js';
 import { fakeTurns, git, installFakeRuntime } from './fixtures/local-target.js';
 import type { FakePlan, FakeState } from './fixtures/local-target.js';
 import {
@@ -109,6 +112,26 @@ function preparedFor(
   pointers: readonly string[] = ['run-20260919100148-e48a9ab0'],
 ): SourceTask {
   return { ref: refFor(key), task: taskFor(key), pointers };
+}
+
+/** The ownership record intake leaves beside a retained workspace. */
+async function writeReviewLedger(
+  workDir: string,
+  overrides: Partial<WorkspaceState> = {},
+): Promise<void> {
+  const state: WorkspaceState = {
+    version: 1,
+    workspaceId: WORKSPACE_ID,
+    sourceRoot: canonicalPath(path.dirname(workDir)),
+    baseCommit: BASE,
+    branch: BRANCH,
+    createdAt: '2026-09-19T12:00:00.000Z',
+    sourceItem: sourceItemFor(refFor()),
+    attempts: [],
+    ...overrides,
+  };
+  await mkdir(path.join(workDir, 'workspaces', WORKSPACE_ID), { recursive: true });
+  await writeFile(workspaceStatePath(workDir, WORKSPACE_ID), JSON.stringify(state), 'utf8');
 }
 
 function pullFor(overrides: Partial<OpenPullRequest> = {}): OpenPullRequest {
@@ -487,6 +510,7 @@ async function scanFixture(
   } = {},
 ): Promise<ScanFixture> {
   const workDir = await createTempDir();
+  await writeReviewLedger(workDir);
   const output: string[] = [];
   const errors: string[] = [];
   const reviewerRuns: ReviewEvidence[] = [];
@@ -525,6 +549,7 @@ async function scanFixture(
     reviewer,
     views: views.source,
     workDir,
+    sourceRoot: canonicalPath(path.dirname(workDir)),
     login: LOGIN,
     checkName: CHECK_NAME,
     reviewerTimeoutMs: 60_000,
@@ -549,6 +574,74 @@ async function reviewDirectories(workDir: string): Promise<string[]> {
 }
 
 describe('one review scan', () => {
+  it.each([
+    { label: 'immutable issue id', sourceItem: { ...sourceItemFor(refFor()), id: '99999' } },
+    { label: 'site', sourceItem: { ...sourceItemFor(refFor()), scope: 'https://other.test' } },
+    { label: 'source type', sourceItem: { ...sourceItemFor(refFor()), type: 'other' } },
+    { label: 'missing identity', sourceItem: null },
+  ])('refuses a ledger with a different $label before using its PR', async ({ sourceItem }) => {
+    // Even a native approval on this other workspace must not become this
+    // ticket's successful check through the no-turn reconciliation path.
+    const repository = fakeRepository({
+      reviews: [{ id: 1, login: LOGIN, state: 'APPROVED', commitId: HEAD, url: 'review' }],
+    });
+    const fixture = await scanFixture({ repository });
+    await writeReviewLedger(fixture.workDir, { sourceItem });
+    const file = workspaceStatePath(fixture.workDir, WORKSPACE_ID);
+    const before = await readFile(file, 'utf8');
+
+    expect(await scanReviews(fixture.context)).toMatchObject({ attention: 1, reviewerRuns: 0 });
+    expect(fixture.errors.join('\n')).toContain(
+      sourceItem === null ? 'records no source item identity' : 'not for this item',
+    );
+    expect(repository.calls.findPullRequests).toEqual([]);
+    expect(fixture.views.prepared).toEqual([]);
+    expect(repository.calls.publishedReviews).toEqual([]);
+    expect(repository.calls.publishedChecks).toEqual([]);
+    expect(await readFile(file, 'utf8')).toBe(before);
+  });
+
+  it.each(['missing', 'malformed', 'different repository'] as const)(
+    'refuses a %s ledger before a view or reviewer is started',
+    async (problem) => {
+      const repository = fakeRepository();
+      const fixture = await scanFixture({ repository });
+      const file = workspaceStatePath(fixture.workDir, WORKSPACE_ID);
+      if (problem === 'missing') {
+        await rm(file);
+      } else if (problem === 'malformed') {
+        await writeFile(file, '{broken', 'utf8');
+      } else {
+        await writeReviewLedger(fixture.workDir, { sourceRoot: '/another/repository' });
+      }
+
+      expect(await scanReviews(fixture.context)).toMatchObject({ attention: 1, reviewerRuns: 0 });
+      expect(fixture.errors.join('\n')).toContain(
+        problem === 'missing'
+          ? 'has no ledger'
+          : problem === 'malformed'
+            ? 'ledger cannot be read'
+            : 'was cloned from',
+      );
+      expect(repository.calls.findPullRequests).toEqual([]);
+      expect(fixture.views.prepared).toEqual([]);
+      expect(repository.calls.publishedReviews).toEqual([]);
+      expect(repository.calls.publishedChecks).toEqual([]);
+    },
+  );
+
+  it('accepts the same immutable item after its display key changes', async () => {
+    const repository = fakeRepository();
+    const fixture = await scanFixture({ repository });
+    await writeReviewLedger(fixture.workDir, {
+      sourceItem: { ...sourceItemFor(refFor()), key: 'OLD-3' },
+    });
+
+    expect(await scanReviews(fixture.context)).toMatchObject({ reviewed: 1, reviewerRuns: 1 });
+    expect(repository.calls.publishedReviews).toHaveLength(1);
+    expect(repository.calls.publishedChecks).toHaveLength(1);
+  });
+
   it.each([
     { state: 'CHANGES_REQUESTED', conclusion: 'success', decision: 'request_changes' },
     { state: 'APPROVED', conclusion: 'failure', decision: 'approve' },
@@ -1210,6 +1303,7 @@ describe('one review scan', () => {
       }),
       views: fakeViews().source,
       workDir,
+      sourceRoot: null,
       login: LOGIN,
       checkName: CHECK_NAME,
       reviewerTimeoutMs: 60_000,
@@ -1246,6 +1340,7 @@ describe('the review watch', () => {
       }),
       views: fakeViews().source,
       workDir,
+      sourceRoot: null,
       login: LOGIN,
       checkName: CHECK_NAME,
       reviewerTimeoutMs: 60_000,
@@ -1305,6 +1400,7 @@ describe('the review watch', () => {
       }),
       views: fakeViews().source,
       workDir,
+      sourceRoot: null,
       login: LOGIN,
       checkName: CHECK_NAME,
       reviewerTimeoutMs: 60_000,
@@ -1855,6 +1951,7 @@ async function writeReviewWorkspace(
   git(workspace, 'add', '--all');
   git(workspace, 'commit', '--quiet', '--message', 'add greetAll');
   const head = git(workspace, 'rev-parse', 'HEAD').trim();
+  await writeReviewLedger(workDir, { baseCommit: base });
   return { path: workspace, base, head };
 }
 
@@ -1999,6 +2096,34 @@ async function reviewCommandFixture(options: {
 }
 
 describe('the review command through the CLI', () => {
+  it.each(['item', 'repository'] as const)(
+    'refuses a real retained workspace owned by another %s before starting the runtime',
+    async (mismatch) => {
+      const world = fakeWorld({ issues: [sourceIssue([WORKSPACE_LABEL])] });
+      const fixture = await reviewCommandFixture({
+        world,
+        plans: [{ edits: [{ file: 'verdict.json', text: verdictFile(APPROVE) }] }],
+      });
+      await writeReviewLedger(
+        path.join(fixture.cwd, 'runs'),
+        mismatch === 'item'
+          ? { sourceItem: { ...sourceItemFor(refFor()), id: '99999' } }
+          : { sourceRoot: '/another/repository' },
+      );
+
+      const result = await fixture.run();
+
+      expect(result.code).toBe(EXIT_INPUT_ERROR);
+      expect(result.err).toContain(mismatch === 'item' ? 'not for this item' : 'was cloned from');
+      expect(await fakeTurns(fixture.runtime.state)).toHaveLength(0);
+      expect(await reviewDirectories(path.join(fixture.cwd, 'runs'))).toEqual([]);
+      expect(world.publishedReviews).toEqual([]);
+      expect(world.publishedChecks).toEqual([]);
+      expect(world.issues[0]?.status).toBe('In Review');
+      expect(git(fixture.workspacePath, 'status', '--porcelain')).toBe('');
+    },
+  );
+
   it('draws the reviewer turn in its own pane, opened by its role and ticket', async () => {
     const world = fakeWorld({ issues: [sourceIssue([WORKSPACE_LABEL])] });
     const console = fakeConsole({ columns: 80, rows: 24 });
@@ -2454,7 +2579,7 @@ describe('the review command through the CLI', () => {
       const result = await fixture.run();
 
       expect(result.code).toBe(EXIT_INPUT_ERROR);
-      expect(result.err).toContain('repository view could not be prepared');
+      expect(result.err).toContain('this machine has no workspace');
       expect(await fakeTurns(fixture.runtime.state)).toHaveLength(0);
       expect(world.publishedReviews).toEqual([]);
       expect(world.publishedChecks).toEqual([]);

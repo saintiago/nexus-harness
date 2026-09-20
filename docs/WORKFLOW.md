@@ -653,6 +653,14 @@ The queue is the configured project, issue type, and label in the `source`'s **r
    `harness/<workspaceId>`. No pointer, a pointer that is not a usable workspace id, two
    pointers, no open pull request, and more than one match are all **reported for coordinator
    attention**: nothing is reviewed, nothing is published, and the ticket stays where it is.
+   Before looking up the pull request, the pointer is resolved through intake's read-only workspace
+   validation: both the clone and ledger must stay inside the workspaces directory, and the ledger
+   must match the ticket's source type, site and immutable issue ID. A renamed display key is allowed.
+   The ledger's source repository must match the canonical `--project` root (`--repo`'s preflight
+   root for a queue). Missing or malformed ledgers, absent source identity and mismatches require
+   coordinator attention before any view or turn, including before check reconciliation. The scan
+   never repairs or adopts a ledger; an operator must verify ownership from the original attempt's
+   evidence before correcting it.
 4. A head whose current commit already carries a completed review by `app.login` whose
    `commit_id` is that head — state `APPROVED` or `CHANGES_REQUESTED` — is not reviewed again, and
    no reviewer turn is started. A later commit is a new head and is reviewed again; a stale

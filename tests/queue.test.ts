@@ -1165,6 +1165,7 @@ function reviewFixture(candidates: readonly SourceCandidate[]): {
       },
     },
     workDir: 'unused',
+    sourceRoot: null,
     login: 'nexus-lens[bot]',
     checkName: 'Nexus Lens review',
     reviewerTimeoutMs: 1_000,

@@ -258,6 +258,14 @@ The review queue is the configured project, issue type, and label in the configu
 
 ### What one review is
 
+Before looking up that branch's pull request or reconciling an existing review's check, the scan
+validates the retained workspace with the same read-only resolution used by intake. The workspace
+and its ledger must resolve inside the workspaces directory, and the ledger must record this
+ticket's source type, site and immutable issue ID; its display key may have changed. The recorded
+source repository must also match the connected project root when the caller supplies it. A
+missing, malformed or mismatched ledger requires coordinator attention: no view, reviewer turn,
+review or check is produced, and the ledger is never adopted or repaired automatically.
+
 - The reviewer launch is its own explicitly configured selection, resolved like the coding launch. It is never the tier that implemented the ticket, and it is a launch prefix, not a credential: provider credentials stay in the runtime's own environment.
 - The reviewer is given the ticket reference, title, description, and acceptance criteria; the pull request's identity, its head and base commits; the head's check runs and combined commit status; and a **repository view** pinned at the exact reviewed head. The view is a local clone of the ticket's own retained workspace, detached from it, holding the change's base commit, so the reviewer reads files, history and diffs with ordinary read tools instead of an assembled patch. No App private key and no publication token reaches the reviewer or the view, and no rendered diff is ever a reason to refuse a review. A view that cannot be prepared — no retained workspace on this machine, a head or base commit it does not hold, a clone that fails, a ticket too large to state compactly — requires coordinator attention before a reviewer turn.
 - One reviewer turn is bounded by the same task timeout a run gets and runs through the same adapter, in its own evidence directory under `<workDir>/reviews/<reviewId>/`, one directory above the view. The launch deliberately does not start inside the checkout: a runtime started in the reviewed tree would take the pull request's own `AGENTS.md` files as instructions governing the turn, and those are evidence the reviewer reads from the view, never commands it obeys. It is review-only: it must not implement fixes, change the view, commit, push, merge, or edit the ticket or the pull request. It must write one verdict file naming `approve`, `request_changes`, or `inconclusive` with a summary and findings. An explicit inconclusive result explains missing material evidence and publishes no review or check. Findings are blocking; approval requires an empty findings list and sufficient evidence.
