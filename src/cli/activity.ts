@@ -1,31 +1,45 @@
 /**
- * The terminal's activity pane: what the coding runtime is doing right now, as a
- * bounded block of lines drawn under the run's own progress.
+ * The terminal's activity pane: what one agent invocation is doing right now, as
+ * a bounded block of lines drawn under the run's own progress, and the
+ * timestamped timeline those panes leave behind when they end.
  *
  * The progress — the timeline lines the CLI echoes as the run goes, then the
- * outcome block — is ordinary output. On an interactive terminal the activity
- * lines are kept in a fixed pane beneath it: it is redrawn in place instead of
- * appended, so the visible screen stops growing with the turn, and it is bounded
- * in lines, so a long run stays readable. A redirected, too narrow, or too short
- * terminal gets the same lines as ordinary ones instead, without a single cursor
- * sequence. Closing the pane erases it and stops drawing, so the outcome and the
- * paths that follow are printed exactly as they were before the pane existed,
- * and an interrupted run leaves a usable terminal.
+ * outcome block — is ordinary output, stamped with the local time it reaches the
+ * viewer (`HH:mm:ss`), one stamp per logical line, so one chronological timeline
+ * holds the lifecycle events and the agent panes together. On an interactive
+ * terminal the activity lines are kept in a fixed pane beneath that output: it
+ * is redrawn in place instead of appended, so the visible screen stops growing
+ * with the turn, and it is bounded in lines, so a long run stays readable. A
+ * redirected, noninteractive, too narrow, or too short terminal gets the same
+ * lines as ordinary ones instead, without a single cursor sequence.
+ *
+ * Every agent invocation gets its own fresh pane. `beginInvocation` announces it
+ * with a boundary line naming the role the phase launched — `developer` for a
+ * coding or repair turn, `reviewer` for a Nexus Lens turn — and the ticket when
+ * one is known, and starts an empty history: a new turn never inherits the rows
+ * of the one before it. `endInvocation` finalizes the pane: it is erased where it
+ * stood and its retained rows are printed as that invocation's segment of the
+ * timeline, so later lifecycle events and the next pane follow them in scrollback
+ * order. Only the pane of the invocation running right now is cursor-managed;
+ * one display never draws two panes at once. Closing the display finalizes
+ * whatever is on screen and stops drawing, so the outcome and the paths that
+ * follow are printed as ordinary lines after it, and an interrupted run leaves a
+ * usable terminal.
  *
  * The history is grouped by the agent's own messages: each message starts a
  * group that keeps at most the three latest work lines that followed it, and the
- * whole history is bounded, so with several turns on screen the messages
- * accumulate one below another while the work between them disappears
- * oldest-first.
+ * history of one pane is bounded, so the messages accumulate one below another
+ * while the work between them disappears oldest-first.
  *
- * Each entry is stamped with the local time the viewer received it — `HH:mm:ss`,
- * read once and kept for every redraw — and an agent message's own line is drawn
- * in a golden yellow, reset again inside the entry, so commands, results and
- * changed files stay in the terminal's ordinary color. The stamp is the viewer's
- * own receive time and nothing more: the runtime's event stream carries no
- * timestamp, so the pane never implies one. Ordinary lines, redirected output,
- * and a terminal that asked for no color carry no escape sequences beyond the
- * pane's own cursor work.
+ * Each entry, and each ordinary line, is stamped with the local time the viewer
+ * received or emitted it — `HH:mm:ss`, read once and kept for every redraw — and
+ * an agent message's own line is drawn in a golden yellow, reset again inside the
+ * entry, so commands, results and changed files stay in the terminal's ordinary
+ * color. The stamp is the viewer's own clock and nothing more: the runtime's
+ * event stream carries no timestamp, so the terminal never implies one. A
+ * redirected or too small terminal carries no escape sequences at all; a
+ * terminal that asked for no color gets stamped plain output without cursor or
+ * styling sequences.
  *
  * It is presentation only. Nothing here is evidence of what a turn did: the full
  * runtime output stays in the turn's own agent log, and every decision is made
@@ -95,31 +109,68 @@ const LABELS: Record<AgentActivity['kind'], string> = {
 };
 
 /**
- * The pane as the rest of the CLI uses it: ordinary lines go above it, activity
- * goes into it, and one call takes it away again.
+ * Which agent a pane belongs to: the phase that launched the turn, never the
+ * model it was launched with. A coding or repair turn is a `developer`; a Nexus
+ * Lens turn is a `reviewer`.
+ */
+export type ActivityRole = 'developer' | 'reviewer';
+
+/**
+ * One agent invocation, as the timeline announces it before the invocation's
+ * pane opens.
+ */
+export interface ActivityInvocation {
+  /** The phase that launched the turn: the role, named by the launcher. */
+  readonly role: ActivityRole;
+  /** The ticket (or standalone task) it works on, when one is known. */
+  readonly ticket?: string | null;
+  /** What the phase calls itself: `implementation turn`, `repair turn 2`, `review`. */
+  readonly phase?: string | null;
+}
+
+/**
+ * The pane as the rest of the CLI uses it: ordinary lines follow it, activity
+ * goes into it, one invocation's pane becomes a segment of the timeline when it
+ * ends, and closing takes the display away again.
  */
 export interface ActivityDisplay {
-  /** Writes one ordinary line (or block of text) above the pane. */
+  /**
+   * Finalizes retained activity before writing an ordinary timeline block. Each
+   * logical line is prefixed once with the local time it reaches the viewer; a
+   * line the pane's progress reader recognizes is condensed first, and the run
+   * wrote a full record of it in the log either way.
+   */
   line(text: string): void;
   /**
-   * Runs `write` with the pane out of the way and puts it back afterwards. Used
-   * for output that reaches the terminal by another route — the CLI's own error
-   * stream, above all — so that it is written above the pane rather than into
-   * the middle of it.
+   * Writes one error line, or a block of them, on the CLI's own error stream,
+   * stamped exactly as `line` stamps the ordinary ones, after retained activity.
    */
-  around(write: () => void): void;
+  error(text: string): void;
   /**
-   * Records one activity line. A message starts a new group; work lines join the
-   * newest group, which keeps its latest three, and the history is trimmed to
-   * the pane's bound. The line is stamped with the time it arrives at, once,
-   * and that stamp is what every later redraw of it carries.
+   * Records one activity line in the current invocation's pane. A message starts
+   * a new group; work lines join the newest group, which keeps its latest three,
+   * and the history is trimmed to the pane's bound. The line is stamped with the
+   * time it arrives at, once, and that stamp is what every later redraw of it
+   * carries.
    */
   activity(activity: AgentActivity): void;
   /**
-   * Erases the pane and stops drawing it. Called on every ending — a pass, a
-   * failure, an interrupt — so that the terminal is left as usable as it was
-   * found. An entry that arrives afterwards is written as one ordinary line,
-   * still with the receive time it was stamped with.
+   * Opens a fresh pane for one agent invocation: the boundary line naming its
+   * role and ticket is written to the timeline, an invocation still open is
+   * finalized first, and the new pane starts with no rows of its own.
+   */
+  beginInvocation(invocation: ActivityInvocation): void;
+  /**
+   * Ends the current invocation: its pane is erased and its retained rows are
+   * written to the timeline as that invocation's segment, in order, before
+   * anything that follows. Ending again, or having opened nothing, does nothing.
+   */
+  endInvocation(): void;
+  /**
+   * Finalizes an open invocation, erases the pane, and stops drawing it. Called
+   * on every ending — a pass, a failure, an interrupt — so that the terminal is
+   * left as usable as it was found. An entry that arrives afterwards is written
+   * as one ordinary line, still with the receive time it was stamped with.
    */
   close(): void;
 }
@@ -128,8 +179,8 @@ export interface ActivityDisplay {
  * The display for one CLI invocation: a pane on an interactive terminal, or
  * plain ordinary lines anywhere else.
  *
- * `now` is the viewer's own clock, read once for each entry the pane receives;
- * it is the time that entry is stamped with. The process clock when the caller
+ * `now` is the viewer's own clock, read once for each emission the pane receives;
+ * it is the time that emission is stamped with. The process clock when the caller
  * gives none, and a controlled clock in a test.
  */
 export function createActivityDisplay(
@@ -138,13 +189,13 @@ export function createActivityDisplay(
 ): ActivityDisplay {
   const terminal = io.terminal;
   if (terminal === undefined) {
-    return plainDisplay(io.out, now);
+    return plainDisplay(io, now);
   }
   const height = paneHeight(terminal.rows);
   const columns = terminal.columns ?? FALLBACK_COLUMNS;
-  return height === 0 || columns < MIN_COLUMNS
-    ? plainDisplay(io.out, now)
-    : paneDisplay(terminal.write, columns - 1, height, now, terminal.color !== false);
+  return height === 0 || columns < MIN_COLUMNS || terminal.color === false
+    ? plainDisplay(io, now)
+    : paneDisplay(terminal.write, io.err, columns - 1, height, now);
 }
 
 /**
@@ -162,15 +213,21 @@ function paneHeight(rows: number | undefined): number {
 /**
  * The interactive pane: it remembers the latest lines, and keeps the cursor on
  * the line below them, where ordinary output goes.
+ *
+ * `write` is the terminal's own raw writer — cursor sequences and all — so a row
+ * written through it carries its own newline. `writeError` writes one complete
+ * line to the CLI's error stream instead, the way every other caller of that
+ * stream does: the stream appends the newline, and nothing is added here.
  */
 function paneDisplay(
   write: (text: string) => void,
+  writeError: (line: string) => void,
   width: number,
   height: number,
   now: () => Date,
-  color: boolean,
 ): ActivityDisplay {
-  const groups: ActivityGroup[] = [];
+  /** The rows of the invocation on screen now; empty between invocations. */
+  let groups: ActivityGroup[] = [];
   /** How many pane lines are on screen directly above the cursor. */
   let drawn = 0;
   let closed = false;
@@ -190,6 +247,55 @@ function paneDisplay(
       write(`${text}\n`);
     }
     drawn = lines.length;
+  };
+
+  /**
+   * Writes one ordinary block after retained activity, each logical line stamped once
+   * with the time the block reached the viewer. A line the progress reader
+   * condenses away is left out; one it does not recognize is shown as written.
+   */
+  const ordinary = (text: string, emit: (line: string) => void, condense: boolean): void => {
+    const stamp = displayTime(now());
+    const lines: string[] = [];
+    for (const logical of text.split(/\r?\n/)) {
+      const shown = condense ? interactiveProgress(logical) : logical;
+      if (shown === null) {
+        continue;
+      }
+      lines.push(stampLine(shown, stamp));
+    }
+    if (lines.length === 0) {
+      return;
+    }
+    // Lifecycle output may arrive during a turn (for example on interrupt).
+    // Freeze what preceded it; redrawing those rows below it would reverse
+    // emission order. Subsequent activity resumes below this block, with only
+    // that new segment cursor-managed until the invocation ends.
+    finalize();
+    for (const line of lines) {
+      emit(line);
+    }
+  };
+
+  /** Writes one ordinary block with no pane on screen to draw under it. */
+  const standalone = (text: string, emit: (line: string) => void): void => {
+    const stamp = displayTime(now());
+    for (const logical of text.split(/\r?\n/)) {
+      emit(stampLine(logical, stamp));
+    }
+  };
+
+  /**
+   * Ends the pane on screen: it is erased where it stood and its retained rows
+   * are written to the timeline, so what it showed stays in scrollback in the
+   * order it was produced and nothing it drew is dropped.
+   */
+  const finalize = (): void => {
+    erase();
+    for (const line of linesOf(groups)) {
+      write(`${line}\n`);
+    }
+    groups = [];
   };
 
   /** Records one formatted activity line in its group. */
@@ -216,30 +322,32 @@ function paneDisplay(
   return {
     line: (text) => {
       if (closed) {
-        write(`${text}\n`);
+        // The pane is gone: a later line is written as the run wrote it, with
+        // nothing condensed away and the time it reached the viewer.
+        standalone(text, (line) => {
+          write(`${line}\n`);
+        });
         return;
       }
-      const presented = interactiveProgress(text);
-      if (presented === null) {
-        return;
-      }
-      erase();
-      write(`${presented}\n`);
-      draw();
+      ordinary(
+        text,
+        (line) => {
+          write(`${line}\n`);
+        },
+        true,
+      );
     },
-    around: (action) => {
+    error: (text) => {
       if (closed) {
-        action();
+        standalone(text, writeError);
         return;
       }
-      erase();
-      action();
-      draw();
+      ordinary(text, writeError, false);
     },
     activity: (activity) => {
       // The entry's receive time, read once here: a redraw later draws this very
       // line again, never a freshly stamped one.
-      const text = paneLine(activity, displayTime(now()), width, color);
+      const text = paneLine(activity, displayTime(now()), width);
       if (closed) {
         write(`${text}\n`);
         return;
@@ -248,8 +356,27 @@ function paneDisplay(
       erase();
       draw();
     },
+    beginInvocation: (invocation) => {
+      // The boundary is one emission with one time: what opens a pane reads as
+      // logical line of the timeline. It may wrap above the activity rows:
+      // only those rows are counted or erased by the cursor-managed pane.
+      const boundary = boundaryLine(invocation, displayTime(now()), width);
+      if (closed) {
+        write(`${boundary}\n`);
+        return;
+      }
+      finalize();
+      write(`${boundary}\n`);
+    },
+    endInvocation: () => {
+      if (!closed) {
+        finalize();
+      }
+    },
     close: () => {
-      erase();
+      if (!closed) {
+        finalize();
+      }
       closed = true;
     },
   };
@@ -342,22 +469,73 @@ function fitHistory(groups: ActivityGroup[], capacity: number): void {
 /**
  * The fallback for a terminal that cannot hold a pane: the same lines, written
  * one per line as ordinary output, without a cursor sequence anywhere. It is
- * also what a redirected stream gets, and it carries no color: the entry as
- * timestamped plain text, with nothing for a terminal to interpret.
+ * also what a redirected stream gets, and it carries no color: the entry and the
+ * invocation boundary as timestamped plain text, with nothing for a terminal to
+ * interpret.
  */
-function plainDisplay(out: (text: string) => void, now: () => Date): ActivityDisplay {
+function plainDisplay(io: CliIo, now: () => Date): ActivityDisplay {
+  /** One block as stamped ordinary lines, whatever the stream it goes to. */
+  const printed = (text: string, write: (line: string) => void): void => {
+    const stamp = displayTime(now());
+    for (const line of text.split(/\r?\n/)) {
+      write(stampLine(line, stamp));
+    }
+  };
+
   return {
     line: (text) => {
-      out(text);
+      printed(text, io.out);
     },
-    around: (action) => {
-      action();
+    error: (text) => {
+      printed(text, io.err);
     },
     activity: (activity) => {
-      out(`${displayTime(now())} ${describe(activity)}`);
+      io.out(`${displayTime(now())} ${describe(activity)}`);
     },
+    beginInvocation: (invocation) => {
+      io.out(boundaryLine(invocation, displayTime(now())));
+    },
+    endInvocation: () => undefined,
     close: () => undefined,
   };
+}
+
+/**
+ * One logical line with the stamp of the emission it belongs to, including an
+ * empty or whitespace-only line. The text after the prefix stays unchanged.
+ */
+function stampLine(line: string, stamp: string): string {
+  return `${stamp} ${line}`;
+}
+
+/**
+ * The boundary that opens one invocation's pane: the role the phase launched,
+ * the ticket when one is known, and what the phase calls itself. It is a row of
+ * the timeline in its own right, so consecutive developer, reviewer, and
+ * next-ticket panes stay distinguishable in scrollback.
+ *
+ * A pane too narrow for the whole row gives up its details before its identity:
+ * what the phase called itself goes first, then the fences. The role and ticket
+ * are never truncated: if necessary this ordinary timeline line wraps above the
+ * pane. Cursor movement counts only activity rows below it, so later redraws
+ * cannot erase any part of the boundary.
+ */
+function boundaryLine(invocation: ActivityInvocation, stamp: string, width?: number): string {
+  const ticket = nonBlank(invocation.ticket);
+  const phase = nonBlank(invocation.phase);
+  const named = ticket === null ? invocation.role : `${invocation.role}: ${ticket}`;
+  const full = `${stamp} ---- ${named}${phase === null ? '' : ` — ${phase}`} ----`;
+  if (width === undefined || stringWidth(full) <= width) {
+    return full;
+  }
+  const namedOnly = `${stamp} ---- ${named} ----`;
+  return stringWidth(namedOnly) <= width ? namedOnly : `${stamp} ${named}`;
+}
+
+/** A boundary field as safe nonblank terminal text, or `null` when empty. */
+function nonBlank(value: string | null | undefined): string | null {
+  const trimmed = flatten(value ?? '');
+  return trimmed === '' ? null : trimmed;
 }
 
 /** One activity entry as plain text: what it is labelled as, and its text. */
@@ -373,10 +551,10 @@ function describe(activity: AgentActivity): string {
  * color and reset again. The highlight is applied after the fit, so its escape
  * sequences never consume a display cell and never change what was cut.
  */
-function paneLine(activity: AgentActivity, stamp: string, width: number, color: boolean): string {
+function paneLine(activity: AgentActivity, stamp: string, width: number): string {
   const head = `${stamp} `;
   const line = truncate(`${head}${describe(activity)}`, width);
-  if (!color || activity.kind !== 'message') {
+  if (activity.kind !== 'message') {
     return line;
   }
   // Split after the timestamp, so the stamp keeps the terminal's ordinary color

@@ -672,9 +672,13 @@ export interface ExerciseRun {
   readonly runDir: string | null;
 }
 
-/** One line of the outcome block the CLI prints for a run that reached a status. */
+/**
+ * One line of the outcome block the CLI prints for a run that reached a status:
+ * the emission time it carries, then its indent and its label, which is what
+ * separates it from a progress line that begins with the same word.
+ */
 function outcomeLine(stdout: string, label: string): string | null {
-  const match = new RegExp(`^\\s+${label}\\s+(\\S.*)$`, 'm').exec(stdout);
+  const match = new RegExp(`^\\d{2}:\\d{2}:\\d{2}\\s{2,}${label}\\s+(\\S.*)$`, 'm').exec(stdout);
   return match?.[1]?.trim() ?? null;
 }
 

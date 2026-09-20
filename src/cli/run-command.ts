@@ -158,9 +158,7 @@ export async function runCommand(options: ParsedOptions, context: CliContext): P
       pane.line(text);
     },
     err: (text) => {
-      pane.around(() => {
-        io.err(text);
-      });
+      pane.error(text);
     },
   };
 

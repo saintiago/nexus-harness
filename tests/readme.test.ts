@@ -135,16 +135,27 @@ function documentedFiles(text: string, root: string): readonly DocumentedFile[] 
   return files;
 }
 
-/** The fenced block showing what a run prints: the one holding the run's header. */
+/**
+ * The fenced block showing what a run prints: the one holding the run's header
+ * row, which carries the local time the outcome reached the terminal.
+ */
 function documentedOutcomeBlock(text: string): string {
-  const block = fencedBlocks(text).find((candidate) => /^run run-\S+: \S+$/m.test(candidate));
+  const block = fencedBlocks(text).find((candidate) =>
+    /^\d{2}:\d{2}:\d{2} run run-\S+: \S+$/m.test(candidate),
+  );
   expect(block, 'README.md shows no run outcome block').toBeDefined();
   return block ?? '';
 }
 
-/** One labelled line of an outcome block, wherever it was printed. */
+/**
+ * One labelled line of a block, wherever it was printed. A line the terminal
+ * timeline writes carries the emission time before its indent; the static
+ * `check-config` report carries the indent alone.
+ */
 function outcomeLine(text: string, label: string): string | null {
-  const match = new RegExp(`^\\s+${label}\\s+(\\S.*)$`, 'm').exec(text);
+  const match = new RegExp(`^(?:\\d{2}:\\d{2}:\\d{2} )?\\s{2,}${label}\\s+(\\S.*)$`, 'm').exec(
+    text,
+  );
   return match?.[1]?.trim() ?? null;
 }
 
@@ -152,7 +163,7 @@ function outcomeLine(text: string, label: string): string | null {
 function documentedOutcomeLabels(text: string): readonly string[] {
   return documentedOutcomeBlock(text)
     .split('\n')
-    .map((line) => /^ {2}([a-z][a-z ]*?) {2,}\S/.exec(line)?.[1])
+    .map((line) => /^\d{2}:\d{2}:\d{2}\s{2,}([a-z][a-z ]*?)\s{2,}\S/.exec(line)?.[1])
     .filter((label): label is string => label !== undefined);
 }
 
@@ -322,7 +333,7 @@ describe('the documented disposable example', () => {
       const run = startCli(document);
       expect(run.stderr).toBe('');
       expect(run.status).toBe(0);
-      expect(run.stdout).toMatch(/^run \S+: passed$/m);
+      expect(run.stdout).toMatch(/^\d{2}:\d{2}:\d{2} run \S+: passed$/m);
 
       // Everything the shown outcome block claims, the CLI really printed.
       const labels = documentedOutcomeLabels(demo);
@@ -341,7 +352,7 @@ describe('the documented disposable example', () => {
       // of the documented shape, the report inside that run's own directory, and
       // the working copy beside it. A hand-edited or stale block fails here.
       const shown = documentedOutcomeBlock(demo);
-      const shownId = /^run (\S+): \S+$/m.exec(shown)?.[1] ?? '';
+      const shownId = /^\d{2}:\d{2}:\d{2} run (\S+): \S+$/m.exec(shown)?.[1] ?? '';
       expect(shownId).toMatch(/^run-\d{14}-[0-9a-f]{8}$/);
       const shownDir = `${DOCUMENTED_ROOT}/harness/runs/${shownId}`;
       const shownWorkspace = `${DOCUMENTED_ROOT}/harness/workspaces/${shownId}`;
@@ -442,7 +453,7 @@ describe('the documented disposable example', () => {
 
       const run = startCli(document);
       expect(run.status).toBe(1);
-      expect(run.stdout).toMatch(/^run \S+: failed$/m);
+      expect(run.stdout).toMatch(/^\d{2}:\d{2}:\d{2} run \S+: failed$/m);
 
       const runDir = outcomeLine(run.stdout, 'run dir') ?? '';
       const timeline = await readFile(path.join(runDir, 'logs', 'run.log'), 'utf8');

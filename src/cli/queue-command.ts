@@ -306,6 +306,8 @@ async function queueCommand(options: QueueCommandOptions, context: CliContext): 
     throw cause;
   }
 
+  // Fatal errors caught after timeline cleanup still carry its emission stamp.
+  let errorIo = io;
   try {
     // The Jira credential and App key are resolved here; the App client renews
     // installation tokens for completion evidence reads as needed.
@@ -371,11 +373,10 @@ async function queueCommand(options: QueueCommandOptions, context: CliContext): 
         pane.line(text);
       },
       err: (text) => {
-        pane.around(() => {
-          io.err(text);
-        });
+        pane.error(text);
       },
     };
+    errorIo = activeIo;
     const sourceIo = { out: activeIo.out, err: activeIo.err };
 
     const stop = new AbortController();
@@ -479,6 +480,12 @@ async function queueCommand(options: QueueCommandOptions, context: CliContext): 
           environment: reviewerEnvironment,
           onActivity: (activity) => {
             pane.activity(activity);
+          },
+          onTurnStart: (ticket) => {
+            pane.beginInvocation({ role: 'reviewer', ticket, phase: 'review' });
+          },
+          onTurnEnd: () => {
+            pane.endInvocation();
           },
         });
 
@@ -634,7 +641,7 @@ async function queueCommand(options: QueueCommandOptions, context: CliContext): 
     }
   } catch (cause) {
     if (cause instanceof SourceError || cause instanceof WorkspaceError) {
-      io.err(`error: ${cause.message}`);
+      errorIo.err(`error: ${cause.message}`);
       return EXIT_INPUT_ERROR;
     }
     throw cause;

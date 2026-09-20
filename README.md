@@ -940,15 +940,16 @@ node /path/to/nexus/dist/cli.js check-config --config nexus.config.json --projec
 npm start -- run --repo /tmp/nexus-demo/tiny-project --config /tmp/nexus-demo/harness/nexus.config.json --task /tmp/nexus-demo/harness/task.json
 ```
 
-**4. What it prints.** Progress lines come from the run's own timeline as it goes, then:
+**4. What it prints.** Progress lines come from the run's own timeline as it goes — each stamped with
+the local time it reached the terminal — and then the outcome block, stamped the same way:
 
 ```
-run run-20260101000000-1a2b3c4d: passed
-  reason     every configured check passed after the implementation turn
-  repairs    0 of 2 repair turns used
-  run dir    /tmp/nexus-demo/harness/runs/run-20260101000000-1a2b3c4d
-  workspace  /tmp/nexus-demo/harness/workspaces/run-20260101000000-1a2b3c4d (branch harness/run-20260101000000-1a2b3c4d)
-  report     /tmp/nexus-demo/harness/runs/run-20260101000000-1a2b3c4d/result.json
+09:41:07 run run-20260101000000-1a2b3c4d: passed
+09:41:07   reason     every configured check passed after the implementation turn
+09:41:07   repairs    0 of 2 repair turns used
+09:41:07   run dir    /tmp/nexus-demo/harness/runs/run-20260101000000-1a2b3c4d
+09:41:07   workspace  /tmp/nexus-demo/harness/workspaces/run-20260101000000-1a2b3c4d (branch harness/run-20260101000000-1a2b3c4d)
+09:41:07   report     /tmp/nexus-demo/harness/runs/run-20260101000000-1a2b3c4d/result.json
 ```
 
 That layout is the real one — `<workDir>/runs/<runId>` for the evidence,
@@ -963,24 +964,28 @@ checked **offline**, with the runtime boundary substituted by a stand-in `codex`
 needs your own account, and the printed paths are always derived from the run directory the CLI
 really allocated.
 
-While a coding turn runs, the CLI also draws what the runtime is doing — its messages, the commands
-it runs and their results, and the files it changed — in a fixed pane under the progress. A command
-is shown as the payload the runtime's shell wrapper was given, so a long PowerShell path cannot hide
-the operation, and a completion names the operation, its recorded exit code or status, and the last
-line of what it printed. Every entry starts with the local time the viewer received it (`HH:mm:ss`,
-captured once and kept across redraws — the runtime reports no event time of its own), and an agent
-message is highlighted in yellow and reset again so the work lines stay in your terminal's ordinary
-color. The pane is grouped by the agent's messages — each message keeps at most its three latest
-work lines — and the whole history is at most twenty lines: the oldest work disappears first, so
-earlier messages stay in order as the work between them scrolls away. Every entry is fitted to one
-row with its timestamp counted, and control characters in runtime text are never written as terminal
-commands. The progress above keeps the task, the phase, and the selected model readable; the startup
-inventory — receipt paths, IDs, hashes, launch arguments — stays in the run log. A redirected, too
-small, or too narrow terminal gets every line with its receive timestamp as ordinary output instead,
-with no cursor sequences at all; `NO_COLOR` in the environment keeps the pane but drops the
-highlighting; on every ending the
-pane is taken away before the outcome block above is printed. The full runtime output always stays
-in the turn's own `logs/agent-*.log`.
+While an agent invocation runs, the CLI also draws what the runtime is doing — its messages, the
+commands it runs and their results, and the files it changed — in a fixed pane under the progress.
+Every invocation gets a pane of its own, opened by a boundary line naming the phase that launched it
+— `developer` for an implementation or repair turn, `reviewer` for a Nexus Lens turn — and the
+ticket it works on, so consecutive turns and tickets stay apart in scrollback. When the invocation
+ends its pane is finalized: the rows it kept are printed into the timeline as that invocation's own
+segment, in order, before anything that follows. A command is shown as the payload the runtime's
+shell wrapper was given, so a long PowerShell path cannot hide the operation, and a completion names
+the operation, its recorded exit code or status, and the last line of what it printed. Every entry
+starts with the local time the viewer received it (`HH:mm:ss`, captured once and kept across redraws —
+the runtime reports no event time of its own), and an agent message is highlighted in yellow and reset
+again so the work lines stay in your terminal's ordinary color. Within one pane the history is
+grouped by the agent's messages — each message keeps at most its three latest work lines — and the
+whole pane is at most twenty lines: the oldest work disappears first, so earlier messages stay in
+order as the work between them scrolls away. Every entry is fitted to one row with its timestamp
+counted, and control characters in runtime text are never written as terminal commands. The progress
+above keeps the task, the phase, and the selected model readable; the startup inventory — receipt
+paths, IDs, hashes, launch arguments — stays in the run log. A redirected, noninteractive, too small,
+or too narrow terminal gets every line — the boundaries included — as stamped ordinary output
+instead, with no cursor or color sequence at all; `NO_COLOR` selects the same plain output
+with timestamps and role boundaries. The full runtime output always stays in the turn's own
+`logs/agent-*.log`.
 
 **5. Look at it, then delete it.**
 

@@ -3444,16 +3444,20 @@ describe('the source commands through the CLI', () => {
       expect(raw).toContain('change: add MARKER.md');
       expect(raw).toContain('\u001b[');
 
-      // And the batch's own summary is ordinary output, printed after the pane
-      // was taken away: nothing of the pane is left on the screen.
+      // And the batch's own summary is ordinary output, printed after the turn's
+      // pane was finalized: the pane's boundary and rows stay in the timeline,
+      // in order, above the batch's own lines.
       const screen = screenAfter(console.chunks);
-      expect(screen.some((line) => line.includes('writing the marker'))).toBe(false);
+      const shown = screen.join('\n');
+      expect(shown).toMatch(
+        /\d{2}:\d{2}:\d{2} ---- developer: SAM1-11 — implementation turn ----\n\d{2}:\d{2}:\d{2} agent: writing the marker\n\d{2}:\d{2}:\d{2} change: add MARKER\.md\n\d{2}:\d{2}:\d{2} implementation turn result: completed/,
+      );
       // What the reservation said on the live terminal is the key and the act;
       // its receipt path and immutable ID stay in the run's own evidence.
-      expect(screen).toContain('SAM1-11: reserved; claiming');
-      expect(screen.join('\n')).not.toContain('receipts');
-      expect(screen.join('\n')).toMatch(/^source completed$/m);
-      expect(screen.at(-1)).toMatch(/^ {2}skipped /);
+      expect(screen.some((line) => line.endsWith(' SAM1-11: reserved; claiming'))).toBe(true);
+      expect(shown).not.toContain('receipts');
+      expect(shown).toMatch(/^\d{2}:\d{2}:\d{2} source completed$/m);
+      expect(screen.at(-1)).toMatch(/^\d{2}:\d{2}:\d{2}\s{2,}skipped /);
     } finally {
       if (previous === undefined) {
         delete process.env.JIRA_API_TOKEN;

@@ -129,8 +129,8 @@ function consoleTerminal(): CliTerminal | undefined {
 
 /**
  * Whether the pane may color the terminal. The `NO_COLOR` convention — set to
- * anything but the empty string — asks for none: the pane keeps drawing its
- * lines, and the highlighting comes out as plain text instead.
+ * anything but the empty string — asks for none: the timeline uses plain output
+ * without cursor or color sequences.
  */
 export function colorAllowed(environment: NodeJS.ProcessEnv): boolean {
   const requested = environment['NO_COLOR'];

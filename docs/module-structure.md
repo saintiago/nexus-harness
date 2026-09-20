@@ -29,9 +29,9 @@ src/
     source-command.ts             (379)  `source list|run|watch`, the connector selection, abortable sleep
     review-command.ts             (273)  `review scan|watch`: the App client, the reviewer, the scan
     queue-command.ts              (677)  `queue run|watch`: the three credentials, the lock, the four phases
-    activity.ts                   (438)  the activity pane: a bounded, message-grouped, timestamped block
+    activity.ts                   (604)  the activity timeline: one bounded, timestamped pane per invocation
     progress.ts                   (136)  what a run's own progress line reads as on an interactive terminal
-    dependencies.ts               (154)  the loop's real collaborators and the wrapped set a test gets
+    dependencies.ts               (168)  the loop's real collaborators and the wrapped set a test gets
     signals.ts                    (28)   host SIGINT/SIGTERM/SIGBREAK handling
   config/
     schema.ts                     (216)  zod schemas and the documented defaults
@@ -119,10 +119,14 @@ further would separate one decision from itself: `runs/runner.ts` (the loop), `s
 - **Owns:** the process entry point, command dispatch, exit codes, argument parsing, usage text, and
   everything the user sees: progress echoed from the run timeline, the outcome block, source-list
   output, and error messages. `cli/activity.ts` is the one place that draws on the terminal beyond
-  ordinary lines: it keeps the runtime activity in a bounded pane under the progress — grouped by
-  the agent's messages, with the oldest work lines dropped first, each entry stamped with the local
-  time the viewer received it, and an agent message highlighted in yellow and reset — and it falls
-  back to ordinary lines when the output is redirected or the terminal cannot hold a pane.
+  ordinary lines: it gives every agent invocation a fresh bounded pane under the progress —
+  grouped by the agent's messages, with the oldest work lines dropped first, each entry stamped
+  with the local time the viewer received it, and an agent message highlighted in yellow and reset
+  — opens each pane with a boundary row naming the role the phase launched (`developer` or
+  `reviewer`) and the ticket, and finalizes a pane into the timeline when its invocation ends, so
+  one chronological, timestamped stream holds the bounded panes and the ordinary lifecycle lines in
+  the order they were produced. It falls back to stamped ordinary lines when the output is
+  redirected or the terminal cannot hold a pane.
   `cli/progress.ts` holds what those progress lines read as there, and only there: a line it does
   not recognize is written as the run wrote it. The directory is also the only place that composes
   the loop's collaborators (`cli/dependencies.ts`), and the only place that constructs a task
