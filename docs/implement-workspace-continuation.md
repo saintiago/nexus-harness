@@ -159,13 +159,15 @@ moved to the review status. Nothing local is created for it.
 - An attempt is recorded in its workspace's ledger as it ends. If that record cannot be written, the
   attempt keeps its report, its logs, and its working copy, its receipt records the failed path, and
   intake stops instead of climbing the ladder or taking the next issue, with no result published for
-  the attempt: the next attempt's number, its tier, and its guidance are all read from that ledger,
-  so none is started from one that does not hold the attempt that ran.
+  the attempt: the next attempt's number and its guidance are read from that ledger (the tier that ran
+  each attempt before it included), so none is started from one that does not hold the attempt that
+  ran.
 - The workspace must not be deleted while an issue points at it.
 
 ## Attempts and escalation
 
-An intake runs one **attempt per configured tier**, in order, without an operator between them:
+One claim is one **coding cycle**. A cycle runs one **attempt per configured tier**, in order,
+without an operator between them:
 
 ```json
 "escalation": [
@@ -176,17 +178,27 @@ An intake runs one **attempt per configured tier**, in order, without an operato
 
 - With no `escalation` field, one tier is built from `agent` and `maxRepairs`, which is today's
   behaviour.
-- Attempt N uses tier N, clamped to the last tier: a re-armed issue whose earlier attempts already
-  spent the ladder continues at its top. The tier's own launch is what the attempt starts, and what
-  its report records: the launched command and the reported tier agree, continuations included.
+- Escalation is local to one cycle, and every cycle starts at its first tier: a first attempt, and a
+  continuation of an issue's workspace — a ticket returned to its ready status by a reviewer's
+  findings, a failed required check, a delivery failure, or a failed post-merge workflow included —
+  all begin there, in the same retained workspace. The workspace's own attempt count is history: it
+  is what its reports and its ledger record, and it never selects a tier.
+- Within one cycle, the next tier runs only after the tier before it exhausted its own repair
+  allowance on an ordinary red post-agent round, and the last configured tier is the last rung. The
+  tier's own launch is what that attempt starts, and what its report records: the launched command
+  and the reported tier agree, continuations included.
 - Each attempt is a separate run: its own run directory, report, comment ("attempt 2 of 3, tier
-  pro"), and its own repair allowance.
+  pro" — the rung's position in the cycle's own ladder), and its own repair allowance.
 - The issue stays in the running status while the ladder climbs: an attempt whose result may be
   published gets its own comment while nothing has moved the item, and only the climb's end moves it
   to review. Two endings deliberately publish nothing and move nothing: a run whose stopped
   executions could not be confirmed to have ended, and an attempt whose workspace ledger could not be
   written (the "Continuation rules" ledger rule above). Later attempts read the item's thread for
   themselves, so a later rung is told the comment the harness published for the rung before it.
+- A run that ended before any coding turn spends no rung: a red baseline on a fresh workspace, and a
+  setup, launch, authentication, or protocol failure, all end the cycle where they happened rather
+  than climbing, and the next cycle — the one that follows the operator's repair — starts at the
+  first tier again.
 - Only an exhausted ordinary red check round climbs. A coding turn that could not finish (a launch,
   authentication, or protocol error), a round that could not be executed (a setup failure, a check
   that could not be launched), an expired limit, a cancellation, and a stop that was not confirmed
@@ -254,12 +266,27 @@ that was not confirmed each end the intake at the rung where they happened. The 
 section used to list are covered by the offline suite; the live exercise that has not been run is
 stated under "Verification" below.
 
+**Corrected in HARN-39.** The escalation index is now local to one coding cycle as the contract
+above says. It used to be the workspace's own attempt count, so a ticket returned to the ready status
+by a reviewer's findings, a failed required check, a delivery failure, or a failed post-merge workflow
+resumed at the rung that count had reached — routinely the stronger tier — and an attempt that ended
+before any coding turn spent a rung the developer never used. Every claim now starts at the first
+configured tier in the same retained workspace, and the next tier is selected only when the tier that
+ran exhausted its own repair allowance on an ordinary red post-agent round. The workspace's attempt
+history is unchanged and separate: reports and the ledger still count every attempt in order, so
+ledgers written before this change are read as they are, and the published attempt line names the
+rung within the cycle's own ladder. The reviewer is a separate, independent selection and is
+untouched by this change.
+
 ## Verification
 
 - Offline: workspace allocation and resolution, reopening a workspace whose attempts committed,
   refusal when the checkout is not on its recorded branch, the eligibility table, the
-  red-baseline exception, the tier loop, the guidance rendering, the decision made from the item as
-  it was just re-read rather than from a lagging search result, and the pointer checks — a malformed
+  red-baseline exception, the tier loop and its cycle-local index (a continuation whose earlier cycle
+  spent the whole ladder starts again at the first tier with the returned guidance; a run that ended
+  before any coding turn climbs nothing; a rung whose allowance is unspent does not hand over to the
+  next), the guidance rendering, the decision made from the item as it was just re-read rather than
+  from a lagging search result, and the pointer checks — a malformed
   id, another item's, site's, or repository's workspace, a workspace directory or ledger whose
   resolved path leaves the workspaces directory through a junction or symbolic link (owned
   temporary fixtures, refused as a refusal rather than an exception), and a ledger with no item

@@ -453,12 +453,18 @@ async function reportDeliveryFailure(
  * launched), an expired limit, a cancellation, or a stop that was not confirmed
  * — and escalating those would spend a stronger launch on infrastructure rather
  * than on code. The fields below are what says which ending a run had: the
- * status, the stop evidence, and the last turn's own round. No reason string is
- * read, so rewording a run's sentence can never change where the ladder goes
+ * status, the stop evidence, the repair turns the rung's own run really spent,
+ * and the last turn's own round. No reason string is read, so rewording a run's
+ * sentence can never change where the ladder goes
  * (docs/implement-workspace-continuation.md).
  */
-function exhaustedRedRound(run: RunTaskResult): boolean {
+function exhaustedRedRound(run: RunTaskResult, allowance: number): boolean {
   if (run.status !== 'failed' || run.timeout !== null || run.cancellation !== null) {
+    return false;
+  }
+  if (run.repairsUsed < allowance) {
+    // The tier's own allowance was not spent: the rung has not exhausted the
+    // repair turns it was given, so a stronger launch is not spent here yet.
     return false;
   }
   const lastTurn = run.attempts.at(-1);
@@ -673,28 +679,37 @@ async function attempt(
     return 'next';
   }
 
-  // The ladder: one attempt per rung, starting from the rung the workspace's own
-  // attempt count has reached. A re-armed issue whose earlier attempts already
-  // spent the ladder climbs at its top rung. Every attempt is its own run — its
-  // own directory, report, comment, and repair allowance — and the issue stays
-  // in the running status until the climb ends: only an exhausted ordinary red
-  // check round climbs, and a pass, a terminal failure, or the last rung
-  // publishes the result and moves the issue to review
+  // The ladder: one attempt per rung, and this claim starts it at the first
+  // rung. Escalation is local to one coding cycle — every claim is one, whether
+  // it creates a workspace or continues the one a reviewer's findings, a failed
+  // required check, a delivery failure, or a failed post-merge workflow returned
+  // to the ready status — so a ticket coming back to work is repaired by the
+  // first tier again, never by the rung the workspace's attempt count has
+  // reached. That count stays the history its reports and its ledger record.
+  // Every attempt is its own run — its own directory, report, comment, and repair
+  // allowance — and the issue stays in the running status until the climb ends:
+  // only a rung whose own run exhausted its allowance with an ordinary red check
+  // round climbs, and a pass, a terminal failure, or the last rung publishes the
+  // result and moves the issue to review
   // (docs/implement-workspace-continuation.md).
   const ladder = context.tiers;
-  const lastAttempt = Math.max(ladder.length, continuedWorkspace?.attempt ?? 1);
+  /** Which rung of this cycle's ladder the next attempt runs; 0 is its first. */
+  let rung = 0;
   let resume = continuedWorkspace;
   let result: RunTaskResult | undefined;
 
   for (;;) {
-    const attempt = resume?.attempt ?? 1;
-    const tier = ladder[Math.min(attempt, ladder.length) - 1];
+    const tier = ladder[rung];
     if (tier === undefined) {
       return stopWith(
         state,
         `${item.ref.key}: the configuration declares no agent tier, so no attempt was started`,
       );
     }
+    /** The rung's own position in this cycle's ladder: 1 for its first tier. */
+    const rungNumber = rung + 1;
+    /** Which attempt this is for the workspace, as its own ledger counts them. */
+    const attempt = resume?.attempt ?? 1;
 
     let run: RunTaskResult;
     // The rung's own brief: what the item's thread says, and what the earlier
@@ -784,7 +799,7 @@ async function attempt(
     io.out(
       `run ${run.run.runId}: ${run.status} for ${item.ref.key} (${run.reason}), ` +
         `report ${run.reportPath}` +
-        ` (attempt ${String(attempt)} of ${String(ladder.length)}, tier ${tier.name})`,
+        ` (attempt ${String(rungNumber)} of ${String(ladder.length)}, tier ${tier.name})`,
     );
 
     // Whether the run's own execution was confirmed stopped: an expired limit and
@@ -818,11 +833,12 @@ async function attempt(
     }
 
     // The workspace's own ledger is what the next attempt reads for its attempt
-    // number, its tier, and its guidance. A record that could not be written is
-    // not a detail to log and climb past: this attempt keeps its report, its
-    // logs, and its working copy, and intake stops here rather than starting
-    // another automatic attempt against a ledger that does not hold this one
-    // (docs/spec.md §6: local persistence failures stop intake).
+    // number and its guidance — which tier ran each attempt before it included.
+    // A record that could not be written is not a detail to log and climb past:
+    // this attempt keeps its report, its logs, and its working copy, and intake
+    // stops here rather than starting another automatic attempt against a ledger
+    // that does not hold this one (docs/spec.md §6: local persistence failures
+    // stop intake).
     if (run.workspaceLedgerProblem !== null) {
       await updateReceipt(file, { problem: `workspace ledger: ${run.workspaceLedgerProblem}` });
       return stopWith(
@@ -860,7 +876,7 @@ async function attempt(
             item,
             run,
             {
-              number: attempt,
+              number: rungNumber,
               of: ladder.length,
               tier: tier.name,
             },
@@ -880,7 +896,7 @@ async function attempt(
 
     const outcome = runOutcome(
       run,
-      { number: attempt, of: ladder.length, tier: tier.name },
+      { number: rungNumber, of: ladder.length, tier: tier.name },
       pullRequest,
       undefined,
       context.completion !== undefined,
@@ -897,9 +913,10 @@ async function attempt(
     };
 
     // Whether another rung follows this attempt. Only an exhausted ordinary red
-    // check round climbs; the ladder's remaining rungs are the configured ones,
-    // so nothing here can add an attempt the configuration did not allow.
-    const climbs = exhaustedRedRound(run) && attempt < lastAttempt;
+    // check round of a rung that actually spent its repair allowance climbs; the
+    // cycle's remaining rungs are the configured ones, so nothing here can add an
+    // attempt the configuration did not allow.
+    const climbs = exhaustedRedRound(run, tier.maxRepairs) && rung + 1 < ladder.length;
 
     // A run the caller stopped still gets one bounded, best-effort feedback
     // sequence of its own, so the issue does not sit in the running status.
@@ -914,7 +931,7 @@ async function attempt(
         // `pending`: the issue has not been given this intake's last word yet.
         await source.progress(item, outcome, feedbackStop);
         io.out(
-          `${item.ref.key}: attempt ${String(attempt)} of ${String(ladder.length)} (tier ` +
+          `${item.ref.key}: attempt ${String(rungNumber)} of ${String(ladder.length)} (tier ` +
             `${tier.name}) published; the issue stays in the running status`,
         );
       } else {
@@ -956,12 +973,15 @@ async function attempt(
       workspacePath: workspace.workspacePath,
       branch: workspace.branch,
       baseCommit: workspace.baseCommit,
+      // The workspace's own history moves on; the escalation index above is not
+      // derived from it.
       attempt: workspace.attempt + 1,
     };
-    const next = ladder[Math.min(resume.attempt, ladder.length) - 1];
+    rung += 1;
+    const next = ladder[rung];
     io.out(
       `${item.ref.key}: escalating to tier ${next?.name ?? 'unknown'} ` +
-        `(attempt ${String(resume.attempt)} of ${String(ladder.length)})`,
+        `(attempt ${String(rung + 1)} of ${String(ladder.length)})`,
     );
   }
 
