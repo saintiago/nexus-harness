@@ -10,7 +10,7 @@
  */
 import { generateKeyPairSync } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync } from 'node:fs';
-import { writeFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { runCli } from '../src/cli.js';
@@ -19,6 +19,15 @@ import type { CliContext, InterruptSignals } from '../src/cli/context.js';
 import { loadConfiguration, projectLockNamespace } from '../src/config/load.js';
 import { acquireIntakeLock, intakeLockPath } from '../src/sources/receipts.js';
 import { completionLogsDir } from '../src/sources/completion.js';
+import type { RunReport, SourceRef } from '../src/shared/types.js';
+import { prepareWorkspace } from '../src/workspace/prepare.js';
+import { preflightSource } from '../src/workspace/preflight.js';
+import { allocateRunDirectory } from '../src/workspace/run-directory.js';
+import {
+  readWorkspaceState,
+  recordWorkspaceAttempt,
+  sourceItemFor,
+} from '../src/workspace/state.js';
 import { git, installFakeGhCompletion, fakeCompletionCalls } from './fixtures/local-target.js';
 import {
   HARNESS_CONFIG_FILE_NAME,
@@ -1093,5 +1102,326 @@ describe('the queue command line', () => {
       first.interrupt();
       expect(await watching).toBe(EXIT_CANCELLED);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The name a fresh queue claim would use
+// ---------------------------------------------------------------------------
+
+/** One issue as the fake Jira site holds it: the fields the queue depends on. */
+interface FakeQueueIssue {
+  readonly id: string;
+  readonly key: string;
+  readonly summary: string;
+  status: string;
+  readonly updated: string;
+  labels: string[];
+}
+
+/** The site's answers: the queue's own reads, and the writes it makes. */
+interface FakeQueueJira {
+  readonly fetch: typeof fetch;
+  readonly issues: FakeQueueIssue[];
+  /** The result comments the harness posted, in order. */
+  readonly comments: string[];
+}
+
+/**
+ * A Jira site in memory for the two queue naming tests: the search the queue
+ * discovers with, the issue read a task is prepared from, the transitions a
+ * claim and a completion select, the thread, and the one pointer-label write.
+ * Every other endpoint is refused, so a test that reaches one fails loudly
+ * rather than passing on an invented answer.
+ */
+function fakeQueueJira(issues: FakeQueueIssue[]): FakeQueueJira {
+  const comments: string[] = [];
+  let commentSerial = 0;
+  const transitionsFrom = (status: string): Array<Record<string, unknown>> => {
+    if (status === 'To Do') {
+      // Both the claim and a refusal move an issue out of the ready status.
+      return [
+        { id: '11', name: 'Start work', to: { name: 'In Progress' } },
+        { id: '21', name: 'Take out of the queue', to: { name: 'In Review' } },
+      ];
+    }
+    if (status === 'In Progress') {
+      return [{ id: '31', name: 'Send for review', to: { name: 'In Review' } }];
+    }
+    return [];
+  };
+  const json = (value: unknown): Response =>
+    new Response(JSON.stringify(value), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  // The description every issue carries: the supported subset the connector
+  // maps to a task, with the heading its acceptance criteria are read from.
+  const description = {
+    type: 'doc',
+    version: 1,
+    content: [
+      { type: 'heading', attrs: { level: 2 }, content: [{ type: 'text', text: 'Goal' }] },
+      {
+        type: 'paragraph',
+        content: [{ type: 'text', text: 'Write the marker file the issue asks for.' }],
+      },
+      {
+        type: 'heading',
+        attrs: { level: 2 },
+        content: [{ type: 'text', text: 'Acceptance criteria' }],
+      },
+      {
+        type: 'bulletList',
+        content: [
+          {
+            type: 'listItem',
+            content: [
+              { type: 'paragraph', content: [{ type: 'text', text: 'The marker file exists.' }] },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+  const fieldsOf = (issue: FakeQueueIssue): Record<string, unknown> => ({
+    summary: issue.summary,
+    status: { name: issue.status },
+    labels: issue.labels,
+    project: { key: SOURCE.projectKey },
+    issuetype: { name: 'Task' },
+    updated: issue.updated,
+  });
+
+  const impl: typeof fetch = async (input, init) => {
+    const url = new URL(
+      typeof input === 'string' ? input : input instanceof URL ? input.href : input.url,
+    );
+    const method = init?.method ?? 'GET';
+    const body =
+      typeof init?.body === 'string'
+        ? (JSON.parse(init.body) as Record<string, unknown>)
+        : undefined;
+
+    if (url.pathname.endsWith('/search/jql')) {
+      // The JQL names the one status being searched for: the site answers with
+      // the issues that are in it.
+      const status = /status = "([^"]*)"/.exec(String(body?.['jql'] ?? ''))?.[1] ?? '';
+      return json({
+        issues: issues
+          .filter((issue) => issue.status === status)
+          .map((issue) => ({ id: issue.id, key: issue.key, fields: fieldsOf(issue) })),
+        isLast: true,
+      });
+    }
+
+    const issueId = /\/issue\/([^/]+)/.exec(url.pathname)?.[1];
+    const issue = issues.find((candidate) => candidate.id === issueId);
+    if (issue === undefined) {
+      return new Response(JSON.stringify({ errorMessages: ['not found'] }), { status: 404 });
+    }
+    if (url.pathname.endsWith('/transitions')) {
+      if (method === 'POST') {
+        const wanted = (body?.['transition'] as { id?: string } | undefined)?.id;
+        const chosen = transitionsFrom(issue.status).find(
+          (transition) => transition['id'] === wanted,
+        );
+        if (chosen !== undefined) {
+          issue.status = String((chosen['to'] as { name: string }).name);
+        }
+        return new Response(null, { status: 204 });
+      }
+      return json({ transitions: transitionsFrom(issue.status) });
+    }
+    if (url.pathname.endsWith('/comment')) {
+      if (method === 'POST') {
+        commentSerial += 1;
+        comments.push(JSON.stringify(body?.['body']));
+        return json({ id: `comment-${String(commentSerial)}` });
+      }
+      // The thread the harness reads before an attempt, and since the one it
+      // continues: this site holds exactly the comments the harness posted.
+      return json({ comments: [], total: 0 });
+    }
+    if (method === 'PUT') {
+      // The only write the connector makes to an issue is the pointer label.
+      const update = body?.['update'] as { labels?: Array<{ add?: string }> } | undefined;
+      for (const change of update?.labels ?? []) {
+        const add = change.add;
+        if (typeof add === 'string' && !issue.labels.includes(add)) {
+          issue.labels.push(add);
+        }
+      }
+      return new Response(null, { status: 204 });
+    }
+    return json({ id: issue.id, key: issue.key, fields: { ...fieldsOf(issue), description } });
+  };
+
+  return { fetch: impl, issues, comments };
+}
+
+/** The one run report a queue invocation wrote, as the output directory holds it. */
+async function onlyRunReport(workDir: string): Promise<RunReport> {
+  const runsRoot = path.join(workDir, 'runs');
+  const reports = readdirSync(runsRoot).filter((name) =>
+    existsSync(path.join(runsRoot, name, 'result.json')),
+  );
+  expect(reports).toHaveLength(1);
+  return JSON.parse(
+    await readFile(path.join(runsRoot, reports[0] ?? '', 'result.json'), 'utf8'),
+  ) as RunReport;
+}
+
+/** The workspace directories one output directory holds, without their ledgers. */
+function workspacesOf(workDir: string): string[] {
+  return readdirSync(path.join(workDir, 'workspaces')).filter((name) => !name.endsWith('.json'));
+}
+
+describe('the name a fresh queue claim would use', () => {
+  it('names a fresh Jira claim’s workspace and pointer after its ticket key', async () => {
+    const fixture = await cliFixture({});
+    const workDir = path.join(path.dirname(fixture.configPath), 'out');
+    const jira = fakeQueueJira([
+      {
+        id: '10025',
+        key: 'SAM1-25',
+        summary: 'Create the marker',
+        status: 'To Do',
+        updated: '2026-09-20T10:00:00.000Z',
+        labels: ['harness-task'],
+      },
+    ]);
+    // The coding turn is the one stand-in. It names the working copy it was
+    // given and then fails, so the attempt keeps its evidence and the queue
+    // stops on it instead of carrying it any further; everything before the
+    // turn — the claim, the workspace, its pointer label, and its ledger — is
+    // the real path under test.
+    const turnWorkspaces: string[] = [];
+    const context: CliContext = {
+      ...fixture.context,
+      fetch: jira.fetch,
+      dependencies: {
+        runAgentTurn: async (request) => {
+          turnWorkspaces.push(request.workspacePath);
+          throw new Error('the queue naming test fails its only coding turn on purpose');
+        },
+      },
+    };
+
+    const code = await runCli(
+      ['queue', 'run', '--config', fixture.configPath, '--repo', fixture.repo],
+      context,
+    );
+
+    expect(code).toBe(EXIT_INPUT_ERROR);
+    // The ticket key names the workspace the attempt really used — the
+    // directory, the branch, the ledger, and the pointer label on the issue —
+    // exactly as `source run` names it for the same fresh claim.
+    const workspacePath = path.join(workDir, 'workspaces', 'SAM1-25');
+    expect(turnWorkspaces).toEqual([workspacePath]);
+    expect(workspacesOf(workDir)).toEqual(['SAM1-25']);
+    expect(jira.issues[0]?.labels).toEqual(['harness-task', 'harness-ws-SAM1-25']);
+    expect(await readWorkspaceState(workDir, 'SAM1-25')).toMatchObject({
+      workspaceId: 'SAM1-25',
+      branch: 'harness/SAM1-25',
+      sourceItem: { type: 'jira', scope: SOURCE.siteUrl, id: '10025', key: 'SAM1-25' },
+    });
+    // The attempt's own evidence keeps its generated run id beside the
+    // workspace, and its report names the workspace the ticket key names.
+    expect((await onlyRunReport(workDir)).workspace).toMatchObject({
+      workspaceId: 'SAM1-25',
+      path: workspacePath,
+      branch: 'harness/SAM1-25',
+      continued: false,
+      attempt: 1,
+    });
+    // The attempt failed, so the queue stopped and published what happened,
+    // naming the ticket rather than carrying on to another one.
+    expect(output(fixture)).toContain('SAM1-25: the coding attempt ended failed');
+    expect(jira.comments).toHaveLength(1);
+  });
+
+  it('continues the workspace its pointer names under watch, without renaming it', async () => {
+    const fixture = await cliFixture({});
+    const workDir = path.join(path.dirname(fixture.configPath), 'out');
+    // The workspace an earlier attempt left, named the way runs were named
+    // before a ticket key was preferred: its clone on its own branch, and the
+    // ledger beside it. Its pointer is what decides where the work continues.
+    const legacyId = 'run-20260920120055-64a4aa89';
+    const ref: SourceRef = {
+      type: 'jira',
+      scope: SOURCE.siteUrl,
+      id: '10011',
+      key: 'SAM1-11',
+      url: `${SOURCE.siteUrl}/browse/SAM1-11`,
+      updatedAt: '2026-09-20T10:00:00.000Z',
+    };
+    const source = await preflightSource({ repoPath: fixture.repo, workDir });
+    await prepareWorkspace(
+      await allocateRunDirectory(workDir, { kind: 'create', preferredWorkspaceId: legacyId }),
+      source,
+      { deadlineMs: Date.now() + 60_000, now: () => new Date() },
+      sourceItemFor(ref),
+    );
+    await recordWorkspaceAttempt(workDir, legacyId, {
+      runId: legacyId,
+      outcome: 'failed',
+      reason: 'the earlier attempt ended failed',
+      endedAt: '2026-09-20T09:00:00.000Z',
+      reportPath: path.join(workDir, 'runs', legacyId, 'result.json'),
+    });
+    const jira = fakeQueueJira([
+      {
+        id: '10011',
+        key: 'SAM1-11',
+        summary: 'Continue the marker',
+        status: 'To Do',
+        updated: '2026-09-20T10:00:00.000Z',
+        labels: ['harness-task', `harness-ws-${legacyId}`],
+      },
+    ]);
+    const turnWorkspaces: string[] = [];
+    const context: CliContext = {
+      ...fixture.context,
+      fetch: jira.fetch,
+      dependencies: {
+        runAgentTurn: async (request) => {
+          turnWorkspaces.push(request.workspacePath);
+          throw new Error('the continuation test fails its only coding turn on purpose');
+        },
+      },
+    };
+
+    const code = await runCli(
+      ['queue', 'watch', '--config', fixture.configPath, '--repo', fixture.repo],
+      context,
+    );
+
+    expect(code).toBe(EXIT_INPUT_ERROR);
+    // The attempt reopened the exact directory the pointer names. The ticket
+    // key named nothing: no workspace was created, renamed, or migrated for it.
+    expect(turnWorkspaces).toEqual([path.join(workDir, 'workspaces', legacyId)]);
+    expect(workspacesOf(workDir)).toEqual([legacyId]);
+    expect(existsSync(path.join(workDir, 'workspaces', 'SAM1-11'))).toBe(false);
+    // The pointer is read, never rewritten: the issue still carries exactly the
+    // label the attempt that created the workspace wrote.
+    expect(jira.issues[0]?.labels).toEqual(['harness-task', `harness-ws-${legacyId}`]);
+    expect((await onlyRunReport(workDir)).workspace).toMatchObject({
+      workspaceId: legacyId,
+      path: path.join(workDir, 'workspaces', legacyId),
+      branch: `harness/${legacyId}`,
+      continued: true,
+      attempt: 2,
+    });
+    // The ledger keeps the identity it recorded when the workspace was made,
+    // and now records both attempts.
+    const ledger = await readWorkspaceState(workDir, legacyId);
+    expect(ledger?.sourceItem).toEqual({
+      type: 'jira',
+      scope: SOURCE.siteUrl,
+      id: '10011',
+      key: 'SAM1-11',
+    });
+    expect(ledger?.attempts).toHaveLength(2);
   });
 });
