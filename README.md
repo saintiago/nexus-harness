@@ -1202,7 +1202,8 @@ Read this before pointing a run at anything you care about.
   recorded branch is returned to it — the recorded branch takes the commit and the branch the turn
   made keeps it — an implementation turn that leaves a dirty, divergent, detached, or branchless
   checkout stops the run before any check with both branch names and the manual action, and a
-  continuation whose checkout cannot be returned is refused before it is claimed.
+  continuation of a workspace left on a branch of its own starts on the recorded branch, while one
+  whose checkout cannot be returned is refused before it is claimed.
 - the optional GitHub delivery step, against disposable Git repositories with a local bare
   destination and a stand-in `gh` on `PATH`: the branch really moves to the destination, the pull
   request is created with the issue reference and the check summary, a repeated delivery finds and

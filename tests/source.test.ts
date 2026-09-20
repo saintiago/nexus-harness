@@ -3782,6 +3782,113 @@ describe('the source commands through the CLI', () => {
     }
   });
 
+  it('returns a continued workspace to its recorded branch before the next coding turn', async () => {
+    const target = await createTarget();
+    const jira = fakeJira([
+      {
+        id: '10011',
+        key: 'SAM1-11',
+        summary: 'Create the marker',
+        status: 'To Do',
+        updated: '2026-09-16T11:00:00.000Z',
+      },
+    ]);
+    const previous = process.env.JIRA_API_TOKEN;
+    process.env.JIRA_API_TOKEN = 'test-token';
+
+    try {
+      const starts: string[] = [];
+      let firstTurn = true;
+      const dependencies: CliContext['dependencies'] = {
+        runAgentTurn: async (request) => {
+          starts.push(
+            (
+              await runProcess(
+                'git',
+                ['symbolic-ref', '--quiet', '--short', 'HEAD'],
+                request.workspacePath,
+              )
+            ).stdout.trim(),
+          );
+          if (firstTurn) {
+            // The first attempt commits on a branch of its own and leaves the
+            // checkout there, so the workspace it leaves behind is on a clean
+            // branch that descends from the recorded one (HARN-35).
+            firstTurn = false;
+            await gitOrFail(
+              ['checkout', '--quiet', '-b', 'task/harn-35-side'],
+              request.workspacePath,
+            );
+            await writeFile(path.join(request.workspacePath, 'MARKER.md'), 'done\n', 'utf8');
+            await gitOrFail(['add', 'MARKER.md'], request.workspacePath);
+            await gitOrFail(
+              ['commit', '--quiet', '--message', 'the marker'],
+              request.workspacePath,
+            );
+            return { summary: 'committed the marker on a branch of its own' };
+          }
+          await writeFile(
+            path.join(request.workspacePath, 'SECOND.md'),
+            'the continuation\n',
+            'utf8',
+          );
+          return { summary: 'worked in the continued workspace' };
+        },
+      };
+      const first = await runSourceCli(
+        ['source', 'run', '--repo', target.repo, '--config', target.configPath],
+        target.directory,
+        { fetch: jira.fetch, dependencies },
+      );
+      expect(first.code).toBe(EXIT_OK);
+
+      // The operator moves the issue back to the ready status; the pointer label
+      // is still on it, so the next scan continues that clone.
+      if (jira.issues[0] === undefined) {
+        throw new Error('the fixture issue disappeared');
+      }
+      jira.issues[0].status = 'To Do';
+      const second = await runSourceCli(
+        ['source', 'run', '--repo', target.repo, '--config', target.configPath],
+        target.directory,
+        { fetch: jira.fetch, dependencies },
+      );
+
+      expect(second.err).toBe('');
+      expect(second.code).toBe(EXIT_OK);
+      // Both coding turns started on the branch the workspace records, and the
+      // continuation really worked in the returned checkout.
+      expect(starts).toEqual(['harness/SAM1-11', 'harness/SAM1-11']);
+      const workspacePath = path.join(target.workDir, 'workspaces', 'SAM1-11');
+      const recorded = (
+        await runProcess('git', ['rev-parse', 'refs/heads/harness/SAM1-11'], workspacePath)
+      ).stdout.trim();
+      const side = (
+        await runProcess('git', ['rev-parse', 'refs/heads/task/harn-35-side'], workspacePath)
+      ).stdout.trim();
+      expect(recorded).toBe(side);
+      expect(
+        (
+          await runProcess('git', ['symbolic-ref', '--quiet', '--short', 'HEAD'], workspacePath)
+        ).stdout.trim(),
+      ).toBe('harness/SAM1-11');
+      expect(existsSync(path.join(workspacePath, 'SECOND.md'))).toBe(true);
+      expect(existsSync(path.join(workspacePath, 'MARKER.md'))).toBe(true);
+
+      // The continuation is the second attempt in the workspace's own ledger.
+      const ledger = JSON.parse(
+        await readFile(path.join(target.workDir, 'workspaces', 'SAM1-11.json'), 'utf8'),
+      ) as { attempts?: unknown[] };
+      expect(ledger.attempts).toHaveLength(2);
+    } finally {
+      if (previous === undefined) {
+        delete process.env.JIRA_API_TOKEN;
+      } else {
+        process.env.JIRA_API_TOKEN = previous;
+      }
+    }
+  });
+
   it('names a new workspace after its ticket key, and points the next attempt at it', async () => {
     const target = await createTarget();
     const jira = fakeJira([
