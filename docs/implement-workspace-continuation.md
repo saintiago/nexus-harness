@@ -291,10 +291,10 @@ published is the recorded branch, and what the checks validated is the checkout
 Now a checkout that is not on the branch its ledger records is read against what it would take to
 return it: it must be clean (no staged, unstaged, or untracked path), and the commit it is at must
 descend from the recorded branch's tip. When both hold, the recorded branch is fast-forwarded to
-that commit and checked out — in that order — before every coding turn and before the round that
-judges it, so a continuation and a repair turn start on the immutable recorded branch, the commit
-the turn made stays on the branch it made it on, and the revision the checks validate is the
-revision a delivery step publishes. Everything else stops before the turn, the check, or the
+that commit and checked out before every coding turn and before the round that judges it, so a
+continuation and a repair turn start on the immutable recorded branch, the commit the turn made
+stays on the branch it made it on, and the revision the checks validate is the revision a delivery
+step publishes. Everything else stops before the turn, the check, or the
 delivery, naming both branch names and what an operator can do by hand: a dirty checkout, a
 detached HEAD, a commit the recorded branch does not descend from, and a recorded branch the
 workspace does not hold. `reopenWorkspace` reads the same standing without changing anything, so a
