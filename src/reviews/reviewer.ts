@@ -23,10 +23,10 @@ import type {
   ReviewEvidence,
   ReviewerTurn,
   ReviewerTurnResult,
-  ReviewVerdict,
+  ReviewerVerdict,
 } from './contract.js';
 import { ReviewError } from './contract.js';
-import { renderDiff } from './diff.js';
+import { MAX_DIFF_CHARS, renderDiff } from './diff.js';
 
 /** The evidence file the reviewer turn is given, written beside its log. */
 export const REVIEW_INPUT_FILE = 'input.md';
@@ -41,6 +41,31 @@ const MAX_FINDING_CHARS = 2_000;
 const MAX_FINDINGS = 20;
 /** How much of the repository's instructions the reviewer is given. */
 const MAX_INSTRUCTIONS_CHARS = 30_000;
+
+/** Known evidence holes must not be turned into an approval by a reviewer. */
+export function reviewEvidenceProblem(evidence: ReviewEvidence): string | null {
+  for (const file of evidence.files) {
+    if (file.patch === null || file.patch.trim() === '') {
+      return `no textual patch is available for ${file.path}`;
+    }
+    const lines = file.patch.split('\n');
+    const additions = lines.filter((line) => line.startsWith('+')).length;
+    const deletions = lines.filter((line) => line.startsWith('-')).length;
+    if (additions !== file.additions || deletions !== file.deletions) {
+      return `the patch for ${file.path} is incomplete compared with GitHub's change counts`;
+    }
+  }
+  if (renderDiff(evidence.files, Infinity).length > MAX_DIFF_CHARS) {
+    return 'the diff exceeds the reviewer input limit';
+  }
+  if ((evidence.instructions?.trim().length ?? 0) > MAX_INSTRUCTIONS_CHARS) {
+    return 'the repository instructions exceed the reviewer input limit';
+  }
+  if (evidence.task.description.trim().length > 8_000) {
+    return 'the ticket description exceeds the reviewer input limit';
+  }
+  return null;
+}
 
 /** One line of text, so ticket or check text cannot become a second line. */
 function oneLine(text: string): string {
@@ -183,15 +208,21 @@ export function reviewPrompt(evidence: ReviewEvidence): string {
       'nothing else. Its shape is exactly:',
       '',
       '{',
-      '  "verdict": "approve" | "request_changes",',
+      '  "verdict": "approve" | "request_changes" | "inconclusive",',
       '  "summary": "one short paragraph for the pull request",',
       '  "findings": [',
       '    { "path": "src/example.ts", "line": 42, "body": "what is wrong and why it matters" }',
       '  ]',
       '}',
       '',
-      '- Write "approve" only when you have no blocking findings. Write "request_changes" only',
-      '  when you have at least one finding.',
+      '- Write "approve" only after completing the review with sufficient evidence and no',
+      '  blocking findings. Findings are blocking: an approval must have an empty findings list.',
+      '  Write "request_changes" only when you have at least one actionable blocking finding.',
+      '- Write "inconclusive" when material evidence is unavailable, including missing code or',
+      '  test context, inaccessible tools, or truncated patches or instructions. Explain what is',
+      '  missing and how the coordinator can obtain it in summary. Never infer approval from an',
+      '  inability to find bugs. This result publishes no review or success check. Pending CI alone',
+      '  is not missing review evidence: CI remains an independent merge requirement.',
       `- "line" is the line number in the new version of the file, and may be null when the`,
       '  finding is about the change as a whole.',
       `- At most ${String(MAX_FINDINGS)} findings, each body at most ${String(MAX_FINDING_CHARS)}`,
@@ -259,7 +290,7 @@ function verdictFinding(
  * stray key cannot turn a usable review into an unusable one; everything the
  * scan publishes is checked by name.
  */
-export function parseVerdict(text: string, where: string): ReviewVerdict {
+export function parseVerdict(text: string, where: string): ReviewerVerdict {
   let value: unknown;
   try {
     value = JSON.parse(text) as unknown;
@@ -279,24 +310,31 @@ export function parseVerdict(text: string, where: string): ReviewVerdict {
   }
   const record = value as Record<string, unknown>;
   const decision = record['verdict'];
-  if (decision !== 'approve' && decision !== 'request_changes') {
+  if (decision !== 'approve' && decision !== 'request_changes' && decision !== 'inconclusive') {
     throw new ReviewError(
       'inconclusive',
       `the reviewer's ${where} says "${String(decision)}" instead of "approve" or ` +
-        '"request_changes", so this scan will not guess which this is.',
+        '"request_changes" or "inconclusive", so this scan will not guess which this is.',
     );
   }
   const summary = verdictString(record['summary'], 'summary', MAX_SUMMARY_CHARS);
   const rawFindings = record['findings'];
-  if (rawFindings !== undefined && !Array.isArray(rawFindings)) {
+  if (!Array.isArray(rawFindings)) {
     throw new ReviewError(
       'inconclusive',
       `the reviewer's ${where} carries a "findings" that is not a list.`,
     );
   }
-  const findings = (rawFindings ?? [])
-    .slice(0, MAX_FINDINGS)
-    .map((finding, index) => verdictFinding(finding, index));
+  if (rawFindings.length > MAX_FINDINGS) {
+    throw new ReviewError(
+      'inconclusive',
+      'the verdict has too many findings; none may be dropped.',
+    );
+  }
+  const findings = rawFindings.map((finding, index) => verdictFinding(finding, index));
+  if (decision === 'approve' && findings.length > 0) {
+    throw new ReviewError('inconclusive', 'an approval cannot carry blocking findings.');
+  }
   if (decision === 'request_changes' && findings.length === 0) {
     throw new ReviewError(
       'inconclusive',

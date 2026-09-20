@@ -549,7 +549,7 @@ cancelled attempt — or a reservation with no finished attempt — is reported 
 work, and a pull request that predates the failure is not the successful code awaiting approval.
 Anything else — no pointer, two pointers, no pull request, more than one match — is reported and
 left in review; nothing is published for it. For an eligible
-ticket the scan reads the pull request's changed files and patches, the repository's `AGENTS.md` at
+ticket the scan reads the pull request's changed files and patches, root and relevant nested `AGENTS.md` files at
 the reviewed head, and the head's check runs and combined status, and runs the configured reviewer
 as **one bounded turn** in its own evidence directory under `<workDir>/reviews/`. The reviewer never
 changes files, implements fixes, commits, pushes, merges, or edits the ticket: it writes one verdict
@@ -563,10 +563,18 @@ reviewed commit, and one app-owned check run named `Nexus Lens review` on that s
 unavailable tool, an API failure, and incomplete evidence are reported as such, never as an
 approval, and never start a coding turn.
 
+The reviewer can explicitly return `inconclusive`, explaining missing material evidence and what
+the coordinator needs to provide. It publishes neither a native verdict nor a check. Known missing
+patches (including binary files), incomplete patches, or input exceeding the documented bounds
+are refused before a paid turn. Approval requires a completed review with sufficient evidence;
+pending CI alone does not prevent a code review, because CI remains a separate merge requirement.
+
 **A repeated scan does not review an unchanged head twice.** A completed review by the configured
 App login whose `commit_id` is the current head is the native record that the head was reviewed; a
-later commit is a new head and is reviewed again. If a review exists but its check run is missing,
-the next scan publishes the check from the review itself instead of reviewing again. There is no
+later commit is a new head and is reviewed again. If a review exists but its check run is missing
+or contradicts the latest native verdict, the next scan creates or updates the app-owned check
+from that verdict instead of reviewing again. An old success cannot substitute for a later
+request for changes. Incomplete native review/check lists require attention. There is no
 local review database and no second coding consumer.
 
 **Operator setup for this installation.** The `nexus-lens` App needs **pull requests: write**,
@@ -583,7 +591,8 @@ Then require, in the destination's branch rule, **both** the repository's CI che
 `Nexus Lens review` check **from this App** (`app5001141`, spelled the way the rule UI shows it). A
 generic "one approving review" rule does not identify Nexus Lens and is not the signal this
 increment provides; the app-owned check on the reviewed head is. The App remains a separate
-identity: `delivery` still pushes and opens pull requests with your own `git` and `gh` login, and
+identity: installation tokens are restricted to the configured repository and required permissions;
+`delivery` still pushes and opens pull requests with your own `git` and `gh` login, and
 the harness stores no GitHub credential. Start with `review scan --limit 1` and inspect the review,
 the check run, and the evidence under `<workDir>/reviews/` before letting `review watch` run
 unattended.
@@ -952,15 +961,12 @@ and only a read.
   request has been created by the harness here. The commands follow `gh`'s documented interface,
   but the live push, the live create-or-update decision, and a live authentication failure have not
   been exercised;
-- **any live Nexus Lens review from this harness.** The review path is verified offline against a
-  fake GitHub API and a real generated test key; no review command here has exchanged an
-  installation token, submitted a review, or published a check run against github.com. The
-  coordinator's own setup verification of the App identity (a genuine App review and an app-owned
-  check on a real pull request, made by hand and through the coordinator's bridge, recorded with
-  the harness task) is evidence about the App and the branch rule, **not** evidence that this code
-  path works: `review scan` is its own live exercise and it has not been run. Mocked tests are not
-  evidence for the live installation token exchange, the repository permissions, or whether the
-  configured branch rule accepts this App's check;
+- **live verification of the corrected Nexus Lens path.** HARN-14's operator notes report an
+  earlier live App-authored request for changes and a failed app-owned check, which exposed review
+  defects. These corrections are verified offline with a fake GitHub API and generated test keys;
+  no live exercise was run for them. The operator must separately verify inline findings, check
+  reconciliation, native approval eligibility, and the configured branch/auto-merge gate. Mocked
+  tests do not establish those outcomes or whether review quality reduces coordinator effort;
 - **the Nexus research-tool profiles.** [docs/nexus-agent-tools.md](docs/nexus-agent-tools.md)
   defines two native Codex profile layers for the Flash and Astra launches. Their TOML and the MCP
   servers they name were checked with the installed CLI 0.154.0 in a temporary Codex home, and the

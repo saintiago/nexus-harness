@@ -123,7 +123,7 @@ function evidenceFor(pullRequest: OpenPullRequest = pullFor()): ReviewEvidence {
     pullRequest,
     files: [
       { path: 'src/greet-all.mjs', patch: PATCH, additions: 3, deletions: 0 },
-      { path: 'src/greet.mjs', patch: null, additions: 1, deletions: 1 },
+      { path: 'src/greet.mjs', patch: '@@ -1 +1 @@\n-old\n+new', additions: 1, deletions: 1 },
     ],
     truncated: false,
     instructions: '# AGENTS.md\nRun the checks.',
@@ -163,8 +163,8 @@ function verdictFile(verdict: ReviewVerdict): string {
 
 describe('the reviewer evidence', () => {
   it('positions a finding on a line the patch really shows', () => {
-    expect(diffPosition(PATCH, 1)).toBe(2);
-    expect(diffPosition(PATCH, 3)).toBe(4);
+    expect(diffPosition(PATCH, 1)).toBe(1);
+    expect(diffPosition(PATCH, 3)).toBe(3);
     // A line the patch does not show has no position: it stays a body finding.
     expect(diffPosition(PATCH, 9)).toBeNull();
     expect(diffPosition('@@ -1 +1 @@', 5)).toBeNull();
@@ -173,25 +173,66 @@ describe('the reviewer evidence', () => {
   it('positions what it can and keeps every other finding for the body', () => {
     const positioned = positionFindings(REQUEST_CHANGES.findings, evidenceFor().files);
     expect(positioned.comments).toEqual([
-      { path: 'src/greet-all.mjs', position: 2, body: 'The exported function ignores the names.' },
+      { path: 'src/greet-all.mjs', position: 1, body: 'The exported function ignores the names.' },
     ]);
     expect(positioned.unpositioned).toEqual([
       { path: 'src/other.mjs', line: 2, body: 'This file was not part of the change.' },
     ]);
   });
 
+  it('counts deletions, later hunk headers and newline markers without resetting positions', () => {
+    const patch = [
+      '@@ -3,2 +3,2 @@',
+      ' context',
+      '-old',
+      '+new',
+      '@@ -20 +20,2 @@',
+      '-before',
+      '+after',
+      '+last',
+      '\\ No newline at end of file',
+    ].join('\n');
+    expect(diffPosition(patch, 3)).toBe(1);
+    expect(diffPosition(patch, 4)).toBe(3);
+    expect(diffPosition(patch, 20)).toBe(6);
+    expect(diffPosition(patch, 21)).toBe(7);
+    expect(diffPosition(patch, 22)).toBeNull();
+    expect(diffPosition('@@ -1 +1 @@\n-old\n+new\n', 1)).toBe(2);
+  });
+
+  it('accepts an explicit evidence-unavailable result and refuses contradictory approvals', () => {
+    expect(
+      parseVerdict(
+        JSON.stringify({
+          verdict: 'inconclusive',
+          summary: 'Need the caller source.',
+          findings: [],
+        }),
+        'v',
+      ),
+    ).toMatchObject({ decision: 'inconclusive', summary: 'Need the caller source.' });
+    expect(() =>
+      parseVerdict(JSON.stringify({ verdict: 'approve', summary: 'Fine.' }), 'v'),
+    ).toThrow(/not a list/);
+    expect(() =>
+      parseVerdict(verdictFile({ ...APPROVE, findings: REQUEST_CHANGES.findings }), 'v'),
+    ).toThrow(/blocking findings/);
+  });
+
   it('renders a bounded diff, and says when GitHub reported no patch', () => {
     const text = renderDiff(evidenceFor().files);
     expect(text).toContain('diff --git a/src/greet-all.mjs b/src/greet-all.mjs');
     expect(text).toContain('+export function greetAll(names) {');
-    expect(text).toContain('binary, or too large');
+    expect(renderDiff([{ path: 'image.png', patch: null, additions: 0, deletions: 0 }])).toContain(
+      'binary, or too large',
+    );
     expect(renderDiff(evidenceFor().files, 40)).toContain('truncated by the harness');
   });
 
   it('validates the reviewer verdict by name', () => {
     expect(parseVerdict(verdictFile(APPROVE), 'verdict.json')).toEqual(APPROVE);
     expect(parseVerdict(verdictFile(REQUEST_CHANGES), 'verdict.json')).toEqual(REQUEST_CHANGES);
-    // An approval may carry notes; a request for changes must name a reason.
+    // Findings are blocking; a request for changes must name a reason.
     expect(() =>
       parseVerdict(
         JSON.stringify({ verdict: 'request_changes', summary: 'No.', findings: [] }),
@@ -236,6 +277,7 @@ interface RecordedCalls {
 }
 
 interface FakeRepositoryOptions {
+  readonly evidence?: Partial<ReviewEvidence>;
   readonly pullRequest?: OpenPullRequest | null;
   readonly reviews?: readonly PullRequestReview[];
   readonly checks?: readonly AppCheckRun[];
@@ -303,6 +345,7 @@ function fakeRepository(options: FakeRepositoryOptions = {}): FakeRepository {
       }
       return {
         ...evidenceFor(request.pullRequest),
+        ...options.evidence,
         ref: request.ref,
         task: request.task,
       };
@@ -312,7 +355,11 @@ function fakeRepository(options: FakeRepositoryOptions = {}): FakeRepository {
         throw options.publishReviewError;
       }
       calls.publishedReviews.push(request);
-      return { id: 5256006204, url: `${request.pullRequest.url}#review`, state: 'APPROVED' };
+      return {
+        id: 5256006204,
+        url: `${request.pullRequest.url}#review`,
+        state: request.decision === 'approve' ? 'APPROVED' : 'CHANGES_REQUESTED',
+      };
     },
     publishCheck: async (request): Promise<PublishedCheck> => {
       if (options.publishCheckError !== undefined) {
@@ -415,6 +462,161 @@ async function reviewDirectories(workDir: string): Promise<string[]> {
 }
 
 describe('one review scan', () => {
+  it.each([
+    { state: 'CHANGES_REQUESTED', conclusion: 'success', decision: 'request_changes' },
+    { state: 'APPROVED', conclusion: 'failure', decision: 'approve' },
+    { state: 'APPROVED', conclusion: null, decision: 'approve' },
+  ])(
+    'reconciles the latest $state verdict with an existing $conclusion check',
+    async ({ state, conclusion, decision }) => {
+      const repository = fakeRepository({
+        reviews: [
+          { id: 1, login: LOGIN, state: 'APPROVED', commitId: HEAD, url: 'old-review' },
+          { id: 2, login: LOGIN, state, commitId: HEAD, url: 'latest-review' },
+        ],
+        // Reverse API order: the greatest ID is the effective run, not the last entry.
+        checks: [
+          { id: 9, conclusion, url: 'new-check' },
+          { id: 3, conclusion: 'failure', url: 'old-check' },
+        ],
+      });
+      const fixture = await scanFixture({ repository });
+      expect(await scanReviews(fixture.context)).toMatchObject({ unchanged: 1, reviewerRuns: 0 });
+      expect(repository.calls.publishedReviews).toEqual([]);
+      expect(repository.calls.publishedChecks).toEqual([
+        expect.objectContaining({
+          checkRunId: 9,
+          head: HEAD,
+          decision,
+          detailsUrl: 'latest-review',
+        }),
+      ]);
+    },
+  );
+
+  it('uses the latest matching check even when an older success is returned last', async () => {
+    const repository = fakeRepository({
+      reviews: [{ id: 2, login: LOGIN, state: 'CHANGES_REQUESTED', commitId: HEAD, url: 'review' }],
+      checks: [
+        { id: 9, conclusion: 'failure', url: 'latest' },
+        { id: 3, conclusion: 'success', url: 'old' },
+      ],
+    });
+    const fixture = await scanFixture({ repository });
+    expect(await scanReviews(fixture.context)).toMatchObject({ unchanged: 1, reviewerRuns: 0 });
+    expect(repository.calls.publishedChecks).toEqual([]);
+  });
+
+  it.each(['stale', 'api'] as const)(
+    'reports %s check reconciliation without running a reviewer',
+    async (failure) => {
+      const repository = fakeRepository({
+        reviews: [{ id: 2, login: LOGIN, state: 'APPROVED', commitId: HEAD, url: 'review' }],
+        ...(failure === 'stale'
+          ? { headAfterReview: OTHER_HEAD }
+          : { publishCheckError: new ReviewError('api', 'write failed') }),
+      });
+      const fixture = await scanFixture({ repository });
+      expect(await scanReviews(fixture.context)).toMatchObject({ attention: 1, reviewerRuns: 0 });
+      expect(repository.calls.publishedChecks).toEqual([]);
+      expect(repository.calls.publishedReviews).toEqual([]);
+    },
+  );
+
+  it.each([
+    { files: [{ path: 'image.png', patch: null, additions: 0, deletions: 0 }] },
+    { files: [{ path: 'code.ts', patch: PATCH, additions: 4, deletions: 0 }] },
+    {
+      files: [
+        {
+          path: 'code.ts',
+          patch: `@@ -0,0 +1 @@\n+${'x'.repeat(120_000)}`,
+          additions: 1,
+          deletions: 0,
+        },
+      ],
+    },
+    { instructions: 'x'.repeat(30_001) },
+    { task: { ...taskFor(), description: 'x'.repeat(8_001) } },
+  ])('refuses known incomplete evidence before a paid turn', async (evidence) => {
+    const repository = fakeRepository({ evidence });
+    const fixture = await scanFixture({ repository });
+    if (evidence.task !== undefined) {
+      // The queue's task, rather than repository metadata, supplies the ticket.
+      fixture.context.queue.prepare = async () => ({ ...preparedFor(), task: evidence.task! });
+    }
+    expect(await scanReviews(fixture.context)).toMatchObject({ attention: 1, reviewerRuns: 0 });
+    expect(fixture.errors.join('\n')).toContain('incomplete review evidence');
+    expect(repository.calls.publishedChecks).toEqual([]);
+    expect(repository.calls.publishedReviews).toEqual([]);
+  });
+
+  it('reports explicit inconclusive evidence without any native publication', async () => {
+    const repository = fakeRepository();
+    const fixture = await scanFixture({
+      repository,
+      reviewer: async () => ({
+        verdict: {
+          decision: 'inconclusive',
+          summary: 'The caller source is unavailable.',
+          findings: [],
+        },
+        summary: 'Evidence unavailable',
+        problem: null,
+        logPath: 'log',
+      }),
+    });
+    expect(await scanReviews(fixture.context)).toMatchObject({ attention: 1, reviewerRuns: 1 });
+    expect(fixture.errors.join('\n')).toContain('caller source is unavailable');
+    expect(repository.calls.publishedReviews).toEqual([]);
+    expect(repository.calls.publishedChecks).toEqual([]);
+  });
+
+  it('refuses an approval returned with a failed turn', async () => {
+    const repository = fakeRepository();
+    const fixture = await scanFixture({
+      repository,
+      reviewer: async () => ({
+        verdict: APPROVE,
+        summary: 'approved',
+        problem: 'Turn interrupted',
+        logPath: 'log',
+      }),
+    });
+    expect(await scanReviews(fixture.context)).toMatchObject({ attention: 1, reviewerRuns: 1 });
+    expect(repository.calls.publishedReviews).toEqual([]);
+    expect(repository.calls.publishedChecks).toEqual([]);
+  });
+
+  it('does not publish a completed verdict after cancellation', async () => {
+    const controller = new AbortController();
+    const repository = fakeRepository();
+    const fixture = await scanFixture({
+      repository,
+      stop: controller.signal,
+      reviewer: async () => {
+        controller.abort();
+        return { verdict: APPROVE, summary: 'approved', problem: null, logPath: 'log' };
+      },
+    });
+    expect(await scanReviews(fixture.context)).toMatchObject({ attention: 1, reviewerRuns: 1 });
+    expect(repository.calls.publishedReviews).toEqual([]);
+    expect(repository.calls.publishedChecks).toEqual([]);
+  });
+
+  it('rejects a ticket whose requirements changed during the reviewer turn', async () => {
+    const repository = fakeRepository();
+    const fixture = await scanFixture({
+      repository,
+      prepare: (_candidate, call) => ({
+        ...preparedFor(),
+        ref: { ...refFor(), updatedAt: call === 1 ? refFor().updatedAt : 'later' },
+      }),
+    });
+    expect(await scanReviews(fixture.context)).toMatchObject({ attention: 1, reviewerRuns: 1 });
+    expect(repository.calls.publishedReviews).toEqual([]);
+    expect(repository.calls.publishedChecks).toEqual([]);
+  });
   it('approves an eligible ticket: one review, one successful check, one record', async () => {
     const repository = fakeRepository();
     const fixture = await scanFixture({ repository });
@@ -487,7 +689,7 @@ describe('one review scan', () => {
     const [review] = repository.calls.publishedReviews;
     expect(review?.decision).toBe('request_changes');
     expect(review?.comments).toEqual([
-      { path: 'src/greet-all.mjs', position: 2, body: 'The exported function ignores the names.' },
+      { path: 'src/greet-all.mjs', position: 1, body: 'The exported function ignores the names.' },
     ]);
     expect(review?.body).toContain('src/other.mjs:2');
     expect(review?.body).toContain('This file was not part of the change.');
@@ -1263,7 +1465,7 @@ function fakeWorld(options: {
         {
           id: 5256006204,
           html_url: `https://github.com/${REPOSITORY}/pull/27#pullrequestreview-5256006204`,
-          state: body['event'],
+          state: body['event'] === 'APPROVE' ? 'APPROVED' : 'CHANGES_REQUESTED',
           commit_id: body['commit_id'],
           user: { login: LOGIN },
         },
@@ -1283,6 +1485,8 @@ function fakeWorld(options: {
           id: 105912854704,
           html_url: `https://github.com/${REPOSITORY}/runs/105912854704`,
           conclusion: body['conclusion'],
+          status: 'completed',
+          app: { id: 5001141 },
           head_sha: body['head_sha'],
         },
         201,
@@ -1430,6 +1634,33 @@ async function reviewCommandFixture(options: {
 }
 
 describe('the review command through the CLI', () => {
+  it('accepts a completed but explicitly inconclusive reviewer without publishing a verdict', async () => {
+    const world = fakeWorld({ issues: [sourceIssue(['harness-ws-run-20260919100148-e48a9ab0'])] });
+    const fixture = await reviewCommandFixture({
+      world,
+      plans: [
+        {
+          edits: [
+            {
+              file: 'verdict.json',
+              text: JSON.stringify({
+                verdict: 'inconclusive',
+                summary: 'Cannot inspect the dependency needed to judge this change.',
+                findings: [],
+              }),
+            },
+          ],
+        },
+      ],
+    });
+    const result = await fixture.run();
+    expect(result.code).toBe(EXIT_INPUT_ERROR);
+    expect(result.err).toContain('Cannot inspect the dependency');
+    expect(await fakeTurns(fixture.runtime.state)).toHaveLength(1);
+    expect(world.publishedReviews).toEqual([]);
+    expect(world.publishedChecks).toEqual([]);
+    expect(world.issues[0]?.status).toBe('In Review');
+  });
   it('reviews from a non-repository evidence directory with both credential variables stripped', async () => {
     const world = fakeWorld({
       issues: [sourceIssue(['harness-ws-run-20260919100148-e48a9ab0'])],
@@ -1639,7 +1870,7 @@ describe('the review command through the CLI', () => {
       expect(world.publishedReviews[0]).toMatchObject({
         event: 'REQUEST_CHANGES',
         commit_id: HEAD,
-        comments: [{ path: 'src/greet-all.mjs', position: 2, body: 'It returns the wrong thing.' }],
+        comments: [{ path: 'src/greet-all.mjs', position: 1, body: 'It returns the wrong thing.' }],
       });
       expect(world.publishedChecks[0]).toMatchObject({ conclusion: 'failure' });
       expect(await fakeTurns(fixture.runtime.state)).toHaveLength(1);

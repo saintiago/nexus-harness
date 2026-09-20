@@ -66,7 +66,7 @@ function describeReviewSummary(summary: ReviewSummary): string {
     `  reviewed   ${String(summary.reviewed)} (approved: ${String(summary.approved)}, ` +
       `changes requested: ${String(summary.changesRequested)})`,
     `  unchanged  ${String(summary.unchanged)} already decided for their reviewed head`,
-    `  attention  ${String(summary.attention)} need a coordinator; nothing was published for them`,
+    `  attention  ${String(summary.attention)} need a coordinator; see publication details above`,
     `  skipped    ${String(summary.skipped)} no longer eligible`,
     `  reviewer   ${String(summary.reviewerRuns)} reviewer turn(s) started`,
   ];

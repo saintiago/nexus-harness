@@ -3,7 +3,7 @@
  * positioned in it.
  *
  * A finding is positioned by the classic diff position — the 1-based index of
- * the line within the file's patch, hunk headers included — which is what the
+ * the line after the first hunk header, later hunk headers included — which is what the
  * native review comment API accepts. A finding whose path, line, or patch does
  * not let that position be computed is not dropped: it is reported in the
  * review's body instead, so a review never loses a reason merely because GitHub
@@ -28,7 +28,9 @@ function* walkPatch(patch: string): Generator<PatchLine> {
   let position = 0;
   let newLine: number | null = null;
   for (const line of patch.split('\n')) {
-    position += 1;
+    // The first @@ header is position zero. Everything after it, including
+    // subsequent hunk headers and deleted lines, advances the diff position.
+    if (newLine !== null) position += 1;
     const hunk = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
     if (hunk !== null) {
       newLine = Number(hunk[1]);

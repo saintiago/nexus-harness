@@ -100,6 +100,16 @@ export interface ReviewVerdict {
   readonly findings: readonly ReviewFinding[];
 }
 
+/** A completed turn can still lack the evidence needed for a native verdict. */
+export interface InconclusiveReview {
+  readonly decision: 'inconclusive';
+  /** The missing evidence and what the coordinator needs to provide. */
+  readonly summary: string;
+  readonly findings: readonly ReviewFinding[];
+}
+
+export type ReviewerVerdict = ReviewVerdict | InconclusiveReview;
+
 /** One file of the pull request's diff, with the patch GitHub reports for it. */
 export interface ChangedFile {
   readonly path: string;
@@ -125,7 +135,7 @@ export interface ReviewEvidence {
   readonly files: readonly ChangedFile[];
   /** True when the changed-file list was bounded; the scan must refuse a reviewer turn. */
   readonly truncated: boolean;
-  /** The repository's `AGENTS.md` at the reviewed head, or `null` when it has none. */
+  /** Root and relevant nested `AGENTS.md` files at the reviewed head, or `null`. */
   readonly instructions: string | null;
   /** Check runs reported for the reviewed head, bounded. */
   readonly checks: readonly CheckEvidence[];
@@ -148,7 +158,7 @@ export interface ReviewQueue {
 /** One inline comment of a review, positioned in the pull request's diff. */
 export interface ReviewComment {
   readonly path: string;
-  /** The 1-based position of the line within the file's patch. */
+  /** Lines after the first hunk header: the first content line is position 1. */
   readonly position: number;
   readonly body: string;
 }
@@ -173,6 +183,8 @@ export interface PublishedReview {
 
 /** What publishing the app-owned check run is asked for. */
 export interface PublishCheckRequest {
+  /** Update this existing app-owned check instead of creating a duplicate. */
+  readonly checkRunId?: number;
   readonly head: string;
   readonly decision: ReviewDecision;
   readonly title: string;
@@ -187,7 +199,7 @@ export interface PublishedCheck {
   readonly conclusion: string;
 }
 
-/** One completed, app-owned check run at a head, as the dedup read finds it. */
+/** One app-owned check run at a head; pending runs have no conclusion. */
 export interface AppCheckRun {
   readonly id: number;
   readonly conclusion: string | null;
@@ -217,7 +229,7 @@ export interface ReviewRepository {
   ): Promise<ReviewEvidence>;
   publishReview(request: PublishReviewRequest, stop: AbortSignal): Promise<PublishedReview>;
   publishCheck(request: PublishCheckRequest, stop: AbortSignal): Promise<PublishedCheck>;
-  /** The completed check runs this App published for one head. */
+  /** The check runs this App published for one head, including pending runs. */
   reviewChecks(head: string, stop: AbortSignal): Promise<readonly AppCheckRun[]>;
 }
 
@@ -236,7 +248,7 @@ export interface ReviewerTurnRequest {
 export interface ReviewerTurnResult {
   /** The reviewer's own final message, or `null` when it gave none. */
   readonly summary: string | null;
-  readonly verdict: ReviewVerdict | null;
+  readonly verdict: ReviewerVerdict | null;
   readonly problem: string | null;
   /** The turn's own log file, kept beside its evidence. */
   readonly logPath: string;

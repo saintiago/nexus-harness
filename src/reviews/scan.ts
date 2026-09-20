@@ -39,7 +39,7 @@ import type {
 } from './contract.js';
 import { ReviewError } from './contract.js';
 import { positionFindings } from './diff.js';
-import { REVIEW_INPUT_FILE, REVIEWER_LOG_FILE } from './reviewer.js';
+import { REVIEW_INPUT_FILE, REVIEWER_LOG_FILE, reviewEvidenceProblem } from './reviewer.js';
 
 /** How many review-directory collisions one allocation may skip before giving up. */
 const MAX_REVIEW_ID_ATTEMPTS = 5;
@@ -349,14 +349,18 @@ async function reviewIfDecided(
 
   const decision = decisionOf(latest.state);
   const checks = await context.repository.reviewChecks(head, context.stop);
-  if (checks.length > 0) {
+  // GitHub list order is not chronological. Compare the newest run, never an
+  // arbitrary older success, and repair the existing signal in place.
+  const effective = checks.toSorted((a, b) => b.id - a.id)[0];
+  const expected = decision === 'approve' ? 'success' : 'failure';
+  if (effective?.conclusion === expected) {
     return {
       disposition: 'unchanged',
       ref: item.ref,
       head,
       decision,
       reviewUrl: latest.url,
-      checkUrl: checks.at(-1)?.url ?? null,
+      checkUrl: effective.url,
       detail:
         `already reviewed at ${head} (${latest.state.toLowerCase().replace('_', ' ')}); no ` +
         'reviewer turn was started',
@@ -364,11 +368,29 @@ async function reviewIfDecided(
     };
   }
 
-  // The review exists; its app-owned check does not. Publishing the check from
-  // the native review is how a scan repairs a half-published verdict, and it
-  // never turns an unapproved head into an approved one.
+  // Revalidate before repairing a missing or contradictory check, just as for
+  // a fresh verdict. The native review is authoritative, not the old check.
+  const rechecked = await context.queue.prepare(
+    { ref: item.ref, title: item.task.title },
+    context.stop,
+  );
+  const current = await context.repository.readPullRequest(pullRequest.number, context.stop);
+  if (
+    context.stop.aborted ||
+    rechecked === null ||
+    rechecked.ref.updatedAt !== item.ref.updatedAt ||
+    current === null ||
+    current.headSha !== head
+  ) {
+    return attention(
+      item.ref,
+      'the ticket or pull request changed before check reconciliation',
+      head,
+    );
+  }
   const check = await context.repository.publishCheck(
     {
+      ...(effective === undefined ? {} : { checkRunId: effective.id }),
       head,
       decision,
       title:
@@ -377,7 +399,7 @@ async function reviewIfDecided(
           : `${context.checkName}: changes requested`,
       summary:
         `Published from the existing review ${latest.url} for ${item.ref.key}: the head ${head} ` +
-        `carried no "${context.checkName}" check run.`,
+        `needed its "${context.checkName}" check reconciled with the latest native verdict.`,
       detailsUrl: latest.url,
     },
     context.stop,
@@ -390,7 +412,7 @@ async function reviewIfDecided(
     reviewUrl: latest.url,
     checkUrl: check.url,
     detail:
-      `already reviewed at ${head}; published the missing "${context.checkName}" check ` +
+      `already reviewed at ${head}; ${effective === undefined ? 'published the missing' : 'reconciled the'} "${context.checkName}" check ` +
       `(${check.conclusion}) from that review`,
     reviewerRun: false,
   };
@@ -439,6 +461,15 @@ async function reviewWithTurn(
       ref,
       `the pull request ${pullRequest.url} changes no files, so there is no diff to review; the ` +
         'coordinator decides what happens next',
+      head,
+    );
+  }
+  const evidenceProblem = reviewEvidenceProblem(evidence);
+  if (evidenceProblem !== null) {
+    return attention(
+      ref,
+      `incomplete review evidence: ${evidenceProblem}; the coordinator must ` +
+        'arrange complete evidence or split the change. No reviewer turn or verdict was published',
       head,
     );
   }
@@ -500,19 +531,42 @@ async function reviewWithTurn(
     return attention(ref, detail, head, reviewerRun);
   };
 
+  const reviewerStop = AbortSignal.any([
+    context.stop,
+    AbortSignal.timeout(context.reviewerTimeoutMs),
+  ]);
   const turn = await context.reviewer({
     dir: reviewDir.dir,
     evidence,
-    stop: AbortSignal.any([context.stop, AbortSignal.timeout(context.reviewerTimeoutMs)]),
+    stop: reviewerStop,
   });
-  if (turn.verdict === null) {
+  if (reviewerStop.aborted || turn.problem !== null || turn.verdict === null) {
     return await attentionResult(turn.problem ?? 'the reviewer turn produced no verdict', true);
   }
   const verdict = turn.verdict;
+  if (verdict.decision === 'inconclusive') {
+    return await attentionResult(`review inconclusive: ${verdict.summary}`, true);
+  }
 
   // The verdict belongs to the head it was made against: both the pull request
   // and the ticket are re-read before anything is published, and a head that
   // moved — or a ticket that left review — is never approved by a stale result.
+  const rechecked = await context.queue.prepare(
+    { ref: item.ref, title: item.task.title } satisfies SourceCandidate,
+    context.stop,
+  );
+  if (
+    rechecked === null ||
+    rechecked.ref.updatedAt !== item.ref.updatedAt ||
+    JSON.stringify(rechecked.pointers) !== JSON.stringify(item.pointers)
+  ) {
+    return await attentionResult(
+      `${ref.key} changed or is no longer in the configured review status, so the verdict for ${head} was not ` +
+        'published',
+      true,
+    );
+  }
+
   const current = await context.repository.readPullRequest(pullRequest.number, context.stop);
   if (current === null) {
     return await attentionResult(
@@ -528,16 +582,8 @@ async function reviewWithTurn(
       true,
     );
   }
-  const rechecked = await context.queue.prepare(
-    { ref: item.ref, title: item.task.title } satisfies SourceCandidate,
-    context.stop,
-  );
-  if (rechecked === null) {
-    return await attentionResult(
-      `${ref.key} is no longer in the configured review status, so the verdict for ${head} was not ` +
-        'published',
-      true,
-    );
+  if (context.stop.aborted) {
+    return await attentionResult('the review scan was interrupted before publication', true);
   }
 
   const positioned = positionFindings(verdict.findings, evidence.files);

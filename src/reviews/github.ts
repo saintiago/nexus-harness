@@ -290,7 +290,7 @@ export function createGitHubReviewClient(
   const now = parts.now ?? ((): Date => new Date());
   const apiBaseUrl = (parts.apiBaseUrl ?? GITHUB_API_BASE_URL).replace(/\/+$/, '');
   const repository = config.repository;
-  const [owner = ''] = repository.split('/');
+  const [owner = '', repo = ''] = repository.split('/');
   const repoPath = `/repos/${repository}`;
   const secrets: string[] = [privateKeyPem];
   let cachedToken: { readonly value: string; readonly expiresAtMs: number } | null = null;
@@ -302,7 +302,7 @@ export function createGitHubReviewClient(
   }
 
   interface Request {
-    readonly method: 'GET' | 'POST';
+    readonly method: 'GET' | 'POST' | 'PATCH';
     readonly path: string;
     readonly token: string;
     readonly stop: AbortSignal;
@@ -419,6 +419,16 @@ export function createGitHubReviewClient(
       token: jwt,
       stop,
       mutation: true,
+      body: {
+        repositories: [repo],
+        permissions: {
+          pull_requests: 'write',
+          checks: 'write',
+          contents: 'read',
+          statuses: 'read',
+          metadata: 'read',
+        },
+      },
     });
     const body = recordOf(answer, 'the installation token answer');
     const token = stringField(body, 'token', 'the installation token answer');
@@ -521,13 +531,19 @@ export function createGitHubReviewClient(
     },
 
     async listReviews(number: number, stop: AbortSignal): Promise<readonly PullRequestReview[]> {
-      const { entries } = await pages(
+      const { entries, truncated } = await pages(
         `${repoPath}/pulls/${String(number)}/reviews`,
         `the review list of pull request ${String(number)}`,
         stop,
         (value, index) =>
           parseReview(value, `review ${String(index + 1)} of pull request ${String(number)}`),
       );
+      if (truncated) {
+        throw new ReviewError(
+          'api',
+          'the native review list is incomplete; no verdict can be inferred.',
+        );
+      }
       return entries as readonly PullRequestReview[];
     },
 
@@ -550,24 +566,39 @@ export function createGitHubReviewClient(
       );
       const files = entries as readonly ChangedFile[];
 
-      const contentsAnswer = await api({
-        method: 'GET',
-        path: `${repoPath}/contents/AGENTS.md?ref=${encodeURIComponent(head)}`,
-        stop,
-        absentOk: true,
-      });
-      const instructions =
-        contentsAnswer === null
-          ? null
-          : (() => {
-              const contents = recordOf(contentsAnswer, 'the AGENTS.md answer');
-              const encoding = contents['encoding'];
-              const content = contents['content'];
-              if (encoding !== 'base64' || typeof content !== 'string') {
-                return null;
-              }
-              return Buffer.from(content, 'base64').toString('utf8');
-            })();
+      // Root and ancestor instructions relevant to every changed file, all
+      // pinned to the reviewed commit. Bound the number of content requests.
+      const instructionPaths = new Set(['AGENTS.md']);
+      for (const file of files) {
+        const segments = file.path.split('/');
+        for (let depth = 1; depth < segments.length; depth += 1) {
+          instructionPaths.add(`${segments.slice(0, depth).join('/')}/AGENTS.md`);
+        }
+      }
+      if (instructionPaths.size > 100) {
+        throw new ReviewError(
+          'inconclusive',
+          'too many instruction paths for a complete bounded review',
+        );
+      }
+      const instructionParts: string[] = [];
+      for (const instructionPath of instructionPaths) {
+        const contentsAnswer = await api({
+          method: 'GET',
+          path: `${repoPath}/contents/${instructionPath.split('/').map(encodeURIComponent).join('/')}?ref=${encodeURIComponent(head)}`,
+          stop,
+          absentOk: true,
+        });
+        if (contentsAnswer === null) continue;
+        const contents = recordOf(contentsAnswer, `the ${instructionPath} answer`);
+        if (contents['encoding'] !== 'base64' || typeof contents['content'] !== 'string') {
+          throw new ReviewError('inconclusive', `${instructionPath} could not be read completely`);
+        }
+        instructionParts.push(
+          `## ${instructionPath}\n${Buffer.from(contents['content'], 'base64').toString('utf8')}`,
+        );
+      }
+      const instructions = instructionParts.length === 0 ? null : instructionParts.join('\n\n');
 
       const checksAnswer = await api({
         method: 'GET',
@@ -633,21 +664,28 @@ export function createGitHubReviewClient(
       });
       const review = recordOf(answer, 'the published review');
       const commitId = review['commit_id'];
-      if (typeof commitId === 'string' && commitId !== '' && commitId !== request.head) {
+      if (commitId !== request.head) {
         throw new ReviewError(
           'stale',
-          `GitHub recorded the review against ${commitId}, not the reviewed head ` +
+          `GitHub did not confirm the review against the reviewed head ` +
             `${request.head}, so this scan will not claim the head was reviewed.`,
         );
       }
       const user = isRecord(review['user']) ? review['user'] : null;
       const publishedAs = user === null ? null : user['login'];
-      if (typeof publishedAs === 'string' && publishedAs !== config.app.login) {
+      if (publishedAs !== config.app.login) {
         throw new ReviewError(
           'api',
-          `GitHub recorded the review as ${publishedAs}, not as the configured App login ` +
+          `GitHub did not confirm the review as the configured App login ` +
             `${config.app.login}, so a later scan would not recognise it as this App's review. ` +
             'Check the installation, the App, and app.login, and treat this head as not reviewed.',
+        );
+      }
+      const expectedState = request.decision === 'approve' ? 'APPROVED' : 'CHANGES_REQUESTED';
+      if (review['state'] !== expectedState) {
+        throw new ReviewError(
+          'api',
+          `GitHub did not confirm a completed ${expectedState} review; no check is published.`,
         );
       }
       return {
@@ -659,13 +697,13 @@ export function createGitHubReviewClient(
 
     async publishCheck(request: PublishCheckRequest, stop: AbortSignal): Promise<PublishedCheck> {
       const answer = await api({
-        method: 'POST',
-        path: `${repoPath}/check-runs`,
+        method: request.checkRunId === undefined ? 'POST' : 'PATCH',
+        path: `${repoPath}/check-runs${request.checkRunId === undefined ? '' : `/${String(request.checkRunId)}`}`,
         stop,
         mutation: true,
         body: {
           name: config.checkName,
-          head_sha: request.head,
+          ...(request.checkRunId === undefined ? { head_sha: request.head } : {}),
           status: 'completed',
           conclusion: request.decision === 'approve' ? 'success' : 'failure',
           output: { title: request.title, summary: request.summary },
@@ -674,29 +712,36 @@ export function createGitHubReviewClient(
       });
       const check = recordOf(answer, 'the published check run');
       const headSha = check['head_sha'];
-      if (typeof headSha === 'string' && headSha !== '' && headSha !== request.head) {
+      if (headSha !== request.head) {
         throw new ReviewError(
           'stale',
-          `GitHub recorded the check run against ${headSha}, not the reviewed head ` +
+          `GitHub did not confirm the check run against the reviewed head ` +
             `${request.head}, so this scan will not claim the head carries the check.`,
+        );
+      }
+      const expectedConclusion = request.decision === 'approve' ? 'success' : 'failure';
+      if (
+        check['status'] !== 'completed' ||
+        check['conclusion'] !== expectedConclusion ||
+        !isRecord(check['app']) ||
+        check['app']['id'] !== config.app.appId
+      ) {
+        throw new ReviewError(
+          'api',
+          'GitHub did not confirm the completed app-owned check and its conclusion.',
         );
       }
       return {
         id: numberField(check, 'id', 'the published check run'),
         url: typeof check['html_url'] === 'string' ? check['html_url'] : (request.detailsUrl ?? ''),
-        conclusion:
-          typeof check['conclusion'] === 'string'
-            ? check['conclusion']
-            : request.decision === 'approve'
-              ? 'success'
-              : 'failure',
+        conclusion: expectedConclusion,
       };
     },
 
     async reviewChecks(head: string, stop: AbortSignal): Promise<readonly AppCheckRun[]> {
       const answer = await api({
         method: 'GET',
-        path: `${repoPath}/commits/${encodeURIComponent(head)}/check-runs?per_page=${String(
+        path: `${repoPath}/commits/${encodeURIComponent(head)}/check-runs?check_name=${encodeURIComponent(config.checkName)}&filter=latest&per_page=${String(
           LIST_PAGE_SIZE,
         )}`,
         stop,
@@ -704,7 +749,16 @@ export function createGitHubReviewClient(
       const record = recordOf(answer, 'the check-run list');
       const checkRuns = record['check_runs'];
       if (!Array.isArray(checkRuns)) {
-        return [];
+        throw new ReviewError('api', 'the check-run list carried no "check_runs" array.');
+      }
+      if (
+        checkRuns.length >= LIST_PAGE_SIZE ||
+        (typeof record['total_count'] === 'number' && record['total_count'] > checkRuns.length)
+      ) {
+        throw new ReviewError(
+          'api',
+          'the app check list is incomplete; no verdict can be inferred.',
+        );
       }
       return checkRuns
         .map((value, index) => {
@@ -715,7 +769,6 @@ export function createGitHubReviewClient(
         .filter(
           ({ check, app }) =>
             check['name'] === config.checkName &&
-            check['status'] === 'completed' &&
             isRecord(app) &&
             typeof app['id'] === 'number' &&
             app['id'] === config.app.appId,

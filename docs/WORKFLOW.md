@@ -543,23 +543,33 @@ The queue is the configured project, issue type, and label in the `source`'s **r
    `commit_id` is that head — state `APPROVED` or `CHANGES_REQUESTED` — is not reviewed again, and
    no reviewer turn is started. A later commit is a new head and is reviewed again; a stale
    verdict can never approve it. If such a review exists but the app-owned `checkName` check run
-   for that head does not, the scan publishes the check from the review's own state and starts no
-   turn: the check is a projection of the native review, never a second decision.
+   for that head does not, the scan publishes the check from the latest review's own state and
+   starts no turn. It also updates the newest app-owned check in place if its conclusion
+   contradicts that verdict, so an older success cannot mask a later request for changes. Native
+   review/check lists that hit their bounds are refused. The ticket and head are revalidated before
+   reconciliation: the check is a projection of the native review, never a second decision.
 5. Otherwise the scan reads the evidence the reviewer is given: the pull request's changed files
-   and their patches, the repository's `AGENTS.md` at the reviewed head when it has one, the
+   and their patches, root and ancestor-directory `AGENTS.md` files at the reviewed head, the
    head's check runs, and its combined commit status. A changed-file list that reaches the
    bounded pagination limit (three full pages of 100 files) is treated as incomplete: no
    reviewer turn starts and no review or check is published. The coordinator must arrange a
-   complete review or split the pull request into smaller changes.
+   complete review or split the pull request into smaller changes. Missing patches (including
+   binary files), patches whose addition/deletion counts disagree with GitHub, a diff exceeding
+   120,000 characters, instructions exceeding 30,000 characters or 100 content paths, and a ticket
+   description exceeding 8,000 characters are also refused before a reviewer turn. Unreadable
+   instruction content is an evidence failure, not evidence that no instructions exist.
 6. The `reviewer` launch runs as **one bounded turn** in its own evidence directory under
    `<workDir>/reviews/<reviewId>/`, with the same adapter, the same non-interactive launch, and
    the same task timeout a run gets. Review turns add `codex exec --skip-git-repo-check` because
    the evidence directory is not a Git repository; coding turns keep the repository check.
    It is instructed to review only: it must not change files,
    implement fixes, commit, push, merge, or edit the ticket or the pull request, and it must write
-   one `verdict.json` (a `verdict` of `approve` or `request_changes`, a summary, and actionable
-   findings). A turn that fails, is stopped, or writes no usable verdict is **inconclusive**:
-   nothing is published for it.
+   one `verdict.json` (a `verdict` of `approve`, `request_changes`, or `inconclusive`, a summary,
+   and a findings array). Findings are blocking; approval requires an empty findings array and
+   sufficient evidence. The reviewer must select `inconclusive` when material code/test context
+   or tools are unavailable, explaining what the coordinator needs to provide in its summary.
+   A turn that fails, is stopped, or writes no usable verdict is also **inconclusive**: nothing is
+   published for it, and no coding repair is started.
 7. Before anything is published, the pull request is re-read and must still be open at the
    reviewed head, and the ticket is re-read and must still be in the configured review status. A
    head that moved, a closed pull request, or a ticket that left review publishes nothing: the
@@ -573,7 +583,8 @@ The queue is the configured project, issue type, and label in the `source`'s **r
 9. One app-owned check run named `checkName` is then published on the same head: conclusion
    `success` only for an approved verdict, `failure` for a requested change. If the review is
    published but the check is not, that is reported; a later scan reads the completed review and
-   publishes the missing check, so a half-published verdict heals instead of being re-reviewed.
+   publishes the missing check or updates a contradictory one. A partial publication is reported
+   honestly: the native review may already exist even when its check write failed.
 
 Every outcome is printed and appended to `<workDir>/reviews/review.log`, and every reviewer turn
 keeps its evidence beside its verdict: `input.md` (what the reviewer was given), `reviewer.log`
@@ -626,17 +637,20 @@ $env:NEXUS_LENS_PRIVATE_KEY_PATH = "C:\keys\nexus-lens.pem"
    under `<workDir>/reviews/` before letting `review watch` run unattended.
 6. Keep the identities separate: reviews and their checks are published by the **App
    installation**, while `delivery` still uses the operator's own `git` and `gh` login. Nothing
-   here changes the operator's personal GitHub session, and the harness stores no GitHub
-   credential of its own.
+   here changes the operator's personal GitHub session. Installation tokens request only the
+   configured repository and the permissions listed above; they are cached only in process.
 
 The parent resolves both credentials before starting a reviewer, then removes `source.tokenEnv`
 and `review.app.privateKeyPathEnv` from the reviewer process environment. The operator's own
 environment and unrelated runtime settings are preserved. This avoids passing the token or the
 App key's location to the reviewer; it does not sandbox a process running as the same OS user.
 
-One review scan or watch per output directory is the supported arrangement. There is no local lock
-and no cross-machine coordination; the native review pinned to a commit is what keeps two scans
-from reviewing the same unchanged head twice, and it is why a scan is safe to repeat.
+One review scan or watch per repository is the supported arrangement. There is no local lock or
+cross-machine coordination; native review metadata deduplicates successive scans, not concurrent
+reviewers. GitHub cannot atomically compare the current head and submit a review; `commit_id` and
+the check's head SHA pin every publication to the reviewed commit even if the head moves after
+the final read. Operators must verify the corrected path with a live App review and gate check;
+offline tests do not establish native approval eligibility, auto-merge, or useful review quality.
 
 ## External references
 
