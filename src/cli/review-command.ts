@@ -163,6 +163,9 @@ async function reviewCommand(
     return EXIT_INPUT_ERROR;
   }
 
+  // Once the timeline is open, even a fatal error caught after cleanup belongs
+  // to it. Configuration/credential failures before that still use ordinary IO.
+  let errorIo = io;
   try {
     const token = resolveJiraToken(source, process.env);
     const privateKey = await resolveAppPrivateKey(review, process.env);
@@ -203,6 +206,7 @@ async function reviewCommand(
         pane.error(text);
       },
     };
+    errorIo = activeIo;
     const reviewer = createReviewerTurn({
       selection: review.reviewer,
       environment: childEnvironment,
@@ -269,7 +273,7 @@ async function reviewCommand(
     }
   } catch (cause) {
     if (cause instanceof ReviewError || cause instanceof SourceError) {
-      io.err(`error: ${cause.message}`);
+      errorIo.err(`error: ${cause.message}`);
       return EXIT_INPUT_ERROR;
     }
     throw cause;

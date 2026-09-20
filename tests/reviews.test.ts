@@ -2113,35 +2113,42 @@ describe('the review command through the CLI', () => {
     expect(world.issues[0]?.status).toBe('In Review');
   });
 
-  it('reports an API failure without approving and without a coding rerun', async () => {
-    const world = fakeWorld({
-      issues: [sourceIssue(['harness-ws-run-20260919100148-e48a9ab0'])],
-    });
-    world.failReview(422);
-    const fixture = await reviewCommandFixture({
-      world,
-      plans: [
-        {
-          edits: [
-            {
-              file: 'verdict.json',
-              text: JSON.stringify({ verdict: 'approve', summary: 'Fine.', findings: [] }),
-            },
-          ],
-        },
-      ],
-    });
+  it.each([401, 422])(
+    'timestamps an HTTP %s failure after review without a coding rerun',
+    async (status) => {
+      const world = fakeWorld({
+        issues: [sourceIssue(['harness-ws-run-20260919100148-e48a9ab0'])],
+      });
+      world.failReview(status);
+      const fixture = await reviewCommandFixture({
+        world,
+        plans: [
+          {
+            edits: [
+              {
+                file: 'verdict.json',
+                text: JSON.stringify({ verdict: 'approve', summary: 'Fine.', findings: [] }),
+              },
+            ],
+          },
+        ],
+      });
 
-    const result = await fixture.run();
+      const result = await fixture.run();
 
-    expect(result.code).toBe(EXIT_INPUT_ERROR);
-    expect(result.err).toContain('HTTP 422');
-    expect(result.err).not.toContain('approved the');
-    expect(world.publishedReviews).toEqual([]);
-    expect(world.publishedChecks).toEqual([]);
-    expect(await fakeTurns(fixture.runtime.state)).toHaveLength(1);
-    expect(world.issues[0]?.status).toBe('In Review');
-  });
+      expect(result.code).toBe(EXIT_INPUT_ERROR);
+      expect(result.err).toContain(`HTTP ${String(status)}`);
+      for (const line of result.err.split('\n')) {
+        expect(line).toMatch(/^\d{2}:\d{2}:\d{2} /);
+      }
+      expect(result.out).toContain('---- reviewer: HARN-3 — review ----');
+      expect(result.err).not.toContain('approved the');
+      expect(world.publishedReviews).toEqual([]);
+      expect(world.publishedChecks).toEqual([]);
+      expect(await fakeTurns(fixture.runtime.state)).toHaveLength(1);
+      expect(world.issues[0]?.status).toBe('In Review');
+    },
+  );
 
   it('refuses --repo and a bad --limit, the way every command does', async () => {
     const directory = await createTempDir();
