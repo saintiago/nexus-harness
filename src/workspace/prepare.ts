@@ -24,11 +24,6 @@ import { writeWorkspaceState } from './state.js';
 
 /** An allocated run directory whose working copy is ready for a task. */
 export interface PreparedWorkspace extends RunDirectory {
-  /**
-   * The workspace's own id: the id of the run that created it, which is also what
-   * an issue's pointer label names (docs/implement-workspace-continuation.md).
-   */
-  readonly workspaceId: string;
   /** Whether this run continues a workspace that already existed. */
   readonly continued: boolean;
   /** Which attempt this is for the workspace, counting this one. */
@@ -265,7 +260,11 @@ export async function prepareWorkspace(
   bounds: PrepareWorkspaceBounds,
   sourceItem?: WorkspaceSourceItem,
 ): Promise<PreparedWorkspace> {
-  const branch = `${RUN_BRANCH_PREFIX}${run.runId}`;
+  // The branch belongs to the workspace, not to the attempt: every attempt that
+  // works in this clone — a continuation included — is on the branch the
+  // workspace's own id names, so a later attempt finds the work where the
+  // pointer label says it is (docs/implement-workspace-continuation.md).
+  const branch = `${RUN_BRANCH_PREFIX}${run.workspaceId}`;
 
   /**
    * The bounds the step that is about to start runs under: the run's own task
@@ -318,7 +317,7 @@ export async function prepareWorkspace(
   // workspace that can be continued rather than an orphaned directory.
   await writeWorkspaceState(run.workDir, {
     version: 1,
-    workspaceId: run.runId,
+    workspaceId: run.workspaceId,
     sourceRoot: source.sourceRoot,
     baseCommit: source.baseCommit,
     branch,
@@ -329,7 +328,6 @@ export async function prepareWorkspace(
 
   return {
     ...run,
-    workspaceId: run.runId,
     continued: false,
     attempt: 1,
     sourceRoot: source.sourceRoot,

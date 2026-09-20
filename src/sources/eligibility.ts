@@ -8,9 +8,9 @@
  * usable is decided when the attempt opens it.
  */
 import type { ContinuedWorkspace } from '../workspace/reopen.js';
-import { resolveWorkspace } from '../workspace/reopen.js';
+import { resolveWorkspace, takenWorkspaceNameProblem } from '../workspace/reopen.js';
 import { sourceItemFor } from '../workspace/state.js';
-import { WORKSPACE_POINTER_PREFIX } from './contract.js';
+import { WORKSPACE_POINTER_PREFIX, workspacePointerLabel } from './contract.js';
 import type { SourceTask } from './contract.js';
 import type { SourceReceipt } from './receipts.js';
 
@@ -79,6 +79,25 @@ export async function decideAttempt(
     // its ledger records is refused when the attempt opens it.
     return { kind: 'continue', workspace: resolution.workspace };
   }
+
+  // No pointer: this is a first attempt, which would create a workspace. The
+  // name the source prefers for it — a Jira ticket key — may already be held by
+  // a workspace, and nothing here adopts one or overwrites it, not even for the
+  // item its ledger records: the refusal names what is there and how to continue
+  // it through a pointer label, or how to move it out of the way
+  // (docs/implement-workspace-continuation.md).
+  if (item.preferredWorkspaceId !== undefined) {
+    const conflict = await takenWorkspaceNameProblem(
+      workDir,
+      item.preferredWorkspaceId,
+      { sourceItem: sourceItemFor(item.ref), sourceRoot },
+      workspacePointerLabel(item.preferredWorkspaceId),
+    );
+    if (conflict !== null) {
+      return { kind: 'refuse', reason: conflict };
+    }
+  }
+
   if (receipt !== null) {
     return {
       kind: 'refuse',

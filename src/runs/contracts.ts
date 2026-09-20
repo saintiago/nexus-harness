@@ -28,7 +28,7 @@ import type { PreparedWorkspace, PrepareWorkspaceBounds } from '../workspace/pre
 import type { PreflightRequest, SourcePreflight } from '../workspace/preflight.js';
 import type { GitRunBounds } from '../workspace/git.js';
 import type { ContinuedWorkspace } from '../workspace/reopen.js';
-import type { RunDirectory } from '../workspace/run-directory.js';
+import type { RunDirectory, WorkspacePlacement } from '../workspace/run-directory.js';
 import type { WorkspaceAttempt, WorkspaceSourceItem } from '../workspace/state.js';
 
 /**
@@ -100,6 +100,16 @@ export interface RunTaskRequest {
    * continuing failed work is the point (docs/implement-workspace-continuation.md).
    */
   readonly continuedWorkspace?: ContinuedWorkspace;
+  /**
+   * The name the caller prefers for the workspace a fresh run creates, when it
+   * has one: the canonical key of the item the task came from, for example
+   * `HARN-23`, so retained work is recognizable as the ticket it belongs to. It
+   * is a preference, never a path: a name that cannot name a workspace is not
+   * used, and the run's own generated id names the workspace instead. It is
+   * ignored for a run that continues a workspace, whose name the pointer already
+   * fixed (docs/implement-workspace-continuation.md).
+   */
+  readonly preferredWorkspaceId?: string;
   /**
    * Called once, after a run's own workspace exists and before any configured
    * command or coding turn runs, with where the work will live. A source uses it
@@ -240,8 +250,16 @@ export interface RunnerDependencies {
    * when it starts, and the run's stop request.
    */
   readonly preflight: (request: PreflightRequest) => Promise<SourcePreflight>;
-  /** Allocates `<workDir>/<runId>` with its `workspace` and `logs` directories. */
-  readonly allocateRunDirectory: (workDir: string) => Promise<RunDirectory>;
+  /**
+   * Allocates `<workDir>/runs/<runId>` with its `logs` directory, and the
+   * workspace the run works in: a new directory named the way `placement` asks
+   * for a fresh run, or nothing at all for a run that continues one that already
+   * exists (src/workspace/run-directory.ts).
+   */
+  readonly allocateRunDirectory: (
+    workDir: string,
+    placement?: WorkspacePlacement,
+  ) => Promise<RunDirectory>;
   /**
    * Fills an allocated run directory with a clone of the recorded base, bounded
    * by the run's remaining task time and by the run's own stop request. The

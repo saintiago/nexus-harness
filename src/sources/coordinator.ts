@@ -735,6 +735,13 @@ async function attempt(
         tier,
         ...(guidance.length === 0 ? {} : { guidance }),
         ...(resume === undefined ? {} : { continuedWorkspace: resume }),
+        // A first attempt of a fresh claim creates the workspace, so it is told
+        // the name the item's source prefers for it — a Jira ticket key — and a
+        // continuation is not: its workspace is the one the pointer names
+        // (docs/implement-workspace-continuation.md).
+        ...(decision.kind === 'fresh' && attempt === 1 && item.preferredWorkspaceId !== undefined
+          ? { preferredWorkspaceId: item.preferredWorkspaceId }
+          : {}),
         ...(decision.kind === 'fresh' && attempt === 1
           ? {
               // Where this attempt's work lives is recorded on the issue before

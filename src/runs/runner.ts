@@ -42,6 +42,7 @@ import type { PreparedWorkspace } from '../workspace/prepare.js';
 import type { WorkspaceStepStop } from '../workspace/errors.js';
 import { workspaceStopOf } from '../workspace/errors.js';
 import type { SourcePreflight } from '../workspace/preflight.js';
+import type { WorkspacePlacement } from '../workspace/run-directory.js';
 import { WORKSPACE_IDENTITY } from '../workspace/git.js';
 import { sourceItemFor } from '../workspace/state.js';
 import type {
@@ -189,7 +190,22 @@ export async function runTask(
     );
   }
 
-  const run = await dependencies.allocateRunDirectory(request.workDir);
+  // The workspace this attempt works in: the one it continues, when its caller
+  // resolved one, or a new one named the way its source preferred it — the
+  // canonical key of the item, for example `HARN-23` — so retained Jira work is
+  // recognizable as the ticket it belongs to. A run whose caller has no
+  // preference keeps the generated name it always had
+  // (docs/implement-workspace-continuation.md).
+  const placement: WorkspacePlacement =
+    request.continuedWorkspace === undefined
+      ? {
+          kind: 'create',
+          ...(request.preferredWorkspaceId === undefined
+            ? {}
+            : { preferredWorkspaceId: request.preferredWorkspaceId }),
+        }
+      : { kind: 'reopen', workspaceId: request.continuedWorkspace.workspaceId };
+  const run = await dependencies.allocateRunDirectory(request.workDir, placement);
   const timeline = runLogPath(run.logsDir);
   await dependencies.appendRunLog(
     timeline,
@@ -233,10 +249,11 @@ export async function runTask(
   if (continued !== undefined) {
     // A continued attempt works in the workspace that already exists: the same
     // clone, on the same branch, from the same recorded base. Only the run
-    // directory and its logs are this attempt's own.
+    // directory and its logs are this attempt's own — and allocation created
+    // none for the workspace, so a continuation adds no directory beside the
+    // clone it reopens.
     workspace = {
       ...run,
-      workspaceId: continued.workspaceId,
       workspacePath: continued.workspacePath,
       branch: continued.branch,
       baseCommit: continued.baseCommit,

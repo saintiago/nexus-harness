@@ -364,6 +364,7 @@ async function sourceCommand(
         stop: runStop,
         tier,
         continuedWorkspace,
+        preferredWorkspaceId,
         onWorkspaceReady,
         guidance,
       }) => {
@@ -394,6 +395,7 @@ async function sourceCommand(
             ...(tier === undefined ? {} : { tierName: tier.name }),
             ...(guidance === undefined ? {} : { guidance }),
             ...(continuedWorkspace === undefined ? {} : { continuedWorkspace }),
+            ...(preferredWorkspaceId === undefined ? {} : { preferredWorkspaceId }),
             ...(onWorkspaceReady === undefined ? {} : { onWorkspaceReady }),
           },
           dependencies,

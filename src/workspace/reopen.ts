@@ -8,7 +8,8 @@
  * ledger records.
  *
  * A pointer label is untrusted text on the issue, so resolving it checks more
- * than that it names a directory: the id must be a generated workspace id, its
+ * than that it names a directory: the id must be a usable workspace id (a
+ * generated run name, or the key a source preferred for the workspace), its
  * resolved path — junctions and symbolic links followed, both for the clone and
  * for the ledger beside it — must stay under the workspaces root, and the ledger
  * must record the external item and the repository the workspace was created
@@ -16,7 +17,7 @@
  * continued
  * (docs/implement-workspace-continuation.md).
  */
-import { statSync } from 'node:fs';
+import { lstatSync, statSync } from 'node:fs';
 import { messageOf } from '../shared/errors.js';
 import { WorkspaceError } from './errors.js';
 import { gitFailure, runGit } from './git.js';
@@ -218,6 +219,137 @@ function missingIdentityProblem(workDir: string, state: WorkspaceState): string 
 }
 
 /**
+ * Why a fresh attempt cannot use this name for the workspace it would create,
+ * or `null` when nothing holds the name.
+ *
+ * A source may prefer a human-readable name for a new workspace — the canonical
+ * key of the item, for example `HARN-23` — and that name is a claim on one
+ * directory in the workspaces root, with its ledger beside it. Whatever already
+ * holds it is never adopted and never overwritten, whether it is another item's
+ * workspace, this item's own workspace with no pointer label saying so, or a
+ * record the harness cannot read as one of its own. The checks are the pointer
+ * checks seen from the other side — the id, the resolved path of the directory
+ * and of the ledger beside it, and the item and repository the ledger records —
+ * because a name a source prefers is trusted no more than a label is.
+ *
+ * Every refusal says what is there and what an operator can do about it.
+ * `continueLabel` is the pointer label that would continue the workspace when it
+ * turns out to hold this item's work; the caller owns that label, so this module
+ * needs to know nothing about pointer labels themselves.
+ */
+export async function takenWorkspaceNameProblem(
+  workDir: string,
+  workspaceId: string,
+  expected: WorkspaceExpectation,
+  continueLabel: string,
+): Promise<string | null> {
+  const idProblem = workspaceIdProblem(workspaceId);
+  if (idProblem !== null) {
+    return (
+      `the name it would give its new workspace cannot be used: ${idProblem}. A workspace id is a ` +
+      'generated name or an item key, and a name is never read as a path'
+    );
+  }
+  let workspacePath: string;
+  let ledgerPath: string;
+  try {
+    workspacePath = workspacePathFor(workDir, workspaceId);
+    ledgerPath = workspaceStatePath(workDir, workspaceId);
+  } catch (cause) {
+    return (
+      `the name it would give its new workspace, ${workspaceId}, cannot be resolved to a place ` +
+      `this harness keeps workspaces: ${messageOf(cause)}. Move the workspace's real directory ` +
+      'where the layout says it lives, or move it aside, and scan again'
+    );
+  }
+  // As for a pointer label: a ledger whose resolved path leaves the workspaces
+  // root is refused before anything is read through it.
+  const ledgerOutside = outsideWorkspacesProblem(workDir, ledgerPath);
+  const workspaceHeld = pathExists(workspacePath);
+  const ledger = ledgerOutside === null && pathExists(ledgerPath);
+  if (!workspaceHeld && !ledger && ledgerOutside === null) {
+    return null;
+  }
+
+  const holds =
+    workspaceHeld && ledger
+      ? `the workspace path "${workspacePath}" and the ledger beside it ("${ledgerPath}")`
+      : workspaceHeld
+        ? `a workspace path at "${workspacePath}"`
+        : `a ledger at "${ledgerPath}"`;
+  const opening =
+    `its new workspace would be named ${workspaceId}, and ${holds} already exists, so the harness ` +
+    'will not create that workspace and will not touch what is there';
+
+  if (ledgerOutside !== null) {
+    return (
+      `${opening}: ${ledgerOutside}. A pointer label is never followed through a junction or a ` +
+      `symbolic link, and the name cannot be used until the ledger is where the layout says it ` +
+      `lives: put the workspace's own ledger back at "${ledgerPath}", or move it aside, and scan ` +
+      'again'
+    );
+  }
+  let state: WorkspaceState | null;
+  try {
+    state = ledger ? await readWorkspaceState(workDir, workspaceId) : null;
+  } catch (cause) {
+    return (
+      `${opening}: the ledger read beside it is not one this harness wrote — ${messageOf(cause)}. ` +
+      'Nothing here adopts or overwrites a workspace whose record it cannot read: repair that ' +
+      'file by hand, or move the workspace and its ledger aside, and scan again'
+    );
+  }
+  if (state === null) {
+    return (
+      `${opening}: there is no ledger that can be read at "${ledgerPath}", so there is no record of what ` +
+      'it was cloned from and whose work it is. The harness never adopts or overwrites a ' +
+      `workspace on its own: if it holds this item's work, restore its ledger and add the ` +
+      `"${continueLabel}" label, then scan again; otherwise move it aside`
+    );
+  }
+  if (state.workspaceId !== workspaceId) {
+    return (
+      `${opening}: its ledger names workspace "${state.workspaceId}", not "${workspaceId}", and ` +
+      "another workspace's record is never read as this name's. Repair the file by hand, or move " +
+      'the directory and its ledger aside, and scan again'
+    );
+  }
+  if (state.sourceItem === null) {
+    return (
+      `${opening}: ${missingIdentityProblem(workDir, state)}. If it holds this item's work, add ` +
+      `the "${continueLabel}" label once that is repaired, then scan again`
+    );
+  }
+  const recorded = state.sourceItem;
+  const claimed = expected.sourceItem;
+  if (
+    recorded.type !== claimed.type ||
+    recorded.scope !== claimed.scope ||
+    recorded.id !== claimed.id
+  ) {
+    return (
+      `${opening}: it was created for ${describeItem(recorded)}, not for this item ` +
+      `(${describeItem(claimed)}). A workspace belongs to what created it, and the harness never ` +
+      "overwrites another item's workspace or adopts it for this one: move it aside, or continue " +
+      'it from the item it belongs to, and scan again'
+    );
+  }
+  if (expected.sourceRoot !== null && state.sourceRoot !== expected.sourceRoot) {
+    return (
+      `${opening}: it is this item's workspace, but it was cloned from "${state.sourceRoot}", and ` +
+      `this run's source repository is "${expected.sourceRoot}". A workspace is continued only ` +
+      'for the repository it was cloned from: fix the ledger\'s "sourceRoot" if the repository ' +
+      'really moved, or move the workspace aside, and scan again'
+    );
+  }
+  return (
+    `${opening}: its ledger records that it is this item's work, but no "${continueLabel}" label ` +
+    'points at it, and the harness never adopts a workspace on its own. Add that label and scan ' +
+    'again to continue that workspace, or move it aside to start a new one'
+  );
+}
+
+/**
  * Resolves and verifies a workspace's checkout for a run that continues it. A
  * workspace's turns may have committed their work, so a `HEAD` ahead of the
  * recorded base is ordinary: the branch is what identifies the checkout, and a
@@ -266,5 +398,16 @@ function isDirectory(candidate: string): boolean {
     return statSync(candidate).isDirectory();
   } catch {
     return false;
+  }
+}
+
+/** A link holds its name even when its target no longer exists. */
+function pathExists(candidate: string): boolean {
+  try {
+    lstatSync(candidate);
+    return true;
+  } catch (cause) {
+    // An unreadable path is not evidence that the name is free either.
+    return (cause as NodeJS.ErrnoException).code !== 'ENOENT';
   }
 }

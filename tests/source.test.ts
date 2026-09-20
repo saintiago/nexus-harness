@@ -16,7 +16,16 @@
 
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, readdir, rename, symlink, writeFile } from 'node:fs/promises';
+import {
+  lstat,
+  mkdir,
+  readFile,
+  readdir,
+  readlink,
+  rename,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -73,7 +82,12 @@ import { preflightSource } from '../src/workspace/preflight.js';
 import { allocateRunDirectory } from '../src/workspace/run-directory.js';
 import type { RunDirectory } from '../src/workspace/run-directory.js';
 import type { WorkspaceSourceItem } from '../src/workspace/state.js';
-import { readWorkspaceState, sourceItemFor, workspaceStatePath } from '../src/workspace/state.js';
+import {
+  readWorkspaceState,
+  recordWorkspaceAttempt,
+  sourceItemFor,
+  workspaceStatePath,
+} from '../src/workspace/state.js';
 import {
   fakeGhCalls,
   fakeTurns,
@@ -135,6 +149,7 @@ function runDirectoryAt(runDir: string): RunDirectory {
     workDir: path.dirname(path.dirname(runDir)),
     runId: path.basename(runDir),
     runDir,
+    workspaceId: path.basename(runDir),
     // The real layout keeps a workspace beside its run's evidence; a fake run
     // directory keeps the same relationship for the code that reads it.
     workspacePath: path.join(path.dirname(runDir), 'workspaces', path.basename(runDir)),
@@ -2291,6 +2306,160 @@ describe('an issue that points at a workspace', () => {
 });
 
 // ---------------------------------------------------------------------------
+// The name a fresh claim would use
+// ---------------------------------------------------------------------------
+
+describe('a workspace name a fresh claim would use', () => {
+  it.each(['SAM1-2', 'SAM1-2.json'])(
+    'refuses a dangling link at %s before claiming the issue',
+    async (entry) => {
+      const workDir = await createTempDir();
+      const root = path.join(workDir, 'workspaces');
+      await mkdir(root, { recursive: true });
+      const held = path.join(root, entry);
+      const target = path.join(root, 'missing-target');
+      await symlink(target, held, 'junction');
+      const originalLink = await readlink(held);
+      expect(existsSync(held)).toBe(false);
+      const fixture = createFixture({
+        workDir,
+        scans: [[candidateFor('2', 'SAM1-2')]],
+        prepare: (candidate) => ({
+          ...preparedFor(candidate),
+          preferredWorkspaceId: 'SAM1-2',
+        }),
+      });
+
+      const summary = await runSource(fixture.context, null);
+
+      expect(summary).toMatchObject({ outcome: 'completed', attempted: 0, refused: 1 });
+      expect(fixture.refusals[0]?.reason).toContain(held);
+      expect(fixture.refusals[0]?.reason).toContain('move it aside');
+      expect(fixture.log).not.toContain('claim:SAM1-2');
+      expect(fixture.requests).toEqual([]);
+      expect(existsSync(receiptFilePath(workDir, refFor('2', 'SAM1-2')))).toBe(false);
+      expect(existsSync(path.join(workDir, 'runs'))).toBe(false);
+      expect((await lstat(held)).isSymbolicLink()).toBe(true);
+      expect(await readlink(held)).toBe(originalLink);
+      expect(await readdir(root)).toEqual([entry]);
+      expect(existsSync(target)).toBe(false);
+    },
+  );
+
+  it('refuses a regular file at the workspace path before claiming the issue', async () => {
+    const workDir = await createTempDir();
+    const held = path.join(workDir, 'workspaces', 'SAM1-2');
+    await mkdir(path.dirname(held), { recursive: true });
+    await writeFile(held, 'retained evidence\n', 'utf8');
+    const fixture = createFixture({
+      workDir,
+      scans: [[candidateFor('2', 'SAM1-2')]],
+      prepare: (candidate) => ({ ...preparedFor(candidate), preferredWorkspaceId: 'SAM1-2' }),
+    });
+
+    const summary = await runSource(fixture.context, null);
+
+    expect(summary).toMatchObject({ outcome: 'completed', attempted: 0, refused: 1 });
+    expect(fixture.refusals[0]?.reason).toContain(held);
+    expect(fixture.log).not.toContain('claim:SAM1-2');
+    expect(fixture.requests).toEqual([]);
+    expect(existsSync(receiptFilePath(workDir, refFor('2', 'SAM1-2')))).toBe(false);
+    expect(existsSync(path.join(workDir, 'runs'))).toBe(false);
+    expect(await readFile(held, 'utf8')).toBe('retained evidence\n');
+  });
+
+  it('refuses a name whose directory is a junction out of the workspaces directory', async (context) => {
+    const workDir = await createTempDir();
+    const outside = await createTempDir();
+    // The name the ticket key prefers is held by a directory that only looks
+    // like it is inside the workspaces root: a name is never followed through a
+    // junction, exactly as a pointer label is not.
+    const workspacePath = path.join(workDir, 'workspaces', 'SAM1-2');
+    await mkdir(path.dirname(workspacePath), { recursive: true });
+    try {
+      await symlink(outside, workspacePath, 'junction');
+    } catch (cause) {
+      // Junctions need no elevation on Windows; a host that cannot make one
+      // cannot show what this test is about.
+      if (process.platform === 'win32') {
+        throw cause;
+      }
+      context.skip();
+      return;
+    }
+    const fixture = createFixture({
+      workDir,
+      scans: [[candidateFor('2', 'SAM1-2')]],
+      prepare: (candidate) => ({
+        ...preparedFor(candidate),
+        preferredWorkspaceId: 'SAM1-2',
+      }),
+    });
+
+    const summary = await runSource(fixture.context, null);
+
+    expect(summary).toMatchObject({ outcome: 'completed', attempted: 0, refused: 1 });
+    const reason = fixture.refusals[0]?.reason ?? '';
+    expect(reason).toContain('SAM1-2');
+    expect(reason).toMatch(/junction or symbolic link/);
+    expect(reason).toMatch(/Move the workspace's real directory/);
+    expect(fixture.log).not.toContain('claim:SAM1-2');
+    expect(fixture.log).not.toContain('run:SAM1-2');
+    expect(existsSync(receiptFilePath(workDir, refFor('2', 'SAM1-2')))).toBe(false);
+  });
+
+  it('refuses a name a ledger holds without a directory, and creates nothing', async () => {
+    const workDir = await createTempDir();
+    // A ledger without its clone: no attempt may write over the record, and no
+    // directory is created for the run that would have used the name.
+    await mkdir(path.join(workDir, 'workspaces'), { recursive: true });
+    await writeFile(workspaceStatePath(workDir, 'SAM1-2'), '{"version":1}\n', 'utf8');
+    const fixture = createFixture({
+      workDir,
+      scans: [[candidateFor('2', 'SAM1-2')]],
+      prepare: (candidate) => ({
+        ...preparedFor(candidate),
+        preferredWorkspaceId: 'SAM1-2',
+      }),
+    });
+
+    const summary = await runSource(fixture.context, null);
+
+    expect(summary).toMatchObject({ outcome: 'completed', attempted: 0, refused: 1 });
+    const reason = fixture.refusals[0]?.reason ?? '';
+    expect(reason).toContain('a ledger at');
+    expect(reason).toMatch(/is not one this harness wrote/);
+    expect(await readFile(workspaceStatePath(workDir, 'SAM1-2'), 'utf8')).toBe('{"version":1}\n');
+    expect(existsSync(path.join(workDir, 'runs'))).toBe(false);
+    expect(fixture.log).not.toContain('claim:SAM1-2');
+    expect(fixture.log).not.toContain('run:SAM1-2');
+  });
+
+  it('leaves a held name alone and the item refused, without a run', async () => {
+    const workDir = await createTempDir();
+    const held = path.join(workDir, 'workspaces', 'SAM1-2');
+    await mkdir(held, { recursive: true });
+    await writeFile(path.join(held, 'PRIVATE.txt'), 'someone else\n', 'utf8');
+    const fixture = createFixture({
+      workDir,
+      scans: [[candidateFor('2', 'SAM1-2')]],
+      prepare: (candidate) => ({
+        ...preparedFor(candidate),
+        preferredWorkspaceId: 'SAM1-2',
+      }),
+    });
+
+    const summary = await runSource(fixture.context, null);
+
+    expect(summary).toMatchObject({ outcome: 'completed', attempted: 0, refused: 1 });
+    expect(fixture.refusals[0]?.reason).toMatch(/no ledger/);
+    expect(await readFile(path.join(held, 'PRIVATE.txt'), 'utf8')).toBe('someone else\n');
+    expect(existsSync(path.join(workDir, 'runs'))).toBe(false);
+    expect(fixture.requests).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // The preview
 // ---------------------------------------------------------------------------
 
@@ -2609,7 +2778,8 @@ describe('source watch', () => {
 
 interface FakeIssue {
   readonly id: string;
-  readonly key: string;
+  /** The display key; a site can rename an issue, and its id stays the same. */
+  key: string;
   readonly summary: string;
   status: string;
   updated: string;
@@ -2668,7 +2838,12 @@ function fakeJira(issues: FakeIssue[]): FakeJira {
   const thread: FakeJira['thread'] = [];
   const transitionsFrom = (status: string): Array<Record<string, unknown>> => {
     if (status === 'To Do') {
-      return [{ id: '11', name: 'Start work', to: { name: 'In Progress' } }];
+      // Both the claim and the refusal move an issue out of the ready status: a
+      // refusal publishes its reason and takes the issue straight to review.
+      return [
+        { id: '11', name: 'Start work', to: { name: 'In Progress' } },
+        { id: '21', name: 'Take out of the queue', to: { name: 'In Review' } },
+      ];
     }
     if (status === 'In Progress') {
       return [{ id: '31', name: 'Send for review', to: { name: 'In Review' } }];
@@ -3017,7 +3192,7 @@ async function onlyRunDirectory(workDir: string): Promise<string> {
  * so two runs of one intake can share a second and sorting their directory
  * names is not the order the attempts happened in. The workspace a report names
  * is likewise read from the report, never guessed from the directories beside
- * it: a continuation's own run allocates a workspace directory it never uses.
+ * it.
  */
 async function reportsByAttempt(workDir: string): Promise<readonly RunReport[]> {
   const runsRoot = path.join(workDir, 'runs');
@@ -3315,21 +3490,32 @@ describe('the source commands through the CLI', () => {
         );
       const [firstRun] = await runNames();
 
-      // The run that created the workspace recorded the item it was created for,
-      // and wrote the pointer label the next attempt is found by.
-      const workspaceId = (await readdir(path.join(target.workDir, 'workspaces'))).find((name) =>
-        name.startsWith('run-'),
-      );
-      expect(workspaceId).toBeDefined();
-      const ledgerPath = path.join(target.workDir, 'workspaces', `${workspaceId ?? ''}.json`);
-      const ledger = JSON.parse(await readFile(ledgerPath, 'utf8')) as { sourceItem?: unknown };
+      // The run that created the workspace named it after the ticket key, so
+      // retained work is recognizable without reading a label or a report, and
+      // wrote the pointer label the next attempt is found by. A continuation
+      // adds no second directory beside it.
+      const workspaceId = 'SAM1-11';
+      expect(workspaceId).toBe(jira.issues[0]?.key);
+      expect(
+        (await readdir(path.join(target.workDir, 'workspaces'))).filter(
+          (name) => !name.endsWith('.json'),
+        ),
+      ).toEqual([workspaceId]);
+      const ledgerPath = path.join(target.workDir, 'workspaces', `${workspaceId}.json`);
+      const ledger = JSON.parse(await readFile(ledgerPath, 'utf8')) as {
+        workspaceId?: string;
+        branch?: string;
+        sourceItem?: unknown;
+      };
+      expect(ledger.workspaceId).toBe(workspaceId);
+      expect(ledger.branch).toBe(`harness/${workspaceId}`);
       expect(ledger.sourceItem).toEqual({
         type: 'jira',
         scope: SCOPE,
         id: '10011',
         key: 'SAM1-11',
       });
-      expect(jira.issues[0]?.labels).toContain(`harness-ws-${workspaceId ?? ''}`);
+      expect(jira.issues[0]?.labels).toContain(`harness-ws-${workspaceId}`);
 
       // The operator moves the issue back to the ready status; the pointer label
       // is still on it, so the next scan continues that clone.
@@ -3364,15 +3550,528 @@ describe('the source commands through the CLI', () => {
         attempt: 2,
       });
       // The same clone: the file the first attempt left is still there, and the
-      // continuation wrote no second pointer label.
-      expect(
-        existsSync(path.join(target.workDir, 'workspaces', `${workspaceId ?? ''}`, 'MARKER.md')),
-      ).toBe(true);
+      // continuation wrote no second pointer label and created no second
+      // directory for the same ticket.
+      expect(existsSync(path.join(target.workDir, 'workspaces', workspaceId, 'MARKER.md'))).toBe(
+        true,
+      );
       expect(
         (jira.issues[0].labels ?? []).filter((label) => label.startsWith('harness-ws-')),
-      ).toEqual([`harness-ws-${workspaceId ?? ''}`]);
+      ).toEqual([`harness-ws-${workspaceId}`]);
+      expect(
+        (await readdir(path.join(target.workDir, 'workspaces'))).filter(
+          (name) => !name.endsWith('.json'),
+        ),
+      ).toEqual([workspaceId]);
       const after = JSON.parse(await readFile(ledgerPath, 'utf8')) as { attempts?: unknown[] };
       expect(after.attempts).toHaveLength(2);
+    } finally {
+      if (previous === undefined) {
+        delete process.env.JIRA_API_TOKEN;
+      } else {
+        process.env.JIRA_API_TOKEN = previous;
+      }
+    }
+  });
+
+  it('names a new workspace after its ticket key, and points the next attempt at it', async () => {
+    const target = await createTarget();
+    const jira = fakeJira([
+      {
+        id: '10023',
+        key: 'SAM1-23',
+        summary: 'Create the marker',
+        status: 'To Do',
+        updated: '2026-09-16T11:00:00.000Z',
+      },
+    ]);
+    const previous = process.env.JIRA_API_TOKEN;
+    process.env.JIRA_API_TOKEN = 'test-token';
+
+    try {
+      const dependencies: CliContext['dependencies'] = {
+        runAgentTurn: async (request) => {
+          await writeFile(path.join(request.workspacePath, 'MARKER.md'), 'done\n', 'utf8');
+          return { summary: 'wrote the marker' };
+        },
+      };
+      const result = await runSourceCli(
+        ['source', 'run', '--repo', target.repo, '--config', target.configPath],
+        target.directory,
+        { fetch: jira.fetch, dependencies },
+      );
+
+      expect(result.err).toBe('');
+      expect(result.code).toBe(EXIT_OK);
+      // The ticket key is what a person sees: the terminal names the workspace
+      // it prepared, and the retained directory is named after the ticket.
+      expect(result.out).toContain('SAM1-23');
+      expect(result.out).toContain('harness/SAM1-23');
+      const workspacePath = path.join(target.workDir, 'workspaces', 'SAM1-23');
+      expect(
+        (await readdir(path.join(target.workDir, 'workspaces'))).filter(
+          (name) => !name.endsWith('.json'),
+        ),
+      ).toEqual(['SAM1-23']);
+      // The attempt's own evidence keeps its generated run id, beside the
+      // workspace rather than in its name.
+      const runs = await readdir(path.join(target.workDir, 'runs'));
+      expect(runs).toHaveLength(1);
+      expect(runs[0]).toMatch(/^run-/);
+      const report = JSON.parse(
+        await readFile(path.join(target.workDir, 'runs', runs[0] ?? '', 'result.json'), 'utf8'),
+      ) as RunReport;
+      expect(report.workspace).toMatchObject({
+        workspaceId: 'SAM1-23',
+        path: workspacePath,
+        branch: 'harness/SAM1-23',
+        continued: false,
+        attempt: 1,
+      });
+      // The clone really is on the branch its id names.
+      expect(
+        (
+          await runProcess('git', ['symbolic-ref', '--quiet', '--short', 'HEAD'], workspacePath)
+        ).stdout.trim(),
+      ).toBe('harness/SAM1-23');
+      // The pointer label names the same workspace, through the one mechanism
+      // that already recorded it, and the ledger keeps the immutable issue id as
+      // the ownership authority.
+      expect(jira.issues[0]?.labels).toContain('harness-ws-SAM1-23');
+      const ledger = await readWorkspaceState(target.workDir, 'SAM1-23');
+      expect(ledger?.sourceItem).toEqual({
+        type: 'jira',
+        scope: SCOPE,
+        id: '10023',
+        key: 'SAM1-23',
+      });
+      expect(ledger?.branch).toBe('harness/SAM1-23');
+    } finally {
+      if (previous === undefined) {
+        delete process.env.JIRA_API_TOKEN;
+      } else {
+        process.env.JIRA_API_TOKEN = previous;
+      }
+    }
+  });
+
+  it('keeps the pointer-owned workspace when the ticket key changes under it', async () => {
+    const target = await createTarget();
+    const jira = fakeJira([
+      {
+        id: '10011',
+        key: 'SAM1-11',
+        summary: 'Create the marker',
+        status: 'To Do',
+        updated: '2026-09-16T11:00:00.000Z',
+      },
+    ]);
+    const previous = process.env.JIRA_API_TOKEN;
+    process.env.JIRA_API_TOKEN = 'test-token';
+
+    try {
+      const dependencies: CliContext['dependencies'] = {
+        runAgentTurn: async (request) => {
+          await writeFile(path.join(request.workspacePath, 'MARKER.md'), 'done\n', 'utf8');
+          return { summary: 'wrote the marker' };
+        },
+      };
+      const first = await runSourceCli(
+        ['source', 'run', '--repo', target.repo, '--config', target.configPath],
+        target.directory,
+        { fetch: jira.fetch, dependencies },
+      );
+      expect(first.code).toBe(EXIT_OK);
+      expect(jira.issues[0]?.labels).toContain('harness-ws-SAM1-11');
+
+      // The site renames the ticket. Its immutable id — the ownership authority —
+      // does not change, and the pointer label still names the workspace the work
+      // lives in.
+      if (jira.issues[0] === undefined) {
+        throw new Error('the fixture issue disappeared');
+      }
+      jira.issues[0].key = 'SAM1-99';
+      jira.issues[0].updated = '2026-09-17T11:00:00.000Z';
+      jira.issues[0].status = 'To Do';
+      const second = await runSourceCli(
+        ['source', 'run', '--repo', target.repo, '--config', target.configPath],
+        target.directory,
+        { fetch: jira.fetch, dependencies },
+      );
+
+      expect(second.err).toBe('');
+      expect(second.code).toBe(EXIT_OK);
+      expect(second.out).toContain('1 passed');
+      // The exact directory the pointer names was reopened: the new key names
+      // nothing, and nothing was renamed to it.
+      expect(
+        (await readdir(path.join(target.workDir, 'workspaces'))).filter(
+          (name) => !name.endsWith('.json'),
+        ),
+      ).toEqual(['SAM1-11']);
+      expect(existsSync(path.join(target.workDir, 'workspaces', 'SAM1-99'))).toBe(false);
+      const reports = await reportsByAttempt(target.workDir);
+      expect(reports).toHaveLength(2);
+      expect(reports[1]?.workspace).toMatchObject({
+        workspaceId: 'SAM1-11',
+        branch: 'harness/SAM1-11',
+        continued: true,
+        attempt: 2,
+      });
+      // The ledger keeps the identity it recorded when the workspace was made:
+      // the display key is not rewritten, and the immutable id still matches.
+      const ledger = await readWorkspaceState(target.workDir, 'SAM1-11');
+      expect(ledger?.sourceItem).toEqual({
+        type: 'jira',
+        scope: SCOPE,
+        id: '10011',
+        key: 'SAM1-11',
+      });
+      expect(
+        (jira.issues[0].labels ?? []).filter((label) => label.startsWith('harness-ws-')),
+      ).toEqual(['harness-ws-SAM1-11']);
+    } finally {
+      if (previous === undefined) {
+        delete process.env.JIRA_API_TOKEN;
+      } else {
+        process.env.JIRA_API_TOKEN = previous;
+      }
+    }
+  });
+
+  it('continues a run-* workspace its legacy pointer names, unchanged', async () => {
+    const target = await createTarget();
+    const legacyId = 'run-20260916100000-abcdef12';
+    const jira = fakeJira([
+      {
+        id: '10011',
+        key: 'SAM1-11',
+        summary: 'Create the marker',
+        status: 'To Do',
+        updated: '2026-09-16T11:00:00.000Z',
+        // The pointer an earlier, generated-name attempt wrote: it still decides
+        // where this ticket's work lives.
+        labels: ['harness-task', `harness-ws-${legacyId}`],
+      },
+    ]);
+    // The workspace such an attempt left: the clone on its own branch, and the
+    // ledger beside it recording that attempt.
+    const source = await preflightSource({ repoPath: target.repo, workDir: target.workDir });
+    const legacy = await prepareWorkspace(
+      await allocateRunDirectory(target.workDir, {
+        kind: 'create',
+        preferredWorkspaceId: legacyId,
+      }),
+      source,
+      { deadlineMs: Date.now() + 60_000, now: () => new Date() },
+      sourceItemFor(refFor('10011', 'SAM1-11')),
+    );
+    await recordWorkspaceAttempt(target.workDir, legacyId, {
+      runId: legacyId,
+      outcome: 'failed',
+      reason: 'the earlier attempt ended failed',
+      endedAt: '2026-09-16T10:30:00.000Z',
+      reportPath: path.join(target.workDir, 'runs', legacyId, 'result.json'),
+    });
+    const previous = process.env.JIRA_API_TOKEN;
+    process.env.JIRA_API_TOKEN = 'test-token';
+
+    try {
+      const dependencies: CliContext['dependencies'] = {
+        runAgentTurn: async (request) => {
+          await writeFile(path.join(request.workspacePath, 'MARKER.md'), 'done\n', 'utf8');
+          return { summary: 'wrote the marker' };
+        },
+      };
+      const result = await runSourceCli(
+        ['source', 'run', '--repo', target.repo, '--config', target.configPath],
+        target.directory,
+        { fetch: jira.fetch, dependencies },
+      );
+
+      expect(result.err).toBe('');
+      expect(result.code).toBe(EXIT_OK);
+      // The legacy pointer reopened the exact directory it names; no workspace
+      // was created for the ticket key, and nothing was migrated or renamed.
+      expect(
+        (await readdir(path.join(target.workDir, 'workspaces'))).filter(
+          (name) => !name.endsWith('.json'),
+        ),
+      ).toEqual([legacyId]);
+      expect(existsSync(path.join(target.workDir, 'workspaces', 'SAM1-11'))).toBe(false);
+      // The one run of this intake wrote a report; the run directory the
+      // fixture's own setup allocated kept none.
+      const runNames = await readdir(path.join(target.workDir, 'runs'));
+      const reportName = runNames.find((name) =>
+        existsSync(path.join(target.workDir, 'runs', name, 'result.json')),
+      );
+      const report = JSON.parse(
+        await readFile(path.join(target.workDir, 'runs', reportName ?? '', 'result.json'), 'utf8'),
+      ) as RunReport;
+      expect(report.workspace).toMatchObject({
+        workspaceId: legacyId,
+        path: legacy.workspacePath,
+        branch: `harness/${legacyId}`,
+        continued: true,
+        attempt: 2,
+      });
+      expect(await readFile(path.join(legacy.workspacePath, 'MARKER.md'), 'utf8')).toBe('done\n');
+      expect(
+        (jira.issues[0]?.labels ?? []).filter((label) => label.startsWith('harness-ws-')),
+      ).toEqual([`harness-ws-${legacyId}`]);
+    } finally {
+      if (previous === undefined) {
+        delete process.env.JIRA_API_TOKEN;
+      } else {
+        process.env.JIRA_API_TOKEN = previous;
+      }
+    }
+  });
+
+  /**
+   * The workspace a name already holds, as an earlier attempt or an operator
+   * would leave it: the directory with a file in it, and — when the test asks for
+   * one — the ledger beside it recording whose work it is. What a fresh claim
+   * finds when the name its ticket key prefers is already taken.
+   */
+  async function plantWorkspace(
+    workDir: string,
+    workspaceId: string,
+    ledger:
+      | {
+          readonly kind: 'yes';
+          readonly sourceRoot: string;
+          readonly sourceItem: unknown;
+        }
+      | { readonly kind: 'no' },
+  ): Promise<{ readonly workspacePath: string; readonly ledgerPath: string }> {
+    const workspacePath = path.join(workDir, 'workspaces', workspaceId);
+    await mkdir(workspacePath, { recursive: true });
+    await writeFile(path.join(workspacePath, 'PRIVATE.txt'), 'earlier work\n', 'utf8');
+    const ledgerPath = workspaceStatePath(workDir, workspaceId);
+    if (ledger.kind === 'yes') {
+      await writeFile(
+        ledgerPath,
+        `${JSON.stringify({
+          version: 1,
+          workspaceId,
+          sourceRoot: ledger.sourceRoot,
+          baseCommit: 'a'.repeat(40),
+          branch: `harness/${workspaceId}`,
+          createdAt: '2026-09-16T10:00:00.000Z',
+          sourceItem: ledger.sourceItem,
+          attempts: [],
+        })}\n`,
+        'utf8',
+      );
+    }
+    return { workspacePath, ledgerPath };
+  }
+
+  /** What a planted workspace holds, so a test can prove a refusal touched nothing. */
+  async function snapshotPlantedWorkspace(planted: {
+    readonly workspacePath: string;
+    readonly ledgerPath: string;
+  }): Promise<{ readonly file: string; readonly ledger: string | null }> {
+    return {
+      file: await readFile(path.join(planted.workspacePath, 'PRIVATE.txt'), 'utf8'),
+      ledger: existsSync(planted.ledgerPath) ? await readFile(planted.ledgerPath, 'utf8') : null,
+    };
+  }
+
+  /** A coding turn a refusal must never reach: the item is not claimed at all. */
+  const refusedTurn: CliContext['dependencies'] = {
+    runAgentTurn: async () => {
+      throw new Error('a refused item must not start a coding turn');
+    },
+  };
+
+  it("refuses a fresh ticket whose key names another item's workspace, and touches nothing", async () => {
+    const target = await createTarget();
+    const jira = fakeJira([
+      {
+        id: '10011',
+        key: 'SAM1-11',
+        summary: 'Create the marker',
+        status: 'To Do',
+        updated: '2026-09-16T11:00:00.000Z',
+      },
+    ]);
+    const source = await preflightSource({ repoPath: target.repo, workDir: target.workDir });
+    const planted = await plantWorkspace(target.workDir, 'SAM1-11', {
+      kind: 'yes',
+      sourceRoot: source.sourceRoot,
+      sourceItem: sourceItemFor(refFor('10099', 'SAM1-99')),
+    });
+    const before = await snapshotPlantedWorkspace(planted);
+    const previous = process.env.JIRA_API_TOKEN;
+    process.env.JIRA_API_TOKEN = 'test-token';
+
+    try {
+      const result = await runSourceCli(
+        ['source', 'run', '--repo', target.repo, '--config', target.configPath],
+        target.directory,
+        {
+          fetch: jira.fetch,
+          dependencies: refusedTurn,
+        },
+      );
+
+      // The refusal is reported on the terminal as well as in the issue's own
+      // comment, and intake goes on with nothing claimed.
+      expect(result.err).toContain('SAM1-11: refused');
+      expect(result.err).toContain('never overwrites');
+      expect(result.code).toBe(EXIT_OK);
+      expect(result.out).toContain('1 refused');
+      // The issue is told why, and what an operator can do about it.
+      expect(jira.issues[0]?.status).toBe('In Review');
+      expect(jira.comments).toHaveLength(1);
+      const refusal = jira.comments[0] ?? '';
+      expect(refusal).toContain('SAM1-11');
+      expect(refusal).toContain('SAM1-99');
+      expect(refusal).toContain('never overwrites');
+      expect(refusal).toContain('move it aside');
+      // Nothing was claimed, no run was created, no pointer label was written,
+      // and the other item's workspace is exactly as it was.
+      expect(existsSync(path.join(target.workDir, 'runs'))).toBe(false);
+      expect(await snapshotPlantedWorkspace(planted)).toEqual(before);
+      expect(jira.issues[0]?.labels).toEqual(['harness-task']);
+    } finally {
+      if (previous === undefined) {
+        delete process.env.JIRA_API_TOKEN;
+      } else {
+        process.env.JIRA_API_TOKEN = previous;
+      }
+    }
+  });
+
+  it('refuses a fresh ticket whose key names a directory with no ledger', async () => {
+    const target = await createTarget();
+    const jira = fakeJira([
+      {
+        id: '10011',
+        key: 'SAM1-11',
+        summary: 'Create the marker',
+        status: 'To Do',
+        updated: '2026-09-16T11:00:00.000Z',
+      },
+    ]);
+    const planted = await plantWorkspace(target.workDir, 'SAM1-11', { kind: 'no' });
+    const before = await snapshotPlantedWorkspace(planted);
+    const previous = process.env.JIRA_API_TOKEN;
+    process.env.JIRA_API_TOKEN = 'test-token';
+
+    try {
+      const result = await runSourceCli(
+        ['source', 'run', '--repo', target.repo, '--config', target.configPath],
+        target.directory,
+        { fetch: jira.fetch, dependencies: refusedTurn },
+      );
+
+      expect(result.code).toBe(EXIT_OK);
+      expect(result.out).toContain('1 refused');
+      expect(jira.issues[0]?.status).toBe('In Review');
+      const refusal = jira.comments[0] ?? '';
+      // Missing trustworthy ownership: the harness cannot tell whose work it is,
+      // so it neither adopts it nor overwrites it, and says how to proceed.
+      expect(refusal).toContain('no ledger');
+      expect(refusal).toContain('harness-ws-SAM1-11');
+      expect(refusal).toContain('move it aside');
+      expect(existsSync(path.join(target.workDir, 'runs'))).toBe(false);
+      expect(await snapshotPlantedWorkspace(planted)).toEqual(before);
+      expect(existsSync(planted.ledgerPath)).toBe(false);
+    } finally {
+      if (previous === undefined) {
+        delete process.env.JIRA_API_TOKEN;
+      } else {
+        process.env.JIRA_API_TOKEN = previous;
+      }
+    }
+  });
+
+  it('refuses a fresh ticket whose key names a ledger with no item identity', async () => {
+    const target = await createTarget();
+    const jira = fakeJira([
+      {
+        id: '10011',
+        key: 'SAM1-11',
+        summary: 'Create the marker',
+        status: 'To Do',
+        updated: '2026-09-16T11:00:00.000Z',
+      },
+    ]);
+    const source = await preflightSource({ repoPath: target.repo, workDir: target.workDir });
+    const planted = await plantWorkspace(target.workDir, 'SAM1-11', {
+      kind: 'yes',
+      sourceRoot: source.sourceRoot,
+      sourceItem: null,
+    });
+    const before = await snapshotPlantedWorkspace(planted);
+    const previous = process.env.JIRA_API_TOKEN;
+    process.env.JIRA_API_TOKEN = 'test-token';
+
+    try {
+      const result = await runSourceCli(
+        ['source', 'run', '--repo', target.repo, '--config', target.configPath],
+        target.directory,
+        { fetch: jira.fetch, dependencies: refusedTurn },
+      );
+
+      expect(result.code).toBe(EXIT_OK);
+      expect(result.out).toContain('1 refused');
+      const refusal = jira.comments[0] ?? '';
+      expect(refusal).toContain('no source item identity');
+      expect(refusal).toContain('never adopts or migrates a workspace on its own');
+      expect(existsSync(path.join(target.workDir, 'runs'))).toBe(false);
+      expect(await snapshotPlantedWorkspace(planted)).toEqual(before);
+    } finally {
+      if (previous === undefined) {
+        delete process.env.JIRA_API_TOKEN;
+      } else {
+        process.env.JIRA_API_TOKEN = previous;
+      }
+    }
+  });
+
+  it("refuses to adopt a fresh ticket's own workspace, with no pointer saying so", async () => {
+    const target = await createTarget();
+    const jira = fakeJira([
+      {
+        id: '10011',
+        key: 'SAM1-11',
+        summary: 'Create the marker',
+        status: 'To Do',
+        updated: '2026-09-16T11:00:00.000Z',
+      },
+    ]);
+    const source = await preflightSource({ repoPath: target.repo, workDir: target.workDir });
+    const planted = await plantWorkspace(target.workDir, 'SAM1-11', {
+      kind: 'yes',
+      sourceRoot: source.sourceRoot,
+      sourceItem: sourceItemFor(refFor('10011', 'SAM1-11')),
+    });
+    const before = await snapshotPlantedWorkspace(planted);
+    const previous = process.env.JIRA_API_TOKEN;
+    process.env.JIRA_API_TOKEN = 'test-token';
+
+    try {
+      const result = await runSourceCli(
+        ['source', 'run', '--repo', target.repo, '--config', target.configPath],
+        target.directory,
+        { fetch: jira.fetch, dependencies: refusedTurn },
+      );
+
+      expect(result.code).toBe(EXIT_OK);
+      expect(result.out).toContain('1 refused');
+      const refusal = jira.comments[0] ?? '';
+      // The workspace is this item's, but nothing points at it: adoption is the
+      // operator's deliberate step, and the refusal names the exact label.
+      expect(refusal).toContain('its ledger records that it is this item');
+      expect(refusal).toContain('never adopts a workspace on its own');
+      expect(refusal).toContain('harness-ws-SAM1-11');
+      expect(existsSync(path.join(target.workDir, 'runs'))).toBe(false);
+      expect(await snapshotPlantedWorkspace(planted)).toEqual(before);
+      expect(jira.issues[0]?.labels).toEqual(['harness-task']);
     } finally {
       if (previous === undefined) {
         delete process.env.JIRA_API_TOKEN;
@@ -3524,18 +4223,18 @@ describe('the source commands through the CLI', () => {
       expect(astra?.workspace.continued).toBe(true);
       expect(astra?.workspace.attempt).toBe(2);
       expect(reports.map((report) => report.workspace.attempt)).toEqual([1, 2]);
-      // The continuation's own run allocated a workspace directory it never
-      // used, so two directories sit beside the ledger and the first name means
-      // nothing: the report and the pointer label are what name the clone.
+      // One workspace holds both attempts, named after the ticket key: the
+      // continuation adds no directory of its own beside the clone it reopened.
       expect(
         (await readdir(path.join(target.workDir, 'workspaces'))).filter(
           (name) => !name.endsWith('.json'),
         ),
-      ).toHaveLength(2);
+      ).toEqual(['SAM1-11']);
       // The pointer label records the workspace the reports name, and every turn
       // really worked in it.
       const workspaceId = astra?.workspace.workspaceId ?? '';
       const workspacePath = astra?.workspace.path ?? '';
+      expect(workspaceId).toBe('SAM1-11');
       expect(flash?.workspace.workspaceId).toBe(workspaceId);
       expect(
         (jira.issues[0]?.labels ?? []).filter((label) => label.startsWith('harness-ws-')),

@@ -99,5 +99,11 @@ export async function prepareItem(
     ref: refFor(config, issue),
     task,
     pointers: parseWorkspacePointers(issue.fields.labels),
+    // The ticket's canonical key names the workspace a first attempt creates,
+    // so retained work is recognizable in the filesystem and in a terminal as
+    // the ticket it belongs to. It is a preference: the naming layer validates
+    // it and falls back to the run's own generated id, and the immutable id
+    // above stays the ownership authority (docs/implement-workspace-continuation.md).
+    preferredWorkspaceId: issue.key,
   } satisfies SourceTask;
 }

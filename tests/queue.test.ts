@@ -772,6 +772,7 @@ function runResult(
       workDir,
       runId: `run-${key}`,
       runDir,
+      workspaceId: `run-${key}`,
       workspacePath: path.join(workDir, 'workspaces', `run-${key}`),
       logsDir: path.join(runDir, 'logs'),
     },
