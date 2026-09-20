@@ -33,3 +33,20 @@ reviewer invocations, and repeated cleanup. Existing HARN-31 regressions remain.
 This exercise verifies synthetic terminal output, not a live coding run. Terminal
 glyph widths use the existing `string-width` convention; fonts and terminal
 settings can differ, and scrollback retention is controlled by the terminal.
+
+## Checks
+
+- `npm ci`: exit 0.
+- `npx vitest run tests/activity.test.ts`: 122 tests passed.
+- `npm run validate`: final run exited 0; formatting, lint, typecheck and build
+  passed, followed by 32 passing test files, 1,099 passing tests and two skipped
+  tests (118.82 seconds for the test suite).
+- The first full test run had two five-second timeouts in the unchanged
+  `tests/completion.test.ts`: `can resolve a reopened ticket only for a later
+different merged result` and `recovers a comment accepted by Jira whose response
+was lost`. Both passed together in an isolated targeted run, and the subsequent
+  unchanged full validation passed. No timeout, test configuration or assertion
+  was relaxed. An earlier validation invocation stopped on two test-code lint
+  errors, which were corrected before these full test runs.
+- `node tests/manual/activity-display.mjs`: exit 0, as described above.
+- `git diff --check`: exit 0.
