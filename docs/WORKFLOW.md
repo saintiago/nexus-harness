@@ -8,6 +8,8 @@ This is a human-readable reference, **not runtime configuration**. The applicati
 
 **Revision: 2026-09-20 — optional review-to-completion.** Add an independent optional `completion` object inside `delivery`, defined in §9: with it, an In Review item whose delivered pull request the Nexus Lens reviewer approved on its current head is carried through native GitHub auto-merge and the configured post-merge main workflows to a verified resolution, or back to its To Do status with findings. Without it, every delivered pull request waits for a person exactly as before. [spec.md](spec.md) §8 defines the behavior.
 
+**Revision: 2026-09-19 — optional Nexus Lens reviews.** Add independent optional `review`, defined in §9, and the `review scan` and `review watch` commands it enables: with it, the tickets the configured Jira connection reports as being in review are reviewed through one explicitly configured reviewer profile, and each verdict is published as a native GitHub review plus one app-owned check run. Without it, nothing changes: no App credential is read, GitHub is never contacted, and no reviewer turn runs. [spec.md](spec.md) §9 defines the behavior and [architecture.md](architecture.md) §2 the module.
+
 ## 1. Configuration
 
 Keep the existing `harness.config.json` shape valid:
@@ -27,7 +29,7 @@ These are target-project commands, not the harness's own CI pipeline. Edit them 
 
 ### Fields
 
-All six original fields are required. `agent`, `escalation`, `source`, and `delivery` are independently optional. Reject unknown top-level/nested fields and invalid types rather than coercing them. Source commands require `source`; ordinary file-task commands do not construct it or require its credentials. Without `delivery` nothing is pushed or published, whatever else the configuration says.
+All six original fields are required. `agent`, `escalation`, `source`, `delivery`, and `review` are independently optional. Reject unknown top-level/nested fields and invalid types rather than coercing them. Source commands require `source`; ordinary file-task commands do not construct it or require its credentials. `review` requires `source`, because it reviews through that same connection and carries no connection of its own. Without `delivery` nothing is pushed or published, whatever else the configuration says.
 
 | Field | Meaning and validation |
 | --- | --- |
@@ -41,6 +43,7 @@ All six original fields are required. `agent`, `escalation`, `source`, and `deli
 | `escalation` | Optional nonempty array of tiers: `{ "name", "agent"?, "maxRepairs"? }` with distinct names. Attempt N of one issue runs tier N, clamped to the last, in the same workspace; a tier that names no `agent` or `maxRepairs` inherits the top-level one. Absent means a single `default` tier built from `agent` and `maxRepairs` (docs/implement-workspace-continuation.md). |
 | `source` | Optional strict Jira object defined in section 5. No `null`; unsupported source types are errors. |
 | `delivery` | Optional strict GitHub object defined in section 8: the destination repository and base branch a passed attempt is delivered to. No `null`; unsupported delivery types are errors. Absent means local-only. |
+| `review` | Optional strict GitHub object defined in section 9: the repository, App installation, reviewer launch, and check name a review scan uses. No `null`; unsupported types are errors. Absent means no review command runs anything. |
 
 Setup/check commands remain nonempty string arrays with a nonblank executable first. Remaining arguments are literal strings, including intentional empty strings. Never concatenate task text into commands or implicitly interpolate environment variables. Use the tested platform launcher and retain its documented restrictions.
 
@@ -462,6 +465,36 @@ Completion is off unless `delivery` carries it. With it, the harness carries an 
       "postMergeWorkflows": ["ci.yml"],
       "toDoStatus": "To Do",
       "doneStatus": "Done"
+
+## 9. Review — optional Nexus Lens reviews
+
+Review is off unless the configuration asks for it. With a strict `review` object, the
+`review scan` and `review watch` commands read the tickets the **same Jira connection** the
+`source` object describes reports as being in review, find each ticket's open pull request in one
+operator-configured repository, ask an explicitly configured reviewer launch for a verdict, and
+publish that verdict as one native GitHub review plus one app-owned check run. Without the object
+nothing changes: no command reads a GitHub App key, contacts GitHub as an App, or starts a
+reviewer turn, and `run`, `source`, and `check-config` behave exactly as they did.
+
+Review is not intake and not delivery. It never claims a ticket, never moves one, never posts a
+Jira comment, never runs a coding turn, never commits, pushes, merges, or marks anything Done, and
+keeps no database or registry: the native review pinned to a commit is the record that one head
+was reviewed.
+
+```json
+{
+  "review": {
+    "type": "github",
+    "repository": "saintiago/nexus-harness",
+    "app": {
+      "appId": 5001141,
+      "installationId": 163007360,
+      "privateKeyPathEnv": "NEXUS_LENS_PRIVATE_KEY_PATH",
+      "login": "nexus-lens[bot]"
+    },
+    "reviewer": {
+      "runtime": "codex",
+      "command": ["codex", "--profile", "nexus-astra", "--model", "gpt-6-astra"]
     }
   }
 }
@@ -501,6 +534,178 @@ Nothing in this path merges, force-pushes, reruns a workflow, or bypasses protec
 2. Put the **Nexus Lens reviewer's** own credential in the environment variable `reviewerTokenEnv` names. It must be a different credential from the operator's: the reviewer's token only reads the reviewer's verdict, and the operator's is what asks GitHub for auto-merge. Neither is written to the configuration, a report, or a log.
 3. Name at least one post-merge workflow that really runs for `push` on the base branch, for example `"ci.yml"` for this repository's own gate.
 4. `check-config` prints the effective `delivery` line before anything runs; the completion object is validated with it.
+
+### Fields
+
+| Field | Meaning and validation |
+| --- | --- |
+| `type` | Required, exactly `"github"`. Another type is rejected rather than accepted as a placeholder. |
+| `repository` | Required destination on github.com as `owner/name`. No host, URL, or path. This is the repository whose pull requests are reviewed; it is independent of `delivery.repository`. |
+| `app.appId` | Required positive integer: the GitHub App whose installation publishes the review and the check run, and the JWT issuer the installation token is minted for. |
+| `app.installationId` | Required positive integer: that App's installation on this repository. |
+| `app.privateKeyPathEnv` | Required environment-variable name. The variable holds the **path** of the App's PEM private key. The key's contents are never a configuration value, never a task field, and never logged. |
+| `app.login` | Required nonblank login the installation's reviews are authored as, for example `nexus-lens[bot]`. A completed review by this login pinned to the current head is what makes a head reviewed. |
+| `reviewer` | Required strict `{ "runtime", "command" }` object, exactly like `agent` in §1 and resolved by the same path rules. It is the explicit reviewer profile: a review never runs the coding tier that implemented the ticket. |
+| `checkName` | Optional nonblank name, default `"Nexus Lens review"`. The app-owned check run published on the reviewed head, and the name a branch rule can require from this App. |
+
+The Jira connection itself is not repeated here: the scan uses `source.siteUrl`, `cloudId`,
+`projectKey`, `issueType`, `label`, `reviewStatus`, `pollIntervalSeconds`, and `tokenEnv`. A
+configuration with `review` and no `source` is rejected.
+
+### Commands
+
+```sh
+# Static: validates the review object too. No credential, no network.
+npm start -- check-config --config harness.jira.config.json
+
+# One finite pass over the tickets in the configured review status.
+npm start -- review scan --config harness.jira.config.json
+
+# One pass, then poll with the source's configured interval until stopped (Ctrl+C).
+npm start -- review watch --config harness.jira.config.json
+
+# Bound the paid reviewer turns one pass starts.
+npm start -- review scan --config harness.jira.config.json --limit 1
+```
+
+`review` takes `--config`; it never takes `--repo`, because a review works from GitHub's own record
+of the pull request and never needs a local clone. `--limit` belongs to
+`review scan` alone and counts reviewer turns, not tickets: a ticket whose head was already
+reviewed costs nothing. `review watch` exits `130` on Ctrl+C after the active reviewer turn and
+the current ticket are finished; evidence already written is kept.
+
+### What is eligible, and what a scan does
+
+The queue is the configured project, issue type, and label in the `source`'s **review status**
+(default `In Review`). For each eligible ticket:
+
+1. The ticket's own local intake receipt is read when this output directory has one. A review
+   approves work, so a receipt whose last recorded attempt ended `failed` or `cancelled`, or one
+   that records a reservation with no finished attempt, is **reported for coordinator attention**
+   and reviewed no further: a pull request that predates the failure is not the successful code a
+   review would approve. A ticket this machine never attempted has no receipt and is reviewed from
+   its pull request alone; a receipt that cannot be read is reported rather than ignored.
+2. The ticket is re-read and mapped exactly as intake maps it, so the reviewer is given the
+   ticket's own description and acceptance criteria. Its pointer labels are read from that same
+   read, never from the search result.
+3. A review needs one clearly identified pull request. Exactly one valid
+   `harness-ws-<workspaceId>` pointer label names the workspace whose branch the delivery step
+   pushed, and exactly one open pull request in `repository` must have the head branch
+   `harness/<workspaceId>`. No pointer, a pointer that is not a generated workspace id, two
+   pointers, no open pull request, and more than one match are all **reported for coordinator
+   attention**: nothing is reviewed, nothing is published, and the ticket stays where it is.
+4. A head whose current commit already carries a completed review by `app.login` whose
+   `commit_id` is that head — state `APPROVED` or `CHANGES_REQUESTED` — is not reviewed again, and
+   no reviewer turn is started. A later commit is a new head and is reviewed again; a stale
+   verdict can never approve it. If such a review exists but the app-owned `checkName` check run
+   for that head does not, the scan publishes the check from the latest review's own state and
+   starts no turn. It also updates the newest app-owned check in place if its conclusion
+   contradicts that verdict, so an older success cannot mask a later request for changes. Native
+   review/check lists that hit their bounds are refused. The ticket and head are revalidated before
+   reconciliation: the check is a projection of the native review, never a second decision.
+5. Otherwise the scan reads the evidence the reviewer is given: the pull request's changed files
+   and their patches, root and ancestor-directory `AGENTS.md` files at the reviewed head, the
+   head's check runs, and its combined commit status. A changed-file list that reaches the
+   bounded pagination limit (three full pages of 100 files) is treated as incomplete: no
+   reviewer turn starts and no review or check is published. The coordinator must arrange a
+   complete review or split the pull request into smaller changes. Missing patches (including
+   binary files), patches whose addition/deletion counts disagree with GitHub, a diff exceeding
+   120,000 characters, instructions exceeding 30,000 characters or 100 content paths, and a ticket
+   description exceeding 8,000 characters are also refused before a reviewer turn. Unreadable
+   instruction content is an evidence failure, not evidence that no instructions exist.
+6. The `reviewer` launch runs as **one bounded turn** in its own evidence directory under
+   `<workDir>/reviews/<reviewId>/`, with the same adapter, the same non-interactive launch, and
+   the same task timeout a run gets. Review turns add `codex exec --skip-git-repo-check` because
+   the evidence directory is not a Git repository; coding turns keep the repository check.
+   It is instructed to review only: it must not change files,
+   implement fixes, commit, push, merge, or edit the ticket or the pull request, and it must write
+   one `verdict.json` (a `verdict` of `approve`, `request_changes`, or `inconclusive`, a summary,
+   and a findings array). Findings are blocking; approval requires an empty findings array and
+   sufficient evidence. The reviewer must select `inconclusive` when material code/test context
+   or tools are unavailable, explaining what the coordinator needs to provide in its summary.
+   A turn that fails, is stopped, or writes no usable verdict is also **inconclusive**: nothing is
+   published for it, and no coding repair is started.
+7. Before anything is published, the pull request is re-read and must still be open at the
+   reviewed head, and the ticket is re-read and must still be in the configured review status. A
+   head that moved, a closed pull request, or a ticket that left review publishes nothing: the
+   result is stale, and a later scan reviews the new head.
+8. The verdict becomes one native review — `APPROVE` for an approved verdict, `REQUEST_CHANGES`
+   otherwise — pinned to the reviewed commit with `commit_id` and carrying the ticket reference
+   and URL, the summary, and any finding the diff could not position. Findings whose file and line
+   the pull request's own patch shows are published as native inline comments.
+   `REQUEST_CHANGES` requires at least one finding; an approval is published only when the
+   reviewer completed with a usable verdict.
+9. One app-owned check run named `checkName` is then published on the same head: conclusion
+   `success` only for an approved verdict, `failure` for a requested change. If the review is
+   published but the check is not, that is reported; a later scan reads the completed review and
+   publishes the missing check or updates a contradictory one. A partial publication is reported
+   honestly: the native review may already exist even when its check write failed.
+
+Every outcome is printed and appended to `<workDir>/reviews/review.log`, and every reviewer turn
+keeps its evidence beside its verdict: `input.md` (what the reviewer was given), `reviewer.log`
+(its own output), `verdict.json`, and `review.json` (the outcome, the review and check URLs, and
+any problem). A ticket the scan could not review is left in the review status with no review, no
+check, and no approval; the coordinator decides what happens next. A missing credential, an
+unavailable tool, an API failure, and incomplete evidence are reported exactly as such, never as
+an approval and never as a reason to start a coding turn.
+
+CI status stays a separate merge requirement: a review verdict does not depend on CI being green,
+and an approved check run does not mean CI passed.
+
+### The merge signal, and what stays outside
+
+The branch rule for the destination should require **both** the configured CI check and the
+app-owned `checkName` check **from this App**. A generic "one approving review" rule does not
+identify the App and is not the signal this increment provides: GitHub's rules can require a check
+run by app, and the app-owned check published on the reviewed head is what makes Lens's approval
+specifically enforceable. An `APPROVE` review is still published, because it is the human-readable
+record of the decision.
+
+Enabling auto-merge, verifying the merge outcome, marking an issue `Done` only after confirmed
+integration, and returning code changes, CI failures, and conflicts to the ready status are the
+coordinator's decisions and are **outside this increment**. A pending CI run, or an infrastructure
+or authentication failure, stays in review for diagnosis rather than triggering code repair.
+
+### Operator setup
+
+1. Create the GitHub App (the installation this repository uses is `nexus-lens`, app id
+   `5001141`), grant it **pull requests: write**, **checks: write**, and read access to contents,
+   commit statuses, and metadata, and install it on the destination repository (installation
+   `163007360` under `saintiago`). Generate a private key and save the PEM somewhere only this
+   machine's operator account can read.
+2. Store the **path** of that PEM in the environment variable the configuration names — for this
+   installation, `NEXUS_LENS_PRIVATE_KEY_PATH` — and never in the JSON:
+
+```powershell
+[Environment]::SetEnvironmentVariable("NEXUS_LENS_PRIVATE_KEY_PATH", "C:\keys\nexus-lens.pem", "User")
+$env:NEXUS_LENS_PRIVATE_KEY_PATH = "C:\keys\nexus-lens.pem"
+```
+
+3. Keep the reviewer profile explicit. For this installation that is the Astra profile — the
+   native `nexus-astra` layer with `gpt-6-astra` at high reasoning effort — selected by the
+   `reviewer.command` prefix above. The harness never writes or reads that profile
+   ([nexus-agent-tools.md](nexus-agent-tools.md)).
+4. Add the destination's branch rule: require the CI check and the `checkName` check from the App,
+   exactly as the merge-signal section describes.
+5. `check-config --config ...` is static and resolves no credential; then run
+   `review scan --limit 1` and inspect the review it publishes, the check run, and the evidence
+   under `<workDir>/reviews/` before letting `review watch` run unattended.
+6. Keep the identities separate: reviews and their checks are published by the **App
+   installation**, while `delivery` still uses the operator's own `git` and `gh` login. Nothing
+   here changes the operator's personal GitHub session. Installation tokens request only the
+   configured repository and the permissions listed above; they are cached only in process.
+
+The parent resolves both credentials before starting a reviewer, then removes `source.tokenEnv`
+and `review.app.privateKeyPathEnv` from the reviewer process environment. The operator's own
+environment and unrelated runtime settings are preserved. This avoids passing the token or the
+App key's location to the reviewer; it does not sandbox a process running as the same OS user.
+
+One review scan or watch per repository is the supported arrangement. There is no local lock or
+cross-machine coordination; native review metadata deduplicates successive scans, not concurrent
+reviewers. GitHub cannot atomically compare the current head and submit a review; `commit_id` and
+the check's head SHA pin every publication to the reviewed commit even if the head moves after
+the final read. Operators must verify the corrected path with a live App review and gate check;
+offline tests do not establish native approval eligibility, auto-merge, or useful review quality.
 
 ## External references
 

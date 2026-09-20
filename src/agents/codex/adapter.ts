@@ -16,9 +16,10 @@ import type { ChildProcessByStdio } from 'node:child_process';
 import type { Readable, Writable } from 'node:stream';
 import { planLaunch } from '../../process/launch.js';
 import { within } from '../../process/stop.js';
+import type { AgentLog } from '../../reporting/logs.js';
 import type { AgentTurnRequest, AgentTurnResult } from '../../runs/contracts.js';
 import { messageOf } from '../../shared/errors.js';
-import type { TerminationOutcome } from '../../shared/types.js';
+import type { AgentActivity, TerminationOutcome } from '../../shared/types.js';
 import { agentMessage, failureText, itemActivities, parseEvent } from './events.js';
 import type { RuntimeOutcome, RuntimeReport } from './events.js';
 import { promptFor } from './prompt.js';
@@ -37,49 +38,50 @@ export class AgentError extends Error {
     this.name = 'AgentError';
   }
 }
-/** The first `max` characters of `text`, flattened onto one line. */
-function excerpt(text: string, max = MAX_DIAGNOSTIC_CHARS): string {
-  const flat = text.replace(/\s+/g, ' ').trim();
-  return flat.length <= max ? flat : `${flat.slice(0, max)} [truncated]`;
+
+/**
+ * One turn of the runtime, as its caller writes it: the prompt, where the turn
+ * runs, the log its output goes to, and the stop that bounds it. This is what
+ * every top-level turn of a run uses, and what the review path uses too — the
+ * runtime interface is the same one, whether the prompt asks for an
+ * implementation or for a review verdict.
+ */
+export interface CodexPromptRequest {
+  /** The prompt, written to the runtime's standard input. */
+  readonly prompt: string;
+  /** How the turn's own log header names it, for example `implementation turn 1`. */
+  readonly label: string;
+  /** Working root: the runtime is started in this directory. */
+  readonly workspacePath: string;
+  /** Review evidence lives outside Git; ordinary coding turns keep the repository check. */
+  readonly skipGitRepoCheck?: boolean;
+  readonly agentLog: AgentLog;
+  readonly stop: AbortSignal;
+  /** Where the runtime's own activity is reported, when a display is watching. */
+  readonly onActivity?: (activity: AgentActivity) => void;
 }
 
-/** The agent's own words, bounded: the turn's log keeps the whole message. */
-function normalizedSummary(text: string | null): string | null {
-  const trimmed = text?.trim() ?? '';
-  if (trimmed === '') {
-    return null;
-  }
-  return trimmed.length <= MAX_SUMMARY_CHARS
-    ? trimmed
-    : `${trimmed.slice(0, MAX_SUMMARY_CHARS)} [truncated: this turn's log holds the full message]`;
-}
 /**
- * Runs one top-level coding turn through the runtime and awaits its completion.
- *
- * The turn resolves with what the runtime reported about a completed turn, and
- * rejects — with an {@link AgentError} — for every other ending: a runtime that
- * could not be started, one that reported a failure, one that exited without
- * reporting a completed turn, and one whose stream contradicted itself. A turn
- * the harness stopped because the run was stopped resolves instead, carrying the
- * stop's own record, so the runner can read what was actually observed rather
- * than a failure invented on the way out.
- *
- * The turn's output is written to the log it was given as it arrives, so a turn
- * that fails keeps what it wrote before it failed; the caller owns that log and
- * closes it.
+ * Runs one top-level turn of the configured runtime with an explicit prompt and
+ * awaits its completion. `runCodexTurn` below wraps it for a coding turn, with
+ * the prompt a task builds; the review path calls it directly for a reviewer
+ * turn, whose prompt its own module builds.
  */
-export async function runCodexTurn(
-  request: AgentTurnRequest,
+export async function runCodexPrompt(
+  request: CodexPromptRequest,
   runtime: CodexRuntime = codexRuntime(),
 ): Promise<AgentTurnResult> {
-  const { agentLog: log, workspacePath, stop, kind, turn } = request;
-  const prompt = promptFor(request);
+  const { agentLog: log, workspacePath, stop, label, prompt } = request;
   const [executable = '', ...prefix] = runtime.command;
   // The prefix, then the adapter's own arguments: the configured launch and the
   // fixed interface, in that order and never joined into one string.
   const execArguments = [...prefix, ...CODEX_EXEC_ARGUMENTS];
-  const invocation = [...runtime.command, ...CODEX_EXEC_ARGUMENTS].join(' ');
-  log.write(`# ${invocation} — ${kind} turn ${String(turn)}, working root ${workspacePath}\n`);
+  if (request.skipGitRepoCheck === true) {
+    // This is an exec option, placed before the final stdin prompt argument.
+    execArguments.splice(execArguments.length - 1, 0, '--skip-git-repo-check');
+  }
+  const invocation = [executable, ...execArguments].join(' ');
+  log.write(`# ${invocation} — ${label}, working root ${workspacePath}\n`);
 
   if (stop.aborted) {
     // The run was stopped before this turn started anything, and work is never
@@ -399,4 +401,53 @@ export async function runCodexTurn(
 
   log.write(`# completed: exit code 0, session ${parsed.sessionId ?? 'not reported'}\n`);
   return { summary: normalizedSummary(parsed.summary) };
+}
+
+/** The first `max` characters of `text`, flattened onto one line. */
+function excerpt(text: string, max = MAX_DIAGNOSTIC_CHARS): string {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  return flat.length <= max ? flat : `${flat.slice(0, max)} [truncated]`;
+}
+
+/** The agent's own words, bounded: the turn's log keeps the whole message. */
+function normalizedSummary(text: string | null): string | null {
+  const trimmed = text?.trim() ?? '';
+  if (trimmed === '') {
+    return null;
+  }
+  return trimmed.length <= MAX_SUMMARY_CHARS
+    ? trimmed
+    : `${trimmed.slice(0, MAX_SUMMARY_CHARS)} [truncated: this turn's log holds the full message]`;
+}
+
+/**
+ * Runs one top-level coding turn through the runtime and awaits its completion.
+ *
+ * The turn resolves with what the runtime reported about a completed turn, and
+ * rejects — with an {@link AgentError} — for every other ending: a runtime that
+ * could not be started, one that reported a failure, one that exited without
+ * reporting a completed turn, and one whose stream contradicted itself. A turn
+ * the harness stopped because the run was stopped resolves instead, carrying the
+ * stop's own record, so the runner can read what was actually observed rather
+ * than a failure invented on the way out.
+ *
+ * The turn's output is written to the log it was given as it arrives, so a turn
+ * that fails keeps what it wrote before it failed; the caller owns that log and
+ * closes it.
+ */
+export async function runCodexTurn(
+  request: AgentTurnRequest,
+  runtime: CodexRuntime = codexRuntime(),
+): Promise<AgentTurnResult> {
+  return await runCodexPrompt(
+    {
+      prompt: promptFor(request),
+      label: `${request.kind} turn ${String(request.turn)}`,
+      workspacePath: request.workspacePath,
+      agentLog: request.agentLog,
+      stop: request.stop,
+      ...(request.onActivity === undefined ? {} : { onActivity: request.onActivity }),
+    },
+    runtime,
+  );
 }

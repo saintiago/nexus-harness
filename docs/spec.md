@@ -6,6 +6,8 @@
 
 **Revision: 2026-09-19 — workspaces outlive runs.** The continuation contract in [implement-workspace-continuation.md](implement-workspace-continuation.md) is implemented: the split layout (`runs/<runId>` evidence, `workspaces/<workspaceId>` clone with its ledger beside it), the pointer label, continuation rules, the escalation ladder, and continued-attempt guidance. This revision realigns the text below with that contract and with the [Rely on Git](#rely-on-git) change; it adds no runtime behaviour of its own.
 
+**Revision: 2026-09-19 — optional Nexus Lens reviews.** The review contract in §9 is implemented: an opt-in `review scan` / `review watch` path that reviews the pull requests of tickets the configured Jira connection reports as being in review, as an explicitly configured reviewer profile, and publishes one native GitHub review plus one app-owned check run per reviewed head. It is read-only on Jira and touches no working copy; [WORKFLOW.md](WORKFLOW.md) §9 owns its inputs and [architecture.md](architecture.md) §2 its module.
+
 ## 1. Goal
 
 Turn an explicit development task into locally checked changes, with as little coordination code as possible:
@@ -244,7 +246,39 @@ Everything else — missing or inconclusive review evidence, an approval or a ch
 
 **Later, only when needed:** another concrete task source, real Claude Code adapter, webhooks, parallel consumers, dependency scheduling, stronger isolation, or remote recovery. The optional GitHub delivery step of §7 opens or updates a pull request, and the optional completion path of §8 is the one configured way an approved delivered pull request is finished; no other automatic merging, CI reaction, or Jira `Done` exists. Add another connector without changing Task or the coding loop; do not ship a placeholder connector now.
 
+**Later, only when needed:** another concrete task source, real Claude Code adapter, webhooks, parallel consumers, dependency scheduling, automatic merging, coordinator-driven CI observation and merge verification, stronger isolation, or remote recovery. The optional GitHub delivery step of §7 opens or updates a pull request and stops there; merging, and reacting to CI on the pull request, stay outside the harness. Add another connector without changing Task or the coding loop; do not ship a placeholder connector now.
+
+**Implemented by the review increment:** the optional `review` object and the `review scan` / `review watch` commands of §9 below. They add no field to Task, no change to the coding loop, and no new process: a scan reads the Jira queue, starts the configured reviewer as one bounded turn, and publishes a native GitHub review and an app-owned check run. Merging, Jira completion, and coordinator decisions remain outside it.
+
 Regression verification must retain baseline failure, pass without repair, repair then pass, repair exhaustion, execution/auth/protocol errors, timeout/cancellation, retained workspace/logs, and unchanged source. Add source tests without weakening those cases. Default tests must not call Jira or a real LLM. T16 is not considered passed by mocked connector tests.
+
+## 9. Optional Nexus Lens reviews
+
+Review is off unless one optional strict `review` object selects it. With it, `review scan` and `review watch` read the tickets the configured Jira connection reports as being in review, identify each ticket's open pull request in the configured repository, ask an explicitly configured reviewer launch for a verdict, and publish that verdict as one native GitHub review plus one app-owned check run. Without it nothing changes: no GitHub App credential is resolved, GitHub is never contacted as an App, and no reviewer turn runs. The commands' inputs and defaults are [WORKFLOW.md](WORKFLOW.md) §9.
+
+### Eligibility and the pull request link
+
+The review queue is the configured project, issue type, and label in the configured review status. Each ticket is re-read and mapped exactly as intake maps it, so the reviewer receives the ticket's own intent and acceptance criteria; the pointer labels the read observed decide where its work lives. When the output directory holds the ticket's intake receipt, that receipt must record a passing attempt: a receipt whose last recorded attempt ended `failed` or `cancelled`, a reservation with no finished attempt, and a receipt that cannot be read are reported for coordinator attention rather than reviewed, because an approval of an earlier pull request would present unsuccessful work as code awaiting approval. A ticket this machine never attempted has no receipt and is reviewed from its pull request alone. A review then needs one clearly identified open pull request: exactly one valid `harness-ws-<workspaceId>` pointer label, and exactly one open pull request in the configured repository whose head branch is `harness/<workspaceId>`. A missing ticket read, no pointer, a pointer that is not a generated workspace id, more than one pointer, no open pull request, and more than one match are reported and left alone: nothing is reviewed, no review or check is published, and the ticket stays in review for the coordinator.
+
+### What one review is
+
+- The reviewer launch is its own explicitly configured selection, resolved like the coding launch. It is never the tier that implemented the ticket, and it is a launch prefix, not a credential: provider credentials stay in the runtime's own environment.
+- The reviewer receives the ticket reference, title, description, and acceptance criteria; the pull request's changed files and patches; root and relevant ancestor-directory `AGENTS.md` files at the reviewed head when present; and the head's check runs and combined commit status. Known missing patches, incomplete change counts, and evidence exceeding the input bounds require coordinator attention before a reviewer turn.
+- One reviewer turn is bounded by the same task timeout a run gets and runs through the same adapter, in its own evidence directory under `<workDir>/reviews/<reviewId>/`. It is review-only: it must not implement fixes, change files, commit, push, merge, or edit the ticket or the pull request. It must write one verdict file naming `approve`, `request_changes`, or `inconclusive` with a summary and findings. An explicit inconclusive result explains missing material evidence and publishes no review or check. Findings are blocking; approval requires an empty findings list and sufficient evidence.
+- A turn that fails, is stopped, or writes no usable verdict is inconclusive. Nothing is published for it, no approval is produced, and no coding turn is started to repair it.
+- `request_changes` requires at least one finding. An approval is published only for a completed, usable verdict: a missing credential, an unavailable tool, an incomplete evidence read, and an API failure are reported as such rather than rounded into one.
+
+### Publishing, and the merge signal
+
+- Before anything is published, the pull request is re-read and must still be open at the reviewed head, and the ticket must still be in the configured review status. A head that moved or a ticket that left review publishes nothing: a stale verdict can never approve a newer commit.
+- The verdict becomes one native GitHub review — `APPROVE` or `REQUEST_CHANGES` — pinned to the reviewed commit with `commit_id`, carrying the ticket's reference and URL and the reviewer's summary, with inline file/line comments for findings the pull request's own diff can position.
+- One check run named by `checkName`, published as the App installation on the reviewed head, is then created with conclusion `success` only for an approved verdict and `failure` for a requested change. A review that was published but whose check could not be is reported; a later scan creates the missing check or updates a contradictory check from the latest native review's state instead of reviewing again. The newest app-owned run is the effective check; list ordering and older successes cannot override a later verdict. Truncated native review/check lists are refused. Check reconciliation also revalidates the ticket and head before writing.
+
+The smallest native signal that identifies Nexus Lens is that app-owned check run: a branch rule should require it from this App, together with the repository's CI check. A generic requirement of one approving review does not identify the App. Merge execution, auto-merge, Jira completion/rework decisions, and CI observation remain outside this increment: the coordinator enables auto-merge where supported, verifies the merge outcome, marks an issue `Done` only for confirmed integration, and returns code changes, CI failures, and conflicts to the ready status with the retained pointer and the concrete findings. A pending CI run and an infrastructure or authentication failure stay in review for diagnosis and do not trigger code repair.
+
+### Deduplication and retained evidence
+
+A head that already carries a completed review by the App's configured login whose `commit_id` is that same head is not reviewed again, and no reviewer turn is started; a later commit is a new head and is reviewed again. That native review metadata is the deduplication record: there is no check registry, delivery database, local lock, or second coding consumer. Each reviewer turn keeps its evidence (`input.md`, `reviewer.log`, `verdict.json`, and `review.json`) under `<workDir>/reviews/`, the scan appends one line per outcome to `<workDir>/reviews/review.log`, and nothing is published into a working copy. The scan never changes Jira: it claims and transitions nothing, posts no comment, and never marks an issue `Done`.
 
 ## Jira API references
 

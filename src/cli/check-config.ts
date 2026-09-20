@@ -27,7 +27,7 @@ function describeConfig(config: HarnessConfig, configPath: string, workDir: stri
     `  setup                  ${commandCount(config.setup)}`,
     `  checks                 ${commandCount(config.checks)}`,
   ];
-  const { delivery, source } = config;
+  const { delivery, source, review } = config;
   if (delivery !== undefined) {
     lines.push(`  delivery               github ${delivery.repository} -> ${delivery.baseBranch}`);
     if (delivery.completion !== undefined) {
@@ -47,6 +47,16 @@ function describeConfig(config: HarnessConfig, configPath: string, workDir: stri
       `  source queue           issuetype ${source.issueType}, label ${source.label}, ` +
         `${source.readyStatus} -> ${source.runningStatus} -> ${source.reviewStatus}`,
       `  source polling         ${String(source.pollIntervalSeconds)}s, token environment variable ${source.tokenEnv}`,
+    );
+  }
+  if (review !== undefined) {
+    lines.push(
+      `  review                 github ${review.repository} as ${review.app.login}, app ` +
+        `${String(review.app.appId)} installation ${String(review.app.installationId)}`,
+      `  review scanning        ${source === undefined ? '(no source)' : source.reviewStatus}, ` +
+        `check "${review.checkName}", key path environment variable ` +
+        `${review.app.privateKeyPathEnv}`,
+      `  review reviewer        ${review.reviewer.runtime} ${review.reviewer.command.join(' ')}`,
     );
   }
   return lines.join('\n');

@@ -266,7 +266,20 @@ export function agentLogPath(logsDir: string, turn: number): string {
  * into it and closes it, and keeps the returned path for the report.
  */
 export async function openAgentLog(logsDir: string, turn: number): Promise<AgentLog> {
-  const file = agentLogPath(logsDir, turn);
+  return await openEvidenceLog(
+    agentLogPath(logsDir, turn),
+    `the agent output of coding turn ${String(turn)}`,
+  );
+}
+
+/**
+ * Creates one append-only log at an explicit path, for evidence that is not one
+ * configured command's output or one coding turn's: the review path's reviewer
+ * turn writes its own, under the name `what` describes. A path that is already
+ * taken is refused rather than truncated, so an earlier log is never
+ * overwritten, and a write that failed is reported when the log is closed.
+ */
+export async function openEvidenceLog(file: string, what: string): Promise<AgentLog> {
   await createFileExclusively(file, AGENT_LOG_TAKEN);
 
   const stream = createWriteStream(file, { flags: 'a', encoding: 'utf8' });
@@ -288,9 +301,7 @@ export async function openAgentLog(logsDir: string, turn: number): Promise<Agent
       closed = true;
       await endStream(stream);
       if (failed !== null) {
-        throw new ReportError(
-          `the agent output of coding turn ${String(turn)} could not be written to "${file}": ${failed}`,
-        );
+        throw new ReportError(`${what} could not be written to "${file}": ${failed}`);
       }
     },
   };

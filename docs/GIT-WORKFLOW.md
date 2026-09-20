@@ -65,13 +65,22 @@ run again on the result. There is no automation here to rebase or to guess.
   once on the pull request and once more on the push of the merged commit to `main`. A red gate
   means the PR is not ready. Do not disable
   checks, weaken assertions, or hide files from validation to get a green run.
+- **The app-owned review check.** This repository's `main` is configured to require the
+  `Nexus Lens review` check from the `nexus-lens` GitHub App (app id `5001141`) beside the
+  `validate` check, with no required approving-review count. The check is published only by that
+  App installation, and only on a reviewed head: the optional `review scan` path publishes it for
+  an `In Review` ticket whose work has a clearly identified open pull request
+  ([WORKFLOW.md](WORKFLOW.md) §9), and the coordinator publishes it through the same installation
+  for a branch no ticket points at. A workflow token never publishes it — that identity is the
+  whole point of the rule — and the rule is not disabled or bypassed to merge a pull request.
 - **A description a reviewer can act on:** what changed, why, what you ran, and what you could not
   verify. `notes/` and `README.md` record the honest gaps; the PR should point at them rather than
   restate them.
-- **No reviewer is required.** This is a one-person project: you may open a PR with nobody
-  requested and merge it yourself once CI is green. The point of the PR in this repository is a
-  place where CI runs and where the change and its evidence are written down, not a second pair of
-  eyes.
+- **No human reviewer is required.** This is a one-person project: you may open a PR with nobody
+  requested and merge it yourself once both checks are green. The point of the PR in this
+  repository is a place where the checks run and where the change and its evidence are written
+  down, not a second pair of eyes — the App-owned check records a review verdict, it does not
+  replace a person's judgment.
 - **No force-pushing to `main`,** and no rewriting a `main` commit that has been pushed.
 
 ## Emergency path

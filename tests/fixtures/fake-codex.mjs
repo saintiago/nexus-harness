@@ -129,6 +129,9 @@ async function run(prompt) {
       cwd: process.cwd(),
       argv: process.argv.slice(2),
       prompt,
+      environmentPresent: Object.fromEntries(
+        (plan.inspectEnvironment ?? []).map((name) => [name, process.env[name] !== undefined]),
+      ),
     })}\n`,
     'utf8',
   );

@@ -288,6 +288,56 @@ const githubDeliverySchema = z.strictObject({
 /** Validates one `delivery` object: the documented optional field of a config. */
 export const deliverySchema = githubDeliverySchema;
 
+/** Documented defaults of the optional GitHub `review` object. */
+export const REVIEW_DEFAULTS = {
+  checkName: 'Nexus Lens review',
+} as const;
+
+/**
+ * The GitHub App installation a review is published as. It carries no
+ * credential: `privateKeyPathEnv` names the environment variable that holds the
+ * path of the App's PEM key, and only a review command reads it
+ * (docs/WORKFLOW.md §9).
+ */
+const githubReviewAppSchema = z.strictObject({
+  appId: boundedInteger('app.appId', 1, 'a positive integer'),
+  installationId: boundedInteger('app.installationId', 1, 'a positive integer'),
+  privateKeyPathEnv: z
+    .string({ error: 'app.privateKeyPathEnv must be a string' })
+    .regex(TOKEN_ENV_PATTERN, {
+      error:
+        'app.privateKeyPathEnv must be an environment-variable name such as "NEXUS_LENS_KEY_PATH"',
+    }),
+  login: nonBlankString('app.login'),
+});
+
+/**
+ * The optional review path. `"github"` is the only implemented type: a
+ * placeholder for a publisher nobody has written would be a way to accept a
+ * configuration the harness cannot honour (docs/WORKFLOW.md §9). The reviewer is
+ * an explicit launch of its own, so a review never runs the tier that
+ * implemented the ticket.
+ */
+const githubReviewSchema = z.strictObject({
+  type: z.literal('github', {
+    error:
+      'must be "github": publishing a native GitHub review and its app-owned check run is the ' +
+      'only review path this harness implements, so another type is rejected rather than ' +
+      'accepted as a placeholder',
+  }),
+  repository: z.string({ error: 'review.repository must be a string' }).regex(REPOSITORY_PATTERN, {
+    error:
+      'review.repository must be the destination on github.com as "owner/name": no host, no URL, ' +
+      'and no path',
+  }),
+  app: githubReviewAppSchema,
+  reviewer: agentSchema,
+  checkName: nonBlankString('review.checkName').default(REVIEW_DEFAULTS.checkName),
+});
+
+/** Validates one `review` object: the documented optional field of a config. */
+export const reviewSchema = githubReviewSchema;
+
 export const harnessConfigSchema = z
   .strictObject({
     workDir: nonBlankString('workDir'),
@@ -319,23 +369,19 @@ export const harnessConfigSchema = z
       .optional(),
     delivery: deliverySchema.optional(),
     source: sourceSchema.optional(),
+    review: reviewSchema.optional(),
   })
   .superRefine((config, ctx) => {
-    // A completion object moves an item between statuses the source owns, so the
-    // two are validated together: with a source configured, both of its target
-    // statuses have to differ from the review status it starts in.
     const completion = config.delivery?.completion;
-    if (completion === undefined || config.source === undefined) {
-      return;
-    }
+    if (completion === undefined || config.source === undefined) return;
     const problem = checkCompletionStatuses(config.source.reviewStatus, completion);
-    if (problem !== null) {
-      ctx.addIssue({
-        code: 'custom',
-        message: problem,
-        path: ['delivery', 'completion', 'toDoStatus'],
-      });
-    }
+    if (problem !== null) ctx.addIssue({ code: 'custom', message: problem, path: ['delivery', 'completion'] });
+  })
+  .refine((config) => config.review === undefined || config.source !== undefined, {
+    error:
+      'review requires the Jira connection described by "source": a review scans the tickets ' +
+      'that connection reports as being in review, and it carries no connection of its own',
+    path: ['review'],
   });
 
 /**

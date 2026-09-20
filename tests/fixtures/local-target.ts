@@ -429,6 +429,8 @@ export async function fakePullRequests(
 
 /** One turn's plan, as the stand-in runtime reads it. */
 export interface FakePlan {
+  /** Named variables whose presence (never values) the runtime records. */
+  readonly inspectEnvironment?: readonly string[];
   /** Files to write into the working copy, relative to its root. */
   readonly edits?: readonly { readonly file: string; readonly text: string }[];
   /** Files to remove from the working copy, relative to its root. */
@@ -443,6 +445,7 @@ export interface FakePlan {
 
 /** One invocation of the stand-in runtime, as it recorded it. */
 export interface FakeTurn {
+  readonly environmentPresent: Readonly<Record<string, boolean>>;
   readonly index: number;
   readonly pid: number;
   /** The beacon token of the process itself: see {@link fixtureProcessGone}. */

@@ -10,12 +10,16 @@ Commands:
                  claims nothing, starts no run, and costs no coding turns.
   source run     Take one finite batch of eligible source tasks and run each one.
   source watch   Do that once, then keep polling for new eligible tasks until stopped.
+  review scan    Review the pull requests of tickets in the configured review status
+                 once, and publish one native GitHub review per unreviewed head.
+  review watch   Do that once, then keep scanning until stopped.
 
 Options:
   --repo <path>     Source repository to task (run, source run, source watch).
   --config <path>   Configuration file, resolved from the current directory.
   --task <path>     Task file (run; optional for check-config).
-  --limit <count>   Most new source tasks one \`source run\` attempts (source run only).
+  --limit <count>   Most new source tasks one \`source run\` attempts, or most reviewer
+                    turns one \`review scan\` starts (those commands only).
   -h, --help        Show this help.
 
 Examples:
@@ -25,6 +29,8 @@ Examples:
   npm run dev -- source list --config harness.jira.config.json
   npm run dev -- source run --repo ../target-project --config harness.jira.config.json --limit 1
   npm run dev -- source watch --repo ../target-project --config harness.jira.config.json
+  npm run dev -- review scan --config harness.jira.config.json
+  npm run dev -- review watch --config harness.jira.config.json
 
 Paths given on the command line resolve from the directory the command was invoked
 in, exactly as the shell would read them. \`workDir\` resolves from the configuration
@@ -61,6 +67,18 @@ delivered pull request the Nexus Lens reviewer approved is carried through nativ
 GitHub auto-merge and the configured post-merge main workflows to a verified
 resolution, or back to its To Do status with findings; the harness never merges a
 pull request itself, and without the object nothing about the pull request changes.
+
+review scan and review watch are the opt-in Nexus Lens review commands. They need a
+\`review\` object in the configuration beside the \`source\` connection it reviews
+through, the Jira credential, and the GitHub App key path named by
+\`review.app.privateKeyPathEnv\`. A scan reads the tickets the source reports as being
+in review, finds each one's open pull request by the branch its pointer label names,
+and asks the explicitly configured \`review.reviewer\` launch for a verdict. A ticket
+whose current head already carries a completed review by the App's login is left
+alone; a new head is reviewed again. The verdict is published as one native GitHub
+review (APPROVE or REQUEST_CHANGES) plus one app-owned check run named by
+\`review.checkName\`, successful only for an approval. Nothing merges, nothing marks
+an issue Done, and a ticket the scan cannot review is reported and left in review.
 
 Exit codes:
   0    the run passed
