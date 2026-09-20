@@ -15,7 +15,7 @@
  */
 import { generateKeyPairSync } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { runCli } from '../src/cli.js';
@@ -55,7 +55,7 @@ import type { SourceRef, Task } from '../src/shared/types.js';
 import { canonicalPath } from '../src/workspace/git.js';
 import { sourceItemFor, workspaceStatePath } from '../src/workspace/state.js';
 import type { WorkspaceState } from '../src/workspace/state.js';
-import { fakeTurns, git, installFakeRuntime } from './fixtures/local-target.js';
+import { fakeEvents, fakeTurns, git, installFakeRuntime } from './fixtures/local-target.js';
 import type { FakePlan, FakeState } from './fixtures/local-target.js';
 import {
   cleanupTempDirectories,
@@ -313,7 +313,7 @@ describe('the reviewer evidence', () => {
     expect(prompt).toContain(view.base);
     expect(prompt).toContain(`Head: ${BRANCH} at ${HEAD}`);
     expect(prompt).toContain(`Base: main at ${BASE}`);
-    expect(prompt).toContain(`git -C repo diff ${BASE}...${HEAD}`);
+    expect(prompt).toContain(`git -C . diff ${BASE}...${HEAD}`);
     expect(prompt).toContain('AGENTS.md');
     expect(prompt).not.toContain('+export function greetAll(names) {');
     expect(prompt).toContain('validate: completed/success');
@@ -2102,7 +2102,7 @@ describe('the review command through the CLI', () => {
       const world = fakeWorld({ issues: [sourceIssue([WORKSPACE_LABEL])] });
       const fixture = await reviewCommandFixture({
         world,
-        plans: [{ edits: [{ file: 'verdict.json', text: verdictFile(APPROVE) }] }],
+        plans: [{ edits: [{ file: '../verdict.json', text: verdictFile(APPROVE) }] }],
       });
       await writeReviewLedger(
         path.join(fixture.cwd, 'runs'),
@@ -2133,7 +2133,7 @@ describe('the review command through the CLI', () => {
       plans: [
         {
           summary: 'the change matches the ticket',
-          edits: [{ file: 'verdict.json', text: verdictFile(APPROVE) }],
+          edits: [{ file: '../verdict.json', text: verdictFile(APPROVE) }],
         },
       ],
     });
@@ -2161,7 +2161,7 @@ describe('the review command through the CLI', () => {
         {
           edits: [
             {
-              file: 'verdict.json',
+              file: '../verdict.json',
               text: JSON.stringify({
                 verdict: 'inconclusive',
                 summary: 'Cannot inspect the dependency needed to judge this change.',
@@ -2180,7 +2180,7 @@ describe('the review command through the CLI', () => {
     expect(world.publishedChecks).toEqual([]);
     expect(world.issues[0]?.status).toBe('In Review');
   });
-  it('reviews from its evidence directory, in a view pinned at the head, with every credential stripped', async () => {
+  it('reviews inside the pinned checkout with publication credentials stripped', async () => {
     const world = fakeWorld({
       issues: [sourceIssue([WORKSPACE_LABEL])],
     });
@@ -2196,7 +2196,7 @@ describe('the review command through the CLI', () => {
             'PATH',
             'FAKE_CODEX',
           ],
-          edits: [{ file: 'verdict.json', text: verdictFile(APPROVE) }],
+          edits: [{ file: '../verdict.json', text: verdictFile(APPROVE) }],
         },
       ],
     });
@@ -2207,12 +2207,11 @@ describe('the review command through the CLI', () => {
     const turns = await fakeTurns(fixture.runtime.state);
     expect(turns).toHaveLength(1);
     const turn = turns[0]!;
-    // The turn's own working directory is the evidence directory, not the
-    // repository: the view sits beside it, and the verdict is written beside it.
+    // The turn runs inside the exact-head checkout; only its output lives outside it.
     expect(turn.cwd).toContain(path.join(fixture.cwd, 'runs', 'reviews'));
-    expect(existsSync(path.join(turn.cwd, '.git'))).toBe(false);
-    expect(existsSync(path.join(turn.cwd, 'verdict.json'))).toBe(true);
-    const view = path.join(turn.cwd, REVIEW_VIEW_DIRECTORY);
+    expect(existsSync(path.join(turn.cwd, '.git'))).toBe(true);
+    expect(existsSync(path.join(turn.cwd, '..', 'verdict.json'))).toBe(true);
+    const view = turn.cwd;
     expect(git(view, 'rev-parse', 'HEAD').trim()).toBe(fixture.head);
     // The view the harness pinned is the one it checks: asking its own boundary
     // whether that snapshot still stands is what decides publication.
@@ -2236,7 +2235,6 @@ describe('the review command through the CLI', () => {
       '--sandbox',
       'danger-full-access',
       '--json',
-      '--skip-git-repo-check',
       '-',
     ]);
     expect(turn.environmentPresent).toEqual({
@@ -2267,7 +2265,7 @@ describe('the review command through the CLI', () => {
       });
       const fixture = await reviewCommandFixture({
         world,
-        plans: [{ edits: [{ file: 'verdict.json', text: verdictFile(APPROVE) }] }],
+        plans: [{ edits: [{ file: '../verdict.json', text: verdictFile(APPROVE) }] }],
       });
 
       const result = await fixture.run();
@@ -2304,7 +2302,7 @@ describe('the review command through the CLI', () => {
           {
             edits: [
               {
-                file: 'verdict.json',
+                file: '../verdict.json',
                 text: JSON.stringify({
                   verdict: 'approve',
                   summary: 'The change implements the ticket.',
@@ -2353,7 +2351,7 @@ describe('the review command through the CLI', () => {
       expect(world.issues[0]?.status).toBe('In Review');
 
       // The reviewer really went through the adapter, with the configured
-      // reviewer profile, in the review's own evidence directory, and its
+      // reviewer profile, inside the pinned checkout, and its
       // prompt names the view rather than carrying the change.
       const turns = await fakeTurns(fixture.runtime.state);
       expect(turns).toHaveLength(1);
@@ -2394,7 +2392,7 @@ describe('the review command through the CLI', () => {
           {
             edits: [
               {
-                file: 'verdict.json',
+                file: '../verdict.json',
                 text: JSON.stringify({
                   verdict: 'request_changes',
                   summary: 'The function ignores the names.',
@@ -2455,7 +2453,15 @@ describe('the review command through the CLI', () => {
         world,
         readFiles: [{ path: 'src/big.mjs', content }],
         plans: [
-          { edits: [{ file: 'verdict.json', text: verdictFile(APPROVE) }], summary: 'approved' },
+          {
+            reviewInspection: {
+              file: 'src/big.mjs',
+              blockingText: 'export const after = 0;',
+              blockingVerdict: verdictFile(REQUEST_CHANGES),
+              clearVerdict: verdictFile(APPROVE),
+            },
+            summary: 'read the complete large file',
+          },
         ],
       });
 
@@ -2464,11 +2470,18 @@ describe('the review command through the CLI', () => {
       expect(result.code).toBe(EXIT_OK);
       const turns = await fakeTurns(fixture.runtime.state);
       expect(turns).toHaveLength(1);
+      expect(await fakeEvents(fixture.runtime.state)).toContainEqual(
+        expect.objectContaining({
+          event: 'review-inspection',
+          file: 'src/big.mjs',
+          blocking: false,
+        }),
+      );
       // The prompt stays compact: the change is not assembled into it.
       expect(turns[0]?.prompt).not.toContain(padding);
       expect(turns[0]?.prompt.length).toBeLessThan(20_000);
       // The reviewer's own view really holds the whole file at the reviewed head.
-      const view = path.join(turns[0]?.cwd ?? '', REVIEW_VIEW_DIRECTORY);
+      const view = turns[0]?.cwd ?? '';
       expect(git(view, 'show', 'HEAD:src/big.mjs')).toBe(content);
       expect(world.publishedReviews).toHaveLength(1);
       expect(world.publishedChecks[0]).toMatchObject({
@@ -2478,77 +2491,106 @@ describe('the review command through the CLI', () => {
     },
   );
 
-  it(
-    'lets a blocking finding about the head reach the review from the view alone',
+  it.each(['blocking', 'corrected', 'inaccessible', 'missing-file'] as const)(
+    'derives a %s result through actual runtime Git and file reads',
     { timeout: 60_000 },
-    async () => {
+    async (scenario) => {
       const world = fakeWorld({ issues: [sourceIssue([WORKSPACE_LABEL])] });
+      const source =
+        scenario === 'corrected'
+          ? REVIEWED_SOURCE.replace(
+              'return names;',
+              'return names.map((name) => `Hello, ${name}!`);',
+            )
+          : REVIEWED_SOURCE;
       const fixture = await reviewCommandFixture({
         world,
+        readFiles: [{ path: REVIEWED_FILE, content: source }],
         plans: [
           {
-            edits: [
-              {
-                file: 'verdict.json',
-                text: verdictFile({
-                  decision: 'request_changes',
-                  summary: 'The exported function throws the names away.',
-                  findings: [
-                    {
-                      path: REVIEWED_FILE,
-                      line: 2,
-                      body: 'It returns the input unchanged instead of greeting the names.',
-                    },
-                  ],
-                }),
-              },
-            ],
-            summary: 'requested changes',
+            removes: scenario === 'missing-file' ? [REVIEWED_FILE] : [],
+            reviewInspection: {
+              file: scenario === 'inaccessible' ? 'src/unavailable.mjs' : REVIEWED_FILE,
+              blockingText: 'return names;',
+              blockingVerdict: verdictFile({
+                decision: 'request_changes',
+                summary: 'The exported function throws the names away.',
+                findings: [
+                  {
+                    path: REVIEWED_FILE,
+                    line: 2,
+                    body: 'It returns the input unchanged instead of greeting the names.',
+                  },
+                ],
+              }),
+              clearVerdict: verdictFile(APPROVE),
+            },
+            summary: 'inspected the repository with read tools',
           },
         ],
       });
 
       const result = await fixture.run();
-
-      expect(result.code).toBe(EXIT_OK);
       const turns = await fakeTurns(fixture.runtime.state);
       expect(turns).toHaveLength(1);
-      // The blocking line is nowhere in the initial context...
       expect(turns[0]?.prompt).not.toContain('return names;');
-      // ...and the turn's own working directory carries a real repository view
-      // pinned at the head, which is where a reviewer's read tools find it: the
-      // finding about that line is published as one inline comment on the head.
-      const view = path.join(turns[0]?.cwd ?? '', REVIEW_VIEW_DIRECTORY);
-      expect(git(view, 'show', `HEAD:${REVIEWED_FILE}`)).toBe(REVIEWED_SOURCE);
+      expect(turns[0]?.prompt).not.toContain(source);
+      expect(turns[0]?.argv).not.toContain('--skip-git-repo-check');
+      const events = await fakeEvents(fixture.runtime.state);
+      if (scenario === 'inaccessible' || scenario === 'missing-file') {
+        expect(result.code).toBe(EXIT_INPUT_ERROR);
+        expect(result.err).toContain('Required file/tool access failed');
+        expect(events).toContainEqual(
+          expect.objectContaining({ event: 'review-inspection-failed' }),
+        );
+        expect(world.publishedReviews).toEqual([]);
+        expect(world.publishedChecks).toEqual([]);
+        return;
+      }
+      expect(result.code).toBe(EXIT_OK);
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          event: 'review-inspection',
+          file: REVIEWED_FILE,
+          blocking: scenario === 'blocking',
+        }),
+      );
       expect(world.publishedReviews[0]).toMatchObject({
-        event: 'REQUEST_CHANGES',
+        event: scenario === 'blocking' ? 'REQUEST_CHANGES' : 'APPROVE',
         commit_id: fixture.head,
-        comments: [
-          {
-            path: REVIEWED_FILE,
-            position: 2,
-            body: 'It returns the input unchanged instead of greeting the names.',
-          },
-        ],
       });
-      expect(world.publishedChecks[0]).toMatchObject({ conclusion: 'failure' });
+      if (scenario === 'blocking') {
+        expect(world.publishedReviews[0]).toMatchObject({
+          comments: [
+            {
+              path: REVIEWED_FILE,
+              position: 2,
+              body: 'It returns the input unchanged instead of greeting the names.',
+            },
+          ],
+        });
+      }
+      expect(world.publishedChecks[0]).toMatchObject({
+        conclusion: scenario === 'blocking' ? 'failure' : 'success',
+      });
     },
   );
 
-  it(
-    'publishes nothing when the reviewer changed its repository view',
+  it.each(['notes.txt', 'scratch.log', 'cache/output.txt'])(
+    'publishes nothing when the reviewer leaves %s in its repository view',
     { timeout: 60_000 },
-    async () => {
+    async (writtenPath) => {
       const world = fakeWorld({ issues: [sourceIssue([WORKSPACE_LABEL])] });
       const fixture = await reviewCommandFixture({
         world,
+        readFiles: [{ path: '.gitignore', content: '*.log\ncache/\n' }],
         plans: [
           {
             // A turn that approves and also leaves a file in the view: the view
             // is no longer the snapshot the reviewed head names.
             edits: [
-              { file: 'verdict.json', text: verdictFile(APPROVE) },
-              { file: path.join(REVIEW_VIEW_DIRECTORY, 'notes.txt'), text: 'scratch\n' },
+              { file: '../verdict.json', text: verdictFile(APPROVE) },
+              { file: writtenPath, text: 'scratch\n' },
             ],
           },
         ],
@@ -2558,7 +2600,7 @@ describe('the review command through the CLI', () => {
 
       expect(result.code).toBe(EXIT_INPUT_ERROR);
       expect(result.err).toContain('repository view');
-      expect(result.err).toContain('notes.txt');
+      expect(result.err).toContain(writtenPath.split('/')[0]);
       expect(world.publishedReviews).toEqual([]);
       expect(world.publishedChecks).toEqual([]);
       expect(world.issues[0]?.status).toBe('In Review');
@@ -2573,7 +2615,7 @@ describe('the review command through the CLI', () => {
       const fixture = await reviewCommandFixture({
         world,
         workspace: false,
-        plans: [{ edits: [{ file: 'verdict.json', text: verdictFile(APPROVE) }] }],
+        plans: [{ edits: [{ file: '../verdict.json', text: verdictFile(APPROVE) }] }],
       });
 
       const result = await fixture.run();
@@ -2594,7 +2636,7 @@ describe('the review command through the CLI', () => {
       const world = fakeWorld({ issues: [sourceIssue([WORKSPACE_LABEL])] });
       const fixture = await reviewCommandFixture({
         world,
-        plans: [{ edits: [{ file: 'verdict.json', text: verdictFile(APPROVE) }] }],
+        plans: [{ edits: [{ file: '../verdict.json', text: verdictFile(APPROVE) }] }],
       });
       // The pull request advanced to a head this machine never held: the view
       // cannot be pinned at it, so nothing may be reviewed or published.
@@ -2690,7 +2732,7 @@ describe('the review command through the CLI', () => {
           {
             edits: [
               {
-                file: 'verdict.json',
+                file: '../verdict.json',
                 text: JSON.stringify({ verdict: 'approve', summary: 'Fine.', findings: [] }),
               },
             ],
@@ -2856,6 +2898,21 @@ describe('the reviewer’s repository view', () => {
     // A snapshot, not a channel: the clone keeps no remote at all, and reading
     // it never touches the workspace it came from.
     expect(git(view.path, 'remote')).toBe('');
+    // The disposable view's object files must not share hard links with the
+    // retained coding workspace, even though this is a local clone.
+    expect(
+      (
+        await stat(
+          path.join(
+            view.path,
+            '.git',
+            'objects',
+            workspace.head.slice(0, 2),
+            workspace.head.slice(2),
+          ),
+        )
+      ).nlink,
+    ).toBe(1);
     expect(git(workspace.path, 'status', '--porcelain').trim()).toBe('');
     // The harness's own boundary agrees that nothing in the view changed.
     expect(await reviewViewProblem(view, neverStopped())).toBeNull();

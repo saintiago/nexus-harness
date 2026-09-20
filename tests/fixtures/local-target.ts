@@ -430,6 +430,13 @@ export async function fakePullRequests(
 
 /** One turn's plan, as the stand-in runtime reads it. */
 export interface FakePlan {
+  /** A deterministic reviewer whose verdict depends on real Git and file reads. */
+  readonly reviewInspection?: {
+    readonly file: string;
+    readonly blockingText: string;
+    readonly blockingVerdict: string;
+    readonly clearVerdict: string;
+  };
   /** Named variables whose presence (never values) the runtime records. */
   readonly inspectEnvironment?: readonly string[];
   /** Files to write into the working copy, relative to its root. */

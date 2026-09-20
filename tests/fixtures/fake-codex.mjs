@@ -44,7 +44,7 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { beaconAnswers, randomToken, startBeacon } from './beacon.mjs';
@@ -151,6 +151,36 @@ async function run(prompt) {
     rmSync(path.join(process.cwd(), file), { force: true });
   }
   record('edits-written', { files: (plan.edits ?? []).map((edit) => edit.file) });
+
+  if (plan.reviewInspection !== undefined) {
+    const inspection = plan.reviewInspection;
+    let verdict;
+    try {
+      // This is executed by the runtime process in its actual working directory,
+      // not by the test after the turn. Both ordinary read boundaries must work.
+      const committed = execFileSync('git', ['show', `HEAD:${inspection.file}`], {
+        encoding: 'utf8',
+        timeout: 10_000,
+        windowsHide: true,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      const checkedOut = readFileSync(inspection.file, 'utf8').replaceAll('\r\n', '\n');
+      if (checkedOut !== committed.replaceAll('\r\n', '\n')) {
+        throw new Error('the required file disagrees with the committed content');
+      }
+      const blocking = checkedOut.includes(inspection.blockingText);
+      record('review-inspection', { file: inspection.file, blocking });
+      verdict = blocking ? inspection.blockingVerdict : inspection.clearVerdict;
+    } catch (cause) {
+      record('review-inspection-failed', { file: inspection.file });
+      verdict = JSON.stringify({
+        verdict: 'inconclusive',
+        summary: `Required file/tool access failed: ${String(cause)}`.slice(0, 2000),
+        findings: [],
+      });
+    }
+    writeFileSync(path.join(process.cwd(), '..', 'verdict.json'), verdict, 'utf8');
+  }
 
   const mode = plan.mode ?? 'ok';
   const summary = plan.summary ?? 'the turn is done';

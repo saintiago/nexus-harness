@@ -24,8 +24,7 @@ import type { ReviewView, ReviewViewSource } from './contract.js';
 
 /**
  * The directory inside one review's evidence directory the view is checked out
- * in. The reviewer's own working directory is the evidence directory, so this is
- * the path its prompt names and the only place the snapshot exists.
+ * in. The reviewer runs here; its verdict and logs stay in the parent directory.
  */
 export const REVIEW_VIEW_DIRECTORY = 'repo';
 
@@ -80,6 +79,7 @@ export async function prepareReviewView(
       '--quiet',
       '--no-checkout',
       '--local',
+      '--no-hardlinks',
       '--origin',
       VIEW_REMOTE,
       '--',
@@ -144,8 +144,8 @@ export async function prepareReviewView(
 /**
  * Why the view is no longer a clean snapshot at the head it was pinned at, or
  * `null` when it still is. The head is read back and the working tree is
- * inspected for anything the turn wrote, staged, or committed; ignored files do
- * not count, exactly as Git does not count them as a change.
+ * inspected for anything the turn wrote, staged, or committed, including ignored
+ * files: scratch output is still a change to a review-only snapshot.
  */
 export async function reviewViewProblem(
   view: ReviewView,
@@ -162,7 +162,7 @@ export async function reviewViewProblem(
     }
 
     const status = await viewGit(
-      ['status', '--porcelain=v1', '--untracked-files=normal', '--ignored=no', '--no-renames'],
+      ['status', '--porcelain=v1', '--untracked-files=all', '--ignored=matching', '--no-renames'],
       view.path,
       stop,
     );
