@@ -504,6 +504,8 @@ const AGENTS_SOURCE = [
   '- The project is checked by `node tools/run-checks.mjs`, which runs every file in `test/`.',
   '- Setup is `node tools/prepare.mjs`.',
   '- Keep the tests as they are: fix the code, never the check.',
+  '- Commit your work as you go: the harness starts no further coding turn from a working copy',
+  '  that still holds uncommitted work.',
   '',
 ].join('\n');
 
