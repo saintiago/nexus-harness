@@ -22,6 +22,7 @@ import type {
   QueueCompletionOutcome,
   QueueLoopContext,
   QueueReviewOutcome,
+  QueueRecovery,
   QueueRunMode,
   QueueSummary,
 } from '../src/queue/loop.js';
@@ -141,6 +142,7 @@ interface LoopRun {
 }
 
 interface LoopParts {
+  readonly discover?: () => Promise<QueueRecovery | null>;
   readonly mode?: QueueRunMode;
   readonly take: (request: {
     readonly only: QueueTicket | null;
@@ -199,6 +201,7 @@ async function runLoop(parts: LoopParts): Promise<LoopRun> {
         }),
       pollIntervalMs: parts.pollIntervalMs ?? 30_000,
       completionPollIntervalMs: parts.completionPollIntervalMs ?? 30_000,
+      discover: parts.discover ?? (async () => null),
       consume: (request) =>
         phase(`consume:${request.only?.ref.key ?? 'next'}`, () => {
           takes.push(request.only);
@@ -228,6 +231,68 @@ async function runLoop(parts: LoopParts): Promise<LoopRun> {
 }
 
 describe('the serial queue loop', () => {
+  it('resumes review before unrelated intake without rerunning coding', async () => {
+    const ticket = queueTicket('SAM1-1');
+    let finished = false;
+    const run = await runLoop({
+      discover: async () => (finished ? null : { ticket, phase: 'review' }),
+      take: () => {
+        expect(finished).toBe(true);
+        return nothing;
+      },
+      ready: () => {
+        finished = true;
+      },
+    });
+    expect(run.summary).toMatchObject({ outcome: 'completed', completed: 1, attempts: 0 });
+    expect(run.log[0]).toBe('+review:SAM1-1');
+    expect(run.overlap()).toBe(false);
+  });
+
+  it('resumes a To Do repair by identity before a higher-priority unrelated ticket', async () => {
+    const ticket = queueTicket('SAM1-1');
+    let finished = false;
+    const run = await runLoop({
+      discover: async () => (finished ? null : { ticket, phase: 'repair' }),
+      take: ({ only }) => {
+        expect(only).toEqual(finished ? null : ticket);
+        return finished ? nothing : took(ticket);
+      },
+      ready: () => {
+        finished = true;
+      },
+    });
+    expect(run.summary).toMatchObject({ outcome: 'completed', attempts: 1 });
+    expect(run.takes).toEqual([ticket, null]);
+  });
+
+  it.each(['run', 'watch'] as const)(
+    'stops %s when recovery fails, without intake or agents',
+    async (mode) => {
+      const run = await runLoop({
+        mode,
+        discover: async () => {
+          throw new Error('SAM1-1: unresolved In Progress owner');
+        },
+        take: () => {
+          throw new Error('must not claim');
+        },
+      });
+      expect(run.summary).toMatchObject({ outcome: 'stopped', attempts: 0 });
+      expect(run.summary.problem).toContain('In Progress');
+      expect(run.log).toEqual([]);
+    },
+  );
+
+  it('stops when a recovered repair changes status instead of treating it as empty', async () => {
+    const run = await runLoop({
+      discover: async () => ({ ticket: queueTicket('SAM1-1'), phase: 'repair' }),
+      take: () => nothing,
+    });
+    expect(run.summary.outcome).toBe('stopped');
+    expect(run.summary.problem).toContain('no longer eligible');
+  });
+
   it('finishes two tickets in the order the queue offers them', async () => {
     const offered: QueueTicket[] = [queueTicket('SAM1-1'), queueTicket('SAM1-2')];
 

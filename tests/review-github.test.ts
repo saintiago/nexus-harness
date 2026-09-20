@@ -53,6 +53,43 @@ function clientFixture(
 }
 
 describe('the review GitHub boundary', () => {
+  it('renews the App token after an hour idle and scopes completion workflow reads', async () => {
+    let clock = Date.parse('2026-09-20T12:00:00Z');
+    let issued = 0;
+    const client = createGitHubReviewClient(
+      {
+        type: 'github',
+        repository: 'owner/repo',
+        checkName: 'Nexus Lens review',
+        app: { appId: APP, installationId: 123, privateKeyPathEnv: 'TEST_KEY', login: LOGIN },
+        reviewer: { runtime: 'codex', command: ['codex'] },
+      },
+      pem,
+      {
+        now: () => new Date(clock),
+        completionReads: true,
+        fetch: async (input, init) => {
+          expect(String(input)).toContain('/app/installations/123/access_tokens');
+          expect(JSON.parse(String(init?.body))).toMatchObject({
+            repositories: ['repo'],
+            permissions: { actions: 'read' },
+          });
+          return new Response(
+            JSON.stringify({
+              token: `installation-${String(++issued)}`,
+              expires_at: new Date(clock + 3600000).toISOString(),
+            }),
+          );
+        },
+      },
+    );
+    expect(await client.installationToken(stop)).toBe('installation-1');
+    expect(await client.installationToken(stop)).toBe('installation-1');
+    clock += 3600000;
+    expect(await client.installationToken(stop)).toBe('installation-2');
+    expect(issued).toBe(2);
+  });
+
   it('scopes the installation token and updates an existing app check in place', async () => {
     const { client, calls } = clientFixture(() => ({
       id: 9,

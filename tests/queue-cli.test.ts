@@ -17,7 +17,7 @@ import { runCli } from '../src/cli.js';
 import { EXIT_CANCELLED, EXIT_INPUT_ERROR, EXIT_OK, EXIT_USAGE } from '../src/cli/context.js';
 import type { CliContext, InterruptSignals } from '../src/cli/context.js';
 import { acquireIntakeLock, intakeLockPath } from '../src/sources/receipts.js';
-import { git } from './fixtures/local-target.js';
+import { git, installFakeGhCompletion, fakeCompletionCalls } from './fixtures/local-target.js';
 import { cleanupTempDirectories, createTempDir, writeJsonFile } from './support.js';
 
 afterEach(async () => {
@@ -88,6 +88,7 @@ interface CliFixture {
   readonly lines: string[];
   /** Every request the fake Jira boundary was asked for. */
   readonly requests: string[];
+  readonly queries: string[];
   /** The interrupt handler the command installed, when it installed one. */
   readonly interrupt: () => void;
   readonly release: () => boolean;
@@ -123,6 +124,7 @@ async function cliFixture(parts: {
 
   const lines: string[] = [];
   const requests: string[] = [];
+  const queries: string[] = [];
   let turns = 0;
   let handler: (() => void) | null = null;
   let released = false;
@@ -137,7 +139,8 @@ async function cliFixture(parts: {
     },
   };
 
-  const jiraFetch: typeof fetch = async (input) => {
+  const jiraFetch: typeof fetch = async (input, init) => {
+    queries.push((JSON.parse(String(init?.body)) as { jql: string }).jql);
     const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
     requests.push(url);
     // Every queue read here is the eligible-issues search: answer it with one
@@ -173,6 +176,7 @@ async function cliFixture(parts: {
     configPath,
     lines,
     requests,
+    queries,
     interrupt: () => handler?.(),
     release: () => released,
     turns: () => turns,
@@ -186,6 +190,221 @@ function output(fixture: CliFixture): string {
 }
 
 describe('the queue command line', () => {
+  it.each(['run', 'watch'])(
+    'stops %s on authoritative In Progress ownership before a ready claim',
+    async (mode) => {
+      const fixture = await cliFixture({});
+      const issue = {
+        id: '7',
+        key: 'SAM1-7',
+        fields: {
+          summary: 'Interrupted ticket',
+          status: { name: 'In Progress' },
+          labels: ['harness-task'],
+          project: { key: 'SAM1' },
+          issuetype: { name: 'Task' },
+          updated: '2026-09-20T00:00:00Z',
+        },
+      };
+      const queries: string[] = [];
+      const code = await runCli(
+        ['queue', mode, '--config', fixture.configPath, '--repo', fixture.repo],
+        {
+          ...fixture.context,
+          fetch: async (input, init) => {
+            if (String(input).includes('/search/jql')) {
+              queries.push((JSON.parse(String(init?.body)) as { jql: string }).jql);
+              return new Response(JSON.stringify({ issues: [issue], isLast: true }));
+            }
+            expect(init?.method).toBe('GET');
+            return new Response(JSON.stringify(issue));
+          },
+        },
+      );
+      expect(code).toBe(EXIT_INPUT_ERROR);
+      expect(output(fixture)).toContain('SAM1-7: still In Progress');
+      expect(queries).toHaveLength(1);
+      expect(queries[0]).toContain('status = "In Progress"');
+      expect(fixture.turns()).toBe(0);
+      expect(fixture.release()).toBe(true);
+    },
+  );
+
+  it('resumes an admitted merged In Review ticket, then a restart after Done has no completion effects', async () => {
+    const fixture = await cliFixture({
+      config: (workDir) => {
+        const config = queueConfig(workDir);
+        const review = config['review'] as Record<string, unknown>;
+        const app = review['app'] as Record<string, unknown>;
+        app['appId'] = 123;
+        app['login'] = 'nexus-lens';
+        review['checkName'] = 'Nexus Lens';
+        const completion = (config['delivery'] as Record<string, unknown>)['completion'] as Record<
+          string,
+          unknown
+        >;
+        completion['lensAppId'] = 123;
+        completion['lensApp'] = 'nexus-lens';
+        completion['lensCheckName'] = 'Nexus Lens';
+        return config;
+      },
+    });
+    // Queue mode must not depend on a pre-minted, expiring environment token.
+    delete process.env['NEXUS_LENS_TOKEN'];
+    const root = path.dirname(fixture.configPath);
+    const workDir = path.join(root, 'out');
+    const workspace = 'run-20260101000000-abcdef01';
+    const head = 'a'.repeat(40);
+    const merge = git(fixture.repo, 'rev-parse', 'HEAD').trim();
+    const remote = path.join(root, 'remote.git');
+    git(root, 'clone', '--bare', fixture.repo, remote);
+    git(fixture.repo, 'remote', 'add', 'origin', remote);
+    mkdirSync(path.join(workDir, 'workspaces', workspace), { recursive: true });
+    const logs = path.join(workDir, 'completion-logs', '7');
+    mkdirSync(logs, { recursive: true });
+    await writeFile(
+      path.join(logs, 'completion-armed-head.json'),
+      JSON.stringify({ head, number: 29, waitingSince: null }),
+    );
+    const gh = await installFakeGhCompletion(root);
+    const prUrl = 'https://github.com/saintiago/nexus-harness/pull/29';
+    await writeFile(
+      gh.pullRequestsFile,
+      JSON.stringify({
+        number: 29,
+        url: prUrl,
+        repo: 'saintiago/nexus-harness',
+        state: 'MERGED',
+        isDraft: false,
+        headRefName: `harness/${workspace}`,
+        baseRefName: 'main',
+        headRefOid: head,
+        mergeCommit: { oid: merge },
+      }) + '\n',
+    );
+    await writeFile(
+      gh.reviewsFile,
+      JSON.stringify([
+        {
+          id: 555,
+          url: `${prUrl}#pullrequestreview-555`,
+          author: { login: 'nexus-lens' },
+          state: 'APPROVED',
+          body: 'Approved',
+          commitId: head,
+        },
+      ]),
+    );
+    await writeFile(
+      gh.checksFile,
+      JSON.stringify([
+        { name: 'Nexus Lens', state: 'SUCCESS', conclusion: 'SUCCESS', link: prUrl },
+      ]),
+    );
+    await writeFile(
+      gh.runsFile,
+      JSON.stringify({
+        databaseId: 4242,
+        workflowId: 17,
+        name: 'CI',
+        path: '.github/workflows/ci.yml',
+        event: 'push',
+        status: 'completed',
+        conclusion: 'success',
+        headSha: merge,
+        headBranch: 'main',
+        url: 'https://github.com/saintiago/nexus-harness/actions/runs/4242',
+      }) + '\n',
+    );
+    let status = 'In Review';
+    const comments: unknown[] = [];
+    let moves = 0;
+    let tokens = 0;
+    const context: CliContext = {
+      ...fixture.context,
+      completionParts: {
+        command: gh.command,
+        env: {
+          ...process.env,
+          GH_TOKEN: 'operator-token',
+          FAKE_GH: JSON.stringify({ stateDir: gh.dir, token: 'operator-token' }),
+        },
+      },
+      refreshParts: { fetchUrl: remote },
+      fetch: async (input, init) => {
+        const url = new URL(String(input));
+        const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {};
+        const json = (data: unknown) => new Response(JSON.stringify(data));
+        if (url.hostname === 'api.github.com') {
+          if (url.pathname.endsWith('/access_tokens')) {
+            tokens += 1;
+            return json({ token: 'fresh-app-token', expires_at: '2099-01-01T00:00:00Z' });
+          }
+          expect(url.pathname).toBe('/repos/saintiago/nexus-harness/pulls');
+          return json([]); // Already merged; no reviewer turn may run.
+        }
+        const issue = {
+          id: '7',
+          key: 'SAM1-7',
+          fields: {
+            summary: 'Delivered ticket',
+            status: { name: status },
+            labels: ['harness-task', `harness-ws-${workspace}`],
+            project: { key: 'SAM1' },
+            issuetype: { name: 'Task' },
+            updated: '2026-09-20T00:00:00Z',
+          },
+        };
+        if (url.pathname.endsWith('/search/jql')) {
+          return json({
+            issues: String(body['jql']).includes(`status = "${status}"`) ? [issue] : [],
+            isLast: true,
+          });
+        }
+        if (url.pathname.endsWith('/changelog')) return json({ values: [], isLast: true });
+        if (url.pathname.endsWith('/comment')) {
+          if (init?.method === 'POST') {
+            const comment = {
+              id: String(comments.length + 1),
+              body: body['body'],
+              created: '2026-09-20T12:00:00Z',
+            };
+            comments.push(comment);
+            return json(comment);
+          }
+          return json({ comments, total: comments.length });
+        }
+        if (url.pathname.endsWith('/transitions')) {
+          if (init?.method === 'POST') {
+            expect(body).toEqual({ transition: { id: 'done' } });
+            moves += 1;
+            status = 'Done';
+            return new Response(null, { status: 204 });
+          }
+          return json({ transitions: [{ id: 'done', name: 'Done', to: { name: 'Done' } }] });
+        }
+        expect(url.pathname).toContain('/issue/7');
+        return json(issue);
+      },
+    };
+    const args = ['queue', 'run', '--config', fixture.configPath, '--repo', fixture.repo];
+    expect(await runCli(args, context), output(fixture)).toBe(EXIT_OK);
+    expect(status).toBe('Done');
+    expect(comments).toHaveLength(1);
+    expect(moves).toBe(1);
+    expect(tokens).toBe(1);
+    expect(fixture.turns()).toBe(0);
+    const calls = await fakeCompletionCalls(gh);
+    expect(calls.length).toBeGreaterThan(0);
+    expect(calls.every((call) => call.credential === 'fresh-app-token')).toBe(true);
+    expect(calls.some((call) => call.op === 'merge')).toBe(false);
+    expect(await runCli(args, context)).toBe(EXIT_OK);
+    expect(await fakeCompletionCalls(gh)).toEqual(calls);
+    expect(comments).toHaveLength(1);
+    expect(moves).toBe(1);
+    expect(tokens).toBe(1);
+  });
+
   it('requires one of its two subcommands', async () => {
     const fixture = await cliFixture({ config: queueConfig });
 
@@ -322,7 +541,13 @@ describe('the queue command line', () => {
     expect(output(fixture)).toContain('no eligible ticket');
     expect(output(fixture)).toContain('0 ticket(s) reached the configured Done status');
     expect(fixture.turns()).toBe(0);
-    expect(fixture.requests).toHaveLength(1);
+    expect(fixture.requests).toHaveLength(4);
+    expect(fixture.queries.map((query) => query.match(/AND status = "([^"]+)"/)?.[1])).toEqual([
+      'In Progress',
+      'In Review',
+      'To Do',
+      'To Do',
+    ]);
     expect(fixture.requests[0]).toContain('/rest/api/3/search/jql');
     // The command installed one interrupt handler and let go of it again.
     expect(fixture.release()).toBe(true);
@@ -360,7 +585,13 @@ describe('the queue command line', () => {
     expect(output(fixture)).toContain('queue idle: no eligible ticket');
     expect(output(fixture)).toContain('queue watch: cancelled');
     expect(fixture.turns()).toBe(0);
-    expect(fixture.requests).toHaveLength(1);
+    expect(fixture.requests).toHaveLength(4);
+    expect(fixture.queries.map((query) => query.match(/AND status = "([^"]+)"/)?.[1])).toEqual([
+      'In Progress',
+      'In Review',
+      'To Do',
+      'To Do',
+    ]);
   });
 
   it('exits nonzero on a queue the source cannot answer, instead of polling it', async () => {

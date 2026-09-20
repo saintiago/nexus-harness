@@ -51,6 +51,8 @@ const MAX_EVIDENCE_CHECKS = 30;
 
 /** What a caller may substitute in the transport, for tests. */
 export interface GitHubReviewParts {
+  /** Queue completion also reads post-merge Actions runs. */
+  readonly completionReads?: boolean;
   readonly fetch: typeof fetch;
   readonly now: () => Date;
   /** The API origin; production is {@link GITHUB_API_BASE_URL}. */
@@ -284,7 +286,7 @@ export function createGitHubReviewClient(
   config: GitHubReviewConfig,
   privateKeyPem: string,
   parts: Partial<GitHubReviewParts> = {},
-): ReviewRepository {
+): ReviewRepository & { installationToken(stop: AbortSignal): Promise<string> } {
   const doFetch: typeof fetch =
     parts.fetch ?? ((input, init) => globalThis.fetch(input as string, init));
   const now = parts.now ?? ((): Date => new Date());
@@ -427,6 +429,7 @@ export function createGitHubReviewClient(
           contents: 'read',
           statuses: 'read',
           metadata: 'read',
+          ...(parts.completionReads === true ? { actions: 'read' } : {}),
         },
       },
     });
@@ -480,6 +483,7 @@ export function createGitHubReviewClient(
   };
 
   return {
+    installationToken,
     async findOpenPullRequest(branch: string, stop: AbortSignal): Promise<OpenPullRequest | null> {
       const head = `${owner}:${branch}`;
       const answer = await api({

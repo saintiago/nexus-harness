@@ -68,6 +68,11 @@ export type QueueCompletionOutcome =
   | { readonly state: 'attention'; readonly detail: string }
   | { readonly state: 'cancelled'; readonly detail: string };
 
+export interface QueueRecovery {
+  readonly ticket: QueueTicket;
+  readonly phase: 'review' | 'repair';
+}
+
 /**
  * Everything one queue invocation needs, as ordinary functions and values.
  *
@@ -86,6 +91,8 @@ export interface QueueLoopContext {
   readonly pollIntervalMs: number;
   /** How long the loop waits between two readings of a pending completion. */
   readonly completionPollIntervalMs: number;
+  /** Discover unfinished Jira work before any unrelated ready claim. */
+  readonly discover: () => Promise<QueueRecovery | null>;
   /**
    * Take at most one ticket and carry it through the coding attempt and its
    * delivery. `only` names the ticket a repair must continue; `null` asks for a
@@ -192,69 +199,90 @@ export async function runQueue(
       return cancelled();
     }
 
-    // A fresh eligibility scan, in the source's own order. At most one ticket
-    // comes out of it; nothing is cached and nothing is pre-reserved.
-    const take = await context.consume({ only: null });
-    cleanupConfirmed = cleanupConfirmed && take.cleanupConfirmed;
-    if (stop.aborted || take.outcome === 'cancelled') {
-      return cancelled();
+    let recovery: QueueRecovery | null;
+    try {
+      recovery = await context.discover();
+    } catch (cause) {
+      if (stop.aborted) return cancelled();
+      return stopped(`Queue recovery failed: ${messageOf(cause)}`);
     }
-    if (take.outcome === 'attention') {
-      active = take.ticket;
-      return stopped(describeTake(take));
-    }
-    if (take.outcome === 'empty') {
-      if (mode === 'run') {
-        io.out(
-          completed === 0
-            ? 'queue run: no eligible ticket; nothing was claimed and no run was started'
-            : `queue run: no further eligible ticket after ${String(completed)} completed; the ` +
-                'queue is drained',
-        );
-        return {
-          outcome: 'completed',
-          completed,
-          attempts,
-          problem: null,
-          ticket: null,
-          cleanupConfirmed,
-        };
-      }
-      io.out(
-        `queue idle: no eligible ticket. Waiting ${String(pollSeconds(context.pollIntervalMs))}s ` +
-          'and scanning again; no agent runs while the queue is idle.',
-      );
-      await sleep(context.pollIntervalMs, stop);
-      continue;
-    }
-
-    const ticket = take.ticket;
-    const run = take.run;
-    active = ticket;
-    if (ticket === null || run === null) {
-      return stopped(
-        'the consumer reported a ticket without saying how its attempt ended, so the queue cannot ' +
-          'tell whether its work is finished',
-      );
-    }
-    attempts += 1;
-    io.out(
-      `${ticket.ref.key}: reserved and run ${run.runId} ended ${run.status} (${run.reason})` +
-        (run.pullRequest === null ? '' : `; delivered as ${run.pullRequest.url}`),
-    );
-    if (run.status === 'cancelled') {
-      if (stop.aborted) {
+    if (stop.aborted) return cancelled();
+    active = recovery?.ticket ?? null;
+    if (recovery?.phase !== 'review') {
+      // A fresh eligibility scan, in the source's own order. At most one ticket
+      // comes out of it; nothing is cached and nothing is pre-reserved.
+      const take = await context.consume({ only: recovery?.ticket ?? null });
+      cleanupConfirmed = cleanupConfirmed && take.cleanupConfirmed;
+      if (stop.aborted || take.outcome === 'cancelled') {
         return cancelled();
       }
-      return stopped(describeRun(ticket, run.status, run));
+      if (take.outcome === 'attention') {
+        active = take.ticket;
+        return stopped(describeTake(take));
+      }
+      if (take.outcome === 'empty') {
+        if (recovery !== null) {
+          return stopped(
+            `${recovery.ticket.ref.key}: the recovered repair is no longer eligible; inspect its Jira status before retrying`,
+          );
+        }
+        if (mode === 'run') {
+          io.out(
+            completed === 0
+              ? 'queue run: no eligible ticket; nothing was claimed and no run was started'
+              : `queue run: no further eligible ticket after ${String(completed)} completed; the ` +
+                  'queue is drained',
+          );
+          return {
+            outcome: 'completed',
+            completed,
+            attempts,
+            problem: null,
+            ticket: null,
+            cleanupConfirmed,
+          };
+        }
+        io.out(
+          `queue idle: no eligible ticket. Waiting ${String(pollSeconds(context.pollIntervalMs))}s ` +
+            'and scanning again; no agent runs while the queue is idle.',
+        );
+        await sleep(context.pollIntervalMs, stop);
+        continue;
+      }
+
+      const ticket = take.ticket;
+      const run = take.run;
+      active = ticket;
+      if (ticket === null || run === null) {
+        return stopped(
+          'the consumer reported a ticket without saying how its attempt ended, so the queue cannot ' +
+            'tell whether its work is finished',
+        );
+      }
+      attempts += 1;
+      io.out(
+        `${ticket.ref.key}: reserved and run ${run.runId} ended ${run.status} (${run.reason})` +
+          (run.pullRequest === null ? '' : `; delivered as ${run.pullRequest.url}`),
+      );
+      if (run.status === 'cancelled') {
+        if (stop.aborted) {
+          return cancelled();
+        }
+        return stopped(describeRun(ticket, run.status, run));
+      }
+      if (run.status !== 'passed') {
+        return stopped(describeRun(ticket, run.status, run));
+      }
+    } else {
+      io.out(`${active?.ref.key}: resuming the existing review and completion lifecycle`);
     }
-    if (run.status !== 'passed') {
-      return stopped(describeRun(ticket, run.status, run));
-    }
+    const ticket = active;
+    if (ticket === null) return stopped('Queue recovery did not identify a current ticket');
 
     // The current ticket's serial lifecycle. Only a confirmed Done ends it; a
     // conclusive finding returns to this same ticket before any fresh scan.
     for (;;) {
+      if (stop.aborted) return cancelled();
       const review = await context.review({ ticket });
       if (stop.aborted || review.state === 'cancelled') {
         return cancelled();

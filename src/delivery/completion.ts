@@ -234,10 +234,10 @@ const PULL_FIELDS =
 
 export function createGitHubCompletion(
   config: CompletionConfig,
-  reviewerToken: string,
+  reviewerToken: string | ((stop: AbortSignal) => Promise<string>),
   parts: GitHubCompletionParts = {},
 ): CompletionActions {
-  if (reviewerToken.trim() === '')
+  if (typeof reviewerToken === 'string' && reviewerToken.trim() === '')
     throw new DeliveryError('Missing separate reviewer/reader credential');
   if (config.postMergeWorkflows.length === 0)
     throw new DeliveryError('At least one expected post-merge workflow is required');
@@ -271,7 +271,6 @@ export function createGitHubCompletion(
     )
   )
     throw new DeliveryError('Reviewer and operator credentials must be different');
-  readerEnvironment['GH_TOKEN'] = reviewerToken;
   let sequence = 0;
   const tag = randomBytes(4).toString('hex');
   const execute = async (
@@ -281,6 +280,21 @@ export function createGitHubCompletion(
     mutation = false,
     checks = false,
   ): Promise<unknown> => {
+    let environment = operatorEnvironment;
+    if (!mutation) {
+      const token = typeof reviewerToken === 'string' ? reviewerToken : await reviewerToken(stop);
+      if (token.trim() === '')
+        throw new DeliveryError('Missing separate reviewer/reader credential');
+      if (
+        Object.entries(operatorEnvironment).some(
+          ([key, value]) =>
+            /^(GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|GITHUB_ENTERPRISE_TOKEN)$/i.test(key) &&
+            value === token,
+        )
+      )
+        throw new DeliveryError('Reviewer and operator credentials must be different');
+      environment = { ...readerEnvironment, GH_TOKEN: token };
+    }
     const result = await runCommand({
       command: [parts.command ?? 'gh', ...args],
       cwd: request.workspacePath,
@@ -288,7 +302,7 @@ export function createGitHubCompletion(
       label: `completion-${tag}-${String(++sequence)}`,
       timeoutMs: COMPLETION_COMMAND_TIMEOUT_MS,
       stop,
-      env: mutation ? operatorEnvironment : readerEnvironment,
+      env: environment,
     });
     if (
       result.outcome !== 'exited' ||

@@ -32,7 +32,8 @@ import type { CompletionOutcome } from '../sources/completion.js';
 import type { SourceContext, SourceTake } from '../sources/contract.js';
 import { SourceError } from '../sources/contract.js';
 import { takeOneItem } from '../sources/coordinator.js';
-import { createJiraCompletionSource } from '../sources/jira/completion.js';
+import { discoverQueueWork } from '../sources/jira/queue.js';
+import { createJiraCompletionSource, readReviewItem } from '../sources/jira/completion.js';
 import { createJiraSource } from '../sources/jira/connector.js';
 import { createHttpClient, resolveJiraToken } from '../sources/jira/http.js';
 import { acquireIntakeLock } from '../sources/receipts.js';
@@ -69,32 +70,6 @@ function environmentWithout(environment: NodeJS.ProcessEnv, ...names: string[]):
     }
   }
   return copy;
-}
-
-/**
- * The Nexus Lens reviewer's own credential, resolved from the one environment
- * variable the completion configuration names. It is deliberately a different
- * variable from the operator's GitHub credential: the reviewer's token reads the
- * reviewer's verdict and never enables auto-merge, and the operator's credential
- * never reaches the reviewer. A missing or blank variable is refused before
- * anything runs, with the variable named and no value echoed.
- */
-function resolveReviewerToken(
-  name: string,
-): { token: string; problem: null } | { token: ''; problem: string } {
-  const raw = process.env[name];
-  const token = typeof raw === 'string' ? raw.trim() : '';
-  if (token === '') {
-    return {
-      token: '',
-      problem:
-        `the environment variable ${name} is missing or blank. The queue's completion phase ` +
-        'reads the Nexus Lens reviewer credential from it; it is a different variable from the ' +
-        "operator's own Git/gh credential, which the harness never uses to read the reviewer's " +
-        'verdict.',
-    };
-  }
-  return { token, problem: null };
 }
 
 /** What one queue command is asked for, and everything it needs to answer. */
@@ -296,19 +271,19 @@ async function queueCommand(options: QueueCommandOptions, context: CliContext): 
     }
     throw cause;
   }
-  const reviewer = resolveReviewerToken(completionConfig.reviewerTokenEnv);
-  if (reviewer.problem !== null) {
-    io.err(`error: ${reviewer.problem}`);
-    return EXIT_INPUT_ERROR;
-  }
 
   try {
-    // The three credentials the phases need are resolved here and nowhere else;
-    // each child gets neither the Jira token nor the App key path, and the
+    // The Jira credential and App key are resolved here; the App client renews
+    // installation tokens for completion evidence reads as needed.
+    // Each child gets neither the Jira token nor the App key path, and the
     // reviewer's own token never reaches the coding runtime, the checks, or the
     // operator's own `git`/`gh` commands (docs/architecture.md §9).
     const privateKey = await resolveAppPrivateKey(reviewConfig, process.env);
-    const operatorEnvironment = environmentWithout(process.env, sourceConfig.tokenEnv);
+    const operatorEnvironment = environmentWithout(
+      process.env,
+      sourceConfig.tokenEnv,
+      reviewConfig.app.privateKeyPathEnv,
+    );
     const childEnvironment = environmentWithout(
       operatorEnvironment,
       completionConfig.reviewerTokenEnv,
@@ -338,6 +313,7 @@ async function queueCommand(options: QueueCommandOptions, context: CliContext): 
     const repository = createGitHubReviewClient(reviewConfig, privateKey, {
       ...(context.fetch === undefined ? {} : { fetch: context.fetch }),
       now: () => new Date(),
+      completionReads: true,
     });
     const deliveryParts = context.deliveryParts ?? {};
     const delivery = createGitHubDelivery(deliveryConfig, {
@@ -345,10 +321,14 @@ async function queueCommand(options: QueueCommandOptions, context: CliContext): 
       env: deliveryParts.env ?? childEnvironment,
     });
     const completionParts = context.completionParts ?? {};
-    const completionActions = createGitHubCompletion(completionConfig, reviewer.token, {
-      ...completionParts,
-      env: completionParts.env ?? childEnvironment,
-    });
+    const completionActions = createGitHubCompletion(
+      completionConfig,
+      repository.installationToken,
+      {
+        ...completionParts,
+        env: completionParts.env ?? childEnvironment,
+      },
+    );
 
     // One display for the whole invocation: every attempt of every ticket
     // writes its progress through it, so the pane outlives the runs it shows.
@@ -476,6 +456,7 @@ async function queueCommand(options: QueueCommandOptions, context: CliContext): 
             sleep: abortableSleep,
             pollIntervalMs: sourceConfig.pollIntervalSeconds * 1000,
             completionPollIntervalMs: completionConfig.pollIntervalSeconds * 1000,
+            discover: () => discoverQueueWork(sourceConfig, jiraHttp, stop.signal),
             consume: async ({ only }): Promise<SourceTake> => {
               try {
                 return await takeOneItem(intake, {
@@ -515,6 +496,21 @@ async function queueCommand(options: QueueCommandOptions, context: CliContext): 
                 only: ticket.ref,
               };
               try {
+                // A restarted invocation may find a PR already merged. The
+                // completion pass alone can verify its admission, merge and CI.
+                const item = await readReviewItem(sourceConfig, jiraHttp, ticket, stop.signal);
+                if (
+                  item?.pointers.length === 1 &&
+                  (await repository.findOpenPullRequest(
+                    `harness/${item.pointers[0] ?? ''}`,
+                    stop.signal,
+                  )) === null
+                ) {
+                  return {
+                    state: 'clear',
+                    detail: 'no open PR; completion must verify the previously admitted merge',
+                  };
+                }
                 return reviewPhase(await scanReviews(scan, 1));
               } catch (cause) {
                 if (stop.signal.aborted) {
@@ -545,7 +541,7 @@ async function queueCommand(options: QueueCommandOptions, context: CliContext): 
                 if (stop.signal.aborted) {
                   return { state: 'cancelled', detail: 'the completion reading was stopped' };
                 }
-                if (cause instanceof SourceError) {
+                if (cause instanceof SourceError || cause instanceof ReviewError) {
                   return { state: 'attention', detail: cause.message };
                 }
                 throw cause;
