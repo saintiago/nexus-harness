@@ -98,7 +98,9 @@ Inputs are rejected rather than repaired: unknown keys, wrong types, blank text,
 malformed command arrays, an unsupported `agent` runtime, and an empty or blank `agent` command all
 fail with the file and field named, and no value is coerced or interpolated. The path rules for an
 `agent` executable are applied exactly as a run would apply them, though the resolved prefix is not
-printed. Exit codes: `0` both files are valid, `1` a file could not be read or is invalid, `2` a
+printed. A configuration that selects `delivery` or `review` prints those selections too — the
+repository, queue, check name, and ids, and the _name_ of the variable that holds a credential,
+never a credential value. Exit codes: `0` both files are valid, `1` a file could not be read or is invalid, `2` a
 missing or unknown option. `--task` is optional: without it, the configuration alone is validated —
 which is what a `source` command needs, and what you run before pointing the harness at a Jira queue.
 
@@ -217,9 +219,9 @@ caller supplies.
 | `2`   | Usage error: an unknown command or option, or a missing value.              |
 | `130` | The run was stopped by the user, and was finalized first.                   |
 
-The `source` commands use the same codes. A `source run` that processed only handled failures,
-invalid task descriptions, or a failed publication exits `1`; a watch stopped with Ctrl+C exits
-`130`.
+The `source` and `review` commands use the same codes. A `source run` that processed only handled
+failures, invalid task descriptions, or a failed publication exits `1`; a `review scan` that had to
+report a ticket for coordinator attention exits `1`; a watch stopped with Ctrl+C exits `130`.
 
 No arguments and `--help` print help and exit `0`. A report that could not be written is reported
 with a nonzero code and the run directory that was kept: the CLI never prints a successful
@@ -493,6 +495,116 @@ instead of being retried behind your back. A fresh run still clones the source c
 a continued attempt instead works in the workspace its pointer names, and the commits and
 uncommitted changes the earlier attempts left there are still in it.
 
+## `review`: reviews of In Review tickets through Nexus Lens
+
+The optional `review` object turns on the second half of the Jira-driven loop: the tickets the
+harness has already worked — the ones the same `source` connection reports as **In Review** — are
+reviewed automatically, and each verdict is published to GitHub as one native review plus one
+app-owned check run. It is off unless the configuration asks for it, and it is read-only on Jira: it
+claims nothing, moves nothing, posts no comment, and never marks an issue Done.
+
+```sh
+# Static: validates the review object too. No credential, no network.
+npm start -- check-config --config harness.jira.config.json
+
+# One finite pass over the tickets in the configured review status.
+npm start -- review scan --config harness.jira.config.json
+
+# One pass, then keep scanning with the source's interval until stopped (Ctrl+C).
+npm start -- review watch --config harness.jira.config.json
+
+# Bound the paid reviewer turns one pass starts: a ticket already reviewed costs none.
+npm start -- review scan --config harness.jira.config.json --limit 1
+```
+
+The configuration is one strict object; `docs/harness.review.example.json` is a credential-free
+example to copy, [docs/WORKFLOW.md](docs/WORKFLOW.md) §9 is the field contract, and
+[docs/spec.md](docs/spec.md) §9 is the behaviour. For this installation the App is `nexus-lens`
+(app id `5001141`, installation `163007360`) and the reviewer is the Astra profile:
+
+```json
+{
+  "review": {
+    "type": "github",
+    "repository": "your-org/your-repo",
+    "app": {
+      "appId": 5001141,
+      "installationId": 163007360,
+      "privateKeyPathEnv": "NEXUS_LENS_PRIVATE_KEY_PATH",
+      "login": "nexus-lens[bot]"
+    },
+    "reviewer": {
+      "runtime": "codex",
+      "command": ["codex", "--profile", "nexus-astra", "--model", "gpt-6-astra"]
+    }
+  }
+}
+```
+
+**What one pass does.** A ticket is eligible when it is in the `source` connection's review status
+with the configured project, issue type, and label, it carries exactly one valid
+`harness-ws-<workspaceId>` pointer label, and exactly one open pull request in `repository` has the
+head branch `harness/<workspaceId>`. A ticket whose local intake receipt records a failed or
+cancelled attempt — or a reservation with no finished attempt — is reported too: a review approves
+work, and a pull request that predates the failure is not the successful code awaiting approval.
+Anything else — no pointer, two pointers, no pull request, more than one match — is reported and
+left in review; nothing is published for it. For an eligible
+ticket the scan reads the pull request's changed files and patches, root and relevant nested `AGENTS.md` files at
+the reviewed head, and the head's check runs and combined status, and runs the configured reviewer
+as **one bounded turn** in its own evidence directory under `<workDir>/reviews/`. The reviewer never
+changes files, implements fixes, commits, pushes, merges, or edits the ticket: it writes one verdict
+which the harness validates. `REQUEST_CHANGES` needs at least one finding and is published with
+inline file/line comments where the diff can position them; `APPROVE` is published only for a
+completed verdict with no blocking findings. Before publishing anything, the scan re-reads the pull
+request head and the ticket, so a head that moved — or a ticket that left review — publishes
+nothing and is reviewed again later. Then the verdict becomes one native review pinned to the
+reviewed commit, and one app-owned check run named `Nexus Lens review` on that same head:
+`success` only for an approval, `failure` for a requested change. A missing credential, an
+unavailable tool, an API failure, and incomplete evidence are reported as such, never as an
+approval, and never start a coding turn.
+
+The reviewer can explicitly return `inconclusive`, explaining missing material evidence and what
+the coordinator needs to provide. It publishes neither a native verdict nor a check. Known missing
+patches (including binary files), incomplete patches, or input exceeding the documented bounds
+are refused before a paid turn. Approval requires a completed review with sufficient evidence;
+pending CI alone does not prevent a code review, because CI remains a separate merge requirement.
+
+**A repeated scan does not review an unchanged head twice.** A completed review by the configured
+App login whose `commit_id` is the current head is the native record that the head was reviewed; a
+later commit is a new head and is reviewed again. If a review exists but its check run is missing
+or contradicts the latest native verdict, the next scan creates or updates the app-owned check
+from that verdict instead of reviewing again. An old success cannot substitute for a later
+request for changes. Incomplete native review/check lists require attention. There is no
+local review database and no second coding consumer.
+
+**Operator setup for this installation.** The `nexus-lens` App needs **pull requests: write**,
+**checks: write**, and read access to contents, commit statuses, and metadata, and it must be
+installed on the destination repository. Put the **path** of its private key PEM (never the key
+itself) in the environment variable the configuration names, here
+`NEXUS_LENS_PRIVATE_KEY_PATH`:
+
+```powershell
+$env:NEXUS_LENS_PRIVATE_KEY_PATH = "C:\keys\nexus-lens.pem"
+```
+
+Then require, in the destination's branch rule, **both** the repository's CI check and the
+`Nexus Lens review` check **from this App** (`app5001141`, spelled the way the rule UI shows it). A
+generic "one approving review" rule does not identify Nexus Lens and is not the signal this
+increment provides; the app-owned check on the reviewed head is. The App remains a separate
+identity: installation tokens are restricted to the configured repository and required permissions;
+`delivery` still pushes and opens pull requests with your own `git` and `gh` login, and
+the harness stores no GitHub credential. Start with `review scan --limit 1` and inspect the review,
+the check run, and the evidence under `<workDir>/reviews/` before letting `review watch` run
+unattended.
+
+**What stays outside.** Nothing here merges, enables auto-merge, verifies a merge, or marks an issue
+Done, and no CI result is interpreted: CI is a separate merge requirement. The coordinator — the
+operator or the next increment — enables auto-merge where it is supported, verifies the merged
+outcome, marks Done only for confirmed integration, and returns code changes, CI failures, and
+conflicts to the ready status with the retained pointer and concrete findings. A pending CI run and
+an infrastructure or authentication failure stay In Review for diagnosis rather than triggering
+code repair.
+
 ## Try it on a disposable project
 
 This is the offline-verified example: a throwaway project with a committed, green baseline, and an
@@ -709,11 +821,19 @@ Read this before pointing a run at anything you care about.
   Issue text is context for the coding turn and for review; it can never choose a repository,
   a command, an environment variable, or a limit — but the turn still reads it and can act on its
   content inside the working copy.
+- **An `In Review` issue in the configured queue is an authorization to review and publish.**
+  `review scan` and `review watch` read that queue and, for an eligible ticket with a clearly
+  identified open pull request, publish a native GitHub review and an app-owned check run as the
+  configured App installation. The App's private key path lives in the environment the harness is
+  started in, never in JSON, a task, or a log; the reviewer turn runs with the same unsandboxed
+  reach a coding turn has, is told not to change anything, and is never merged or asked to fix what
+  it finds. Point the App at a repository whose rules you are prepared to gate with its check.
 - **Not implemented, and not planned here:** automatic merging, CI observation on a delivered pull
   request, a provider registry, workflow engines, background services, webhooks, parallel consumers,
-  and a second coding runtime. Delivery opens or updates a pull request and stops there; a human
-  merges it. There is exactly one runtime interface (the Codex CLI), exactly one loop, exactly one
-  implemented task source (Jira), and exactly one optional delivery step (GitHub).
+  and a second coding runtime. Delivery opens or updates a pull request and stops there; reviews
+  record a verdict and stop there; a human or the coordinator merges. There is exactly one runtime
+  interface (the Codex CLI), exactly one loop, exactly one implemented task source (Jira), exactly
+  one optional delivery step (GitHub), and exactly one optional review path.
 
 ## What is verified, and what is not
 
@@ -755,6 +875,17 @@ Read this before pointing a run at anything you care about.
   source CLI path runs the same way, including the link the issue's comment then carries, and a
   configuration without `delivery` still asks GitHub for nothing. Nothing there needs a GitHub
   account, a token, or a network.
+- the optional Nexus Lens review path, against a fake Jira queue, a fake GitHub API, and a real
+  generated RSA test key (`tests/reviews.test.ts`): eligibility and the pointer-to-branch pull
+  request link, a ticket whose local receipt records a failed attempt being reported instead of
+  reviewed, approve and request-changes publishing as the App (a real JWT exchange, a review
+  pinned to the head, inline comments positioned in the diff, one app-owned check run that is
+  successful only for an approval), a head that already carries a completed review starting no
+  reviewer turn, a later or moved head being reviewed again or refused as stale, a missing check
+  being republished from the existing review without a turn, and failed reviewer, evidence, and
+  API paths reported without an approval. The CLI path is exercised end to end with the real
+  adapter and a stand-in `codex` on `PATH`, which writes the verdict file the way a reviewer turn
+  does. Nothing there needs a GitHub App, a key other than a disposable test one, or a network.
 
 **Verified live (`npm run test:live`) on 2026-09-16, through the DeepSeek launch this checkout
 selects:** Codex CLI 0.154.0 answered a read-only connectivity probe, and both exercises then passed
@@ -830,6 +961,12 @@ and only a read.
   request has been created by the harness here. The commands follow `gh`'s documented interface,
   but the live push, the live create-or-update decision, and a live authentication failure have not
   been exercised;
+- **live verification of the corrected Nexus Lens path.** HARN-14's operator notes report an
+  earlier live App-authored request for changes and a failed app-owned check, which exposed review
+  defects. These corrections are verified offline with a fake GitHub API and generated test keys;
+  no live exercise was run for them. The operator must separately verify inline findings, check
+  reconciliation, native approval eligibility, and the configured branch/auto-merge gate. Mocked
+  tests do not establish those outcomes or whether review quality reduces coordinator effort;
 - **the Nexus research-tool profiles.** [docs/nexus-agent-tools.md](docs/nexus-agent-tools.md)
   defines two native Codex profile layers for the Flash and Astra launches. Their TOML and the MCP
   servers they name were checked with the installed CLI 0.154.0 in a temporary Codex home, and the
@@ -996,20 +1133,21 @@ the same launch: the repair exercise in step 1 is already a later turn in one re
 `src/` is a small hierarchy of responsibility-based modules; [docs/module-structure.md](docs/module-structure.md)
 is the full tree, the placement rules, and the steps for adding a source or a runtime.
 
-| Module                    | Responsibility                                                                               |
-| ------------------------- | -------------------------------------------------------------------------------------------- |
-| `src/cli.ts` + `src/cli/` | Arguments, help, exit codes, command dispatch, and top-level wiring. Owns all presentation.  |
-| `src/config/`             | The input schemas and their documented defaults, and reading/validating the two JSON inputs. |
-| `src/shared/`             | The data contracts (data only: no imports, no runtime I/O) and the one message helper.       |
-| `src/process/`            | Starting one command or Git reading, its limit, and stopping its process tree.               |
-| `src/checks/`             | One setup/check round and what a command's result means.                                     |
-| `src/workspace/`          | Preflight, run directory allocation, the working copy, the ledger, and the change summary.   |
-| `src/runs/`               | The order the work happens in: baseline, turns, checks, repair, deadlines, the report.       |
-| `src/reporting/`          | `result.json`, the logs under `<runDir>/logs`, and the change summary.                       |
-| `src/sources/`            | The task-source contract, receipts, eligibility, guidance, and the serial coordinator.       |
-| `src/sources/jira/`       | The Jira Cloud connector: HTTP, search, reads, transitions, comments, the ADF reader.        |
-| `src/delivery/`           | The optional GitHub step: push a passed attempt's branch, create or update its pull request. |
-| `src/agents/codex/`       | The coding runtime: one turn through the Codex CLI, normalized for the runner.               |
+| Module                    | Responsibility                                                                                                                |
+| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `src/cli.ts` + `src/cli/` | Arguments, help, exit codes, command dispatch, and top-level wiring. Owns all presentation.                                   |
+| `src/config/`             | The input schemas and their documented defaults, and reading/validating the two JSON inputs.                                  |
+| `src/shared/`             | The data contracts (data only: no imports, no runtime I/O) and the one message helper.                                        |
+| `src/process/`            | Starting one command or Git reading, its limit, and stopping its process tree.                                                |
+| `src/checks/`             | One setup/check round and what a command's result means.                                                                      |
+| `src/workspace/`          | Preflight, run directory allocation, the working copy, the ledger, and the change summary.                                    |
+| `src/runs/`               | The order the work happens in: baseline, turns, checks, repair, deadlines, the report.                                        |
+| `src/reporting/`          | `result.json`, the logs under `<runDir>/logs`, and the change summary.                                                        |
+| `src/sources/`            | The task-source contract, receipts, eligibility, guidance, and the serial coordinator.                                        |
+| `src/sources/jira/`       | The Jira Cloud connector: HTTP, search, reads, transitions, comments, the ADF reader.                                         |
+| `src/delivery/`           | The optional GitHub step: push a passed attempt's branch, create or update its pull request.                                  |
+| `src/reviews/`            | The optional Nexus Lens path: one scan or watch, the App installation, the reviewer turn, and the published review and check. |
+| `src/agents/codex/`       | The coding runtime: one turn through the Codex CLI, normalized for the runner.                                                |
 
 `src/cli.ts` (and `src/cli/`) depends on the modules below it; nothing depends on `cli.ts`. Helper
 modules never import the CLI, and `src/shared/types.ts` is data only. Both rules are enforced by
@@ -1024,6 +1162,12 @@ adapter plus configuration and CLI wiring, not a change to `Task` or to the loop
 Delivery is not a source and not a connector: `src/delivery/github.ts` is one optional step the
 source command hands to the coordinator, and it starts its `git` and `gh` commands through the same
 bounded runner every configured command uses.
+
+Review is its own optional path, not a source and not delivery: `src/reviews/` reads the Jira queue
+through the existing connector without claiming anything, runs the explicitly configured reviewer
+through the same Codex adapter, and publishes as the configured GitHub App installation. Nothing in
+it merges, changes Jira, or opens a working copy, and a configuration without `review` never
+constructs it.
 
 `.prettierignore` excludes the supplied `AGENTS.md` and `docs/` so those design documents stay
 byte-for-byte as written.
@@ -1066,6 +1210,8 @@ operator's own `gh` credentials, once the check is green —
   rules for placing new code in it.
 - [docs/harness.jira.example.json](docs/harness.jira.example.json) — a credential-free source
   configuration to copy.
+- [docs/harness.review.example.json](docs/harness.review.example.json) — a credential-free
+  configuration with the optional Nexus Lens `review` object, to copy beside a source.
 - [docs/nexus-agent-tools.md](docs/nexus-agent-tools.md) — the two native Codex profile files that
   give a Nexus turn GitHub (read), the OpenAI Docs MCP server, Context7 and Tavily, and keep the
   personal connectors out, with the operator setup and the new-session smoke procedure.
@@ -1081,7 +1227,11 @@ The 2026-09-16 extension added the optional `agent` selection, the selected-laun
 explicit no-approval policy, and the Jira task source with `source list`, `source run`, and
 `source watch`; the workspace-continuation increment — retained workspaces, the
 `harness-ws-<workspaceId>` pointer label, the escalation ladder, and continuation guidance — is
-implemented and verified offline. **A real Jira-driven continuation has since run:** Jira run
+implemented and verified offline. The optional Nexus Lens review path — the `review` object and
+the `review scan` / `review watch` commands, one reviewer turn per unreviewed head, and the native
+review plus app-owned check the merge gate can require from this App — is implemented and verified
+offline; it is opt-in, read-only on Jira, and nothing in it merges or marks an issue Done. **A real
+Jira-driven continuation has since run:** Jira run
 `run-20260919115244-4ff8eedf` claimed HARN-2, continued workspace `run-20260919100148-e48a9ab0` —
 same clone, same recorded base `36f62fd`, attempt 2 — and the attempt's documentation work is the
 local commit `f835c33` on that retained branch: one issue's continuation, not the full supervised
@@ -1089,8 +1239,12 @@ exercise. What remains is listed under
 [What is verified, and what is not](#what-is-verified-and-what-is-not) rather than promised here. The
 next real piece of work is the **supervised live Jira exercise**, still not run: it needs a
 service-account token, a disposable target repository, and an operator who has inspected the queue
-before the first paid call, and its restart, watch, and failure steps have no live evidence. After
-that, a second coding adapter (Claude Code, with its own invocation
+before the first paid call, and its restart, watch, and failure steps have no live evidence. Beside
+it, the coordinator increment — observing CI, enabling GitHub auto-merge where it is supported,
+verifying the merge outcome, marking an issue Done only for confirmed integration, and returning
+code changes, CI failures, and conflicts to the ready status — is not built here, and neither is a
+live `review scan` against the real App installation. After that, a second coding adapter (Claude
+Code, with its own invocation
 and event parser and its own tests — a Claude launcher behind the Codex parser would be a bug), live
 turns on POSIX hosts, and stronger isolation before unattended runs of untrusted repositories.
 Nothing here builds them ahead of a task that needs them.

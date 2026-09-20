@@ -198,37 +198,95 @@ const githubDeliverySchema = z.strictObject({
 /** Validates one `delivery` object: the documented optional field of a config. */
 export const deliverySchema = githubDeliverySchema;
 
-export const harnessConfigSchema = z.strictObject({
-  workDir: nonBlankString('workDir'),
-  maxRepairs: boundedInteger('maxRepairs', 0, 'a nonnegative integer'),
-  taskTimeoutMinutes: boundedInteger('taskTimeoutMinutes', 1, 'a positive integer'),
-  commandTimeoutMinutes: boundedInteger('commandTimeoutMinutes', 1, 'a positive integer'),
-  setup: z.array(commandSchema, { error: 'must be an array of command arrays' }),
-  checks: z
-    .array(commandSchema, { error: 'must be an array of command arrays' })
-    .min(1, { error: 'must contain at least one command' }),
-  agent: agentSchema.optional(),
-  escalation: z
-    .array(
-      z.strictObject({
-        name: nonBlankString('escalation[].name'),
-        agent: agentSchema.optional(),
-        maxRepairs: boundedInteger(
-          'escalation[].maxRepairs',
-          0,
-          'a nonnegative integer',
-        ).optional(),
-      }),
-      { error: 'escalation must be an array of tiers' },
-    )
-    .min(1, { error: 'escalation must hold at least one tier' })
-    .refine((tiers) => new Set(tiers.map((tier) => tier.name)).size === tiers.length, {
-      error: 'escalation tier names must be distinct: two tiers with one name are one tier',
-    })
-    .optional(),
-  delivery: deliverySchema.optional(),
-  source: sourceSchema.optional(),
+/** Documented defaults of the optional GitHub `review` object. */
+export const REVIEW_DEFAULTS = {
+  checkName: 'Nexus Lens review',
+} as const;
+
+/**
+ * The GitHub App installation a review is published as. It carries no
+ * credential: `privateKeyPathEnv` names the environment variable that holds the
+ * path of the App's PEM key, and only a review command reads it
+ * (docs/WORKFLOW.md §9).
+ */
+const githubReviewAppSchema = z.strictObject({
+  appId: boundedInteger('app.appId', 1, 'a positive integer'),
+  installationId: boundedInteger('app.installationId', 1, 'a positive integer'),
+  privateKeyPathEnv: z
+    .string({ error: 'app.privateKeyPathEnv must be a string' })
+    .regex(TOKEN_ENV_PATTERN, {
+      error:
+        'app.privateKeyPathEnv must be an environment-variable name such as "NEXUS_LENS_KEY_PATH"',
+    }),
+  login: nonBlankString('app.login'),
 });
+
+/**
+ * The optional review path. `"github"` is the only implemented type: a
+ * placeholder for a publisher nobody has written would be a way to accept a
+ * configuration the harness cannot honour (docs/WORKFLOW.md §9). The reviewer is
+ * an explicit launch of its own, so a review never runs the tier that
+ * implemented the ticket.
+ */
+const githubReviewSchema = z.strictObject({
+  type: z.literal('github', {
+    error:
+      'must be "github": publishing a native GitHub review and its app-owned check run is the ' +
+      'only review path this harness implements, so another type is rejected rather than ' +
+      'accepted as a placeholder',
+  }),
+  repository: z.string({ error: 'review.repository must be a string' }).regex(REPOSITORY_PATTERN, {
+    error:
+      'review.repository must be the destination on github.com as "owner/name": no host, no URL, ' +
+      'and no path',
+  }),
+  app: githubReviewAppSchema,
+  reviewer: agentSchema,
+  checkName: nonBlankString('review.checkName').default(REVIEW_DEFAULTS.checkName),
+});
+
+/** Validates one `review` object: the documented optional field of a config. */
+export const reviewSchema = githubReviewSchema;
+
+export const harnessConfigSchema = z
+  .strictObject({
+    workDir: nonBlankString('workDir'),
+    maxRepairs: boundedInteger('maxRepairs', 0, 'a nonnegative integer'),
+    taskTimeoutMinutes: boundedInteger('taskTimeoutMinutes', 1, 'a positive integer'),
+    commandTimeoutMinutes: boundedInteger('commandTimeoutMinutes', 1, 'a positive integer'),
+    setup: z.array(commandSchema, { error: 'must be an array of command arrays' }),
+    checks: z
+      .array(commandSchema, { error: 'must be an array of command arrays' })
+      .min(1, { error: 'must contain at least one command' }),
+    agent: agentSchema.optional(),
+    escalation: z
+      .array(
+        z.strictObject({
+          name: nonBlankString('escalation[].name'),
+          agent: agentSchema.optional(),
+          maxRepairs: boundedInteger(
+            'escalation[].maxRepairs',
+            0,
+            'a nonnegative integer',
+          ).optional(),
+        }),
+        { error: 'escalation must be an array of tiers' },
+      )
+      .min(1, { error: 'escalation must hold at least one tier' })
+      .refine((tiers) => new Set(tiers.map((tier) => tier.name)).size === tiers.length, {
+        error: 'escalation tier names must be distinct: two tiers with one name are one tier',
+      })
+      .optional(),
+    delivery: deliverySchema.optional(),
+    source: sourceSchema.optional(),
+    review: reviewSchema.optional(),
+  })
+  .refine((config) => config.review === undefined || config.source !== undefined, {
+    error:
+      'review requires the Jira connection described by "source": a review scans the tickets ' +
+      'that connection reports as being in review, and it carries no connection of its own',
+    path: ['review'],
+  });
 
 /**
  * The launch the harness uses when the configuration names none: the installed
