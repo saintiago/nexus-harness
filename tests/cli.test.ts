@@ -1307,7 +1307,7 @@ describe('the activity pane under the run status', () => {
     expect(raw).toMatch(/\d{2}:\d{2}:\d{2} result: exit 1\n/);
   });
 
-  it('draws the pane with no styling at all when the terminal asks for no color', async () => {
+  it('uses plain output without cursor sequences when the terminal asks for no color', async () => {
     const fixture = await createRunFixture({ agent: reportingAgent() });
     const console = fakeConsole({ columns: 80, rows: 24, color: false });
 
@@ -1321,10 +1321,9 @@ describe('the activity pane under the run status', () => {
     );
 
     expect(result.code).toBe(EXIT_OK);
-    const raw = console.chunks.join('');
-    // The pane still redraws in place, and each line still says when it arrived;
-    // only the styling is gone.
-    expect(raw).toContain('\u001b[');
+    const raw = result.out;
+    expect(console.chunks).toEqual([]);
+    expect(raw).not.toContain('\u001b');
     expect(raw).toMatch(/\d{2}:\d{2}:\d{2} agent: I will change one file\.\n/);
     // eslint-disable-next-line no-control-regex
     expect(raw).not.toMatch(/\u001b\[[0-9;]*m/);

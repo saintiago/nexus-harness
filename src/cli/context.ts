@@ -55,8 +55,8 @@ export interface CliTerminal {
   readonly rows?: number;
   /**
    * Whether the pane may color what it draws; absent means it may. A terminal
-   * whose host asked for no color reports `false`, and the pane then draws the
-   * same lines — timestamps and all — with every color escape sequence left out.
+   * whose host asked for no color reports `false`, selecting plain output with
+   * timestamps and boundaries but no cursor or color escape sequences.
    */
   readonly color?: boolean;
 }

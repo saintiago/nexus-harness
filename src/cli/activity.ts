@@ -38,8 +38,8 @@
  * color. The stamp is the viewer's own clock and nothing more: the runtime's
  * event stream carries no timestamp, so the terminal never implies one. A
  * redirected or too small terminal carries no escape sequences at all; a
- * terminal that asked for no color keeps the pane and the stamps and carries no
- * styling sequence.
+ * terminal that asked for no color gets stamped plain output without cursor or
+ * styling sequences.
  *
  * It is presentation only. Nothing here is evidence of what a turn did: the full
  * runtime output stays in the turn's own agent log, and every decision is made
@@ -129,13 +129,13 @@ export interface ActivityInvocation {
 }
 
 /**
- * The pane as the rest of the CLI uses it: ordinary lines go above it, activity
+ * The pane as the rest of the CLI uses it: ordinary lines follow it, activity
  * goes into it, one invocation's pane becomes a segment of the timeline when it
  * ends, and closing takes the display away again.
  */
 export interface ActivityDisplay {
   /**
-   * Writes one ordinary timeline line, or a block of them, above the pane. Each
+   * Finalizes retained activity before writing an ordinary timeline block. Each
    * logical line is prefixed once with the local time it reaches the viewer; a
    * line the pane's progress reader recognizes is condensed first, and the run
    * wrote a full record of it in the log either way.
@@ -143,8 +143,7 @@ export interface ActivityDisplay {
   line(text: string): void;
   /**
    * Writes one error line, or a block of them, on the CLI's own error stream,
-   * stamped exactly as `line` stamps the ordinary ones and drawn above the pane
-   * rather than through the middle of it.
+   * stamped exactly as `line` stamps the ordinary ones, after retained activity.
    */
   error(text: string): void;
   /**
@@ -194,9 +193,9 @@ export function createActivityDisplay(
   }
   const height = paneHeight(terminal.rows);
   const columns = terminal.columns ?? FALLBACK_COLUMNS;
-  return height === 0 || columns < MIN_COLUMNS
+  return height === 0 || columns < MIN_COLUMNS || terminal.color === false
     ? plainDisplay(io, now)
-    : paneDisplay(terminal.write, io.err, columns - 1, height, now, terminal.color !== false);
+    : paneDisplay(terminal.write, io.err, columns - 1, height, now);
 }
 
 /**
@@ -226,7 +225,6 @@ function paneDisplay(
   width: number,
   height: number,
   now: () => Date,
-  color: boolean,
 ): ActivityDisplay {
   /** The rows of the invocation on screen now; empty between invocations. */
   let groups: ActivityGroup[] = [];
@@ -252,7 +250,7 @@ function paneDisplay(
   };
 
   /**
-   * Writes one ordinary block above the pane, each logical line stamped once
+   * Writes one ordinary block after retained activity, each logical line stamped once
    * with the time the block reached the viewer. A line the progress reader
    * condenses away is left out; one it does not recognize is shown as written.
    */
@@ -266,11 +264,17 @@ function paneDisplay(
       }
       lines.push(stampLine(shown, stamp));
     }
-    erase();
+    if (lines.length === 0) {
+      return;
+    }
+    // Lifecycle output may arrive during a turn (for example on interrupt).
+    // Freeze what preceded it; redrawing those rows below it would reverse
+    // emission order. Subsequent activity resumes below this block, with only
+    // that new segment cursor-managed until the invocation ends.
+    finalize();
     for (const line of lines) {
       emit(line);
     }
-    draw();
   };
 
   /** Writes one ordinary block with no pane on screen to draw under it. */
@@ -343,7 +347,7 @@ function paneDisplay(
     activity: (activity) => {
       // The entry's receive time, read once here: a redraw later draws this very
       // line again, never a freshly stamped one.
-      const text = paneLine(activity, displayTime(now()), width, color);
+      const text = paneLine(activity, displayTime(now()), width);
       if (closed) {
         write(`${text}\n`);
         return;
@@ -548,10 +552,10 @@ function describe(activity: AgentActivity): string {
  * color and reset again. The highlight is applied after the fit, so its escape
  * sequences never consume a display cell and never change what was cut.
  */
-function paneLine(activity: AgentActivity, stamp: string, width: number, color: boolean): string {
+function paneLine(activity: AgentActivity, stamp: string, width: number): string {
   const head = `${stamp} `;
   const line = truncate(`${head}${describe(activity)}`, width);
-  if (!color || activity.kind !== 'message') {
+  if (activity.kind !== 'message') {
     return line;
   }
   // Split after the timestamp, so the stamp keeps the terminal's ordinary color

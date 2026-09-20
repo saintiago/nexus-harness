@@ -363,8 +363,7 @@ describe('the activity pane', () => {
     const terminal = fakeConsole({ columns: 40, rows: 24 });
     const pane = createActivityDisplay(terminal.io, CLOCK);
     // Every ordinary line carries the emission time too, and the one that
-    // reaches the terminal by the error route is written above the pane
-    // rather than through the middle of it.
+    // reaches the terminal by the error route follows the retained activity.
     const progress = [`${STAMP} HARN-16: implementation`];
     const latest: string[] = [];
     pane.line('HARN-16: implementation');
@@ -377,6 +376,8 @@ describe('the activity pane', () => {
       expect(screenAfter(terminal.chunks, 40)).toEqual([...progress, ...latest]);
       if (index === 14) {
         pane.line('HARN-16: repair 1');
+        progress.push(...latest);
+        latest.length = 0;
         progress.push(`${STAMP} HARN-16: repair 1`);
         pane.error('diagnostic');
         progress.push(`${STAMP} diagnostic`);
@@ -398,22 +399,20 @@ describe('the activity pane', () => {
     ]);
   });
 
-  it('writes an error block above the pane, stamped line by line', () => {
+  it('writes an error block after prior activity, stamped line by line', () => {
     const terminal = fakeConsole(FULL_TERMINAL);
     const pane = createActivityDisplay(terminal.io, CLOCK);
     pane.activity({ kind: 'command', text: 'step 1' });
     // The CLI's own error stream reaches the same console: a block written
-    // there is stamped like every other line and is drawn above the pane,
-    // never into the middle of it.
+    // there is stamped like every other line and follows prior activity.
     pane.error('sj-1: skipped, not a usable task\nand one more line');
     pane.activity({ kind: 'command', text: 'step 2' });
 
-    // The diagnostic takes the pane's old place, directly under the progress,
-    // and the pane is drawn again beneath it.
+    // The diagnostic separates frozen prior activity from the new active rows.
     expect(screenAfter(terminal.chunks)).toEqual([
+      stamped('run', 'step 1'),
       `${STAMP} sj-1: skipped, not a usable task`,
       `${STAMP} and one more line`,
-      stamped('run', 'step 1'),
       stamped('run', 'step 2'),
     ]);
     pane.close();
@@ -479,15 +478,14 @@ describe('the pane’s timestamps and message highlight', () => {
     pane.activity({ kind: 'command', text: 'npm test' });
     expect(clock.reads()).toBe(2);
 
-    // A later progress line redraws the whole history: the first entry keeps
-    // the time it arrived at, although the clock has moved on by then, and the
-    // progress line itself carries the one time it was emitted at.
+    // Later progress freezes the history with its original receive times,
+    // then follows it with the time the progress itself was emitted at.
     clock.set(new Date(2026, 8, 20, 10, 0, 0));
     pane.line('phase changed');
     expect(screenAfter(terminal.chunks)).toEqual([
-      '10:00:00 phase changed',
       '09:41:07 agent: first',
       '09:41:08 run: npm test',
+      '10:00:00 phase changed',
     ]);
     // Three reads: one per activity entry, and one for the progress emission.
     expect(clock.reads()).toBe(3);
@@ -553,13 +551,8 @@ describe('the pane’s timestamps and message highlight', () => {
       stamped('agent', 'plain, please'),
       stamped('run', 'npm test'),
     ]);
-    // Still the pane — it redraws in place — but nothing in it needs a reset.
-    expect(terminal.chunks.some((chunk) => chunk.startsWith('\u001b'))).toBe(true);
-    for (const chunk of drawnLines(terminal.chunks)) {
-      // eslint-disable-next-line no-control-regex
-      expect(chunk).not.toMatch(/\u001b\[[0-9;]*m/);
-    }
     pane.close();
+    expect(terminal.chunks.join('')).not.toContain('\u001b');
   });
 });
 
@@ -699,6 +692,60 @@ describe('a terminal that cannot hold a pane', () => {
 // ---------------------------------------------------------------------------
 
 describe('the invocation timeline', () => {
+  it.each([
+    { name: 'interactive', size: FULL_TERMINAL },
+    { name: 'redirected', size: undefined },
+    { name: 'no-color', size: { ...FULL_TERMINAL, color: false } },
+    { name: 'narrow', size: { columns: 10, rows: 24 } },
+    { name: 'short', size: { columns: 80, rows: 3 } },
+  ])('preserves interleaved lifecycle order on a $name terminal', ({ size, name }) => {
+    const terminal = fakeConsole(size);
+    const io = size === undefined ? { out: terminal.io.out, err: terminal.io.err } : terminal.io;
+    let second = 0;
+    const pane = createActivityDisplay(io, () => new Date(2026, 8, 20, 9, 41, second++));
+    pane.beginInvocation({ role: 'developer', ticket: 'HARN-1' });
+    pane.activity({ kind: 'message', text: 'implementing' });
+    pane.line('still running\nwaiting for the turn');
+    const frozen = screenAfter(terminal.chunks);
+    pane.activity({ kind: 'message', text: 'checking the change' });
+    pane.activity({ kind: 'command', text: 'npm test' });
+    expect(screenAfter(terminal.chunks).slice(0, frozen.length)).toEqual(frozen);
+    pane.endInvocation();
+    pane.line('implementation completed');
+    pane.beginInvocation({ role: 'reviewer', ticket: 'HARN-1' });
+    pane.activity({ kind: 'message', text: 'reviewing' });
+    pane.error('interrupt received\nwaiting for cleanup');
+    pane.activity({ kind: 'message', text: 'cleanup finished' });
+    // Opening another invocation also finalizes the preceding one.
+    pane.beginInvocation({ role: 'developer', ticket: 'HARN-2', phase: 'repair turn 1' });
+    pane.activity({ kind: 'message', text: 'repairing' });
+    pane.close();
+    pane.close();
+    pane.line('queue stopped');
+
+    expect(screenAfter(terminal.chunks)).toEqual([
+      '09:41:00 ---- developer: HARN-1 ----',
+      '09:41:01 agent: implementing',
+      '09:41:02 still running',
+      '09:41:02 waiting for the turn',
+      '09:41:03 agent: checking the change',
+      '09:41:04 run: npm test',
+      '09:41:05 implementation completed',
+      '09:41:06 ---- reviewer: HARN-1 ----',
+      '09:41:07 agent: reviewing',
+      '09:41:08 interrupt received',
+      '09:41:08 waiting for cleanup',
+      '09:41:09 agent: cleanup finished',
+      '09:41:10 ---- developer: HARN-2 — repair turn 1 ----',
+      '09:41:11 agent: repairing',
+      '09:41:12 queue stopped',
+    ]);
+    expect(second).toBe(13);
+    if (name !== 'interactive') {
+      expect(terminal.chunks.join('')).not.toContain('\u001b');
+    }
+  });
+
   it('keeps developer, reviewer, and next developer panes separate and in order', () => {
     const terminal = fakeConsole(FULL_TERMINAL);
     const pane = createActivityDisplay(terminal.io, CLOCK);
@@ -786,10 +833,44 @@ describe('the invocation timeline', () => {
     pane.close();
   });
 
+  it('bounds resumed activity without redrawing across a lifecycle block', () => {
+    const terminal = fakeConsole(FULL_TERMINAL);
+    const pane = createActivityDisplay(terminal.io, CLOCK);
+    pane.beginInvocation({ role: 'developer', ticket: 'HARN-1' });
+    pane.activity({ kind: 'message', text: 'before progress' });
+    pane.line('still running');
+    const frozen = screenAfter(terminal.chunks);
+    const resumedAt = terminal.chunks.length;
+    for (let index = 1; index <= 25; index += 1) {
+      pane.activity({ kind: 'message', text: `after progress ${String(index)}` });
+      const screen = screenAfter(terminal.chunks);
+      expect(screen.slice(0, frozen.length)).toEqual(frozen);
+      expect(screen.length - frozen.length).toBeLessThanOrEqual(20);
+    }
+    for (let index = 1; index <= 5; index += 1) {
+      pane.activity({ kind: 'command', text: `step ${String(index)}` });
+      expect(screenAfter(terminal.chunks).length - frozen.length).toBe(20);
+    }
+    pane.endInvocation();
+    const screen = screenAfter(terminal.chunks);
+    expect(screen.slice(0, frozen.length)).toEqual(frozen);
+    expect(screen.slice(frozen.length)).toEqual([
+      // At capacity, older work is removed before messages; the newest work
+      // remains visible without exceeding the twenty-row bound.
+      ...Array.from({ length: 19 }, (_, offset) =>
+        stamped('agent', `after progress ${String(offset + 7)}`),
+      ),
+      stamped('run', 'step 5'),
+    ]);
+    expect(terminal.chunks.slice(resumedAt).join('')).not.toContain('before progress');
+    pane.close();
+  });
+
   it.each([
     { name: 'redirected', size: undefined },
     { name: 'too narrow', size: { columns: 10, rows: 24 } },
     { name: 'too short', size: { columns: 80, rows: 3 } },
+    { name: 'no-color', size: { ...FULL_TERMINAL, color: false } },
   ])('keeps the boundaries, the stamps and no escape sequence on a $name terminal', ({ size }) => {
     const terminal = fakeConsole(size);
     const io = size === undefined ? { out: terminal.io.out, err: terminal.io.err } : terminal.io;
@@ -827,12 +908,9 @@ describe('the invocation timeline', () => {
     pane.line('HARN-3: Nexus Lens approved it');
     pane.close();
 
-    // The pane still redraws in place, and every row it draws says when it
-    // arrived; what is gone is the styling (HARN-18).
+    // No-color terminals keep the timeline without cursor or styling sequences.
     const raw = terminal.chunks.join('');
-    expect(raw).toContain('\u001b[');
-    // eslint-disable-next-line no-control-regex
-    expect(raw).not.toMatch(/\u001b\[[0-9;]*m/);
+    expect(raw).not.toContain('\u001b');
     expect(screenAfter(terminal.chunks)).toEqual([
       boundary('reviewer', 'HARN-3', 'review'),
       stamped('agent', 'reading the diff'),

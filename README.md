@@ -983,8 +983,8 @@ counted, and control characters in runtime text are never written as terminal co
 above keeps the task, the phase, and the selected model readable; the startup inventory — receipt
 paths, IDs, hashes, launch arguments — stays in the run log. A redirected, noninteractive, too small,
 or too narrow terminal gets every line — the boundaries included — as stamped ordinary output
-instead, with no cursor or color sequence at all; `NO_COLOR` in the environment keeps the pane and
-the timestamps but drops the highlighting. The full runtime output always stays in the turn's own
+instead, with no cursor or color sequence at all; `NO_COLOR` selects the same plain output
+with timestamps and role boundaries. The full runtime output always stays in the turn's own
 `logs/agent-*.log`.
 
 **5. Look at it, then delete it.**

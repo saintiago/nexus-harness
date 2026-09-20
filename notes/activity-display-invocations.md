@@ -42,8 +42,8 @@ the messages that go to the error stream — is stamped with the same compact lo
 `HH:mm:ss`, one read per emission and one stamp per logical line, so a multi-line
 block keeps its wording and gains a time on every line. A redirected,
 noninteractive, too narrow, or too short terminal gets the boundaries and the
-stamps with no cursor or color sequence at all; `NO_COLOR` keeps the pane and the
-timestamps and drops only the styling. The reporter stays presentation only: the
+stamps with no cursor or color sequence at all; `NO_COLOR` now selects the same
+plain output (corrected during the review repair below). The reporter stays presentation only: the
 run log, each turn's own log, the report, and every decision read from them are
 untouched.
 
@@ -120,3 +120,22 @@ in order.
   come from that run and are not a claim about any other machine.
 - Resize handling is still outside the pane, and ambiguous-width characters still
   follow the `string-width` convention (notes/activity-display-width.md).
+
+## Review repair: lifecycle output during an invocation
+
+The first implementation finalized panes between turns but still placed lifecycle
+output arriving during a turn above its earlier activity. That reversed receive
+order, particularly for interrupt diagnostics. The display now freezes the retained
+activity before emitting a lifecycle block; subsequent activity resumes below it,
+and cursor redraws cannot reach the frozen segment. The resumed pane retains the
+same twenty-row bound and message/work retention policy.
+
+The task also requires no cursor sequences for no-color terminals. `NO_COLOR` now
+selects the plain-output fallback, retaining timestamps and invocation boundaries.
+This supersedes the earlier behavior that disabled only highlighting.
+
+Deterministic tests interleave developer, reviewer and next-ticket repair activity
+with ordinary and multiline error output using an advancing clock. They check exact
+chronological order, stable earlier segments, one timestamp per emission, repeated
+cleanup, resumed activity bounds, and all plain-output fallbacks. These remain
+offline tests; this repair did not run a live Jira or coding-agent exercise.
