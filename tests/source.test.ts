@@ -1758,6 +1758,148 @@ describe('the escalation ladder', () => {
     expect(fixture.log.filter((entry) => entry.startsWith('workspace:'))).toHaveLength(1);
   });
 
+  it('restarts review-requested rework at the first tier, with the returned guidance', async () => {
+    const workDir = await createTempDir();
+    // Two attempts an earlier cycle spent the whole ladder with, in the clone and
+    // ledger the next claim continues. The workspace's attempt history says
+    // three; the escalation index of the new cycle is not read from it.
+    const { workspaceId, sourceRoot } = await preparedWorkspaceOnDisk(workDir, [
+      { outcome: 'failed', reason: 'flash left the marker wrong', tier: 'flash' },
+      { outcome: 'failed', reason: 'astra left the marker wrong', tier: 'astra' },
+    ]);
+    const fixture = createFixture({
+      workDir,
+      tiers: TIERS,
+      scans: [[candidateFor('2', 'SAM1-2')]],
+      prepare: (candidate) => preparedFor(candidate, [workspaceId]),
+      preflight: () => Promise.resolve({ sourceRoot, baseCommit: 'base' }),
+      commentsSince: () => [
+        {
+          author: 'Nexus Lens',
+          createdAt: '2026-01-03T09:00:00.000Z',
+          text: 'the reviewer asked for the marker to end in a newline',
+        },
+      ],
+    });
+
+    const summary = await runSource(fixture.context, null);
+
+    expect(summary.passed).toBe(1);
+    // The first developer invocation of a new cycle is the first tier, whatever
+    // the workspace's own attempt count has reached.
+    expect(fixture.requests.map((request) => request.tier)).toEqual(['flash']);
+    expect(fixture.requests[0]?.continued).toBe(true);
+    expect(fixture.requests[0]?.continuedWorkspace?.attempt).toBe(3);
+    // The returned guidance travels with it: what the attempts before it did,
+    // and what the reviewer wrote after the last of them ended.
+    expect(fixture.requests[0]?.guidance).toEqual([
+      'attempt 1 (tier flash) failed: flash left the marker wrong',
+      'attempt 2 (tier astra) failed: astra left the marker wrong',
+      'comment by Nexus Lens at 2026-01-03T09:00:00.000Z: ' +
+        'the reviewer asked for the marker to end in a newline',
+    ]);
+    // This cycle's own ladder may still climb; this attempt passed, so it did
+    // not, and the issue is told the result once.
+    expect(fixture.progresses).toEqual([]);
+    expect(fixture.completions).toHaveLength(1);
+  });
+
+  it('starts the next cycle at the first tier after a baseline-only failure', async () => {
+    const workDir = await createTempDir();
+    // The attempt the ledger records ran no coding turn at all: the baseline was
+    // red, so no tier was spent. Once the baseline is repaired and the issue is
+    // back in the ready status, the first developer invocation of the new cycle
+    // is the first tier — not the rung the recorded attempt count would map to.
+    const { workspaceId, sourceRoot } = await preparedWorkspaceOnDisk(workDir, [
+      {
+        outcome: 'failed',
+        reason: 'the baseline checks did not pass, so no coding turn was started',
+        tier: 'flash',
+      },
+    ]);
+    const fixture = createFixture({
+      workDir,
+      tiers: TIERS,
+      scans: [[candidateFor('2', 'SAM1-2')]],
+      prepare: (candidate) => preparedFor(candidate, [workspaceId]),
+      preflight: () => Promise.resolve({ sourceRoot, baseCommit: 'base' }),
+    });
+
+    const summary = await runSource(fixture.context, null);
+
+    expect(summary.passed).toBe(1);
+    expect(fixture.requests.map((request) => request.tier)).toEqual(['flash']);
+    // The workspace's own history still counts the attempt that failed: this run
+    // is its second, and the ledger says so.
+    expect(fixture.requests[0]?.continuedWorkspace?.attempt).toBe(2);
+  });
+
+  it('does not climb when the run ended before any coding turn', async () => {
+    const workDir = await createTempDir();
+    // A red baseline on a fresh workspace, or a setup command that could not be
+    // executed, ends the run before any developer ran. That is not an exhausted
+    // rung, so the stronger tier is not spent on it: the work continues in a new
+    // cycle instead.
+    const fixture = createFixture({
+      workDir,
+      tiers: TIERS,
+      scans: [[candidateFor('1')]],
+      run: (_task, _call, runDir) =>
+        Promise.resolve(resultContinuing(runDir, { workspaceId: 'run-1', attempt: 1 }, 'failed')),
+    });
+
+    const summary = await runSource(fixture.context, null);
+
+    expect(summary.outcome).toBe('completed');
+    expect(summary.failed).toBe(1);
+    expect(fixture.requests.map((request) => request.tier)).toEqual(['flash']);
+    expect(fixture.progresses).toEqual([]);
+    expect(fixture.completions).toHaveLength(1);
+    expect(fixture.output.join('\n')).not.toContain('escalating to tier');
+  });
+
+  it("does not climb while the rung's own repair allowance is unspent", async () => {
+    const workDir = await createTempDir();
+    // Astra is for a tier that really used everything it was allowed: a red run
+    // that reports fewer repair turns than its own tier allows is not exhausted,
+    // so the next tier is not selected for it.
+    const allowance: readonly EscalationTier[] = [
+      {
+        name: 'flash',
+        agent: { runtime: 'codex', command: ['codex', '--model', 'deepseek-flash'] },
+        maxRepairs: 2,
+      },
+      {
+        name: 'pro',
+        agent: { runtime: 'codex', command: ['codex', '--model', 'deepseek-pro'] },
+        maxRepairs: 2,
+      },
+    ];
+    const fixture = createFixture({
+      workDir,
+      tiers: allowance,
+      scans: [[candidateFor('1')]],
+      run: (_task, _call, runDir) =>
+        Promise.resolve(
+          resultContinuing(
+            runDir,
+            { workspaceId: 'run-1', attempt: 1 },
+            'failed',
+            redRoundAttempts(),
+          ),
+        ),
+    });
+
+    const summary = await runSource(fixture.context, null);
+
+    expect(summary.outcome).toBe('completed');
+    expect(summary.failed).toBe(1);
+    expect(fixture.requests.map((request) => request.tier)).toEqual(['flash']);
+    expect(fixture.progresses).toEqual([]);
+    expect(fixture.completions).toHaveLength(1);
+    expect(fixture.output.join('\n')).not.toContain('escalating to tier');
+  });
+
   it('does not climb when the first tier passes', async () => {
     const workDir = await createTempDir();
     const fixture = createFixture({ workDir, tiers: TIERS, scans: [[candidateFor('1')]] });
@@ -4356,7 +4498,7 @@ describe('the source commands through the CLI', () => {
     }
   });
 
-  it('runs a re-armed continuation at the rung its attempt count has reached', async () => {
+  it('restarts a re-armed continuation at the first tier, keeping its workspace and its history', async () => {
     const ladder: readonly EscalationTier[] = [
       {
         name: 'flash',
@@ -4401,8 +4543,10 @@ describe('the source commands through the CLI', () => {
           { edits: [{ file: 'MARKER.md', text: 'not yet\n' }], summary: 'flash: still wrong' },
           { edits: [{ file: 'MARKER.md', text: 'not yet\n' }], summary: 'astra: first try' },
           { edits: [{ file: 'MARKER.md', text: 'not yet\n' }], summary: 'astra: still wrong' },
-          // The re-armed issue is continued at the ladder's top rung.
-          { edits: [{ file: 'MARKER.md', text: 'done\n' }], summary: 'astra: finished it' },
+          // The re-armed issue is a new coding cycle, so it starts at the first
+          // tier again — in the same retained workspace, with everything the
+          // earlier cycles left in it.
+          { edits: [{ file: 'MARKER.md', text: 'done\n' }], summary: 'flash: finished it' },
         ],
         async () => {
           const first = await runSourceCli(argv, target.directory, { fetch: jira.fetch });
@@ -4410,8 +4554,9 @@ describe('the source commands through the CLI', () => {
           expect(jira.issues[0]?.status).toBe('In Review');
 
           // The operator puts the issue back to work; its pointer label still
-          // names the workspace, so the next intake continues it — at attempt 3
-          // of the ladder, which is its top rung, Astra.
+          // names the workspace, so the next intake continues it — and because
+          // escalation is local to one coding cycle, that cycle starts at its
+          // first tier again: Flash, in the same clone.
           if (jira.issues[0] === undefined) {
             throw new Error('the fixture issue disappeared');
           }
@@ -4424,14 +4569,27 @@ describe('the source commands through the CLI', () => {
       expect(run.second.err).toBe('');
       expect(run.second.code).toBe(EXIT_OK);
       expect(run.second.out).toContain('1 passed');
-      // One attempt was made, in the same workspace, by the tier the attempt
-      // count maps to: the stronger launch really is what Astra's comment says.
+      // One attempt was made, in the same workspace, by the first tier of the
+      // new cycle: the weaker launch really ran, not the rung the workspace's
+      // attempt count would have mapped to.
       const turns = await fakeTurns(runtime.state);
       expect(turns).toHaveLength(5);
-      expect(turns[4]?.argv.slice(0, 2)).toEqual(['--profile', 'nexus-astra']);
+      expect(turns[4]?.argv.slice(0, 2)).toEqual(['--profile', 'nexus-flash']);
+      // The new cycle's attempt is told what the earlier cycles did and what the
+      // item's own thread said since: the ledger's lines for both attempts
+      // before it, and the harness's own comment for the rung before it.
+      const prompt = turns[4]?.prompt ?? '';
+      expect(prompt).toContain('attempt 1 (tier flash) failed');
+      expect(prompt).toContain('attempt 2 (tier astra) failed');
+      expect(prompt).toContain('comment by Harness');
+      expect(prompt).toContain('finished: failed');
       // The reports are ordered by the attempt each one records, not by their
       // directory names: run IDs have second resolution, so two runs of one
       // intake can share a second and sorting the names could reverse them.
+      // The workspace attempt history is truthful and separate from the cycle's
+      // own escalation index: the re-armed attempt is attempt 3 of the
+      // workspace, and its report records that, while the ladder it climbed
+      // started at its first rung.
       const reports = await reportsByAttempt(target.workDir);
       expect(reports.map((report) => report.status)).toEqual(['failed', 'failed', 'passed']);
       expect(reports.map((report) => report.workspace.attempt)).toEqual([1, 2, 3]);
@@ -4440,16 +4598,29 @@ describe('the source commands through the CLI', () => {
       expect(continued?.agent.command).toEqual([
         'codex',
         '--profile',
-        'nexus-astra',
+        'nexus-flash',
         '--model',
-        'gpt-6-astra',
+        'deepseek-flash',
       ]);
       expect(continued?.workspace.continued).toBe(true);
       expect(continued?.workspace.attempt).toBe(3);
       expect(jira.issues[0]?.status).toBe('In Review');
       expect(jira.comments).toHaveLength(3);
       expect(jira.comments[2]).toContain('finished: passed');
-      expect(jira.comments[2]).toContain('(tier astra)');
+      // The comment names the rung of the cycle it ran in, while the run's
+      // report and the ledger keep the workspace's own attempt count.
+      expect(jira.comments[2]).toContain('Attempt 1 of 2 (tier flash)');
+      // The ledger keeps every attempt, in order, with the tier that ran it: the
+      // escalation index restarted, the workspace's history did not.
+      const workspaceId = continued?.workspace.workspaceId ?? '';
+      const ledger = JSON.parse(
+        await readFile(path.join(target.workDir, 'workspaces', `${workspaceId}.json`), 'utf8'),
+      ) as { attempts?: Array<{ tier?: string; outcome?: string }> };
+      expect(ledger.attempts?.map((attempt) => [attempt.tier, attempt.outcome])).toEqual([
+        ['flash', 'failed'],
+        ['astra', 'failed'],
+        ['flash', 'passed'],
+      ]);
     } finally {
       if (previous === undefined) {
         delete process.env.JIRA_API_TOKEN;
