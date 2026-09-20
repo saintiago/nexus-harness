@@ -167,6 +167,12 @@ export interface BaselineDiagnosisParts {
   readonly readyStatus: string;
   /** The status a non-actionable diagnosis leaves the item in. */
   readonly reviewStatus: string;
+  /**
+   * How long one reviewer turn may run before it is stopped, in milliseconds.
+   * The turn is bounded like every other launch the harness starts: a reviewer
+   * that never answers cannot hold the intake open.
+   */
+  readonly reviewerTimeoutMs: number;
   /** `<workDir>`: where the diagnosis's own evidence directories are kept. */
   readonly workDir: string;
   readonly io: SourceIo;
@@ -177,7 +183,7 @@ export interface BaselineDiagnosisParts {
  * for every red baseline that command observes.
  */
 export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): BaselineDiagnosis {
-  const { reviewer, record, readyStatus, reviewStatus, workDir, io } = parts;
+  const { reviewer, record, readyStatus, reviewStatus, reviewerTimeoutMs, workDir, io } = parts;
 
   /**
    * One outcome for a step that did not finish: a stop the caller asked for is
@@ -267,12 +273,19 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
       );
       let reviewed: BaselineReviewResult;
       try {
+        // The one turn is bounded like every other launch: the run's own stop
+        // request, and a limit of its own so a reviewer that never answers
+        // cannot hold the intake open.
+        const turnStop = AbortSignal.any([
+          stop,
+          AbortSignal.timeout(Math.max(1, reviewerTimeoutMs)),
+        ]);
         reviewed = await reviewer({
           dir,
           item,
           workspace: { path: workspace.workspacePath, baseCommit: workspace.baseCommit },
           baseline,
-          stop,
+          stop: turnStop,
         });
       } catch (cause) {
         reviewed = {

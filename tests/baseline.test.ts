@@ -214,6 +214,7 @@ function phaseFor(parts: {
       record: parts.record,
       readyStatus: parts.readyStatus ?? 'To Do',
       reviewStatus: parts.reviewStatus ?? 'In Review',
+      reviewerTimeoutMs: 60_000,
       workDir: parts.workDir,
       io: { out: (text) => out.push(text), err: (text) => out.push(text) },
     }),
@@ -463,6 +464,43 @@ describe('the pre-delivery baseline diagnosis', () => {
     expect(outcome.kind).toBe('cancelled');
     expect(reviewer.requests).toEqual([]);
     expect(record.posted).toEqual([]);
+  });
+
+  it('bounds the one reviewer turn instead of waiting for it forever', async () => {
+    const workDir = await createTempDir();
+    const record = fakeRecord();
+    let bounded = false;
+    const reviewer: BaselineReview = async (request) => {
+      await new Promise<void>((resolve) => {
+        if (request.stop.aborted) {
+          resolve();
+          return;
+        }
+        request.stop.addEventListener('abort', () => resolve(), { once: true });
+      });
+      bounded = request.stop.aborted;
+      return {
+        summary: null,
+        finding: null,
+        problem: 'the turn was stopped before it produced a finding',
+        logPath: path.join(request.dir, 'reviewer.log'),
+      };
+    };
+    const diagnosis = createBaselineDiagnosis({
+      reviewer,
+      record,
+      readyStatus: 'To Do',
+      reviewStatus: 'In Review',
+      reviewerTimeoutMs: 20,
+      workDir,
+      io: { out: () => undefined, err: () => undefined },
+    });
+
+    const outcome = await diagnosis.diagnose(requestFor());
+
+    expect(bounded).toBe(true);
+    expect(outcome.kind).toBe('attention');
+    expect(record.status).toBe('In Review');
   });
 });
 
@@ -757,21 +795,26 @@ function fakeJira(status = 'In Progress'): FakeJira {
 }
 
 describe('the Jira record of one diagnosis', () => {
+  /** The real Jira record and a scripted reviewer, as the phase is composed in production. */
+  function jiraDiagnosis(record: BaselineRecord, reviewer: BaselineReview, workDir: string) {
+    return createBaselineDiagnosis({
+      reviewer,
+      record,
+      readyStatus: 'To Do',
+      reviewStatus: 'In Review',
+      reviewerTimeoutMs: 60_000,
+      workDir,
+      io: { out: () => undefined, err: () => undefined },
+    });
+  }
+
   it('posts one marker comment and returns the issue to its ready status', async () => {
     const workDir = await createTempDir();
     const site = fakeJira();
     const http = createHttpClient(SOURCE_CONFIG, TOKEN, { fetch: site.fetch });
     const record = createJiraBaselineRecord(SOURCE_CONFIG, http);
     const reviewer = scriptedReviewer(REPAIR_FINDING);
-    const out: string[] = [];
-    const diagnosis = createBaselineDiagnosis({
-      reviewer: reviewer.review,
-      record,
-      readyStatus: 'To Do',
-      reviewStatus: 'In Review',
-      workDir,
-      io: { out: (text) => out.push(text), err: (text) => out.push(text) },
-    });
+    const diagnosis = jiraDiagnosis(record, reviewer.review, workDir);
     const request = requestFor();
 
     const outcome = await diagnosis.diagnose(request);
@@ -803,14 +846,7 @@ describe('the Jira record of one diagnosis', () => {
     const http = createHttpClient(SOURCE_CONFIG, TOKEN, { fetch: site.fetch });
     const record = createJiraBaselineRecord(SOURCE_CONFIG, http);
     const reviewer = scriptedReviewer(REPAIR_FINDING);
-    const diagnosis = createBaselineDiagnosis({
-      reviewer: reviewer.review,
-      record,
-      readyStatus: 'To Do',
-      reviewStatus: 'In Review',
-      workDir,
-      io: { out: () => undefined, err: () => undefined },
-    });
+    const diagnosis = jiraDiagnosis(record, reviewer.review, workDir);
     const request = requestFor();
 
     const first = await diagnosis.diagnose(request);
@@ -834,14 +870,7 @@ describe('the Jira record of one diagnosis', () => {
     const http = createHttpClient(SOURCE_CONFIG, TOKEN, { fetch: site.fetch });
     const record = createJiraBaselineRecord(SOURCE_CONFIG, http);
     const reviewer = scriptedReviewer(INCONCLUSIVE_FINDING);
-    const diagnosis = createBaselineDiagnosis({
-      reviewer: reviewer.review,
-      record,
-      readyStatus: 'To Do',
-      reviewStatus: 'In Review',
-      workDir,
-      io: { out: () => undefined, err: () => undefined },
-    });
+    const diagnosis = jiraDiagnosis(record, reviewer.review, workDir);
 
     const outcome = await diagnosis.diagnose(requestFor());
 

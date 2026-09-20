@@ -272,6 +272,12 @@ read from the checkout `--repo` names, so the repository a run clones describes 
    configuration lists them. A red baseline stops a fresh run before any coding turn — the task is
    not attempted on a project that is already failing. A continuation may start red, because its
    workspace may already carry failed work, and only its post-turn round decides.
+   For a ticket from a configured source, that red baseline is not the end of the road: when every
+   setup command succeeded and the check round completed nonzero, the configured reviewer diagnoses
+   it in one bounded local turn over the snapshot and the command evidence, and an actionable
+   finding returns the same ticket to its ready status — with its workspace pointer — as guidance
+   for the next claim, which repairs the baseline and then continues the original task. Nothing is
+   sent to GitHub, and nothing is delivered until a post-agent round passes.
 5. **Coding turns**: one fresh invocation of the configured launch per top-level turn, started in
    the working copy and never asking for approval. The implementation turn is given the task; each
    repair turn is given the failures the harness observed for itself. Every turn of the run uses the
@@ -861,6 +867,11 @@ What one invocation does:
    or an unsuccessful post-merge workflow return the ticket to To Do with its pointer intact. The
    queue then continues **that** ticket in **that** retained workspace — same clone, same base,
    same ladder — before considering unrelated ready work.
+   A completed red baseline is the same idea one step earlier: the configured reviewer diagnoses
+   that exact snapshot in one bounded local turn, does not touch GitHub, and an actionable finding
+   is one Jira comment plus the same return to To Do with the pointer intact. The next claim
+   continues the workspace with the finding as guidance, repairs the baseline, and then continues
+   the original task.
 4. **Source readiness.** After a confirmed Done, the operator's checkout must be on the configured
    base branch, carry no uncommitted or untracked work, and have the expected delivery repository
    as a remote; the verified merge commit must be in the fetched base branch and the local `HEAD`
@@ -1362,6 +1373,13 @@ a read.
   or `queue run` has claimed a ticket under `"ordering": "rank"` yet: the claims made so far were
   Priority-ordered, and the first Rank-ordered claim waits on the queue being restarted so it
   reloads this project configuration;
+- **any live red-baseline diagnosis.** The path is verified offline end to end — the reviewer turn
+  over a disposable repository whose committed baseline really fails, the one comment and the move
+  by target status name against a fake Jira site, the restart that spends no second reviewer turn,
+  the next claim's guidance through a real retained workspace, and the queue carrying the same
+  ticket into its repair attempt. HARN-34's load-sensitive baseline has not been replayed against a
+  real Jira ticket with a real reviewer launch, no live queue has returned a diagnosed ticket to
+  To Do, and the finding quality of a live reviewer is not established by the offline fixtures;
 - **any live GitHub delivery.** The delivery step is verified offline against disposable Git
   repositories and a stand-in `gh` on `PATH`; no branch has been pushed to github.com and no pull
   request has been created by the harness here. The commands follow `gh`'s documented interface,

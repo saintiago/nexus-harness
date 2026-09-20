@@ -289,7 +289,7 @@ prepare → setup → baseline checks
 
 A red baseline stops a **fresh attempt** before any coding turn; a **continuation** may start red, because its workspace may already carry committed work the checks reject, and only its post-turn check round decides. A setup/launch/authentication/protocol error, expired timeout, cancellation, or exhausted repair allowance stops the loop and preserves work, fresh or continued. Only ordinary completed red check rounds trigger repair. Checks are rerun by the harness regardless of the agent's claims. The selected agent does not change between turns. Before every coding turn, and before the round that follows it, the checkout is returned to the branch its workspace records: a turn may have committed on a branch of its own, and what the checks judge and a delivery step publishes is the recorded branch's own revision. That return fast-forwards and checks out a clean checkout whose commit descends from the recorded branch, keeping the commit the turn made on the branch it made it on; a detached, divergent, or branchless checkout stops the run before that turn or check, naming both branches and the manual action, and nothing is reset, force-updated, or discarded (HARN-35). A return that would write over a local file the checkout ignores is **refused** with the paths named and the file's bytes kept, and what the checkout and the fast-forward did is read back rather than taken from their exit codes, so a Git configuration that squashed the merge cannot pass for a returned branch. A coding turn is also started only from the workspace's own committed state: a checkout that still holds uncommitted work — on the recorded branch included — stops the run before the agent, naming the branch, the paths, and the manual action, while the round that judges a turn still reads what that turn left, uncommitted work included. See the specification for reporting and safety semantics.
 
-The delivery step is **outside the run**: the run's own report is written first, and only a `passed` attempt is delivered. A delivery failure changes neither the run's status nor its evidence, and it never starts a coding turn (§8).
+The delivery step is **outside the run**: the run's own report is written first, and only a `passed` attempt is delivered. A delivery failure changes neither the run's status nor its evidence, and it never starts a coding turn (§8). A red baseline never reaches it either: for a fresh source attempt the ending is diagnosed locally first (§11, "The pre-delivery baseline diagnosis"), so an attempt is delivered only after a post-agent round passed every configured setup and check and the ticket's own work is on the recorded branch.
 
 Every working copy is given a **repository-local** Git identity (`Nexus Agent <nexus@local>`, commit signing disabled) before any check or coding turn runs, so a turn can make small local commits as it works; a turn is asked to finish with the work it wants built on committed, because the harness starts no further coding turn from a working copy that still holds uncommitted work. Those commits stay in the retained working copy: the harness itself never merges or integrates a target's changes and, without a configured delivery step, never pushes or publishes them either. A commit is not a check result, and anything a turn leaves uncommitted is kept — the round after the turn judges it, and a delivery step refuses to publish it — but it ends the run there rather than going to another agent. A continued workspace keeps the base commit its ledger recorded as the comparison base, so `changes` in the report is the whole diff against that base, committed and uncommitted parts alike. These settings are written with `git config --local`; the harness never writes global or system Git configuration.
 
@@ -454,6 +454,8 @@ Normal file-based `run --task ...` remains independent: even with `source` in it
 For all terminal local outcomes, publish the exact `passed`, `failed`, or `cancelled` outcome and move from running to review when still appropriate. `In Review` does not mean success. `Done` stays a human decision after inspecting and applying the retained changes. A passed attempt delivered by §8 carries its pull request URL in that comment; a passed attempt whose delivery failed carries the run's own outcome with the failure beside it, so the two never leave a finished task sitting in the running status. Nothing else about the comment changes.
 
 While an `escalation` ladder is climbing, the issue stays in the running status: each attempt publishes its own comment ("attempt 2 of 3, tier pro" — the rung's position in this cycle's own ladder), and only the climb's last attempt — a pass, a terminal failure, or the rung that exhausted the ladder — publishes the final result and moves the issue to review. Escalation is local to one coding cycle: every claim starts at the first tier, including a claim that continues the retained workspace an issue carries after a reviewer's findings, a failed required check, a delivery failure, or a failed post-merge workflow returned it to the ready status, and the workspace's own attempt count never selects a tier. Only an exhausted ordinary red check round climbs: a run that ended before any coding turn, a setup/launch/authentication/protocol error, a cancellation, an expired limit, and a stop that was not confirmed each end the intake at the rung where they happened rather than spending a stronger launch on them. That rung's result is then published and moved to review, with two deliberate exceptions that stop intake instead: a run whose stopped executions could not be confirmed to have ended publishes nothing and leaves the issue where it is, and neither does an attempt whose workspace ledger could not be written (see the local-save paragraph below).
+
+A completed red baseline on a fresh workspace from a configured source is the one ending that is diagnosed before it is published: the ladder still climbs nothing from it, but the issue is not told only that its baseline failed. One local reviewer turn over the exact snapshot and the command evidence produces a finding; an actionable one returns the same issue to its ready status with one comment carrying the failing check, the evidence, the likely cause and the repair, so the next claim repairs the baseline before continuing the original task, and a diagnosis with nothing actionable moves it to the review status with the evidence and the required action and stops intake for a person. Nothing else about the ladder, the comments, or the review move changes (§11, "The pre-delivery baseline diagnosis").
 
 A delivery failure is an operator problem, not a coding one: the run's report and logs are kept as they were written, the receipt records `delivery: <what failed>`, the issue is still told the outcome the run produced with the failure beside it, and intake stops. Fix what the failure names — a leftover path, Git credentials, or `gh auth status` — and retry the publication **by hand** in the retained workspace with ordinary `git` and `gh`, checking GitHub first because a failed push or creation may already have taken effect; §8 has the recipe. Moving the issue back to the ready status is not that retry: it starts a new coding run in the same workspace. No coding turn is started to repair a publishing failure.
 
@@ -973,6 +975,65 @@ Unresolved In Progress ownership or multiple In Review items stop it for attenti
 In Review item resumes its scoped review/completion phases; a merged PR must pass the existing
 admission and native GitHub checks. Retained To Do repairs take precedence over unrelated new
 work. A Done item is never rerun.
+
+### The pre-delivery baseline diagnosis
+
+A fresh workspace whose baseline is red — every `setup` command exited `0`, the check round
+completed, and at least one configured check exited nonzero — is diagnosed before any developer
+turn. The diagnosis exists exactly when the composed configuration provides the reviewer — the
+harness file's `reviewer`, with the project's own `source` and `delivery` — and a project without it
+keeps the older behaviour: the failed attempt is published and the item waits In Review. It runs the
+harness configuration's `reviewer.reviewer` selection (never a coding tier) for one turn in its own
+evidence directory under `<workDir>/baseline/<evidence>/`, bounded by the harness configuration's
+`taskTimeoutMinutes` and by the intake's own stop request, with:
+
+- the ticket: its key, link, title, description, and acceptance criteria, as the reviewer's context;
+- the configured commands: every setup command that succeeded, and every check with the result it
+  exited with;
+- the bounded stdout/stderr each failing check wrote (the same bounded reading a repair turn is
+  given), with the log file paths beside it;
+- a read-only clone of the retained workspace (`repo/` in the evidence directory), pinned at the
+  commit the baseline ran against, which the reviewer may inspect with ordinary read tools.
+
+The turn receives no coding instruction and changes nothing: the only file it writes is
+`finding.json` in that evidence directory, and the harness checks after the turn that the clone is
+still the clean snapshot it was given. `finding.json` is exactly one of two shapes — a
+repository-local repair, or why none may be made:
+
+```json
+{
+  "outcome": "repair",
+  "failingCheck": "the failing command, exactly as configured",
+  "evidence": "what the recorded output or the snapshot shows",
+  "likelyCause": "the most likely cause, named concretely",
+  "repairGuidance": "what the next coding turn should change in the working copy"
+}
+```
+
+```json
+{
+  "outcome": "inconclusive",
+  "reason": "why no repository-local repair can be named from this evidence",
+  "requiredAction": "what a person must supply, do, or decide before another attempt"
+}
+```
+
+Every field shown is required, nonblank, and bounded; anything else — a missing field, invalid
+JSON, no file at all, a turn that failed or was stopped, or a clone the turn changed — is a
+diagnosis with no usable finding, and is handled like an inconclusive one.
+
+An actionable finding becomes exactly one comment on the issue, naming the marker
+`nexus-baseline:repair:<evidence>`, the failing check, the evidence, the likely cause and the repair
+guidance, and the issue returns to `readyStatus` with its workspace pointer untouched. The queue
+then continues that same ticket before any unrelated ready work: the next claim reopens the same
+workspace, reads the finding from the thread as guidance, repairs the baseline, and continues the
+original task. An inconclusive, environmental, or unsafe finding posts one comment carrying
+`nexus-baseline:attention:<evidence>`, the reason and the required action, moves the issue to
+`reviewStatus`, and stops the queue for a person. Nothing is posted to GitHub, and no coding turn
+is started from a diagnosis. `<evidence>` is a hash of the immutable item, the snapshot commit, and
+the configured commands with the results they produced: a restart that sees the same evidence
+reuses the comment it already wrote — no second reviewer turn, no second comment — and makes only
+the status move that had not happened yet.
 
 ### Exits
 

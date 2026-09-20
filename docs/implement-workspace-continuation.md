@@ -216,7 +216,9 @@ without an operator between them:
 - A run that ended before any coding turn spends no rung: a red baseline on a fresh workspace, and a
   setup, launch, authentication, or protocol failure, all end the cycle where they happened rather
   than climbing, and the next cycle — the one that follows the operator's repair — starts at the
-  first tier again.
+  first tier again. The pre-delivery baseline diagnosis introduced later is not a rung either: it
+  happens outside the ladder, records its finding in Jira, and hands the same ticket back to the
+  ordinary first rung ([implement-baseline-diagnosis.md](implement-baseline-diagnosis.md)).
 - Only an exhausted ordinary red check round climbs. A coding turn that could not finish (a launch,
   authentication, or protocol error), a round that could not be executed (a setup failure, a check
   that could not be launched), an expired limit, a cancellation, and a stop that was not confirmed

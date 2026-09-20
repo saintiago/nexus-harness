@@ -14,6 +14,8 @@
 
 **Revision: 2026-09-20 — a repair turn stays on the recorded branch.** A coding turn can commit on a branch of its own and leave the checkout there. Before every coding turn, and before the round that judges it, the checkout is returned to the branch its workspace ledger records when that can be done without losing anything: a clean checkout whose commit descends from that branch is fast-forwarded to it and checked out, so a continuation and a repair turn work on the branch the workspace owns, and the checks and a delivery step are about one revision. The return never writes over a local file the checkout ignores — Git is asked not to overwrite one, and a return that would is refused with the paths Git named — and what the checkout and the fast-forward did is read back rather than taken from their exit codes, so a Git configuration that squashed the merge cannot pass a staged working copy off as a returned branch. A coding turn is also started only from the workspace's own committed state: a checkout that still holds uncommitted work — on the recorded branch included — stops the run before the agent, with the branch, the paths, and the manual action. A detached, divergent, or branchless checkout stops as well; nothing is reset, force-updated, or discarded, and §7's exact-revision delivery refusal is unchanged. The workspace contract is in [implement-workspace-continuation.md](implement-workspace-continuation.md).
 
+**Revision: 2026-09-21 — a completed red baseline is diagnosed before any developer turn.** The contract in §11 is extended: when a fresh workspace's every setup command succeeded and its configured check round completed with a nonzero result, the configured reviewer — never a coding tier — inspects the exact source snapshot and the bounded command evidence in one local turn and writes one structured finding. An actionable finding is one Jira comment naming the failing check, the evidence, the likely cause and the repair, and the same ticket returns to the status it was claimed from with its workspace pointer preserved; the next claim continues that workspace with the finding as guidance, repairs the baseline first, and then continues the original task. Anything else — missing or unusable evidence, an environmental cause, an unsafe repair, a setup failure, a missing host tool, a launch error, a cancellation, or an incomplete round — leaves the ticket In Review with the evidence and the required human action. Nothing here touches GitHub: no pull request exists yet, so no review, approval, or check is fabricated for one, and delivery stays impossible until a post-agent round passes every configured setup and check. The assignment is [implement-baseline-diagnosis.md](implement-baseline-diagnosis.md).
+
 **Completion exception:** the no-merge/no-Done defaults below are superseded only by the explicitly configured path in §10. The review commands themselves remain read/review-only.
 
 ## 1. Goal
@@ -44,7 +46,7 @@ Keep harness state limited to what execution and reporting need. A report or wor
 
 1. Read the task JSON, the Nexus-wide harness configuration, and the connected project's own configuration, and a local Git repository path. Validate the three inputs, compose the two configuration files into one effective configuration, normalize the optional agent selection, and keep the loaded task/configuration fixed for the run. A file that is missing, malformed, carries a field the other file owns, or cannot compose with the other is refused before anything is claimed or started.
 2. Create a unique run directory. A fresh attempt clones the source repository's committed `HEAD` into a new workspace and uses a dedicated local branch there; a continuation reopens the workspace its pointer label names, on its recorded branch and base. A continuation whose checkout is clean and sits on a branch of its own whose commit descends from that branch is accepted, and the run returns the checkout to the recorded branch before its first coding turn; a checkout that holds uncommitted work, is detached, is divergent, or names no held branch is refused, with the branch names and the manual action, while nothing has been claimed. Require a clean source checkout so uncommitted work is not silently omitted. Never reset or edit the source checkout.
-3. Run configured setup and checks before the agent. A failing baseline stops a fresh attempt with a clear explanation; a continuation may start red, because its workspace may already carry failed work, and only its post-turn round decides.
+3. Run configured setup and checks before the agent. A failing baseline stops a fresh attempt with a clear explanation, and the source path then diagnoses it rather than parking it (§11); a continuation may start red, because its workspace may already carry failed work, and only its post-turn round decides.
 4. Ask the selected agent invocation to implement the task in the retained working copy. Supply the task, acceptance criteria, and relevant target-repository instructions. Before every coding turn the checkout is returned to the branch the workspace records, when that can be done without losing anything: a clean checkout on a branch of its own whose commit descends from that recorded branch is fast-forwarded to it and checked out, and a state that cannot be returned stops the run before the turn — one that would write over a local file the checkout ignores included, refused with the paths named and the file kept. The turn starts from the workspace's own committed state: a checkout that still holds uncommitted work stops the run before the agent rather than being handed to one, and the failure names the branch, the paths, and the manual action. The turn works with a repository-local Git identity and is asked to commit small, meaningful pieces as it goes; those commits stay in the retained copy. Nothing pushes, merges, or publishes them except the optional delivery step of a passed attempt, which the harness — never the coding turn — performs (§7).
    The turn's runtime is launched with write access to that copy, its Git metadata included, so staging and committing are possible; the harness still makes no commit of its own.
 5. Wait for the agent to finish and stop its managed mutating processes. Return the checkout to the branch the workspace records before anything reads it, so what the checks judge is the revision that branch holds; a state that cannot be returned stops the run before any check. Run setup again, then all configured checks from the harness. Agent-reported success is not a check result.
@@ -337,6 +339,41 @@ The loop keeps one current ticket and one active phase. It takes at most one tic
 ### Repair before unrelated work
 
 When the review requests changes, a required pull-request check has definitively failed, or a configured post-merge workflow concluded unsuccessfully, §10 returns the item to its To Do status with its workspace pointer preserved. The loop then continues **that** ticket by identity: the next attempt reopens the workspace its pointer names, under the recorded base, through the same runner and escalation ladder — which starts again at its first tier — and reviews the head the repair delivered. Unrelated ready work waits until the current ticket is confirmed Done. The loop does not clear, adopt, migrate, or replace a workspace, and it does not implement a second repair system.
+
+### A completed red baseline is diagnosed, not parked
+
+The one ending that used to leave a claimed ticket with nothing to carry is a fresh workspace whose
+baseline is red: every setup command succeeded, the configured check round completed with a nonzero
+result, and no coding turn ran. The source path hands that attempt to the configured reviewer — the
+Nexus-wide selection, never a coding tier — for one bounded local turn before any developer turn. The
+reviewer receives the exact source snapshot (a read-only clone of the retained workspace, pinned at
+the commit the baseline ran against), the configured commands, and the bounded stdout/stderr each of
+them wrote; it receives no coding instruction, may inspect that snapshot with its normal local tools,
+and cannot change the retained workspace it was cloned from. It writes one structured finding:
+either the failing check, the evidence, the likely cause and the repair a later coding turn can make,
+or why no repair may be made automatically.
+
+An actionable finding produces **one** concise Jira comment naming those four things, and the same
+ticket returns to the status it was claimed from with its workspace pointer and its original
+acceptance criteria preserved. The loop then continues that ticket — before unrelated ready work —
+and the next claim reopens the same retained workspace, is told the original task *and* the reviewed
+finding as guidance, repairs the baseline first, and only then continues the original task. That
+attempt is an ordinary one: the same runner, the same escalation ladder (which starts again at its
+first tier), the same checks, and the same delivery refusal for anything that is still red.
+
+An inconclusive, environmental, or unsafe diagnosis, a reviewer turn that produced nothing usable, a
+baseline that could not be executed, a command that could not be launched, a cancellation, and an
+expired limit all leave the item In Review with the evidence and what a person must do; none of them
+starts a coding turn, guesses at a repair, or returns the item for one. A setup failure, a missing
+host tool, a launch error, a cancellation, and incomplete evidence are never diagnosed as if they
+were a red round: only a *completed* round whose setup commands all succeeded qualifies.
+
+This pre-delivery diagnosis is recorded in Jira only. There is no pull request yet, so nothing is
+reviewed, approved, or checked on GitHub for it; the harness fabricates no pull-request review, no
+Lens approval, and no check run. The marker inside the one comment is the deduplication record: a
+restart that finds the same evidence — the same immutable item, the same snapshot, the same
+configured commands with the same results — starts no second reviewer turn and writes no second
+comment, and completes only the status move the interrupted pass had not made.
 
 ### Source readiness between tickets
 

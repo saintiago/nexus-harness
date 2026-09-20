@@ -62,8 +62,14 @@ Nexus will write without creating it.
 2. **Real, noninteractive `setup` and `checks` commands.** Run them once by hand in a clean clone of
    the committed baseline and make sure they pass there. They must run unattended on this machine:
    no prompts, no interactive or watch modes, no browser, no credentials of their own. `setup` may
-   be empty; `checks` cannot, and a red baseline stops a fresh attempt before any coding turn, so a
-   project that is already red cannot be connected this way.
+   be empty; `checks` cannot. A red baseline still stops a fresh attempt before any coding turn, but
+   it no longer parks the ticket: the configured reviewer diagnoses it in one local turn, and an
+   actionable finding is one comment plus a return of the same ticket to the ready status, whose
+   next claim repairs the baseline and then continues the ticket
+   ([WORKFLOW.md](WORKFLOW.md) §11). A diagnosis that is inconclusive, environmental, or unsafe
+   leaves the ticket In Review for a person instead. Connecting a project whose committed checks
+   already pass is still the smoother start: the diagnosis can repair what lives in the working
+   copy, not the host or the check's own configuration.
 3. **The Jira queue.** Decide the site URL (`https://<site>.atlassian.net`), the site's cloud ID,
    the project key, the issue type (`Task` by default), the label (`harness-task` by default — keep
    it distinctive), and the ready, running and review statuses (`To Do` → `In Progress` →
@@ -192,11 +198,13 @@ From here Nexus is autonomous, one ticket at a time, and needs no further setup:
    clone, its `harness/<workspaceId>` branch, the repository-local Git identity, the receipt before
    the claim, and the `harness-ws-<workspaceId>` pointer label on the issue.
 2. The baseline round runs `setup` and every `check`; a red baseline stops a fresh attempt before
-   any coding turn. A green baseline starts the implementation turn, and a completed red round
-   starts repair turns within the shared ladder instead of giving up. Every turn is asked to finish
-   with the work it wants the next turn to build on committed: a working copy left holding
-   uncommitted work stops the run before the next agent, names the paths, and leaves finishing them
-   by hand to the operator.
+   any coding turn, and is then diagnosed in one local reviewer turn over the snapshot and the
+   command evidence: an actionable finding is one comment and a return of the same ticket to the
+   ready status, whose next claim repairs the baseline and then continues the original task. A green
+   baseline starts the implementation turn, and a completed red round starts repair turns within the
+   shared ladder instead of giving up. Every turn is asked to finish with the work it wants the next
+   turn to build on committed: a working copy left holding uncommitted work stops the run before the
+   next agent, names the paths, and leaves finishing them by hand to the operator.
 3. A passed attempt is delivered: its branch is pushed and its pull request opened or updated with
    the operator's own Git/`gh` credential.
 4. Native auto-merge is armed for that exact head before Nexus Lens reviews it, and the review

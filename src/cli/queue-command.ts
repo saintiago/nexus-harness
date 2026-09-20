@@ -464,6 +464,7 @@ async function queueCommand(options: QueueCommandOptions, context: CliContext): 
           record: createJiraBaselineRecord(sourceConfig, jiraHttp),
           readyStatus: sourceConfig.readyStatus,
           reviewStatus: sourceConfig.reviewStatus,
+          reviewerTimeoutMs: config.taskTimeoutMinutes * 60_000,
           workDir,
           io: sourceIo,
         });
