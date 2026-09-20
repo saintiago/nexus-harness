@@ -311,7 +311,11 @@ describe('harness configuration validation', () => {
     ],
     ['an agent that is not an object', harnessWith({ agent: 'codex' }), [/agent:/]],
     ['a null agent', harnessWith({ agent: null }), [/agent:/]],
-    ['an agent without a runtime', harnessWith({ agent: { command: ['codex'] } }), [/agent\.runtime/]],
+    [
+      'an agent without a runtime',
+      harnessWith({ agent: { command: ['codex'] } }),
+      [/agent\.runtime/],
+    ],
     [
       'an agent without a command',
       harnessWith({ agent: { runtime: 'codex' } }),

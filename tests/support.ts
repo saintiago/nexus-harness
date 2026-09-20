@@ -177,12 +177,7 @@ export const HARNESS_CONFIG_FIELDS: readonly string[] = [
 ];
 
 /** The fields a connected project's configuration owns (docs/WORKFLOW.md §1). */
-export const PROJECT_CONFIG_FIELDS: readonly string[] = [
-  'setup',
-  'checks',
-  'source',
-  'delivery',
-];
+export const PROJECT_CONFIG_FIELDS: readonly string[] = ['setup', 'checks', 'source', 'delivery'];
 
 /**
  * Routes one field map into the file that owns each field, so a fixture can

@@ -281,16 +281,12 @@ describe('the entry point, as a process', () => {
   it(
     'refuses a configuration that allows no repair turn, before any paid work',
     async () => {
-      const configPath = await writeJsonFile(
-        await createTempDir(),
-        HARNESS_CONFIG_FILE_NAME,
-        {
-          workDir: './runs',
-          maxRepairs: 0,
-          taskTimeoutMinutes: 60,
-          commandTimeoutMinutes: 10,
-        },
-      );
+      const configPath = await writeJsonFile(await createTempDir(), HARNESS_CONFIG_FILE_NAME, {
+        workDir: './runs',
+        maxRepairs: 0,
+        taskTimeoutMinutes: 60,
+        commandTimeoutMinutes: 10,
+      });
 
       const result = await spawnLiveEntry(await isolatedEnvironment(), ['--config', configPath]);
 

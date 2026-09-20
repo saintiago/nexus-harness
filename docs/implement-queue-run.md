@@ -17,15 +17,17 @@ happen in and who decides it.
 ## Commands
 
 ```sh
-npm run dev -- queue run   --repo ../target-project --config harness.queue.config.json
-npm run dev -- queue watch --repo ../target-project --config harness.queue.config.json
+npm run dev -- queue run   --repo ../target-project --config nexus.config.json
+npm run dev -- queue watch --repo ../target-project --config nexus.config.json
 ```
 
-Both are opt-in and both are strict: the configuration must carry a `source`, a `review`, and a
-`delivery.completion`, and the loader already requires that the review and the completion path
-describe the same repository, App, and check name. Every existing one-item command keeps its own
-option table and behaves exactly as it did; `queue run` and `queue watch` accept `--config` and
-`--repo` and nothing else.
+Both are opt-in and both are strict: the configuration the two files compose must carry the
+project's `source`, the Nexus-wide `reviewer`, and a `delivery.completion` — and the loader already
+requires that the review and the completion path describe the same repository, App, and check name.
+(That split is HARN-24's; this document was written when both files were one.) Every existing
+one-item command keeps its own option table and behaves exactly as it did; `queue run` and
+`queue watch` accept `--config` and `--repo` and nothing else, and `--repo` names the checkout the
+project configuration is read from.
 
 `queue run` is finite: it ends successfully when a fresh scan finds no eligible ticket.
 `queue watch` is the same loop as one visible foreground process — not a daemon, service, or

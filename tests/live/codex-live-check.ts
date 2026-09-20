@@ -10,7 +10,7 @@
  *
  * ## Selecting the runtime
  *
- * `npm run test:live -- --config harness.config.json` runs the exercises with the
+ * `npm run test:live -- --config nexus.config.json` runs the exercises with the
  * agent, repair allowance, and numeric limits that file selects, loaded through
  * the harness's own schema and path rules. The fixture keeps the repository, the
  * output directory, the task, the setup, and the checks its own: a supplied
@@ -1163,7 +1163,7 @@ export type VerifierArguments =
   | { readonly ok: false; readonly message: string };
 
 const VERIFIER_USAGE = [
-  'usage: npm run test:live [-- --config harness.config.json]',
+  'usage: npm run test:live [-- --config nexus.config.json]',
   '',
   'Without --config the exercises use the documented default: the ordinary Codex launch',
   "(`codex`), 2 repair turns, and the fixture's own task and command limits.",

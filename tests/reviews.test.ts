@@ -2140,10 +2140,10 @@ describe('the review command through the CLI', () => {
     delete project['source'];
     const { harnessPath: configPath } = await writeFixtureConfig(directory, {}, project);
     const err: string[] = [];
-    const code = await runCli(
-      ['review', 'scan', '--config', configPath, '--project', directory],
-      { cwd: directory, io: { out: () => undefined, err: (text) => err.push(text) } },
-    );
+    const code = await runCli(['review', 'scan', '--config', configPath, '--project', directory], {
+      cwd: directory,
+      io: { out: () => undefined, err: (text) => err.push(text) },
+    });
     expect(code).toBe(EXIT_INPUT_ERROR);
     expect(err.join('\n')).toContain('configures the Nexus Lens reviewer');
     expect(err.join('\n')).toContain(path.join(directory, PROJECT_CONFIG_FILE_NAME));
@@ -2156,10 +2156,10 @@ describe('the review command through the CLI', () => {
     const previous = process.env.NEXUS_LENS_KEY_PATH;
     delete process.env.NEXUS_LENS_KEY_PATH;
     try {
-      const code = await runCli(
-        ['check-config', '--config', configPath, '--project', directory],
-        { cwd: directory, io: { out: (text) => out.push(text), err: () => undefined } },
-      );
+      const code = await runCli(['check-config', '--config', configPath, '--project', directory], {
+        cwd: directory,
+        io: { out: (text) => out.push(text), err: () => undefined },
+      });
       expect(code).toBe(EXIT_OK);
     } finally {
       if (previous !== undefined) {

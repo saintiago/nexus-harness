@@ -10,6 +10,8 @@
 
 **Revision: 2026-09-20 — the serial queue.** The contract in §11 is implemented: the opt-in `queue run` and `queue watch` commands compose the Jira source, the retained-workspace runner, the GitHub delivery step, the Nexus Lens review scan, and the review-to-completion pass into one serial lifecycle for one ticket at a time, and prepare the operator's checkout between tickets. They change no single-item behaviour: without them every existing command does exactly what it did, and orchestration stays ordinary deterministic code. [WORKFLOW.md](WORKFLOW.md) §11 owns the commands' inputs and defaults, [architecture.md](architecture.md) §2 the module, and [implement-queue-run.md](implement-queue-run.md) the assignment.
 
+**Revision: 2026-09-20 — one harness configuration, one file per connected project.** The configuration contract in [WORKFLOW.md](WORKFLOW.md) §1 is implemented: one Nexus-wide harness configuration an operator keeps (`--config`) owns the output directory, the limits, the coding launches, and the reviewer integration; one project configuration, committed at each connected repository's root as `nexus.project.json`, owns that repository's setup/checks, its Jira connection, and its GitHub destination. The loader composes the two, refuses a field in the file that does not own it, and refuses a project that cannot supply what the Nexus-wide reviewer and completion policy need — before anything is claimed or run. The commands validate and print the composition (`check-config`, and the `--project` on the read-only commands), and the retired single-file configuration is no longer read.
+
 **Completion exception:** the no-merge/no-Done defaults below are superseded only by the explicitly configured path in §10. The review commands themselves remain read/review-only.
 
 ## 1. Goal
@@ -38,7 +40,7 @@ Keep harness state limited to what execution and reporting need. A report or wor
 
 ## 2. What the working version does
 
-1. Read task/configuration JSON and a local Git repository path. Validate inputs, normalize the optional agent selection, and keep the loaded task/configuration fixed for the run.
+1. Read the task JSON, the Nexus-wide harness configuration, and the connected project's own configuration, and a local Git repository path. Validate the three inputs, compose the two configuration files into one effective configuration, normalize the optional agent selection, and keep the loaded task/configuration fixed for the run. A file that is missing, malformed, carries a field the other file owns, or cannot compose with the other is refused before anything is claimed or started.
 2. Create a unique run directory. A fresh attempt clones the source repository's committed `HEAD` into a new workspace and uses a dedicated local branch there; a continuation reopens the workspace its pointer label names, on its recorded branch and base. Require a clean source checkout so uncommitted work is not silently omitted. Never reset or edit the source checkout.
 3. Run configured setup and checks before the agent. A failing baseline stops a fresh attempt with a clear explanation; a continuation may start red, because its workspace may already carry failed work, and only its post-turn round decides.
 4. Ask the selected agent invocation to implement the task in the retained working copy. Supply the task, acceptance criteria, and relevant target-repository instructions. The turn works with a repository-local Git identity and is asked to commit small, meaningful pieces as it goes; those commits stay in the retained copy. Nothing pushes, merges, or publishes them except the optional delivery step of a passed attempt, which the harness — never the coding turn — performs (§7).
@@ -57,11 +59,11 @@ The history is grouped by the agent's messages: each message starts a group that
 
 ### Agent selection
 
-The original six configuration fields remain required. Preserve optional `agent`, containing `runtime` and a literal `command` prefix. When omitted, use `runtime: "codex"` and `command: ["codex"]`. When present, require both fields and reject unsupported runtime values and unknown fields. Add an independent optional `source` object for intake, as defined in WORKFLOW. All existing task and configuration files remain valid.
+The original six configuration fields remain required, split between the two files that now own them: the harness configuration carries `workDir`, `maxRepairs`, `taskTimeoutMinutes`, and `commandTimeoutMinutes`, and the connected project's configuration carries `setup` and `checks`. Preserve optional `agent` in the harness configuration, containing `runtime` and a literal `command` prefix. When omitted, use `runtime: "codex"` and `command: ["codex"]`. When present, require both fields and reject unsupported runtime values and unknown fields. Add an independent optional `source` object for intake, as defined in WORKFLOW, to the project configuration. All existing task files remain valid, and an input that still carries the retired single-file shape is refused with where each of its fields now belongs rather than read as one.
 
 The adapter owns non-interactive execution, workspace binding, stdin prompts, structured-output parsing, and shutdown. The launch prefix may choose a Codex executable, compatible wrapper, native profile, or model. It is not a complete command or a way to replace the adapter's execution protocol.
 
-Coding-provider credentials, endpoints, catalogs, reasoning settings, and gateway configuration remain in native runtime settings or the process environment. Do not add equivalent LLM fields to task/config JSON, provider SDKs, or an LLM gateway inside the harness. Jira connection settings belong to `source`; the Jira service-account API token comes only from the environment variable named by `tokenEnv`.
+Coding-provider credentials, endpoints, catalogs, reasoning settings, and gateway configuration remain in native runtime settings or the process environment. Do not add equivalent LLM fields to task/config JSON, provider SDKs, or an LLM gateway inside the harness. Jira connection settings belong to the project configuration's `source`; the Jira service-account API token comes only from the environment variable named by `tokenEnv`. Neither configuration file holds a credential value.
 
 A selected runtime/profile/key that is unavailable must fail clearly. Never silently use OpenAI, switch models, try Claude, run a login flow, or choose a cheaper provider as a fallback. Reuse the same selection for all top-level turns.
 
@@ -210,7 +212,7 @@ Rework is ordinary: move an attempted issue back to the ready status and the har
 
 ## 7. Optional GitHub delivery
 
-Delivery is a harness/operator operation, off unless the configuration selects it, and it never runs a coding turn. It is configured by one optional strict `delivery` object — the only implemented type is `"github"` — and an absent object means the local-only behavior described everywhere else ([WORKFLOW.md](WORKFLOW.md) §8).
+Delivery is a harness/operator operation, off unless the connected project's configuration selects it, and it never runs a coding turn. It is configured by one optional strict `delivery` object in that project's own configuration — the only implemented type is `"github"` — and an absent object means the local-only behavior described everywhere else ([WORKFLOW.md](WORKFLOW.md) §8).
 
 After a **passed** attempt, and before that attempt's result is published, the harness delivers the working copy the run left:
 
@@ -238,7 +240,7 @@ Delivery uses the operator's own Git and `gh` authentication; the configured rep
 
 **Later, only when needed:** another concrete task source, real Claude Code adapter, webhooks, parallel consumers, dependency scheduling, automatic merging, stronger isolation, or remote recovery. The optional GitHub delivery step of §7 opens or updates a pull request and stops there. Merging and reacting to CI on the pull request happen only through the explicitly configured completion path of §10, which the serial queue of §11 composes into one lifecycle per ticket; without it they stay outside the harness. Add another connector without changing Task or the coding loop; do not ship a placeholder connector now.
 
-**Implemented by the review increment:** the optional `review` object and the `review scan` / `review watch` commands of §9 below. They add no field to Task, no change to the coding loop, and no new process: a scan reads the Jira queue, starts the configured reviewer as one bounded turn, and publishes a native GitHub review and an app-owned check run. Merging, Jira completion, and coordinator decisions remain outside it.
+**Implemented by the review increment:** the optional Nexus-wide `reviewer` object and the `review scan` / `review watch` commands of §9 below. They add no field to Task, no change to the coding loop, and no new process: a scan reads the Jira queue through the connected project's `source`, starts the configured reviewer as one bounded turn, and publishes a native GitHub review and an app-owned check run on the repository that project delivers to. Merging, Jira completion, and coordinator decisions remain outside it.
 
 **Implemented by the queue increment:** the opt-in `queue run` and `queue watch` commands of §11 below, and the source-readiness step they use between tickets. They add no new agent, connector, or state: they compose the existing Jira source, the existing runner and delivery step, the existing Nexus Lens scan, and the existing completion pass into one serial lifecycle, and they decide only the order.
 
@@ -246,7 +248,7 @@ Regression verification must retain baseline failure, pass without repair, repai
 
 ## 9. Optional Nexus Lens reviews
 
-Review is off unless one optional strict `review` object selects it. With it, `review scan` and `review watch` read the tickets the configured Jira connection reports as being in review, identify each ticket's open pull request in the configured repository, ask an explicitly configured reviewer launch for a verdict, and publish that verdict as one native GitHub review plus one app-owned check run. Without it nothing changes: no GitHub App credential is resolved, GitHub is never contacted as an App, and no reviewer turn runs. The commands' inputs and defaults are [WORKFLOW.md](WORKFLOW.md) §9.
+Review is off unless one optional strict `reviewer` object in the Nexus-wide harness configuration selects it, composed with the connected project's own `source` and `delivery`. With it, `review scan` and `review watch` read the tickets that project's Jira connection reports as being in review, identify each ticket's open pull request in the repository its project delivers to, ask an explicitly configured reviewer launch for a verdict, and publish that verdict as one native GitHub review plus one app-owned check run. Without it nothing changes: no GitHub App credential is resolved, GitHub is never contacted as an App, and no reviewer turn runs. The commands' inputs and defaults are [WORKFLOW.md](WORKFLOW.md) §9.
 
 ### Eligibility and the pull request link
 
@@ -274,9 +276,9 @@ A head that already carries a completed review by the App's configured login who
 
 ## 10. Optional review-to-completion
 
-Completion is a second, independently optional step inside `delivery`: `delivery.completion`. Absent means §7 alone and an In Review item waits for a person. Present, it carries reviewed source work from an approved pull request through **native GitHub auto-merge** and the configured post-merge workflows on `main` to a verified Jira resolution, without a coordinator or a coding turn in between. It changes nothing about the blanket no-merge/no-`Done` rule above for a configuration that does not enable it.
+Completion is a second, independently optional step: one project's `delivery.completion`, composed with the Nexus-wide `completion` policy. Absent means §7 alone and an In Review item waits for a person. Present, it carries reviewed source work from an approved pull request through **native GitHub auto-merge** and the configured post-merge workflows on `main` to a verified Jira resolution, without a coordinator or a coding turn in between. It changes nothing about the blanket no-merge/no-`Done` rule above for a configuration that does not enable it.
 
-The configuration names the Nexus Lens reviewer (`lensApp`, `lensAppId`, `lensCheckName`), the environment variable holding that reviewer's own credential (`reviewerTokenEnv`), at least one expected post-merge workflow (`postMergeWorkflows`), the two Jira statuses an item can end in (`toDoStatus`, `doneStatus`), and its polling bounds. An empty or missing workflow list, or a status that is not distinct from the review status or from the other outcome, is refused rather than treated as evidence.
+The two files own one half each: the harness configuration names the Nexus Lens reviewer (`lensApp`, `lensAppId`, `lensCheckName`), the environment variable holding that reviewer's own credential (`reviewerTokenEnv`), and the polling bounds; the project configuration names at least one expected post-merge workflow (`postMergeWorkflows`) and the two Jira statuses an item can end in (`toDoStatus`, `doneStatus`). A project completion without the harness policy, an empty or missing workflow list, a reviewer identity that disagrees with the configured reviewer, or a status that is not distinct from the review status or from the other outcome is refused rather than treated as evidence.
 
 The reviewer's credential is deliberately a different environment variable from the operator's `gh`/Git credential. The reviewer's token reads the reviewer's verdict and never enables auto-merge; the operator's credential authenticates the one per-pull-request arming request and never reaches the reviewer. The harness never merges, force-pushes, reruns a workflow, or bypasses protection: `enablePullRequestAutoMerge` with `mergeMethod: SQUASH` asks GitHub to merge once branch protection and every required check allow it, and only GitHub's own merged state is trusted.
 

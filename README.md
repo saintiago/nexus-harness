@@ -108,7 +108,7 @@ this README does not restate it.
    it: the launches, the limits, and the reviewer stay in the one harness file.
 2. Commit it. The harness reads it from the checkout `--repo` names (and from the root `--project`
    names for the read-only commands), so it has to be part of what a run clones.
-3. Make sure the credentials it *names* are in the operator's environment: the Jira token under
+3. Make sure the credentials it _names_ are in the operator's environment: the Jira token under
    `source.tokenEnv`, the operator's own `gh`/Git login for delivery. No credential goes into either
    file.
 4. Validate both files before the first run:
@@ -121,9 +121,11 @@ The retired single file is no longer read. Split it: the Nexus-wide fields becom
 project fields become a committed `nexus.project.json` in the connected repository's root. That is
 exactly what this repository did for itself: its `nexus.project.json` carries the Jira queue, the
 delivery destination, and the one command its CI runs, while the reviewer, the launches, and the
-limits moved into the operator's harness file. The retired filename stays ignored so a leftover copy
-cannot make the checkout dirty, and the queue's invocation becomes
-`npm start -- queue run --repo . --config nexus.config.json`.
+limits moved into the operator's harness file — start from
+[docs/nexus.config.example.json](docs/nexus.config.example.json), which holds this installation's
+tiers, reviewer, and completion policy, and set `workDir` and the launcher's own path for the
+machine. The retired filename stays ignored so a leftover copy cannot make the checkout dirty, and
+the queue's invocation becomes `npm start -- queue run --repo . --config nexus.config.json`.
 
 ## `check-config`: validate the composed configuration
 
@@ -862,7 +864,7 @@ node tools/run-checks.mjs      # green before any run: 2 of 2 test files passed
 ```
 
 **2. The two configuration files.** The project's own configuration sits at its root and is
-committed with it; the Nexus-wide file sits outside the project, and `workDir` resolves from *its*
+committed with it; the Nexus-wide file sits outside the project, and `workDir` resolves from _its_
 own directory, which is exactly why the output can be kept out of the source repository:
 
 ```sh
