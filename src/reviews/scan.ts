@@ -12,6 +12,12 @@
  * changed head, a failed or inconclusive reviewer turn, a GitHub answer it could
  * not use — is reported and left exactly where it is, with no review, no check,
  * and no approval. Nothing here merges, and nothing marks an issue Done.
+ *
+ * The reviewer never receives an assembled patch: before the turn the scan
+ * pins a repository view at the exact reviewed head, cloned from the ticket's
+ * own retained workspace, and after the turn it checks that the view is still
+ * that clean snapshot. A view that cannot be pinned, a head that moved, and a
+ * view the turn changed all publish nothing.
  */
 import { randomBytes } from 'node:crypto';
 import { appendFile, mkdir, writeFile } from 'node:fs/promises';
@@ -22,7 +28,7 @@ import { readReceipt, receiptFilePath } from '../sources/receipts.js';
 import type { SourceReceipt } from '../sources/receipts.js';
 import { messageOf } from '../shared/errors.js';
 import type { SourceRef, Task } from '../shared/types.js';
-import { workspaceIdProblem } from '../workspace/run-directory.js';
+import { workspaceIdProblem, workspacePathFor } from '../workspace/run-directory.js';
 import type {
   OpenPullRequest,
   PublishedCheck,
@@ -35,6 +41,7 @@ import type {
   ReviewScanContext,
   ReviewSummary,
   ReviewVerdict,
+  ReviewView,
   ReviewWatchOptions,
 } from './contract.js';
 import { ReviewError } from './contract.js';
@@ -216,6 +223,8 @@ interface ReviewRecord {
   readonly problem: string | null;
   readonly reviewerLog: string | null;
   readonly input: string | null;
+  /** The repository view the reviewer inspected, when one was prepared. */
+  readonly view: string | null;
 }
 
 /** The review's body: the ticket link, the summary, and the unpositioned findings. */
@@ -289,6 +298,16 @@ async function reviewItem(context: ReviewScanContext, item: SourceTask): Promise
     return attention(ref, pointerProblem);
   }
   const branch = `harness/${workspaceId}`;
+  // Where the ticket's delivered work lives on this machine: the retained
+  // workspace the pointer names, and the source of the reviewer's repository
+  // view. The id is validated above; resolution refuses an alias that would
+  // lead out of the workspaces directory.
+  let workspacePath: string;
+  try {
+    workspacePath = workspacePathFor(context.workDir, workspaceId);
+  } catch (cause) {
+    return attention(ref, messageOf(cause));
+  }
 
   let pullRequest: OpenPullRequest | null;
   try {
@@ -310,7 +329,7 @@ async function reviewItem(context: ReviewScanContext, item: SourceTask): Promise
 
   try {
     const unchanged = await reviewIfDecided(context, item, pullRequest);
-    return unchanged ?? (await reviewWithTurn(context, item, pullRequest));
+    return unchanged ?? (await reviewWithTurn(context, item, pullRequest, workspacePath));
   } catch (cause) {
     // A recognized source or review failure is this ticket's problem; anything
     // else is a programming error, and the scan stops rather than reporting it
@@ -423,6 +442,7 @@ async function reviewWithTurn(
   context: ReviewScanContext,
   item: SourceTask,
   pullRequest: OpenPullRequest,
+  workspacePath: string,
 ): Promise<ReviewItemResult> {
   const { ref } = item;
   const head = pullRequest.headSha;
@@ -450,9 +470,10 @@ async function reviewWithTurn(
   if (evidence.truncated) {
     return attention(
       ref,
-      `the changed-file list is truncated for ${pullRequest.url}, so the diff evidence is ` +
-        'incomplete; no reviewer turn was started and nothing was published. The coordinator ' +
-        'must arrange a complete review or split the pull request into smaller changes',
+      `the changed-file list GitHub reports for ${pullRequest.url} is truncated, so the review ` +
+        'could not be shown to account for every changed file; no reviewer turn was started and ' +
+        'nothing was published. The coordinator must arrange a complete review or split the pull ' +
+        'request into smaller changes',
       head,
     );
   }
@@ -468,14 +489,16 @@ async function reviewWithTurn(
   if (evidenceProblem !== null) {
     return attention(
       ref,
-      `incomplete review evidence: ${evidenceProblem}; the coordinator must ` +
-        'arrange complete evidence or split the change. No reviewer turn or verdict was published',
+      `incomplete review evidence: ${evidenceProblem}; no reviewer turn was started and nothing ` +
+        'was published. The coordinator must arrange a review this harness can give the reviewer',
       head,
     );
   }
 
   const reviewDir = await allocateReviewDirectory(context.workDir);
   const startedAt = context.now().toISOString();
+  /** Set once the view exists; the record names it only then. */
+  let viewPath: string | null = null;
 
   /** Writes the attempt's own `review.json`. A record that cannot be written stops the scan. */
   const writeRecord = async (parts: {
@@ -502,6 +525,7 @@ async function reviewWithTurn(
       problem: parts.problem,
       reviewerLog: parts.reviewerRun ? path.join(reviewDir.dir, REVIEWER_LOG_FILE) : null,
       input: parts.reviewerRun ? path.join(reviewDir.dir, REVIEW_INPUT_FILE) : null,
+      view: viewPath,
     };
     const file = path.join(reviewDir.dir, REVIEW_RECORD_FILE);
     try {
@@ -535,9 +559,35 @@ async function reviewWithTurn(
     context.stop,
     AbortSignal.timeout(context.reviewerTimeoutMs),
   ]);
+
+  // The reviewer inspects a repository, not an assembled patch: the ticket's
+  // own retained workspace is cloned into this attempt's evidence directory and
+  // pinned at the reviewed head. A view that cannot be pinned there — no
+  // workspace on this machine, a head or base commit it does not hold, a clone
+  // that fails — is reported before a paid turn is started.
+  let view: ReviewView;
+  try {
+    view = await context.views.prepare(
+      { dir: reviewDir.dir, workspacePath, head, base: pullRequest.baseSha },
+      reviewerStop,
+    );
+  } catch (cause) {
+    if (stopsBatch(cause) || !(cause instanceof ReviewError)) {
+      throw cause;
+    }
+    return await attentionResult(
+      `its repository view could not be prepared for ${head}: ${cause.message}. No reviewer turn ` +
+        'was started and nothing was published; the coordinator must make the retained workspace ' +
+        'hold the reviewed head before the review can run',
+      false,
+    );
+  }
+  viewPath = view.path;
+
   const turn = await context.reviewer({
     dir: reviewDir.dir,
     evidence,
+    view,
     stop: reviewerStop,
   });
   if (reviewerStop.aborted || turn.problem !== null || turn.verdict === null) {
@@ -546,6 +596,23 @@ async function reviewWithTurn(
   const verdict = turn.verdict;
   if (verdict.decision === 'inconclusive') {
     return await attentionResult(`review inconclusive: ${verdict.summary}`, true);
+  }
+
+  // The verdict belongs to the view it was made in: a view the turn left
+  // changed — an edit, an untracked file, a commit, a moved head — is not the
+  // snapshot the reviewed head names, so nothing from this attempt is published.
+  let viewProblem: string | null;
+  try {
+    viewProblem = await context.views.problem(view, reviewerStop);
+  } catch (cause) {
+    viewProblem = messageOf(cause);
+  }
+  if (viewProblem !== null) {
+    return await attentionResult(
+      `the reviewer's repository view for ${head} changed during the turn: ${viewProblem}; its ` +
+        'verdict was not published',
+      true,
+    );
   }
 
   // The verdict belongs to the head it was made against: both the pull request

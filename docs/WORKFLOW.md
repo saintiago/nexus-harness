@@ -561,7 +561,10 @@ reviewer turn, and `run`, `source`, and `check-config` behave exactly as they di
 Review is not intake and not delivery. It never claims a ticket, never moves one, never posts a
 Jira comment, never runs a coding turn, never commits, pushes, merges, or marks anything Done, and
 keeps no database or registry: the native review pinned to a commit is the record that one head
-was reviewed.
+was reviewed. Instead of an assembled patch, the reviewer inspects a local repository view pinned
+at the reviewed head, cloned from the ticket's own retained workspace under the configured
+`workDir`: the view is read-only evidence, no App credential reaches it, and the scan refuses to
+publish a verdict for a view that is missing, cannot be pinned at the head, or was changed.
 
 ```json
 {
@@ -619,12 +622,15 @@ npm start -- review watch --config nexus.config.json --project ../target-project
 npm start -- review scan --config nexus.config.json --project ../target-project --limit 1
 ```
 
-`review` takes `--config` and `--project`; it never takes `--repo`, because a review works from
-GitHub's own record of the pull request and never needs a local clone — `--project` only names the
-root the connected project's configuration is read from. `--limit` belongs to
-`review scan` alone and counts reviewer turns, not tickets: a ticket whose head was already
-reviewed costs nothing. `review watch` exits `130` on Ctrl+C after the active reviewer turn and
-the current ticket are finished; evidence already written is kept.
+`review` takes `--config` and `--project`; it never takes `--repo`, because the pull request is
+read from GitHub's own record and the reviewer's repository view comes from the ticket's own
+retained workspace under the configured `workDir` — `--project` only names the root the connected
+project's configuration is read from. That workspace has to be on the machine running the scan: a
+ticket whose pointer names no workspace there, or whose workspace does not hold the reviewed head
+and its base commit, is reported for coordinator attention instead of being reviewed. `--limit`
+belongs to `review scan` alone and counts reviewer turns, not tickets: a ticket whose head was
+already reviewed costs nothing. `review watch` exits `130` on Ctrl+C after the active reviewer turn
+and the current ticket are finished; evidence already written is kept.
 
 ### What is eligible, and what a scan does
 
@@ -636,7 +642,8 @@ The queue is the configured project, issue type, and label in the `source`'s **r
    that records a reservation with no finished attempt, is **reported for coordinator attention**
    and reviewed no further: a pull request that predates the failure is not the successful code a
    review would approve. A ticket this machine never attempted has no receipt and is reviewed from
-   its pull request alone; a receipt that cannot be read is reported rather than ignored.
+   its pull request and the repository view below alone; a receipt that cannot be read is reported
+   rather than ignored.
 2. The ticket is re-read and mapped exactly as intake maps it, so the reviewer is given the
    ticket's own description and acceptance criteria. Its pointer labels are read from that same
    read, never from the search result.
@@ -655,32 +662,44 @@ The queue is the configured project, issue type, and label in the `source`'s **r
    contradicts that verdict, so an older success cannot mask a later request for changes. Native
    review/check lists that hit their bounds are refused. The ticket and head are revalidated before
    reconciliation: the check is a projection of the native review, never a second decision.
-5. Otherwise the scan reads the evidence the reviewer is given: the pull request's changed files
-   and their patches, root and ancestor-directory `AGENTS.md` files at the reviewed head, the
-   head's check runs, and its combined commit status. A changed-file list that reaches the
-   bounded pagination limit (three full pages of 100 files) is treated as incomplete: no
-   reviewer turn starts and no review or check is published. The coordinator must arrange a
-   complete review or split the pull request into smaller changes. Missing patches (including
-   binary files), patches whose addition/deletion counts disagree with GitHub, a diff exceeding
-   120,000 characters, instructions exceeding 30,000 characters or 100 content paths, and a ticket
-   description exceeding 8,000 characters are also refused before a reviewer turn. Unreadable
-   instruction content is an evidence failure, not evidence that no instructions exist.
+5. Otherwise the scan reads what GitHub reports about the change — the changed file list with
+   each file's patch, the head's check runs, and its combined commit status — and prepares the
+   **repository view** the reviewer inspects. The view is cloned from the ticket's own retained
+   workspace (`<workDir>/workspaces/<workspaceId>`, the one the pointer label names), detached
+   from it so it keeps no remote, and pinned at exactly the reviewed head; the change's base
+   commit must be in it. The clone carries committed content only and no credential of any kind:
+   the App private key and the installation token stay with the scan. A changed-file list that
+   reaches the bounded pagination limit (three full pages of 100 files) is treated as incomplete:
+   no reviewer turn starts and no review or check is published, and the coordinator must arrange
+   a complete review or split the pull request into smaller changes. A missing patch (a binary or
+   oversized file), a patch whose addition/deletion counts disagree with GitHub's own counts, or
+   a repository change too large to render are *not* refusals: the reviewer reads the change from
+   the view, and a finding the patch cannot position is reported in the review body. A ticket
+   description exceeding 8,000 characters is refused before a reviewer turn, and so is a view
+   that cannot be prepared: no retained workspace on this machine, a head or base commit it does
+   not hold, a clone that fails, or a view that is not clean.
 6. The `reviewer` launch runs as **one bounded turn** in its own evidence directory under
-   `<workDir>/reviews/<reviewId>/`, with the same adapter, the same non-interactive launch, and
-   the same task timeout a run gets. Review turns add `codex exec --skip-git-repo-check` because
-   the evidence directory is not a Git repository; coding turns keep the repository check.
-   It is instructed to review only: it must not change files,
-   implement fixes, commit, push, merge, or edit the ticket or the pull request, and it must write
-   one `verdict.json` (a `verdict` of `approve`, `request_changes`, or `inconclusive`, a summary,
-   and a findings array). Findings are blocking; approval requires an empty findings array and
-   sufficient evidence. The reviewer must select `inconclusive` when material code/test context
-   or tools are unavailable, explaining what the coordinator needs to provide in its summary.
-   A turn that fails, is stopped, or writes no usable verdict is also **inconclusive**: nothing is
-   published for it, and no coding repair is started.
-7. Before anything is published, the pull request is re-read and must still be open at the
-   reviewed head, and the ticket is re-read and must still be in the configured review status. A
-   head that moved, a closed pull request, or a ticket that left review publishes nothing: the
-   result is stale, and a later scan reviews the new head.
+   `<workDir>/reviews/<reviewId>/`, one directory above the view (`repo/`), with the same
+   adapter, the same non-interactive launch, and the same task timeout a run gets. Review turns
+   add `codex exec --skip-git-repo-check` because the evidence directory itself is not a Git
+   repository; coding turns keep the repository check. The prompt carries the ticket, the pull
+   request's identity and head/base commits, the CI evidence, the view's location, and the
+   verdict contract — never the patch, and never the repository's `AGENTS.md` contents, which the
+   reviewer reads from the view like any other file. It is instructed to review only: it must not
+   change the view (no edits, commits, checkouts, fetches, or pushes), implement fixes, commit,
+   push, merge, or edit the ticket or the pull request, and it must write one `verdict.json` (a
+   `verdict` of `approve`, `request_changes`, or `inconclusive`, a summary, and a findings array).
+   Findings are blocking; approval requires an empty findings array and sufficient evidence. The
+   reviewer must select `inconclusive` when material code/test context or tools are unavailable,
+   explaining what the coordinator needs to provide in its summary. A turn that fails, is
+   stopped, or writes no usable verdict is also **inconclusive**: nothing is published for it, and
+   no coding repair is started.
+7. Before anything is published, the view is re-checked: it must still be at the reviewed head
+   with no changed path, or an edit, a new file, a commit, or a moved head publishes nothing. The
+   pull request is then re-read and must still be open at that same head, and the ticket is
+   re-read and must still be in the configured review status. A head that moved, a closed pull
+   request, a ticket that left review, and a view the turn changed publish nothing: the result is
+   stale, and a later scan reviews the new head.
 8. The verdict becomes one native review — `APPROVE` for an approved verdict, `REQUEST_CHANGES`
    otherwise — pinned to the reviewed commit with `commit_id` and carrying the ticket reference
    and URL, the summary, and any finding the diff could not position. Findings whose file and line
@@ -695,8 +714,9 @@ The queue is the configured project, issue type, and label in the `source`'s **r
 
 Every outcome is printed and appended to `<workDir>/reviews/review.log`, and every reviewer turn
 keeps its evidence beside its verdict: `input.md` (what the reviewer was given), `reviewer.log`
-(its own output), `verdict.json`, and `review.json` (the outcome, the review and check URLs, and
-any problem). A ticket the scan could not review is left in the review status with no review, no
+(its own output), `verdict.json`, `review.json` (the outcome, the review and check URLs, the view
+it inspected, and any problem), and the repository view itself (`repo/`), kept for inspection.
+A ticket the scan could not review is left in the review status with no review, no
 check, and no approval; the coordinator decides what happens next. A missing credential, an
 unavailable tool, an API failure, and incomplete evidence are reported exactly as such, never as
 an approval and never as a reason to start a coding turn.

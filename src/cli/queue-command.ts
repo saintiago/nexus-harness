@@ -50,6 +50,7 @@ import { ReviewError } from '../reviews/contract.js';
 import { createGitHubReviewClient, resolveAppPrivateKey } from '../reviews/github.js';
 import { createReviewerTurn } from '../reviews/reviewer.js';
 import { scanReviews } from '../reviews/scan.js';
+import { reviewViews } from '../reviews/view.js';
 import { WorkspaceError } from '../workspace/errors.js';
 import { preflightSource } from '../workspace/preflight.js';
 import { refreshSource } from '../workspace/refresh.js';
@@ -550,6 +551,7 @@ async function queueCommand(options: QueueCommandOptions, context: CliContext): 
                 },
                 repository,
                 reviewer: reviewerTurn,
+                views: reviewViews(),
                 workDir,
                 login: reviewConfig.app.login,
                 checkName: reviewConfig.checkName,

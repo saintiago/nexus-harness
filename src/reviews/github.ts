@@ -1,7 +1,7 @@
 /**
  * The GitHub side of the review path: the App's installation identity, the
- * repository's pull requests, reviews, checks, and the evidence a reviewer turn
- * is given.
+ * repository's pull requests, reviews, checks, and what a reviewer turn is told
+ * about them.
  *
  * Every call is made as a GitHub App installation: a short-lived RS256 JWT
  * signed with the App's private key is exchanged for an installation access
@@ -202,6 +202,7 @@ function parsePullRequest(value: unknown, what: string): OpenPullRequest {
     headSha: stringField(head, 'sha', `${what} head`),
     headBranch: stringField(head, 'ref', `${what} head`),
     baseBranch: stringField(base, 'ref', `${what} base`),
+    baseSha: stringField(base, 'sha', `${what} base`),
     draft: pull['draft'] === true,
     author:
       user === null ? 'unknown' : typeof user['login'] === 'string' ? user['login'] : 'unknown',
@@ -570,40 +571,6 @@ export function createGitHubReviewClient(
       );
       const files = entries as readonly ChangedFile[];
 
-      // Root and ancestor instructions relevant to every changed file, all
-      // pinned to the reviewed commit. Bound the number of content requests.
-      const instructionPaths = new Set(['AGENTS.md']);
-      for (const file of files) {
-        const segments = file.path.split('/');
-        for (let depth = 1; depth < segments.length; depth += 1) {
-          instructionPaths.add(`${segments.slice(0, depth).join('/')}/AGENTS.md`);
-        }
-      }
-      if (instructionPaths.size > 100) {
-        throw new ReviewError(
-          'inconclusive',
-          'too many instruction paths for a complete bounded review',
-        );
-      }
-      const instructionParts: string[] = [];
-      for (const instructionPath of instructionPaths) {
-        const contentsAnswer = await api({
-          method: 'GET',
-          path: `${repoPath}/contents/${instructionPath.split('/').map(encodeURIComponent).join('/')}?ref=${encodeURIComponent(head)}`,
-          stop,
-          absentOk: true,
-        });
-        if (contentsAnswer === null) continue;
-        const contents = recordOf(contentsAnswer, `the ${instructionPath} answer`);
-        if (contents['encoding'] !== 'base64' || typeof contents['content'] !== 'string') {
-          throw new ReviewError('inconclusive', `${instructionPath} could not be read completely`);
-        }
-        instructionParts.push(
-          `## ${instructionPath}\n${Buffer.from(contents['content'], 'base64').toString('utf8')}`,
-        );
-      }
-      const instructions = instructionParts.length === 0 ? null : instructionParts.join('\n\n');
-
       const checksAnswer = await api({
         method: 'GET',
         path: `${repoPath}/commits/${encodeURIComponent(head)}/check-runs?per_page=${String(
@@ -635,7 +602,6 @@ export function createGitHubReviewClient(
         pullRequest,
         files,
         truncated,
-        instructions,
         checks,
         combinedStatus,
         fetchedAt: now().toISOString(),

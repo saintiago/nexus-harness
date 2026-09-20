@@ -102,9 +102,13 @@ are reviewed, the Jira credential, and the GitHub App key path named by
 \`reviewer.app.privateKeyPathEnv\`. A scan reads the tickets the source reports as
 being in review, finds each one's open pull request by the branch its pointer label
 names, and asks the explicitly configured \`reviewer.reviewer\` launch for a verdict.
-A ticket whose current head already carries a completed review by the App's login
-is left alone; a new head is reviewed again. The verdict is published as one native
-GitHub review (APPROVE or REQUEST_CHANGES) plus one app-owned check run named by
+The reviewer inspects a repository view cloned from that ticket's own retained
+workspace under the configured workDir, pinned at the exact pull request head and
+carrying no credential, instead of an assembled patch; a review that cannot be given
+such a view, or whose view the turn changed, publishes nothing. A ticket whose
+current head already carries a completed review by the App's login is left alone; a
+new head is reviewed again. The verdict is published as one native GitHub review
+(APPROVE or REQUEST_CHANGES) plus one app-owned check run named by
 \`reviewer.checkName\`, successful only for an approval. Nothing merges, nothing
 marks an issue Done, and a ticket the scan cannot review is reported and left in
 review.

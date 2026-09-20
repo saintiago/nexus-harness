@@ -1156,6 +1156,14 @@ function reviewFixture(candidates: readonly SourceCandidate[]): {
     reviewer: async () => {
       throw new Error('no reviewer turn may run');
     },
+    views: {
+      prepare: async () => {
+        throw new Error('no repository view may be prepared');
+      },
+      problem: async () => {
+        throw new Error('no repository view may be checked');
+      },
+    },
     workDir: 'unused',
     login: 'nexus-lens[bot]',
     checkName: 'Nexus Lens review',

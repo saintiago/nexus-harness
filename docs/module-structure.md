@@ -207,7 +207,8 @@ further would separate one decision from itself: `runs/runner.ts` (the loop), `s
 
 ### `workspace/`
 
-- **Owns:** the source checkout and the working copies, and Git is invoked nowhere else. `preflight.ts`
+- **Owns:** the source checkout and the working copies, and the Git plumbing every module shares
+  (the review path's own view in `reviews/view.ts` is its only other caller). `preflight.ts`
   records the committed base and refuses a dirty checkout or an output path that overlaps the source;
   `run-directory.ts` allocates `<workDir>/runs/<runId>` for one attempt's evidence and names
   `<workDir>/workspaces/<workspaceId>` for the retained clone — the name its caller preferred (a
@@ -337,27 +338,35 @@ further would separate one decision from itself: `runs/runner.ts` (the loop), `s
 - **Owns:** the one optional Nexus Lens review path. `contract.ts` is the ordinary data and
   failures the scan acts on (`ReviewError`, its problem kinds, the pull request, review, verdict,
   evidence and summary shapes, and the two boundaries — `ReviewQueue`, the read-only Jira side,
-  and `ReviewRepository`, everything the scan needs from GitHub). `github.ts` is the App
+  `ReviewRepository`, everything the scan needs from GitHub, and `ReviewViewSource`, the local
+  repository view it prepares and checks). `github.ts` is the App
   installation: the RS256 JWT signed with the configured PEM key, the installation token it is
-  exchanged for, and the pull request, review, diff, contents, check and check-run calls the scan
-  makes. `diff.ts` renders the diff the reviewer reads and computes the classic diff position of
-  a finding, so a finding the patch does not show is reported in the body instead of dropped.
-  `reviewer.ts` is the prompt one ticket's evidence becomes, the one bounded Codex turn through
+  exchanged for, and the pull request, review, changed-file, check and check-run calls the scan
+  makes. `view.ts` is the reviewer's own repository view: it clones the ticket's retained
+  workspace into the review's evidence directory, removes the clone's remote, pins it at the
+  exact reviewed head, and reports a view that is missing, cannot be pinned, does not hold the
+  base commit, or was changed; it reuses the workspace module's bounded Git invocation and hands
+  the reviewer no credential. `diff.ts` computes the classic diff position of a finding, so a
+  finding the pull request's patch does not show — or a patch GitHub could not report completely
+  — is reported in the body instead of dropped. `reviewer.ts` is the prompt one ticket's identity
+  and its view become, the one bounded Codex turn through
   `agents/codex/`, and the strict reader of the `verdict.json` that turn has to write. `scan.ts`
   is one finite scan and the watch above it: eligibility, the ticket's own intake receipt when the
   output directory holds one, the pointer-to-branch pull request lookup, the native
-  deduplication, the stale-head and stale-ticket rechecks before publishing, the review and check
-  publishing, and the evidence directory and log each attempt keeps.
+  deduplication, the view's preparation and post-turn check, the stale-head and stale-ticket
+  rechecks before publishing, the review and check publishing, and the evidence directory and log
+  each attempt keeps.
 - **Does not own:** the coding loop, the working copy, Jira writes, delivery, or merging. It
   claims nothing, moves nothing, posts no Jira comment, starts no coding turn, and keeps no
   registry: a completed review pinned to a commit is the deduplication record.
 - **Entry points:** `ReviewError`, `ReviewScanContext`, `ReviewWatchOptions`, `ReviewSummary`,
-  `ReviewItemResult`, `ReviewQueue`, `ReviewRepository`, `ReviewerTurn`, `ReviewVerdict`
-  (`reviews/contract.ts`); `resolveAppPrivateKey`, `appJwt`, `createGitHubReviewClient`,
-  `GITHUB_API_BASE_URL` (`reviews/github.ts`); `reviewPrompt`, `parseVerdict`,
-  `createReviewerTurn` (`reviews/reviewer.ts`); `scanReviews`, `watchReviews`,
-  `allocateReviewDirectory` (`reviews/scan.ts`); `diffPosition`, `renderDiff`,
-  `positionFindings` (`reviews/diff.ts`).
+  `ReviewItemResult`, `ReviewQueue`, `ReviewRepository`, `ReviewView`, `ReviewViewSource`,
+  `ReviewerTurn`, `ReviewVerdict` (`reviews/contract.ts`); `resolveAppPrivateKey`, `appJwt`,
+  `createGitHubReviewClient`, `GITHUB_API_BASE_URL` (`reviews/github.ts`); `prepareReviewView`,
+  `reviewViewProblem`, `reviewViews`, `REVIEW_VIEW_DIRECTORY` (`reviews/view.ts`);
+  `reviewPrompt`, `parseVerdict`, `createReviewerTurn`, `reviewEvidenceProblem`
+  (`reviews/reviewer.ts`); `scanReviews`, `watchReviews`, `allocateReviewDirectory`
+  (`reviews/scan.ts`); `diffPosition`, `positionFindings` (`reviews/diff.ts`).
 
 ### `queue/`
 

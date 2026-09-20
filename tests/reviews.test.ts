@@ -3,17 +3,19 @@
  * belongs to, and what one scan publishes.
  *
  * The scan tests drive the real coordinator with a fake queue, a fake
- * repository, and a fake reviewer turn, so eligibility, deduplication, stale
- * results, failures, and limits are asserted from what really happened: which
- * calls arrived in which order, and which native review and check were
- * published. The last block is the whole path through the CLI: the real Jira
- * connector and the real GitHub App client against a fake HTTP boundary, the
- * real Codex adapter against the stand-in runtime, and a real generated RSA key
- * — nothing there contacts a network, and the key is a disposable test key.
+ * repository, a fake repository-view source, and a fake reviewer turn, so
+ * eligibility, deduplication, stale results, failures, and limits are asserted
+ * from what really happened: which calls arrived in which order, and which
+ * native review and check were published. The last block is the whole path
+ * through the CLI: the real Jira connector and the real GitHub App client
+ * against a fake HTTP boundary, the Git-backed repository view against a real
+ * retained workspace, the real Codex adapter against the stand-in runtime, and
+ * a real generated RSA key — nothing there contacts a network, and the key is a
+ * disposable test key.
  */
 import { generateKeyPairSync } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { runCli } from '../src/cli.js';
@@ -31,19 +33,26 @@ import type {
   ReviewerTurn,
   ReviewScanContext,
   ReviewVerdict,
+  ReviewView,
+  ReviewViewSource,
   PublishedCheck,
   PublishedReview,
 } from '../src/reviews/contract.js';
 import { ReviewError } from '../src/reviews/contract.js';
-import { diffPosition, positionFindings, renderDiff } from '../src/reviews/diff.js';
+import { diffPosition, positionFindings } from '../src/reviews/diff.js';
 import { appJwt, resolveAppPrivateKey } from '../src/reviews/github.js';
 import { parseVerdict, reviewPrompt } from '../src/reviews/reviewer.js';
 import { allocateReviewDirectory, scanReviews, watchReviews } from '../src/reviews/scan.js';
+import {
+  REVIEW_VIEW_DIRECTORY,
+  prepareReviewView,
+  reviewViewProblem,
+} from '../src/reviews/view.js';
 import { SourceError } from '../src/sources/contract.js';
 import type { SourceCandidate, SourceTask } from '../src/sources/contract.js';
 import { receiptFilePath, reserveReceipt } from '../src/sources/receipts.js';
 import type { SourceRef, Task } from '../src/shared/types.js';
-import { fakeTurns, installFakeRuntime } from './fixtures/local-target.js';
+import { fakeTurns, git, installFakeRuntime } from './fixtures/local-target.js';
 import type { FakePlan, FakeState } from './fixtures/local-target.js';
 import {
   cleanupTempDirectories,
@@ -65,7 +74,11 @@ const LOGIN = 'nexus-lens[bot]';
 const CHECK_NAME = 'Nexus Lens review';
 const HEAD = 'a'.repeat(40);
 const OTHER_HEAD = 'b'.repeat(40);
-const BRANCH = 'harness/run-20260919100148-e48a9ab0';
+const BASE = 'c'.repeat(40);
+const WORKSPACE_ID = 'run-20260919100148-e48a9ab0';
+/** The one pointer label the fixtures use to name the ticket's workspace. */
+const WORKSPACE_LABEL = `harness-ws-${WORKSPACE_ID}`;
+const BRANCH = `harness/${WORKSPACE_ID}`;
 
 function refFor(key = 'HARN-3', id = '10003'): SourceRef {
   return {
@@ -106,6 +119,7 @@ function pullFor(overrides: Partial<OpenPullRequest> = {}): OpenPullRequest {
     headSha: HEAD,
     headBranch: BRANCH,
     baseBranch: 'main',
+    baseSha: BASE,
     draft: false,
     author: 'example-owner',
     ...overrides,
@@ -130,11 +144,15 @@ function evidenceFor(pullRequest: OpenPullRequest = pullFor()): ReviewEvidence {
       { path: 'src/greet.mjs', patch: '@@ -1 +1 @@\n-old\n+new', additions: 1, deletions: 1 },
     ],
     truncated: false,
-    instructions: '# AGENTS.md\nRun the checks.',
     checks: [{ name: 'validate', status: 'completed', conclusion: 'success' }],
     combinedStatus: 'success',
     fetchedAt: '2026-09-19T12:00:00.000Z',
   };
+}
+
+/** The repository view one review of the fixtures inspects. */
+function viewFor(dir = '/evidence/review-20260919120000-12345678'): ReviewView {
+  return { path: path.join(dir, REVIEW_VIEW_DIRECTORY), head: HEAD, base: BASE };
 }
 
 const APPROVE: ReviewVerdict = {
@@ -223,14 +241,21 @@ describe('the reviewer evidence', () => {
     ).toThrow(/blocking findings/);
   });
 
-  it('renders a bounded diff, and says when GitHub reported no patch', () => {
-    const text = renderDiff(evidenceFor().files);
-    expect(text).toContain('diff --git a/src/greet-all.mjs b/src/greet-all.mjs');
-    expect(text).toContain('+export function greetAll(names) {');
-    expect(renderDiff([{ path: 'image.png', patch: null, additions: 0, deletions: 0 }])).toContain(
-      'binary, or too large',
-    );
-    expect(renderDiff(evidenceFor().files, 40)).toContain('truncated by the harness');
+  it('positions nothing from a patch GitHub could not report completely', () => {
+    // A binary or oversized file has no patch, and a patch whose line counts
+    // disagree with GitHub's own change counts is equally unusable as a
+    // position: both findings are reported in the review body instead.
+    for (const files of [
+      [{ path: 'image.png', patch: null, additions: 0, deletions: 0 }],
+      [{ path: 'src/greet-all.mjs', patch: PATCH, additions: 4, deletions: 0 }],
+    ]) {
+      const positioned = positionFindings(
+        [{ path: files[0]?.path ?? '', line: 1, body: 'Something is wrong here.' }],
+        files,
+      );
+      expect(positioned.comments).toEqual([]);
+      expect(positioned.unpositioned).toHaveLength(1);
+    }
   });
 
   it('validates the reviewer verdict by name', () => {
@@ -252,17 +277,27 @@ describe('the reviewer evidence', () => {
     );
   });
 
-  it('tells the reviewer the ticket, the diff, the instructions and the CI, and forbids fixes', () => {
-    const prompt = reviewPrompt(evidenceFor());
+  it('tells the reviewer the ticket, its view and the CI, without carrying the change', () => {
+    const view = viewFor('/tmp/reviews/review-20260919120000-12345678');
+    const prompt = reviewPrompt(evidenceFor(), view, '/tmp/reviews/review-20260919120000-12345678');
     expect(prompt).toContain('HARN-3');
     expect(prompt).toContain(`${SCOPE}/browse/HARN-3`);
     expect(prompt).toContain('The greeting is implemented.');
-    expect(prompt).toContain('+export function greetAll(names) {');
-    expect(prompt).toContain('Run the checks.');
+    // The change itself is not in the prompt: it is in the pinned view, and the
+    // prompt names that view, its head and the base the diff starts from.
+    expect(prompt).toContain('repo');
+    expect(prompt).toContain(view.head);
+    expect(prompt).toContain(view.base);
+    expect(prompt).toContain(`Head: ${BRANCH} at ${HEAD}`);
+    expect(prompt).toContain(`Base: main at ${BASE}`);
+    expect(prompt).toContain(`git -C repo diff ${BASE}...${HEAD}`);
+    expect(prompt).toContain('AGENTS.md');
+    expect(prompt).not.toContain('+export function greetAll(names) {');
     expect(prompt).toContain('validate: completed/success');
     expect(prompt).toContain('Combined commit status: success');
-    expect(prompt).toContain('Do not change any file');
+    expect(prompt).toContain('Do not change the repository view');
     expect(prompt).toContain('verdict.json');
+    expect(prompt).toContain(`At most 20 findings`);
   });
 });
 
@@ -394,12 +429,54 @@ interface ScanFixture {
   readonly errors: string[];
   readonly workDir: string;
   readonly reviewerRuns: ReviewEvidence[];
+  readonly views: FakeViews;
+}
+
+/** What a fake view source recorded, and the problem it reports, if any. */
+interface FakeViews {
+  readonly source: ReviewViewSource;
+  readonly prepared: Array<{ readonly dir: string; readonly workspacePath: string }>;
+  /** How many times the scan checked the view after a turn. */
+  readonly checks: { count: number };
+}
+
+/**
+ * The scan's repository-view boundary as a test double: it prepares a view the
+ * way the Git-backed one does (a path inside the review's evidence directory,
+ * pinned at the head it was asked for) and reports the problem a test planted,
+ * or none. The real Git-backed source has its own tests below and the whole
+ * path is exercised again through the CLI.
+ */
+function fakeViews(
+  options: { readonly prepareError?: ReviewError; readonly problem?: string } = {},
+): FakeViews {
+  const prepared: Array<{ readonly dir: string; readonly workspacePath: string }> = [];
+  const checks = { count: 0 };
+  const source: ReviewViewSource = {
+    prepare: async (request) => {
+      prepared.push({ dir: request.dir, workspacePath: request.workspacePath });
+      if (options.prepareError !== undefined) {
+        throw options.prepareError;
+      }
+      return {
+        path: path.join(request.dir, REVIEW_VIEW_DIRECTORY),
+        head: request.head,
+        base: request.base,
+      };
+    },
+    problem: async () => {
+      checks.count += 1;
+      return options.problem ?? null;
+    },
+  };
+  return { source, prepared, checks };
 }
 
 async function scanFixture(
   options: {
     readonly repository?: FakeRepository;
     readonly reviewer?: ReviewerTurn;
+    readonly views?: FakeViews;
     readonly items?: readonly SourceTask[];
     readonly candidates?: readonly SourceCandidate[];
     readonly prepare?: (
@@ -414,6 +491,7 @@ async function scanFixture(
   const errors: string[] = [];
   const reviewerRuns: ReviewEvidence[] = [];
   const repository = options.repository ?? fakeRepository();
+  const views = options.views ?? fakeViews();
   const items = options.items ?? [preparedFor()];
   const candidates = options.candidates ?? [candidateFor()];
   let prepared = 0;
@@ -445,6 +523,7 @@ async function scanFixture(
     queue,
     repository: repository.repository,
     reviewer,
+    views: views.source,
     workDir,
     login: LOGIN,
     checkName: CHECK_NAME,
@@ -457,7 +536,7 @@ async function scanFixture(
     now: () => new Date('2026-09-19T12:00:00.000Z'),
     sleep: async () => undefined,
   };
-  return { context, output, errors, workDir, reviewerRuns };
+  return { context, output, errors, workDir, reviewerRuns, views };
 }
 
 /** The one review directory a scan left, when it left one. */
@@ -532,31 +611,87 @@ describe('one review scan', () => {
   );
 
   it.each([
-    { files: [{ path: 'image.png', patch: null, additions: 0, deletions: 0 }] },
-    { files: [{ path: 'code.ts', patch: PATCH, additions: 4, deletions: 0 }] },
     {
+      what: 'no textual patch for a binary file',
+      files: [{ path: 'image.png', patch: null, additions: 0, deletions: 0 }],
+    },
+    {
+      what: 'a patch that disagrees with GitHub’s change counts',
+      files: [{ path: 'code.ts', patch: PATCH, additions: 4, deletions: 0 }],
+    },
+    {
+      what: 'a rendered diff far beyond the old character guard',
       files: [
         {
           path: 'code.ts',
-          patch: `@@ -0,0 +1 @@\n+${'x'.repeat(120_000)}`,
-          additions: 1,
+          patch: `@@ -0,0 +1,3 @@\n+a\n+b\n+${'x'.repeat(200_000)}`,
+          additions: 3,
           deletions: 0,
         },
       ],
     },
-    { instructions: 'x'.repeat(30_001) },
-    { task: { ...taskFor(), description: 'x'.repeat(8_001) } },
-  ])('refuses known incomplete evidence before a paid turn', async (evidence) => {
-    const repository = fakeRepository({ evidence });
+  ])('lets $what reach the reviewer instead of refusing the change', async ({ files }) => {
+    // GitHub's own report of a change can be unusable for positioning without
+    // being a reason to refuse the review: the reviewer reads the change from
+    // its repository view, and a finding the patch cannot position is reported
+    // in the review body.
+    const repository = fakeRepository({ evidence: { files } });
     const fixture = await scanFixture({ repository });
-    if (evidence.task !== undefined) {
-      // The queue's task, rather than repository metadata, supplies the ticket.
-      fixture.context.queue.prepare = async () => ({ ...preparedFor(), task: evidence.task! });
-    }
+
+    expect(await scanReviews(fixture.context)).toMatchObject({ reviewed: 1, attention: 0 });
+    expect(fixture.reviewerRuns).toHaveLength(1);
+    expect(repository.calls.publishedReviews).toHaveLength(1);
+    expect(repository.calls.publishedChecks).toHaveLength(1);
+  });
+
+  it('refuses a ticket too large to state compactly before a paid turn', async () => {
+    const repository = fakeRepository();
+    const fixture = await scanFixture({ repository });
+    fixture.context.queue.prepare = async () => ({
+      ...preparedFor(),
+      task: { ...taskFor(), description: 'x'.repeat(8_001) },
+    });
+
     expect(await scanReviews(fixture.context)).toMatchObject({ attention: 1, reviewerRuns: 0 });
     expect(fixture.errors.join('\n')).toContain('incomplete review evidence');
     expect(repository.calls.publishedChecks).toEqual([]);
     expect(repository.calls.publishedReviews).toEqual([]);
+  });
+
+  it('starts no reviewer turn when its repository view cannot be prepared', async () => {
+    const repository = fakeRepository();
+    const views = fakeViews({
+      prepareError: new ReviewError(
+        'inconclusive',
+        "the ticket's retained workspace does not hold the reviewed head",
+      ),
+    });
+    const fixture = await scanFixture({ repository, views });
+
+    const summary = await scanReviews(fixture.context);
+
+    expect(summary).toMatchObject({ attention: 1, reviewed: 0, reviewerRuns: 0 });
+    expect(fixture.errors.join('\n')).toContain('repository view could not be prepared');
+    expect(fixture.reviewerRuns).toEqual([]);
+    expect(repository.calls.publishedReviews).toEqual([]);
+    expect(repository.calls.publishedChecks).toEqual([]);
+  });
+
+  it('publishes nothing when the reviewer changed its repository view', async () => {
+    const repository = fakeRepository();
+    const views = fakeViews({
+      problem: 'the repository view carries 1 changed path(s): "notes.txt"',
+    });
+    const fixture = await scanFixture({ repository, views });
+
+    const summary = await scanReviews(fixture.context);
+
+    expect(summary).toMatchObject({ attention: 1, reviewed: 0, reviewerRuns: 1 });
+    expect(views.checks.count).toBe(1);
+    expect(fixture.errors.join('\n')).toContain('repository view for');
+    expect(fixture.errors.join('\n')).toContain('notes.txt');
+    expect(repository.calls.publishedReviews).toEqual([]);
+    expect(repository.calls.publishedChecks).toEqual([]);
   });
 
   it('reports explicit inconclusive evidence without any native publication', async () => {
@@ -668,12 +803,24 @@ describe('one review scan', () => {
       check: { conclusion: string };
       problem: string | null;
       reviewerLog: string | null;
+      view: string | null;
     };
     expect(record.disposition).toBe('reviewed');
     expect(record.verdict).toBe('approve');
     expect(record.problem).toBeNull();
     expect(record.check.conclusion).toBe('success');
     expect(record.reviewerLog).not.toBeNull();
+    // The view came from the workspace the ticket's pointer names, and the
+    // record says where the reviewer inspected it.
+    expect(fixture.views.prepared).toEqual([
+      {
+        dir: path.join(fixture.workDir, 'reviews', directories[0] ?? ''),
+        workspacePath: path.join(fixture.workDir, 'workspaces', WORKSPACE_ID),
+      },
+    ]);
+    expect(record.view).toBe(
+      path.join(fixture.workDir, 'reviews', directories[0] ?? '', REVIEW_VIEW_DIRECTORY),
+    );
     expect(await readFile(path.join(fixture.workDir, 'reviews', 'review.log'), 'utf8')).toContain(
       'HARN-3: approved',
     );
@@ -1061,6 +1208,7 @@ describe('one review scan', () => {
         problem: 'not used',
         logPath: 'log',
       }),
+      views: fakeViews().source,
       workDir,
       login: LOGIN,
       checkName: CHECK_NAME,
@@ -1096,6 +1244,7 @@ describe('the review watch', () => {
         problem: 'not used',
         logPath: 'log',
       }),
+      views: fakeViews().source,
       workDir,
       login: LOGIN,
       checkName: CHECK_NAME,
@@ -1154,6 +1303,7 @@ describe('the review watch', () => {
         problem: 'not used',
         logPath: 'log',
       }),
+      views: fakeViews().source,
       workDir,
       login: LOGIN,
       checkName: CHECK_NAME,
@@ -1366,6 +1516,7 @@ interface FakeWorld {
   readonly publishedChecks: Array<Record<string, unknown>>;
   readonly issues: FakeIssue[];
   setHead(sha: string): void;
+  setBase(sha: string): void;
   failReview(status: number): void;
 }
 
@@ -1373,6 +1524,7 @@ interface FakeWorld {
 function fakeWorld(options: {
   readonly issues: FakeIssue[];
   readonly headSha?: string;
+  readonly baseSha?: string;
   readonly reviews?: Array<{ login: string; state: string; commitId: string }>;
   readonly files?: Array<{ filename: string; patch: string | null }>;
 }): FakeWorld {
@@ -1388,6 +1540,7 @@ function fakeWorld(options: {
   ];
   const files = options.files ?? [{ filename: 'src/greet-all.mjs', patch: PATCH }];
   let headSha = options.headSha ?? HEAD;
+  let baseSha = options.baseSha ?? BASE;
   let reviewStatus = 201;
 
   const json = (value: unknown, status = 200): Response =>
@@ -1487,7 +1640,7 @@ function fakeWorld(options: {
           merged_at: null,
           user: { login: 'example-owner' },
           head: { sha: headSha, ref: branch },
-          base: { ref: 'main' },
+          base: { ref: 'main', sha: baseSha },
         },
       ]);
     }
@@ -1501,7 +1654,7 @@ function fakeWorld(options: {
         merged_at: null,
         user: { login: 'example-owner' },
         head: { sha: headSha, ref: BRANCH },
-        base: { ref: 'main' },
+        base: { ref: 'main', sha: baseSha },
       });
     }
     if (method === 'GET' && path === `/repos/${REPOSITORY}/pulls/27/reviews`) {
@@ -1636,6 +1789,9 @@ function fakeWorld(options: {
     setHead: (sha: string) => {
       headSha = sha;
     },
+    setBase: (sha: string) => {
+      baseSha = sha;
+    },
     failReview: (status: number) => {
       reviewStatus = status;
     },
@@ -1653,10 +1809,63 @@ function sourceIssue(labels: string[]): FakeIssue {
   };
 }
 
+/**
+ * The reviewed head's own content, as the retained workspace really holds it:
+ * the three lines GitHub's patch for the fixture's file describes. A reviewer
+ * reads this from the view, and the compact prompt never carries it.
+ */
+const REVIEWED_SOURCE = ['export function greetAll(names) {', '  return names;', '}', ''].join(
+  '\n',
+);
+/** The one file the fixture's pull request changes. */
+const REVIEWED_FILE = 'src/greet-all.mjs';
+
+/** One file the reviewed head really carries, beyond the fixture's own. */
+interface ReviewedFile {
+  readonly path: string;
+  readonly content: string;
+}
+
+/**
+ * Creates the retained workspace the ticket's pointer names, as the coding run
+ * and its delivery step would have left it: a clone on the branch
+ * `harness/<workspaceId>`, whose head the pull request's head names and whose
+ * history holds the change's base commit. Returns the two commits so the fake
+ * world can report them.
+ */
+async function writeReviewWorkspace(
+  workDir: string,
+  extra: readonly ReviewedFile[] = [],
+): Promise<{ readonly path: string; readonly base: string; readonly head: string }> {
+  const workspace = path.join(workDir, 'workspaces', WORKSPACE_ID);
+  await mkdir(workspace, { recursive: true });
+  git(workspace, 'init', '--quiet', '--initial-branch=main');
+  await writeFile(path.join(workspace, 'README.md'), '# The example project\n', 'utf8');
+  git(workspace, 'add', '--all');
+  git(workspace, 'commit', '--quiet', '--message', 'the example project');
+  const base = git(workspace, 'rev-parse', 'HEAD').trim();
+
+  git(workspace, 'checkout', '--quiet', '-b', BRANCH);
+  await mkdir(path.dirname(path.join(workspace, REVIEWED_FILE)), { recursive: true });
+  await writeFile(path.join(workspace, REVIEWED_FILE), REVIEWED_SOURCE, 'utf8');
+  for (const file of extra) {
+    await mkdir(path.dirname(path.join(workspace, file.path)), { recursive: true });
+    await writeFile(path.join(workspace, file.path), file.content, 'utf8');
+  }
+  git(workspace, 'add', '--all');
+  git(workspace, 'commit', '--quiet', '--message', 'add greetAll');
+  const head = git(workspace, 'rev-parse', 'HEAD').trim();
+  return { path: workspace, base, head };
+}
+
 async function reviewCommandFixture(options: {
   readonly world: FakeWorld;
   readonly plans?: readonly FakePlan[];
   readonly key?: string | null;
+  /** Whether the ticket's retained workspace is on this machine at all. */
+  readonly workspace?: boolean;
+  /** Files the reviewed head really carries, beyond the fixture's own. */
+  readonly readFiles?: readonly ReviewedFile[];
   /** Nexus-wide harness configuration fields to replace. */
   readonly harness?: Record<string, unknown>;
   /** The connected project's own configuration, when a test replaces it. */
@@ -1666,6 +1875,10 @@ async function reviewCommandFixture(options: {
 }): Promise<{
   readonly cwd: string;
   readonly configPath: string;
+  /** The reviewed head the fake world and the retained workspace agree on. */
+  readonly head: string | null;
+  readonly base: string | null;
+  readonly workspacePath: string;
   readonly runtime: { readonly bin: string; readonly state: FakeState };
   readonly run: () => Promise<{ code: number; out: string; err: string }>;
   readonly signals: InterruptSignals;
@@ -1679,6 +1892,17 @@ async function reviewCommandFixture(options: {
     maxRepairs: 0,
     taskTimeoutMinutes: 5,
   } as Record<string, unknown>);
+  // The retained workspace the ticket's pointer label names: a review happens
+  // in a repository view cloned from it, so it has to be really there.
+  const workDir = path.join(directory, 'runs');
+  const workspace =
+    options.workspace === false
+      ? null
+      : await writeReviewWorkspace(workDir, options.readFiles ?? []);
+  if (workspace !== null) {
+    options.world.setHead(workspace.head);
+    options.world.setBase(workspace.base);
+  }
   const projectPath = await writeJsonFile(
     directory,
     PROJECT_CONFIG_FILE_NAME,
@@ -1762,12 +1986,21 @@ async function reviewCommandFixture(options: {
     }
   };
 
-  return { cwd: directory, configPath, runtime, run, signals };
+  return {
+    cwd: directory,
+    configPath,
+    head: workspace?.head ?? null,
+    base: workspace?.base ?? null,
+    workspacePath: path.join(workDir, 'workspaces', WORKSPACE_ID),
+    runtime,
+    run,
+    signals,
+  };
 }
 
 describe('the review command through the CLI', () => {
   it('draws the reviewer turn in its own pane, opened by its role and ticket', async () => {
-    const world = fakeWorld({ issues: [sourceIssue(['harness-ws-run-20260919100148-e48a9ab0'])] });
+    const world = fakeWorld({ issues: [sourceIssue([WORKSPACE_LABEL])] });
     const console = fakeConsole({ columns: 80, rows: 24 });
     const fixture = await reviewCommandFixture({
       world,
@@ -1796,7 +2029,7 @@ describe('the review command through the CLI', () => {
   });
 
   it('accepts a completed but explicitly inconclusive reviewer without publishing a verdict', async () => {
-    const world = fakeWorld({ issues: [sourceIssue(['harness-ws-run-20260919100148-e48a9ab0'])] });
+    const world = fakeWorld({ issues: [sourceIssue([WORKSPACE_LABEL])] });
     const fixture = await reviewCommandFixture({
       world,
       plans: [
@@ -1822,9 +2055,9 @@ describe('the review command through the CLI', () => {
     expect(world.publishedChecks).toEqual([]);
     expect(world.issues[0]?.status).toBe('In Review');
   });
-  it('reviews from a non-repository evidence directory with both credential variables stripped', async () => {
+  it('reviews from its evidence directory, in a view pinned at the head, with every credential stripped', async () => {
     const world = fakeWorld({
-      issues: [sourceIssue(['harness-ws-run-20260919100148-e48a9ab0'])],
+      issues: [sourceIssue([WORKSPACE_LABEL])],
     });
     const fixture = await reviewCommandFixture({
       world,
@@ -1849,8 +2082,25 @@ describe('the review command through the CLI', () => {
     const turns = await fakeTurns(fixture.runtime.state);
     expect(turns).toHaveLength(1);
     const turn = turns[0]!;
+    // The turn's own working directory is the evidence directory, not the
+    // repository: the view sits beside it, and the verdict is written beside it.
     expect(turn.cwd).toContain(path.join(fixture.cwd, 'runs', 'reviews'));
     expect(existsSync(path.join(turn.cwd, '.git'))).toBe(false);
+    expect(existsSync(path.join(turn.cwd, 'verdict.json'))).toBe(true);
+    const view = path.join(turn.cwd, REVIEW_VIEW_DIRECTORY);
+    expect(git(view, 'rev-parse', 'HEAD').trim()).toBe(fixture.head);
+    // The view the harness pinned is the one it checks: asking its own boundary
+    // whether that snapshot still stands is what decides publication.
+    expect(
+      await reviewViewProblem(
+        { path: view, head: fixture.head ?? '', base: fixture.base ?? '' },
+        new AbortController().signal,
+      ),
+    ).toBeNull();
+    // The view really holds the reviewed head's own content, and no path back
+    // to the workspace it was cloned from.
+    expect(git(view, 'show', `HEAD:${REVIEWED_FILE}`)).toBe(REVIEWED_SOURCE);
+    expect(git(view, 'remote')).toBe('');
     expect(existsSync(path.join(fixture.cwd, '.git'))).toBe(false);
     expect(turn.argv).toEqual([
       '--profile',
@@ -1873,7 +2123,7 @@ describe('the review command through the CLI', () => {
       FAKE_CODEX: true,
     });
     // The parent resolved the key and still publishes as the App.
-    expect(world.publishedReviews[0]).toMatchObject({ event: 'APPROVE', commit_id: HEAD });
+    expect(world.publishedReviews[0]).toMatchObject({ event: 'APPROVE', commit_id: fixture.head });
     expect(world.publishedChecks[0]).toMatchObject({ conclusion: 'success' });
   });
 
@@ -1884,7 +2134,7 @@ describe('the review command through the CLI', () => {
     'handles $count changed files without approving a truncated list',
     async ({ count, truncated, pages }) => {
       const world = fakeWorld({
-        issues: [sourceIssue(['harness-ws-run-20260919100148-e48a9ab0'])],
+        issues: [sourceIssue([WORKSPACE_LABEL])],
         files: Array.from({ length: count }, (_, index) => ({
           filename: `src/file-${String(index)}.mjs`,
           patch: PATCH,
@@ -1920,7 +2170,7 @@ describe('the review command through the CLI', () => {
     { timeout: 60_000 },
     async () => {
       const world = fakeWorld({
-        issues: [sourceIssue([`harness-ws-${'run-20260919100148-e48a9ab0'}`])],
+        issues: [sourceIssue([WORKSPACE_LABEL])],
       });
       const fixture = await reviewCommandFixture({
         world,
@@ -1960,12 +2210,12 @@ describe('the review command through the CLI', () => {
       expect(reviewCall?.authorization).toBe('Bearer installation-token');
       expect(world.publishedReviews[0]).toMatchObject({
         event: 'APPROVE',
-        commit_id: HEAD,
+        commit_id: fixture.head,
       });
       expect(String(world.publishedReviews[0]?.['body'])).toContain(`${SCOPE}/browse/HARN-3`);
       expect(world.publishedChecks[0]).toMatchObject({
         name: CHECK_NAME,
-        head_sha: HEAD,
+        head_sha: fixture.head,
         status: 'completed',
         conclusion: 'success',
       });
@@ -1977,7 +2227,8 @@ describe('the review command through the CLI', () => {
       expect(world.issues[0]?.status).toBe('In Review');
 
       // The reviewer really went through the adapter, with the configured
-      // reviewer profile, in the review's own evidence directory.
+      // reviewer profile, in the review's own evidence directory, and its
+      // prompt names the view rather than carrying the change.
       const turns = await fakeTurns(fixture.runtime.state);
       expect(turns).toHaveLength(1);
       expect(turns[0]?.argv.slice(0, 4)).toEqual([
@@ -1988,7 +2239,9 @@ describe('the review command through the CLI', () => {
       ]);
       expect(turns[0]?.cwd).toContain(path.join('runs', 'reviews'));
       expect(turns[0]?.prompt).toContain('HARN-3');
-      expect(turns[0]?.prompt).toContain('+export function greetAll(names) {');
+      expect(turns[0]?.prompt).toContain(`Base: main at ${fixture.base}`);
+      expect(turns[0]?.prompt).toContain(`Head: ${BRANCH} at ${fixture.head}`);
+      expect(turns[0]?.prompt).not.toContain('export function greetAll(names) {');
 
       // A second scan of the same, unchanged head starts no reviewer turn and
       // publishes no second review: the native review is the record.
@@ -2006,7 +2259,7 @@ describe('the review command through the CLI', () => {
     { timeout: 60_000 },
     async () => {
       const world = fakeWorld({
-        issues: [sourceIssue(['harness-ws-run-20260919100148-e48a9ab0'])],
+        issues: [sourceIssue([WORKSPACE_LABEL])],
         reviews: [{ login: LOGIN, state: 'APPROVED', commitId: OTHER_HEAD }],
       });
       const fixture = await reviewCommandFixture({
@@ -2039,7 +2292,7 @@ describe('the review command through the CLI', () => {
       expect(result.code).toBe(EXIT_OK);
       expect(world.publishedReviews[0]).toMatchObject({
         event: 'REQUEST_CHANGES',
-        commit_id: HEAD,
+        commit_id: fixture.head,
         comments: [{ path: 'src/greet-all.mjs', position: 1, body: 'It returns the wrong thing.' }],
       });
       expect(world.publishedChecks[0]).toMatchObject({ conclusion: 'failure' });
@@ -2047,9 +2300,193 @@ describe('the review command through the CLI', () => {
     },
   );
 
+  it(
+    'reviews a change larger than the old rendered-diff guard reached',
+    { timeout: 60_000 },
+    async () => {
+      // The observed case: a complete pull request whose rendered patch is far
+      // past the 120,000-character prompt guard the harness used to refuse on.
+      const padding = 'x'.repeat(150_000);
+      const content = [
+        'export const big = true;',
+        `// ${padding}`,
+        'export const after = 1;',
+        '',
+      ].join('\n');
+      const patch = [
+        '@@ -0,0 +1,3 @@',
+        '+export const big = true;',
+        `+// ${padding}`,
+        '+export const after = 1;',
+      ].join('\n');
+      expect(patch.length).toBeGreaterThan(120_000);
+
+      const world = fakeWorld({
+        issues: [sourceIssue([WORKSPACE_LABEL])],
+        files: [{ filename: 'src/big.mjs', patch }],
+      });
+      const fixture = await reviewCommandFixture({
+        world,
+        readFiles: [{ path: 'src/big.mjs', content }],
+        plans: [
+          { edits: [{ file: 'verdict.json', text: verdictFile(APPROVE) }], summary: 'approved' },
+        ],
+      });
+
+      const result = await fixture.run();
+
+      expect(result.code).toBe(EXIT_OK);
+      const turns = await fakeTurns(fixture.runtime.state);
+      expect(turns).toHaveLength(1);
+      // The prompt stays compact: the change is not assembled into it.
+      expect(turns[0]?.prompt).not.toContain(padding);
+      expect(turns[0]?.prompt.length).toBeLessThan(20_000);
+      // The reviewer's own view really holds the whole file at the reviewed head.
+      const view = path.join(turns[0]?.cwd ?? '', REVIEW_VIEW_DIRECTORY);
+      expect(git(view, 'show', 'HEAD:src/big.mjs')).toBe(content);
+      expect(world.publishedReviews).toHaveLength(1);
+      expect(world.publishedChecks[0]).toMatchObject({
+        head_sha: fixture.head,
+        conclusion: 'success',
+      });
+    },
+  );
+
+  it(
+    'lets a blocking finding about the head reach the review from the view alone',
+    { timeout: 60_000 },
+    async () => {
+      const world = fakeWorld({ issues: [sourceIssue([WORKSPACE_LABEL])] });
+      const fixture = await reviewCommandFixture({
+        world,
+        plans: [
+          {
+            edits: [
+              {
+                file: 'verdict.json',
+                text: verdictFile({
+                  decision: 'request_changes',
+                  summary: 'The exported function throws the names away.',
+                  findings: [
+                    {
+                      path: REVIEWED_FILE,
+                      line: 2,
+                      body: 'It returns the input unchanged instead of greeting the names.',
+                    },
+                  ],
+                }),
+              },
+            ],
+            summary: 'requested changes',
+          },
+        ],
+      });
+
+      const result = await fixture.run();
+
+      expect(result.code).toBe(EXIT_OK);
+      const turns = await fakeTurns(fixture.runtime.state);
+      expect(turns).toHaveLength(1);
+      // The offending line is nowhere in the initial context...
+      expect(turns[0]?.prompt).not.toContain('return names;');
+      // ...and the reviewer's own tools find it in the pinned view, from which
+      // the blocking finding is published as one inline comment on the head.
+      const view = path.join(turns[0]?.cwd ?? '', REVIEW_VIEW_DIRECTORY);
+      expect(git(view, 'show', `HEAD:${REVIEWED_FILE}`)).toBe(REVIEWED_SOURCE);
+      expect(world.publishedReviews[0]).toMatchObject({
+        event: 'REQUEST_CHANGES',
+        commit_id: fixture.head,
+        comments: [
+          {
+            path: REVIEWED_FILE,
+            position: 2,
+            body: 'It returns the input unchanged instead of greeting the names.',
+          },
+        ],
+      });
+      expect(world.publishedChecks[0]).toMatchObject({ conclusion: 'failure' });
+    },
+  );
+
+  it(
+    'publishes nothing when the reviewer changed its repository view',
+    { timeout: 60_000 },
+    async () => {
+      const world = fakeWorld({ issues: [sourceIssue([WORKSPACE_LABEL])] });
+      const fixture = await reviewCommandFixture({
+        world,
+        plans: [
+          {
+            // A turn that approves and also leaves a file in the view: the view
+            // is no longer the snapshot the reviewed head names.
+            edits: [
+              { file: 'verdict.json', text: verdictFile(APPROVE) },
+              { file: path.join(REVIEW_VIEW_DIRECTORY, 'notes.txt'), text: 'scratch\n' },
+            ],
+          },
+        ],
+      });
+
+      const result = await fixture.run();
+
+      expect(result.code).toBe(EXIT_INPUT_ERROR);
+      expect(result.err).toContain('repository view');
+      expect(result.err).toContain('notes.txt');
+      expect(world.publishedReviews).toEqual([]);
+      expect(world.publishedChecks).toEqual([]);
+      expect(world.issues[0]?.status).toBe('In Review');
+    },
+  );
+
+  it(
+    'starts no reviewer turn when the retained workspace is not on this machine',
+    { timeout: 60_000 },
+    async () => {
+      const world = fakeWorld({ issues: [sourceIssue([WORKSPACE_LABEL])] });
+      const fixture = await reviewCommandFixture({
+        world,
+        workspace: false,
+        plans: [{ edits: [{ file: 'verdict.json', text: verdictFile(APPROVE) }] }],
+      });
+
+      const result = await fixture.run();
+
+      expect(result.code).toBe(EXIT_INPUT_ERROR);
+      expect(result.err).toContain('repository view could not be prepared');
+      expect(await fakeTurns(fixture.runtime.state)).toHaveLength(0);
+      expect(world.publishedReviews).toEqual([]);
+      expect(world.publishedChecks).toEqual([]);
+      expect(world.issues[0]?.status).toBe('In Review');
+    },
+  );
+
+  it(
+    'starts no reviewer turn when the workspace cannot be pinned at the reviewed head',
+    { timeout: 60_000 },
+    async () => {
+      const world = fakeWorld({ issues: [sourceIssue([WORKSPACE_LABEL])] });
+      const fixture = await reviewCommandFixture({
+        world,
+        plans: [{ edits: [{ file: 'verdict.json', text: verdictFile(APPROVE) }] }],
+      });
+      // The pull request advanced to a head this machine never held: the view
+      // cannot be pinned at it, so nothing may be reviewed or published.
+      world.setHead(OTHER_HEAD);
+
+      const result = await fixture.run();
+
+      expect(result.code).toBe(EXIT_INPUT_ERROR);
+      expect(result.err).toContain(`reviewed head ${OTHER_HEAD}`);
+      expect(await fakeTurns(fixture.runtime.state)).toHaveLength(0);
+      expect(world.publishedReviews).toEqual([]);
+      expect(world.publishedChecks).toEqual([]);
+      expect(world.issues[0]?.status).toBe('In Review');
+    },
+  );
+
   it('reports a missing App key honestly, without contacting the repository', async () => {
     const world = fakeWorld({
-      issues: [sourceIssue(['harness-ws-run-20260919100148-e48a9ab0'])],
+      issues: [sourceIssue([WORKSPACE_LABEL])],
     });
     const fixture = await reviewCommandFixture({ world, key: null });
 
@@ -2092,7 +2529,7 @@ describe('the review command through the CLI', () => {
 
   it('reports an unavailable reviewer launch as inconclusive, without approving', async () => {
     const world = fakeWorld({
-      issues: [sourceIssue(['harness-ws-run-20260919100148-e48a9ab0'])],
+      issues: [sourceIssue([WORKSPACE_LABEL])],
     });
     const fixture = await reviewCommandFixture({
       world,
@@ -2117,7 +2554,7 @@ describe('the review command through the CLI', () => {
     'timestamps an HTTP %s failure after review without a coding rerun',
     async (status) => {
       const world = fakeWorld({
-        issues: [sourceIssue(['harness-ws-run-20260919100148-e48a9ab0'])],
+        issues: [sourceIssue([WORKSPACE_LABEL])],
       });
       world.failReview(status);
       const fixture = await reviewCommandFixture({
@@ -2229,6 +2666,132 @@ describe('the review command through the CLI', () => {
 // ---------------------------------------------------------------------------
 // The pieces the tests above stand in for
 // ---------------------------------------------------------------------------
+
+/**
+ * A retained workspace with the two commits one review needs: the recorded base
+ * on the checkout's own branch, and the reviewed head on the ticket's
+ * `harness/<workspaceId>` branch. It is a real Git repository, written the way a
+ * run leaves one.
+ */
+async function viewWorkspace(): Promise<{
+  readonly path: string;
+  readonly base: string;
+  readonly head: string;
+}> {
+  const root = await createTempDir();
+  const workspacePath = path.join(root, 'workspaces', WORKSPACE_ID);
+  await mkdir(workspacePath, { recursive: true });
+  git(workspacePath, 'init', '--quiet', '--initial-branch=main');
+  await writeFile(path.join(workspacePath, 'README.md'), '# the example project\n', 'utf8');
+  git(workspacePath, 'add', '--all');
+  git(workspacePath, 'commit', '--quiet', '--message', 'the example project');
+  const base = git(workspacePath, 'rev-parse', 'HEAD').trim();
+
+  git(workspacePath, 'checkout', '--quiet', '-b', BRANCH);
+  await writeFile(path.join(workspacePath, 'app.mjs'), 'export const ready = true;\n', 'utf8');
+  git(workspacePath, 'add', '--all');
+  git(workspacePath, 'commit', '--quiet', '--message', 'the reviewed change');
+  const head = git(workspacePath, 'rev-parse', 'HEAD').trim();
+  return { path: workspacePath, base, head };
+}
+
+/** An aborted-never signal: these steps are not the ones a stop races here. */
+function neverStopped(): AbortSignal {
+  return new AbortController().signal;
+}
+
+describe('the reviewer’s repository view', () => {
+  it('pins a clean snapshot at the reviewed head, holding the base commit', async () => {
+    const workspace = await viewWorkspace();
+    const dir = await createTempDir();
+
+    const view = await prepareReviewView(
+      { dir, workspacePath: workspace.path, head: workspace.head, base: workspace.base },
+      neverStopped(),
+    );
+
+    expect(view).toEqual({
+      path: path.join(dir, REVIEW_VIEW_DIRECTORY),
+      head: workspace.head,
+      base: workspace.base,
+    });
+    expect(git(view.path, 'rev-parse', 'HEAD').trim()).toBe(workspace.head);
+    expect(git(view.path, 'show', 'HEAD:app.mjs')).toBe('export const ready = true;\n');
+    expect(git(view.path, 'rev-parse', `${workspace.base}^{commit}`).trim()).toBe(workspace.base);
+    // A snapshot, not a channel: the clone keeps no remote at all, and reading
+    // it never touches the workspace it came from.
+    expect(git(view.path, 'remote')).toBe('');
+    expect(git(workspace.path, 'status', '--porcelain').trim()).toBe('');
+    // The harness's own boundary agrees that nothing in the view changed.
+    expect(await reviewViewProblem(view, neverStopped())).toBeNull();
+  });
+
+  it('refuses a workspace that is not a Git repository', async () => {
+    const root = await createTempDir();
+    const dir = await createTempDir();
+    const workspacePath = path.join(root, 'workspaces', WORKSPACE_ID);
+    await mkdir(workspacePath, { recursive: true });
+
+    await expect(
+      prepareReviewView({ dir, workspacePath, head: HEAD, base: BASE }, neverStopped()),
+    ).rejects.toThrow(/could not be cloned into a repository view/);
+  });
+
+  it('refuses a head or a base the retained workspace does not hold', async () => {
+    const workspace = await viewWorkspace();
+    const headDir = await createTempDir();
+    const baseDir = await createTempDir();
+
+    await expect(
+      prepareReviewView(
+        { dir: headDir, workspacePath: workspace.path, head: OTHER_HEAD, base: workspace.base },
+        neverStopped(),
+      ),
+    ).rejects.toThrow(new RegExp(`checked out at the reviewed head ${OTHER_HEAD}`));
+    await expect(
+      prepareReviewView(
+        { dir: baseDir, workspacePath: workspace.path, head: workspace.head, base: OTHER_HEAD },
+        neverStopped(),
+      ),
+    ).rejects.toThrow(new RegExp(`base commit ${OTHER_HEAD}`));
+  });
+
+  it('refuses a pull request that carries no full commit ids', async () => {
+    const workspace = await viewWorkspace();
+    const dir = await createTempDir();
+
+    await expect(
+      prepareReviewView(
+        { dir, workspacePath: workspace.path, head: 'not-a-commit', base: workspace.base },
+        neverStopped(),
+      ),
+    ).rejects.toThrow(/no full head and base commit/);
+  });
+
+  it('reports a view that was edited, one left with a new file, and a moved head', async () => {
+    const workspace = await viewWorkspace();
+    const dir = await createTempDir();
+    const view = await prepareReviewView(
+      { dir, workspacePath: workspace.path, head: workspace.head, base: workspace.base },
+      neverStopped(),
+    );
+
+    await writeFile(path.join(view.path, 'app.mjs'), 'export const ready = false;\n', 'utf8');
+    expect(await reviewViewProblem(view, neverStopped())).toMatch(/changed path/);
+    expect(await reviewViewProblem(view, neverStopped())).toContain('app.mjs');
+
+    git(view.path, 'checkout', '--', 'app.mjs');
+    expect(await reviewViewProblem(view, neverStopped())).toBeNull();
+
+    await writeFile(path.join(view.path, 'notes.txt'), 'scratch\n', 'utf8');
+    expect(await reviewViewProblem(view, neverStopped())).toContain('notes.txt');
+    await rm(path.join(view.path, 'notes.txt'));
+
+    await writeFile(path.join(view.path, 'app.mjs'), 'export const ready = false;\n', 'utf8');
+    git(view.path, 'commit', '--quiet', '--all', '--message', 'not the reviewed head');
+    expect(await reviewViewProblem(view, neverStopped())).toMatch(/not at the reviewed head/);
+  });
+});
 
 describe('the review evidence directory', () => {
   it('is generated, exclusive, and named by a timestamp', async () => {

@@ -1,11 +1,13 @@
 /**
- * Git invocation for the workspace modules: one command with literal arguments,
- * never through a shell, and the small path helpers built on it.
+ * Git invocation for the workspace modules, and for the review path's
+ * repository view: one command with literal arguments, never through a shell,
+ * and the small path helpers built on it.
  *
  * Inherited Git variables are dropped so that a `GIT_DIR`, `GIT_WORK_TREE`, or
  * `GIT_INDEX_FILE` in the caller's environment cannot redirect an inspection at
  * a different repository, and optional locks are off so that merely reading the
- * source never rewrites its index. Git is invoked nowhere else.
+ * source never rewrites its index. Every Git invocation in the harness goes
+ * through this module.
  *
  * Every Git invocation is bounded and stoppable, through the same process
  * runner the configured commands use (`process/invocation.ts`): a run's own

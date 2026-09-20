@@ -686,15 +686,22 @@ cancelled attempt — or a reservation with no finished attempt — is reported 
 work, and a pull request that predates the failure is not the successful code awaiting approval.
 Anything else — no pointer, two pointers, no pull request, more than one match — is reported and
 left in review; nothing is published for it. For an eligible
-ticket the scan reads the pull request's changed files and patches, root and relevant nested `AGENTS.md` files at
-the reviewed head, and the head's check runs and combined status, and runs the configured reviewer
-as **one bounded turn** in its own evidence directory under `<workDir>/reviews/`. The reviewer never
-changes files, implements fixes, commits, pushes, merges, or edits the ticket: it writes one verdict
-which the harness validates. `REQUEST_CHANGES` needs at least one finding and is published with
-inline file/line comments where the diff can position them; `APPROVE` is published only for a
-completed verdict with no blocking findings. Before publishing anything, the scan re-reads the pull
-request head and the ticket, so a head that moved — or a ticket that left review — publishes
-nothing and is reviewed again later. Then the verdict becomes one native review pinned to the
+ticket the scan gives the reviewer a **repository view** instead of an assembled patch: a clone of
+the ticket's own retained workspace (`<workDir>/workspaces/<workspaceId>`, the one its pointer
+label names), detached from it so it keeps no remote, and pinned at exactly the pull request's
+head with the change's base commit in it. The view holds no credential of any kind — the App
+private key and the installation token stay with Nexus — and the reviewer reads files, history
+and diffs there with ordinary read tools. The scan also reads the head's check runs and combined
+status, and runs the configured reviewer as **one bounded turn** in its own evidence directory
+under `<workDir>/reviews/`, one directory above the view. The reviewer never
+changes the view, implements fixes, commits, pushes, merges, or edits the ticket: it writes one
+verdict which the harness validates. `REQUEST_CHANGES` needs at least one finding and is published
+with inline file/line comments where the pull request's own diff can position them; `APPROVE` is
+published only for a completed verdict with no blocking findings. Before publishing anything, the
+scan checks that the view is still the clean snapshot at that head, re-reads the pull
+request head, and re-reads the ticket, so a head that moved, a ticket that left review, or a view
+the turn changed publishes nothing and is reviewed again later. Then the verdict becomes one native
+review pinned to the
 reviewed commit, and one app-owned check run named `Nexus Lens review` on that same head:
 `success` only for an approval, `failure` for a requested change. A missing credential, an
 unavailable tool, an API failure, and incomplete evidence are reported as such, never as an
@@ -702,8 +709,14 @@ approval, and never start a coding turn.
 
 The reviewer can explicitly return `inconclusive`, explaining missing material evidence and what
 the coordinator needs to provide. It publishes neither a native verdict nor a check. Known missing
-patches (including binary files), incomplete patches, or input exceeding the documented bounds
-are refused before a paid turn. Approval requires a completed review with sufficient evidence;
+patches (including binary files) and a change far too large to render are **not** refusals: the
+reviewer reads the change from its view, and a finding the patch cannot position is written in the
+review body. What is refused before a paid turn is a review that cannot be given a pinned view —
+no retained workspace on this machine, a workspace that does not hold the reviewed head or its
+base commit, a clone that fails, a view that is not clean, or a ticket description over the
+documented size bound — and a change GitHub lists in more than three pages of files, whose list
+is treated as incomplete. Each of those is reported for a coordinator, never as an approval and
+never as a coding turn. Approval requires a completed review with sufficient evidence;
 pending CI alone does not prevent a code review, because CI remains a separate merge requirement.
 
 **A repeated scan does not review an unchanged head twice.** A completed review by the configured
@@ -1138,9 +1151,17 @@ Read this before pointing a run at anything you care about.
   successful only for an approval), a head that already carries a completed review starting no
   reviewer turn, a later or moved head being reviewed again or refused as stale, a missing check
   being republished from the existing review without a turn, and failed reviewer, evidence, and
-  API paths reported without an approval. The CLI path is exercised end to end with the real
-  adapter and a stand-in `codex` on `PATH`, which writes the verdict file the way a reviewer turn
-  does. Nothing there needs a GitHub App, a key other than a disposable test one, or a network.
+  API paths reported without an approval. The repository view is exercised against real temporary
+  Git repositories: a clean clone pinned at the reviewed head with its remote removed and the base
+  commit in it, a workspace that is not a repository, a head or base commit it does not hold, and a
+  view that was edited, left with a new file, or committed in. The CLI path is exercised end to end
+  with the real adapter, a stand-in `codex` on `PATH` that writes the verdict file the way a
+  reviewer turn does, and a real retained workspace under the output directory: a complete change
+  far larger than the old 120,000-character prompt guard reaches the reviewer with the patch
+  nowhere in its prompt, a blocking finding about the head is published as an inline comment from
+  the view alone, and a view that was changed, a workspace that is missing, and a head the
+  workspace does not hold all publish nothing. Nothing there needs a GitHub App, a key other than
+  a disposable test one, or a network.
 - the serial queue, against scripted phases and real temporary Git repositories
   (`tests/queue.test.ts`, `tests/queue-cli.test.ts`, `tests/refresh.test.ts`): two tickets finished in
   the queue's own order, a same-ticket repair before unrelated ready work, a fresh scan after every
@@ -1240,7 +1261,9 @@ and only a read.
 - **live verification of the corrected Nexus Lens path.** HARN-14's operator notes report an
   earlier live App-authored request for changes and a failed app-owned check, which exposed review
   defects. These corrections are verified offline with a fake GitHub API and generated test keys;
-  no live exercise was run for them. The operator must separately verify inline findings, check
+  no live exercise was run for them, and the repository-view path — the pinned local clone a
+  reviewer inspects instead of an assembled patch — is offline evidence too: no live reviewer turn
+  has read a view from this checkout. The operator must separately verify inline findings, check
   reconciliation, native approval eligibility, and the configured branch/auto-merge gate. Mocked
   tests do not establish those outcomes or whether review quality reduces coordinator effort;
 - **the Nexus research-tool profiles.** [docs/nexus-agent-tools.md](docs/nexus-agent-tools.md)
@@ -1448,8 +1471,9 @@ bounded runner every configured command uses.
 Review is its own optional path, not a source and not delivery: `src/reviews/` reads the Jira queue
 through the existing connector without claiming anything, runs the explicitly configured reviewer
 through the same Codex adapter, and publishes as the configured GitHub App installation. Nothing in
-it merges, changes Jira, or opens a working copy, and a configuration without `review` never
-constructs it.
+it merges, changes Jira, or touches the working copy a coding attempt used: the reviewer inspects
+its own repository view, cloned from the ticket's retained workspace and pinned at the reviewed
+head, and a configuration without `review` never constructs any of it.
 
 `.prettierignore` excludes the supplied `AGENTS.md` and `docs/` so those design documents stay
 byte-for-byte as written.
