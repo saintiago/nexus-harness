@@ -207,86 +207,66 @@ export function outsideWorkspacesProblem(workDir: string, candidate: string): st
 }
 
 /**
- * Allocates `<workDir>/runs/<runId>`, `<workDir>/workspaces/<runId>`, and
- * `<runDir>/logs`. The run ID is generated, so no part of the layout comes from
- * task text, and both directories named after it are created exclusively: an
- * existing run directory or workspace is never reused, resumed, or overwritten,
- * and a different ID is generated instead. Allocation itself clones nothing.
- *
- * The workspace sits beside the evidence rather than inside it, so a later
- * attempt can continue it once there is a reason to
- * (docs/implement-workspace-continuation.md); this run's own report and logs stay
- * where they were written either way.
+ * Creates the two directories the layout keeps under the output directory.
+ * A failure here is about the output location itself, so it says so.
  */
-export async function allocateRunDirectory(
-  workDir: string,
-  placement: WorkspacePlacement = { kind: 'create' },
-  generateRunId: () => string = newRunId,
+async function createLayoutRoots(
+  outputDir: string,
+  runsRoot: string,
+  workspacesRoot: string,
+): Promise<void> {
+  try {
+    await mkdir(runsRoot, { recursive: true });
+    await mkdir(workspacesRoot, { recursive: true });
+  } catch (cause) {
+    throw new WorkspaceError(
+      `the output directory "${outputDir}" cannot be created: ${messageOf(cause)}`,
+    );
+  }
+}
+
+/**
+ * Allocates one run's evidence: `<runsRoot>/<runId>` and its `logs`, under a
+ * freshly generated id, and never reusing a name another run already holds.
+ *
+ * `workspace` is the workspace the run works in, and `null` when the run is the
+ * one that names it: then the workspace a fresh attempt creates is named after
+ * the run itself, and this call creates that directory too, first, so a name
+ * that is already taken leaves nothing behind. A workspace whose name its caller
+ * fixed — a ticket key, or a clone an attempt continues — is only named here:
+ * the clone exists already, and allocation creates nothing for it.
+ */
+async function allocateRunEvidence(
+  outputDir: string,
+  runsRoot: string,
+  workspacesRoot: string,
+  workspace: { readonly workspaceId: string; readonly workspacePath: string } | null,
+  generateRunId: () => string,
 ): Promise<RunDirectory> {
-  const outputDir = path.resolve(workDir);
-  const runsRoot = path.join(outputDir, 'runs');
-  const workspacesRoot = path.join(outputDir, 'workspaces');
-  /**
-   * The name the caller preferred, when it has a usable one. A preference that
-   * cannot name a workspace is not a name and not a path: the run's own
-   * generated id names the workspace instead, exactly as it does for a caller
-   * that preferred nothing.
-   */
-  const preferred =
-    placement.kind === 'create' &&
-    placement.preferredWorkspaceId !== undefined &&
-    workspaceIdProblem(placement.preferredWorkspaceId) === null
-      ? placement.preferredWorkspaceId
-      : null;
   let attempted = outputDir;
 
   for (let attempt = 1; attempt <= MAX_RUN_ID_ATTEMPTS; attempt += 1) {
     const runId = generateRunId();
     assertUsableRunId(runId);
 
-    // A name is either what the caller preferred (a fresh run that continues
-    // nothing), or the run's own generated id. A run that continues a workspace
-    // creates none: it only names the one the caller already resolved.
-    const workspaceId = placement.kind === 'reopen' ? placement.workspaceId : (preferred ?? runId);
+    const workspaceId = workspace?.workspaceId ?? runId;
+    const workspacePath = workspace?.workspacePath ?? path.join(workspacesRoot, workspaceId);
     const runDir = path.join(runsRoot, runId);
-    const workspacePath = path.join(workspacesRoot, workspaceId);
     const logsDir = path.join(runDir, 'logs');
     attempted = runDir;
 
-    try {
-      await mkdir(runsRoot, { recursive: true });
-      await mkdir(workspacesRoot, { recursive: true });
-    } catch (cause) {
-      throw new WorkspaceError(
-        `the output directory "${outputDir}" cannot be created: ${messageOf(cause)}`,
-      );
-    }
-
-    // A preferred name that something already holds is refused before anything
-    // is created, so the common conflict leaves nothing behind: the harness
-    // never overwrites or adopts an existing workspace, and it never quietly
-    // gives the run a different name than the one it asked for.
-    if (preferred !== null && (await nameIsHeld(workspacePath))) {
-      throw preferredNameTakenError(workspacePath);
-    }
+    await createLayoutRoots(outputDir, runsRoot, workspacesRoot);
 
     try {
-      // The workspace first: a name that is already taken leaves nothing behind.
-      // A continuation creates no workspace at all: the clone it names exists
-      // already, resolved and verified by the caller.
-      if (placement.kind === 'create') {
+      // The workspace first, when this run creates one: a name that is already
+      // taken leaves nothing behind. A run whose workspace name is fixed creates
+      // none for it — the clone is already there.
+      if (workspace === null) {
         await mkdir(workspacePath);
       }
       await mkdir(runDir);
     } catch (cause) {
-      if ((cause as NodeJS.ErrnoException).code === 'EEXIST' && preferred !== null) {
-        // The name the caller preferred was taken between the check above and
-        // this call. It is refused, never replaced by another name; the run
-        // directory this iteration created first is left in place, empty, and
-        // is never reused either.
-        throw preferredNameTakenError(workspacePath, runDir);
-      }
-      // The only expected failure left is a name that is already taken, which is
+      // The only expected failure is a name that is already taken, which is
       // another run's directory or its workspace: leave it alone and try a
       // different ID. A name taken between the two calls above leaves one empty
       // directory behind, which is never reused either.
@@ -326,6 +306,90 @@ export async function allocateRunDirectory(
   );
 }
 
+/**
+ * Allocates one attempt's evidence — `<workDir>/runs/<runId>` and its `logs` —
+ * and the workspace the attempt works in: `<workDir>/workspaces/<workspaceId>`
+ * for a run that creates one, and nothing at all for a run that continues one.
+ *
+ * A run with no preference is named by its own generated id, exactly as it
+ * always was; a run whose caller preferred a name — the canonical key of the
+ * item, for example `HARN-23` — creates that directory exclusively, under
+ * exactly that name. A name something already holds is refused, never replaced
+ * by another name: the harness never overwrites or adopts a workspace, whoever
+ * it belongs to. Allocation itself clones nothing.
+ *
+ * The workspace sits beside the evidence rather than inside it, so a later
+ * attempt can continue it once there is a reason to
+ * (docs/implement-workspace-continuation.md); this run's own report and logs stay
+ * where they were written either way.
+ */
+export async function allocateRunDirectory(
+  workDir: string,
+  placement: WorkspacePlacement = { kind: 'create' },
+  generateRunId: () => string = newRunId,
+): Promise<RunDirectory> {
+  const outputDir = path.resolve(workDir);
+  const runsRoot = path.join(outputDir, 'runs');
+  const workspacesRoot = path.join(outputDir, 'workspaces');
+
+  // A run that continues a workspace creates nothing for it: the clone exists,
+  // resolved and verified by the caller, and only this run's evidence is new.
+  if (placement.kind === 'reopen') {
+    return await allocateRunEvidence(
+      outputDir,
+      runsRoot,
+      workspacesRoot,
+      {
+        workspaceId: placement.workspaceId,
+        workspacePath: workspacePathFor(workDir, placement.workspaceId),
+      },
+      generateRunId,
+    );
+  }
+
+  /**
+   * The name the caller preferred, when it has a usable one. A preference that
+   * cannot name a workspace is not a name and not a path: the run's own
+   * generated id names the workspace instead, exactly as it does for a caller
+   * that preferred nothing.
+   */
+  const preferred =
+    placement.preferredWorkspaceId !== undefined &&
+    workspaceIdProblem(placement.preferredWorkspaceId) === null
+      ? placement.preferredWorkspaceId
+      : null;
+  if (preferred === null) {
+    return await allocateRunEvidence(outputDir, runsRoot, workspacesRoot, null, generateRunId);
+  }
+
+  // The name is the caller's, so it is created once, before the run's own
+  // evidence, and refused — never replaced by a different name — when something
+  // already holds it. A conflict leaves nothing of this run behind.
+  const workspacePath = path.join(workspacesRoot, preferred);
+  await createLayoutRoots(outputDir, runsRoot, workspacesRoot);
+  if (await nameIsHeld(workspacePath)) {
+    throw preferredNameTakenError(workspacePath);
+  }
+  try {
+    await mkdir(workspacePath);
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code === 'EEXIST') {
+      // Taken between the check above and this call: refused all the same.
+      throw preferredNameTakenError(workspacePath);
+    }
+    throw new WorkspaceError(
+      `the workspace directory "${workspacePath}" cannot be created: ${messageOf(cause)}`,
+    );
+  }
+  return await allocateRunEvidence(
+    outputDir,
+    runsRoot,
+    workspacesRoot,
+    { workspaceId: preferred, workspacePath },
+    generateRunId,
+  );
+}
+
 /** Whether anything — a directory, a file, or a link — exists at one path. */
 async function exists(candidate: string): Promise<boolean> {
   try {
@@ -346,12 +410,11 @@ async function nameIsHeld(workspacePath: string): Promise<boolean> {
 }
 
 /**
- * Why a run cannot use the workspace name its caller preferred. The run's own
- * evidence directory is named when this run had already created it — the name
- * was taken between the check and the creation — because it is left in place,
- * empty, and a reader has to know that it is this failure's, not a workspace's.
+ * Why a run cannot use the workspace name its caller preferred: something
+ * already holds it, and nothing here overwrites or adopts a workspace or quietly
+ * renames the run's own.
  */
-function preferredNameTakenError(workspacePath: string, runDir?: string): WorkspaceError {
+function preferredNameTakenError(workspacePath: string): WorkspaceError {
   const name = path.basename(workspacePath);
   return new WorkspaceError(
     [
@@ -361,12 +424,6 @@ function preferredNameTakenError(workspacePath: string, runDir?: string): Worksp
         'name its caller preferred is never quietly replaced by a different one.',
       'Continue that workspace through the pointer label naming it if it holds this work, or move ' +
         'it aside; then run again.',
-      ...(runDir === undefined
-        ? []
-        : [
-            `This run's own evidence directory "${runDir}" was created before the conflict was ` +
-              'seen and is left in place, empty; it is never reused.',
-          ]),
     ].join('\n'),
   );
 }

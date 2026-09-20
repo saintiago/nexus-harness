@@ -87,7 +87,12 @@ On cancellation/timeout, stop owned commands and agent execution before reportin
 
 ## 4. Files, not a database
 
-Use one generated run ID, unrelated to task text:
+Use one generated run ID, unrelated to task text, for the attempt's own evidence. A source-backed
+first attempt may name the workspace it creates after the item's canonical key (Jira's `HARN-23`),
+which is what makes retained work recognizable in a terminal and in the filesystem; the pointer
+label names the same string, and the ledger's immutable external id remains the ownership
+authority. A name something already holds is refused, never adopted or overwritten, and a continued
+workspace keeps the name its pointer fixed even if the item's key changes later:
 
 ```text
 <workDir>/
@@ -245,7 +250,7 @@ Review is off unless one optional strict `review` object selects it. With it, `r
 
 ### Eligibility and the pull request link
 
-The review queue is the configured project, issue type, and label in the configured review status. Each ticket is re-read and mapped exactly as intake maps it, so the reviewer receives the ticket's own intent and acceptance criteria; the pointer labels the read observed decide where its work lives. When the output directory holds the ticket's intake receipt, that receipt must record a passing attempt: a receipt whose last recorded attempt ended `failed` or `cancelled`, a reservation with no finished attempt, and a receipt that cannot be read are reported for coordinator attention rather than reviewed, because an approval of an earlier pull request would present unsuccessful work as code awaiting approval. A ticket this machine never attempted has no receipt and is reviewed from its pull request alone. A review then needs one clearly identified open pull request: exactly one valid `harness-ws-<workspaceId>` pointer label, and exactly one open pull request in the configured repository whose head branch is `harness/<workspaceId>`. A missing ticket read, no pointer, a pointer that is not a generated workspace id, more than one pointer, no open pull request, and more than one match are reported and left alone: nothing is reviewed, no review or check is published, and the ticket stays in review for the coordinator.
+The review queue is the configured project, issue type, and label in the configured review status. Each ticket is re-read and mapped exactly as intake maps it, so the reviewer receives the ticket's own intent and acceptance criteria; the pointer labels the read observed decide where its work lives. When the output directory holds the ticket's intake receipt, that receipt must record a passing attempt: a receipt whose last recorded attempt ended `failed` or `cancelled`, a reservation with no finished attempt, and a receipt that cannot be read are reported for coordinator attention rather than reviewed, because an approval of an earlier pull request would present unsuccessful work as code awaiting approval. A ticket this machine never attempted has no receipt and is reviewed from its pull request alone. A review then needs one clearly identified open pull request: exactly one valid `harness-ws-<workspaceId>` pointer label, and exactly one open pull request in the configured repository whose head branch is `harness/<workspaceId>`. A missing ticket read, no pointer, a pointer that is not a usable workspace id, more than one pointer, no open pull request, and more than one match are reported and left alone: nothing is reviewed, no review or check is published, and the ticket stays in review for the coordinator.
 
 ### What one review is
 

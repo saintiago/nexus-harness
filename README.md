@@ -484,7 +484,7 @@ earlier attempt still in it, and a baseline that is allowed to be red, because c
 work is the point. An attempted issue with no such label is not run again: the harness refuses it,
 says why in a comment, and moves it out of the queue, so a stale ticket cannot quietly burn more
 attempts. A pointer the harness will not follow is refused the same way, and the comment says which
-of these it is: it is not a generated workspace id (a label is never read as a path), it names a
+of these it is: it is not a usable workspace id (a label is never read as a path), it names a
 workspace this machine does not have, its directory or its ledger is a junction or symbolic link
 out of `workDir/workspaces` (a pointer is never followed through one), the workspace's ledger
 records another item, site, or repository (a workspace is continued only by what created it), or
@@ -493,6 +493,16 @@ the ledger records no item identity at all (a legacy ledger: add its `sourceItem
 records them — and scan again; the harness never adopts or migrates a workspace on its own). An
 issue carrying two pointers is refused too, because there is no way to tell which one to continue.
 The receipt stays as the audit trail behind all of it.
+
+**The retained work is named after the ticket.** A workspace a Jira attempt creates is named after
+the ticket's canonical key — `HARN-23` — so the directory a person sees under `workDir/workspaces`
+names the ticket it belongs to, while the attempt's own evidence keeps its generated
+`run-<timestamp>-<hash>` directory under `runs/`. The name is settled before anything is created: a
+name something already holds — another ticket's workspace, a directory with no trustworthy ledger,
+or this ticket's own workspace with no pointer label — is **refused** with guidance rather than
+adopted, overwritten, or quietly replaced by a different name, and a ticket whose key changes later
+keeps the workspace its pointer already named. File-task runs keep the generated name they always
+had.
 
 Putting an attempted issue back to the ready status is ordinary rework, not a retry of a dead run:
 the harness continues the workspace its pointer names, with a new run directory and report. To start
@@ -967,7 +977,11 @@ Read this before pointing a run at anything you care about.
   attempt is told, the decision made from the item as it was just re-read rather than from the search
   result that discovered it, the pointer checks that refuse a malformed id, another item's, site's,
   or repository's workspace, and a ledger with no item identity, and the refusal of an attempted
-  issue that names no workspace to continue.
+  issue that names no workspace to continue; and the ticket-key naming of a newly claimed Jira
+  workspace, with the refusals that keep an existing name safe (a name another item's workspace, a
+  directory or ledger without trustworthy ownership, or this ticket's own unpointed workspace
+  already holds), a changed display key still continuing the workspace its pointer names, and an
+  existing `run-*` pointer reopening unchanged.
 - the optional GitHub delivery step, against disposable Git repositories with a local bare
   destination and a stand-in `gh` on `PATH`: the branch really moves to the destination, the pull
   request is created with the issue reference and the check summary, a repeated delivery finds and
@@ -1355,7 +1369,10 @@ offline; it is opt-in, read-only on Jira, and nothing in it merges or marks an i
 serial queue — `queue run`, `queue watch`, the completion path they drive, and the source-readiness
 step between tickets — is implemented and verified offline; it starts no agent beyond the configured
 coding and reviewer turns, keeps no state of its own, and has no live evidence against a real queue,
-App installation, or auto-merge. **A real Jira-driven continuation has since run:** Jira run
+App installation, or auto-merge. Jira work now keeps its name too: a newly claimed ticket's workspace
+is named after its canonical key (`HARN-23`), the pointer label names the same string, and every
+existing `run-*` workspace and pointer goes on reopening exactly as it did — verified offline, with
+no live run of the ticket-key naming yet. **A real Jira-driven continuation has since run:** Jira run
 `run-20260919115244-4ff8eedf` claimed HARN-2, continued workspace `run-20260919100148-e48a9ab0` —
 same clone, same recorded base `36f62fd`, attempt 2 — and the attempt's documentation work is the
 local commit `f835c33` on that retained branch: one issue's continuation, not the full supervised

@@ -37,8 +37,15 @@ limit.
   issue points at it.
 - A **run** is one attempt: one deadline, one baseline round, its own turns, one verdict, one
   comment. Its report is never rewritten.
-- `workspaceId` is the id of the run that created the workspace (`run-<timestamp>-<hash>`), so the
-  pointer below and the directory names speak the same string.
+- `workspaceId` is the name of the clone's own directory under `workspaces/`, so the pointer below
+  and the directory names speak the same string. A source that has a human-readable name for the
+  item it took — Jira, whose canonical key is `HARN-23` — uses that key as the *preferred* name for
+  a workspace a first attempt creates, so retained work is recognizable without reading a label or
+  a report; a task-file run, and a source that names nothing, keep the id of the run that created
+  the workspace (`run-<timestamp>-<hash>`). A preferred name is validated exactly like a pointer
+  label — letters, digits, `-`, and `_` only, never a path — and a name that cannot be one is not
+  used: the run's own id names the workspace instead. All of it is display naming: ownership is the
+  immutable external id the ledger records, never the directory's name.
 - One layout, and only this one. A `workDir` written before this change is upgraded once, by hand
   (see below); the code never looks in the old place, so nothing half-migrated can be continued by
   accident.
@@ -69,19 +76,24 @@ The first attempt writes the label `harness-ws-<workspaceId>` on the issue, once
 exists and before any coding turn. It is written exactly once, by the run that created the
 workspace; a continuation never writes a label.
 
+That label is what fixes the name: a ticket whose key changes later keeps the workspace it already
+had. Its label still names it, the ledger's recorded key is display only and is never compared, and
+nothing renames a directory or rewrites a label.
+
 The label is the only durable statement of where an issue's work lives, and it is readable by any
 agent. The queue label (`harness-task`) selects work; this one records where the work is.
 
 A label is untrusted text, so the id it names is checked before anything else happens to it: it must
-be a generated workspace id (the same shape a run id has, `[A-Za-z0-9][A-Za-z0-9_-]{0,63}`), its
-resolved path must stay under `<workDir>/workspaces`, and the workspace's ledger must record the
-item and the repository the workspace was created for. *Resolved* means through the filesystem, not
-by the spelling of the name: junctions and symbolic links are followed, for the clone and for the
-ledger read beside it, so a generated id whose directory — or whose `<workspaceId>.json` — lies
-inside the workspaces directory only lexically, while reaching somewhere else, is refused before
-anything is read through it. Identity is the connector type, the site, and the immutable external
-id; the key is display only. A label on another item, another site, or a run against another
-repository is refused, not followed.
+be a usable workspace id — a generated run name, or the key a source preferred, which is the same
+shape, `[A-Za-z0-9][A-Za-z0-9_-]{0,63}`, and never a path — its resolved path must stay under
+`<workDir>/workspaces`, and the workspace's ledger must record the item and the repository the
+workspace was created for. *Resolved* means through the filesystem, not by the spelling of the
+name: junctions and symbolic links are followed, for the clone and for the ledger read beside it, so
+a generated id whose directory — or whose `<workspaceId>.json` — lies inside the workspaces
+directory only lexically, while reaching somewhere else, is refused before anything is read through
+it. Identity is the connector type, the site, and the immutable external id; the key is display
+only. A label on another item, another site, or a run against another repository is refused, not
+followed.
 
 The harness never adopts or migrates a workspace by itself. A ledger that records no source item —
 written before identities were recorded, or by a run that did not come from a source — is refused
@@ -104,9 +116,10 @@ anything is read through it, and is never repaired, migrated, or read as somethi
 | --- | --- | --- |
 | none | none | **fresh**: create the workspace, write the pointer, claim, attempt 1 |
 | none | present | **refuse**: already attempted, and nothing says what to continue |
+| none, and the name a fresh attempt would use is already held | any | **refuse**: something is there — another item's workspace, a directory or ledger the harness cannot read as this item's, or this item's own workspace with no pointer saying so — and the harness never adopts or overwrites it; the refusal names what holds the name and how to continue it through its pointer label, or how to move it aside |
 | exactly one, and it resolves on this machine | any | **continue** that workspace, attempt N+1 |
 | exactly one, and it does not resolve here | any | **refuse**: the pointer names a workspace this machine does not have |
-| exactly one, and it is not a generated workspace id | any | **refuse**: a label is never read as a path |
+| exactly one, and it is not a usable workspace id | any | **refuse**: a label is never read as a path |
 | exactly one, and its real location is not under `<workDir>/workspaces` | any | **refuse**: a junction or symbolic link leads out of the workspaces directory, and a pointer is never followed through one |
 | exactly one, and the ledger records another item, site, or repository | any | **refuse**: a workspace belongs to what created it |
 | exactly one, and the ledger records no source item | any | **refuse**: the workspace cannot be shown to be this issue's, and the repair is manual |
@@ -124,6 +137,9 @@ moved to the review status. Nothing local is created for it.
 
 - The workspace is reopened, not re-cloned: same directory, same branch, and whatever the earlier
   attempts left in it — local commits and uncommitted changes alike.
+- A continuation creates no directory of its own beside the workspace it reopens: its evidence is a
+  new `runs/<runId>`, and `workspaces/<workspaceId>` stays exactly the clone the pointer names.
+  Allocation creates the workspace directory only for the attempt that creates the workspace.
 - Its recorded base commit stays the base, so `changes` in the report is the ticket's whole diff, not
   just this attempt's part. The report also records what the attempt *found* (how many paths already
   differed) so the two are never confused.

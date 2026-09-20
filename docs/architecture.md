@@ -87,7 +87,7 @@ Keep imports directional and acyclic. Retain the existing lightweight lint check
 
 ## 4. Working copy and runtime
 
-A fresh attempt clones once into a retained workspace; a continuation reopens that workspace instead of cloning again. Keep the one layout: `<workDir>/runs/<runId>` for an attempt's evidence and `<workDir>/workspaces/<workspaceId>` for the clone, with the workspace ledger beside it ([implement-workspace-continuation.md](implement-workspace-continuation.md)). Do not add linked worktrees or interchangeable workspace backends.
+A fresh attempt clones once into a retained workspace; a continuation reopens that workspace instead of cloning again, and creates no directory of its own beside it. Keep the one layout: `<workDir>/runs/<runId>` for an attempt's evidence and `<workDir>/workspaces/<workspaceId>` for the clone, with the workspace ledger beside it ([implement-workspace-continuation.md](implement-workspace-continuation.md)); `workspaceId` is the name the clone was created under — a source's canonical item key (a Jira ticket's `HARN-23`) when it has one, and the creating run's id otherwise — which is display naming, not identity. Do not add linked worktrees or interchangeable workspace backends.
 
 ### Git owns version history
 

@@ -206,8 +206,10 @@ further would separate one decision from itself: `runs/runner.ts` (the loop), `s
 - **Owns:** the source checkout and the working copies, and Git is invoked nowhere else. `preflight.ts`
   records the committed base and refuses a dirty checkout or an output path that overlaps the source;
   `run-directory.ts` allocates `<workDir>/runs/<runId>` for one attempt's evidence and names
-  `<workDir>/workspaces/<workspaceId>` for the retained clone; `prepare.ts` fills an allocated
-  directory with a clone of the recorded base and writes the ledger `state.ts` owns;
+  `<workDir>/workspaces/<workspaceId>` for the retained clone — the name its caller preferred (a
+  Jira ticket key), or the run's own generated id, validated like a pointer label — while a run
+  that continues one creates no directory beside it; `prepare.ts` fills an allocated directory with
+  a clone of the recorded base and writes the ledger `state.ts` owns;
   `reopen.ts` resolves a pointer to a workspace, reads the checkout, and refuses one that is not on
   the branch its ledger records; `changes.ts` reads what the copy differs from its base by; `git.ts`
   and `status.ts` are the plumbing they share, including the repository-local commit identity
@@ -521,7 +523,9 @@ boundary.
   real callers, or it belongs to the module that uses it.
 - A workspace is looked for at `<workDir>/workspaces/<workspaceId>` and nowhere else. A clone
   somewhere else is refused, not adopted, and a `workDir` written before this layout was upgraded by
-  hand once (`docs/implement-workspace-continuation.md`).
+  hand once (`docs/implement-workspace-continuation.md`). A name a fresh claim would use is checked
+  before anything is created: what already holds it is refused with guidance, never adopted or
+  overwritten, and an existing `run-*` name is looked up exactly like a ticket key.
 - The ledger is derived state. A run's report is the authority on what that run did, the ledger is
   only what the next attempt reads, and nothing rewrites a report.
 - Text from an item - its description, its comments, another agent's note - is context for a turn and

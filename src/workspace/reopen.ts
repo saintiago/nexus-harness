@@ -8,7 +8,8 @@
  * ledger records.
  *
  * A pointer label is untrusted text on the issue, so resolving it checks more
- * than that it names a directory: the id must be a generated workspace id, its
+ * than that it names a directory: the id must be a usable workspace id (a
+ * generated run name, or the key a source preferred for the workspace), its
  * resolved path — junctions and symbolic links followed, both for the clone and
  * for the ledger beside it — must stay under the workspaces root, and the ledger
  * must record the external item and the repository the workspace was created
