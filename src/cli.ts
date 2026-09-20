@@ -123,7 +123,18 @@ function consoleTerminal(): CliTerminal | undefined {
     write: (text) => process.stdout.write(text),
     ...(columns === undefined ? {} : { columns }),
     ...(rows === undefined ? {} : { rows }),
+    color: colorAllowed(process.env),
   };
+}
+
+/**
+ * Whether the pane may color the terminal. The `NO_COLOR` convention — set to
+ * anything but the empty string — asks for none: the pane keeps drawing its
+ * lines, and the highlighting comes out as plain text instead.
+ */
+export function colorAllowed(environment: NodeJS.ProcessEnv): boolean {
+  const requested = environment['NO_COLOR'];
+  return requested === undefined || requested === '';
 }
 
 /** True when this module is the process entry point, not an import. */

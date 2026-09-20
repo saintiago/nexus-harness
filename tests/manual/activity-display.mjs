@@ -7,7 +7,9 @@
  * drawn by the same pane the CLI uses; the progress lines are the shapes the
  * runner and the source coordinator write. The first block is what the reported
  * screenshot showed for the same operations before HARN-16, printed here for
- * comparison; the second is what the pane shows now.
+ * comparison; the second is what the pane shows now, with every entry carrying
+ * the local time the viewer received it and each agent message highlighted in
+ * yellow and reset again (HARN-18).
  */
 import assert from 'node:assert/strict';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -74,19 +76,33 @@ out('The launcher path consumed the width; every result said only "exit N".');
 
 await delay(1200);
 out('\nAfter — the same shapes through the reader and the pane:');
+out('Each entry now carries its receive time, and an agent message is highlighted.');
 await delay(600);
 
 /**
  * Progress lines are ordinary output and may wrap; only the pane's own activity
- * draws must each fit one row, which is what this flags.
+ * draws must each fit one row: a line that fits, says when the viewer received
+ * it, and — for a message — is highlighted and reset inside its own line, which
+ * is what this flags.
  */
-let drawingActivity = false;
+const HIGHLIGHTED_MESSAGE = /^\d{2}:\d{2}:\d{2} \u001b\[33magent: .*\u001b\[0m$/;
+const STAMPED_WORK = /^\d{2}:\d{2}:\d{2} (run|result|change): /;
+let drawingKind = null;
+let highlighted = 0;
 const terminal = {
   columns,
   rows,
   write: (chunk) => {
-    if (drawingActivity && !chunk.startsWith('\u001b')) {
-      assert(stringWidth(chunk.trimEnd()) < columns, 'A draw would overflow its row');
+    if (drawingKind !== null && !chunk.startsWith('\u001b')) {
+      const line = chunk.replace(/\n$/, '');
+      assert(stringWidth(line) < columns, 'A draw would overflow its row');
+      assert(/^\d{2}:\d{2}:\d{2} /.test(line), 'A draw carries the time it arrived');
+      if (HIGHLIGHTED_MESSAGE.test(line)) {
+        highlighted += 1;
+      } else {
+        assert(STAMPED_WORK.test(line), `A drawn pane line is a stamped entry: ${line}`);
+        assert(!line.includes('\u001b'), 'Only an agent message is highlighted');
+      }
     }
     write(chunk);
   },
@@ -96,9 +112,9 @@ const pane = createActivityDisplay({ out, err: out, terminal });
 let work = 0;
 const draw = async (type, item) => {
   for (const activity of itemActivities(type, item)) {
-    drawingActivity = true;
+    drawingKind = activity.kind;
     pane.activity(activity);
-    drawingActivity = false;
+    drawingKind = null;
     work += 1;
     await delay(90);
   }
@@ -221,6 +237,7 @@ try {
 // These are synthetic labels and paths, not a run's outcome or an OS interrupt.
 out('Outcome block would follow here, e.g. "run run-20260919204053-1e36ccde: passed".');
 out(
-  `Example paths: logs/agent-implementation.log, logs/run.log, result.json (${String(work)} synthetic activity lines).`,
+  `Example paths: logs/agent-implementation.log, logs/run.log, result.json (${String(work)} synthetic activity lines, ` +
+    `${String(highlighted)} highlighted message draws).`,
 );
 out('Display check finished; the activity pane should be gone.');

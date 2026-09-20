@@ -24,7 +24,11 @@ export interface FakeConsole {
 }
 
 export function fakeConsole(
-  parts: { readonly columns?: number; readonly rows?: number } = {},
+  parts: {
+    readonly columns?: number;
+    readonly rows?: number;
+    readonly color?: boolean;
+  } = {},
 ): FakeConsole {
   const chunks: string[] = [];
   return {
@@ -36,6 +40,7 @@ export function fakeConsole(
         write: (text) => chunks.push(text),
         ...(parts.columns === undefined ? {} : { columns: parts.columns }),
         ...(parts.rows === undefined ? {} : { rows: parts.rows }),
+        ...(parts.color === undefined ? {} : { color: parts.color }),
       },
     },
   };
@@ -44,9 +49,11 @@ export function fakeConsole(
 /**
  * What a terminal would show after these writes, as the lines it holds: a line
  * is created by `\n` or wrapping at `columns`, `ESC[<n>A` moves up physical
- * rows, and `ESC[J` erases from the cursor down. Model newline's terminal CRLF
- * translation and whole grapheme cell widths. This only handles the sequences
- * the pane emits; it is not a general terminal emulator.
+ * rows, `ESC[J` erases from the cursor down, and an `ESC[<params>m` styling
+ * sequence changes no cell — as on a real terminal, a highlight is not text.
+ * Model newline's terminal CRLF translation and whole grapheme cell widths.
+ * This only handles the sequences the pane emits; it is not a general terminal
+ * emulator.
  */
 /* eslint-disable no-control-regex -- the escape sequences are what this reads */
 export function screenAfter(chunks: readonly string[], columns = Infinity): readonly string[] {
@@ -54,7 +61,7 @@ export function screenAfter(chunks: readonly string[], columns = Infinity): read
   let row = 0;
   let column = 0;
   const graphemes = new Intl.Segmenter();
-  const tokens = /\u001b\[(\d+)A|\u001b\[J|\n|[^\u001b\n]+/g;
+  const tokens = /\u001b\[(\d+)A|\u001b\[J|\u001b\[[0-9;]*m|\n|[^\u001b\n]+/g;
 
   for (const match of chunks.join('').matchAll(tokens)) {
     const token = match[0];
@@ -65,6 +72,10 @@ export function screenAfter(chunks: readonly string[], columns = Infinity): read
     }
     if (token === '\u001b[J') {
       screen.length = row;
+      continue;
+    }
+    if (token.startsWith('\u001b[')) {
+      // Styling only: it changes nothing a screen holds.
       continue;
     }
     if (token === '\n') {

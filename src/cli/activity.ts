@@ -18,6 +18,15 @@
  * accumulate one below another while the work between them disappears
  * oldest-first.
  *
+ * Each entry is stamped with the local time the viewer received it — `HH:mm:ss`,
+ * read once and kept for every redraw — and an agent message's own line is drawn
+ * in a golden yellow, reset again inside the entry, so commands, results and
+ * changed files stay in the terminal's ordinary color. The stamp is the viewer's
+ * own receive time and nothing more: the runtime's event stream carries no
+ * timestamp, so the pane never implies one. Ordinary lines, redirected output,
+ * and a terminal that asked for no color carry no escape sequences beyond the
+ * pane's own cursor work.
+ *
  * It is presentation only. Nothing here is evidence of what a turn did: the full
  * runtime output stays in the turn's own agent log, and every decision is made
  * from the harness's own checks (docs/spec.md §2).
@@ -41,6 +50,20 @@ const FALLBACK_COLUMNS = 80;
 
 /** Below this width the pane gives up and writes ordinary lines instead. */
 const MIN_COLUMNS = 20;
+
+/**
+ * The golden/yellow an agent message is drawn in: the standard ANSI yellow,
+ * which every terminal that renders color at all supports, and which stays
+ * readable on light and dark backgrounds alike.
+ */
+const MESSAGE_COLOR = '\u001b[33m';
+
+/**
+ * Back to the terminal's own default styling. Written inside every highlighted
+ * entry, never once per draw, so a message's color cannot reach the text after
+ * it — the next activity line, the progress, or the outcome.
+ */
+const COLOR_RESET = '\u001b[0m';
 
 /**
  * One complete ANSI escape sequence: the escape, any parameter and intermediate
@@ -88,13 +111,15 @@ export interface ActivityDisplay {
   /**
    * Records one activity line. A message starts a new group; work lines join the
    * newest group, which keeps its latest three, and the history is trimmed to
-   * the pane's bound.
+   * the pane's bound. The line is stamped with the time it arrives at, once,
+   * and that stamp is what every later redraw of it carries.
    */
   activity(activity: AgentActivity): void;
   /**
    * Erases the pane and stops drawing it. Called on every ending — a pass, a
    * failure, an interrupt — so that the terminal is left as usable as it was
-   * found. Output that arrives afterwards is written plainly.
+   * found. An entry that arrives afterwards is written as one ordinary line,
+   * still with the receive time it was stamped with.
    */
   close(): void;
 }
@@ -102,8 +127,15 @@ export interface ActivityDisplay {
 /**
  * The display for one CLI invocation: a pane on an interactive terminal, or
  * plain ordinary lines anywhere else.
+ *
+ * `now` is the viewer's own clock, read once for each entry the pane receives;
+ * it is the time that entry is stamped with. The process clock when the caller
+ * gives none, and a controlled clock in a test.
  */
-export function createActivityDisplay(io: CliIo): ActivityDisplay {
+export function createActivityDisplay(
+  io: CliIo,
+  now: () => Date = () => new Date(),
+): ActivityDisplay {
   const terminal = io.terminal;
   if (terminal === undefined) {
     return plainDisplay(io.out);
@@ -112,7 +144,7 @@ export function createActivityDisplay(io: CliIo): ActivityDisplay {
   const columns = terminal.columns ?? FALLBACK_COLUMNS;
   return height === 0 || columns < MIN_COLUMNS
     ? plainDisplay(io.out)
-    : paneDisplay(terminal.write, columns - 1, height);
+    : paneDisplay(terminal.write, columns - 1, height, now, terminal.color !== false);
 }
 
 /**
@@ -135,6 +167,8 @@ function paneDisplay(
   write: (text: string) => void,
   width: number,
   height: number,
+  now: () => Date,
+  color: boolean,
 ): ActivityDisplay {
   const groups: ActivityGroup[] = [];
   /** How many pane lines are on screen directly above the cursor. */
@@ -203,7 +237,9 @@ function paneDisplay(
       draw();
     },
     activity: (activity) => {
-      const text = formatActivity(activity, width);
+      // The entry's receive time, read once here: a redraw later draws this very
+      // line again, never a freshly stamped one.
+      const text = paneLine(activity, displayTime(now()), width, color);
       if (closed) {
         write(`${text}\n`);
         return;
@@ -305,7 +341,9 @@ function fitHistory(groups: ActivityGroup[], capacity: number): void {
 
 /**
  * The fallback for a terminal that cannot hold a pane: the same lines, written
- * one per line as ordinary output, without a cursor sequence anywhere.
+ * one per line as ordinary output, without a cursor sequence anywhere. It is
+ * also what a redirected stream gets, and it carries no color: the entry as
+ * plain text, with nothing for a terminal to interpret.
  */
 function plainDisplay(out: (text: string) => void): ActivityDisplay {
   return {
@@ -316,19 +354,50 @@ function plainDisplay(out: (text: string) => void): ActivityDisplay {
       action();
     },
     activity: (activity) => {
-      out(formatActivity(activity, null));
+      out(describe(activity));
     },
     close: () => undefined,
   };
 }
 
+/** One activity entry as plain text: what it is labelled as, and its text. */
+function describe(activity: AgentActivity): string {
+  return `${LABELS[activity.kind]}: ${flatten(activity.text)}`;
+}
+
 /**
- * One activity line as a display line: labelled with what it is, flattened onto
- * one line, and — when a width is given — cut to fit the pane.
+ * One activity entry as the pane draws it: the local time the viewer received
+ * it, the label, and the flattened text, fitted to one row. The timestamp is
+ * visible text, so it counts toward the fit like any other character, and a
+ * message's own line — the label and its text — is drawn in the pane's message
+ * color and reset again. The highlight is applied after the fit, so its escape
+ * sequences never consume a display cell and never change what was cut.
  */
-function formatActivity(activity: AgentActivity, width: number | null): string {
-  const text = `${LABELS[activity.kind]}: ${flatten(activity.text)}`;
-  return width === null ? text : truncate(text, width);
+function paneLine(activity: AgentActivity, stamp: string, width: number, color: boolean): string {
+  const head = `${stamp} `;
+  const line = truncate(`${head}${describe(activity)}`, width);
+  if (!color || activity.kind !== 'message') {
+    return line;
+  }
+  // Split after the timestamp, so the stamp keeps the terminal's ordinary color
+  // and only the message's own line is highlighted.
+  const plain = line.slice(0, head.length);
+  return `${plain}${MESSAGE_COLOR}${line.slice(plain.length)}${COLOR_RESET}`;
+}
+
+/** Two digits, as a clock field is written. */
+function twoDigits(value: number): string {
+  return String(value).padStart(2, '0');
+}
+
+/**
+ * The compact local time the viewer stamps a received entry with: `HH:mm:ss`,
+ * read from the viewer's own clock once per entry. It is a display fact, not
+ * the runtime's event time — the event stream carries none, and the pane never
+ * writes a stamp that could be read as one.
+ */
+function displayTime(at: Date): string {
+  return `${twoDigits(at.getHours())}:${twoDigits(at.getMinutes())}:${twoDigits(at.getSeconds())}`;
 }
 
 /**

@@ -29,7 +29,7 @@ import { existsSync } from 'node:fs';
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { runCli } from '../src/cli.js';
+import { colorAllowed, runCli } from '../src/cli.js';
 import { EXIT_CANCELLED, EXIT_INPUT_ERROR, EXIT_OK, EXIT_USAGE } from '../src/cli/context.js';
 import type { CliContext, CliTerminal, InterruptSignals } from '../src/cli/context.js';
 import { ReportError } from '../src/reporting/errors.js';
@@ -1065,6 +1065,53 @@ describe('the activity pane under the run status', () => {
     expect(`${result.out}${result.err}`).not.toContain('\u001b');
   });
 
+  it('stamps and highlights what the pane draws, in the stream the terminal saw', async () => {
+    const fixture = await createRunFixture({ agent: reportingAgent() });
+    const console = fakeConsole({ columns: 80, rows: 24 });
+
+    const result = await run(
+      runArgv({ repo: 'target-project', config: 'harness.config.json', task: 'task.json' }),
+      {
+        cwd: fixture.parent,
+        dependencies: fixture.dependencies,
+        terminal: console.io.terminal,
+      },
+    );
+
+    expect(result.code).toBe(EXIT_OK);
+    const raw = console.chunks.join('');
+    // The message carries the local time it reached the viewer, the highlight,
+    // and the reset that ends it inside the same line.
+    // eslint-disable-next-line no-control-regex
+    expect(raw).toMatch(/\d{2}:\d{2}:\d{2} \u001b\[33magent: I will change one file\.\u001b\[0m/);
+    // Work lines are stamped the same way and stay in the terminal's own color.
+    expect(raw).toMatch(/\d{2}:\d{2}:\d{2} run: npm test\n/);
+    expect(raw).toMatch(/\d{2}:\d{2}:\d{2} result: exit 1\n/);
+  });
+
+  it('draws the pane with no styling at all when the terminal asks for no color', async () => {
+    const fixture = await createRunFixture({ agent: reportingAgent() });
+    const console = fakeConsole({ columns: 80, rows: 24, color: false });
+
+    const result = await run(
+      runArgv({ repo: 'target-project', config: 'harness.config.json', task: 'task.json' }),
+      {
+        cwd: fixture.parent,
+        dependencies: fixture.dependencies,
+        terminal: console.io.terminal,
+      },
+    );
+
+    expect(result.code).toBe(EXIT_OK);
+    const raw = console.chunks.join('');
+    // The pane still redraws in place, and each line still says when it arrived;
+    // only the styling is gone.
+    expect(raw).toContain('\u001b[');
+    expect(raw).toMatch(/\d{2}:\d{2}:\d{2} agent: I will change one file\.\n/);
+    // eslint-disable-next-line no-control-regex
+    expect(raw).not.toMatch(/\u001b\[[0-9;]*m/);
+  });
+
   it('keeps the task, the phase, and the model on screen without the startup inventory', async () => {
     const fixture = await createRunFixture({
       config: {
@@ -1225,6 +1272,15 @@ describe('the activity pane under the run status', () => {
     expect(screen.join('\n')).toMatch(new RegExp(`^run ${report.runId}: cancelled$`, 'm'));
     expect(screen.join('\n')).toContain(`run dir    ${runDir}`);
     expect(screen.join('\n')).toContain(`report     ${path.join(runDir, 'result.json')}`);
+  });
+});
+
+describe('the terminal’s color request', () => {
+  it('reads only a set, non-empty NO_COLOR as a request for no color', () => {
+    expect(colorAllowed({})).toBe(true);
+    expect(colorAllowed({ NO_COLOR: '' })).toBe(true);
+    expect(colorAllowed({ NO_COLOR: '1' })).toBe(false);
+    expect(colorAllowed({ NO_COLOR: 'false' })).toBe(false);
   });
 });
 

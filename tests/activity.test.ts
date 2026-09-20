@@ -5,9 +5,10 @@
  * and read what a terminal would show, not the escape sequences themselves:
  * the writes are replayed through a small screen, so an assertion is about the
  * lines a person would see. Three things are what the tests are about: the pane
- * holds the latest lines instead of growing, redirected output carries ordinary
- * lines and not one cursor sequence, and closing the pane leaves the terminal as
- * it was found.
+ * holds the latest lines instead of growing, every entry carries the local time
+ * the viewer received it and a message is highlighted and reset, and redirected
+ * output carries ordinary lines and not one escape sequence. Closing the pane
+ * leaves the terminal as it was found.
  *
  * The event tests are the other half: what one `item.started`/`item.completed`
  * event is read as, and what is deliberately not read as activity.
@@ -19,6 +20,17 @@ import { createActivityDisplay } from '../src/cli/activity.js';
 import { fakeConsole, screenAfter } from './support.js';
 
 const FULL_TERMINAL = { columns: 80, rows: 24 } as const;
+/**
+ * The clock the pane tests run on: one fixed local instant, so every entry is
+ * stamped with a known `HH:mm:ss` instead of the wall clock.
+ */
+const CLOCK = (): Date => new Date(2026, 8, 20, 9, 41, 7);
+/** What {@link CLOCK} renders as: the compact local time the pane writes. */
+const STAMP = '09:41:07';
+/** The pane's own highlight of an agent message: standard yellow. */
+const GOLD = '\u001b[33m';
+/** The reset inside a highlighted entry, so the color reaches nothing after it. */
+const RESET = '\u001b[0m';
 /** Two graphemes that each occupy two cells: four cells of one wide pair. */
 const WIDE_PAIR = '界👩🏽‍💻';
 const WIDE_TEXT = [
@@ -31,14 +43,55 @@ const WIDE_TEXT = [
   { text: 'e\u0301', cells: 1 },
 ] as const;
 
+/** One entry as a screen shows it: the receive time, the label, and the text. */
+function stamped(label: string, text: string): string {
+  return `${STAMP} ${label}: ${text}`;
+}
+
+/** One agent message as the pane writes it: stamped, highlighted, and reset. */
+function highlighted(text: string): string {
+  return `${STAMP} ${GOLD}agent: ${text}${RESET}`;
+}
+
+/**
+ * A clock the test owns, and how often the pane has read it: the timestamp is
+ * captured once when an entry arrives, never again on a redraw.
+ */
+function testClock(start: Date): {
+  readonly now: () => Date;
+  readonly set: (at: Date) => void;
+  readonly reads: () => number;
+} {
+  let at = start;
+  let reads = 0;
+  return {
+    now: () => {
+      reads += 1;
+      return at;
+    },
+    set: (next) => {
+      at = next;
+    },
+    reads: () => reads,
+  };
+}
+
+/** Every line a pane drew, in order: the chunks that are not its cursor work. */
+function drawnLines(chunks: readonly string[]): readonly string[] {
+  return chunks
+    .filter((chunk) => !chunk.startsWith('\u001b'))
+    .map((chunk) => chunk.replace(/\n$/, ''));
+}
+
 /**
  * What the pane draws for one activity entry at `columns`: the label, then as
  * much of the entry as fits while leaving the last column unused, then the
- * ellipsis that marks what was cut. The exact-fit expectations live in the
- * `WIDE_TEXT` cases; this is the model the redraw sweep below is read against.
+ * ellipsis that marks what was cut. The timestamp is visible text and is part
+ * of the fit. The exact-fit expectations live in the `WIDE_TEXT` cases; this is
+ * the model the redraw sweep below is read against.
  */
 function fittedEntry(label: string, text: string, columns: number): string {
-  const full = `${label}: ${text}`;
+  const full = stamped(label, text);
   if (stringWidth(full) <= columns - 1) {
     return full;
   }
@@ -62,7 +115,7 @@ function fittedEntry(label: string, text: string, columns: number): string {
 describe('the activity pane', () => {
   it('stops the screen from growing with the turn, and keeps the newest work', () => {
     const terminal = fakeConsole(FULL_TERMINAL);
-    const pane = createActivityDisplay(terminal.io);
+    const pane = createActivityDisplay(terminal.io, CLOCK);
     pane.line('run run-1: implementation turn started');
 
     for (let index = 1; index <= 40; index += 1) {
@@ -76,13 +129,17 @@ describe('the activity pane', () => {
     // The task and the phase stay on screen, and the pane below them holds the
     // newest work lines, oldest first — one message-less group holds three.
     expect(screen[0]).toBe('run run-1: implementation turn started');
-    expect(screen.slice(1)).toEqual(['run: step 38', 'run: step 39', 'run: step 40']);
+    expect(screen.slice(1)).toEqual([
+      stamped('run', 'step 38'),
+      stamped('run', 'step 39'),
+      stamped('run', 'step 40'),
+    ]);
     pane.close();
   });
 
   it('starts a new group at every agent message', () => {
     const terminal = fakeConsole(FULL_TERMINAL);
-    const pane = createActivityDisplay(terminal.io);
+    const pane = createActivityDisplay(terminal.io, CLOCK);
     // Work reported before the first message keeps its own group above it.
     pane.activity({ kind: 'command', text: 'early work' });
     pane.activity({ kind: 'message', text: 'I will change one file.' });
@@ -92,36 +149,36 @@ describe('the activity pane', () => {
     pane.activity({ kind: 'change', text: 'update src/parser.ts' });
 
     expect(screenAfter(terminal.chunks)).toEqual([
-      'run: early work',
-      'agent: I will change one file.',
-      'run: npm test',
-      'result: exit 1 — npm test',
-      'agent: The failure is in the parser.',
-      'change: update src/parser.ts',
+      stamped('run', 'early work'),
+      stamped('agent', 'I will change one file.'),
+      stamped('run', 'npm test'),
+      stamped('result', 'exit 1 — npm test'),
+      stamped('agent', 'The failure is in the parser.'),
+      stamped('change', 'update src/parser.ts'),
     ]);
     pane.close();
   });
 
   it('keeps at most the latest three work lines under one message', () => {
     const terminal = fakeConsole(FULL_TERMINAL);
-    const pane = createActivityDisplay(terminal.io);
+    const pane = createActivityDisplay(terminal.io, CLOCK);
     pane.activity({ kind: 'message', text: 'working' });
     for (let index = 1; index <= 5; index += 1) {
       pane.activity({ kind: 'command', text: `step ${String(index)}` });
     }
 
     expect(screenAfter(terminal.chunks)).toEqual([
-      'agent: working',
-      'run: step 3',
-      'run: step 4',
-      'run: step 5',
+      stamped('agent', 'working'),
+      stamped('run', 'step 3'),
+      stamped('run', 'step 4'),
+      stamped('run', 'step 5'),
     ]);
     pane.close();
   });
 
   it('drops the oldest work lines first, so the messages accumulate in order', () => {
     const terminal = fakeConsole(FULL_TERMINAL);
-    const pane = createActivityDisplay(terminal.io);
+    const pane = createActivityDisplay(terminal.io, CLOCK);
     for (let group = 1; group <= 7; group += 1) {
       pane.activity({ kind: 'message', text: `message ${String(group)}` });
       for (const step of ['a', 'b', 'c']) {
@@ -133,46 +190,46 @@ describe('the activity pane', () => {
     // Twenty lines exactly: every message is still there, and what the earlier
     // ones no longer carry is the work that followed them.
     expect(screenAfter(terminal.chunks)).toEqual([
-      'agent: message 1',
-      'agent: message 2',
-      'agent: message 3',
-      'run: work 3c',
-      'agent: message 4',
-      'run: work 4a',
-      'run: work 4b',
-      'run: work 4c',
-      'agent: message 5',
-      'run: work 5a',
-      'run: work 5b',
-      'run: work 5c',
-      'agent: message 6',
-      'run: work 6a',
-      'run: work 6b',
-      'run: work 6c',
-      'agent: message 7',
-      'run: work 7a',
-      'run: work 7b',
-      'run: work 7c',
+      stamped('agent', 'message 1'),
+      stamped('agent', 'message 2'),
+      stamped('agent', 'message 3'),
+      stamped('run', 'work 3c'),
+      stamped('agent', 'message 4'),
+      stamped('run', 'work 4a'),
+      stamped('run', 'work 4b'),
+      stamped('run', 'work 4c'),
+      stamped('agent', 'message 5'),
+      stamped('run', 'work 5a'),
+      stamped('run', 'work 5b'),
+      stamped('run', 'work 5c'),
+      stamped('agent', 'message 6'),
+      stamped('run', 'work 6a'),
+      stamped('run', 'work 6b'),
+      stamped('run', 'work 6c'),
+      stamped('agent', 'message 7'),
+      stamped('run', 'work 7a'),
+      stamped('run', 'work 7b'),
+      stamped('run', 'work 7c'),
     ]);
     pane.close();
   });
 
   it('scrolls the oldest message once the work lines are gone', () => {
     const terminal = fakeConsole(FULL_TERMINAL);
-    const pane = createActivityDisplay(terminal.io);
+    const pane = createActivityDisplay(terminal.io, CLOCK);
     for (let index = 1; index <= 21; index += 1) {
       pane.activity({ kind: 'message', text: `message ${String(index)}` });
     }
 
     expect(screenAfter(terminal.chunks)).toEqual(
-      Array.from({ length: 20 }, (_, offset) => `agent: message ${String(offset + 2)}`),
+      Array.from({ length: 20 }, (_, offset) => stamped('agent', `message ${String(offset + 2)}`)),
     );
     pane.close();
   });
 
   it('makes room for new work rather than hiding it behind a full history of messages', () => {
     const terminal = fakeConsole(FULL_TERMINAL);
-    const pane = createActivityDisplay(terminal.io);
+    const pane = createActivityDisplay(terminal.io, CLOCK);
     for (let index = 1; index <= 20; index += 1) {
       pane.activity({ kind: 'message', text: `message ${String(index)}` });
     }
@@ -180,31 +237,31 @@ describe('the activity pane', () => {
 
     const screen = screenAfter(terminal.chunks);
     expect(screen).toHaveLength(20);
-    expect(screen[0]).toBe('agent: message 2');
-    expect(screen.at(-1)).toBe('run: npm test');
+    expect(screen[0]).toBe(stamped('agent', 'message 2'));
+    expect(screen.at(-1)).toBe(stamped('run', 'npm test'));
     pane.close();
   });
 
   it('labels messages, commands, results, and changed files', () => {
     const terminal = fakeConsole(FULL_TERMINAL);
-    const pane = createActivityDisplay(terminal.io);
+    const pane = createActivityDisplay(terminal.io, CLOCK);
     pane.activity({ kind: 'message', text: 'I will adjust the parser.' });
     pane.activity({ kind: 'command', text: 'npm test' });
     pane.activity({ kind: 'result', text: 'exit 1' });
     pane.activity({ kind: 'change', text: 'update src/greet.ts' });
 
     expect(screenAfter(terminal.chunks)).toEqual([
-      'agent: I will adjust the parser.',
-      'run: npm test',
-      'result: exit 1',
-      'change: update src/greet.ts',
+      stamped('agent', 'I will adjust the parser.'),
+      stamped('run', 'npm test'),
+      stamped('result', 'exit 1'),
+      stamped('change', 'update src/greet.ts'),
     ]);
     pane.close();
   });
 
   it('sanitizes control characters and escape sequences out of event text', () => {
     const terminal = fakeConsole(FULL_TERMINAL);
-    const pane = createActivityDisplay(terminal.io);
+    const pane = createActivityDisplay(terminal.io, CLOCK);
     pane.activity({
       kind: 'message',
       text: 'first\r\nsecond\u0007 \u001b[31mred\u001b[0m \u001b[2Jthird',
@@ -212,8 +269,8 @@ describe('the activity pane', () => {
     pane.activity({ kind: 'command', text: 'echo \u001b]0;title\u0007 hi' });
 
     const [message = '', command = ''] = screenAfter(terminal.chunks);
-    expect(message).toBe('agent: first second red third');
-    expect(command).toBe('run: echo hi');
+    expect(message).toBe(stamped('agent', 'first second red third'));
+    expect(command).toBe(stamped('run', 'echo hi'));
     // Nothing a runtime wrote moved the cursor: what the pane itself drew is
     // the only cursor work in the stream.
     for (const line of [message, command]) {
@@ -226,12 +283,12 @@ describe('the activity pane', () => {
 
   it('fits a line to the terminal width, marking what it cut', () => {
     const terminal = fakeConsole({ columns: 40, rows: 24 });
-    const pane = createActivityDisplay(terminal.io);
+    const pane = createActivityDisplay(terminal.io, CLOCK);
     pane.activity({ kind: 'message', text: 'x'.repeat(200) });
 
     const [line = ''] = screenAfter(terminal.chunks);
     expect(line).toHaveLength(39);
-    expect(line.startsWith('agent: xxx')).toBe(true);
+    expect(line.startsWith(`${STAMP} agent: xxx`)).toBe(true);
     expect(line.endsWith('…')).toBe(true);
     pane.close();
   });
@@ -258,12 +315,15 @@ describe('the activity pane', () => {
       expect(stringWidth(text)).toBe(cells);
       for (const columns of [20, 40, 80]) {
         const terminal = fakeConsole({ columns, rows: 24 });
-        const pane = createActivityDisplay(terminal.io);
+        const pane = createActivityDisplay(terminal.io, CLOCK);
         pane.activity({ kind: 'message', text: text.repeat(100) });
-        const count = Math.floor((columns - 1 - 'agent: '.length - 1) / cells);
-        const expected = `agent: ${text.repeat(count)}…`;
-        expect(terminal.chunks).toEqual([`${expected}\n`]);
-        expect(stringWidth(expected)).toBe(7 + count * cells + 1);
+        // The stamp and the label are visible text: 09:41:07 and "agent: ",
+        // 16 cells of them, are what the rest of the text has to fit behind.
+        const head = `${STAMP} agent: `;
+        const count = Math.floor((columns - 1 - head.length - 1) / cells);
+        const expected = `${head}${text.repeat(count)}…`;
+        expect(terminal.chunks).toEqual([`${highlighted(text.repeat(count) + '…')}\n`]);
+        expect(stringWidth(expected)).toBe(head.length + count * cells + 1);
         expect(stringWidth(expected)).toBeLessThan(columns);
         expect(screenAfter(terminal.chunks, columns)).toEqual([expected]);
         pane.close();
@@ -275,20 +335,25 @@ describe('the activity pane', () => {
   it.each(WIDE_TEXT)(
     'keeps exactly fitting $text intact, including combining marks',
     ({ text, cells }) => {
-      const terminal = fakeConsole({ columns: 40, rows: 24 });
-      const pane = createActivityDisplay(terminal.io);
-      const message = text.repeat(32 / cells);
+      // A terminal sized so that the stamp, the label, and the whole repetition
+      // reach the pane's last usable cell exactly: nothing may be cut, and the
+      // highlight's own escape sequences may not push it over.
+      const repeated = Math.floor(32 / cells);
+      const columns = `${STAMP} agent: `.length + repeated * cells + 1;
+      const terminal = fakeConsole({ columns, rows: 24 });
+      const pane = createActivityDisplay(terminal.io, CLOCK);
+      const message = text.repeat(repeated);
       pane.activity({ kind: 'message', text: message });
-      expect(terminal.chunks).toEqual([`agent: ${message}\n`]);
-      expect(stringWidth(`agent: ${message}`)).toBe(39);
+      expect(terminal.chunks).toEqual([`${highlighted(message)}\n`]);
+      expect(stringWidth(highlighted(message))).toBe(columns - 1);
       pane.close();
-      expect(screenAfter(terminal.chunks, 40)).toEqual([]);
+      expect(screenAfter(terminal.chunks, columns)).toEqual([]);
     },
   );
 
   it('keeps wide activity on one row each across redraws, progress and cleanup', () => {
     const terminal = fakeConsole({ columns: 40, rows: 24 });
-    const pane = createActivityDisplay(terminal.io);
+    const pane = createActivityDisplay(terminal.io, CLOCK);
     const progress = ['HARN-16: implementation'];
     const latest: string[] = [];
     pane.line(progress[0] ?? '');
@@ -321,7 +386,7 @@ describe('the activity pane', () => {
 
   it('writes output that arrives by another route above the pane', () => {
     const terminal = fakeConsole(FULL_TERMINAL);
-    const pane = createActivityDisplay(terminal.io);
+    const pane = createActivityDisplay(terminal.io, CLOCK);
     pane.activity({ kind: 'command', text: 'step 1' });
     // Standing in for the CLI's own error stream, which reaches the same
     // console: it must be written above the pane, never into its middle.
@@ -334,15 +399,15 @@ describe('the activity pane', () => {
     // and the pane is drawn again beneath it.
     expect(screenAfter(terminal.chunks)).toEqual([
       'sj-1: skipped, not a usable task',
-      'run: step 1',
-      'run: step 2',
+      stamped('run', 'step 1'),
+      stamped('run', 'step 2'),
     ]);
     pane.close();
   });
 
-  it('erases the pane when it closes, and writes plainly afterwards', () => {
+  it('erases the pane when it closes, and writes later entries without cursor work', () => {
     const terminal = fakeConsole(FULL_TERMINAL);
-    const pane = createActivityDisplay(terminal.io);
+    const pane = createActivityDisplay(terminal.io, CLOCK);
     pane.line('run run-1: implementation turn started');
     pane.activity({ kind: 'message', text: 'working on it' });
     pane.close();
@@ -352,11 +417,128 @@ describe('the activity pane', () => {
     const before = terminal.chunks.length;
     pane.line('run run-1: passed');
     pane.activity({ kind: 'message', text: 'a late line' });
-    expect(terminal.chunks.slice(before).join('')).toBe('run run-1: passed\nagent: a late line\n');
+    // An entry that arrives after the close is still the viewer's own line: the
+    // time it arrived at, the label, and a message's highlight — no cursor work.
+    expect(terminal.chunks.slice(before).join('')).toBe(
+      `run run-1: passed\n${highlighted('a late line')}\n`,
+    );
     expect(screenAfter(terminal.chunks.slice(before))).toEqual([
       'run run-1: passed',
-      'agent: a late line',
+      stamped('agent', 'a late line'),
     ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The receive time and the message highlight
+// ---------------------------------------------------------------------------
+
+describe('the pane’s timestamps and message highlight', () => {
+  it('stamps each entry with the compact local time it was received at', () => {
+    const terminal = fakeConsole(FULL_TERMINAL);
+    const clock = testClock(new Date(2026, 8, 20, 9, 41, 7));
+    const pane = createActivityDisplay(terminal.io, clock.now);
+    pane.activity({ kind: 'command', text: 'npm test' });
+    clock.set(new Date(2026, 8, 20, 23, 5, 9));
+    pane.activity({ kind: 'message', text: 'the tests are red' });
+
+    // Local hours, minutes and seconds, two digits each: a compact clock, not
+    // an ISO timestamp and not the runtime's own event time.
+    expect(screenAfter(terminal.chunks)).toEqual([
+      '09:41:07 run: npm test',
+      '23:05:09 agent: the tests are red',
+    ]);
+    pane.close();
+  });
+
+  it('reads its clock once per entry, and keeps that entry’s time across redraws', () => {
+    const terminal = fakeConsole(FULL_TERMINAL);
+    const clock = testClock(new Date(2026, 8, 20, 9, 41, 7));
+    const pane = createActivityDisplay(terminal.io, clock.now);
+    pane.activity({ kind: 'message', text: 'first' });
+    clock.set(new Date(2026, 8, 20, 9, 41, 8));
+    pane.activity({ kind: 'command', text: 'npm test' });
+    expect(clock.reads()).toBe(2);
+
+    // A later progress line redraws the whole history: the first entry keeps
+    // the time it arrived at, although the clock has moved on by then.
+    clock.set(new Date(2026, 8, 20, 10, 0, 0));
+    pane.line('phase changed');
+    expect(screenAfter(terminal.chunks)).toEqual([
+      'phase changed',
+      '09:41:07 agent: first',
+      '09:41:08 run: npm test',
+    ]);
+    expect(clock.reads()).toBe(2);
+    pane.close();
+  });
+
+  it('highlights an agent message and resets it, and colors nothing else', () => {
+    const terminal = fakeConsole(FULL_TERMINAL);
+    const pane = createActivityDisplay(terminal.io, CLOCK);
+    pane.activity({ kind: 'message', text: 'I will change one file.' });
+    pane.activity({ kind: 'command', text: 'npm test' });
+    pane.activity({ kind: 'result', text: 'exit 1' });
+    pane.activity({ kind: 'change', text: 'update src/a.ts' });
+
+    // Every redraw the pane wrote, oldest first. The message is drawn in the
+    // pane's color and reset inside its own line, wherever it appears in the
+    // history; a command, a result, and a changed file carry no styling.
+    const lines = drawnLines(terminal.chunks);
+    expect(lines.at(-4)).toBe(highlighted('I will change one file.'));
+    expect(lines.slice(-3)).toEqual([
+      stamped('run', 'npm test'),
+      stamped('result', 'exit 1'),
+      stamped('change', 'update src/a.ts'),
+    ]);
+    for (const line of lines) {
+      expect(line.includes(GOLD)).toBe(line.includes('agent: '));
+      if (!line.includes('agent: ')) {
+        expect(line).not.toContain('\u001b');
+      }
+    }
+    pane.close();
+  });
+
+  it.each([
+    { columns: 40, fitted: 22 },
+    { columns: 20, fitted: 2 },
+  ])(
+    'fits the timestamp into a $columns-column pane, where the escapes take no cell',
+    ({ columns, fitted }) => {
+      const terminal = fakeConsole({ columns, rows: 24 });
+      const pane = createActivityDisplay(terminal.io, CLOCK);
+      pane.activity({ kind: 'message', text: 'x'.repeat(200) });
+
+      const visible = `${STAMP} ${GOLD}agent: ${'x'.repeat(fitted)}…${RESET}`;
+      expect(terminal.chunks).toEqual([`${visible}\n`]);
+      // The stamp is part of what had to fit, and the color sequences around
+      // the message are not: the line occupies exactly the pane's width.
+      expect(screenAfter(terminal.chunks, columns)).toEqual([
+        `${STAMP} agent: ${'x'.repeat(fitted)}…`,
+      ]);
+      expect(stringWidth(visible)).toBe(columns - 1);
+      pane.close();
+    },
+  );
+
+  it('draws the same lines with no escape sequence when the terminal wants no color', () => {
+    const terminal = fakeConsole({ ...FULL_TERMINAL, color: false });
+    const pane = createActivityDisplay(terminal.io, CLOCK);
+    pane.activity({ kind: 'message', text: 'plain, please' });
+    pane.activity({ kind: 'command', text: 'npm test' });
+
+    expect(screenAfter(terminal.chunks)).toEqual([
+      stamped('agent', 'plain, please'),
+      stamped('run', 'npm test'),
+    ]);
+    // Still the pane — it redraws in place — but nothing in it needs a reset.
+    expect(terminal.chunks.some((chunk) => chunk.startsWith('\u001b'))).toBe(true);
+    for (const chunk of drawnLines(terminal.chunks)) {
+      // eslint-disable-next-line no-control-regex
+      expect(chunk).not.toMatch(/\u001b\[[0-9;]*m/);
+    }
+    pane.close();
   });
 });
 
@@ -369,7 +551,7 @@ describe('a terminal that cannot hold a pane', () => {
     // Rows minus the space the progress keeps: six rows leave two activity
     // lines, and those two are the newest.
     const terminal = fakeConsole({ columns: 80, rows: 6 });
-    const pane = createActivityDisplay(terminal.io);
+    const pane = createActivityDisplay(terminal.io, CLOCK);
     pane.line('baseline check-round result: passed');
     for (let index = 1; index <= 4; index += 1) {
       pane.activity({ kind: 'command', text: `step ${String(index)}` });
@@ -377,8 +559,8 @@ describe('a terminal that cannot hold a pane', () => {
 
     expect(screenAfter(terminal.chunks)).toEqual([
       'baseline check-round result: passed',
-      'run: step 3',
-      'run: step 4',
+      stamped('run', 'step 3'),
+      stamped('run', 'step 4'),
     ]);
     pane.close();
   });
@@ -429,7 +611,7 @@ describe('a terminal that cannot hold a pane', () => {
 
   it('keeps the full-size bound when the terminal reports no size', () => {
     const terminal = fakeConsole();
-    const pane = createActivityDisplay(terminal.io);
+    const pane = createActivityDisplay(terminal.io, CLOCK);
     for (let group = 1; group <= 8; group += 1) {
       pane.activity({ kind: 'message', text: `message ${String(group)}` });
       for (const step of ['a', 'b', 'c']) {
@@ -439,8 +621,8 @@ describe('a terminal that cannot hold a pane', () => {
 
     const screen = screenAfter(terminal.chunks);
     expect(screen).toHaveLength(20);
-    expect(screen[0]).toBe('agent: message 1');
-    expect(screen.at(-1)).toBe('run: work 8c');
+    expect(screen[0]).toBe(stamped('agent', 'message 1'));
+    expect(screen.at(-1)).toBe(stamped('run', 'work 8c'));
     pane.close();
   });
 });
