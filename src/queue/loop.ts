@@ -311,6 +311,9 @@ export async function runQueue(
           return cancelled();
         }
         completed += 1;
+        // Nothing is current any more: the next fresh scan decides what, if
+        // anything, this invocation carries next.
+        active = null;
         io.out(
           `${ticket.ref.key}: ${completion.detail}. The local base branch is ready for the next ` +
             'workspace; the queue scans again.',

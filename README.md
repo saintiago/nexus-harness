@@ -668,6 +668,12 @@ place: the delivery step refuses to edit a merged pull request, so a repair afte
 post-merge workflow ends as an actionable stop rather than a second pull request. Turning that into
 a new ticket is an operator decision.
 
+**A second boundary.** A ticket an interrupted queue left In Review is not picked up by the next
+queue invocation: its fresh scan is the ready queue. Finish that ticket with the deterministic
+completion path — `source run`'s post-batch pass carries a delivered, approved item the rest of the
+way — or move it back to its ready status and let the queue's next scan continue the same
+workspace. The queue never adopts, resets, or re-delivers it by itself.
+
 ## Try it on a disposable project
 
 This is the offline-verified example: a throwaway project with a committed, green baseline, and an

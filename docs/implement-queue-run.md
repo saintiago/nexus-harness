@@ -95,6 +95,13 @@ instead of writing it again. A restarted queue therefore resumes a ticket that a
 conclusion returned to the ready status, and it does nothing at all about a ticket that is already
 Done.
 
+One boundary is deliberate: a ticket an interrupted queue left **In Review** is not claimed by a
+later queue invocation. The queue's fresh scan is the ready queue, and an In Review item belongs to
+the deterministic completion path a person can run — `source run`'s post-batch pass carries a
+delivered, approved item the rest of the way — or, if the work has to change, to the operator
+moving it back to its ready status, where the queue's next scan continues the same workspace. The
+queue never adopts, resets, or re-delivers such a ticket by itself.
+
 ## Limits, stated plainly
 
 - A ticket whose pull request GitHub has already merged cannot be repaired in place by this

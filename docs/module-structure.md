@@ -28,7 +28,7 @@ src/
     run-command.ts                (224)  `run`: load the inputs, install the stop, print the outcome
     source-command.ts             (379)  `source list|run|watch`, the connector selection, abortable sleep
     review-command.ts             (273)  `review scan|watch`: the App client, the reviewer, the scan
-    queue-command.ts              (500)  `queue run|watch`: the three credentials, the lock, the four phases
+    queue-command.ts              (677)  `queue run|watch`: the three credentials, the lock, the four phases
     activity.ts                   (371)  the activity pane: a bounded, message-grouped block under the progress
     progress.ts                   (136)  what a run's own progress line reads as on an interactive terminal
     dependencies.ts               (154)  the loop's real collaborators and the wrapped set a test gets
@@ -60,7 +60,7 @@ src/
     prepare.ts                    (305)  prepareWorkspace: the clone, its branch, the ledger it writes
     state.ts                      (129)  the workspace ledger: what a clone is, every attempt in it
     reopen.ts                     (131)  resolveWorkspace/reopenWorkspace: the pointer, the checkout
-    refresh.ts                    (290)  source readiness between tickets: fetch, verify, fast-forward only
+    refresh.ts                    (376)  source readiness between tickets: fetch, verify, fast-forward only
     changes.ts                    (288)  inspectWorkspaceChanges: what the copy differs from its base by
   runs/
     contracts.ts                  (345)  run and turn requests/results, RunnerDependencies, the two errors
@@ -97,7 +97,7 @@ src/
     reviewer.ts                   (402)  the reviewer prompt, the one bounded turn, and the verdict file
     scan.ts                       (790)  one scan or watch: eligibility, dedup, publishing, evidence
   queue/
-    loop.ts                       (330)  the serial control loop: one current ticket, one phase at a time
+    loop.ts                       (370)  the serial control loop: one current ticket, one phase at a time
   agents/
     codex/
       runtime.ts                  (110)  the launch prefix, the environment, the stop contract
