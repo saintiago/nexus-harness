@@ -325,6 +325,7 @@ describe('the Jira source configuration', () => {
     ['a numeric ordering', { ...minimalSource, ordering: 1 }, /ordering/],
     ['a boolean ordering', { ...minimalSource, ordering: true }, /ordering/],
     ['a differently cased ordering', { ...minimalSource, ordering: 'PRIORITY' }, /ordering/],
+    ['a padded ordering', { ...minimalSource, ordering: ' rank ' }, /ordering/],
     ['a token in the configuration', { ...minimalSource, token: 'secret' }, /token/],
   ];
 
