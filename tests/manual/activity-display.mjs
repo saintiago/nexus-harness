@@ -86,10 +86,11 @@ await delay(600);
  * Progress lines are ordinary output and may wrap; only the pane's own activity
  * draws must each fit one row: a line that fits, says when the viewer received
  * it, and — for a message — is highlighted and reset inside its own line, which
- * is what this flags.
+ * is what this flags. Wrapped message continuations carry the same yellow and
+ * reset but no repeated timestamp or label (HARN-34).
  */
 /* eslint-disable no-control-regex -- the pane's own escape sequences are what this reads */
-const HIGHLIGHTED_MESSAGE = /^\d{2}:\d{2}:\d{2} \u001b\[33magent: .*\u001b\[0m$/;
+const HIGHLIGHTED_MESSAGE = /^(?:\d{2}:\d{2}:\d{2} )?\u001b\[33m.*\u001b\[0m$/;
 const STAMPED_WORK = /^\d{2}:\d{2}:\d{2} (run|result|change): /;
 /* eslint-enable no-control-regex */
 let drawingKind = null;
@@ -100,10 +101,9 @@ const terminal = {
   columns,
   rows,
   write: (chunk) => {
-    if (drawingKind !== null && !chunk.startsWith('\u001b') && !chunk.startsWith('\r')) {
+    if (drawingKind !== null && chunk.endsWith('\r\n') && chunk !== '\r\n') {
       const line = chunk.replace(/\r?\n$/, '');
       assert(stringWidth(line) < columns, 'A draw would overflow its row');
-      assert(/^\d{2}:\d{2}:\d{2} /.test(line), 'A draw carries the time it arrived');
       if (HIGHLIGHTED_MESSAGE.test(line)) {
         highlighted += 1;
       } else {
@@ -259,7 +259,10 @@ try {
   pane.beginInvocation({ role: 'reviewer', ticket: 'HARN-16', phase: 'review' });
   await draw('item.completed', {
     type: 'agent_message',
-    text: 'Nexus Lens is reading the diff before writing a verdict.',
+    text:
+      'Nexus Lens is reading the diff before writing a verdict. ' +
+      'Complete graphemes: 界 😀 👩🏽‍💻 👨‍👩‍👧‍👦 🇪🇸 1️⃣ é. '.repeat(12) +
+      'REVIEW-END',
   });
   await draw('item.started', { type: 'command_execution', command: 'git diff --stat' });
   await draw('item.completed', {
@@ -276,7 +279,16 @@ try {
   pane.beginInvocation({ role: 'developer', ticket: 'HARN-26', phase: 'implementation turn' });
   await draw('item.completed', {
     type: 'agent_message',
-    text: 'The next ticket starts with an empty pane of its own.',
+    text:
+      'Committed locally as ba5dda8. ' +
+      'The complete explanation must remain readable in terminal history. '.repeat(40) +
+      'MESSAGE-END: all synthetic details were displayed.',
+  });
+  await draw('item.started', { type: 'command_execution', command: 'git status --short' });
+  await draw('item.completed', {
+    type: 'command_execution',
+    command: 'git status --short',
+    exit_code: 0,
   });
   pane.endInvocation();
   pane.line('HARN-26: implementation turn result: completed');

@@ -1018,9 +1018,13 @@ the runtime reports no event time of its own), and an agent message is highlight
 again so the work lines stay in your terminal's ordinary color. Within one pane the history is
 grouped by the agent's messages — each message keeps at most its three latest work lines — and the
 whole pane is at most twenty lines: the oldest work disappears first, so earlier messages stay in
-order as the work between them scrolls away. Every entry is fitted to one row with its timestamp
-counted, and control characters in runtime text are never written as terminal commands. The progress
-above keeps the task, the phase, and the selected model readable; the startup inventory — receipt
+order as the work between them disappears. Agent messages wrap in full by display columns, preserving
+CJK and emoji graphemes, with one timestamp and label and yellow highlighting on every wrapped row.
+All message rows count toward the twenty-row pane; older rows enter terminal history before leaving
+the managed pane, even for a message taller than the screen. Command and result summaries remain
+bounded to one row with their timestamp counted. Control characters in runtime text are never
+written as terminal commands. The progress above keeps the task, the phase, and the selected model
+readable; the startup inventory — receipt
 paths, IDs, hashes, launch arguments — stays in the run log. A redirected, noninteractive, too small,
 or too narrow terminal gets every line — the boundaries included — as stamped ordinary output
 instead, with no cursor or color sequence at all; `NO_COLOR` selects the same plain output

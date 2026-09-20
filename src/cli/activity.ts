@@ -36,8 +36,10 @@
  *
  * The history is grouped by the agent's own messages: each message starts a
  * group that keeps at most the three latest work lines that followed it, and the
- * history of one pane is bounded, so the messages accumulate one below another
- * while the work between them disappears oldest-first.
+ * cursor-managed history of one pane is bounded to twenty physical rows. Message
+ * text wraps by display columns, while work disappears oldest-first. Once there
+ * is no older work to remove, message rows scroll into terminal history; every
+ * row is written before it leaves the managed pane.
  *
  * Each entry, and each ordinary line, is stamped with the local time the viewer
  * received or emitted it — `HH:mm:ss`, read once and kept for every redraw — and
@@ -276,7 +278,12 @@ function paneDisplay(
     if (surplus > 0) {
       write(`\u001b[${String(surplus)}A`);
     }
-    drawn = lines.length;
+    // Write every message row before releasing the prefix into terminal history.
+    // Only the tail remains cursor-managed; future paints cannot replay or erase
+    // the rows above it, even when one message is taller than the whole screen.
+    const overflow = Math.max(0, lines.length - height);
+    releaseHistory(groups, overflow);
+    drawn = lines.length - overflow;
   };
 
   /**
@@ -347,20 +354,20 @@ function paneDisplay(
     }
   };
 
-  /** Records one formatted activity line in its group. */
-  const record = (kind: AgentActivity['kind'], text: string): void => {
+  /** Records one logical entry, whose message may occupy several physical rows. */
+  const record = (kind: AgentActivity['kind'], lines: string[]): void => {
     if (kind === 'message') {
-      groups.push({ message: text, work: [] });
+      groups.push({ message: lines, work: [] });
     } else {
       let group = groups.at(-1);
       if (group === undefined) {
         // Work reported before the turn's first message is still that work: it
         // keeps its own group rather than being placed under a message that
         // came later.
-        group = { message: null, work: [] };
+        group = { message: [], work: [] };
         groups.push(group);
       }
-      group.work.push(text);
+      group.work.push(...lines);
       if (group.work.length > WORK_LINES_PER_GROUP) {
         group.work.splice(0, group.work.length - WORK_LINES_PER_GROUP);
       }
@@ -401,12 +408,12 @@ function paneDisplay(
       }
       // The entry's receive time, read once here: a redraw later draws this very
       // line again, never a freshly stamped one.
-      const text = paneLine(activity, displayTime(now()), width);
+      const lines = paneLines(activity, displayTime(now()), width);
       if (closed) {
-        write(`${text}\r\n`);
+        for (const line of lines) write(`${line}\r\n`);
         return;
       }
-      record(activity.kind, text);
+      record(activity.kind, lines);
       paint();
     },
     beginInvocation: (invocation) => {
@@ -439,85 +446,54 @@ function paneDisplay(
 
 /** One agent message and the work lines that followed it. */
 interface ActivityGroup {
-  /** The message line that starts the group, or `null` for work seen before one. */
-  readonly message: string | null;
+  /** Retained physical rows of one message, empty for work seen before one. */
+  readonly message: string[];
   /** The group's retained work lines, oldest first. */
   readonly work: string[];
 }
 
-/** One row the pane draws, and where in the history it is kept. */
-interface ActivityRow {
-  readonly group: ActivityGroup;
-  /** The index of a work line, or `null` for the group's message line. */
-  readonly work: number | null;
-}
-
 /** Every line the history would draw, oldest first. */
 function linesOf(groups: readonly ActivityGroup[]): readonly string[] {
-  const lines: string[] = [];
-  for (const group of groups) {
-    if (group.message !== null) {
-      lines.push(group.message);
-    }
-    lines.push(...group.work);
-  }
-  return lines;
-}
-
-/** Every row of the history with the place it is kept, oldest first. */
-function rowsOf(groups: readonly ActivityGroup[]): readonly ActivityRow[] {
-  const rows: ActivityRow[] = [];
-  for (const group of groups) {
-    if (group.message !== null) {
-      rows.push({ group, work: null });
-    }
-    group.work.forEach((_line, index) => {
-      rows.push({ group, work: index });
-    });
-  }
-  return rows;
-}
-
-/** Removes one row, and a message-less group that no longer holds anything. */
-function removeRow(groups: ActivityGroup[], row: ActivityRow): void {
-  const position = groups.indexOf(row.group);
-  if (position < 0) {
-    return;
-  }
-  if (row.work === null) {
-    groups.splice(position, 1);
-    return;
-  }
-  row.group.work.splice(row.work, 1);
-  if (row.group.work.length === 0 && row.group.message === null) {
-    groups.splice(position, 1);
-  }
+  return groups.flatMap((group) => group.message.concat(group.work));
 }
 
 /**
- * Drops rows until the history fits the pane it is drawn in.
+ * Drops older work until the history fits, or only messages and newest work remain.
  *
  * The oldest work line goes first, so earlier agent messages stay in order and
  * accumulate one below another as the work between them disappears; a message
- * is dropped only once no work line can go instead, and the history then scrolls
- * as a plain sequence of messages. The row that just arrived is never the one
- * dropped — a pane that hid the newest line would not show the work it exists to
- * show — so work arriving under a history that is already all messages takes the
- * oldest message's place.
+ * is released into scrollback only after painting, never discarded here. The
+ * row that just arrived is never dropped: work arriving under a history that is
+ * already all messages releases the oldest message row instead.
  */
 function fitHistory(groups: ActivityGroup[], capacity: number): void {
-  for (;;) {
-    const rows = rowsOf(groups);
-    if (rows.length <= capacity) {
-      return;
-    }
-    const oldestWork = rows.findIndex((row) => row.work !== null);
-    const target = oldestWork >= 0 && oldestWork < rows.length - 1 ? oldestWork : 0;
-    const row = rows[target];
-    if (row === undefined) {
-      return;
-    }
-    removeRow(groups, row);
+  let excess =
+    groups.reduce((sum, group) => sum + group.message.length + group.work.length, 0) - capacity;
+  for (const group of groups) {
+    if (excess <= 0) break;
+    const removable = group.work.length - (group === groups.at(-1) ? 1 : 0);
+    const count = Math.min(excess, Math.max(0, removable));
+    group.work.splice(0, count);
+    excess -= count;
+  }
+  // Only a leading work-only group can have become empty.
+  if (groups[0]?.message.length === 0 && groups[0].work.length === 0) {
+    groups.shift();
+  }
+}
+
+/** Forget already painted prefix rows without moving or rewriting them. */
+function releaseHistory(groups: ActivityGroup[], count: number): void {
+  while (count > 0) {
+    const group = groups[0];
+    if (group === undefined) return;
+    const messages = Math.min(count, group.message.length);
+    group.message.splice(0, messages);
+    count -= messages;
+    const work = Math.min(count, group.work.length);
+    group.work.splice(0, work);
+    count -= work;
+    if (group.message.length === 0 && group.work.length === 0) groups.shift();
   }
 }
 
@@ -600,22 +576,39 @@ function describe(activity: AgentActivity): string {
 
 /**
  * One activity entry as the pane draws it: the local time the viewer received
- * it, the label, and the flattened text, fitted to one row. The timestamp is
- * visible text, so it counts toward the fit like any other character, and a
- * message's own line — the label and its text — is drawn in the pane's message
- * color and reset again. The highlight is applied after the fit, so its escape
- * sequences never consume a display cell and never change what was cut.
+ * it, the label, and safe text. Work summaries stay bounded to one row; messages
+ * wrap without truncation. Only the first row has a timestamp and label. Each
+ * message row resets its own highlight so it cannot color the next work entry.
  */
-function paneLine(activity: AgentActivity, stamp: string, width: number): string {
+function paneLines(activity: AgentActivity, stamp: string, width: number): string[] {
   const head = `${stamp} `;
-  const line = truncate(`${head}${describe(activity)}`, width);
+  const text = `${head}${describe(activity)}`;
   if (activity.kind !== 'message') {
-    return line;
+    return [truncate(text, width)];
   }
-  // Split after the timestamp, so the stamp keeps the terminal's ordinary color
-  // and only the message's own line is highlighted.
-  const plain = line.slice(0, head.length);
-  return `${plain}${MESSAGE_COLOR}${line.slice(plain.length)}${COLOR_RESET}`;
+  return wrap(text, width).map((line, index) => {
+    const plain = index === 0 ? head : '';
+    return `${plain}${MESSAGE_COLOR}${line.slice(plain.length)}${COLOR_RESET}`;
+  });
+}
+
+/** Wrap by display cells without splitting or dropping a grapheme (or a space). */
+function wrap(text: string, width: number): string[] {
+  const lines: string[] = [];
+  let line = '';
+  let cells = 0;
+  for (const { segment } of graphemes.segment(text)) {
+    const size = stringWidth(segment);
+    if (cells + size > width && line !== '') {
+      lines.push(line);
+      line = '';
+      cells = 0;
+    }
+    line += segment;
+    cells += size;
+  }
+  lines.push(line);
+  return lines;
 }
 
 /** Two digits, as a clock field is written. */

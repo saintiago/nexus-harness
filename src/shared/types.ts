@@ -432,7 +432,7 @@ export type AttemptKind = 'implementation' | 'repair';
 
 /**
  * One line of what a coding turn is doing, as the terminal's activity pane shows
- * it: the runtime's own event stream, normalized and bound to a single line.
+ * it: complete messages and bounded work summaries from the runtime's event stream.
  *
  * It is presentation only. What a turn did is in its agent log and is decided by
  * the harness's own checks; an activity line is never evidence, never reaches a
@@ -443,7 +443,7 @@ export interface AgentActivity {
   readonly kind: 'message' | 'command' | 'result' | 'change';
   /**
    * The text, as the runtime reported it. It is not sanitized and not bounded:
-   * the display that owns the terminal flattens it and fits it to its width.
+   * the display sanitizes it, wraps messages, and fits work summaries to its width.
    */
   readonly text: string;
 }

@@ -84,7 +84,7 @@ export function failureText(event: Record<string, unknown>): string | null {
   return typeof message === 'string' && message.trim() !== '' ? message : null;
 }
 
-/** How much of a command or a message one activity line keeps. */
+/** How much of a command one activity line keeps. Messages are unabridged. */
 const MAX_ACTIVITY_CHARS = 400;
 
 /**
@@ -354,7 +354,7 @@ export function itemActivities(eventType: string, item: unknown): readonly Agent
       return [{ kind: 'result', text: resultText(record) }];
     }
     case 'agent_message': {
-      const text = eventType === 'item.completed' ? activityText(record['text']) : null;
+      const text = eventType === 'item.completed' ? activityText(record['text'], Infinity) : null;
       return text === null ? [] : [{ kind: 'message', text }];
     }
     case 'file_change': {
