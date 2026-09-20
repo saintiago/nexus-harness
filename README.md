@@ -523,15 +523,20 @@ declares tiers tried in order inside one claim, each with its own launch and rep
 
 Flash runs the implementation and up to two repair turns; only when its post-agent checks are still
 red does Astra run — in the **same retained workspace**, so the earlier commits and uncommitted work
-are still in it — with its own two-repair allowance. Attempt N of an issue runs tier N, clamped to
-the last tier, and the tier's own launch is what really starts and what its report records. Only an
-exhausted ordinary red check round climbs: a setup, launch, authentication, or protocol error, a
-cancellation, a timeout, and an unconfirmed cleanup all end the intake at the rung where they
-happened rather than spending a stronger launch on them, and that attempt's result is then the
-issue's last word — published and moved to review, except where a required local save failed or the
-run's stop was not confirmed, which publish no comment and leave the issue in the running status. A
-tier that names no `agent` or `maxRepairs` inherits the top-level one, and no `escalation` at all
-means the single ordinary tier. The launch prefixes above are operator-native Codex profiles;
+are still in it — with its own two-repair allowance, and the tier's own launch is what really starts
+and what its report records. Escalation is local to one coding cycle: every claim starts at the first
+tier, so a ticket that a reviewer's findings, a failed required check, a delivery failure, or a
+failed post-merge workflow sent back to its ready status returns to Flash in its retained workspace,
+with the work and guidance it accumulated, and the workspace's own attempt count never selects a
+tier.
+Only an exhausted ordinary red check round climbs: a run that ended before any coding turn, a setup,
+launch, authentication, or protocol error, a cancellation, a timeout, and an unconfirmed cleanup all
+end the intake at the rung where they happened rather than spending a stronger launch on them, and
+that attempt's result is then the issue's last word — published and moved to review, except where a
+required local save failed or the run's stop was not confirmed, which publish no comment and leave
+the issue in the running status. A tier that names no `agent` or `maxRepairs` inherits the top-level
+one, and no `escalation` at all means the single ordinary tier. The launch prefixes above are
+operator-native Codex profiles;
 [nexus-agent-tools.md](docs/nexus-agent-tools.md) is how to install them, and the harness never reads
 or writes them.
 
@@ -1168,11 +1173,13 @@ Read this before pointing a run at anything you care about.
   attempt's own comment while the issue stays in the running status, one review move when the ladder
   ends, the two endings that publish nothing and leave the issue where it is (a stop that was not
   confirmed, and a workspace ledger that could not be written), and the ladder's refusal to climb
-  from a setup/launch/protocol error, a cancellation, or an expired limit — the guidance a continued
-  attempt is told, the decision made from the item as it was just re-read rather than from the search
-  result that discovered it, the pointer checks that refuse a malformed id, another item's, site's,
-  or repository's workspace, and a ledger with no item identity, and the refusal of an attempted
-  issue that names no workspace to continue; and the ticket-key naming of a newly claimed Jira
+  from a setup/launch/protocol error, a cancellation, or an expired limit, and its restart at the
+  first tier for every new coding cycle while the workspace's own attempt history stays separate and
+  truthful — the guidance a continued attempt is told, the decision made from the item as it was
+  just re-read rather than from the search result that discovered it, the pointer checks that refuse
+  a malformed id, another item's, site's, or repository's workspace, and a ledger with no item
+  identity, and the refusal of an attempted issue that names no workspace to continue; and the
+  ticket-key naming of a newly claimed Jira
   workspace, with the refusals that keep an existing name safe (a name another item's workspace, a
   directory or ledger without trustworthy ownership, or this ticket's own unpointed workspace
   already holds), a changed display key still continuing the workspace its pointer names, and an
@@ -1577,7 +1584,9 @@ operator's own `gh` credentials, once the check is green —
 - [docs/implement-workspace-continuation.md](docs/implement-workspace-continuation.md) — the
   contract for workspaces that outlive runs, the workspace pointer label, and the escalation ladder.
   Its three increments are implemented, including the corrections HARN-7 made to which tier really
-  launches, when Jira moves to review, and which failures may escalate.
+  launches, when Jira moves to review, and which failures may escalate, and HARN-39's cycle-local
+  escalation index: every claim starts at the first tier again, while the workspace's own attempt
+  history stays in its reports and its ledger.
 - [docs/LONG_TERM_VISION.md](docs/LONG_TERM_VISION.md) — the direction the harness is meant to grow
   into. It defines no behaviour: [docs/spec.md](docs/spec.md) stays authoritative, and every change
   still needs a task.

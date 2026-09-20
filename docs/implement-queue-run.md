@@ -58,9 +58,10 @@ the completion pass are each narrowed to that ticket's immutable identity.
 post-merge workflow that concluded unsuccessfully all return the item to `toDoStatus` with its
 workspace pointer preserved. The loop then asks for **that** ticket by identity — not for the next
 eligible one — so its next attempt reopens the same retained workspace, under the same base, through
-the ordinary escalation ladder. There is no second repair system: the attempt is the same runner
-with the same per-rung launch and repair allowance, and the pointer label is still the only
-statement of where the work lives. The loop never adopts, clears, or migrates a workspace.
+the ordinary escalation ladder, which starts again at its first tier because escalation is local to
+one coding cycle. There is no second repair system: the attempt is the same runner with the same
+per-rung launch and repair allowance, and the pointer label is still the only statement of where the
+work lives. The loop never adopts, clears, or migrates a workspace.
 
 ## Source readiness, and only forward
 

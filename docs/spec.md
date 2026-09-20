@@ -192,7 +192,7 @@ Discover available transitions for the issue and select a unique transition by i
 
 Save local results first. Post one compact result comment with run ID, observed outcome/reason, check summary, repairs used, local artifact locations, and — when the attempt was delivered — its pull request URL; mark paths as local, not downloadable Jira attachments. Exclude transcripts, diffs, environment variables, tokens, and native provider configuration. Then move to review only if the issue is still in the running status; respect subsequent human status changes. Jira comments use ADF. [J3]
 
-While an `escalation` ladder still has a rung to try, that comment is one attempt's own and the issue stays in the running status; only the climb's last attempt moves it to review, and only an exhausted ordinary red check round lets the climb continue ([implement-workspace-continuation.md](implement-workspace-continuation.md)).
+While an `escalation` ladder still has a rung to try, that comment is one attempt's own and the issue stays in the running status; only the climb's last attempt moves it to review, and only an exhausted ordinary red check round — one whose rung spent its own repair allowance — lets the climb continue ([implement-workspace-continuation.md](implement-workspace-continuation.md)). Escalation is local to one coding cycle: every claim, a first attempt and a claim that continues the workspace a reviewer's findings, a failed required check, a delivery failure, or a failed post-merge workflow returned to the ready status alike, starts at the first configured tier in that same retained workspace, and the workspace's own attempt count never selects one.
 
 A feedback failure keeps the original local run outcome and a separate `feedback: failed` receipt entry. Record whether a comment was acknowledged before a later transition failed. Do not blindly resend comments after an ambiguous response. No automatic outbox/reconciliation loop in this increment.
 
@@ -334,7 +334,7 @@ The loop keeps one current ticket and one active phase. It takes at most one tic
 
 ### Repair before unrelated work
 
-When the review requests changes, a required pull-request check has definitively failed, or a configured post-merge workflow concluded unsuccessfully, §10 returns the item to its To Do status with its workspace pointer preserved. The loop then continues **that** ticket by identity: the next attempt reopens the workspace its pointer names, under the recorded base, through the same runner and escalation ladder, and reviews the head the repair delivered. Unrelated ready work waits until the current ticket is confirmed Done. The loop does not clear, adopt, migrate, or replace a workspace, and it does not implement a second repair system.
+When the review requests changes, a required pull-request check has definitively failed, or a configured post-merge workflow concluded unsuccessfully, §10 returns the item to its To Do status with its workspace pointer preserved. The loop then continues **that** ticket by identity: the next attempt reopens the workspace its pointer names, under the recorded base, through the same runner and escalation ladder — which starts again at its first tier — and reviews the head the repair delivered. Unrelated ready work waits until the current ticket is confirmed Done. The loop does not clear, adopt, migrate, or replace a workspace, and it does not implement a second repair system.
 
 ### Source readiness between tickets
 
