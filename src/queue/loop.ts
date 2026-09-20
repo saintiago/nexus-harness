@@ -121,6 +121,13 @@ export interface QueueSummary {
   readonly problem: string | null;
   /** The ticket the loop stopped, was cancelled, or is idle behind. */
   readonly ticket: QueueTicket | null;
+  /**
+   * Whether everything this invocation started was confirmed stopped. `false`
+   * means a working copy may still be written to, so the caller leaves the
+   * intake lock in place for inspection instead of releasing it
+   * (docs/spec.md §6).
+   */
+  readonly cleanupConfirmed: boolean;
 }
 
 /** One phrase for how a consumer step ended without taking a usable ticket. */
@@ -161,6 +168,7 @@ export async function runQueue(
   let completed = 0;
   let attempts = 0;
   let active: QueueTicket | null = null;
+  let cleanupConfirmed = true;
 
   const cancelled = (): QueueSummary => ({
     outcome: 'cancelled',
@@ -168,6 +176,7 @@ export async function runQueue(
     attempts,
     problem: null,
     ticket: active,
+    cleanupConfirmed,
   });
   const stopped = (problem: string): QueueSummary => ({
     outcome: 'stopped',
@@ -175,6 +184,7 @@ export async function runQueue(
     attempts,
     problem,
     ticket: active,
+    cleanupConfirmed,
   });
 
   for (;;) {
@@ -185,6 +195,7 @@ export async function runQueue(
     // A fresh eligibility scan, in the source's own order. At most one ticket
     // comes out of it; nothing is cached and nothing is pre-reserved.
     const take = await context.consume({ only: null });
+    cleanupConfirmed = cleanupConfirmed && take.cleanupConfirmed;
     if (stop.aborted || take.outcome === 'cancelled') {
       return cancelled();
     }
@@ -200,7 +211,14 @@ export async function runQueue(
             : `queue run: no further eligible ticket after ${String(completed)} completed; the ` +
                 'queue is drained',
         );
-        return { outcome: 'completed', completed, attempts, problem: null, ticket: null };
+        return {
+          outcome: 'completed',
+          completed,
+          attempts,
+          problem: null,
+          ticket: null,
+          cleanupConfirmed,
+        };
       }
       io.out(
         `queue idle: no eligible ticket. Waiting ${String(pollSeconds(context.pollIntervalMs))}s ` +
@@ -305,6 +323,7 @@ export async function runQueue(
       // ready work is considered.
       io.out(`${ticket.ref.key}: back for repair: ${completion.detail}`);
       const repair = await context.consume({ only: ticket });
+      cleanupConfirmed = cleanupConfirmed && repair.cleanupConfirmed;
       if (stop.aborted || repair.outcome === 'cancelled') {
         return cancelled();
       }

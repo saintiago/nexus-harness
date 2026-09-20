@@ -313,6 +313,7 @@ describe('the serial queue loop', () => {
       attempts: 0,
       problem: null,
       ticket: null,
+      cleanupConfirmed: true,
     });
     expect(run.takes).toEqual([null]);
     expect(run.log).toEqual(['+consume:next', '-consume:next']);
@@ -394,6 +395,17 @@ describe('the serial queue loop', () => {
     // One reading and no wait: a blocker is reported, never polled silently.
     expect(run.log).toEqual(['+consume:next', '-consume:next']);
     expect(run.out.some((line) => line.startsWith('queue idle'))).toBe(false);
+  });
+
+  it('carries an unconfirmed stop to its caller, so the lock is not released', async () => {
+    const run = await runLoop({
+      take: () => ({
+        ...attention('the run was stopped without confirming that everything it started had ended'),
+        cleanupConfirmed: false,
+      }),
+    });
+
+    expect(run.summary).toMatchObject({ outcome: 'stopped', cleanupConfirmed: false });
   });
 
   it('stops when the review needs a person', async () => {
@@ -619,6 +631,7 @@ function runResult(
   key: string,
   status: RunStatus,
   workspace: PreparedWorkspace | null,
+  unconfirmedStop = false,
 ): RunTaskResult {
   const runDir = path.join(workDir, 'runs', `run-${key}`);
   return {
@@ -636,7 +649,14 @@ function runResult(
     attempts: [],
     repairsUsed: status === 'failed' ? 2 : 0,
     timeout: null,
-    cancellation: null,
+    cancellation: unconfirmedStop
+      ? {
+          phase: 'the implementation turn',
+          elapsedMs: 1_000,
+          termination: 'unconfirmed',
+          problem: 'the process tree could not be confirmed stopped',
+        }
+      : null,
     changes: summarizeChanges({ baseCommit: 'base', paths: [] }),
     workspaceLedgerProblem: null,
     reportPath: path.join(runDir, 'result.json'),
@@ -669,6 +689,8 @@ interface TakeFixtureOptions {
   readonly pointers?: readonly string[];
   readonly claim?: boolean;
   readonly status?: RunStatus;
+  /** Whether the run's stop is reported as unconfirmed. */
+  readonly unconfirmedStop?: boolean;
   readonly delivery?: Delivery;
   readonly stop?: AbortSignal;
 }
@@ -746,7 +768,13 @@ function takeFixture(options: TakeFixtureOptions): {
       calls.push(`run:${request.task.id}`);
       const workspace = preparedWorkspace(options.workDir, request.task.id);
       await request.onWorkspaceReady?.({ workspaceId: workspace.workspaceId });
-      return runResult(options.workDir, request.task.id, options.status ?? 'passed', workspace);
+      return runResult(
+        options.workDir,
+        request.task.id,
+        options.status ?? 'passed',
+        workspace,
+        options.unconfirmedStop ?? false,
+      );
     },
     now: () => new Date('2026-09-20T10:00:00.000Z'),
     sleep: async () => {},
@@ -929,6 +957,22 @@ describe('the queue consumer step', () => {
     // and leaves the ticket for a later scan.
     expect(result.outcome).toBe('empty');
     expect(fixture.calls).toContain('claim:SAM1-1');
+  });
+
+  it('reports an unconfirmed stop, so the caller keeps the lock for inspection', async () => {
+    const workDir = await createTempDir();
+    const fixture = takeFixture({
+      workDir,
+      candidates: [candidateFor('SAM1-1')],
+      status: 'cancelled',
+      unconfirmedStop: true,
+    });
+
+    const result = await takeOneItem(fixture.context, { lockHeld: true });
+
+    expect(result.outcome).toBe('cancelled');
+    expect(result.cleanupConfirmed).toBe(false);
+    expect(result.ticket?.ref.key).toBe('SAM1-1');
   });
 });
 

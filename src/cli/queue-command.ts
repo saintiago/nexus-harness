@@ -230,6 +230,12 @@ function describeQueueSummary(summary: QueueSummary, mode: QueueRunMode): string
   if (summary.problem !== null) {
     lines.push(`  problem    ${summary.problem}`);
   }
+  if (!summary.cleanupConfirmed) {
+    lines.push(
+      '  cleanup    not confirmed: something this invocation started may still be running, so the ' +
+        'intake lock is left for inspection',
+    );
+  }
   return lines.join('\n');
 }
 
@@ -401,6 +407,11 @@ async function queueCommand(options: QueueCommandOptions, context: CliContext): 
         return EXIT_INPUT_ERROR;
       }
 
+      // Whether everything this invocation started was confirmed stopped. A
+      // stop that could not be confirmed leaves the lock for inspection rather
+      // than releasing it: something may still be writing to a working copy
+      // (docs/spec.md §6).
+      let cleanupConfirmed = true;
       try {
         const intake: SourceContext = {
           source: connector,
@@ -556,11 +567,12 @@ async function queueCommand(options: QueueCommandOptions, context: CliContext): 
           mode,
         );
 
+        cleanupConfirmed = summary.cleanupConfirmed;
         pane.close();
         activeIo.out(describeQueueSummary(summary, mode));
         return exitCodeForQueue(summary);
       } finally {
-        await releaseQueueLock(lock, activeIo);
+        await releaseQueueLock(lock, activeIo, cleanupConfirmed);
       }
     } finally {
       release();
@@ -591,12 +603,25 @@ async function acquireQueueLock(
   }
 }
 
-/** Releasing the queue's own lock, reported when it could not be released. */
+/**
+ * Releasing the queue's own lock, or leaving it for inspection. A cleanup that
+ * was not confirmed means something this invocation started may still be
+ * writing, so the lock is kept exactly as an unconfirmed stop keeps it in a
+ * `source` command.
+ */
 async function releaseQueueLock(
   lock: { readonly dir: string; readonly release: () => Promise<void> } | null,
   io: CliIo,
+  cleanupConfirmed: boolean,
 ): Promise<void> {
   if (lock === null) {
+    return;
+  }
+  if (!cleanupConfirmed) {
+    io.err(
+      `the intake lock "${lock.dir}" was left in place for inspection: the invocation could not ` +
+        'confirm that everything it started had stopped, so a working copy may still be written to',
+    );
     return;
   }
   try {
