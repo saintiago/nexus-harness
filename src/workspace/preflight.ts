@@ -103,7 +103,7 @@ async function readBaseCommit(
   return commit;
 }
 /** Refuses staged, unstaged, or non-ignored untracked work. Read-only. */
-async function assertCleanCheckout(
+export async function assertCleanCheckout(
   sourceRoot: string,
   requested: string,
   bounds: GitRunBounds,

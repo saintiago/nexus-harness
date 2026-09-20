@@ -284,7 +284,7 @@ export function createGitHubReviewClient(
   config: GitHubReviewConfig,
   privateKeyPem: string,
   parts: Partial<GitHubReviewParts> = {},
-): ReviewRepository {
+): ReviewRepository & { installationToken(stop: AbortSignal): Promise<string> } {
   const doFetch: typeof fetch =
     parts.fetch ?? ((input, init) => globalThis.fetch(input as string, init));
   const now = parts.now ?? ((): Date => new Date());
@@ -421,6 +421,9 @@ export function createGitHubReviewClient(
       mutation: true,
       body: {
         repositories: [repo],
+        // Keep renewal within the installed Lens permission set. Queue
+        // completion reads public workflow evidence with this same token;
+        // requesting ungranted Actions access makes token issuance fail.
         permissions: {
           pull_requests: 'write',
           checks: 'write',
@@ -480,6 +483,7 @@ export function createGitHubReviewClient(
   };
 
   return {
+    installationToken,
     async findOpenPullRequest(branch: string, stop: AbortSignal): Promise<OpenPullRequest | null> {
       const head = `${owner}:${branch}`;
       const answer = await api({

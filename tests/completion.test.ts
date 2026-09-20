@@ -399,6 +399,7 @@ async function createFixture(options: FixtureOptions = {}): Promise<Fixture> {
 function passFor(
   fixture: Fixture,
   parts: {
+    readonly reader?: (stop: AbortSignal) => Promise<string>;
     readonly fail?: string;
     readonly reviewsUnknown?: boolean;
     readonly clockStepMs?: number;
@@ -425,7 +426,7 @@ function passFor(
     NEXUS_LENS_TOKEN: REVIEWER_TOKEN,
   };
   const http = createHttpClient(SOURCE, JIRA_TOKEN, { fetch: fixture.jira.fetch });
-  const actions = createGitHubCompletion(fixture.config, REVIEWER_TOKEN, {
+  const actions = createGitHubCompletion(fixture.config, parts.reader ?? REVIEWER_TOKEN, {
     command: fixture.gh.command,
     env,
   });
@@ -482,6 +483,47 @@ function transitions(fixture: Fixture): readonly string[] {
 // ---------------------------------------------------------------------------
 
 describe('review-to-completion', () => {
+  it('refreshes the reader credential for later evidence reads without changing the operator identity', async () => {
+    const fixture = await createFixture({ merged: true });
+    let readings = 0;
+    const outcome = only(
+      await runPass(fixture, {
+        reader: async () => `installation-token-${String(++readings)}`,
+      }),
+    );
+    expect(outcome.status, outcome.detail).toBe('done');
+    const calls = await fakeCompletionCalls(fixture.gh);
+    expect(calls.length).toBeGreaterThan(3);
+    expect(calls.map((call) => call.credential)).toEqual(
+      calls.map((_, index) => `installation-token-${String(index + 1)}`),
+    );
+  });
+
+  it('stops before GitHub commands or Jira writes when reader refresh fails', async () => {
+    const fixture = await createFixture({ merged: true });
+    const outcome = only(
+      await runPass(fixture, {
+        reader: async () => {
+          throw new Error('App installation refresh denied');
+        },
+      }),
+    );
+    expect(outcome.status).toBe('attention');
+    expect(outcome.detail).toContain('App installation refresh denied');
+    expect(await fakeCompletionCalls(fixture.gh)).toEqual([]);
+    expect(commentTexts(fixture)).toEqual([]);
+    expect(transitions(fixture)).toEqual([]);
+  });
+
+  it('refuses a refreshed reader token that equals the operator credential', async () => {
+    const fixture = await createFixture({ merged: true });
+    const outcome = only(await runPass(fixture, { reader: async () => OPERATOR_TOKEN }));
+    expect(outcome.status).toBe('attention');
+    expect(outcome.detail).toContain('credentials must be different');
+    expect(await fakeCompletionCalls(fixture.gh)).toEqual([]);
+    expect(transitions(fixture)).toEqual([]);
+  });
+
   it('finishes an approved pull request after its merge and main workflow succeeded', async () => {
     const fixture = await createFixture({ merged: true, runs: [workflowRun()] });
 
@@ -526,6 +568,7 @@ describe('review-to-completion', () => {
     const outcome = only(
       await runPass(fixture, {
         clockStepMs: 1_000,
+        reader: async () => REVIEWER_TOKEN,
         onSleep: async () => {
           views += 1;
           if (views === 1) {
@@ -548,6 +591,11 @@ describe('review-to-completion', () => {
     const calls = await fakeCompletionCalls(fixture.gh);
     const merge = calls.find((call) => call.op === 'merge');
     expect(merge?.credential).toBe(OPERATOR_TOKEN);
+    expect(
+      calls
+        .filter((call) => call.op !== 'merge')
+        .every((call) => call.credential === REVIEWER_TOKEN),
+    ).toBe(true);
     expect(merge?.auto).toBe(true);
     expect(merge?.squash).toBe(true);
     expect(merge?.argv.join(' ')).toContain('enablePullRequestAutoMerge');

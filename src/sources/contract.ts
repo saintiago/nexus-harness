@@ -371,3 +371,50 @@ export interface SourceSummary {
   /** What the review-to-completion pass did after this batch; `null` when it is off. */
   readonly completion: CompletionRunSummary | null;
 }
+
+/**
+ * The one ticket a queue consumer step took: the external identity the serial
+ * queue loop follows it by, and the title it prints.
+ */
+export interface QueueTicket {
+  readonly ref: SourceRef;
+  readonly title: string;
+}
+
+/** How one taken ticket's coding attempt ended, as the queue loop reports it. */
+export interface SourceTakeRun {
+  readonly status: RunStatus;
+  readonly runId: string;
+  readonly reportPath: string;
+  readonly reason: string;
+  /**
+   * The pull request this attempt's work was delivered as; `null` when delivery
+   * is off, the attempt did not pass, or a passed attempt committed nothing to
+   * deliver.
+   */
+  readonly pullRequest: DeliveredPullRequest | null;
+}
+
+/**
+ * What one `queue` consumer step did: a fresh eligibility scan that takes at
+ * most one ticket and carries it through the coding attempt and its delivery.
+ *
+ * `taken` is the only outcome that names a ticket, and its run says how the
+ * attempt ended. `empty` means the scan found no ticket that could be taken at
+ * all. `attention` is everything a person has to decide — a refusal this step
+ * published, an item whose description is not a usable task, an attempt that
+ * failed or could not be confirmed stopped, a ledger that could not be written,
+ * or a delivery failure — and the serial queue loop stops on it instead of
+ * skipping the ticket for another one. `cancelled` is the caller's interrupt.
+ */
+export interface SourceTake {
+  readonly outcome: 'taken' | 'empty' | 'attention' | 'cancelled';
+  readonly ticket: QueueTicket | null;
+  readonly run: SourceTakeRun | null;
+  /** Tickets the scan skipped because they were no longer eligible. */
+  readonly skipped: number;
+  /** Why a person is needed, when the step stopped for one; `null` otherwise. */
+  readonly problem: string | null;
+  /** Whether everything this step started is confirmed stopped. */
+  readonly cleanupConfirmed: boolean;
+}

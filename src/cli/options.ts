@@ -50,6 +50,14 @@ export const REVIEW_SCAN_OPTIONS: ReadonlyMap<string, string> = new Map([
 export const REVIEW_WATCH_OPTIONS: ReadonlyMap<string, string> = new Map([
   ['--config', 'a path value'],
 ]);
+export const QUEUE_RUN_OPTIONS: ReadonlyMap<string, string> = new Map([
+  ['--repo', 'a path value'],
+  ['--config', 'a path value'],
+]);
+export const QUEUE_WATCH_OPTIONS: ReadonlyMap<string, string> = new Map([
+  ['--repo', 'a path value'],
+  ['--config', 'a path value'],
+]);
 export function parseOptions(
   args: readonly string[],
   allowed: ReadonlyMap<string, string>,

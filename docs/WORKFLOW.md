@@ -8,6 +8,8 @@ This is a human-readable reference, **not runtime configuration**. The applicati
 
 **Revision: 2026-09-19 — optional Nexus Lens reviews.** Add independent optional `review`, defined in §9, and the `review scan` and `review watch` commands it enables: with it, the tickets the configured Jira connection reports as being in review are reviewed through one explicitly configured reviewer profile, and each verdict is published as a native GitHub review plus one app-owned check run. Without it, nothing changes: no App credential is read, GitHub is never contacted, and no reviewer turn runs. [spec.md](spec.md) §9 defines the behavior and [architecture.md](architecture.md) §2 the module.
 
+**Revision: 2026-09-20 — the serial queue.** Add the `queue run` and `queue watch` commands, defined in §11. They compose the existing `source`, `delivery` (with `completion`), and `review` objects into one serial lifecycle per ticket and prepare the local checkout between tickets. They add no configuration field: without them every existing command behaves exactly as it did. [spec.md](spec.md) §11 defines the behavior and [architecture.md](architecture.md) §2 the module.
+
 **Completion exception:** the no-merge/no-Done defaults below are superseded only by the explicitly configured path in §10. The review commands themselves remain read/review-only.
 
 ## 1. Configuration
@@ -719,6 +721,81 @@ Every API read is bounded by the item deadline; an expired read has a separate t
 2. Put the **Nexus Lens reviewer's** own credential in the environment variable `reviewerTokenEnv` names. It must be a different credential from the operator's: the reviewer/reader token only reads GitHub evidence, and the operator's is what asks GitHub for auto-merge. Neither is written to the configuration, a report, or a log.
 3. Name at least one post-merge workflow that really runs for `push` on the base branch, for example `"ci.yml"` for this repository's own gate.
 4. `check-config` prints the effective `delivery` line before anything runs; the completion object is validated with it.
+
+## 11. Serial queue — `queue run` and `queue watch`
+
+The two queue commands are a foreground control loop over the paths above: they take one eligible
+ticket at a time, run it, deliver it, review it with Nexus Lens, complete it through GitHub's own
+merge and the configured post-merge workflows, prepare the checkout for the next workspace, and take
+one more ticket. [spec.md](spec.md) §11 defines the behavior; this section defines the commands and
+the configuration they need.
+
+```sh
+npm run dev -- queue run   --repo ../target-project --config harness.queue.config.json
+npm run dev -- queue watch --repo ../target-project --config harness.queue.config.json
+```
+
+| Option | Contract |
+| --- | --- |
+| `--config` | Required. The configuration file, resolved from the current directory. |
+| `--repo` | Required. The operator's own checkout of the delivery repository's base branch. The queue clones each workspace from it and fast-forwards it between tickets. |
+
+Nothing else is accepted: `--task` belongs to `run`, and `--limit` to `source run` and
+`review scan`, so a queue command refuses them as the unknown options they are for it. Both
+commands are opt-in; `check-config` validates the objects they need without approving any of them
+for use.
+
+### What the configuration must carry
+
+All three optional objects are required for these two commands, and each is validated by the loader
+exactly as its own command validates it:
+
+- `source`: the Jira queue. Its `readyStatus` is the queue the loop takes from, its `reviewStatus`
+  the status a finished attempt lands in, `runningStatus` the status a claim moves it to, and
+  `pollIntervalSeconds` the idle wait watch mode uses.
+- `review`: the Nexus Lens path. Its `repository`, `app` login and id, and `checkName` must agree
+  with `delivery.completion`, which the loader already enforces: the queue reviews the pull request
+  it delivered, with the reviewer whose check the completion gate requires.
+- `delivery` with `delivery.completion`: the destination repository and base branch, and the
+  completion settings of §10, including `toDoStatus` and `doneStatus`. The queue stops on a ticket
+  that reaches `doneStatus`, and repairs — in the same workspace — a ticket that returns to
+  `toDoStatus`. Without this object a queue command is refused rather than run: a ticket nothing can
+  complete is a ticket the loop would have to skip.
+
+A configuration with no `source`, no `review`, or a `delivery` without `completion` is refused with
+what is missing, before any credential is resolved.
+
+### Credentials
+
+The queue resolves the Jira token named by `source.tokenEnv` and the App key path named by
+`review.app.privateKeyPathEnv`. Its completion reader obtains a current installation token from
+the existing App client before each GitHub evidence read; that client refreshes tokens near expiry.
+Token requests retain the Lens permissions listed in §9, including during renewal; they do not
+request additional Actions access. The configured public repository's post-merge workflows are
+read with that token; inaccessible workflow evidence stops the queue for attention. Queue
+mode does not use a static token from `delivery.completion.reviewerTokenEnv`; that setting remains
+in the shared completion configuration, and standalone source commands still use it as §10 describes.
+The operator's Git/`gh` credential alone arms auto-merge. Coding turns, checks, and operator commands
+inherit neither the Jira token, App key path, nor the configured reviewer-token variable; reviewer
+turns also exclude operator GitHub tokens. No credential is written to reports or logs.
+
+Before claiming fresh work, the queue discovers authoritative In Progress and In Review work.
+Unresolved In Progress ownership or multiple In Review items stop it for attention. A single
+In Review item resumes its scoped review/completion phases; a merged PR must pass the existing
+admission and native GitHub checks. Retained To Do repairs take precedence over unrelated new
+work. A Done item is never rerun.
+
+### Exits
+
+| Exit | Meaning |
+| --- | --- |
+| `0` | `queue run` drained the queue: a fresh scan found no eligible ticket. |
+| `1` | The queue stopped for a person, or input, credential, or checkout validation failed. The reason names the ticket and what to fix. |
+| `2` | Usage error: unknown subcommand or option, or a missing `--config`/`--repo`. |
+| `130` | The user interrupted the wait or the active phase; cleanup finished and no next ticket was started. |
+
+`queue watch` never exits `0` on its own: while the queue is healthy and empty it stays one visible
+foreground process, printing an idle status and the wait before each fresh scan.
 
 ## External references
 

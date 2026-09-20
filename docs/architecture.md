@@ -8,6 +8,8 @@ One TypeScript CLI application, a few modules, and local files. No services, fra
 
 **Revision: 2026-09-19 — optional Nexus Lens reviews.** One optional, configured path reviews the pull requests of tickets the Jira connection reports as being in review, through an explicitly configured reviewer launch of the Codex adapter, and publishes a native GitHub review plus an app-owned check run as a GitHub App installation. It is its own small module, it is read-only on Jira and on any working copy, it keeps no registry or database, and it never merges. [spec.md](spec.md) §9 defines the behavior and [WORKFLOW.md](WORKFLOW.md) §9 the input.
 
+**Revision: 2026-09-20 — the serial queue.** Two opt-in commands compose the modules above — the Jira source, the retained-workspace runner, the delivery step, the Nexus Lens scan, and the completion pass — into one serial lifecycle per ticket, and add one small module for the source readiness between two workspaces. The loop starts no agent of its own, holds no state of its own, and adds no service, scheduler, or queue: [spec.md](spec.md) §11 defines the behavior and [WORKFLOW.md](WORKFLOW.md) §11 the commands.
+
 ## 1. Keep the existing application
 
 Retain the modules introduced by the completed tasks:
@@ -26,6 +28,7 @@ src/
   sources/jira/       # the Jira Cloud connector
   delivery/           # the optional GitHub step: push a passed attempt, manage its pull request
   reviews/            # the optional Nexus Lens review path: verdicts, GitHub App reviews and checks
+  queue/              # the serial control loop over the modules above, one ticket at a time
   agents/codex/       # Codex CLI invocation and normalized turn results
 ```
 
@@ -48,6 +51,7 @@ cli → runner → workspace
              → report
 cli → delivery (the optional GitHub step, used by a source command)
 cli → reviews (the optional Nexus Lens review path, with the read-only Jira queue)
+cli → queue (the serial loop: the intake step, the review scan, the completion pass, and source readiness, in order)
 ```
 
 Only `agents/codex/` talks to a coding runtime. Only `workspace/` handles Git/working-copy preparation. Only `process/` starts or stops a process, and `checks/round.ts` says what a configured command's result means. Report file writes belong in `reporting/`.
@@ -55,6 +59,8 @@ Only `agents/codex/` talks to a coding runtime. Only `workspace/` handles Git/wo
 `delivery/github.ts` is the one module that pushes a branch or drives `gh`. It starts every command through `process/`, refuses a working copy that still holds uncommitted work, treats GitHub as the record of whether a pull request exists, and never merges, force-pushes, or changes an issue's state. The CLI builds it from the configuration and hands it to the source coordinator; the runner never sees it, and a run without it behaves exactly as before.
 
 `reviews/` is the one module that reviews a ticket's pull request, and the only one that talks to GitHub as a GitHub App. `github.ts` owns the App JWT, the installation token, and the repository reads and writes; `reviewer.ts` owns the reviewer prompt, the one bounded Codex turn that answers it, and the verdict file it validates; `diff.ts` owns how a finding is positioned in the pull request's diff; `scan.ts` owns one scan or watch, the ticket's own intake receipt when this output directory holds one, and what it publishes; `contract.ts` is the ordinary data and failures they share. The CLI builds it from the configuration, the Jira connection, and the two credentials the configuration names. It never claims a Jira item, transitions one, or posts a comment, it never opens a working copy, and the runner never sees it.
+
+`queue/loop.ts` is the one module that decides the order of a serial queue invocation, and it decides nothing else. Its phases are ordinary functions the CLI composed from the modules above — `takeOneItem` in `sources/coordinator.ts` for one ticket through the coding attempt and the delivery step, `scanReviews` in `reviews/scan.ts` narrowed to that ticket, the completion pass in `sources/completion.ts` narrowed to that ticket, and `refreshSource` in `workspace/refresh.ts` for the checkout between two workspaces. It imports no connector, resolves no credential, starts no agent, keeps no state across invocations, and adds no configuration field: `src/cli/queue-command.ts` is where the credentials are resolved, the one intake lock is held for the whole invocation, and the exit code is decided.
 
 `config.ts` validates the optional `agent` object, supplies the legacy default when it is omitted, and applies the path rules in WORKFLOW. CLI composition passes the effective selection to the existing agent adapter. The runner does not interpret profiles, model IDs, credentials, CLI events, or provider APIs.
 
@@ -274,3 +280,12 @@ transition discovery. Completion never imports or starts a reviewer or coding ru
 The reader/reviewer token is separate from the trusted operator credential used only
 to arm auto-merge. See spec §10 and WORKFLOW §10 for this opt-in exception to the
 default no-merge/no-Done behavior.
+
+The serial queue adds no owner to that list: `queue/loop.ts` is sequencing only, and the
+review scan and the completion pass take an optional one-ticket scope so a queue never
+reviews, comments on, arms, or moves an item other than the ticket it is carrying.
+`workspace/refresh.ts` owns the one new operation — fetch the configured base branch and
+fast-forward the operator's own checkout to the verified merge commit, or refuse with what
+to fix — and it is the only place the queue touches the source checkout. One intake lock is
+held for a whole queue invocation, so the existing second-consumer rule is unchanged and
+stronger while a queue waits. See spec §11 and WORKFLOW §11.

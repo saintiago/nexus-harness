@@ -33,6 +33,7 @@ import { EXIT_INPUT_ERROR, EXIT_OK, EXIT_USAGE } from './cli/context.js';
 import type { CliContext, CliTerminal } from './cli/context.js';
 import { HELP, USAGE_HINT } from './cli/help.js';
 import { CHECK_CONFIG_OPTIONS, parseOptions, RUN_OPTIONS } from './cli/options.js';
+import { queueCli } from './cli/queue-command.js';
 import { reviewCli } from './cli/review-command.js';
 import { runCommand } from './cli/run-command.js';
 import { sourceCli } from './cli/source-command.js';
@@ -69,6 +70,10 @@ export async function runCli(
 
   if (command === 'review') {
     return reviewCli(argv.slice(1), context);
+  }
+
+  if (command === 'queue') {
+    return queueCli(argv.slice(1), context);
   }
 
   if (command !== 'check-config' && command !== 'run') {

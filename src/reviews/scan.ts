@@ -680,13 +680,21 @@ async function reviewWithTurn(
   return result;
 }
 
-/** A summary of one scan, mutable while the scan runs. */
-type MutableSummary = { -readonly [Key in keyof ReviewSummary]: ReviewSummary[Key] };
+/**
+ * A summary of one scan, mutable while the scan runs. The per-ticket results
+ * are collected in an ordinary array; the summary a caller receives keeps them
+ * read-only.
+ */
+type MutableSummary = Omit<
+  { -readonly [Key in keyof ReviewSummary]: ReviewSummary[Key] },
+  'items'
+> & { items: ReviewItemResult[] };
 
 /** An empty summary of one scan. */
 function emptySummary(outcome: ReviewSummary['outcome']): MutableSummary {
   return {
     outcome,
+    items: [],
     scanned: 0,
     reviewed: 0,
     approved: 0,
@@ -701,6 +709,7 @@ function emptySummary(outcome: ReviewSummary['outcome']): MutableSummary {
 
 /** Adds one candidate's result to the scan's running counts. */
 function countResult(summary: MutableSummary, result: ReviewItemResult): void {
+  summary.items.push(result);
   summary.scanned += 1;
   if (result.reviewerRun) {
     summary.reviewerRuns += 1;
@@ -759,7 +768,22 @@ export async function scanReviews(
     throw cause;
   }
 
-  for (const candidate of candidates) {
+  // A caller that named one ticket reviews exactly that ticket: the serial
+  // queue loop never starts a reviewer turn for a ticket other than the one it
+  // is carrying (docs/WORKFLOW.md §11). The ticket is matched by the immutable
+  // identity of a source reference, never by its mutable key.
+  const only = context.only;
+  const scoped =
+    only === undefined
+      ? candidates
+      : candidates.filter(
+          (candidate) =>
+            candidate.ref.type === only.type &&
+            candidate.ref.scope === only.scope &&
+            candidate.ref.id === only.id,
+        );
+
+  for (const candidate of scoped) {
     if (context.stop.aborted) {
       summary.outcome = 'cancelled';
       return summary;
@@ -835,7 +859,7 @@ export async function scanReviews(
  */
 export async function watchReviews(options: ReviewWatchOptions): Promise<ReviewSummary> {
   const MAX_BACKOFF_MS = 5 * 60_000;
-  let last = emptySummary('completed');
+  let last: ReviewSummary = emptySummary('completed');
   let backoffMs = options.pollIntervalMs;
   for (;;) {
     if (options.stop.aborted) {

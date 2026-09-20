@@ -11,6 +11,9 @@ Build and maintain a small, local-first coding harness. The documents in `docs/`
 - [implement-workspace-continuation.md](docs/implement-workspace-continuation.md): the contract for
   workspaces that outlive runs, the pointer label, and the escalation ladder. All three increments
   are implemented; the defects it lists under "Known gaps" are separate tasks.
+- [implement-queue-run.md](docs/implement-queue-run.md): the serial queue assignment — `queue run`
+  and `queue watch`, one ticket at a time through delivery, review and completion, and the
+  source-readiness step between two workspaces. Implemented; its live exercise has not been run.
 - [LONG_TERM_VISION.md](docs/LONG_TERM_VISION.md): the direction the harness is meant to grow into.
   It defines no behaviour: the spec stays authoritative, and every change to behaviour still needs a
   task.

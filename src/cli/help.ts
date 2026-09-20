@@ -13,9 +13,14 @@ Commands:
   review scan    Review the pull requests of tickets in the configured review status
                  once, and publish one native GitHub review per unreviewed head.
   review watch   Do that once, then keep scanning until stopped.
+  queue run      Finish eligible tickets one at a time through coding, delivery,
+                 review and completion, and exit when no eligible ticket remains.
+  queue watch    Do that, and when the queue is empty wait for the next eligible
+                 ticket instead of exiting. One foreground process; Ctrl+C stops it.
 
 Options:
-  --repo <path>     Source repository to task (run, source run, source watch).
+  --repo <path>     Source repository to task (run, source run, source watch,
+                    queue run, queue watch).
   --config <path>   Configuration file, resolved from the current directory.
   --task <path>     Task file (run; optional for check-config).
   --limit <count>   Most new source tasks one \`source run\` attempts, or most reviewer
@@ -31,6 +36,8 @@ Examples:
   npm run dev -- source watch --repo ../target-project --config harness.jira.config.json
   npm run dev -- review scan --config harness.jira.config.json
   npm run dev -- review watch --config harness.jira.config.json
+  npm run dev -- queue run --repo ../target-project --config harness.queue.config.json
+  npm run dev -- queue watch --repo ../target-project --config harness.queue.config.json
 
 Paths given on the command line resolve from the directory the command was invoked
 in, exactly as the shell would read them. \`workDir\` resolves from the configuration
@@ -79,6 +86,21 @@ alone; a new head is reviewed again. The verdict is published as one native GitH
 review (APPROVE or REQUEST_CHANGES) plus one app-owned check run named by
 \`review.checkName\`, successful only for an approval. Nothing merges, nothing marks
 an issue Done, and a ticket the scan cannot review is reported and left in review.
+
+queue run and queue watch are the opt-in serial queue commands. They need a
+\`source\` object, a \`review\` object, and a \`delivery\` object that carries
+\`delivery.completion\`, all naming the same repository, plus \`--repo\` pointing at
+the operator's own checkout of the base branch. They keep one current ticket and
+one active phase at a time: the coding attempt and its delivery, then the Nexus
+Lens review of that ticket's pull request, then the completion path that merges
+it once GitHub allows and verifies every configured post-merge workflow. A ticket
+the review or CI sends back to its To Do status is repaired in its preserved
+workspace before any other ticket is considered. queue run ends when no eligible
+ticket remains; queue watch waits visibly for the next one and starts no agent
+while it is idle. A ticket confirmed Done is followed by source readiness: the
+configured base branch, the expected delivery repository, and a clean checkout
+are required, and the checkout is only ever fast-forwarded to the verified merge
+commit. Anything a person has to decide exits nonzero with the evidence kept.
 
 Exit codes:
   0    the run passed
