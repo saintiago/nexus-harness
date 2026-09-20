@@ -43,6 +43,7 @@ import type {
   TerminationOutcome,
 } from '../src/shared/types.js';
 import { WorkspaceError } from '../src/workspace/errors.js';
+import { returnToRecordedBranch } from '../src/workspace/branch.js';
 import { configureWorkspaceIdentity } from '../src/workspace/git.js';
 import { prepareWorkspace } from '../src/workspace/prepare.js';
 import type { PreparedWorkspace } from '../src/workspace/prepare.js';
@@ -387,6 +388,7 @@ function dependencies(
     allocateRunDirectory,
     prepareWorkspace,
     configureWorkspaceIdentity,
+    returnToRecordedBranch,
     recordWorkspaceAttempt,
     runCheckRound,
     openAgentLog,
@@ -419,6 +421,14 @@ interface FakeTurn {
     readonly text: string;
     readonly message: string;
   }[];
+  /**
+   * A message the turn commits its whole working copy with, once its own process
+   * has finished: everything it changed is staged and committed, the way a real
+   * turn finishes the work it wants the next turn to build on. A turn is followed
+   * by another coding turn only from committed state (HARN-35), so a plan whose
+   * turn the run repairs names this.
+   */
+  readonly commit?: string;
   /** Text it writes to its agent log before its process starts. */
   readonly logText?: string;
   /** How long its process stays alive while it works, in milliseconds. */
@@ -512,7 +522,12 @@ function fakeAgent(
           throw new Error(`the coding turn's own process exited ${String(result.code)}`);
         }
         if (plan.failWith !== undefined) {
+          // A turn that did not finish does not commit its work: what it left is
+          // exactly what the run keeps for it.
           throw new Error(plan.failWith);
+        }
+        if (plan.commit !== undefined) {
+          await commitEverything(agentRequest.workspacePath, plan.commit);
         }
         return { summary: plan.summary ?? `the implementation turn edited ${file}` };
       } finally {
@@ -529,6 +544,40 @@ interface RecordedEvent {
   readonly agentActive?: boolean;
   /** Whether a command decided it passed. */
   readonly passed?: boolean;
+}
+
+/**
+ * Commits everything a stand-in turn left in `workspacePath`, under the identity
+ * the run configured there: the state a turn the run goes on to repair has to
+ * look like (HARN-35). A turn whose working copy already matches what is
+ * committed has nothing to add, and that is not a failure: the state it was asked
+ * for already holds.
+ */
+async function commitEverything(workspacePath: string, message: string): Promise<void> {
+  const staged = await runProcess('git', ['add', '--all'], {
+    cwd: workspacePath,
+    env: workspaceCommitEnvironment(),
+  });
+  if (staged.code !== 0) {
+    throw new Error(`the turn could not stage its work: ${staged.stderr.trim()}`);
+  }
+  const changed = await runProcess('git', ['diff', '--cached', '--quiet'], {
+    cwd: workspacePath,
+    env: workspaceCommitEnvironment(),
+  });
+  if (changed.code === 0) {
+    return;
+  }
+  if (changed.code !== 1) {
+    throw new Error(`the turn could not read its staged work: ${changed.stderr.trim()}`);
+  }
+  const committed = await runProcess('git', ['commit', '--quiet', '--message', message], {
+    cwd: workspacePath,
+    env: workspaceCommitEnvironment(),
+  });
+  if (committed.code !== 0) {
+    throw new Error(`the turn could not commit its work: ${committed.stderr.trim()}`);
+  }
 }
 
 /** Every record the fixture processes wrote, in the order they wrote them. */
@@ -735,6 +784,7 @@ describe('a run that continues a workspace', () => {
     const firstAgent = fakeAgent(fixture, {
       file: 'first-only.txt',
       text: 'from the first attempt\n',
+      commit: 'tiny-001: a file only this clone has',
     });
     const first = await runTask(
       { ...request(fixture, configuration(fixture)), sourceRef: SOURCE_REF },
@@ -900,9 +950,11 @@ describe('a working copy a coding turn commits in', () => {
 
   it('configures the identity for a continuation that did not go through reopenWorkspace', async () => {
     const fixture = await createFixture();
+    // The first attempt commits its own work: a coding turn is only ever started
+    // from the workspace's own committed state (HARN-35).
     const first = await runTask(
       request(fixture, configuration(fixture)),
-      dependencies(fakeAgent(fixture).turn),
+      dependencies(fakeAgent(fixture, { commit: 'tiny-001: the implementation' }).turn),
     );
     const workspace = first.workspace;
     expect(workspace).not.toBeNull();
@@ -1110,6 +1162,391 @@ describe('a working copy a coding turn commits in', () => {
   }, 60_000);
 });
 
+/**
+ * A coding turn works with Git write access, so it can commit on a branch of its
+ * own and leave the checkout there. What the checks judge, and what a delivery
+ * step publishes, is the branch the workspace records: a clean checkout that
+ * descends from it is returned to it — fast-forwarded, with every commit kept —
+ * before the round reads the working copy, and a checkout that cannot be
+ * returned that way ends the run before any check (HARN-35).
+ */
+describe('a working copy a turn leaves on a branch of its own', () => {
+  /** The branch a checkout is on, or `''` when it is on no branch. */
+  async function branchOf(workspacePath: string): Promise<string> {
+    return (await gitOrFail(['symbolic-ref', '--quiet', '--short', 'HEAD'], workspacePath)).trim();
+  }
+
+  /** The commit a ref points at in the fixture's own Git environment. */
+  async function commitOf(workspacePath: string, ref: string): Promise<string> {
+    return (await gitOrFail(['rev-parse', '--verify', ref], workspacePath)).trim();
+  }
+
+  it('returns a repair turn to the recorded branch, keeping the earlier commit', async () => {
+    const fixture = await createFixture([{ file: 'target.txt', text: IMPLEMENTED_TEXT }]);
+    const starts: string[] = [];
+    const agent: RunnerDependencies['runAgentTurn'] = async (request) => {
+      starts.push(await branchOf(request.workspacePath));
+      if (request.turn === 1) {
+        // The implementation turn breaks what the check verifies, commits that
+        // on a branch of its own, and leaves the checkout there: the workspace's
+        // recorded branch still points at the base, and the round after this
+        // turn is red against the commit the branch takes from it.
+        await gitOrFail(['checkout', '--quiet', '-b', 'task/side'], request.workspacePath);
+        await writeFile(
+          path.join(request.workspacePath, 'target.txt'),
+          'broken by the implementation turn\n',
+          'utf8',
+        );
+        await gitOrFail(['add', 'target.txt'], request.workspacePath);
+        await gitOrFail(
+          ['commit', '--quiet', '--message', 'the first turn'],
+          request.workspacePath,
+        );
+      } else {
+        // The repair turn works where the harness asked it to: the branch the
+        // workspace records, which the commit above must already be on.
+        await writeFile(path.join(request.workspacePath, 'target.txt'), IMPLEMENTED_TEXT, {
+          flag: 'a',
+        });
+      }
+      return { summary: `turn ${String(request.turn)}` };
+    };
+
+    const result = await runTask(
+      request(
+        fixture,
+        configuration(fixture, {
+          checks: [command(fixture, 'check-1', 'need', 'target.txt', IMPLEMENTED_TEXT)],
+        }),
+      ),
+      dependencies(agent),
+    );
+
+    expect(result.status).toBe('passed');
+    expect(starts).toHaveLength(2);
+    // Every turn started on the branch the workspace records — the repair turn
+    // after the implementation turn left a branch of its own.
+    const workspacePath = result.workspace?.workspacePath ?? '';
+    expect(starts[0]).toBe(result.workspace?.branch);
+    expect(starts[1]).toBe(result.workspace?.branch);
+    expect(await branchOf(workspacePath)).toBe(result.workspace?.branch);
+
+    // The commit of the branch the first turn used is on the recorded branch,
+    // and the branch itself still holds it: nothing was reset or discarded.
+    const side = await commitOf(workspacePath, 'refs/heads/task/side');
+    expect(await commitOf(workspacePath, `refs/heads/${result.workspace?.branch ?? ''}`)).toBe(
+      side,
+    );
+    expect(await commitOf(workspacePath, 'HEAD')).toBe(side);
+    expect((await git(['merge-base', '--is-ancestor', side, 'HEAD'], workspacePath)).code).toBe(0);
+    // The repair turn's work is there too: the recorded branch holds the commit
+    // the implementation turn made, and the repair turn added to it.
+    expect(await readText(path.join(workspacePath, 'target.txt'))).toBe(
+      `broken by the implementation turn\n${IMPLEMENTED_TEXT}`,
+    );
+
+    // What the rounds saw: the first was red, and the round that decided the run
+    // passed on the recorded branch after the repair turn.
+    const report = await readReport(result.reportPath);
+    expect(report.attempts.map((entry) => entry.checks?.outcome)).toEqual(['failed', 'passed']);
+    expect(report.changes.paths.map((entry) => entry.path)).toEqual(['target.txt']);
+    const timeline = await readText(report.runLog);
+    expect(timeline).toContain(
+      `checkout returned to branch ${result.workspace?.branch ?? ''} at ${side}, from task/side`,
+    );
+  }, 120_000);
+
+  it('fast-forwards before the repair turn even when Git configuration would squash the merge', async () => {
+    const fixture = await createFixture([{ file: 'target.txt', text: IMPLEMENTED_TEXT }]);
+    const starts: string[] = [];
+    const agent: RunnerDependencies['runAgentTurn'] = async (request) => {
+      starts.push(await branchOf(request.workspacePath));
+      if (request.turn === 1) {
+        // Git reads `branch.<name>.mergeOptions` when merging into that branch,
+        // and `--ff-only` does not cancel a configured `--squash`: a return that
+        // trusted the exit code would stage this commit without moving the
+        // recorded branch, and the repair turn would then be refused a staged
+        // working copy instead of starting on the commit the checks saw.
+        const recorded = await branchOf(request.workspacePath);
+        await gitOrFail(
+          ['config', `branch.${recorded}.mergeOptions`, '--squash'],
+          request.workspacePath,
+        );
+        await gitOrFail(['checkout', '--quiet', '-b', 'task/side'], request.workspacePath);
+        await writeFile(
+          path.join(request.workspacePath, 'target.txt'),
+          'broken by the implementation turn\n',
+          'utf8',
+        );
+        await gitOrFail(['add', 'target.txt'], request.workspacePath);
+        await gitOrFail(
+          ['commit', '--quiet', '--message', 'the first turn'],
+          request.workspacePath,
+        );
+      } else {
+        await writeFile(path.join(request.workspacePath, 'target.txt'), IMPLEMENTED_TEXT, {
+          flag: 'a',
+        });
+      }
+      return { summary: `turn ${String(request.turn)}` };
+    };
+
+    const result = await runTask(
+      request(
+        fixture,
+        configuration(fixture, {
+          checks: [command(fixture, 'check-1', 'need', 'target.txt', IMPLEMENTED_TEXT)],
+        }),
+      ),
+      dependencies(agent),
+    );
+
+    expect(result.status).toBe('passed');
+    expect(starts).toEqual([result.workspace?.branch, result.workspace?.branch]);
+    // The repair turn really worked on the commit the implementation turn made:
+    // the recorded branch took it, the checkout is on it and clean, and the
+    // repair turn's work is committed there.
+    const workspacePath = result.workspace?.workspacePath ?? '';
+    const side = await commitOf(workspacePath, 'refs/heads/task/side');
+    expect(await branchOf(workspacePath)).toBe(result.workspace?.branch);
+    expect(await commitOf(workspacePath, `refs/heads/${result.workspace?.branch ?? ''}`)).toBe(
+      side,
+    );
+    expect(await commitOf(workspacePath, 'HEAD')).toBe(side);
+    expect(
+      (
+        await git(
+          ['merge-base', '--is-ancestor', result.workspace?.baseCommit ?? '', side],
+          workspacePath,
+        )
+      ).code,
+    ).toBe(0);
+    expect(await readText(path.join(workspacePath, 'target.txt'))).toBe(
+      `broken by the implementation turn\n${IMPLEMENTED_TEXT}`,
+    );
+
+    const report = await readReport(result.reportPath);
+    expect(report.attempts.map((entry) => entry.checks?.outcome)).toEqual(['failed', 'passed']);
+    const timeline = await readText(report.runLog);
+    expect(timeline).toContain(
+      `checkout returned to branch ${result.workspace?.branch ?? ''} at ${side}, from task/side`,
+    );
+  }, 120_000);
+
+  it('stops before the checks when the checkout cannot be returned, keeping its work', async () => {
+    const fixture = await createFixture();
+    const starts: string[] = [];
+    const agent: RunnerDependencies['runAgentTurn'] = async (request) => {
+      starts.push(await branchOf(request.workspacePath));
+      await gitOrFail(['checkout', '--quiet', '-b', 'task/side'], request.workspacePath);
+      await writeFile(path.join(request.workspacePath, 'side.txt'), 'the commit\n', 'utf8');
+      await gitOrFail(['add', 'side.txt'], request.workspacePath);
+      await gitOrFail(['commit', '--quiet', '--message', 'the commit'], request.workspacePath);
+      // And the turn also leaves something it never committed, so checking the
+      // recorded branch out would mean switching a dirty checkout.
+      await writeFile(path.join(request.workspacePath, 'leftover.txt'), 'uncommitted\n', 'utf8');
+      return { summary: 'left a dirty branch of its own' };
+    };
+
+    const result = await runTask(request(fixture, configuration(fixture)), dependencies(agent));
+
+    expect(result.status).toBe('failed');
+    expect(starts).toHaveLength(1);
+    expect(result.reason).toMatch(/could not be returned to the branch this workspace records/);
+    expect(result.reason).toContain('task/side');
+    expect(result.reason).toContain(`"${result.workspace?.branch ?? ''}"`);
+    expect(result.reason).toContain('leftover.txt');
+    expect(result.reason).toMatch(/Commit or remove those paths by hand/);
+
+    // The turn ran and is kept, with no check round observed after it: the
+    // fixture processes only ever ran the baseline.
+    const report = await readReport(result.reportPath);
+    expect(report.attempts).toHaveLength(1);
+    expect(report.attempts[0]?.kind).toBe('implementation');
+    expect(report.attempts[0]?.checks).toBeNull();
+    expect(eventOrder(await recordedEvents(fixture))).toEqual([
+      'start setup-1',
+      'end setup-1',
+      'start check-1',
+      'end check-1',
+    ]);
+
+    // Nothing was switched, reset, or discarded: the commit, the leftover, and
+    // the recorded branch are all where the turn left them.
+    const workspacePath = result.workspace?.workspacePath ?? '';
+    expect(await branchOf(workspacePath)).toBe('task/side');
+    expect(await readText(path.join(workspacePath, 'leftover.txt'))).toBe('uncommitted\n');
+    expect(await commitOf(workspacePath, `refs/heads/${result.workspace?.branch ?? ''}`)).toBe(
+      result.workspace?.baseCommit,
+    );
+  }, 120_000);
+
+  it('stops when the checkout and the recorded branch diverged, naming both revisions', async () => {
+    const fixture = await createFixture();
+    const starts: string[] = [];
+    let side = '';
+    let recorded = '';
+    const agent: RunnerDependencies['runAgentTurn'] = async (request) => {
+      starts.push(await branchOf(request.workspacePath));
+      // The turn moves the recorded branch on, then commits on a branch of its
+      // own started from the base, so neither side descends from the other.
+      await writeFile(path.join(request.workspacePath, 'recorded.txt'), 'later work\n', 'utf8');
+      await gitOrFail(['add', 'recorded.txt'], request.workspacePath);
+      await gitOrFail(['commit', '--quiet', '--message', 'later work'], request.workspacePath);
+      recorded = await commitOf(request.workspacePath, 'HEAD');
+      await gitOrFail(
+        ['checkout', '--quiet', '-b', 'task/side', request.baseCommit],
+        request.workspacePath,
+      );
+      await writeFile(path.join(request.workspacePath, 'side.txt'), 'side work\n', 'utf8');
+      await gitOrFail(['add', 'side.txt'], request.workspacePath);
+      await gitOrFail(['commit', '--quiet', '--message', 'side work'], request.workspacePath);
+      side = await commitOf(request.workspacePath, 'HEAD');
+      return { summary: 'diverged from the recorded branch' };
+    };
+
+    const result = await runTask(request(fixture, configuration(fixture)), dependencies(agent));
+
+    expect(result.status).toBe('failed');
+    expect(starts).toHaveLength(1);
+    expect(result.reason).toMatch(/could not be returned to the branch this workspace records/);
+    expect(result.reason).toContain('task/side');
+    expect(result.reason).toContain('not an ancestor');
+    expect(result.reason).toContain(side);
+    expect(result.reason).toContain(recorded);
+    expect(result.reason).toMatch(/reconcile the two by hand/);
+
+    // No check ran after the turn, and both branches are exactly where the turn
+    // left them: nothing was reset or force-updated.
+    const report = await readReport(result.reportPath);
+    expect(report.attempts).toHaveLength(1);
+    expect(report.attempts[0]?.checks).toBeNull();
+    const workspacePath = result.workspace?.workspacePath ?? '';
+    expect(await branchOf(workspacePath)).toBe('task/side');
+    expect(await commitOf(workspacePath, 'refs/heads/task/side')).toBe(side);
+    expect(await commitOf(workspacePath, `refs/heads/${result.workspace?.branch ?? ''}`)).toBe(
+      recorded,
+    );
+    expect(eventOrder(await recordedEvents(fixture))).toEqual([
+      'start setup-1',
+      'end setup-1',
+      'start check-1',
+      'end check-1',
+    ]);
+  });
+
+  it('stops before the checks when the return would write over an ignored local file', async () => {
+    const fixture = await createFixture([
+      { file: 'settings.json', text: 'the committed settings\n' },
+    ]);
+    const starts: string[] = [];
+    const agent: RunnerDependencies['runAgentTurn'] = async (request) => {
+      starts.push(await branchOf(request.workspacePath));
+      // The turn stops tracking the settings file, ignores it, and regenerates a
+      // copy locally: the recorded branch still tracks it, so returning the
+      // checkout to that branch would write the committed copy over the local
+      // one and the fast-forward would then delete it. The harness refuses
+      // instead of destroying it, before any check reads the working copy.
+      await gitOrFail(['checkout', '--quiet', '-b', 'task/side'], request.workspacePath);
+      await gitOrFail(['rm', '--quiet', '--cached', 'settings.json'], request.workspacePath);
+      await writeFile(path.join(request.workspacePath, '.gitignore'), 'settings.json\n', 'utf8');
+      await gitOrFail(['add', '.gitignore'], request.workspacePath);
+      await gitOrFail(
+        ['commit', '--quiet', '--message', 'stop tracking the settings'],
+        request.workspacePath,
+      );
+      await writeFile(
+        path.join(request.workspacePath, 'settings.json'),
+        'regenerated locally\n',
+        'utf8',
+      );
+      return { summary: 'left an ignored local file under a path the recorded branch tracks' };
+    };
+
+    const result = await runTask(request(fixture, configuration(fixture)), dependencies(agent));
+
+    expect(result.status).toBe('failed');
+    // The turn started on the branch the workspace records, and no further one
+    // was started from the state the return refused to move.
+    expect(starts).toEqual([result.workspace?.branch]);
+    expect(result.reason).toMatch(/could not be returned to the branch this workspace records/);
+    expect(result.reason).toContain('task/side');
+    expect(result.reason).toContain(`"${result.workspace?.branch ?? ''}"`);
+    expect(result.reason).toContain('settings.json');
+    expect(result.reason).toMatch(/nothing local was written over/);
+
+    // No check ran after the turn: the fixture processes only ever ran the
+    // baseline, and the turn's own record is kept without a round.
+    const report = await readReport(result.reportPath);
+    expect(report.attempts).toHaveLength(1);
+    expect(report.attempts[0]?.checks).toBeNull();
+    expect(eventOrder(await recordedEvents(fixture))).toEqual([
+      'start setup-1',
+      'end setup-1',
+      'start check-1',
+      'end check-1',
+    ]);
+
+    // The local file's bytes are still there, and neither branch moved.
+    const workspacePath = result.workspace?.workspacePath ?? '';
+    expect(await branchOf(workspacePath)).toBe('task/side');
+    expect(await readText(path.join(workspacePath, 'settings.json'))).toBe('regenerated locally\n');
+    expect(await commitOf(workspacePath, `refs/heads/${result.workspace?.branch ?? ''}`)).toBe(
+      result.workspace?.baseCommit,
+    );
+  }, 120_000);
+
+  it('stops before the repair turn when the working copy still holds uncommitted work', async () => {
+    const fixture = await createFixture();
+    // The implementation turn breaks what the check verifies and leaves its work
+    // uncommitted, so the round after it is red and the run would repair. It
+    // stops there instead: a repair turn is a coding turn, and no coding turn is
+    // started from a working copy that still holds uncommitted work (HARN-35).
+    const agent = fakeAgent(fixture, {
+      mode: 'replace',
+      text: 'broken, and never committed\n',
+      holdMs: 0,
+    });
+
+    const result = await runTask(
+      request(fixture, configuration(fixture)),
+      dependencies(agent.turn),
+    );
+
+    expect(result.status).toBe('failed');
+    expect(result.reason).toMatch(/the working copy is not in the state a coding turn starts from/);
+    expect(result.reason).toContain(`("${result.workspace?.branch ?? ''}")`);
+    expect(result.reason).toContain('with no uncommitted work');
+    expect(result.reason).toContain('app.txt');
+    expect(result.reason).toMatch(/Commit or remove those paths by hand/);
+
+    // Only the implementation turn ran: the repair turn the red round earned was
+    // never started, and no round ran after the refusal.
+    expect(agent.requests.map((asked) => asked.kind)).toEqual(['implementation']);
+    const report = await readReport(result.reportPath);
+    expect(report.status).toBe('failed');
+    expect(report.repairsUsed).toBe(0);
+    expect(report.attempts).toHaveLength(1);
+    expect(report.attempts[0]?.kind).toBe('implementation');
+    expect(report.attempts[0]?.checks?.outcome).toBe('failed');
+
+    // What the turn left is kept exactly as it was — nothing was committed,
+    // stashed, or discarded, and the checkout never moved — so finishing it by
+    // hand is what the message asks for.
+    const workspacePath = result.workspace?.workspacePath ?? '';
+    expect(await branchOf(workspacePath)).toBe(result.workspace?.branch);
+    expect(await readText(path.join(workspacePath, 'app.txt'))).toContain(
+      'broken, and never committed',
+    );
+    expect(
+      eventOrder(await recordedEvents(fixture)).filter((event) => event === 'start check-1'),
+    ).toHaveLength(2);
+    expect(timelineMessages(await readText(report.runLog)).at(-1)).toMatch(
+      /^final status: failed, the working copy is not in the state a coding turn starts from/,
+    );
+  }, 60_000);
+});
+
 describe('a continued run whose source checkout moved on', () => {
   it('keeps the recorded base for comparisons, with commits and leftovers both visible', async () => {
     const fixture = await createFixture();
@@ -1121,6 +1558,9 @@ describe('a continued run whose source checkout moved on', () => {
           message: 'tiny-001: attempt one checkpoint',
         },
       ],
+      // Everything the attempt left is committed, because the next run is only
+      // started from the workspace's own committed state (HARN-35).
+      commit: 'tiny-001: attempt one finishes what it wrote',
     });
     const first = await runTask(
       { ...request(fixture, configuration(fixture)), sourceRef: SOURCE_REF },
@@ -1166,10 +1606,11 @@ describe('a continued run whose source checkout moved on', () => {
     expect(report.source.baseCommit).toBe(workspace.baseCommit);
     expect(report.changes.baseCommit).toBe(workspace.baseCommit);
     // The whole diff against that base: an earlier attempt's commit and a dirty
-    // leftover are both visible.
+    // leftover are both visible — a path the earlier attempt committed and this
+    // attempt added to again holds both states.
     const states = new Map(report.changes.paths.map((entry) => [entry.path, entry.states]));
     expect(states.get('committed.txt')).toEqual(['committed']);
-    expect(states.get('app.txt')).toEqual(['unstaged']);
+    expect(states.get('app.txt')).toEqual(['committed', 'unstaged']);
   }, 120_000);
 });
 
@@ -1494,6 +1935,9 @@ describe('the bounded repair loop', () => {
       {
         mode: 'replace',
         text: 'broken by the implementation turn\n',
+        // The turn commits what it leaves: the run goes on to repair it, and a
+        // repair turn only follows a committed working copy (HARN-35).
+        commit: 'tiny-001: the implementation, as it stands',
         holdMs: 0,
         summary: 'done — every test passes',
       },
@@ -1608,8 +2052,14 @@ describe('the bounded repair loop', () => {
   it('spends at most maxRepairs additional turns and reports the exhausted allowance', async () => {
     const fixture = await createFixture();
     // Every turn breaks what the check verifies, so every round is red and the
-    // allowance is what ends the run.
-    const agent = fakeAgent(fixture, { mode: 'replace', text: 'still broken\n', holdMs: 0 });
+    // allowance is what ends the run. Every turn also commits what it leaves, so
+    // the repair turn that follows each one starts from committed state (HARN-35).
+    const agent = fakeAgent(fixture, {
+      mode: 'replace',
+      text: 'still broken\n',
+      commit: 'tiny-001: still broken, but committed',
+      holdMs: 0,
+    });
 
     const result = await runTask(
       request(fixture, configuration(fixture)),
@@ -1696,7 +2146,12 @@ describe('the bounded repair loop', () => {
     const fixture = await createFixture();
     const agent = fakeAgent(
       fixture,
-      { mode: 'replace', text: 'broken by the implementation turn\n', holdMs: 0 },
+      {
+        mode: 'replace',
+        text: 'broken by the implementation turn\n',
+        commit: 'tiny-001: the broken implementation',
+        holdMs: 0,
+      },
       {
         2: {
           failWith: 'the coding runtime exited unexpectedly',
@@ -1772,7 +2227,12 @@ describe('the bounded repair loop', () => {
     // repair closes the gate, so the round after it cannot run at all.
     const agent = fakeAgent(
       fixture,
-      { mode: 'replace', text: 'broken by the implementation turn\n', holdMs: 0 },
+      {
+        mode: 'replace',
+        text: 'broken by the implementation turn\n',
+        commit: 'tiny-001: the implementation before the repair',
+        holdMs: 0,
+      },
       {
         2: {
           mode: 'replace',
@@ -3095,6 +3555,53 @@ describe('a run the caller stops', () => {
     await new Promise((resolve) => setTimeout(resolve, 700));
     expect(turns.requests[0]?.stop.aborted).toBe(false);
   }, 60_000);
+
+  it('gives a turn only the task time the checkout before it left', async () => {
+    const fixture = await createFixture();
+    const clock = testClock();
+    const config = configuration(fixture, { taskTimeoutMinutes: 1 });
+    const rounds = standInRounds(() => passedRound());
+    let waitedMs: number | null = null;
+    const turns = standInTurns(async (asked) => {
+      // The turn waits for the stop the run armed for it, so what it was given
+      // is measured rather than inferred: the return below spends all but 300 ms
+      // of the run's minute, so the stop has to arrive in a moment.
+      const startedAt = Date.now();
+      await awaitStop(asked);
+      waitedMs = Date.now() - startedAt;
+      return { summary: "the turn was stopped by the run's own deadline" };
+    });
+
+    const result = await runTask(
+      request(fixture, config),
+      dependencies(turns.run, {
+        now: clock.now,
+        runCheckRound: rounds.run,
+        returnToRecordedBranch: async () => {
+          // Returning the checkout is real Git work the run spends its own time
+          // on: a turn is given what is left after it, not the budget the run
+          // had before it started.
+          clock.advance(minutes(1) - 300);
+          return { changed: false };
+        },
+      }),
+    );
+
+    // The turn's stop was the run's deadline, and it reached the turn in the
+    // 300 ms that were left rather than in the minute it was never given.
+    expect(result.status).toBe('failed');
+    expect(result.timeout).toMatchObject({ limit: 'task', phase: 'implementation turn' });
+    expect(result.reason).toMatch(
+      /the implementation turn was stopped when the run's remaining task time ran out/,
+    );
+    expect(waitedMs).not.toBeNull();
+    // The budget that was left is 300 ms; the bound is generous because the
+    // point is that it is not the minute the run had before the return.
+    expect(waitedMs ?? Number.POSITIVE_INFINITY).toBeLessThan(10_000);
+    // Nothing followed the stopped turn: the round that judges it never ran.
+    expect(rounds.requests.map((round) => round.name)).toEqual(['baseline']);
+    expect(turns.requests).toHaveLength(1);
+  }, 60_000);
 });
 
 describe('the collaborators a run is given', () => {
@@ -3142,6 +3649,7 @@ describe('the collaborators a run is given', () => {
     const preflights: PreflightRequest[] = [];
     const allocations: string[] = [];
     const identities: string[] = [];
+    const returned: string[] = [];
     const rounds: CheckRoundRequest[] = [];
     const turns: AgentTurnRequest[] = [];
     const reports: RunReportRequest[] = [];
@@ -3161,6 +3669,10 @@ describe('the collaborators a run is given', () => {
         prepareWorkspace: async () => workspace,
         configureWorkspaceIdentity: async (workspacePath) => {
           identities.push(workspacePath);
+        },
+        returnToRecordedBranch: async (workspacePath, branch) => {
+          returned.push(`${workspacePath} ${branch}`);
+          return { changed: false };
         },
         recordWorkspaceAttempt: async () => undefined,
         runCheckRound: async (asked) => {
@@ -3200,6 +3712,12 @@ describe('the collaborators a run is given', () => {
     expect(allocations).toEqual([workDir]);
     // The working copy was given its commit identity before the baseline ran.
     expect(identities).toEqual([workspace.workspacePath]);
+    // Every turn and every round that judges one is preceded by returning the
+    // checkout to the branch the workspace records (HARN-35).
+    expect(returned).toEqual([
+      `${workspace.workspacePath} ${workspace.branch}`,
+      `${workspace.workspacePath} ${workspace.branch}`,
+    ]);
 
     // Both rounds got the loaded plan itself, in the working copy, with their
     // own log names.
@@ -3355,11 +3873,15 @@ describe('what a run records about the working copy it left', () => {
     const result = await runTask(
       request(fixture, configuration(fixture)),
       dependencies(agent.turn, {
-        // The working copy loses its repository before the run's final reading:
-        // the comparison cannot be made, and the run records that as a
-        // diagnostic rather than waiting for an answer or claiming no changes.
+        // The working copy loses its repository once the round that decides the
+        // run has passed: the comparison cannot be made, and the run records
+        // that as a diagnostic rather than waiting for an answer or claiming no
+        // changes. (The checkout is returned to its recorded branch before that
+        // round, so the run reaches it and is decided by its checks.)
         runCheckRound: async (asked) => {
-          await rm(path.join(asked.cwd, '.git'), { recursive: true, force: true });
+          if (asked.name !== 'baseline') {
+            await rm(path.join(asked.cwd, '.git'), { recursive: true, force: true });
+          }
           return { outcome: 'passed', setup: [], checks: [], problem: null };
         },
       }),

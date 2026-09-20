@@ -1484,6 +1484,7 @@ describe('Git cleanup at intake boundaries', () => {
               allocateRunDirectory: unexpected,
               prepareWorkspace: unexpected,
               configureWorkspaceIdentity: unexpected,
+              returnToRecordedBranch: unexpected,
               runCheckRound: unexpected,
               runAgentTurn: unexpected,
               openAgentLog: unexpected,
@@ -3224,6 +3225,13 @@ async function createTarget(
   const directory = await createTempDir();
   const repo = path.join(directory, 'target-project');
   await mkdir(repo, { recursive: true });
+  // The target project's bytes are what this fixture writes, on any host: the
+  // harness's own Git invocations inherit this machine's system configuration,
+  // which rewrites line endings at checkout, while the fixture's do not, so
+  // without this a committed file would read as modified after a checkout the
+  // harness made (tests/runner.test.ts commits the same file for the same
+  // reason).
+  await writeFile(path.join(repo, '.gitattributes'), '* -text\n', 'utf8');
   await writeFile(path.join(repo, 'README.md'), '# target\n', 'utf8');
   if (options.markerCheck === true) {
     await mkdir(path.join(repo, 'tools'), { recursive: true });
@@ -3672,10 +3680,20 @@ describe('the source commands through the CLI', () => {
     process.env.JIRA_API_TOKEN = 'test-token';
 
     try {
+      let turns = 0;
       const dependencies: CliContext['dependencies'] = {
         runAgentTurn: async (request) => {
-          await writeFile(path.join(request.workspacePath, 'MARKER.md'), 'done\n', 'utf8');
-          return { summary: 'wrote the marker' };
+          turns += 1;
+          const file = turns === 1 ? 'MARKER.md' : 'SECOND.md';
+          await writeFile(path.join(request.workspacePath, file), 'done\n', 'utf8');
+          // Each attempt commits what it wrote: the next attempt continues this
+          // clone, and a coding turn starts only from committed state (HARN-35).
+          await gitOrFail(['add', file], request.workspacePath);
+          await gitOrFail(
+            ['commit', '--quiet', '--message', `write ${file}`],
+            request.workspacePath,
+          );
+          return { summary: `wrote ${file}` };
         },
       };
       const first = await runSourceCli(
@@ -3774,6 +3792,113 @@ describe('the source commands through the CLI', () => {
     }
   });
 
+  it('returns a continued workspace to its recorded branch before the next coding turn', async () => {
+    const target = await createTarget();
+    const jira = fakeJira([
+      {
+        id: '10011',
+        key: 'SAM1-11',
+        summary: 'Create the marker',
+        status: 'To Do',
+        updated: '2026-09-16T11:00:00.000Z',
+      },
+    ]);
+    const previous = process.env.JIRA_API_TOKEN;
+    process.env.JIRA_API_TOKEN = 'test-token';
+
+    try {
+      const starts: string[] = [];
+      let firstTurn = true;
+      const dependencies: CliContext['dependencies'] = {
+        runAgentTurn: async (request) => {
+          starts.push(
+            (
+              await runProcess(
+                'git',
+                ['symbolic-ref', '--quiet', '--short', 'HEAD'],
+                request.workspacePath,
+              )
+            ).stdout.trim(),
+          );
+          if (firstTurn) {
+            // The first attempt commits on a branch of its own and leaves the
+            // checkout there, so the workspace it leaves behind is on a clean
+            // branch that descends from the recorded one (HARN-35).
+            firstTurn = false;
+            await gitOrFail(
+              ['checkout', '--quiet', '-b', 'task/harn-35-side'],
+              request.workspacePath,
+            );
+            await writeFile(path.join(request.workspacePath, 'MARKER.md'), 'done\n', 'utf8');
+            await gitOrFail(['add', 'MARKER.md'], request.workspacePath);
+            await gitOrFail(
+              ['commit', '--quiet', '--message', 'the marker'],
+              request.workspacePath,
+            );
+            return { summary: 'committed the marker on a branch of its own' };
+          }
+          await writeFile(
+            path.join(request.workspacePath, 'SECOND.md'),
+            'the continuation\n',
+            'utf8',
+          );
+          return { summary: 'worked in the continued workspace' };
+        },
+      };
+      const first = await runSourceCli(
+        ['source', 'run', '--repo', target.repo, '--config', target.configPath],
+        target.directory,
+        { fetch: jira.fetch, dependencies },
+      );
+      expect(first.code).toBe(EXIT_OK);
+
+      // The operator moves the issue back to the ready status; the pointer label
+      // is still on it, so the next scan continues that clone.
+      if (jira.issues[0] === undefined) {
+        throw new Error('the fixture issue disappeared');
+      }
+      jira.issues[0].status = 'To Do';
+      const second = await runSourceCli(
+        ['source', 'run', '--repo', target.repo, '--config', target.configPath],
+        target.directory,
+        { fetch: jira.fetch, dependencies },
+      );
+
+      expect(second.err).toBe('');
+      expect(second.code).toBe(EXIT_OK);
+      // Both coding turns started on the branch the workspace records, and the
+      // continuation really worked in the returned checkout.
+      expect(starts).toEqual(['harness/SAM1-11', 'harness/SAM1-11']);
+      const workspacePath = path.join(target.workDir, 'workspaces', 'SAM1-11');
+      const recorded = (
+        await runProcess('git', ['rev-parse', 'refs/heads/harness/SAM1-11'], workspacePath)
+      ).stdout.trim();
+      const side = (
+        await runProcess('git', ['rev-parse', 'refs/heads/task/harn-35-side'], workspacePath)
+      ).stdout.trim();
+      expect(recorded).toBe(side);
+      expect(
+        (
+          await runProcess('git', ['symbolic-ref', '--quiet', '--short', 'HEAD'], workspacePath)
+        ).stdout.trim(),
+      ).toBe('harness/SAM1-11');
+      expect(existsSync(path.join(workspacePath, 'SECOND.md'))).toBe(true);
+      expect(existsSync(path.join(workspacePath, 'MARKER.md'))).toBe(true);
+
+      // The continuation is the second attempt in the workspace's own ledger.
+      const ledger = JSON.parse(
+        await readFile(path.join(target.workDir, 'workspaces', 'SAM1-11.json'), 'utf8'),
+      ) as { attempts?: unknown[] };
+      expect(ledger.attempts).toHaveLength(2);
+    } finally {
+      if (previous === undefined) {
+        delete process.env.JIRA_API_TOKEN;
+      } else {
+        process.env.JIRA_API_TOKEN = previous;
+      }
+    }
+  }, 30_000);
+
   it('names a new workspace after its ticket key, and points the next attempt at it', async () => {
     const target = await createTarget();
     const jira = fakeJira([
@@ -3870,10 +3995,21 @@ describe('the source commands through the CLI', () => {
     process.env.JIRA_API_TOKEN = 'test-token';
 
     try {
+      let turns = 0;
       const dependencies: CliContext['dependencies'] = {
         runAgentTurn: async (request) => {
-          await writeFile(path.join(request.workspacePath, 'MARKER.md'), 'done\n', 'utf8');
-          return { summary: 'wrote the marker' };
+          turns += 1;
+          const file = turns === 1 ? 'MARKER.md' : 'SECOND.md';
+          await writeFile(path.join(request.workspacePath, file), 'done\n', 'utf8');
+          // Each attempt commits what it wrote: the renamed ticket continues the
+          // same clone, and a coding turn starts only from committed state
+          // (HARN-35).
+          await gitOrFail(['add', file], request.workspacePath);
+          await gitOrFail(
+            ['commit', '--quiet', '--message', `write ${file}`],
+            request.workspacePath,
+          );
+          return { summary: `wrote ${file}` };
         },
       };
       const first = await runSourceCli(
@@ -4326,22 +4462,26 @@ describe('the source commands through the CLI', () => {
         [
           // The flash attempt: an implementation turn and both repair turns its
           // allowance allows, every round red, so the allowance is spent on
-          // ordinary failed checks and the ladder climbs. The notes file is work
-          // nothing later touches, so the stronger attempt really inherits the
-          // weaker one's dirty working copy.
+          // ordinary failed checks and the ladder climbs. Every turn commits what
+          // it leaves — a coding turn starts only from committed state (HARN-35)
+          // — and the notes file is work nothing later touches, so the stronger
+          // attempt really inherits the weaker one's committed working copy.
           {
             edits: [
               { file: 'MARKER.md', text: 'not yet\n' },
               { file: 'NOTES.md', text: 'flash was here\n' },
             ],
+            commit: 'flash: the first try, committed',
             summary: 'flash: first try',
           },
           {
             edits: [{ file: 'MARKER.md', text: 'not yet\n' }],
+            commit: 'flash: the first repair, still wrong',
             summary: 'flash: first repair, still wrong',
           },
           {
             edits: [{ file: 'MARKER.md', text: 'not yet\n' }],
+            commit: 'flash: the second repair, still wrong',
             summary: 'flash: second repair, still wrong',
           },
           // The astra attempt continues the same clone and finishes it.
@@ -4498,6 +4638,9 @@ describe('the source commands through the CLI', () => {
     }
   });
 
+  // Five real coding turns — each with its own baseline, post-turn check round,
+  // and the Git step that returns the checkout to its recorded branch — need
+  // more than the default five seconds on a busy host.
   it('restarts a re-armed continuation at the first tier, keeping its workspace and its history', async () => {
     const ladder: readonly EscalationTier[] = [
       {
@@ -4538,11 +4681,29 @@ describe('the source commands through the CLI', () => {
         runtime.state,
         [
           // The first intake spends the whole ladder without fixing the check:
-          // flash's two turns, then astra's two.
-          { edits: [{ file: 'MARKER.md', text: 'not yet\n' }], summary: 'flash: first try' },
-          { edits: [{ file: 'MARKER.md', text: 'not yet\n' }], summary: 'flash: still wrong' },
-          { edits: [{ file: 'MARKER.md', text: 'not yet\n' }], summary: 'astra: first try' },
-          { edits: [{ file: 'MARKER.md', text: 'not yet\n' }], summary: 'astra: still wrong' },
+          // flash's two turns, then astra's two. Each turn commits what it
+          // leaves, because the turn that follows it — a repair, or the next
+          // rung, or the next cycle — starts only from committed state (HARN-35).
+          {
+            edits: [{ file: 'MARKER.md', text: 'not yet\n' }],
+            commit: 'flash: first try',
+            summary: 'flash: first try',
+          },
+          {
+            edits: [{ file: 'MARKER.md', text: 'not yet\n' }],
+            commit: 'flash: still wrong',
+            summary: 'flash: still wrong',
+          },
+          {
+            edits: [{ file: 'MARKER.md', text: 'not yet\n' }],
+            commit: 'astra: first try',
+            summary: 'astra: first try',
+          },
+          {
+            edits: [{ file: 'MARKER.md', text: 'not yet\n' }],
+            commit: 'astra: still wrong',
+            summary: 'astra: still wrong',
+          },
           // The re-armed issue is a new coding cycle, so it starts at the first
           // tier again — in the same retained workspace, with everything the
           // earlier cycles left in it.
@@ -4628,7 +4789,7 @@ describe('the source commands through the CLI', () => {
         process.env.JIRA_API_TOKEN = previous;
       }
     }
-  });
+  }, 30_000);
 
   it('does not spend the stronger tier on a runtime that could not finish the turn', async () => {
     const ladder: readonly EscalationTier[] = [
@@ -4919,7 +5080,7 @@ describe('the source commands through the CLI', () => {
     }
   });
 
-  it('refuses to deliver a recorded branch a turn left behind, and still tells the issue', async () => {
+  it('returns a recorded branch a turn left behind, and delivers what the checks passed', async () => {
     const target = await createTarget({ delivery: true });
     const jira = fakeJira([
       {
@@ -4938,9 +5099,10 @@ describe('the source commands through the CLI', () => {
       const dependencies: CliContext['dependencies'] = {
         runAgentTurn: async (request) => {
           // Ordinary local Git use during coding: the turn commits on a branch
-          // of its own and leaves the workspace's recorded branch behind it.
-          // The checks still pass, because they judge the working copy; what
-          // delivery must not do is push the older recorded branch instead.
+          // of its own and leaves the checkout there. The harness returns the
+          // checkout to the branch the workspace records before the checks that
+          // judge it, so the checks and the delivery are about one revision
+          // (HARN-35).
           await gitOrFail(
             ['checkout', '--quiet', '-b', 'task/harn-17-marker'],
             request.workspacePath,
@@ -4984,33 +5146,23 @@ describe('the source commands through the CLI', () => {
           report.workspace.path,
         )
       ).stdout.trim();
-      expect(recorded).not.toBe(validated);
-
-      // The run itself passed; the delivery refused to publish the older
-      // revision, named both of them, and intake stopped for a person.
+      // The checkout is on the recorded branch, at the commit the turn made on
+      // its own branch: the checks that passed ran on the revision delivery
+      // would publish, so that is the revision it publishes (HARN-17).
       expect(report.status).toBe('passed');
-      expect(result.code).toBe(EXIT_INPUT_ERROR);
-      expect(result.out).toContain('checked out at');
-      expect(result.out).toContain(validated);
-      expect(result.out).toContain(recorded);
-      expect(result.out).toContain(`branch this step would publish, ${report.workspace.branch}`);
-      expect(result.out).toContain('never force-pushes');
-      // The retry is an operator step with git and gh, not a return to the
-      // ready status, which would start a coding run instead.
-      expect(result.out).toContain('starts a new coding run');
+      expect(recorded).toBe(validated);
+      expect(
+        (
+          await runProcess(
+            'git',
+            ['symbolic-ref', '--quiet', '--short', 'HEAD'],
+            report.workspace.path,
+          )
+        ).stdout.trim(),
+      ).toBe(report.workspace.branch);
 
-      // Nothing left the machine: no push, no pull request, and GitHub was not
-      // asked anything at all.
-      expect(await fakeGhCalls(destination.state)).toEqual([]);
-      const pushed = await runProcess(
-        'git',
-        ['--git-dir', destination.remote, 'rev-parse', `refs/heads/${report.workspace.branch}`],
-        target.directory,
-      );
-      expect(pushed.code).not.toBe(0);
-
-      // Every commit and branch the turn left is still there, the checkout was
-      // not switched or adopted, and the tree is still clean.
+      // The branch the turn used still holds the commit it made: returning the
+      // checkout to the recorded branch reset and discarded nothing.
       const taskBranch = (
         await runProcess(
           'git',
@@ -5023,18 +5175,25 @@ describe('the source commands through the CLI', () => {
         (await runProcess('git', ['status', '--porcelain'], report.workspace.path)).stdout.trim(),
       ).toBe('');
 
-      // The issue is told the passed outcome with the delivery failure, and it
-      // stays in review: no coding turn was started to repair the publication.
+      // The destination holds that same revision, and the issue is told the
+      // passed outcome with the pull request that carries it.
+      const pushed = await runProcess(
+        'git',
+        ['--git-dir', destination.remote, 'rev-parse', `refs/heads/${report.workspace.branch}`],
+        target.directory,
+      );
+      expect(pushed.code).toBe(0);
+      expect(pushed.stdout.trim()).toBe(validated);
+      const url = 'https://github.com/example-owner/example-repo/pull/1';
+      expect(result.code).toBe(EXIT_OK);
+      expect(result.out).toContain(`pull request created: ${url}`);
       const receipt = await readReceipt(
         receiptFilePath(target.workDir, refFor('10011', 'SAM1-11')),
       );
       expect(receipt?.outcome).toBe('passed');
-      expect(receipt?.problem).toContain('delivery:');
-      expect(receipt?.problem).toContain(recorded);
       expect(jira.comments).toHaveLength(1);
       expect(jira.comments[0]).toContain('finished: passed');
-      expect(jira.comments[0]).toContain('Delivery:');
-      expect(jira.comments[0]).not.toContain('Pull request:');
+      expect(jira.comments[0]).toContain(`Pull request: ${url}`);
       expect(jira.issues[0]?.status).toBe('In Review');
     } finally {
       if (previous === undefined) {
@@ -5043,7 +5202,202 @@ describe('the source commands through the CLI', () => {
         process.env.JIRA_API_TOKEN = previous;
       }
     }
-  });
+  }, 30_000);
+
+  it('stops a turn that left a dirty branch of its own, and tells the issue why', async () => {
+    const target = await createTarget({ delivery: true });
+    const jira = fakeJira([
+      {
+        id: '10011',
+        key: 'SAM1-11',
+        summary: 'Create the marker',
+        status: 'To Do',
+        updated: '2026-09-16T11:00:00.000Z',
+      },
+    ]);
+    const destination = await createDeliveryDestination(target.directory);
+    const previous = process.env.JIRA_API_TOKEN;
+    process.env.JIRA_API_TOKEN = 'test-token';
+
+    try {
+      const dependencies: CliContext['dependencies'] = {
+        runAgentTurn: async (request) => {
+          // The turn commits its work on a branch of its own and leaves
+          // uncommitted work beside it: returning the checkout to the branch
+          // the workspace records would mean switching a dirty checkout, which
+          // the harness never does (HARN-35).
+          await gitOrFail(
+            ['checkout', '--quiet', '-b', 'task/harn-35-marker'],
+            request.workspacePath,
+          );
+          await writeFile(path.join(request.workspacePath, 'MARKER.md'), 'done\n', 'utf8');
+          await gitOrFail(['add', '--all'], request.workspacePath);
+          await gitOrFail(
+            ['commit', '--quiet', '--message', 'write the marker'],
+            request.workspacePath,
+          );
+          await writeFile(
+            path.join(request.workspacePath, 'notes.md'),
+            'never committed\n',
+            'utf8',
+          );
+          return { summary: 'left a dirty branch of its own' };
+        },
+      };
+      const result = await withFakeGhOnPath(
+        destination.bin,
+        destination.state,
+        async () =>
+          await runSourceCli(
+            ['source', 'run', '--repo', target.repo, '--config', target.configPath],
+            target.directory,
+            {
+              fetch: jira.fetch,
+              dependencies,
+              deliveryParts: { pushUrl: destination.remote },
+            },
+          ),
+      );
+
+      // The run stopped before any check round ran after the turn, and the
+      // failure names both branches and what a person can do by hand.
+      const runDir = await onlyRunDirectory(target.workDir);
+      const report = JSON.parse(await readFile(path.join(runDir, 'result.json'), 'utf8')) as {
+        status: string;
+        reason: string;
+        attempts: readonly { readonly checks: unknown }[];
+        workspace: { path: string; branch: string };
+      };
+      expect(report.status).toBe('failed');
+      expect(report.attempts).toHaveLength(1);
+      expect(report.attempts[0]?.checks).toBeNull();
+      expect(report.reason).toContain('task/harn-35-marker');
+      expect(report.reason).toContain(report.workspace.branch);
+      expect(report.reason).toContain('notes.md');
+      expect(report.reason).toMatch(/Commit or remove those paths by hand/);
+      expect(result.code).toBe(EXIT_INPUT_ERROR);
+
+      // Nothing left the machine: no push, no pull request, and GitHub was not
+      // asked anything at all.
+      expect(await fakeGhCalls(destination.state)).toEqual([]);
+      const pushed = await runProcess(
+        'git',
+        ['--git-dir', destination.remote, 'rev-parse', `refs/heads/${report.workspace.branch}`],
+        target.directory,
+      );
+      expect(pushed.code).not.toBe(0);
+
+      // What the turn left is kept exactly where it is: its commit on its own
+      // branch, and the path it never committed.
+      const head = (
+        await runProcess(
+          'git',
+          ['symbolic-ref', '--quiet', '--short', 'HEAD'],
+          report.workspace.path,
+        )
+      ).stdout.trim();
+      expect(head).toBe('task/harn-35-marker');
+      expect(await readFile(path.join(report.workspace.path, 'notes.md'), 'utf8')).toBe(
+        'never committed\n',
+      );
+
+      // The issue carries the failed outcome and its reason, and a person
+      // decides what happens next.
+      expect(jira.comments).toHaveLength(1);
+      expect(jira.comments[0]).toContain('finished: failed');
+      expect(jira.comments[0]).toContain('task/harn-35-marker');
+      expect(jira.issues[0]?.status).toBe('In Review');
+    } finally {
+      if (previous === undefined) {
+        delete process.env.JIRA_API_TOKEN;
+      } else {
+        process.env.JIRA_API_TOKEN = previous;
+      }
+    }
+  }, 30_000);
+
+  it('refuses a continuation whose workspace still holds uncommitted work, and starts no turn', async () => {
+    const target = await createTarget({ markerCheck: true });
+    const jira = fakeJira([
+      {
+        id: '10011',
+        key: 'SAM1-11',
+        summary: 'Create the marker',
+        status: 'To Do',
+        updated: '2026-09-16T11:00:00.000Z',
+      },
+    ]);
+    const previous = process.env.JIRA_API_TOKEN;
+    process.env.JIRA_API_TOKEN = 'test-token';
+
+    try {
+      let turns = 0;
+      const dependencies: CliContext['dependencies'] = {
+        runAgentTurn: async (request) => {
+          turns += 1;
+          // The attempt writes the marker and never commits it: the round after
+          // it is green — it reads what the turn left — and the working copy is
+          // dirty when the run ends.
+          await writeFile(path.join(request.workspacePath, 'MARKER.md'), 'done\n', 'utf8');
+          return { summary: 'wrote the marker, and never committed it' };
+        },
+      };
+      const first = await runSourceCli(
+        ['source', 'run', '--repo', target.repo, '--config', target.configPath],
+        target.directory,
+        { fetch: jira.fetch, dependencies },
+      );
+      expect(first.code).toBe(EXIT_OK);
+      expect(first.out).toContain('1 passed');
+      const runsDir = path.join(target.workDir, 'runs');
+      const runNames = (): Promise<string[]> =>
+        readdir(runsDir).then((names) => names.filter((name) => name.startsWith('run-')));
+      const [firstRun] = await runNames();
+      const workspacePath = path.join(target.workDir, 'workspaces', 'SAM1-11');
+      expect(await readFile(path.join(workspacePath, 'MARKER.md'), 'utf8')).toBe('done\n');
+
+      // The operator moves the issue back to the ready status, so the next scan
+      // would continue that workspace. It refuses instead: a coding turn is
+      // started only from the workspace's own committed state, and no turn is
+      // started at all (HARN-35).
+      if (jira.issues[0] === undefined) {
+        throw new Error('the fixture issue disappeared');
+      }
+      jira.issues[0].status = 'To Do';
+      const second = await runSourceCli(
+        ['source', 'run', '--repo', target.repo, '--config', target.configPath],
+        target.directory,
+        { fetch: jira.fetch, dependencies },
+      );
+
+      expect(second.err).toContain('SAM1-11: refused');
+      expect(second.code).toBe(EXIT_OK);
+      expect(second.out).toContain('1 refused');
+      // No second run, and the only coding turn that ever ran was the first
+      // attempt's: the refused continuation started none.
+      expect(await runNames()).toEqual([firstRun]);
+      expect(turns).toBe(1);
+
+      // The issue is told which branch and which paths stop it, and what a
+      // person can do by hand.
+      expect(jira.comments).toHaveLength(2);
+      const refusal = jira.comments[1] ?? '';
+      expect(refusal).toContain('cannot be continued');
+      expect(refusal).toContain('harness/SAM1-11');
+      expect(refusal).toContain('MARKER.md');
+      expect(refusal).toMatch(/Commit or remove those paths by hand/);
+      expect(jira.issues[0]?.status).toBe('In Review');
+
+      // The work is kept exactly where the attempt left it.
+      expect(await readFile(path.join(workspacePath, 'MARKER.md'), 'utf8')).toBe('done\n');
+    } finally {
+      if (previous === undefined) {
+        delete process.env.JIRA_API_TOKEN;
+      } else {
+        process.env.JIRA_API_TOKEN = previous;
+      }
+    }
+  }, 30_000);
 
   it('keeps a passed attempt local when no delivery step is configured', async () => {
     const target = await createTarget();

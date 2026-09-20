@@ -401,9 +401,11 @@ function runChecksSource(repairFixture: boolean): string {
  * part of the project's committed check, and does three things: it stays inert
  * unless the environment names an arm file, it waits briefly for that file to
  * appear rather than racing the run that writes it, and it injects exactly once,
- * by breaking a committed module so the project's own test fails on its real
- * assertion. What the repair turn then sees is ordinary check output; what the
- * verifier asserts is that the module was repaired, not the test.
+ * by breaking a committed module — and committing the break, because the coding
+ * turn that repairs it starts only from the working copy's committed state
+ * (HARN-35) — so the project's own test fails on its real assertion. What the
+ * repair turn then sees is ordinary check output; what the verifier asserts is
+ * that the module was repaired, not the test.
  */
 const REPAIR_FIXTURE_SOURCE = [
   '/**',
@@ -414,8 +416,11 @@ const REPAIR_FIXTURE_SOURCE = [
   ' * code: nothing in src/ knows it exists, and a normal run of the harness never',
   ' * sees it. It is armed from outside the working copy, after the implementation',
   ' * turn has ended (tests/live/codex-live-check.ts writes the file named by the',
-  ' * environment), and it injects one failure, once.',
+  ' * environment), and it injects one failure, once. The broken module is',
+  ' * committed, because the repair turn the harness starts afterwards works from',
+  ' * the working copy’s committed state (HARN-35).',
   ' */',
+  "import { execFileSync } from 'node:child_process';",
   "import { existsSync, mkdirSync, writeFileSync } from 'node:fs';",
   "import path from 'node:path';",
   '',
@@ -458,6 +463,27 @@ const REPAIR_FIXTURE_SOURCE = [
   '  mkdirSync(path.dirname(MARKER), { recursive: true });',
   "  writeFileSync(MARKER, 'injected once\\n', 'utf8');",
   "  writeFileSync('src/greet.mjs', BROKEN, 'utf8');",
+  '  // The working copy the repair turn starts from is committed state: the',
+  '  // injected failure is committed like any other, and the repair turn then',
+  '  // commits the repair on top of it. The identity is this fixture’s own, so',
+  '  // the injection does not depend on any Git configuration around it.',
+  "  execFileSync('git', ['add', 'src/greet.mjs'], { stdio: 'ignore' });",
+  '  execFileSync(',
+  "    'git',",
+  '    [',
+  "      '-c',",
+  "      'user.name=live repair fixture',",
+  "      '-c',",
+  "      'user.email=fixture@example.test',",
+  "      '-c',",
+  "      'commit.gpgsign=false',",
+  "      'commit',",
+  "      '--quiet',",
+  "      '--message',",
+  '      `${LABEL}: the injected failure`,',
+  '    ],',
+  "    { stdio: 'ignore' },",
+  '  );',
   '  console.log(',
   '    `${LABEL}: src/greet.mjs was broken on purpose so a real repair turn can be ` +',
   "      'exercised. This is not a defect the coding turn caused, and no harness check ' +",
@@ -478,6 +504,8 @@ const AGENTS_SOURCE = [
   '- The project is checked by `node tools/run-checks.mjs`, which runs every file in `test/`.',
   '- Setup is `node tools/prepare.mjs`.',
   '- Keep the tests as they are: fix the code, never the check.',
+  '- Commit your work as you go: the harness starts no further coding turn from a working copy',
+  '  that still holds uncommitted work.',
   '',
 ].join('\n');
 

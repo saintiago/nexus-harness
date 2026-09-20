@@ -443,6 +443,13 @@ export interface FakePlan {
   readonly edits?: readonly { readonly file: string; readonly text: string }[];
   /** Files to remove from the working copy, relative to its root. */
   readonly removes?: readonly string[];
+  /**
+   * A message the stand-in commits its whole working copy with, once it has made
+   * its changes: the harness starts no coding turn from a working copy that still
+   * holds uncommitted work (HARN-35), so a plan whose turn the run repairs names
+   * this.
+   */
+  readonly commit?: string;
   /** How long the turn holds, keeping a child process of its own alive. */
   readonly holdMs?: number;
   /** How the runtime behaves; `ok` reports a completed turn. */

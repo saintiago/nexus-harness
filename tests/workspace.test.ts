@@ -9,6 +9,7 @@
 import { spawn } from 'node:child_process';
 import { existsSync, realpathSync, statSync } from 'node:fs';
 import {
+  chmod,
   lstat,
   mkdir,
   readFile,
@@ -24,6 +25,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { taskSchema } from '../src/config/schema.js';
+import { inspectBranchStanding, returnToRecordedBranch } from '../src/workspace/branch.js';
 import { inspectWorkspaceChanges } from '../src/workspace/changes.js';
 import { WorkspaceError } from '../src/workspace/errors.js';
 import { prepareWorkspace } from '../src/workspace/prepare.js';
@@ -339,11 +341,12 @@ describe('a workspace that outlives its run', () => {
     expect(committed?.states).toEqual(['committed']);
   });
 
-  it('refuses a workspace that is not on the branch its ledger records', async () => {
+  it('refuses a workspace on no branch, naming the branch it records and the manual action', async () => {
     const fixture = await createRepository();
     const prepared = await prepareRun(fixture);
-    // A checkout on another branch — or, as here, on no branch at all — is not
-    // the workspace the ledger names, and the harness will not continue it.
+    // A detached checkout names no branch, so which branch its commit belongs
+    // on is a guess the harness does not make: it is refused rather than
+    // continued or adopted (HARN-35).
     await gitOrFail(['checkout', '--quiet', '--detach'], prepared.workspacePath);
 
     await expect(
@@ -351,7 +354,12 @@ describe('a workspace that outlives its run', () => {
         sourceItem: FIXTURE_SOURCE_ITEM,
         sourceRoot: prepared.sourceRoot,
       }),
-    ).rejects.toThrow(/not its recorded/);
+    ).rejects.toThrow(
+      new RegExp(
+        `on no branch \\(a detached HEAD\\), not on its recorded branch ` +
+          `"${prepared.branch}".*check out the recorded branch by hand`,
+      ),
+    );
   });
 
   it('refuses a workspace that is not where the layout puts it', async () => {
@@ -690,6 +698,510 @@ describe('a workspace that outlives its run', () => {
     expect((await readWorkspaceState(fixture.workDir, prepared.workspaceId))?.attempts).toEqual([
       { ...attempt, endedAt: now },
     ]);
+  });
+});
+
+/**
+ * A coding turn has write access to its clone, Git metadata included, so it can
+ * commit its work on a branch of its own. The harness's own branch is what a
+ * continuation reopens, what the checks judge and what a delivery step
+ * publishes, so a clean checkout that descends from it is returned to it by
+ * fast-forwarding, and a checkout that cannot be returned that way is refused
+ * with the branch names and the manual action (HARN-35).
+ */
+describe('a retained checkout that left its recorded branch', () => {
+  /** The failure one call rejects with, as a `WorkspaceError` to assert on. */
+  async function refusalOf(call: () => Promise<unknown>): Promise<WorkspaceError> {
+    const failure = await call().then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    expect(failure).toBeInstanceOf(WorkspaceError);
+    return failure as WorkspaceError;
+  }
+
+  /** The branch the checkout is on, or `''` when it is on no branch. */
+  async function currentBranchOf(workspacePath: string): Promise<string> {
+    return (await gitOrFail(['symbolic-ref', '--quiet', '--short', 'HEAD'], workspacePath)).trim();
+  }
+
+  /**
+   * A repository fixture whose bytes survive every checkout: this host's system
+   * Git configuration rewrites line endings at checkout, the harness's own Git
+   * invocations inherit it while the fixture's do not, and without this a file
+   * the fixture committed would read as modified after the harness checked it
+   * out. tests/runner.test.ts commits the same file for the same reason.
+   */
+  async function createExactByteRepository(): Promise<Fixture> {
+    const fixture = await createRepository();
+    await writeFile(path.join(fixture.repo, '.gitattributes'), '* -text\n', 'utf8');
+    await gitOrFail(['add', '.gitattributes'], fixture.repo);
+    await gitOrFail(['commit', '--quiet', '--message', 'exact bytes'], fixture.repo);
+    return fixture;
+  }
+
+  /**
+   * Leaves the prepared workspace the way a coding turn can: the checkout is on
+   * `branch`, with the turn's work committed there and the recorded branch
+   * still where the attempt started from. `dirty` adds a path the turn never
+   * committed; `commit: false` leaves a branch at the recorded tip.
+   */
+  async function leaveOnBranch(
+    prepared: PreparedWorkspace,
+    branch: string,
+    options: { readonly commit?: boolean; readonly dirty?: boolean } = {},
+  ): Promise<string> {
+    await gitOrFail(['checkout', '--quiet', '-b', branch], prepared.workspacePath);
+    if (options.commit !== false) {
+      await writeFile(
+        path.join(prepared.workspacePath, 'side.txt'),
+        'work on a branch of its own\n',
+        'utf8',
+      );
+      await gitOrFail(['add', 'side.txt'], prepared.workspacePath);
+      await gitOrFail(
+        ['commit', '--quiet', '--message', 'the work of a coding turn'],
+        prepared.workspacePath,
+      );
+    }
+    if (options.dirty === true) {
+      await writeFile(
+        path.join(prepared.workspacePath, 'leftover.txt'),
+        'work the turn never committed\n',
+        'utf8',
+      );
+    }
+    return await headOf(prepared.workspacePath);
+  }
+
+  it('is returned to the recorded branch by fast-forwarding it, losing no commit', async () => {
+    const fixture = await createExactByteRepository();
+    const prepared = await prepareRun(fixture);
+    const revision = await leaveOnBranch(prepared, 'task/side');
+
+    // The reading names what would move and changes nothing.
+    expect(await inspectBranchStanding(prepared.workspacePath, prepared.branch)).toEqual({
+      kind: 'recoverable',
+      currentBranch: 'task/side',
+      revision,
+      recorded: prepared.baseCommit,
+    });
+    expect(await currentBranchOf(prepared.workspacePath)).toBe('task/side');
+
+    expect(await returnToRecordedBranch(prepared.workspacePath, prepared.branch)).toEqual({
+      changed: true,
+      from: 'task/side',
+      revision,
+    });
+    // The checkout is on the recorded branch at the commit the turn made, and
+    // the branch the turn used still holds that commit: nothing was reset,
+    // force-updated, or discarded.
+    expect(await currentBranchOf(prepared.workspacePath)).toBe(prepared.branch);
+    expect(
+      (
+        await gitOrFail(['rev-parse', `refs/heads/${prepared.branch}`], prepared.workspacePath)
+      ).trim(),
+    ).toBe(revision);
+    expect(
+      (await gitOrFail(['rev-parse', 'refs/heads/task/side'], prepared.workspacePath)).trim(),
+    ).toBe(revision);
+    expect((await gitOrFail(['status', '--porcelain'], prepared.workspacePath)).trim()).toBe('');
+
+    // Nothing is left to do the next time the checkout is read.
+    expect(await inspectBranchStanding(prepared.workspacePath, prepared.branch)).toEqual({
+      kind: 'on-branch',
+    });
+    expect(await returnToRecordedBranch(prepared.workspacePath, prepared.branch)).toEqual({
+      changed: false,
+    });
+  });
+
+  it('returns a clean branch that is already at the recorded tip without moving either', async () => {
+    const fixture = await createExactByteRepository();
+    const prepared = await prepareRun(fixture);
+    await leaveOnBranch(prepared, 'task/ordinary', { commit: false });
+
+    expect(await returnToRecordedBranch(prepared.workspacePath, prepared.branch)).toEqual({
+      changed: true,
+      from: 'task/ordinary',
+      revision: prepared.baseCommit,
+    });
+    expect(await currentBranchOf(prepared.workspacePath)).toBe(prepared.branch);
+    expect(
+      (await gitOrFail(['rev-parse', 'refs/heads/task/ordinary'], prepared.workspacePath)).trim(),
+    ).toBe(prepared.baseCommit);
+  });
+
+  it('fast-forwards the recorded branch even when Git configuration would squash the merge', async () => {
+    const fixture = await createExactByteRepository();
+    const prepared = await prepareRun(fixture);
+    const revision = await leaveOnBranch(prepared, 'task/side');
+
+    // Git reads `branch.<name>.mergeOptions` when merging into that branch, and
+    // `--ff-only` does not cancel a configured `--squash`: a plain fast-forward
+    // exits 0 after staging the descendant without moving the recorded branch.
+    // A return that reported that as a reconciliation would hand a coding turn
+    // a staged working copy, so the merge has to cancel the squash and the
+    // result has to be read back.
+    await gitOrFail(
+      ['config', `branch.${prepared.branch}.mergeOptions`, '--squash'],
+      prepared.workspacePath,
+    );
+
+    expect(
+      await returnToRecordedBranch(
+        prepared.workspacePath,
+        prepared.branch,
+        {},
+        {
+          requireClean: true,
+        },
+      ),
+    ).toEqual({ changed: true, from: 'task/side', revision });
+
+    // The recorded branch really moved to the commit the checkout held, the
+    // checkout is on it, and nothing was left staged for the next turn.
+    expect(await currentBranchOf(prepared.workspacePath)).toBe(prepared.branch);
+    expect(await headOf(prepared.workspacePath)).toBe(revision);
+    expect(
+      (
+        await gitOrFail(['rev-parse', `refs/heads/${prepared.branch}`], prepared.workspacePath)
+      ).trim(),
+    ).toBe(revision);
+    expect((await gitOrFail(['status', '--porcelain'], prepared.workspacePath)).trim()).toBe('');
+    expect(
+      await inspectBranchStanding(
+        prepared.workspacePath,
+        prepared.branch,
+        {},
+        { requireClean: true },
+      ),
+    ).toEqual({ kind: 'on-branch' });
+    expect(
+      (await gitOrFail(['rev-parse', 'refs/heads/task/side'], prepared.workspacePath)).trim(),
+    ).toBe(revision);
+  });
+
+  it('refuses a return that would write over an ignored local file, keeping its bytes', async () => {
+    const fixture = await createExactByteRepository();
+    await writeFile(path.join(fixture.repo, 'settings.json'), 'the committed settings\n', 'utf8');
+    await gitOrFail(['add', 'settings.json'], fixture.repo);
+    await gitOrFail(['commit', '--quiet', '--message', 'track the settings'], fixture.repo);
+    const prepared = await prepareRun(fixture);
+
+    // A turn of its own stops tracking the settings file, ignores it, and
+    // leaves a locally regenerated copy. The harness's own reading calls that
+    // checkout clean, because an ignored path never makes one dirty; checking
+    // the recorded branch out would write the committed copy over the local
+    // one, and the fast-forward would then delete it.
+    await gitOrFail(['checkout', '--quiet', '-b', 'task/side'], prepared.workspacePath);
+    await gitOrFail(['rm', '--quiet', '--cached', 'settings.json'], prepared.workspacePath);
+    await writeFile(path.join(prepared.workspacePath, '.gitignore'), 'settings.json\n', 'utf8');
+    await gitOrFail(['add', '.gitignore'], prepared.workspacePath);
+    await gitOrFail(
+      ['commit', '--quiet', '--message', 'stop tracking the settings'],
+      prepared.workspacePath,
+    );
+    await writeFile(
+      path.join(prepared.workspacePath, 'settings.json'),
+      'regenerated locally\n',
+      'utf8',
+    );
+    const revision = await headOf(prepared.workspacePath);
+
+    expect(await inspectBranchStanding(prepared.workspacePath, prepared.branch)).toEqual({
+      kind: 'recoverable',
+      currentBranch: 'task/side',
+      revision,
+      recorded: prepared.baseCommit,
+    });
+
+    const failure = await refusalOf(() =>
+      returnToRecordedBranch(prepared.workspacePath, prepared.branch),
+    );
+
+    // The refusal names both branches and the path Git would have written over,
+    // and says the local file was left alone rather than destroyed.
+    expect(failure.message).toContain('task/side');
+    expect(failure.message).toContain(`"${prepared.branch}"`);
+    expect(failure.message).toContain('settings.json');
+    expect(failure.message).toMatch(/nothing local was written over/);
+
+    // The file's own bytes survive, and nothing moved: the checkout is still on
+    // the branch the turn made, at its commit, and the recorded branch is still
+    // where the attempt started from.
+    expect(await readFile(path.join(prepared.workspacePath, 'settings.json'), 'utf8')).toBe(
+      'regenerated locally\n',
+    );
+    expect(await currentBranchOf(prepared.workspacePath)).toBe('task/side');
+    expect(await headOf(prepared.workspacePath)).toBe(revision);
+    expect(
+      (
+        await gitOrFail(['rev-parse', `refs/heads/${prepared.branch}`], prepared.workspacePath)
+      ).trim(),
+    ).toBe(prepared.baseCommit);
+  });
+
+  it('refuses a return that did not really move the branch, reading its own result back', async () => {
+    const fixture = await createExactByteRepository();
+    const prepared = await prepareRun(fixture);
+    const revision = await leaveOnBranch(prepared, 'task/side');
+
+    // Git runs hooks after a merge, and a hook can leave the recorded branch
+    // wherever it likes while the command still exits 0. The return reads its
+    // own result back instead of trusting that exit code, so what it reports is
+    // the state that really exists rather than the one it asked for. The hooks
+    // path is pinned in the workspace's own configuration so a developer's
+    // global setting cannot decide whether the fixture's hook runs.
+    await gitOrFail(['config', 'core.hooksPath', '.git/hooks'], prepared.workspacePath);
+    const hookPath = path.join(prepared.workspacePath, '.git', 'hooks', 'post-merge');
+    await writeFile(
+      hookPath,
+      `#!/bin/sh\ngit update-ref refs/heads/${prepared.branch} ${prepared.baseCommit}\n` +
+        'echo ran > .git/hook-ran.txt\n',
+      'utf8',
+    );
+    // Git skips a hook that is not executable on a POSIX host, and runs one
+    // either way on Windows: the bit is set so the fixture takes the same path
+    // wherever the suite runs. The marker the hook leaves inside the Git
+    // directory is checked before the refusal is, so a host that skipped the
+    // hook anyway fails on that precondition — which names the reason — rather
+    // than on a refusal the test expected and did not get.
+    await chmod(hookPath, 0o755);
+    const markerPath = path.join(prepared.workspacePath, '.git', 'hook-ran.txt');
+
+    const settled = await returnToRecordedBranch(prepared.workspacePath, prepared.branch).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect(existsSync(markerPath)).toBe(true);
+    expect(settled).toBeInstanceOf(WorkspaceError);
+    const failure = settled as WorkspaceError;
+
+    // The refusal names the branch and the revisions it really found, and it
+    // says nothing was reset or discarded.
+    expect(failure.message).toContain(`"${prepared.branch}"`);
+    expect(failure.message).toContain(prepared.baseCommit);
+    expect(failure.message).toContain(revision);
+    expect(failure.message).toMatch(/read back rather than assumed/);
+    expect(failure.message).toMatch(/Nothing was reset, force-updated, or discarded/);
+
+    // The commit the turn made is still on the branch it made it on.
+    expect(
+      (await gitOrFail(['rev-parse', 'refs/heads/task/side'], prepared.workspacePath)).trim(),
+    ).toBe(revision);
+  });
+
+  it('leaves a checkout that is already on the recorded branch exactly as it is', async () => {
+    const fixture = await createExactByteRepository();
+    const prepared = await prepareRun(fixture);
+    // The round that judges a turn reads the working copy the turn left, so it
+    // does not ask for a clean one: uncommitted work on the recorded branch is
+    // ordinary there, it is not a reason to switch, and nothing about it is
+    // touched.
+    await writeFile(path.join(prepared.workspacePath, 'left.txt'), 'uncommitted\n', 'utf8');
+
+    expect(await inspectBranchStanding(prepared.workspacePath, prepared.branch)).toEqual({
+      kind: 'on-branch',
+    });
+    expect(await returnToRecordedBranch(prepared.workspacePath, prepared.branch)).toEqual({
+      changed: false,
+    });
+    expect(await readFile(path.join(prepared.workspacePath, 'left.txt'), 'utf8')).toBe(
+      'uncommitted\n',
+    );
+    expect(await headOf(prepared.workspacePath)).toBe(prepared.baseCommit);
+  });
+
+  it('refuses a checkout that holds uncommitted work when a coding turn needs a clean one', async () => {
+    const fixture = await createExactByteRepository();
+    const prepared = await prepareRun(fixture);
+    await writeFile(path.join(prepared.workspacePath, 'left.txt'), 'uncommitted\n', 'utf8');
+
+    // The strict reading is what a caller about to start a coding turn makes: a
+    // turn works from the workspace's own committed state, so the checkout is
+    // refused rather than handed on.
+    const strict = { requireClean: true } as const;
+    const standing = await inspectBranchStanding(
+      prepared.workspacePath,
+      prepared.branch,
+      {},
+      strict,
+    );
+    expect(standing.kind).toBe('refused');
+    if (standing.kind !== 'refused') {
+      return;
+    }
+    // Both names the criterion asks for: the branch the ledger records, the
+    // commit it is at, and the paths that would have to be finished by hand.
+    expect(standing.problem).toContain(`"${prepared.branch}"`);
+    expect(standing.problem).toContain(prepared.baseCommit);
+    expect(standing.problem).toContain('left.txt');
+    expect(standing.problem).toMatch(/Commit or remove those paths by hand/);
+
+    const failure = await refusalOf(() =>
+      returnToRecordedBranch(prepared.workspacePath, prepared.branch, {}, strict),
+    );
+    expect(failure.message).toBe(standing.problem);
+
+    // Nothing moved: the checkout is where the turn left it, with its commit and
+    // its leftover.
+    expect(await currentBranchOf(prepared.workspacePath)).toBe(prepared.branch);
+    expect(await headOf(prepared.workspacePath)).toBe(prepared.baseCommit);
+    expect(await readFile(path.join(prepared.workspacePath, 'left.txt'), 'utf8')).toBe(
+      'uncommitted\n',
+    );
+  });
+
+  it('refuses a dirty branch of its own, naming both branches and the manual action', async () => {
+    const fixture = await createExactByteRepository();
+    const prepared = await prepareRun(fixture);
+    const revision = await leaveOnBranch(prepared, 'task/side', { dirty: true });
+
+    const failure = await refusalOf(() =>
+      returnToRecordedBranch(prepared.workspacePath, prepared.branch),
+    );
+
+    // The refusal names what Git would have to move between, and what a person
+    // can do instead: the harness never commits, discards, or force-switches a
+    // dirty checkout.
+    expect(failure.message).toContain('task/side');
+    expect(failure.message).toContain(`"${prepared.branch}"`);
+    expect(failure.message).toContain('leftover.txt');
+    expect(failure.message).toMatch(/Commit or remove those paths by hand/);
+    expect(failure.message).toContain(revision);
+
+    // Nothing moved: the checkout, its commit, its leftover, and the recorded
+    // branch are all exactly where the turn left them.
+    expect(await currentBranchOf(prepared.workspacePath)).toBe('task/side');
+    expect(await headOf(prepared.workspacePath)).toBe(revision);
+    expect(await readFile(path.join(prepared.workspacePath, 'leftover.txt'), 'utf8')).toBe(
+      'work the turn never committed\n',
+    );
+    expect(
+      (
+        await gitOrFail(['rev-parse', `refs/heads/${prepared.branch}`], prepared.workspacePath)
+      ).trim(),
+    ).toBe(prepared.baseCommit);
+  });
+
+  it('refuses a commit the recorded branch does not descend from, and names both revisions', async () => {
+    const fixture = await createExactByteRepository();
+    const prepared = await prepareRun(fixture);
+    const revision = await leaveOnBranch(prepared, 'task/side');
+    // The recorded branch moves on as well, so neither side descends from the
+    // other: fast-forwarding it to the checkout would drop the commit it holds.
+    await gitOrFail(['checkout', '--quiet', prepared.branch], prepared.workspacePath);
+    await writeFile(path.join(prepared.workspacePath, 'recorded.txt'), 'later work\n', 'utf8');
+    await gitOrFail(['add', 'recorded.txt'], prepared.workspacePath);
+    await gitOrFail(['commit', '--quiet', '--message', 'later work'], prepared.workspacePath);
+    const recorded = await headOf(prepared.workspacePath);
+    await gitOrFail(['checkout', '--quiet', 'task/side'], prepared.workspacePath);
+
+    const standing = await inspectBranchStanding(prepared.workspacePath, prepared.branch);
+    expect(standing.kind).toBe('refused');
+
+    const failure = await refusalOf(() =>
+      returnToRecordedBranch(prepared.workspacePath, prepared.branch),
+    );
+    expect(failure.message).toContain('task/side');
+    expect(failure.message).toContain(`"${prepared.branch}"`);
+    expect(failure.message).toContain(revision);
+    expect(failure.message).toContain(recorded);
+    expect(failure.message).toMatch(/reconcile the two by hand/);
+
+    // Both branches and the checkout are untouched.
+    expect(await currentBranchOf(prepared.workspacePath)).toBe('task/side');
+    expect(
+      (await gitOrFail(['rev-parse', 'refs/heads/task/side'], prepared.workspacePath)).trim(),
+    ).toBe(revision);
+    expect(
+      (
+        await gitOrFail(['rev-parse', `refs/heads/${prepared.branch}`], prepared.workspacePath)
+      ).trim(),
+    ).toBe(recorded);
+  });
+
+  it('refuses a checkout whose recorded branch the workspace does not hold', async () => {
+    const fixture = await createExactByteRepository();
+    const prepared = await prepareRun(fixture);
+    await leaveOnBranch(prepared, 'task/side');
+    await gitOrFail(['branch', '--delete', '--force', prepared.branch], prepared.workspacePath);
+
+    const failure = await refusalOf(() =>
+      returnToRecordedBranch(prepared.workspacePath, prepared.branch),
+    );
+
+    expect(failure.message).toContain('task/side');
+    expect(failure.message).toContain(`holds no branch named "${prepared.branch}"`);
+    expect(failure.message).toMatch(/never recreates, renames, or adopts a branch/);
+    expect(await currentBranchOf(prepared.workspacePath)).toBe('task/side');
+  });
+
+  it('is accepted by a continuation when it can be returned, and left where it is', async () => {
+    const fixture = await createExactByteRepository();
+    const prepared = await prepareRun(fixture);
+    const revision = await leaveOnBranch(prepared, 'task/side');
+
+    // Verification is a read: the run that follows is what returns the checkout
+    // to the recorded branch, before its first coding turn.
+    const reopened = await reopenWorkspace(fixture.workDir, prepared.workspaceId, {
+      sourceItem: FIXTURE_SOURCE_ITEM,
+      sourceRoot: prepared.sourceRoot,
+    });
+    expect(reopened.branch).toBe(prepared.branch);
+    expect(reopened.attempt).toBe(1);
+    expect(await currentBranchOf(prepared.workspacePath)).toBe('task/side');
+    expect(
+      (
+        await gitOrFail(['rev-parse', `refs/heads/${prepared.branch}`], prepared.workspacePath)
+      ).trim(),
+    ).toBe(prepared.baseCommit);
+    expect(await headOf(prepared.workspacePath)).toBe(revision);
+  });
+
+  it('is refused by a continuation when it cannot be returned, with the branch names', async () => {
+    const fixture = await createExactByteRepository();
+    const prepared = await prepareRun(fixture);
+    await leaveOnBranch(prepared, 'task/side', { dirty: true });
+
+    await expect(
+      reopenWorkspace(fixture.workDir, prepared.workspaceId, {
+        sourceItem: FIXTURE_SOURCE_ITEM,
+        sourceRoot: prepared.sourceRoot,
+      }),
+    ).rejects.toThrow(
+      /cannot be continued: .*task\/side.*recorded branch.*leftover\.txt.*Commit or remove/s,
+    );
+  });
+
+  it('is refused by a continuation when its recorded branch holds uncommitted work', async () => {
+    const fixture = await createExactByteRepository();
+    const prepared = await prepareRun(fixture);
+    // The earlier attempt left work it never committed, on the branch the ledger
+    // records: the next attempt would start another agent on it, and the harness
+    // starts no coding turn from a working copy like that (HARN-35).
+    await writeFile(path.join(prepared.workspacePath, 'left.txt'), 'uncommitted\n', 'utf8');
+
+    await expect(
+      reopenWorkspace(fixture.workDir, prepared.workspaceId, {
+        sourceItem: FIXTURE_SOURCE_ITEM,
+        sourceRoot: prepared.sourceRoot,
+      }),
+    ).rejects.toThrow(
+      new RegExp(
+        `cannot be continued: .*"${prepared.branch}".*left\\.txt.*Commit or remove those paths by hand`,
+        's',
+      ),
+    );
+
+    // Verification is a read: the working copy is exactly where the earlier
+    // attempt left it, so the work can be finished by hand.
+    expect(await currentBranchOf(prepared.workspacePath)).toBe(prepared.branch);
+    expect(await headOf(prepared.workspacePath)).toBe(prepared.baseCommit);
+    expect(await readFile(path.join(prepared.workspacePath, 'left.txt'), 'utf8')).toBe(
+      'uncommitted\n',
+    );
   });
 });
 

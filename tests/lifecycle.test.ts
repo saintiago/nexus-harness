@@ -38,6 +38,7 @@ import type { AgentTurnResult, RunnerDependencies } from '../src/runs/contracts.
 import { runTask } from '../src/runs/runner.js';
 import type { Command, HarnessConfig, RunReport, Task } from '../src/shared/types.js';
 import { configureWorkspaceIdentity } from '../src/workspace/git.js';
+import { returnToRecordedBranch } from '../src/workspace/branch.js';
 import { prepareWorkspace } from '../src/workspace/prepare.js';
 import { preflightSource } from '../src/workspace/preflight.js';
 import { allocateRunDirectory } from '../src/workspace/run-directory.js';
@@ -436,6 +437,7 @@ function dependencies(
     allocateRunDirectory,
     prepareWorkspace,
     configureWorkspaceIdentity,
+    returnToRecordedBranch,
     recordWorkspaceAttempt,
     runCheckRound,
     openAgentLog,
@@ -872,7 +874,9 @@ describe('a run its caller stops, for real', () => {
         phases.push(`${asked.kind} ${String(asked.turn)}`);
         if (asked.kind === 'implementation') {
           // The implementation leaves the mark that makes the checks red — so the
-          // run has a completed red round to repair — and returns by itself.
+          // run has a completed red round to repair — and returns by itself. It
+          // commits the mark, because the repair turn that follows starts only
+          // from committed state (HARN-35).
           const spawned = await runProcess(
             process.execPath,
             [
@@ -887,6 +891,15 @@ describe('a run its caller stops, for real', () => {
             { cwd: asked.workspacePath },
           );
           expect(spawned.code).toBe(0);
+          expect((await git(['add', RED_FLAG], asked.workspacePath)).code).toBe(0);
+          expect(
+            (
+              await git(
+                ['commit', '--quiet', '--message', 'the implementation turn'],
+                asked.workspacePath,
+              )
+            ).code,
+          ).toBe(0);
           return { summary: 'the implementation turn made the checks red' };
         }
 
@@ -973,12 +986,32 @@ describe('a run its caller stops, for real', () => {
     expect(await sourceState(fixture.repo)).toEqual(before);
   }, 90_000);
 
-  // Windows-only by construction: this scenario defeats the stop by emptying
-  // PATH, so the harness cannot find `taskkill` — the utility Windows stops a
-  // tree with. On POSIX the harness signals the invocation's process group
-  // directly (`process.kill(-pid)`), which needs no utility to be found, so the
-  // stop succeeds and there is nothing unconfirmed to report. The confirmed
-  // stop every platform can reach is covered by the tests above.
+  /**
+   * The one directory this host's PATH resolves `git` from. The unconfirmed-stop
+   * test narrows PATH to it rather than emptying PATH: the harness still has to
+   * reach Git between the turn and the checks — it returns the checkout to the
+   * branch the workspace records (HARN-35) — while the utility Windows stops a
+   * process tree with (`taskkill`, in the system directory) is out of reach,
+   * which is what makes the stop unconfirmable.
+   */
+  function gitDirectoryOnPath(): string {
+    const names = process.platform === 'win32' ? ['git.exe', 'git.cmd', 'git.bat'] : ['git'];
+    for (const entry of (process.env.PATH ?? '').split(path.delimiter)) {
+      for (const name of names) {
+        if (entry !== '' && existsSync(path.join(entry, name))) {
+          return entry;
+        }
+      }
+    }
+    throw new Error('this host has no git executable on PATH');
+  }
+
+  // Windows-only by construction: this scenario defeats the stop by narrowing
+  // PATH to Git alone, so the harness cannot find `taskkill` — the utility
+  // Windows stops a tree with. On POSIX the harness signals the invocation's
+  // process group directly (`process.kill(-pid)`), which needs no utility to be
+  // found, so the stop succeeds and there is nothing unconfirmed to report. The
+  // confirmed stop every platform can reach is covered by the tests above.
   it.skipIf(process.platform !== 'win32')(
     'reports a stop it could not confirm, and never calls the copy safe to reuse',
     async () => {
@@ -1003,7 +1036,7 @@ describe('a run its caller stops, for real', () => {
             'the checks will hang\n',
             'utf8',
           );
-          process.env.PATH = '';
+          process.env.PATH = gitDirectoryOnPath();
           return { summary: 'the implementation turn made the checks hang' };
         }),
       );

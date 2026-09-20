@@ -380,6 +380,9 @@ describe('the built CLI, end to end', () => {
         plans: [
           {
             edits: [{ file: 'src/greet-all.mjs', text: WRONG_GREET_ALL_SOURCE }],
+            // The repair turn after this one only starts from committed state
+            // (HARN-35).
+            commit: 'add greetAll, as it stands',
             summary: 'added greetAll',
           },
           {
@@ -482,6 +485,9 @@ describe('the built CLI, end to end', () => {
 
       const wrong: FakePlan = {
         edits: [{ file: 'src/greet-all.mjs', text: WRONG_GREET_ALL_SOURCE }],
+        // Every turn of the allowance is followed by another one, which only
+        // starts from committed state (HARN-35).
+        commit: 'add greetAll again, as it stands',
         summary: 'added greetAll again',
       };
       const result = await runCli({

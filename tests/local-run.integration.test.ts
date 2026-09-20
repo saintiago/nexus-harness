@@ -91,6 +91,7 @@ import type {
   Task,
 } from '../src/shared/types.js';
 import { configureWorkspaceIdentity } from '../src/workspace/git.js';
+import { returnToRecordedBranch } from '../src/workspace/branch.js';
 import type { PreparedWorkspace } from '../src/workspace/prepare.js';
 import { prepareWorkspace } from '../src/workspace/prepare.js';
 import { preflightSource } from '../src/workspace/preflight.js';
@@ -301,7 +302,7 @@ const runtimeSource = (beaconModule: string): string =>
   [
     `import { beaconAnswers, randomToken, startBeacon } from ${JSON.stringify(beaconModule)};`,
     "import { appendFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';",
-    "import { spawn } from 'node:child_process';",
+    "import { execFileSync, spawn } from 'node:child_process';",
     "import path from 'node:path';",
     '',
     '// Two modes: `--turn` is a coding turn, `--child` is the process one holds.',
@@ -361,6 +362,23 @@ const runtimeSource = (beaconModule: string): string =>
     '    written.push(`removed ${file}`);',
     '  }',
     "  record('edits-written', { files: written });",
+    '',
+    '  // A turn that commits its work: the next coding turn of its run only ever',
+    '  // starts from committed state (HARN-35).',
+    "  if (typeof plan.commit === 'string' && plan.commit !== '') {",
+    "    const git = (args) => execFileSync('git', args, { cwd: workspace, stdio: ['ignore', 'pipe', 'pipe'], timeout: 30000 });",
+    "    git(['add', '--all']);",
+    '    let staged = true;',
+    '    try {',
+    "      execFileSync('git', ['diff', '--cached', '--quiet'], { cwd: workspace, stdio: 'ignore', timeout: 30000 });",
+    '      staged = false;',
+    '    } catch (cause) {',
+    '      staged = cause?.status === 1;',
+    '    }',
+    '    if (staged) {',
+    "      git(['commit', '--quiet', '--message', plan.commit]);",
+    '    }',
+    '  }',
     '',
     '  if (holds > 0) {',
     '    setInterval(() => {}, 250);',
@@ -671,6 +689,13 @@ interface Plan {
   readonly edits?: readonly { readonly file: string; readonly text: string }[];
   /** Files the runtime deletes from the working copy. */
   readonly removes?: readonly string[];
+  /**
+   * A message the runtime commits its whole working copy with, once it has made
+   * its changes. The harness starts no coding turn from a working copy that still
+   * holds uncommitted work (HARN-35), so a plan whose turn the run repairs names
+   * this.
+   */
+  readonly commit?: string;
   /** The turn's own account of what it did. A claim, and never check evidence. */
   readonly summary: string;
   /** How long the runtime keeps a child of its own alive while the turn works. */
@@ -858,6 +883,7 @@ function dependencies(
     allocateRunDirectory,
     prepareWorkspace,
     configureWorkspaceIdentity,
+    returnToRecordedBranch,
     recordWorkspaceAttempt,
     runCheckRound,
     appendRunLog,
@@ -883,6 +909,7 @@ function dependencies(
       await writeJsonFile(target.turnsDir, path.basename(planFile), {
         edits: plan.edits ?? [],
         removes: plan.removes ?? [],
+        ...(plan.commit === undefined ? {} : { commit: plan.commit }),
         holdMs: plan.holdMs ?? 0,
       });
 
@@ -1139,10 +1166,14 @@ describe('the offline local loop, end to end', () => {
     const { deps, turns } = dependencies(target, [
       {
         edits: [{ file: 'src/greet-all.mjs', text: WRONG_GREET_ALL_SOURCE }],
+        // Each turn commits what it leaves: the repair turn after it only starts
+        // from committed state (HARN-35).
+        commit: 'implement greetAll, as it stands',
         summary: 'added greetAll and it looks right to me',
       },
       {
         edits: [{ file: 'src/greet-all.mjs', text: GREET_ALL_SOURCE }],
+        commit: 'fix the separator and the empty case',
         summary: 'fixed the separator and the empty case',
       },
     ]);
@@ -1221,10 +1252,14 @@ describe('the offline local loop, end to end', () => {
     const { deps, turns } = dependencies(target, [
       {
         edits: [{ file: 'src/greet-all.mjs', text: WRONG_GREET_ALL_SOURCE }],
+        // Every turn of the allowance is followed by another one, which only
+        // starts from committed state (HARN-35).
+        commit: 'implement greetAll, as it stands',
         summary: 'implemented greetAll',
       },
       {
         edits: [{ file: 'src/greet-all.mjs', text: WRONG_GREET_ALL_SOURCE.replace('Ada', 'name') }],
+        commit: 'rework the greeting, still wrong',
         summary: 'reworked the greeting',
       },
       // The last repair turn does nothing at all, and still claims success: agent

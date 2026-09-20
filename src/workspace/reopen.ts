@@ -7,6 +7,18 @@
  * still hold, and the attempt refuses a workspace that is not on the branch its
  * ledger records.
  *
+ * That branch is also what the run works on, the checks judge, and a delivery
+ * step publishes, so a checkout left on a branch of its own is read here
+ * against what it would take to return it (HARN-35): a clean checkout whose
+ * commit descends from the recorded branch's tip is accepted — the runner
+ * fast-forwards and checks out the recorded branch before the first turn — and
+ * a dirty checkout on a branch of its own, a detached one, a divergent one, and
+ * one that names no branch the workspace holds are refused here, before anything
+ * is claimed, with the branch names and the manual action. The checkout must be
+ * clean on the recorded branch as well: a coding turn is started only from the
+ * workspace's own committed state, so a workspace left with uncommitted work is
+ * refused here rather than handed on to an agent.
+ *
  * A pointer label is untrusted text on the issue, so resolving it checks more
  * than that it names a directory: the id must be a usable workspace id (a
  * generated run name, or the key a source preferred for the workspace), its
@@ -19,8 +31,8 @@
  */
 import { lstatSync, statSync } from 'node:fs';
 import { messageOf } from '../shared/errors.js';
+import { inspectBranchStanding } from './branch.js';
 import { WorkspaceError } from './errors.js';
-import { gitFailure, runGit } from './git.js';
 import type { GitRunBounds } from './git.js';
 import { outsideWorkspacesProblem, workspaceIdProblem, workspacePathFor } from './run-directory.js';
 import type { WorkspaceSourceItem } from './state.js';
@@ -353,12 +365,14 @@ export async function takenWorkspaceNameProblem(
  * Resolves and verifies a workspace's checkout for a run that continues it. A
  * workspace's turns may have committed their work, so a `HEAD` ahead of the
  * recorded base is ordinary: the branch is what identifies the checkout, and a
- * workspace that is not on the branch its ledger records is refused rather than
- * continued. The recorded base travels back with the workspace so every attempt
- * keeps comparing against it. The reading of the branch is bounded and
- * stoppable like every other Git invocation: a caller that already has a stop
- * request hands it over, and a reading the harness had to stop is reported as
- * the stop it was rather than as a statement about the checkout.
+ * workspace that is neither on the branch its ledger records nor one the
+ * harness can safely return to it is refused rather than continued
+ * ({@link inspectBranchStanding}). The recorded base travels back with the
+ * workspace so every attempt keeps comparing against it. The reading of the
+ * branch is bounded and stoppable like every other Git invocation: a caller
+ * that already has a stop request hands it over, and a reading the harness had
+ * to stop is reported as the stop it was rather than as a statement about the
+ * checkout.
  */
 export async function reopenWorkspace(
   workDir: string,
@@ -372,22 +386,16 @@ export async function reopenWorkspace(
   }
   const workspace = resolution.workspace;
 
-  const symbolic = await runGit(
-    ['symbolic-ref', '--quiet', '--short', 'HEAD'],
-    workspace.workspacePath,
-    bounds,
-  );
-  const branch = symbolic.stdout.trim();
-  if (symbolic.outcome !== 'exited') {
-    // A reading the harness stopped is not a statement about the checkout: it
-    // says nothing about which branch the workspace is on.
-    throw gitFailure(`the branch of workspace ${workspaceId} could not be read`, symbolic);
-  }
-  if (symbolic.code !== 0 || branch !== workspace.branch) {
-    throw new WorkspaceError(
-      `workspace ${workspaceId} is on ${branch === '' ? 'no branch' : `branch "${branch}"`}, not ` +
-        `its recorded "${workspace.branch}", so the harness will not continue it`,
-    );
+  // The checkout is only read here, never changed: a continuation is verified
+  // before anything is claimed, and the run it starts is what returns the
+  // checkout to the recorded branch before its first coding turn. It is read
+  // strictly, because no coding turn is started from a working copy that still
+  // holds uncommitted work.
+  const standing = await inspectBranchStanding(workspace.workspacePath, workspace.branch, bounds, {
+    requireClean: true,
+  });
+  if (standing.kind === 'refused') {
+    throw new WorkspaceError(`workspace ${workspaceId} cannot be continued: ${standing.problem}`);
   }
   return workspace;
 }
