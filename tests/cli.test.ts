@@ -1303,8 +1303,8 @@ describe('the activity pane under the run status', () => {
     // eslint-disable-next-line no-control-regex
     expect(raw).toMatch(/\d{2}:\d{2}:\d{2} \u001b\[33magent: I will change one file\.\u001b\[0m/);
     // Work lines are stamped the same way and stay in the terminal's own color.
-    expect(raw).toMatch(/\d{2}:\d{2}:\d{2} run: npm test\n/);
-    expect(raw).toMatch(/\d{2}:\d{2}:\d{2} result: exit 1\n/);
+    expect(raw).toMatch(/\d{2}:\d{2}:\d{2} run: npm test\r\n/);
+    expect(raw).toMatch(/\d{2}:\d{2}:\d{2} result: exit 1\r\n/);
   });
 
   it('uses plain output without cursor sequences when the terminal asks for no color', async () => {

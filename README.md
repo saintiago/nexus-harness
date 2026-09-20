@@ -987,8 +987,11 @@ commands it runs and their results, and the files it changed — in a fixed pane
 Every invocation gets a pane of its own, opened by a boundary line naming the phase that launched it
 — `developer` for an implementation or repair turn, `reviewer` for a Nexus Lens turn — and the
 ticket it works on, so consecutive turns and tickets stay apart in scrollback. When the invocation
-ends its pane is finalized: the rows it kept are printed into the timeline as that invocation's own
-segment, in order, before anything that follows. A command is shown as the payload the runtime's
+ends its pane is finalized: the rows it kept are left exactly where the pane drew them, as that
+invocation's own segment of the timeline, in order, before anything that follows — a repaint only
+ever rewrites those rows, so a retained row is never written a second time. If the terminal size
+changes, the existing rows are left in place and new activity starts a fresh segment fitted to the
+current size; rows that may have wrapped or entered scrollback are never replayed. A command is shown as the payload the runtime's
 shell wrapper was given, so a long PowerShell path cannot hide the operation, and a completion names
 the operation, its recorded exit code or status, and the last line of what it printed. Every entry
 starts with the local time the viewer received it (`HH:mm:ss`, captured once and kept across redraws —

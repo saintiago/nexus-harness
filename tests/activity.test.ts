@@ -54,6 +54,15 @@ function highlighted(text: string): string {
   return `${STAMP} ${GOLD}agent: ${text}${RESET}`;
 }
 
+/**
+ * How the pane writes one of its own rows: the row's line is cleared first, so
+ * the row is rewritten where it stands instead of being appended to whatever
+ * was there, and then the row itself is written.
+ */
+function painted(row: string): readonly string[] {
+  return ['\r\u001b[K', `${row}\r\n`];
+}
+
 /** One invocation boundary as the timeline writes it. */
 function boundary(role: string, ticket: string, phase?: string): string {
   return `${STAMP} ---- ${role}: ${ticket}${phase === undefined ? '' : ` — ${phase}`} ----`;
@@ -85,8 +94,8 @@ function testClock(start: Date): {
 /** Every line a pane drew, in order: the chunks that are not its cursor work. */
 function drawnLines(chunks: readonly string[]): readonly string[] {
   return chunks
-    .filter((chunk) => !chunk.startsWith('\u001b'))
-    .map((chunk) => chunk.replace(/\n$/, ''));
+    .filter((chunk) => !chunk.includes('\u001b[K') && !chunk.startsWith('\u001b'))
+    .map((chunk) => chunk.replace(/\r?\n$/, ''));
 }
 
 /**
@@ -119,6 +128,147 @@ function fittedEntry(label: string, text: string, columns: number): string {
 // ---------------------------------------------------------------------------
 
 describe('the activity pane', () => {
+  it('forgets physical positions even when a resize restores the previous dimensions', () => {
+    const terminal = fakeConsole();
+    let resized: (() => void) | undefined;
+    let releases = 0;
+    const pane = createActivityDisplay(
+      {
+        ...terminal.io,
+        terminal: {
+          ...FULL_TERMINAL,
+          write: (text) => terminal.chunks.push(text),
+          onResize: (handler) => {
+            resized = handler;
+            return () => {
+              releases += 1;
+              resized = undefined;
+            };
+          },
+        },
+      },
+      CLOCK,
+    );
+    pane.activity({ kind: 'message', text: 'before resize' });
+    const start = terminal.chunks.length;
+    expect(resized).toBeTypeOf('function');
+    resized?.();
+    resized?.();
+    expect(terminal.chunks.length).toBe(start);
+    pane.activity({ kind: 'command', text: 'after resize' });
+    pane.activity({ kind: 'result', text: 'done' });
+    expect(terminal.chunks.slice(start).join('')).not.toContain('before resize');
+    expect(screenAfter(terminal.chunks)).toEqual([
+      stamped('agent', 'before resize'),
+      stamped('run', 'after resize'),
+      stamped('result', 'done'),
+    ]);
+    pane.close();
+    pane.close();
+    expect(releases).toBe(1);
+    expect(resized).toBeUndefined();
+  });
+
+  it.each(['developer', 'reviewer'] as const)(
+    'rewrites only the %s pane with raw line feeds and Windows event text',
+    (role) => {
+      const terminal = fakeConsole(FULL_TERMINAL);
+      let second = 0;
+      const pane = createActivityDisplay(
+        terminal.io,
+        () => new Date(2026, 8, 20, 15, 47, second++),
+      );
+      const screen = (): readonly string[] =>
+        screenAfter(terminal.chunks, 80, { rows: 24, newlineResetsColumn: false });
+      pane.line('lifecycle started');
+      pane.beginInvocation({ role, ticket: 'HARN-31' });
+      pane.activity({ kind: 'message', text: 'retained message\r\nsecond line' });
+      const frozen = screen().slice(0, 2);
+      for (let index = 0; index < 8; index += 1) {
+        pane.activity({
+          kind: index % 2 === 0 ? 'command' : 'result',
+          text: `step ${String(index)}\r\noutput`,
+        });
+        const shown = screen();
+        expect(shown.slice(0, 2)).toEqual(frozen);
+        expect(shown.filter((line) => line.includes('agent:'))).toEqual([
+          '15:47:02 agent: retained message second line',
+        ]);
+        expect(shown.length).toBeLessThanOrEqual(6);
+        const stamps = shown.map((line) => line.slice(0, 8));
+        expect(stamps).toEqual([...stamps].sort());
+      }
+      pane.line('lifecycle finished\r\nchecks passed');
+      pane.endInvocation();
+      pane.close();
+      expect(screen().slice(-2)).toEqual(['15:47:11 lifecycle finished', '15:47:11 checks passed']);
+      expect(screen().filter((line) => line.includes('retained message'))).toHaveLength(1);
+    },
+  );
+
+  it.each([
+    { columns: 40, rows: 24 },
+    { columns: 80, rows: 8 },
+    { columns: 40, rows: 8 },
+    { columns: 10, rows: 3 },
+  ])('leaves reflowed history alone after resizing to $columns by $rows', (size) => {
+    const terminal = fakeConsole();
+    const geometry = { columns: 80, rows: 24 };
+    const io = {
+      ...terminal.io,
+      terminal: {
+        write: (text: string) => terminal.chunks.push(text),
+        get columns() {
+          return geometry.columns;
+        },
+        get rows() {
+          return geometry.rows;
+        },
+      },
+    };
+    let second = 0;
+    const pane = createActivityDisplay(io, () => new Date(2026, 8, 20, 15, 47, second++));
+    pane.beginInvocation({ role: 'developer', ticket: 'HARN-31' });
+    for (let index = 0; index < 20; index += 1) {
+      pane.activity({ kind: 'message', text: `message ${String(index)} ${'x'.repeat(60)}` });
+    }
+    const before = screenAfter(terminal.chunks, 80, { rows: 24 });
+    const cut = terminal.chunks.length;
+    Object.assign(geometry, size);
+    // Seed the resized screen with the old visible lines. Narrower terminals
+    // reflow them; shorter terminals put the oldest physical rows in scrollback.
+    const seed = before.map((line) => `${line}\r\n`);
+    const frozen = screenAfter(seed, size.columns, { rows: size.rows });
+    for (let index = 0; index < 8; index += 1) {
+      pane.activity({
+        kind: index % 2 === 0 ? 'command' : 'result',
+        text: `step ${String(index)}\r\n${'y'.repeat(60)}`,
+      });
+      const writes = terminal.chunks.slice(cut);
+      expect(writes.join('')).not.toContain('agent:');
+      const screen = screenAfter([...seed, ...writes], size.columns, {
+        rows: size.rows,
+        newlineResetsColumn: false,
+      });
+      expect(screen.slice(0, frozen.length)).toEqual(frozen);
+      if (size.columns >= 20) {
+        expect(screen.length - frozen.length).toBeLessThanOrEqual(3);
+        expect(screen.at(-1)).toContain(`step ${String(index)}`);
+      } else {
+        expect(writes.join('')).not.toContain('\u001b');
+      }
+    }
+    // A later expansion opens another fresh segment; it cannot replay the
+    // messages or work from either earlier geometry.
+    const expand = terminal.chunks.length;
+    Object.assign(geometry, FULL_TERMINAL);
+    pane.activity({ kind: 'message', text: 'after expansion' });
+    expect(screenAfter(terminal.chunks.slice(expand), 80)).toEqual([
+      '15:47:29 agent: after expansion',
+    ]);
+    pane.close();
+  });
+
   it('stops the screen from growing with the turn, and keeps the newest work', () => {
     const terminal = fakeConsole(FULL_TERMINAL);
     const pane = createActivityDisplay(terminal.io, CLOCK);
@@ -328,7 +478,7 @@ describe('the activity pane', () => {
         const head = `${STAMP} agent: `;
         const count = Math.floor((columns - 1 - head.length - 1) / cells);
         const expected = `${head}${text.repeat(count)}…`;
-        expect(terminal.chunks).toEqual([`${highlighted(text.repeat(count) + '…')}\n`]);
+        expect(terminal.chunks).toEqual([...painted(highlighted(text.repeat(count) + '…'))]);
         expect(stringWidth(expected)).toBe(head.length + count * cells + 1);
         expect(stringWidth(expected)).toBeLessThan(columns);
         expect(screenAfter(terminal.chunks, columns)).toEqual([expected]);
@@ -352,7 +502,7 @@ describe('the activity pane', () => {
       const pane = createActivityDisplay(terminal.io, CLOCK);
       const message = text.repeat(repeated);
       pane.activity({ kind: 'message', text: message });
-      expect(terminal.chunks).toEqual([`${highlighted(message)}\n`]);
+      expect(terminal.chunks).toEqual([...painted(highlighted(message))]);
       expect(stringWidth(highlighted(message))).toBe(columns - 1);
       pane.close();
       expect(screenAfter(terminal.chunks, columns)).toEqual([`${STAMP} agent: ${message}`]);
@@ -385,7 +535,8 @@ describe('the activity pane', () => {
       }
     }
     for (const chunk of terminal.chunks) {
-      if (!chunk.startsWith('\u001b')) expect(stringWidth(chunk.trimEnd())).toBeLessThan(40);
+      if (!chunk.includes('\u001b[K') && !chunk.startsWith('\u001b'))
+        expect(stringWidth(chunk.trimEnd())).toBeLessThan(40);
     }
     pane.close();
     pane.close();
@@ -418,6 +569,104 @@ describe('the activity pane', () => {
     pane.close();
   });
 
+  it('keeps one retained agent message as later command and result events repaint it', () => {
+    const terminal = fakeConsole(FULL_TERMINAL);
+    const pane = createActivityDisplay(terminal.io, CLOCK);
+    pane.beginInvocation({ role: 'developer', ticket: 'HARN-31', phase: 'implementation turn' });
+    pane.activity({ kind: 'message', text: 'one developer message' });
+    const firstDraw = terminal.chunks.length;
+    pane.activity({ kind: 'command', text: 'npm test' });
+    pane.activity({ kind: 'result', text: 'exit 1 — npm test' });
+    // A lifecycle block arriving mid-turn: it freezes the pane where it stands,
+    // and its Windows-style line endings are one stamp per logical line, never
+    // a cursor-moving carriage return.
+    pane.line('post-agent check-round started\r\npost-agent check-round result: passed');
+    pane.activity({ kind: 'command', text: 'npm run validate' });
+    pane.activity({ kind: 'result', text: 'exit 0 — npm run validate' });
+
+    // Every repaint writes the pane's own lines where they stand: each line it
+    // writes is cleared first, and nothing is ever cleared to the end of the
+    // screen, so a repaint cannot reach — or leave behind — a line the pane
+    // does not own. That is what keeps the retained message from being appended
+    // to the timeline again by a later command or result.
+    const afterFirstDraw = terminal.chunks.slice(firstDraw);
+    expect(afterFirstDraw.join('')).not.toContain('\u001b[J');
+    let copies = 0;
+    for (const [index, chunk] of afterFirstDraw.entries()) {
+      if (chunk.includes('one developer message')) {
+        // The retained row appears only as the pane's own highlighted line,
+        // rewritten where it stands after the line was cleared for it.
+        copies += 1;
+        expect(chunk).toBe(`${highlighted('one developer message')}\r\n`);
+        expect(afterFirstDraw[index - 1]).toBe('\r\u001b[K');
+      }
+    }
+    // The two command/result events before the lifecycle block repainted the
+    // pane over the message; nothing after them wrote it again.
+    expect(copies).toBe(2);
+
+    // One chronological timeline: the boundary, the message, the work that
+    // followed it, the lifecycle block, and the work that resumed below it.
+    expect(screenAfter(terminal.chunks)).toEqual([
+      boundary('developer', 'HARN-31', 'implementation turn'),
+      stamped('agent', 'one developer message'),
+      stamped('run', 'npm test'),
+      stamped('result', 'exit 1 — npm test'),
+      `${STAMP} post-agent check-round started`,
+      `${STAMP} post-agent check-round result: passed`,
+      stamped('run', 'npm run validate'),
+      stamped('result', 'exit 0 — npm run validate'),
+    ]);
+    pane.close();
+  });
+
+  it('freezes the pane in place, without writing the retained rows again', () => {
+    const terminal = fakeConsole(FULL_TERMINAL);
+    const pane = createActivityDisplay(terminal.io, CLOCK);
+    pane.beginInvocation({ role: 'developer', ticket: 'HARN-31', phase: 'implementation turn' });
+    pane.activity({ kind: 'message', text: 'implementing' });
+    pane.activity({ kind: 'command', text: 'npm test' });
+
+    const before = terminal.chunks.length;
+    pane.line('post-agent check-round started\r\npost-agent check-round result: passed');
+    // The lifecycle block is the only thing the display writes: the retained
+    // rows stay exactly where the pane drew them, never re-emitted below it.
+    expect(terminal.chunks.slice(before).join('')).toBe(
+      `${STAMP} post-agent check-round started\r\n` +
+        `${STAMP} post-agent check-round result: passed\r\n`,
+    );
+    const frozen = screenAfter(terminal.chunks);
+
+    pane.activity({ kind: 'result', text: 'exit 0 — npm test' });
+    pane.endInvocation();
+    expect(screenAfter(terminal.chunks).slice(0, frozen.length)).toEqual(frozen);
+    pane.close();
+    expect(screenAfter(terminal.chunks)).toEqual([
+      ...frozen,
+      stamped('result', 'exit 0 — npm test'),
+    ]);
+  });
+
+  it('leaves the rows it drew when an invocation ends, writing nothing again', () => {
+    const terminal = fakeConsole(FULL_TERMINAL);
+    const pane = createActivityDisplay(terminal.io, CLOCK);
+    pane.beginInvocation({ role: 'reviewer', ticket: 'HARN-31', phase: 'review' });
+    pane.activity({ kind: 'message', text: 'Nexus Lens is reading the diff' });
+    pane.activity({ kind: 'command', text: 'git diff --stat' });
+
+    const before = terminal.chunks.length;
+    pane.endInvocation();
+    pane.close();
+    // Ending an invocation writes nothing at all: the rows the pane drew are
+    // already its segment of the timeline, and nothing appends them again.
+    expect(terminal.chunks.slice(before)).toEqual([]);
+    expect(screenAfter(terminal.chunks)).toEqual([
+      boundary('reviewer', 'HARN-31', 'review'),
+      stamped('agent', 'Nexus Lens is reading the diff'),
+      stamped('run', 'git diff --stat'),
+    ]);
+  });
+
   it('finalizes the pane when it closes, and writes later entries without cursor work', () => {
     const terminal = fakeConsole(FULL_TERMINAL);
     const pane = createActivityDisplay(terminal.io, CLOCK);
@@ -438,7 +687,7 @@ describe('the activity pane', () => {
     // A line that arrives after the close is still the viewer's own: the time
     // it arrived at, the label, and a message's highlight — no cursor work.
     expect(terminal.chunks.slice(before).join('')).toBe(
-      `${STAMP} run run-1: passed\n${highlighted('a late line')}\n`,
+      `${STAMP} run run-1: passed\r\n${highlighted('a late line')}\r\n`,
     );
     expect(screenAfter(terminal.chunks.slice(before))).toEqual([
       `${STAMP} run run-1: passed`,
@@ -530,7 +779,7 @@ describe('the pane’s timestamps and message highlight', () => {
       pane.activity({ kind: 'message', text: 'x'.repeat(200) });
 
       const visible = `${STAMP} ${GOLD}agent: ${'x'.repeat(fitted)}…${RESET}`;
-      expect(terminal.chunks).toEqual([`${visible}\n`]);
+      expect(terminal.chunks).toEqual([...painted(visible)]);
       // The stamp is part of what had to fit, and the color sequences around
       // the message are not: the line occupies exactly the pane's width.
       expect(screenAfter(terminal.chunks, columns)).toEqual([
@@ -715,16 +964,19 @@ describe('the invocation timeline', () => {
 
     // Blank lines, indentation and trailing logical lines survive unchanged
     // after their one prefix. Each block reads the clock once on both streams,
-    // including after close; CRLF never leaves a cursor-moving carriage return.
+    // including after close; lifecycle text never retains an embedded carriage
+    // return. Interactive row endings and the pane's column reset are explicit.
     expect(second).toBe(6);
-    expect(terminal.chunks.join('')).not.toContain('\r');
+    expect(
+      terminal.chunks.join('').replaceAll('\r\n', '\n').replaceAll('\r\u001b[K', '\u001b[K'),
+    ).not.toContain('\r');
     expect(screenAfter(terminal.chunks)).toEqual([
       '09:41:00 ---- developer: HARN-26 ----',
       '09:41:01 agent: working',
       ...[2, 3, 4, 5].flatMap((at) => lines.map((line) => `09:41:0${String(at)} ${line}`)),
     ]);
     for (const at of [2, 3, 4, 5]) {
-      expect(terminal.chunks.join('')).toContain(
+      expect(terminal.chunks.join('').replaceAll('\r\n', '\n')).toContain(
         lines.map((line) => `09:41:0${String(at)} ${line}\n`).join(''),
       );
     }
@@ -749,7 +1001,7 @@ describe('the invocation timeline', () => {
       // No truncation, even when the timestamp, role and ticket cannot fit in
       // one row. This boundary is ordinary output above the managed activity.
       expect(terminal.chunks.slice(start).join('')).toBe(
-        `${STAMP} ${invocation.role}: ${invocation.ticket}\n`,
+        `${STAMP} ${invocation.role}: ${invocation.ticket}\r\n`,
       );
       const beforeActivity = screenAfter(terminal.chunks, columns);
       expect(beforeActivity.slice(0, frozen.length)).toEqual(frozen);
@@ -782,7 +1034,9 @@ describe('the invocation timeline', () => {
     });
     pane.endInvocation();
     pane.close();
-    expect(terminal.chunks.join('')).toBe(`${boundary('developer', 'HARN-26', 'repair turn 2')}\n`);
+    expect(terminal.chunks.join('')).toBe(
+      `${boundary('developer', 'HARN-26', 'repair turn 2')}${interactive ? '\r\n' : '\n'}`,
+    );
   });
 
   it.each([

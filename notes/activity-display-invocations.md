@@ -141,3 +141,39 @@ with ordinary and multiline error output using an advancing clock. They check ex
 chronological order, stable earlier segments, one timestamp per emission, repeated
 cleanup, resumed activity bounds, and all plain-output fallbacks. These remain
 offline tests; this repair did not run a live Jira or coding-agent exercise.
+
+## Repair: retained rows are never written twice — HARN-31
+
+The queue made the flaw visible: after HARN-26 was installed, a long developer turn
+showed the same retained developer message with its original `15:47:47` stamp
+again and again, with each later command and result, interleaved with the rows
+that came after it. A repaint was allowed to write more than the pane's own
+lines. `finalize` erased the pane's rows and wrote them out again below the
+cursor — a second write of every retained row, in a place the pane then had to
+keep finding — and every repaint cleared with `ESC[J`, "the rest of the screen",
+which reaches lines the pane does not own. On a terminal whose geometry does not
+match the height and width the pane read once at startup (a window resized
+during a long turn, a row that wrapped), the cursor no longer stood where the
+display believed, so each repaint's rows landed one line lower than the pane's
+previous copy and the retained message was appended again instead of rewritten.
+
+The display now owns exactly the lines it holds. `paint` returns the cursor to
+the pane's first line, clears each line of the pane's region from the first
+column, writes that line again, and leaves the cursor under the pane's own rows;
+it never clears to the end of the screen, so a repaint cannot take — or leave
+behind — a line outside its region. A lifecycle line, the end of an invocation,
+and a close all freeze the pane by letting go of its bookkeeping only: the rows
+that were drawn stay exactly where they are, as that invocation's segment of the
+timeline, and nothing is written a second time. The 20-line bound, the group
+retention, the yellow message styling, the receive-time stamps, the boundary
+rows, and the plain, redirected, and `NO_COLOR` fallbacks are unchanged.
+
+The focused regression drives one agent message, then several command and result
+events, then a `\r\n`-terminated lifecycle block and more command and result
+events after it: it asserts that no repaint clears to the end of the screen, that
+each write of the retained row is the pane's own highlighted line cleared first,
+that the freeze and the finalization write nothing at all, and that the visible
+timeline holds each row once, in chronological order. All of these fail against
+the pre-repair renderer. `npx vitest run tests/activity.test.ts` passes, as does
+the full `npm run validate`, offline: no model, run, repository, network, or live
+Jira site is involved.

@@ -117,12 +117,20 @@ function consoleTerminal(): CliTerminal | undefined {
   if (process.stdout.isTTY !== true) {
     return undefined;
   }
-  const columns = process.stdout.columns;
-  const rows = process.stdout.rows;
   return {
     write: (text) => process.stdout.write(text),
-    ...(columns === undefined ? {} : { columns }),
-    ...(rows === undefined ? {} : { rows }),
+    get columns() {
+      return process.stdout.columns;
+    },
+    get rows() {
+      return process.stdout.rows;
+    },
+    onResize: (handler) => {
+      process.stdout.on('resize', handler);
+      return () => {
+        process.stdout.off('resize', handler);
+      };
+    },
     color: colorAllowed(process.env),
   };
 }

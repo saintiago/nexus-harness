@@ -44,8 +44,8 @@ export interface CliIo {
  * An interactive terminal the CLI draws its activity pane on.
  *
  * `write` is the terminal of the CLI's own standard output, cursor sequences and
- * all; `columns` and `rows` are what it reports, and are absent when it does not
- * report a size. Nothing else is needed: the pane is redrawn in place with
+ * all; `columns` and `rows` report its current size (live getters for the real
+ * terminal), and are absent when it does not report a size. The pane uses
  * ordinary cursor moves, and a terminal that reports no size still gets the full
  * pane.
  */
@@ -53,6 +53,8 @@ export interface CliTerminal {
   write(text: string): void;
   readonly columns?: number;
   readonly rows?: number;
+  /** Invalidates pane positions on any resize, including between two writes. */
+  onResize?(handler: () => void): () => void;
   /**
    * Whether the pane may color what it draws; absent means it may. A terminal
    * whose host asked for no color reports `false`, selecting plain output with
