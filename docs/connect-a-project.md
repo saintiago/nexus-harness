@@ -19,7 +19,9 @@ Replace all three before running anything, and keep them absolute. `npm --prefix
 with `<NEXUS_HOME>` as its working directory, so a relative path would resolve there instead of
 where you are standing. Quote a path that contains spaces. The commands below use `npm run dev`,
 which runs the CLI from TypeScript sources through the installation's `node_modules` and needs no
-build; nothing here writes inside the Nexus checkout.
+build; nothing here writes inside the Nexus checkout. If the installation was never installed
+(`<NEXUS_HOME>/node_modules` is missing), run `npm --prefix <NEXUS_HOME> ci` once first: that is
+installation setup, not project configuration.
 
 ## What the project owns, and what it does not
 
