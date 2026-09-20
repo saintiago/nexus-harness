@@ -378,7 +378,7 @@ describe('the activity pane', () => {
     }
 
     expect(screenAfter(terminal.chunks)).toEqual(
-      Array.from({ length: 20 }, (_, offset) => stamped('agent', `message ${String(offset + 2)}`)),
+      Array.from({ length: 21 }, (_, offset) => stamped('agent', `message ${String(offset + 1)}`)),
     );
     pane.close();
   });
@@ -392,8 +392,8 @@ describe('the activity pane', () => {
     pane.activity({ kind: 'command', text: 'npm test' });
 
     const screen = screenAfter(terminal.chunks);
-    expect(screen).toHaveLength(20);
-    expect(screen[0]).toBe(stamped('agent', 'message 2'));
+    expect(screen).toHaveLength(21);
+    expect(screen[0]).toBe(stamped('agent', 'message 1'));
     expect(screen.at(-1)).toBe(stamped('run', 'npm test'));
     pane.close();
   });
@@ -437,14 +437,14 @@ describe('the activity pane', () => {
     pane.close();
   });
 
-  it('fits a line to the terminal width, marking what it cut', () => {
+  it('fits a command to the terminal width, marking what it cut', () => {
     const terminal = fakeConsole({ columns: 40, rows: 24 });
     const pane = createActivityDisplay(terminal.io, CLOCK);
-    pane.activity({ kind: 'message', text: 'x'.repeat(200) });
+    pane.activity({ kind: 'command', text: 'x'.repeat(200) });
 
     const [line = ''] = screenAfter(terminal.chunks);
     expect(line).toHaveLength(39);
-    expect(line.startsWith(`${STAMP} agent: xxx`)).toBe(true);
+    expect(line.startsWith(`${STAMP} run: xxx`)).toBe(true);
     expect(line.endsWith('…')).toBe(true);
     pane.close();
   });
@@ -476,16 +476,19 @@ describe('the activity pane', () => {
         // The stamp and the label are visible text: 09:41:07 and "agent: ",
         // 16 cells of them, are what the rest of the text has to fit behind.
         const head = `${STAMP} agent: `;
-        const count = Math.floor((columns - 1 - head.length - 1) / cells);
-        const expected = `${head}${text.repeat(count)}…`;
-        expect(terminal.chunks).toEqual([...painted(highlighted(text.repeat(count) + '…'))]);
-        expect(stringWidth(expected)).toBe(head.length + count * cells + 1);
-        expect(stringWidth(expected)).toBeLessThan(columns);
-        expect(screenAfter(terminal.chunks, columns)).toEqual([expected]);
+        const count = Math.floor((columns - 1 - head.length) / cells);
+        const shown = screenAfter(terminal.chunks, columns, { rows: 24 });
+        expect(shown[0]).toBe(`${head}${text.repeat(count)}`);
+        expect(shown.join('')).toBe(`${head}${text.repeat(100)}`);
+        for (const line of shown) {
+          expect(stringWidth(line)).toBeLessThan(columns);
+          // A row boundary must never cut a combined character in half.
+          const body = line.startsWith(head) ? line.slice(head.length) : line;
+          expect(body).toBe(text.repeat([...new Intl.Segmenter().segment(body)].length));
+        }
+        const before = terminal.chunks.length;
         pane.close();
-        // Closing finalizes the pane: the fitted row stays in the timeline
-        // exactly once, and nothing is drawn below it any more.
-        expect(screenAfter(terminal.chunks, columns)).toEqual([expected]);
+        expect(terminal.chunks).toHaveLength(before);
       }
     },
   );
@@ -700,6 +703,151 @@ describe('the activity pane', () => {
 // The receive time and the message highlight
 // ---------------------------------------------------------------------------
 
+describe('complete wrapped agent messages', () => {
+  it.each([
+    { columns: 20, rows: 5 },
+    { columns: 20, rows: 24 },
+    { columns: 40, rows: 8 },
+    { columns: 80, rows: 24 },
+  ])('streams an oversized message into history at $columns by $rows', ({ columns, rows }) => {
+    const terminal = fakeConsole({ columns, rows });
+    const clock = testClock(CLOCK());
+    const pane = createActivityDisplay(terminal.io, clock.now);
+    const text = `Committed locally as ba5dda8. ${'All checks passed. '.repeat(140)}END`;
+    // Exercise the adapter too: messages must survive its former 400-character cap.
+    const activities = itemActivities('item.completed', { type: 'agent_message', text });
+    expect(activities).toEqual([{ kind: 'message', text }]);
+    for (const activity of activities) pane.activity(activity);
+    const screen = (): readonly string[] =>
+      screenAfter(terminal.chunks, columns, { rows, newlineResetsColumn: false });
+    expect(screen().length).toBeGreaterThan(24);
+    expect(screen().join('')).toBe(stamped('agent', text));
+    expect(screen().filter((line) => line.includes(STAMP))).toHaveLength(1);
+    for (const chunk of terminal.chunks.filter((chunk) => chunk.endsWith('\r\n'))) {
+      expect(chunk).toContain(GOLD);
+      expect(chunk).toContain(`${RESET}\r\n`);
+      expect(stringWidth(chunk.trimEnd())).toBeLessThan(columns);
+    }
+    for (let index = 0; index < 8; index += 1) {
+      clock.set(new Date(2026, 8, 20, 9, 42, index));
+      pane.activity({ kind: index % 2 === 0 ? 'command' : 'result', text: String(index) });
+      // Old work is replaced; the whole message remains once, in chronological order.
+      expect(screen().slice(0, -1).join('')).toBe(stamped('agent', text));
+      expect(screen().at(-1)).toBe(
+        `09:42:0${String(index)} ${index % 2 === 0 ? 'run' : 'result'}: ${String(index)}`,
+      );
+    }
+    expect(clock.reads()).toBe(9);
+    for (const chunk of terminal.chunks) {
+      if (chunk.startsWith('\u001b[') && chunk.endsWith('A')) {
+        expect(Number(chunk.slice(2, -1))).toBeLessThanOrEqual(Math.min(20, rows - 4));
+      }
+    }
+    const beforeClose = terminal.chunks.length;
+    pane.endInvocation();
+    pane.close();
+    pane.close();
+    expect(terminal.chunks).toHaveLength(beforeClose);
+    pane.line('done');
+    expect(screen().slice(0, -2).join('')).toBe(stamped('agent', text));
+    expect(screen().at(-1)).toBe('09:42:07 done');
+  });
+
+  it('counts wrapped message rows when removing older work, without splitting a group', () => {
+    const terminal = fakeConsole({ columns: 40, rows: 24 });
+    const pane = createActivityDisplay(terminal.io, CLOCK);
+    const first = 'a'.repeat(400); // 416 display cells: eleven rows at width 39.
+    const second = 'b'.repeat(200); // Six more rows.
+    pane.activity({ kind: 'message', text: first });
+    for (const text of ['old 1', 'old 2', 'old 3']) pane.activity({ kind: 'command', text });
+    pane.activity({ kind: 'message', text: second });
+    for (const text of ['new 1', 'new 2', 'new 3']) pane.activity({ kind: 'command', text });
+    const shown = screenAfter(terminal.chunks, 40, { rows: 24, newlineResetsColumn: false });
+    expect(shown).toHaveLength(20);
+    expect(shown.slice(0, 11).join('')).toBe(stamped('agent', first));
+    expect(shown.slice(11, 17).join('')).toBe(stamped('agent', second));
+    expect(shown.slice(17)).toEqual(
+      ['new 1', 'new 2', 'new 3'].map((text) => stamped('run', text)),
+    );
+    pane.close();
+  });
+
+  it('keeps wrapped developer, reviewer and repair messages separate through resize and cleanup', () => {
+    const terminal = fakeConsole();
+    const geometry = { columns: 40, rows: 24 };
+    let resized: (() => void) | undefined;
+    let releases = 0;
+    const pane = createActivityDisplay(
+      {
+        ...terminal.io,
+        terminal: {
+          get columns() {
+            return geometry.columns;
+          },
+          get rows() {
+            return geometry.rows;
+          },
+          write: (text) => terminal.chunks.push(text),
+          onResize: (handler) => {
+            resized = handler;
+            return () => {
+              resized = undefined;
+              releases += 1;
+            };
+          },
+        },
+      },
+      CLOCK,
+    );
+    let history: readonly string[] = [];
+    let start = 0;
+    for (const [index, role] of (['developer', 'reviewer', 'developer'] as const).entries()) {
+      pane.beginInvocation({ role, ticket: 'HARN-34' });
+      const text = `${role} ${WIDE_TEXT.map(({ text }) => text)
+        .join('')
+        .repeat(50)} END-${String(index)}`;
+      const [activity] = itemActivities('item.completed', { type: 'agent_message', text });
+      expect(activity).toEqual({ kind: 'message', text });
+      if (activity !== undefined) pane.activity(activity);
+      const segment = screenAfter(terminal.chunks.slice(start), geometry.columns, {
+        rows: geometry.rows,
+        newlineResetsColumn: false,
+      });
+      expect(segment.join('')).toBe(`${boundary(role, 'HARN-34')}${stamped('agent', text)}`);
+      history = [...history, ...segment];
+      const cut = terminal.chunks.length;
+      // Shrink then restore between emissions: the resize event must still
+      // invalidate ownership, even if the next write observes the old size.
+      Object.assign(geometry, { columns: 10, rows: 3 });
+      resized?.();
+      Object.assign(geometry, { columns: 40, rows: 24 });
+      resized?.();
+      pane.activity({ kind: 'command', text: 'npm test' });
+      pane.activity({ kind: 'result', text: 'exit 0' });
+      const fresh = terminal.chunks.slice(cut);
+      expect(fresh.join('')).not.toContain(GOLD);
+      expect(
+        screenAfter([...history.map((line) => `${line}\r\n`), ...fresh], 40, {
+          rows: 24,
+          newlineResetsColumn: false,
+        }),
+      ).toEqual([...history, stamped('run', 'npm test'), stamped('result', 'exit 0')]);
+      history = [...history, stamped('run', 'npm test'), stamped('result', 'exit 0')];
+      expect(screenAfter(terminal.chunks, 40, { rows: 24, newlineResetsColumn: false })).toEqual(
+        history,
+      );
+      pane.endInvocation();
+      start = terminal.chunks.length;
+    }
+    const ending = terminal.chunks.length;
+    pane.close();
+    pane.close();
+    expect(releases).toBe(1);
+    expect(resized).toBeUndefined();
+    expect(terminal.chunks).toHaveLength(ending);
+  });
+});
+
 describe('the pane’s timestamps and message highlight', () => {
   it('stamps each entry with the compact local time it was received at', () => {
     const terminal = fakeConsole(FULL_TERMINAL);
@@ -769,8 +917,8 @@ describe('the pane’s timestamps and message highlight', () => {
   });
 
   it.each([
-    { columns: 40, fitted: 22 },
-    { columns: 20, fitted: 2 },
+    { columns: 40, fitted: 23 },
+    { columns: 20, fitted: 3 },
   ])(
     'fits the timestamp into a $columns-column pane, where the escapes take no cell',
     ({ columns, fitted }) => {
@@ -778,13 +926,13 @@ describe('the pane’s timestamps and message highlight', () => {
       const pane = createActivityDisplay(terminal.io, CLOCK);
       pane.activity({ kind: 'message', text: 'x'.repeat(200) });
 
-      const visible = `${STAMP} ${GOLD}agent: ${'x'.repeat(fitted)}…${RESET}`;
-      expect(terminal.chunks).toEqual([...painted(visible)]);
+      const visible = `${STAMP} ${GOLD}agent: ${'x'.repeat(fitted)}${RESET}`;
+      expect(terminal.chunks.slice(0, 2)).toEqual([...painted(visible)]);
       // The stamp is part of what had to fit, and the color sequences around
       // the message are not: the line occupies exactly the pane's width.
-      expect(screenAfter(terminal.chunks, columns)).toEqual([
-        `${STAMP} agent: ${'x'.repeat(fitted)}…`,
-      ]);
+      expect(screenAfter(terminal.chunks, columns).join('')).toBe(
+        stamped('agent', 'x'.repeat(200)),
+      );
       expect(stringWidth(visible)).toBe(columns - 1);
       pane.close();
     },
@@ -1010,7 +1158,7 @@ describe('the invocation timeline', () => {
         pane.activity({ kind: 'message', text: String(index) });
         const screen = screenAfter(terminal.chunks, columns);
         expect(screen.slice(0, beforeActivity.length)).toEqual(beforeActivity);
-        expect(screen.length - beforeActivity.length).toBe(Math.min(index + 1, 20));
+        expect(screen.length - beforeActivity.length).toBe(index + 1);
       }
       const retained = screenAfter(terminal.chunks, columns);
       pane.endInvocation();
@@ -1152,18 +1300,22 @@ describe('the invocation timeline', () => {
     pane.beginInvocation({ role: 'developer', ticket: 'HARN-1', phase: 'implementation turn 1' });
     for (let index = 1; index <= 25; index += 1) {
       pane.activity({ kind: 'message', text: `developer message ${String(index)}` });
-      // The boundary plus a pane bounded at twenty rows: the screen never grows
-      // past the invocation's own pane while it is the one being managed.
-      expect(screenAfter(terminal.chunks).length).toBeLessThanOrEqual(21);
+      // All messages enter history; only twenty physical rows stay managed.
+      expect(screenAfter(terminal.chunks)).toHaveLength(index + 1);
+      for (const chunk of terminal.chunks) {
+        if (chunk.startsWith('\u001b[') && chunk.endsWith('A')) {
+          expect(Number(chunk.slice(2, -1))).toBeLessThanOrEqual(20);
+        }
+      }
     }
     pane.endInvocation();
 
-    // What the pane left in the timeline is its last twenty rows, in order.
+    // The entire message history remains, including rows released by the pane.
     const first = screenAfter(terminal.chunks);
     expect(first).toEqual([
       boundary('developer', 'HARN-1', 'implementation turn 1'),
-      ...Array.from({ length: 20 }, (_, offset) =>
-        stamped('agent', `developer message ${String(offset + 6)}`),
+      ...Array.from({ length: 25 }, (_, offset) =>
+        stamped('agent', `developer message ${String(offset + 1)}`),
       ),
     ]);
 
@@ -1192,11 +1344,11 @@ describe('the invocation timeline', () => {
       pane.activity({ kind: 'message', text: `after progress ${String(index)}` });
       const screen = screenAfter(terminal.chunks);
       expect(screen.slice(0, frozen.length)).toEqual(frozen);
-      expect(screen.length - frozen.length).toBeLessThanOrEqual(20);
+      expect(screen.length - frozen.length).toBe(index);
     }
     for (let index = 1; index <= 5; index += 1) {
       pane.activity({ kind: 'command', text: `step ${String(index)}` });
-      expect(screenAfter(terminal.chunks).length - frozen.length).toBe(20);
+      expect(screenAfter(terminal.chunks).length - frozen.length).toBe(26);
     }
     pane.endInvocation();
     const screen = screenAfter(terminal.chunks);
@@ -1204,8 +1356,8 @@ describe('the invocation timeline', () => {
     expect(screen.slice(frozen.length)).toEqual([
       // At capacity, older work is removed before messages; the newest work
       // remains visible without exceeding the twenty-row bound.
-      ...Array.from({ length: 19 }, (_, offset) =>
-        stamped('agent', `after progress ${String(offset + 7)}`),
+      ...Array.from({ length: 25 }, (_, offset) =>
+        stamped('agent', `after progress ${String(offset + 1)}`),
       ),
       stamped('run', 'step 5'),
     ]);
@@ -1625,7 +1777,7 @@ describe('reading activity from the runtime event stream', () => {
     expect(itemActivities('item.completed', null)).toEqual([]);
   });
 
-  it('bounds a long command or message to one line', () => {
+  it('bounds a long command to one line', () => {
     const [command] = itemActivities('item.started', {
       type: 'command_execution',
       command: `line one\n${'x'.repeat(500)}`,
@@ -1637,9 +1789,9 @@ describe('reading activity from the runtime event stream', () => {
   });
 
   it.each(WIDE_TEXT)('does not split $text at the event summary size limit', ({ text }) => {
-    const [activity] = itemActivities('item.completed', {
-      type: 'agent_message',
-      text: `${'x'.repeat(399)}${text}tail`,
+    const [activity] = itemActivities('item.started', {
+      type: 'command_execution',
+      command: `${'x'.repeat(399)}${text}tail`,
     });
     expect(activity?.text).toBe(`${'x'.repeat(399)}${text.length === 1 ? text : ''}…`);
   });
