@@ -32,8 +32,11 @@ state: a checkout that still holds uncommitted work is refused rather than hande
 recorded branch included, while the round that judges a turn still reads what that turn left. The
 runner does all of that before every coding turn and before the round that judges it, and
 `workspace/reopen.ts` verifies the same standing read-only, strictly before a continuation is
-claimed. Nothing is reset, force-updated, adopted, or discarded, and
-`delivery/github.ts` still refuses a recorded branch that is not the revision the checks validated
+claimed. The return never writes over a local file the checkout ignores — Git is asked not to
+overwrite one, and a return that would is refused with the paths named — and it reads back what the
+checkout and the fast-forward did, so a Git configuration that squashed the merge cannot pass a
+staged working copy off as a returned branch. Nothing is reset, force-updated, adopted, or discarded,
+and `delivery/github.ts` still refuses a recorded branch that is not the revision the checks validated
 (HARN-17). [spec.md](spec.md) §2 and §7 define the behavior, [WORKFLOW.md](WORKFLOW.md) §4, §6, and
 §8 the input, and [implement-workspace-continuation.md](implement-workspace-continuation.md) the
 contract.

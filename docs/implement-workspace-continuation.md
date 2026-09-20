@@ -158,8 +158,12 @@ moved to the review status. Nothing local is created for it.
   round that judges it: a clean checkout on a branch of its own whose commit descends from that
   branch is fast-forwarded to it and checked out, the committing branch keeps its commit, and a
   detached, divergent, or branchless checkout stops before the turn or the check with the branch
-  names and the manual action. Nothing is reset, force-updated, or discarded. The recorded base,
-  not `HEAD`, is what the report compares against.
+  names and the manual action. The return never writes over a local file the checkout ignores: Git
+  is asked not to overwrite one, a return that would is refused with the paths named and the file's
+  bytes kept, and what the checkout and the fast-forward did is read back instead of taken from
+  their exit codes, so a Git configuration that squashed the merge cannot pass for a returned
+  branch. Nothing is reset, force-updated, or discarded. The recorded base, not `HEAD`, is what the
+  report compares against.
 - A coding turn starts only from the workspace's own committed state, on the recorded branch
   included: a checkout that still holds uncommitted work — staged, unstaged, or untracked — stops
   the run before that turn with the branch, the paths, and the manual action, and nothing is
@@ -306,11 +310,12 @@ continuation and a repair turn start on the immutable recorded branch, the commi
 stays on the branch it made it on, and the revision the checks validate is the revision a delivery
 step publishes. Everything else stops before the turn, the check, or the
 delivery, naming both branch names and what an operator can do by hand: a dirty checkout, a
-detached HEAD, a commit the recorded branch does not descend from, and a recorded branch the
-workspace does not hold. `reopenWorkspace` reads the same standing without changing anything, so a
-continuation that cannot be returned is refused before it is claimed. Nothing here resets,
-force-updates, adopts a branch, or discards a commit, and the delivery step's own exact-revision
-check is unchanged.
+detached HEAD, a commit the recorded branch does not descend from, a recorded branch the
+workspace does not hold, and a local file the checkout ignores that the return would write over —
+that last one is refused with the file's bytes kept, the paths Git named, and the branch names.
+`reopenWorkspace` reads the same standing without changing anything, so a continuation that cannot
+be returned is refused before it is claimed. Nothing here resets, force-updates, adopts a branch,
+or discards a commit, and the delivery step's own exact-revision check is unchanged.
 
 **Corrected in HARN-35, during its repair.** The first attempt above left one case open: the strict
 reading applied only to a checkout that was not on its recorded branch, so a retained workspace
@@ -325,6 +330,21 @@ what it really left, and the delivery step's own clean-checkout refusal remains 
 publishing it. A turn is therefore asked to finish with the work it wants the next turn to build
 on committed, and a dirty working copy is finished by hand — the harness never commits, stashes,
 or discards it for anyone.
+
+**Corrected in HARN-35, in the repair of its delivered pull request.** The return above gained the
+two protections it was still missing. Git overwrites an ignored local file silently when a checkout
+writes at its path, so a checkout the harness called clean could lose a locally regenerated file
+the recorded branch still tracks — the case where a turn stopped tracking that file, added it to
+`.gitignore`, and left its own copy behind. The checkout and the fast-forward now ask Git not to
+overwrite an ignored file (`--no-overwrite-ignore`); a return that would have written over one is
+**refused** with the paths Git named and the branch names, the file's bytes are left exactly as they
+were, and the run stops before the turn, the check, or the delivery that would have followed. And
+what the two commands did is read back rather than assumed from their exit codes: they inherit Git
+configuration and run hooks, and a `branch.<name>.mergeOptions` that sets `--squash` makes
+`git merge --ff-only` exit 0 after staging the descendant without moving the recorded branch. The
+merge cancels a configured squash (`--no-squash`), and a checkout that does not end on the recorded
+branch, at the commit the checkout held, and clean is reported as the failure it is instead of
+handing a staged working copy to the next coding turn.
 
 ## Verification
 
@@ -359,7 +379,13 @@ or discards it for anyone.
   implementation turn left a branch of its own, a red branch of its own that stops the run before
   any check after the turn, and a red round whose uncommitted work stops the run before the repair
   turn) and through a source batch (a passed return delivered on the revision the checks validated,
-  and a dirty branch of a turn's own stopped and told to the issue).
+  and a dirty branch of a turn's own stopped and told to the issue). The return's own safety is
+  covered as well: a checkout the recorded branch would write an ignored local file over is refused
+  with the file's bytes kept, the checkout and both branches untouched, and the run stopped before
+  the check that would have followed the turn; and a `branch.<name>.mergeOptions` of `--squash` in
+  the workspace cannot make the fast-forward report a reconciliation it did not perform — the
+  recorded branch really takes the commit, the checkout ends clean on it, and the repair turn that
+  follows starts there.
 - Live: **partly run, 2026-09-19.** A real Jira-driven continuation has happened: run
   `run-20260919115244-4ff8eedf` claimed HARN-2, reopened workspace `run-20260919100148-e48a9ab0`
   (same clone, same recorded base `36f62fd`, attempt 2), and the attempt's work is the local commit

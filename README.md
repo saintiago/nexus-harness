@@ -261,9 +261,12 @@ read from the checkout `--repo` names, so the repository a run clones describes 
    clean and its commit descends from the recorded branch's tip, the harness fast-forwards the
    recorded branch to it and checks it out — the commit stays on the branch the turn made it on —
    and a detached, divergent, or branchless checkout stops the run before the next turn or check
-   with both branch names and what to do by hand. A coding turn is also started only from the
-   workspace's own committed state: a working copy that still holds uncommitted work stops the run
-   before the agent, with its branch, the paths, and what to do by hand. Nothing is reset,
+   with both branch names and what to do by hand. A return that would write over a local file the
+   working copy ignores is refused with the paths named and the file's bytes kept, rather than
+   performed, and what the checkout and the fast-forward did is read back, so a Git configuration
+   that squashed the merge cannot pass for a returned branch. A coding turn is also started only
+   from the workspace's own committed state: a working copy that still holds uncommitted work stops
+   the run before the agent, with its branch, the paths, and what to do by hand. Nothing is reset,
    force-updated, or discarded.
 4. **The baseline round**: every `setup` command, then every `checks` command, in the order the
    configuration lists them. A red baseline stops a fresh run before any coding turn — the task is
@@ -583,9 +586,12 @@ failure names both revisions. Before the checks that judge a turn, the run retur
 to its recorded branch when it can — a fast-forward and a checkout, with the commit a turn made on a
 branch of its own kept on that branch — and a detached, divergent, or branchless checkout stops the
 run before any check, with both branch names and what to do by hand; that is what keeps the
-validated revision and the published branch the same. A coding turn starts only from committed
-state, so a working copy left holding uncommitted work stops the run before the next agent instead
-of being handed to one. The pull request is found by repository, head branch, and base branch — the
+validated revision and the published branch the same. That return refuses to write over a local
+file the working copy ignores, naming the paths instead, and reads back what the checkout and the
+fast-forward did, so a configuration that squashed the merge cannot pass for a returned branch. A
+coding turn starts only from committed state, so a working copy left holding uncommitted work stops
+the run before the next agent instead of being handed to one. The pull request is found by repository,
+head branch, and base branch — the
 one open match is updated, a closed or merged one is refused instead of edited, and one is created
 only when no match exists at all. Later committed work
 updates the same branch and the same pull request, because a continued attempt reuses the workspace
@@ -1210,7 +1216,12 @@ Read this before pointing a run at anything you care about.
   made keeps it — an implementation turn that leaves a divergent, detached, or branchless checkout
   stops the run before any check with both branch names and the manual action, and a continuation
   of a workspace left on a branch of its own starts on the recorded branch, while one whose
-  checkout cannot be returned is refused before it is claimed. The state a coding turn may start
+  checkout cannot be returned is refused before it is claimed. That return is covered against what
+  Git can do to a checkout the harness did not ask about: a return that would write over an ignored
+  local file is refused with the file's bytes kept and the run stopped before the check that would
+  have followed, and a `branch.<name>.mergeOptions` of `--squash` cannot make the fast-forward
+  report a reconciliation it did not perform — the recorded branch really takes the commit, the
+  checkout ends clean on it, and the repair turn starts there. The state a coding turn may start
   from is covered as well: a working copy that still holds uncommitted work — on the recorded
   branch included — stops the run before the next agent, naming the branch and the paths, whether
   it is a repair turn the red round earned or a continuation, while the reading the round after a

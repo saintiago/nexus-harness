@@ -222,7 +222,9 @@ further would separate one decision from itself: `runs/runner.ts` (the loop), `s
   that cannot be returned or that still holds uncommitted work, because no coding turn is started
   from a working copy like that — and `branch.ts` reads that standing and returns the checkout to
   the recorded branch with a fast-forward and a checkout, never a reset, a force update, or an
-  adopted branch; `changes.ts` reads what the copy differs from its base by; `git.ts`
+  adopted branch — refusing a return that would write over a local file the checkout ignores, and
+  reading back what the checkout and the fast-forward did before reporting it; `changes.ts` reads
+  what the copy differs from its base by; `git.ts`
   and `status.ts` are the plumbing they share, including the repository-local commit identity
   (`configureWorkspaceIdentity`) a run writes into a working copy before any check or coding turn.
   Every Git invocation is bounded and stopped through `process/`: a run's phases give it what is
