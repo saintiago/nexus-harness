@@ -3887,7 +3887,7 @@ describe('the source commands through the CLI', () => {
         process.env.JIRA_API_TOKEN = previous;
       }
     }
-  });
+  }, 30_000);
 
   it('names a new workspace after its ticket key, and points the next attempt at it', async () => {
     const target = await createTarget();
@@ -4613,6 +4613,9 @@ describe('the source commands through the CLI', () => {
     }
   });
 
+  // Five real coding turns — each with its own baseline, post-turn check round,
+  // and the Git step that returns the checkout to its recorded branch — need
+  // more than the default five seconds on a busy host.
   it('restarts a re-armed continuation at the first tier, keeping its workspace and its history', async () => {
     const ladder: readonly EscalationTier[] = [
       {
@@ -4743,7 +4746,7 @@ describe('the source commands through the CLI', () => {
         process.env.JIRA_API_TOKEN = previous;
       }
     }
-  });
+  }, 30_000);
 
   it('does not spend the stronger tier on a runtime that could not finish the turn', async () => {
     const ladder: readonly EscalationTier[] = [
@@ -5156,7 +5159,7 @@ describe('the source commands through the CLI', () => {
         process.env.JIRA_API_TOKEN = previous;
       }
     }
-  });
+  }, 30_000);
 
   it('stops a turn that left a dirty branch of its own, and tells the issue why', async () => {
     const target = await createTarget({ delivery: true });
@@ -5268,7 +5271,7 @@ describe('the source commands through the CLI', () => {
         process.env.JIRA_API_TOKEN = previous;
       }
     }
-  });
+  }, 30_000);
 
   it('keeps a passed attempt local when no delivery step is configured', async () => {
     const target = await createTarget();
