@@ -1,0 +1,658 @@
+/**
+ * `queue run` and `queue watch`: the serial queue commands.
+ *
+ * They are the one place the serial loop's four phases are composed, and the
+ * only place a queue invocation resolves the credentials those phases need:
+ *
+ * - the existing Jira source and retained-workspace runner, taken one ticket at
+ *   a time, with the configured delivery step;
+ * - the existing Nexus Lens review scan, narrowed to that one ticket;
+ * - the existing review-to-completion pass, narrowed to that one ticket;
+ * - the source-readiness step that fetches the base branch and only ever
+ *   fast-forwards the operator's checkout to the verified merge commit.
+ *
+ * The loop itself decides only the order, and it is a foreground control loop:
+ * `queue watch` is this process, not a daemon. One intake lock is held for the
+ * whole invocation, so a second consumer cannot start between two tickets, and
+ * every command's own option table keeps the one-item commands exactly as they
+ * were (docs/WORKFLOW.md §11).
+ */
+import path from 'node:path';
+import { ConfigError, escalationTiers, loadHarnessConfig, resolveWorkDir } from '../config/load.js';
+import { createGitHubCompletion } from '../delivery/completion.js';
+import { createGitHubDelivery } from '../delivery/github.js';
+import type { QueueCompletionOutcome, QueueReviewOutcome, QueueSummary } from '../queue/loop.js';
+import { runQueue } from '../queue/loop.js';
+import type { QueueRunMode } from '../queue/loop.js';
+import { runTask } from '../runs/runner.js';
+import { messageOf } from '../shared/errors.js';
+import type { HarnessConfig, JiraSourceConfig } from '../shared/types.js';
+import { createCompletionPass } from '../sources/completion.js';
+import type { CompletionOutcome } from '../sources/completion.js';
+import type { SourceContext, SourceTake } from '../sources/contract.js';
+import { SourceError } from '../sources/contract.js';
+import { takeOneItem } from '../sources/coordinator.js';
+import { createJiraCompletionSource } from '../sources/jira/completion.js';
+import { createJiraSource } from '../sources/jira/connector.js';
+import { createHttpClient, resolveJiraToken } from '../sources/jira/http.js';
+import { acquireIntakeLock } from '../sources/receipts.js';
+import type { ReviewScanContext, ReviewSummary } from '../reviews/contract.js';
+import { ReviewError } from '../reviews/contract.js';
+import { createGitHubReviewClient, resolveAppPrivateKey } from '../reviews/github.js';
+import { createReviewerTurn } from '../reviews/reviewer.js';
+import { scanReviews } from '../reviews/scan.js';
+import { WorkspaceError } from '../workspace/errors.js';
+import { preflightSource } from '../workspace/preflight.js';
+import { refreshSource } from '../workspace/refresh.js';
+import { createActivityDisplay } from './activity.js';
+import { EXIT_CANCELLED, EXIT_INPUT_ERROR, EXIT_OK, EXIT_USAGE } from './context.js';
+import type { CliContext, CliIo } from './context.js';
+import { composeDependencies } from './dependencies.js';
+import { USAGE_HINT } from './help.js';
+import { listOptions, parseOptions, QUEUE_RUN_OPTIONS, QUEUE_WATCH_OPTIONS } from './options.js';
+import { hostSignals } from './signals.js';
+import { abortableSleep } from './source-command.js';
+
+/**
+ * The environment a command inherits, with the variables the harness resolved
+ * removed. Windows environment names are case-insensitive, including when the
+ * configuration spells them differently; `process.env` itself is never modified.
+ */
+function environmentWithout(environment: NodeJS.ProcessEnv, ...names: string[]): NodeJS.ProcessEnv {
+  const copy: NodeJS.ProcessEnv = { ...environment };
+  const normalize = (name: string): string =>
+    process.platform === 'win32' ? name.toUpperCase() : name;
+  const removed = new Set(names.map(normalize));
+  for (const name of Object.keys(copy)) {
+    if (removed.has(normalize(name))) {
+      delete copy[name];
+    }
+  }
+  return copy;
+}
+
+/**
+ * The Nexus Lens reviewer's own credential, resolved from the one environment
+ * variable the completion configuration names. It is deliberately a different
+ * variable from the operator's GitHub credential: the reviewer's token reads the
+ * reviewer's verdict and never enables auto-merge, and the operator's credential
+ * never reaches the reviewer. A missing or blank variable is refused before
+ * anything runs, with the variable named and no value echoed.
+ */
+function resolveReviewerToken(
+  name: string,
+): { token: string; problem: null } | { token: ''; problem: string } {
+  const raw = process.env[name];
+  const token = typeof raw === 'string' ? raw.trim() : '';
+  if (token === '') {
+    return {
+      token: '',
+      problem:
+        `the environment variable ${name} is missing or blank. The queue's completion phase ` +
+        'reads the Nexus Lens reviewer credential from it; it is a different variable from the ' +
+        "operator's own Git/gh credential, which the harness never uses to read the reviewer's " +
+        'verdict.',
+    };
+  }
+  return { token, problem: null };
+}
+
+/** What one queue command is asked for, and everything it needs to answer. */
+interface QueueCommandOptions {
+  readonly mode: QueueRunMode;
+  readonly configPath: string;
+  readonly repoPath: string;
+}
+
+/**
+ * Everything the configured queue needs, or the reason it cannot be one.
+ *
+ * A queue completes a ticket through a chain of three configured pieces, so a
+ * configuration that cannot complete one is refused before any credential is
+ * resolved: the review has to publish the very check the completion gate
+ * requires, in the very repository the delivery step pushes to.
+ */
+function queueConfigurationProblem(config: HarnessConfig, configPath: string): string | null {
+  if (config.source === undefined) {
+    return (
+      `${configPath} has no "source" object, so there is no queue to take tickets from ` +
+      '(docs/WORKFLOW.md section 5).'
+    );
+  }
+  if (config.review === undefined) {
+    return (
+      `${configPath} has no "review" object, so a ticket could never be reviewed before it is ` +
+      'completed. A queue command needs one; docs/WORKFLOW.md section 9 defines it.'
+    );
+  }
+  if (config.delivery === undefined) {
+    return (
+      `${configPath} has no "delivery" object, so a passed attempt would stay local and no pull ` +
+      'request could be completed. A queue command needs one; docs/WORKFLOW.md section 8 defines it.'
+    );
+  }
+  const delivery = config.delivery;
+  const completion = delivery.completion;
+  if (completion === undefined) {
+    return (
+      `${configPath} configures "delivery" without "delivery.completion", so nothing would ever ` +
+      'mark a ticket Done. A queue command needs that object; docs/WORKFLOW.md section 10 defines ' +
+      'it.'
+    );
+  }
+  const review = config.review;
+  if (review.repository !== delivery.repository) {
+    return (
+      `the review repository "${review.repository}" is not the delivery repository ` +
+      `"${delivery.repository}". A queue reviews the pull request it delivered, so the two ` +
+      'objects must name the same repository (docs/WORKFLOW.md sections 8 to 10).'
+    );
+  }
+  if (completion.lensCheckName !== review.checkName) {
+    return (
+      `"delivery.completion.lensCheckName" is "${completion.lensCheckName}" but the review ` +
+      `publishes its check as "${review.checkName}", so the completion gate would never see the ` +
+      "reviewer's verdict. Make the two names equal (docs/WORKFLOW.md section 10)."
+    );
+  }
+  return null;
+}
+
+/** One review scan's summary, as the loop reads it. */
+function reviewPhase(summary: ReviewSummary): QueueReviewOutcome {
+  if (summary.outcome === 'cancelled') {
+    return { state: 'cancelled', detail: 'the review was stopped' };
+  }
+  if (summary.problem !== null) {
+    return { state: 'attention', detail: summary.problem };
+  }
+  const [item] = summary.items;
+  if (item === undefined) {
+    return {
+      state: 'attention',
+      detail:
+        'the ticket is not in the configured review status, so the queue cannot review what it ' +
+        'just delivered',
+    };
+  }
+  if (item.disposition === 'attention') {
+    return { state: 'attention', detail: item.detail };
+  }
+  if (item.disposition === 'skipped') {
+    return {
+      state: 'attention',
+      detail: `it left the review status before it could be reviewed (${item.detail})`,
+    };
+  }
+  if (item.disposition === 'unchanged') {
+    return {
+      state: 'clear',
+      detail: `its current head already carries the reviewer's completed verdict (${item.detail})`,
+    };
+  }
+  return {
+    state: 'clear',
+    detail:
+      item.decision === 'approve'
+        ? `Nexus Lens approved it (${item.detail})`
+        : `Nexus Lens requested changes (${item.detail}); the completion path reads that verdict`,
+  };
+}
+
+/** One completion pass's outcome for the one ticket it was narrowed to. */
+function completionPhase(outcomes: readonly CompletionOutcome[]): QueueCompletionOutcome {
+  const [outcome] = outcomes;
+  if (outcome === undefined) {
+    return {
+      state: 'attention',
+      detail:
+        'the ticket is not in the configured review status, so the completion path had nothing to ' +
+        'read',
+    };
+  }
+  switch (outcome.status) {
+    case 'done':
+      return {
+        state: 'done',
+        detail: outcome.detail,
+        mergeCommit: outcome.mergeCommit ?? null,
+      };
+    case 'to-do':
+      return { state: 'to-do', detail: outcome.detail };
+    case 'pending':
+      return { state: 'pending', detail: outcome.detail };
+    case 'attention':
+      return { state: 'attention', detail: outcome.detail };
+    default:
+      // `observed`: nothing was concluded, and nothing was written. A queue
+      // cannot carry a ticket from that position, so a person looks at it.
+      return { state: 'attention', detail: outcome.detail };
+  }
+}
+
+/** A compact account of one queue invocation, and anything it could not do. */
+function describeQueueSummary(summary: QueueSummary, mode: QueueRunMode): string {
+  const lines = [
+    `queue ${mode}: ${summary.outcome}`,
+    `  completed  ${String(summary.completed)} ticket(s) reached the configured Done status`,
+    `  attempts   ${String(summary.attempts)} coding attempt(s) started`,
+  ];
+  if (summary.ticket !== null) {
+    lines.push(`  ticket     ${summary.ticket.ref.key} ${summary.ticket.ref.url}`);
+  }
+  if (summary.problem !== null) {
+    lines.push(`  problem    ${summary.problem}`);
+  }
+  return lines.join('\n');
+}
+
+/** How a queue invocation's own outcome becomes an exit code. */
+function exitCodeForQueue(summary: QueueSummary): number {
+  if (summary.outcome === 'cancelled') {
+    return EXIT_CANCELLED;
+  }
+  return summary.outcome === 'stopped' ? EXIT_INPUT_ERROR : EXIT_OK;
+}
+
+/**
+ * One `queue` invocation: load the configuration, refuse one that cannot
+ * complete a ticket, resolve the credentials its phases need, hold the intake
+ * lock for the whole run, and hand the serial loop its four ordinary phases.
+ */
+async function queueCommand(
+  options: QueueCommandOptions,
+  context: CliContext,
+): Promise<number> {
+  const { mode, configPath, repoPath } = options;
+  const { io } = context;
+
+  let config: HarnessConfig;
+  try {
+    config = await loadHarnessConfig(configPath);
+  } catch (cause) {
+    if (cause instanceof ConfigError) {
+      io.err(`error: ${cause.message}`);
+      return EXIT_INPUT_ERROR;
+    }
+    throw cause;
+  }
+
+  const problem = queueConfigurationProblem(config, configPath);
+  if (problem !== null) {
+    io.err(`error: ${problem}`);
+    return EXIT_INPUT_ERROR;
+  }
+  // The three objects the check above proved present.
+  const sourceConfig = config.source as JiraSourceConfig;
+  const reviewConfig = config.review;
+  const deliveryConfig = config.delivery;
+  const completionConfig = deliveryConfig?.completion;
+  if (reviewConfig === undefined || deliveryConfig === undefined || completionConfig === undefined) {
+    throw new Error('unreachable: the queue configuration was checked above');
+  }
+
+  const workDir = resolveWorkDir(config, configPath);
+  let token: string;
+  try {
+    token = resolveJiraToken(sourceConfig, process.env);
+  } catch (cause) {
+    if (cause instanceof SourceError) {
+      io.err(`error: ${cause.message}`);
+      return EXIT_INPUT_ERROR;
+    }
+    throw cause;
+  }
+  const reviewer = resolveReviewerToken(completionConfig.reviewerTokenEnv);
+  if (reviewer.problem !== null) {
+    io.err(`error: ${reviewer.problem}`);
+    return EXIT_INPUT_ERROR;
+  }
+
+  try {
+    // The three credentials the phases need are resolved here and nowhere else;
+    // each child gets neither the Jira token nor the App key path, and the
+    // reviewer's own token never reaches the coding runtime, the checks, or the
+    // operator's own `git`/`gh` commands (docs/architecture.md §9).
+    const privateKey = await resolveAppPrivateKey(reviewConfig, process.env);
+    const operatorEnvironment = environmentWithout(process.env, sourceConfig.tokenEnv);
+    const childEnvironment = environmentWithout(
+      operatorEnvironment,
+      completionConfig.reviewerTokenEnv,
+    );
+    const reviewerEnvironment = environmentWithout(
+      process.env,
+      sourceConfig.tokenEnv,
+      reviewConfig.app.privateKeyPathEnv,
+      'GH_TOKEN',
+      'GITHUB_TOKEN',
+      'GH_ENTERPRISE_TOKEN',
+      'GITHUB_ENTERPRISE_TOKEN',
+      completionConfig.reviewerTokenEnv,
+    );
+
+    const jiraParts = context.fetch === undefined ? {} : { fetch: context.fetch };
+    const jiraHttp = createHttpClient(sourceConfig, token, jiraParts);
+    const connector = createJiraSource(sourceConfig, token, jiraParts, jiraHttp);
+    // The review queue is the same connection with its eligibility status set
+    // to the review status: it claims nothing, transitions nothing, and posts
+    // no comment.
+    const reviewQueue = createJiraSource(
+      { ...sourceConfig, readyStatus: sourceConfig.reviewStatus },
+      token,
+      jiraParts,
+    );
+    const repository = createGitHubReviewClient(reviewConfig, privateKey, {
+      ...(context.fetch === undefined ? {} : { fetch: context.fetch }),
+      now: () => new Date(),
+    });
+    const deliveryParts = context.deliveryParts ?? {};
+    const delivery = createGitHubDelivery(deliveryConfig, {
+      ...deliveryParts,
+      env: deliveryParts.env ?? childEnvironment,
+    });
+    const completionParts = context.completionParts ?? {};
+    const completionActions = createGitHubCompletion(completionConfig, reviewer.token, {
+      ...completionParts,
+      env: completionParts.env ?? childEnvironment,
+    });
+
+    // One display for the whole invocation: every attempt of every ticket
+    // writes its progress through it, so the pane outlives the runs it shows.
+    const pane = createActivityDisplay(io);
+    const activeIo: CliIo = {
+      out: (text) => {
+        pane.line(text);
+      },
+      err: (text) => {
+        pane.around(() => {
+          io.err(text);
+        });
+      },
+    };
+    const sourceIo = { out: activeIo.out, err: activeIo.err };
+
+    const stop = new AbortController();
+    const release = (context.signals ?? hostSignals()).onInterrupt(() => {
+      if (stop.signal.aborted) {
+        activeIo.err(
+          'interrupt received again: the queue is already stopping, and this CLI is still ' +
+            'waiting for the active phase to finish before it exits.',
+        );
+        return;
+      }
+      activeIo.err(
+        [
+          'interrupt received: asking the queue to stop, and waiting for the active phase and its',
+          'cleanup before this command exits. Artifacts, receipts, and workspaces are kept, and no',
+          'next ticket is started.',
+        ].join('\n'),
+      );
+      stop.abort(new Error('the user interrupted the queue'));
+    });
+
+    try {
+      // The source/output preflight comes first, exactly as it does for a finite
+      // batch: a refused checkout must not leave an intake lock behind. The
+      // whole invocation then holds one intake lock, so a second consumer cannot
+      // take work while this queue is between tickets or waiting in watch mode.
+      try {
+        await preflightSource({
+          repoPath,
+          workDir,
+          bounds: { stop: stop.signal },
+        });
+      } catch (cause) {
+        if (cause instanceof WorkspaceError) {
+          activeIo.err(cause.message);
+          return EXIT_INPUT_ERROR;
+        }
+        throw cause;
+      }
+      const lock = await acquireQueueLock(workDir, activeIo);
+      if (lock === null) {
+        return EXIT_INPUT_ERROR;
+      }
+
+      try {
+        const intake: SourceContext = {
+          source: connector,
+          workDir,
+          tiers: escalationTiers(config),
+          repoPath,
+          io: sourceIo,
+          stop: stop.signal,
+          preflight: preflightSource,
+          delivery,
+          run: ({ task, sourceRef, stop: runStop, tier, continuedWorkspace, onWorkspaceReady, guidance }) => {
+            const agent = tier?.agent ?? config.agent;
+            const dependencies = composeDependencies(
+              context,
+              activeIo,
+              () => undefined,
+              agent,
+              childEnvironment,
+              pane,
+            );
+            return runTask(
+              {
+                task,
+                config:
+                  tier === undefined ? config : { ...config, agent, maxRepairs: tier.maxRepairs },
+                repoPath,
+                workDir,
+                stop: runStop,
+                sourceRef,
+                ...(tier === undefined ? {} : { tierName: tier.name }),
+                ...(guidance === undefined ? {} : { guidance }),
+                ...(continuedWorkspace === undefined ? {} : { continuedWorkspace }),
+                ...(onWorkspaceReady === undefined ? {} : { onWorkspaceReady }),
+              },
+              dependencies,
+            );
+          },
+          now: () => new Date(),
+          sleep: abortableSleep,
+        };
+
+        const reviewerTurn = createReviewerTurn({
+          selection: reviewConfig.reviewer,
+          environment: reviewerEnvironment,
+          onActivity: (activity) => {
+            pane.activity(activity);
+          },
+        });
+
+        const summary = await runQueue(
+          {
+            io: sourceIo,
+            stop: stop.signal,
+            sleep: abortableSleep,
+            pollIntervalMs: sourceConfig.pollIntervalSeconds * 1000,
+            completionPollIntervalMs: completionConfig.pollIntervalSeconds * 1000,
+            consume: async ({ only }): Promise<SourceTake> => {
+              try {
+                return await takeOneItem(intake, {
+                  lockHeld: true,
+                  ...(only === null ? {} : { only }),
+                });
+              } catch (cause) {
+                if (cause instanceof SourceError || cause instanceof WorkspaceError) {
+                  return {
+                    outcome: 'attention',
+                    ticket: only,
+                    run: null,
+                    skipped: 0,
+                    problem: cause.message,
+                    cleanupConfirmed: true,
+                  };
+                }
+                throw cause;
+              }
+            },
+            review: async ({ ticket }): Promise<QueueReviewOutcome> => {
+              const scan: ReviewScanContext = {
+                queue: {
+                  list: (signal) => reviewQueue.listEligible(signal),
+                  prepare: (candidate, signal) => reviewQueue.prepare(candidate, signal),
+                },
+                repository,
+                reviewer: reviewerTurn,
+                workDir,
+                login: reviewConfig.app.login,
+                checkName: reviewConfig.checkName,
+                reviewerTimeoutMs: config.taskTimeoutMinutes * 60_000,
+                io: sourceIo,
+                stop: stop.signal,
+                now: () => new Date(),
+                sleep: abortableSleep,
+                only: ticket.ref,
+              };
+              try {
+                return reviewPhase(await scanReviews(scan, 1));
+              } catch (cause) {
+                if (stop.signal.aborted) {
+                  return { state: 'cancelled', detail: 'the review was stopped' };
+                }
+                if (cause instanceof ReviewError || cause instanceof SourceError) {
+                  return { state: 'attention', detail: cause.message };
+                }
+                throw cause;
+              }
+            },
+            complete: async ({ ticket }): Promise<QueueCompletionOutcome> => {
+              const pass = createCompletionPass({
+                config: completionConfig,
+                repository: deliveryConfig.repository,
+                baseBranch: deliveryConfig.baseBranch,
+                source: createJiraCompletionSource(sourceConfig, jiraHttp),
+                actions: completionActions,
+                workDir,
+                io: sourceIo,
+                now: () => new Date(),
+                sleep: abortableSleep,
+                only: ticket.ref,
+              });
+              try {
+                return completionPhase(await pass.run(stop.signal));
+              } catch (cause) {
+                if (stop.signal.aborted) {
+                  return { state: 'cancelled', detail: 'the completion reading was stopped' };
+                }
+                if (cause instanceof SourceError) {
+                  return { state: 'attention', detail: cause.message };
+                }
+                throw cause;
+              }
+            },
+            ready: async ({ mergeCommit }) => {
+              await refreshSource(
+                {
+                  repoPath,
+                  baseBranch: deliveryConfig.baseBranch,
+                  repository: deliveryConfig.repository,
+                  mergedCommit: mergeCommit,
+                  bounds: { stop: stop.signal },
+                },
+                context.refreshParts ?? {},
+              );
+            },
+          },
+          mode,
+        );
+
+        pane.close();
+        activeIo.out(describeQueueSummary(summary, mode));
+        return exitCodeForQueue(summary);
+      } finally {
+        await releaseQueueLock(lock, activeIo);
+      }
+    } finally {
+      release();
+      pane.close();
+    }
+  } catch (cause) {
+    if (cause instanceof SourceError || cause instanceof WorkspaceError) {
+      io.err(`error: ${cause.message}`);
+      return EXIT_INPUT_ERROR;
+    }
+    throw cause;
+  }
+}
+
+/** The exclusive intake lock, reported where a person reads it. */
+async function acquireQueueLock(
+  workDir: string,
+  io: CliIo,
+): Promise<{ readonly dir: string; readonly release: () => Promise<void> } | null> {
+  try {
+    return await acquireIntakeLock(workDir, () => new Date());
+  } catch (cause) {
+    if (cause instanceof SourceError) {
+      io.err(`error: ${cause.message}`);
+      return null;
+    }
+    throw cause;
+  }
+}
+
+/** Releasing the queue's own lock, reported when it could not be released. */
+async function releaseQueueLock(
+  lock: { readonly dir: string; readonly release: () => Promise<void> } | null,
+  io: CliIo,
+): Promise<void> {
+  if (lock === null) {
+    return;
+  }
+  try {
+    await lock.release();
+  } catch (cause) {
+    io.err(
+      `the intake lock "${lock.dir}" was left in place for inspection: ${messageOf(cause)}`,
+    );
+  }
+}
+
+/** `queue run` and `queue watch`: the two serial queue subcommands. */
+export async function queueCli(args: readonly string[], context: CliContext): Promise<number> {
+  const { cwd, io } = context;
+  const [subcommand, ...rest] = args;
+
+  if (subcommand === undefined) {
+    io.err(`error: queue requires one of: run, watch\n${USAGE_HINT}`);
+    return EXIT_USAGE;
+  }
+  if (subcommand.startsWith('-')) {
+    io.err(`error: unknown option "${subcommand}"\n${USAGE_HINT}`);
+    return EXIT_USAGE;
+  }
+  if (subcommand !== 'run' && subcommand !== 'watch') {
+    io.err(
+      `error: unknown queue command "${subcommand}"; expected "run" or "watch"\n${USAGE_HINT}`,
+    );
+    return EXIT_USAGE;
+  }
+
+  const parsed = parseOptions(rest, subcommand === 'run' ? QUEUE_RUN_OPTIONS : QUEUE_WATCH_OPTIONS);
+  if (!parsed.ok) {
+    io.err(`error: ${parsed.message}\n${USAGE_HINT}`);
+    return EXIT_USAGE;
+  }
+
+  const missing = [
+    parsed.options.config === undefined ? '--config' : undefined,
+    parsed.options.repo === undefined ? '--repo' : undefined,
+  ].filter((name): name is string => name !== undefined);
+  if (missing.length > 0) {
+    io.err(`error: queue ${subcommand} requires ${listOptions(missing)}\n${USAGE_HINT}`);
+    return EXIT_USAGE;
+  }
+
+  return queueCommand(
+    {
+      mode: subcommand,
+      configPath: path.resolve(cwd, parsed.options.config ?? ''),
+      repoPath: path.resolve(cwd, parsed.options.repo ?? ''),
+    },
+    context,
+  );
+}

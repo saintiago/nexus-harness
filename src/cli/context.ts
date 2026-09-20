@@ -9,6 +9,7 @@
 import type { GitHubDeliveryParts } from '../delivery/github.js';
 import type { GitHubCompletionParts } from '../delivery/completion.js';
 import type { RunnerDependencies } from '../runs/contracts.js';
+import type { SourceRefreshParts } from '../workspace/refresh.js';
 
 /** The run passed, or the CLI printed what it was asked for. */
 export const EXIT_OK = 0;
@@ -108,4 +109,11 @@ export interface CliContext {
    * caller gives none: nothing in production substitutes them.
    */
   completionParts?: GitHubCompletionParts;
+  /**
+   * The source-readiness step's own outward boundary, when a caller needs to
+   * stand in for it: the URL the delivery repository is fetched from. The
+   * configured repository's HTTPS URL when a caller gives none, so nothing in
+   * production substitutes it.
+   */
+  refreshParts?: SourceRefreshParts;
 }
