@@ -1266,12 +1266,15 @@ and only a read.
 - **live verification of the corrected Nexus Lens path.** HARN-14's operator notes report an
   earlier live App-authored request for changes and a failed app-owned check, which exposed review
   defects. These corrections are verified offline with a fake GitHub API and generated test keys;
-  no live exercise was run for them, and the repository-view path — the pinned local clone a
-  reviewer inspects instead of an assembled patch — is offline evidence too: no live reviewer turn
-  has read a view from this checkout. The observed case behind it — HARN-24's pull request #47,
-  whose 39 files rendered as 325,809 characters and was refused before any reviewer turn ran — is
-  covered offline by a change larger than the old guard reaching the reviewer from a real retained
-  workspace; running the equivalent live turn stays the operator's step. The operator must
+  the task's operator feedback reports a live Astra review of PR #50 at
+  `716f73d5130874bcfba31dc96745208995da64ac`, whose 147,666-character diff exceeded the
+  removed guard. That turn inspected the pinned repository with Git/file tools and published an
+  attributable request-changes review and failed App check. This checkout's follow-up corrections
+  (detecting ignored writes, launching inside the pinned checkout, and exercising actual reads in
+  deterministic tests) have offline coverage only. The original observed case, HARN-24's PR #47,
+  had all 39 file patches but was refused at 325,809 rendered characters. Replaying that exact
+  case and rechecking the corrected runtime with a real reviewer remain operator steps; this
+  coding turn cannot use provider accounts or publish reviews. The operator must
   retain a readable workspace ledger whose immutable source identity and source repository match
   the ticket and connected project: review now uses intake's ownership validation before PR lookup,
   including before reconciling an existing approval. The ownership correction is also verified

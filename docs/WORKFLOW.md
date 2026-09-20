@@ -686,19 +686,17 @@ The queue is the configured project, issue type, and label in the `source`'s **r
    description exceeding 8,000 characters is refused before a reviewer turn, and so is a view
    that cannot be prepared: no retained workspace on this machine, a head or base commit it does
    not hold, a clone that fails, or a view that is not clean.
-6. The `reviewer` launch runs as **one bounded turn** in its own evidence directory under
-   `<workDir>/reviews/<reviewId>/`, one directory above the view (`repo/`), with the same
-   adapter, the same non-interactive launch, and the same task timeout a run gets. The working
-   directory is deliberately not the checkout: a runtime started inside the reviewed tree would
-   load the pull request's own `AGENTS.md` files as instructions that govern the turn, and those
-   are evidence the reviewer reads from the view, never commands it obeys. Review turns
-   add `codex exec --skip-git-repo-check` because the evidence directory itself is not a Git
-   repository; coding turns keep the repository check. The prompt carries the ticket, the pull
+6. The `reviewer` launch runs as **one bounded turn** inside the pinned repository view at
+   `<workDir>/reviews/<reviewId>/repo/`, with the same adapter, non-interactive launch and task
+   timeout a run gets. The ordinary Git repository check stays enabled. The verdict is written
+   outside the view, at the absolute path supplied in the prompt in the parent evidence directory.
+   The repository's applicable `AGENTS.md` files remain available to read as review evidence;
+   they cannot authorize fixes or publication. The prompt carries the ticket, the pull
    request's identity and head/base commits, the CI evidence, the view's location, and the
    verdict contract — never the patch, and never the repository's `AGENTS.md` contents, which the
    reviewer reads from the view like any other file. It is instructed to review only: it must not
-   change the view (no edits, commits, checkouts, fetches, or pushes), implement fixes, commit,
-   push, merge, or edit the ticket or the pull request, and it must write one `verdict.json` (a
+   change the view (including ignored files; no edits, commits, checkouts, fetches, or pushes),
+   implement fixes, commit, push, merge, or edit the ticket or the pull request, and it must write one `verdict.json` (a
    `verdict` of `approve`, `request_changes`, or `inconclusive`, a summary, and a findings array).
    Findings are blocking; approval requires an empty findings array and sufficient evidence. The
    reviewer must select `inconclusive` when material code/test context or tools are unavailable,
