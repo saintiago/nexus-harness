@@ -770,7 +770,9 @@ what is missing, before any credential is resolved.
 The queue resolves the Jira token named by `source.tokenEnv` and the App key path named by
 `review.app.privateKeyPathEnv`. Its completion reader obtains a current installation token from
 the existing App client before each GitHub evidence read; that client refreshes tokens near expiry.
-The installation must grant Actions read access for the configured post-merge workflows. Queue
+Token requests retain the Lens permissions listed in §9, including during renewal; they do not
+request additional Actions access. The configured public repository's post-merge workflows are
+read with that token; inaccessible workflow evidence stops the queue for attention. Queue
 mode does not use a static token from `delivery.completion.reviewerTokenEnv`; that setting remains
 in the shared completion configuration, and standalone source commands still use it as §10 describes.
 The operator's Git/`gh` credential alone arms auto-merge. Coding turns, checks, and operator commands

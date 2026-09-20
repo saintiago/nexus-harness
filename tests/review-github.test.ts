@@ -53,7 +53,7 @@ function clientFixture(
 }
 
 describe('the review GitHub boundary', () => {
-  it('renews the App token after an hour idle and scopes completion workflow reads', async () => {
+  it('renews the App token after an hour idle using only the installed Lens permissions', async () => {
     let clock = Date.parse('2026-09-20T12:00:00Z');
     let issued = 0;
     const client = createGitHubReviewClient(
@@ -67,12 +67,17 @@ describe('the review GitHub boundary', () => {
       pem,
       {
         now: () => new Date(clock),
-        completionReads: true,
         fetch: async (input, init) => {
           expect(String(input)).toContain('/app/installations/123/access_tokens');
-          expect(JSON.parse(String(init?.body))).toMatchObject({
+          expect(JSON.parse(String(init?.body))).toEqual({
             repositories: ['repo'],
-            permissions: { actions: 'read' },
+            permissions: {
+              pull_requests: 'write',
+              checks: 'write',
+              contents: 'read',
+              statuses: 'read',
+              metadata: 'read',
+            },
           });
           return new Response(
             JSON.stringify({

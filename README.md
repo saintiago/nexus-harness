@@ -629,8 +629,10 @@ A queue command needs three objects to be configured: `source` (the Jira queue i
 the path that ends a ticket). The loader already requires those objects to agree — same repository,
 same App, same check name — so a configuration that could never complete a ticket is refused before
 any credential is resolved. The queue uses the Jira service-account token and the App's private
-key path, renewing the App installation token for completion evidence reads as needed. The App
-needs Actions read access for post-merge workflows; only the operator credential arms auto-merge.
+key path, renewing the App installation token for completion evidence reads as needed with the
+same Lens permissions used by reviews. Public post-merge workflow reads need no added Actions
+permission in the token request; inaccessible evidence stops the queue for attention. Only the
+operator credential arms auto-merge.
 Queue mode does not require a pre-minted token in `reviewerTokenEnv`. Each child gets only the
 credentials its phase needs. [docs/WORKFLOW.md](docs/WORKFLOW.md#11-serial-queue--queue-run-and-queue-watch) §11 is
 the command contract and [docs/spec.md](docs/spec.md) §11 the behaviour.

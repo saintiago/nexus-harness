@@ -322,9 +322,11 @@ for attention. Ready items carrying retained workspace pointers resume before un
 in Jira's native order among repairs. The queue never adopts or resets workspaces.
 
 Queue completion evidence reads obtain a current installation token through the existing Lens App
-authentication boundary, which renews expiring tokens. The queue requests Actions read permission
-for post-merge workflows and never freezes a reader token for a long-running process. Operator
-credentials remain exclusive to auto-merge mutations; standalone one-item commands are unchanged.
+authentication boundary, which renews expiring tokens with the same installed Lens permission set
+used for reviews. Public post-merge workflow reads require no additional permission in the token
+request; an inaccessible workflow stops the queue for attention. The queue never freezes a reader
+token for a long-running process. Operator credentials remain exclusive to auto-merge mutations;
+standalone one-item commands are unchanged.
 
 ### Shape
 

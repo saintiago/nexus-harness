@@ -313,7 +313,6 @@ async function queueCommand(options: QueueCommandOptions, context: CliContext): 
     const repository = createGitHubReviewClient(reviewConfig, privateKey, {
       ...(context.fetch === undefined ? {} : { fetch: context.fetch }),
       now: () => new Date(),
-      completionReads: true,
     });
     const deliveryParts = context.deliveryParts ?? {};
     const delivery = createGitHubDelivery(deliveryConfig, {

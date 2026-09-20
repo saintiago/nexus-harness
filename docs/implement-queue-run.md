@@ -107,9 +107,11 @@ among repairs. Done items are never claimed or reviewed again.
 
 The queue obtains completion reader credentials from the same expiring GitHub App installation
 authentication boundary as Lens. Every completion evidence read asks that boundary for a current
-token, including after long coding turns, pending CI and idle waits. Only queue mode requests the
-additional Actions read permission. Auto-merge still uses only the operator credential. The
-`reviewerTokenEnv` setting remains required by the completion schema and is stripped from child
+token, including after long coding turns, pending CI and idle waits. Token requests keep the
+installed Lens permission set used by reviews, without adding Actions access: public post-merge
+workflow evidence is read with the same token. Inaccessible evidence stops the queue for attention.
+Auto-merge still uses only the operator credential. The `reviewerTokenEnv` setting remains required
+by the completion schema and is stripped from child
 environments, but queue mode does not require or capture its value; standalone source commands
 retain their existing credential behavior.
 

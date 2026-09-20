@@ -337,6 +337,19 @@ describe('the queue command line', () => {
         const json = (data: unknown) => new Response(JSON.stringify(data));
         if (url.hostname === 'api.github.com') {
           if (url.pathname.endsWith('/access_tokens')) {
+            // Exercise the production queue's token request: the installed
+            // Lens App does not grant Actions permission, even though public
+            // post-merge workflow evidence is readable with its token.
+            expect(body).toEqual({
+              repositories: ['nexus-harness'],
+              permissions: {
+                pull_requests: 'write',
+                checks: 'write',
+                contents: 'read',
+                statuses: 'read',
+                metadata: 'read',
+              },
+            });
             tokens += 1;
             return json({ token: 'fresh-app-token', expires_at: '2099-01-01T00:00:00Z' });
           }

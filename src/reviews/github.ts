@@ -51,8 +51,6 @@ const MAX_EVIDENCE_CHECKS = 30;
 
 /** What a caller may substitute in the transport, for tests. */
 export interface GitHubReviewParts {
-  /** Queue completion also reads post-merge Actions runs. */
-  readonly completionReads?: boolean;
   readonly fetch: typeof fetch;
   readonly now: () => Date;
   /** The API origin; production is {@link GITHUB_API_BASE_URL}. */
@@ -423,13 +421,15 @@ export function createGitHubReviewClient(
       mutation: true,
       body: {
         repositories: [repo],
+        // Keep renewal within the installed Lens permission set. Queue
+        // completion reads public workflow evidence with this same token;
+        // requesting ungranted Actions access makes token issuance fail.
         permissions: {
           pull_requests: 'write',
           checks: 'write',
           contents: 'read',
           statuses: 'read',
           metadata: 'read',
-          ...(parts.completionReads === true ? { actions: 'read' } : {}),
         },
       },
     });
