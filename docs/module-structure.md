@@ -123,9 +123,10 @@ further would separate one decision from itself: `runs/runner.ts` (the loop), `s
   grouped by the agent's messages, with the oldest work lines dropped first, each entry stamped
   with the local time the viewer received it, and an agent message highlighted in yellow and reset
   — opens each pane with a boundary row naming the role the phase launched (`developer` or
-  `reviewer`) and the ticket, and finalizes a pane into the timeline when its invocation ends, so
-  one chronological, timestamped stream holds the bounded panes and the ordinary lifecycle lines in
-  the order they were produced. It falls back to stamped ordinary lines when the output is
+  `reviewer`) and the ticket, and finalizes a pane in place into the timeline when its invocation
+  ends: the rows it holds stay exactly where they were drawn, so one chronological, timestamped
+  stream holds the bounded panes and the ordinary lifecycle lines in the order they were produced.
+  It falls back to stamped ordinary lines when the output is
   redirected or the terminal cannot hold a pane.
   `cli/progress.ts` holds what those progress lines read as there, and only there: a line it does
   not recognize is written as the run wrote it. The directory is also the only place that composes
