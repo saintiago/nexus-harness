@@ -456,6 +456,7 @@ async function queueCommand(options: QueueCommandOptions, context: CliContext): 
             stop: runStop,
             tier,
             continuedWorkspace,
+            preferredWorkspaceId,
             onWorkspaceReady,
             guidance,
           }) => {
@@ -480,6 +481,13 @@ async function queueCommand(options: QueueCommandOptions, context: CliContext): 
                 ...(tier === undefined ? {} : { tierName: tier.name }),
                 ...(guidance === undefined ? {} : { guidance }),
                 ...(continuedWorkspace === undefined ? {} : { continuedWorkspace }),
+                // A first attempt of a fresh claim creates the workspace, so the
+                // name the item's source prefers for it — a Jira ticket key —
+                // travels with the request, exactly as `source run` hands it
+                // over. A continuation is not told one: its workspace is the
+                // one its pointer names
+                // (docs/implement-workspace-continuation.md).
+                ...(preferredWorkspaceId === undefined ? {} : { preferredWorkspaceId }),
                 ...(onWorkspaceReady === undefined ? {} : { onWorkspaceReady }),
               },
               dependencies,
