@@ -6,6 +6,8 @@
  *
  * - the existing Jira source and retained-workspace runner, taken one ticket at
  *   a time, with the configured delivery step;
+ * - the completion pass's arm step, taken for the delivered head before the
+ *   review can publish the final required check;
  * - the existing Nexus Lens review scan, narrowed to that one ticket;
  * - the existing review-to-completion pass, narrowed to that one ticket;
  * - the source-readiness step that fetches the base branch and only ever
@@ -21,14 +23,19 @@ import path from 'node:path';
 import { ConfigError, escalationTiers, loadHarnessConfig, resolveWorkDir } from '../config/load.js';
 import { createGitHubCompletion } from '../delivery/completion.js';
 import { createGitHubDelivery } from '../delivery/github.js';
-import type { QueueCompletionOutcome, QueueReviewOutcome, QueueSummary } from '../queue/loop.js';
+import type {
+  QueueArmOutcome,
+  QueueCompletionOutcome,
+  QueueReviewOutcome,
+  QueueSummary,
+} from '../queue/loop.js';
 import { runQueue } from '../queue/loop.js';
 import type { QueueRunMode } from '../queue/loop.js';
 import { runTask } from '../runs/runner.js';
 import { messageOf } from '../shared/errors.js';
 import type { HarnessConfig, JiraSourceConfig } from '../shared/types.js';
 import { createCompletionPass } from '../sources/completion.js';
-import type { CompletionOutcome } from '../sources/completion.js';
+import type { ArmOutcome, CompletionOutcome } from '../sources/completion.js';
 import type { SourceContext, SourceTake } from '../sources/contract.js';
 import { SourceError } from '../sources/contract.js';
 import { takeOneItem } from '../sources/coordinator.js';
@@ -189,6 +196,26 @@ function completionPhase(outcomes: readonly CompletionOutcome[]): QueueCompletio
       // `observed`: nothing was concluded, and nothing was written. A queue
       // cannot carry a ticket from that position, so a person looks at it.
       return { state: 'attention', detail: outcome.detail };
+  }
+}
+
+/** One arm pass's outcome for the one ticket it was narrowed to. */
+function armPhase(outcomes: readonly ArmOutcome[]): QueueArmOutcome {
+  const [outcome] = outcomes;
+  if (outcome === undefined) {
+    return {
+      state: 'attention',
+      detail:
+        'the ticket is not in the configured review status, so native auto-merge had nothing to arm',
+    };
+  }
+  switch (outcome.status) {
+    case 'armed':
+      return { state: 'armed', detail: outcome.detail };
+    case 'attention':
+      return { state: 'attention', detail: outcome.detail };
+    default:
+      return { state: 'observed', detail: outcome.detail };
   }
 }
 
@@ -472,6 +499,31 @@ async function queueCommand(options: QueueCommandOptions, context: CliContext): 
                     problem: cause.message,
                     cleanupConfirmed: true,
                   };
+                }
+                throw cause;
+              }
+            },
+            arm: async ({ ticket }): Promise<QueueArmOutcome> => {
+              const pass = createCompletionPass({
+                config: completionConfig,
+                repository: deliveryConfig.repository,
+                baseBranch: deliveryConfig.baseBranch,
+                source: createJiraCompletionSource(sourceConfig, jiraHttp),
+                actions: completionActions,
+                workDir,
+                io: sourceIo,
+                now: () => new Date(),
+                sleep: abortableSleep,
+                only: ticket.ref,
+              });
+              try {
+                return armPhase(await pass.arm(stop.signal));
+              } catch (cause) {
+                if (stop.signal.aborted) {
+                  return { state: 'cancelled', detail: 'the auto-merge request was stopped' };
+                }
+                if (cause instanceof SourceError || cause instanceof ReviewError) {
+                  return { state: 'attention', detail: cause.message };
                 }
                 throw cause;
               }

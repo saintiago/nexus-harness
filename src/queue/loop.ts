@@ -2,30 +2,32 @@
  * The serial queue control loop: one current ticket, one phase at a time.
  *
  * ```text
- * fresh scan -> take at most one ticket -> coding attempt -> delivery
- *      ^                                        |
- *      |                    review (Nexus Lens) v
- *      |                              completion (merge + post-merge CI)
- *      |                                   |            |
- *      |            Done: source readiness  |            |  To Do: repair the same ticket
- *      +-----------------------------------+            +--> back to the coding attempt
+ * fresh scan -> take at most one ticket -> coding attempt -> delivery -> arm auto-merge
+ *      ^                                                                         |
+ *      |                                        review (Nexus Lens)              v
+ *      |                                             completion (merge + post-merge CI)
+ *      |                                                 |            |
+ *      |            Done: source readiness               |            |  To Do: repair the same ticket
+ *      +-------------------------------------------------+            +--> back to the coding attempt
  * ```
  *
  * It owns sequencing and nothing else: every phase is an ordinary function the
  * CLI composed from the modules that already implement it (the Jira intake
- * coordinator, the GitHub delivery step, the Nexus Lens review scan, the
- * review-to-completion pass, and the source-readiness step). This module starts
- * no agent of its own, imports no connector, holds no state across invocations,
- * and never caches or pre-reserves a batch: after a ticket is confirmed Done it
- * asks for a fresh eligibility scan, and in watch mode it waits — visibly, as
- * the foreground process — for the next one.
+ * coordinator, the GitHub delivery step, the completion pass's arm operation,
+ * the Nexus Lens review scan, the review-to-completion pass, and the
+ * source-readiness step). This module starts no agent of its own, imports no
+ * connector, holds no state across invocations, and never caches or pre-reserves
+ * a batch: after a ticket is confirmed Done it asks for a fresh eligibility
+ * scan, and in watch mode it waits — visibly, as the foreground process — for
+ * the next one.
  *
  * Everything that is not a confirmed completion stops the loop with an
- * actionable result: a failed coding attempt, a review or completion that needs
- * a person, a pending completion the pass's own deadline did not resolve, and a
- * source checkout that cannot be proven ready. The blocked ticket is never
- * skipped for another one, and an interrupt stops waiting or the active bounded
- * phase without starting anything new (docs/WORKFLOW.md §11).
+ * actionable result: a failed coding attempt, an auto-merge request GitHub
+ * refused, a review or completion that needs a person, a pending completion the
+ * pass's own deadline did not resolve, and a source checkout that cannot be
+ * proven ready. The blocked ticket is never skipped for another one, and an
+ * interrupt stops waiting or the active bounded phase without starting anything
+ * new (docs/WORKFLOW.md §11).
  */
 import type { RunStatus } from '../shared/types.js';
 import { messageOf } from '../shared/errors.js';
@@ -44,6 +46,22 @@ export type QueueReviewOutcome =
   /** The ticket's current head now carries the reviewer's completed verdict. */
   | { readonly state: 'clear'; readonly detail: string }
   /** The review could not be completed, or needs a person before it can be. */
+  | { readonly state: 'attention'; readonly detail: string }
+  | { readonly state: 'cancelled'; readonly detail: string };
+
+/** What the arm phase did with the current ticket's delivered pull request. */
+export type QueueArmOutcome =
+  /**
+   * Native auto-merge is enabled for the current head, or was verified as
+   * already enabled. The review phase publishes the final required check next.
+   */
+  | { readonly state: 'armed'; readonly detail: string }
+  /**
+   * There is no open delivered pull request to arm. Completion verifies any
+   * merge a previous pass admitted.
+   */
+  | { readonly state: 'observed'; readonly detail: string }
+  /** GitHub refused the request; the ticket stays In Review for a person. */
   | { readonly state: 'attention'; readonly detail: string }
   | { readonly state: 'cancelled'; readonly detail: string };
 
@@ -99,6 +117,12 @@ export interface QueueLoopContext {
    * fresh eligibility scan, in the source's own priority order.
    */
   readonly consume: (request: { readonly only: QueueTicket | null }) => Promise<SourceTake>;
+  /**
+   * Arm native auto-merge for the current ticket's newly delivered or updated
+   * pull request, before the review phase publishes the final required check.
+   * An already armed current head is verified without a second request.
+   */
+  readonly arm: (request: { readonly ticket: QueueTicket }) => Promise<QueueArmOutcome>;
   /** Review the current ticket's pull request with the configured reviewer. */
   readonly review: (request: { readonly ticket: QueueTicket }) => Promise<QueueReviewOutcome>;
   /** Carry the current ticket's delivered pull request to Done or back to To Do. */
@@ -283,6 +307,14 @@ export async function runQueue(
     // conclusive finding returns to this same ticket before any fresh scan.
     for (;;) {
       if (stop.aborted) return cancelled();
+      const arm = await context.arm({ ticket });
+      if (stop.aborted || arm.state === 'cancelled') {
+        return cancelled();
+      }
+      if (arm.state === 'attention') {
+        return stopped(`${ticket.ref.key}: native auto-merge needs a person: ${arm.detail}`);
+      }
+      io.out(`${ticket.ref.key}: ${arm.detail}`);
       const review = await context.review({ ticket });
       if (stop.aborted || review.state === 'cancelled') {
         return cancelled();

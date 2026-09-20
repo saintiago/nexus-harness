@@ -278,12 +278,15 @@ results. `sources/completion.ts` runs a bounded completion pass after a source b
 `sources/jira/completion.ts` owns fresh issue reads, comment deduplication and native
 transition discovery. Completion never imports or starts a reviewer or coding runtime.
 The reader/reviewer token is separate from the trusted operator credential used only
-to arm auto-merge. See spec §10 and WORKFLOW §10 for this opt-in exception to the
-default no-merge/no-Done behavior.
+to arm auto-merge. The serial queue's arm step runs the completion pass's arm operation
+immediately after delivery and before the review scan can publish the final required
+check; the completion pass then verifies the recorded PR/head or re-arms it. See spec
+§10 and WORKFLOW §10 for this opt-in exception to the default no-merge/no-Done behavior.
 
 The serial queue adds no owner to that list: `queue/loop.ts` is sequencing only, and the
-review scan and the completion pass take an optional one-ticket scope so a queue never
-reviews, comments on, arms, or moves an item other than the ticket it is carrying.
+arm operation, the review scan and the completion pass take an optional one-ticket scope so
+a queue never reviews, comments on, arms, or moves an item other than the ticket it is
+carrying.
 `workspace/refresh.ts` owns the one new operation — fetch the configured base branch and
 fast-forward the operator's own checkout to the verified merge commit, or refuse with what
 to fix — and it is the only place the queue touches the source checkout. One intake lock is

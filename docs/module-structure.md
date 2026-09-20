@@ -531,6 +531,8 @@ boundary.
 
 
 The optional completion path adds `delivery/completion.ts` and `delivery/gate.ts` for
-GitHub reads and native auto-merge arming, `sources/completion.ts` for the bounded pass,
-and `sources/jira/completion.ts` for Jira feedback. It starts no agent and creates no
-workflow engine or service.
+GitHub reads and native auto-merge arming, `sources/completion.ts` for the bounded pass
+and its arm-before-review step, and `sources/jira/completion.ts` for Jira feedback. The
+serial queue owns only the order: arm the delivered head, review it, then verify the
+recorded arm through completion. It starts no agent and creates no workflow engine or
+service.

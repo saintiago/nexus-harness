@@ -645,9 +645,13 @@ What one invocation does:
 1. **One current ticket.** A fresh scan of the configured ready queue, in its own priority order,
    offers at most one ticket; it is claimed and run through the same workspace/check/repair loop,
    ladder included, and delivered as a pull request.
-2. **Review, then completion.** Nexus Lens reviews that ticket's head, and the completion path arms
-   native auto-merge once GitHub's rules allow it, waits for GitHub's own merge, requires every
-   configured post-merge workflow to succeed, and then comments and marks the ticket Done.
+2. **Arm, then review, then completion.** As soon as the pull request is delivered or updated, the
+   queue arms native auto-merge for that exact head — before the Nexus Lens check is published,
+   because GitHub refuses to arm a pull request whose required checks are already clean. Nexus Lens
+   then reviews that head; the completion path verifies the recorded arm, waits for GitHub's own
+   merge, requires every configured post-merge workflow to succeed, and then comments and marks the
+   ticket Done. A refused arm stops the queue with the refusal as evidence and leaves the ticket In
+   Review.
 3. **Repair before anything else.** Findings from the review, a definitively failed required check,
    or an unsuccessful post-merge workflow return the ticket to To Do with its pointer intact. The
    queue then continues **that** ticket in **that** retained workspace — same clone, same base,
@@ -1367,9 +1371,10 @@ infrastructure failures stay In Review.
 
 GitHub merged state and the expected push workflows on the exact merge commit are authoritative.
 The Jira comment marker deduplicates writes; it never substitutes for those checks.
-The local admission file records only the PR/head being followed and the polling deadline,
-before arming, so a restart can identify a PR that disappeared from the open list. Historical
-merged PRs without that admission are not backfilled.
+The local admission file records only the PR/head being followed and the polling deadline, once
+GitHub acknowledged the arm, so a restart verifies the armed head instead of arming twice and can
+identify a PR that disappeared from the open list. Historical merged PRs without that admission are
+not backfilled.
 
 The `queue run` and `queue watch` commands of [docs/WORKFLOW.md](docs/WORKFLOW.md#11-serial-queue--queue-run-and-queue-watch)
 §11 are what run this path per ticket, in order, with the Nexus Lens scan in front of it and the

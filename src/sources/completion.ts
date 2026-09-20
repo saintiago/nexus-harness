@@ -3,7 +3,12 @@
  * that carry a workspace pointer, and for each of them one deterministic
  * handling built only from live GitHub and Jira state.
  *
- * A local admission records only the PR/head and deadline, never its outcome.
+ * Native auto-merge is armed before the reviewer publishes the final required
+ * check: the queue arms the newly delivered or updated pull request first, so
+ * GitHub is never asked to arm a pull request whose status has just turned
+ * clean. A local admission records only the PR/head and deadline, never its
+ * outcome.
+ *
  * What happened is read back every time: the item's status and thread in Jira, and the
  * pull request in the repository GitHub owns. Comment markers are how a repeated
  * pass or a restart recognises the comment it already wrote — the thread is the
@@ -25,6 +30,7 @@
 import { mkdir, readFile, writeFile, rename } from 'node:fs/promises';
 import path from 'node:path';
 import type {
+  AutoMergeStatus,
   CompletionActions,
   CompletionRequest,
   GateFinding,
@@ -83,6 +89,33 @@ export interface CompletionOutcome {
 /** The pass the source command runs after a batch: one bounded scan. */
 export interface CompletionPass {
   run(stop: AbortSignal): Promise<readonly CompletionOutcome[]>;
+  /**
+   * Ask GitHub to enable native auto-merge for the current open pull request of
+   * the item this pass is scoped to, before the queue's review phase can publish
+   * the final required check. Re-running this against an already armed head is
+   * a verified no-op; a new head is re-armed.
+   */
+  arm(stop: AbortSignal): Promise<readonly ArmOutcome[]>;
+}
+
+/** What one attempt to arm native auto-merge did for one item. */
+export type ArmStatus =
+  /** Native auto-merge is enabled for the recorded pull request and head. */
+  | 'armed'
+  /** There is no open pull request to arm; completion verifies any admitted merge. */
+  | 'observed'
+  /** GitHub refused the request, or the evidence could not be recorded. */
+  | 'attention';
+
+/** One item's arm outcome, as the queue loop reads it. */
+export interface ArmOutcome {
+  readonly ref: { readonly key: string; readonly url: string };
+  readonly status: ArmStatus;
+  readonly detail: string;
+  /** The head the verified request covers, when one is recorded. */
+  readonly head?: string | null;
+  /** The pull request number the verified request covers, when one is recorded. */
+  readonly number?: number | null;
 }
 
 /**
@@ -163,9 +196,9 @@ async function ensureCompletionLogsDir(
 }
 
 /**
- * Records the head auto-merge was armed for, beside the item's other evidence.
- * A later pass reads it to name the merge it is waiting for, so a restart after
- * an uncertain write does not have to guess from the current head.
+ * Records the PR/head admitted for an auto-merge request before contacting
+ * GitHub. This is recovery identity, not proof that the request succeeded:
+ * live GitHub evidence must establish the arm or the actual reviewed merge.
  */
 async function recordArmedHead(
   workDir: string,
@@ -195,7 +228,7 @@ async function recordArmedHead(
   await rename(temporary, target);
 }
 
-/** What a previous pass recorded when it armed auto-merge, when it recorded one. */
+/** The PR/head a previous pass admitted for auto-merge, when it recorded one. */
 async function readArmedHead(
   workDir: string,
   issueId: string,
@@ -391,6 +424,20 @@ interface PullContext {
   readonly pull: PullRequestSnapshot;
 }
 
+/** What one attempt to arm the current pull request concluded. */
+type Arming =
+  | {
+      readonly kind: 'armed';
+      readonly head: string;
+      readonly number: number;
+      readonly detail: string;
+    }
+  | {
+      readonly kind: 'attention';
+      readonly detail: string;
+      readonly evidence: readonly string[];
+    };
+
 /**
  * One review-to-completion pass. It is built once per source command and reused
  * for every batch, so its clock and its sleeps are the invocation's own.
@@ -419,6 +466,99 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
     const request = requestFor(item, workspaceId);
     const pull = await actions.findPullRequest(request, stop);
     return pull === null ? null : { item, request, pull };
+  };
+
+  /**
+   * Makes sure GitHub holds a native auto-merge request for the open pull
+   * request's current head, before the reviewer's check can make the pull
+   * request clean. A request already enabled for this exact pull request is
+   * verified for the head GitHub holds now; a delivered repair's new head is
+   * re-armed. The local admission is persisted before the request, so a lost
+   * response or failed verification read cannot lose a merge's identity. A
+   * restart still verifies the arm or merge from GitHub. The merge-wait start
+   * is written only when completion first sees the approved head still awaiting
+   * its merge, so a long review does not consume the merge deadline.
+   */
+  const ensureArmed = async (
+    context: PullContext,
+    stop: AbortSignal,
+    wait: { readonly beginsHere: boolean },
+  ): Promise<Arming> => {
+    const { item, request, pull } = context;
+    const head = pull.headRefOid;
+    const previous = await readArmedHead(parts.workDir, item.ref.id);
+    if (pull.autoMergeRequest && previous?.number === pull.number && previous.head === head) {
+      return {
+        kind: 'armed',
+        head,
+        number: pull.number,
+        detail: `native auto-merge is already enabled for ${pull.url} at head ${head}`,
+      };
+    }
+
+    try {
+      // Persist intent before the remote mutation: GitHub can accept it and
+      // merge even if the response or subsequent verification read is lost.
+      // A failed local write must therefore prevent the remote request.
+      // The arm is not necessarily the moment the item begins waiting for a
+      // merge: in the queue it is armed before the review runs, and the wait
+      // starts when the completion pass first finds an approved head whose
+      // merge is still pending. A later pass preserves what is recorded here.
+      const inherited =
+        previous?.number === pull.number && previous.head === head ? previous.waitingSince : null;
+      const waitingSince =
+        inherited !== null && inherited !== ''
+          ? inherited
+          : wait.beginsHere
+            ? now().toISOString()
+            : null;
+      await recordArmedHead(
+        parts.workDir,
+        item.ref.id,
+        {
+          head,
+          number: pull.number,
+          waitingSince,
+        },
+        now,
+      );
+    } catch (cause) {
+      return {
+        kind: 'attention',
+        detail:
+          `the pull request/head record could not be written for ${pull.url} at head ${head} ` +
+          `(${messageOf(cause)}); auto-merge was not requested and the item stays In Review`,
+        evidence: [pull.url],
+      };
+    }
+
+    let status: AutoMergeStatus;
+    try {
+      status = await actions.enableAutoMerge(request, pull, head, stop, async () => {
+        const fresh = await source.readItem({ ref: item.ref, title: item.title }, stop);
+        return (
+          fresh !== null && fresh.pointers.length === 1 && fresh.pointers[0] === request.workspaceId
+        );
+      });
+    } catch (cause) {
+      return {
+        kind: 'attention',
+        detail:
+          `GitHub did not confirm auto-merge for ${pull.url} at head ${head}: ` +
+          `${messageOf(cause)}; the admission is retained for verification on restart; ` +
+          'the item stays In Review and no merge is assumed',
+        evidence: [pull.url],
+      };
+    }
+
+    return {
+      kind: 'armed',
+      head,
+      number: pull.number,
+      detail:
+        `native auto-merge ${status === 'enabled' ? 'enabled' : 'already enabled'} for ` +
+        `${pull.url} at head ${head}; GitHub merges it only when branch protection allows`,
+    };
   };
 
   /** The merge and post-merge reading, repeated until it concludes or the deadline passes. */
@@ -533,8 +673,8 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
     const { item, request, pull } = context;
 
     // GitHub's own merged state comes first. A pull request this path already
-    // armed may be merged by the time the next pass reads it — and a restart
-    // finds it merged without any local record — so what decides that item is
+    // admitted may be merged by the time the next pass reads it, even if the
+    // auto-merge response was lost — so what decides that item is
     // the merge itself and its post-merge workflows. The reviewer's approval on
     // that same head is still what says the merged commit is the reviewed work.
     const armed = await readArmedHead(parts.workDir, item.ref.id);
@@ -616,56 +756,16 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
     }
 
     // The merge this path is responsible for is the one GitHub would make from
-    // the head the reviewer's approval names, which is also the head a previous
-    // pass recorded when it armed auto-merge.
-    const reviewedHead = gate.review?.commitId ?? armed?.head ?? pull.headRefOid;
-    // The item is read once more before the one GitHub write this path makes: a
-    // person who moved it while the polls were running is respected.
-    const current = await source.readItem({ ref: item.ref, title: item.title }, stop);
-    if (current === null) {
-      return {
-        kind: 'observed',
-        detail: 'it left In Review before GitHub was asked to arm anything',
-      };
+    // the head the reviewer's approval names. The queue arms that head before
+    // the review runs; a completion pass that reads an unarmed approved pull
+    // request (a standalone source command, or a restart without the queue's
+    // arm step) still tries here, and GitHub's own refusal is reported.
+    const arming = await ensureArmed(context, stop, { beginsHere: true });
+    if (arming.kind === 'attention') {
+      return { kind: 'attention', detail: arming.detail, evidence: arming.evidence };
     }
-    await recordArmedHead(
-      parts.workDir,
-      item.ref.id,
-      // The arm is also the moment this item began waiting for GitHub: the
-      // deadline is measured from here, and a later pass keeps this value. An
-      // earlier pass's value is kept as it is, so re-arming an already-armed
-      // pull request never moves the item's own deadline.
-      {
-        head: reviewedHead,
-        number: pull.number,
-        waitingSince:
-          armed?.head === reviewedHead && armed.number === pull.number
-            ? (armed.waitingSince ?? now().toISOString())
-            : now().toISOString(),
-      },
-      now,
-    );
-    try {
-      await actions.enableAutoMerge(request, pull, reviewedHead, stop, async () => {
-        const fresh = await source.readItem({ ref: item.ref, title: item.title }, stop);
-        return (
-          fresh !== null && fresh.pointers.length === 1 && fresh.pointers[0] === request.workspaceId
-        );
-      });
-    } catch (cause) {
-      return {
-        kind: 'attention',
-        detail:
-          `GitHub did not enable auto-merge (${messageOf(cause)}); the item stays In Review and ` +
-          'nothing is assumed about the merge',
-        evidence: [pull.url],
-      };
-    }
-    io.out(
-      `${item.ref.key}: auto-merge enabled for ${pull.url} at approved head ${reviewedHead}; ` +
-        'GitHub merges it once its branch protection allows it',
-    );
-    return await followMerge(context, reviewedHead, stop, MERGE_WAIT_ROUNDS);
+    io.out(`${item.ref.key}: ${arming.detail}`);
+    return await followMerge(context, arming.head, stop, MERGE_WAIT_ROUNDS);
   };
 
   /** Posts one comment unless the thread already carries its marker. */
@@ -900,9 +1000,9 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
       };
     }
     if (context === null) {
-      // No open pull request matches the delivered branch. When a previous pass
-      // armed auto-merge, GitHub may have merged it and taken it out of that
-      // list: that pull request is read by number, and only the merge and its
+      // No open pull request matches the delivered branch. GitHub may have
+      // accepted an admitted auto-merge request and merged it even if its
+      // response was lost: that pull request is read by number, and the merge and its
       // post-merge workflows decide this item from here.
       const armed = await readArmedHead(parts.workDir, item.ref.id);
       if (armed?.number !== null && armed?.number !== undefined) {
@@ -969,6 +1069,87 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
     }
   };
 
+  /**
+   * The In Review items this pass may touch. A caller that named one ticket —
+   * the serial queue loop arms exactly the ticket it is carrying — reads
+   * nothing about another In Review item. The ticket is matched by the
+   * immutable identity of a source reference, never by its key.
+   */
+  const scopedCandidates = async (stop: AbortSignal): Promise<readonly SourceCandidate[]> => {
+    const candidates = await source.listReview(stop);
+    const only = parts.only;
+    if (only === undefined) return candidates;
+    return candidates.filter(
+      (candidate) =>
+        candidate.ref.type === only.type &&
+        candidate.ref.scope === only.scope &&
+        candidate.ref.id === only.id,
+    );
+  };
+
+  /**
+   * One item's arm step: find its open delivered pull request and verify or
+   * establish native auto-merge for the head GitHub holds now. Nothing here
+   * writes a comment or moves the item; a refusal is reported as attention and
+   * the item stays In Review.
+   */
+  const armOne = async (candidate: SourceCandidate, stop: AbortSignal): Promise<ArmOutcome> => {
+    const item = await source.readItem(candidate, stop);
+    if (item === null) {
+      return {
+        ref: candidate.ref,
+        status: 'observed',
+        detail: 'it is no longer In Review, so nothing was armed',
+      };
+    }
+    const { ref } = item;
+    if (item.pointers.length !== 1) {
+      return {
+        ref,
+        status: 'observed',
+        detail:
+          item.pointers.length === 0
+            ? 'it has no workspace pointer, so this path will not arm anything for it'
+            : `it carries ${String(item.pointers.length)} workspace pointers, so which workspace ` +
+              'produced the work is ambiguous',
+      };
+    }
+    const evidence = await ensureCompletionLogsDir(parts.workDir, item.ref.id);
+    if (!evidence.ready) {
+      return { ref, status: 'attention', detail: evidence.problem };
+    }
+    let context: PullContext | null;
+    try {
+      context = await contextFor(item, item.pointers[0] ?? '', stop);
+    } catch (cause) {
+      return {
+        ref,
+        status: 'attention',
+        detail: `GitHub could not be read before native auto-merge was armed: ${messageOf(cause)}`,
+      };
+    }
+    if (context === null) {
+      return {
+        ref,
+        status: 'observed',
+        detail:
+          'no single open delivered pull request matches its recorded workspace branch, so nothing ' +
+          'was armed; the completion path verifies any merge it admitted',
+      };
+    }
+    const arming = await ensureArmed(context, stop, { beginsHere: false });
+    if (arming.kind === 'attention') {
+      return { ref, status: 'attention', detail: arming.detail };
+    }
+    return {
+      ref,
+      status: 'armed',
+      detail: arming.detail,
+      head: arming.head,
+      number: arming.number,
+    };
+  };
+
   // The logical polling deadline survives passes; this wall-clock bound also stops a
   // hung GitHub/Jira read. A separate short feedback budget can report that expiry.
   const reportDeadline = async (
@@ -1019,21 +1200,7 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
 
   return {
     async run(stop) {
-      const candidates = await source.listReview(stop);
-      // A caller that named one ticket — the serial queue loop completes
-      // exactly the ticket it is carrying — reads and writes nothing about
-      // another In Review item (docs/WORKFLOW.md §11). The ticket is matched by
-      // the immutable identity of a source reference, never by its key.
-      const only = parts.only;
-      const scoped =
-        only === undefined
-          ? candidates
-          : candidates.filter(
-              (candidate) =>
-                candidate.ref.type === only.type &&
-                candidate.ref.scope === only.scope &&
-                candidate.ref.id === only.id,
-            );
+      const scoped = await scopedCandidates(stop);
       const outcomes: CompletionOutcome[] = [];
       for (const candidate of scoped) {
         if (stop.aborted) {
@@ -1068,6 +1235,35 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
             detail: 'Completion deadline expired; attention comment could not be confirmed',
             commentId: null,
           }));
+        }
+        outcomes.push(outcome);
+      }
+      return outcomes;
+    },
+    async arm(stop) {
+      const scoped = await scopedCandidates(stop);
+      const outcomes: ArmOutcome[] = [];
+      for (const candidate of scoped) {
+        if (stop.aborted) {
+          break;
+        }
+        const deadline = new AbortController();
+        const timer = setTimeout(
+          () => deadline.abort(new Error('Auto-merge deadline expired')),
+          config.deadlineSeconds * 1000,
+        );
+        let outcome: ArmOutcome;
+        try {
+          outcome = await armOne(candidate, AbortSignal.any([stop, deadline.signal]));
+        } catch (cause) {
+          if (!deadline.signal.aborted) throw cause;
+          outcome = {
+            ref: candidate.ref,
+            status: 'attention',
+            detail: 'the item deadline expired before native auto-merge could be armed',
+          };
+        } finally {
+          clearTimeout(timer);
         }
         outcomes.push(outcome);
       }

@@ -171,14 +171,17 @@ export interface CompletionActions {
   ): Promise<MergeVerdict>;
   /**
    * Ask GitHub to enable native auto-merge for this pull request, re-reading the
-   * head immediately before the request. Throws {@link DeliveryError} when
-   * GitHub refuses it — a conflict, branch protection, or a missing permission
-   * is an operator problem, never a coding finding.
+   * head immediately before the request and again after it. The caller arms as
+   * soon as the delivered pull request exists, before the final required check
+   * can turn green, because GitHub refuses to arm a pull request whose status is
+   * already clean. Throws {@link DeliveryError} when GitHub refuses it — a
+   * conflict, branch protection, or a missing permission is an operator
+   * problem, never a coding finding.
    */
   enableAutoMerge(
     request: CompletionRequest,
     pull: PullRequestSnapshot,
-    reviewedHead: string,
+    head: string,
     stop: AbortSignal,
     beforeWrite?: () => Promise<boolean>,
   ): Promise<AutoMergeStatus>;
@@ -263,6 +266,15 @@ export function createGitHubCompletion(
     if (key.toUpperCase() === config.reviewerTokenEnv.toUpperCase())
       delete operatorEnvironment[key];
   }
+  const credentialValues = [
+    ...Object.entries(operatorEnvironment),
+    ...Object.entries(readerEnvironment),
+  ]
+    .filter(([key]) =>
+      /^(GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|GITHUB_ENTERPRISE_TOKEN)$/i.test(key),
+    )
+    .map(([, value]) => value ?? '')
+    .filter((value) => value !== '');
   if (
     Object.entries(operatorEnvironment).some(
       ([key, value]) =>
@@ -273,6 +285,37 @@ export function createGitHubCompletion(
     throw new DeliveryError('Reviewer and operator credentials must be different');
   let sequence = 0;
   const tag = randomBytes(4).toString('hex');
+  /**
+   * What a failed command said, as one bounded line. The command log is the
+   * evidence an operator reads; the message that reaches the item keeps the
+   * reason — GitHub's own "Pull request is in clean status" included — without
+   * the workspace path or any credential value this process handed the command.
+   */
+  const failureDiagnostic = async (
+    result: { readonly stderrPath: string; readonly stdoutPath: string },
+    request: CompletionRequest,
+    commandSecrets: readonly string[],
+  ): Promise<string> => {
+    for (const file of [result.stderrPath, result.stdoutPath]) {
+      let text: string;
+      try {
+        text = await readFile(file, 'utf8');
+      } catch {
+        continue;
+      }
+      const line = text
+        .split(/\r?\n/)
+        .map((entry) => entry.trim())
+        .filter((entry) => entry !== '')
+        .at(-1);
+      if (line === undefined || line === '') continue;
+      let safe = line.split(request.workspacePath).join('<workspace>');
+      for (const credential of [...credentialValues, ...commandSecrets])
+        safe = safe.split(credential).join('[redacted]');
+      return safe.length <= 300 ? safe : `${safe.slice(0, 300)}…`;
+    }
+    return 'it wrote no diagnostic output';
+  };
   const execute = async (
     request: CompletionRequest,
     args: string[],
@@ -281,6 +324,7 @@ export function createGitHubCompletion(
     checks = false,
   ): Promise<unknown> => {
     let environment = operatorEnvironment;
+    let commandToken: string | null = null;
     if (!mutation) {
       const token = typeof reviewerToken === 'string' ? reviewerToken : await reviewerToken(stop);
       if (token.trim() === '')
@@ -294,6 +338,7 @@ export function createGitHubCompletion(
       )
         throw new DeliveryError('Reviewer and operator credentials must be different');
       environment = { ...readerEnvironment, GH_TOKEN: token };
+      commandToken = token;
     }
     const result = await runCommand({
       command: [parts.command ?? 'gh', ...args],
@@ -309,8 +354,14 @@ export function createGitHubCompletion(
       !(result.exitCode === 0 || (checks && (result.exitCode === 1 || result.exitCode === 8)))
     ) {
       // Command logs retain the diagnostic; never copy credentials or local paths to Jira.
+      const diagnostic = await failureDiagnostic(
+        result,
+        request,
+        commandToken === null ? [] : [commandToken],
+      );
       throw new DeliveryError(
-        `GitHub ${mutation ? 'auto-merge request' : 'evidence read'} failed (${result.outcome}, ${String(result.exitCode)}); operator attention required`,
+        `GitHub ${mutation ? 'auto-merge request' : 'evidence read'} failed ` +
+          `(${result.outcome}, ${String(result.exitCode)}): ${diagnostic}; operator attention required`,
       );
     }
     const value: unknown = JSON.parse(await readFile(result.stdoutPath, 'utf8'));
@@ -643,15 +694,25 @@ export function createGitHubCompletion(
     },
     readMerge,
     async enableAutoMerge(r, p, head, stop, beforeWrite) {
-      const verdict = await gate(r, p, stop);
-      if (verdict.status !== 'approved')
-        throw new DeliveryError('Review gate changed before arming');
-      if (beforeWrite && !(await beforeWrite()))
-        throw new DeliveryError('Ticket left In Review before arming');
       const current = await readPull(r, p.number, stop);
       identity(r, current, { ...p, headRefOid: head });
-      if (current.state !== 'OPEN' || current.isDraft || current.mergeable !== 'MERGEABLE')
-        throw new DeliveryError('PR cannot be armed in its current state');
+      // A pull request GitHub merged between the read and the request needs no
+      // arm: the completion path verifies that merge by its own evidence.
+      if (current.state === 'MERGED') return 'already-enabled';
+      if (current.state !== 'OPEN')
+        throw new DeliveryError(
+          `Pull request is ${current.state}, so GitHub was not asked to arm auto-merge`,
+        );
+      if (current.isDraft)
+        throw new DeliveryError(
+          'Pull request is a draft, so GitHub was not asked to arm auto-merge',
+        );
+      if (current.mergeable === 'CONFLICTING')
+        throw new DeliveryError(
+          'Pull request has merge conflicts, so GitHub was not asked to arm auto-merge',
+        );
+      if (beforeWrite && !(await beforeWrite()))
+        throw new DeliveryError('Ticket left In Review before arming');
       if (current.autoMergeRequest) return 'already-enabled';
       const answer = object(
         await execute(
@@ -672,6 +733,16 @@ export function createGitHubCompletion(
         object(object(answer['data'])['enablePullRequestAutoMerge'])['pullRequest'],
       )['autoMergeRequest'];
       if (!armed) throw new DeliveryError('GitHub did not acknowledge auto-merge');
+      // Read the pull request back: the request is only recorded for the exact
+      // head GitHub still holds, and a native merge that landed in the window is
+      // a success rather than a lost request.
+      const verified = await readPull(r, p.number, stop);
+      identity(r, verified, { ...p, headRefOid: head });
+      if (verified.state === 'MERGED') return 'enabled';
+      if (verified.state !== 'OPEN' || !verified.autoMergeRequest)
+        throw new DeliveryError(
+          'GitHub did not keep auto-merge enabled for the current head; it may still be unarmed',
+        );
       return 'enabled';
     },
   };
