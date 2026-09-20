@@ -3680,10 +3680,20 @@ describe('the source commands through the CLI', () => {
     process.env.JIRA_API_TOKEN = 'test-token';
 
     try {
+      let turns = 0;
       const dependencies: CliContext['dependencies'] = {
         runAgentTurn: async (request) => {
-          await writeFile(path.join(request.workspacePath, 'MARKER.md'), 'done\n', 'utf8');
-          return { summary: 'wrote the marker' };
+          turns += 1;
+          const file = turns === 1 ? 'MARKER.md' : 'SECOND.md';
+          await writeFile(path.join(request.workspacePath, file), 'done\n', 'utf8');
+          // Each attempt commits what it wrote: the next attempt continues this
+          // clone, and a coding turn starts only from committed state (HARN-35).
+          await gitOrFail(['add', file], request.workspacePath);
+          await gitOrFail(
+            ['commit', '--quiet', '--message', `write ${file}`],
+            request.workspacePath,
+          );
+          return { summary: `wrote ${file}` };
         },
       };
       const first = await runSourceCli(
@@ -3985,10 +3995,21 @@ describe('the source commands through the CLI', () => {
     process.env.JIRA_API_TOKEN = 'test-token';
 
     try {
+      let turns = 0;
       const dependencies: CliContext['dependencies'] = {
         runAgentTurn: async (request) => {
-          await writeFile(path.join(request.workspacePath, 'MARKER.md'), 'done\n', 'utf8');
-          return { summary: 'wrote the marker' };
+          turns += 1;
+          const file = turns === 1 ? 'MARKER.md' : 'SECOND.md';
+          await writeFile(path.join(request.workspacePath, file), 'done\n', 'utf8');
+          // Each attempt commits what it wrote: the renamed ticket continues the
+          // same clone, and a coding turn starts only from committed state
+          // (HARN-35).
+          await gitOrFail(['add', file], request.workspacePath);
+          await gitOrFail(
+            ['commit', '--quiet', '--message', `write ${file}`],
+            request.workspacePath,
+          );
+          return { summary: `wrote ${file}` };
         },
       };
       const first = await runSourceCli(
@@ -4441,22 +4462,26 @@ describe('the source commands through the CLI', () => {
         [
           // The flash attempt: an implementation turn and both repair turns its
           // allowance allows, every round red, so the allowance is spent on
-          // ordinary failed checks and the ladder climbs. The notes file is work
-          // nothing later touches, so the stronger attempt really inherits the
-          // weaker one's dirty working copy.
+          // ordinary failed checks and the ladder climbs. Every turn commits what
+          // it leaves — a coding turn starts only from committed state (HARN-35)
+          // — and the notes file is work nothing later touches, so the stronger
+          // attempt really inherits the weaker one's committed working copy.
           {
             edits: [
               { file: 'MARKER.md', text: 'not yet\n' },
               { file: 'NOTES.md', text: 'flash was here\n' },
             ],
+            commit: 'flash: the first try, committed',
             summary: 'flash: first try',
           },
           {
             edits: [{ file: 'MARKER.md', text: 'not yet\n' }],
+            commit: 'flash: the first repair, still wrong',
             summary: 'flash: first repair, still wrong',
           },
           {
             edits: [{ file: 'MARKER.md', text: 'not yet\n' }],
+            commit: 'flash: the second repair, still wrong',
             summary: 'flash: second repair, still wrong',
           },
           // The astra attempt continues the same clone and finishes it.
@@ -4656,11 +4681,29 @@ describe('the source commands through the CLI', () => {
         runtime.state,
         [
           // The first intake spends the whole ladder without fixing the check:
-          // flash's two turns, then astra's two.
-          { edits: [{ file: 'MARKER.md', text: 'not yet\n' }], summary: 'flash: first try' },
-          { edits: [{ file: 'MARKER.md', text: 'not yet\n' }], summary: 'flash: still wrong' },
-          { edits: [{ file: 'MARKER.md', text: 'not yet\n' }], summary: 'astra: first try' },
-          { edits: [{ file: 'MARKER.md', text: 'not yet\n' }], summary: 'astra: still wrong' },
+          // flash's two turns, then astra's two. Each turn commits what it
+          // leaves, because the turn that follows it — a repair, or the next
+          // rung, or the next cycle — starts only from committed state (HARN-35).
+          {
+            edits: [{ file: 'MARKER.md', text: 'not yet\n' }],
+            commit: 'flash: first try',
+            summary: 'flash: first try',
+          },
+          {
+            edits: [{ file: 'MARKER.md', text: 'not yet\n' }],
+            commit: 'flash: still wrong',
+            summary: 'flash: still wrong',
+          },
+          {
+            edits: [{ file: 'MARKER.md', text: 'not yet\n' }],
+            commit: 'astra: first try',
+            summary: 'astra: first try',
+          },
+          {
+            edits: [{ file: 'MARKER.md', text: 'not yet\n' }],
+            commit: 'astra: still wrong',
+            summary: 'astra: still wrong',
+          },
           // The re-armed issue is a new coding cycle, so it starts at the first
           // tier again — in the same retained workspace, with everything the
           // earlier cycles left in it.
