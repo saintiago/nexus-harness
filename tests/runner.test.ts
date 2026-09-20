@@ -3104,6 +3104,7 @@ describe('the collaborators a run is given', () => {
       workDir,
       runId: 'run-0001',
       runDir: path.join(workDir, 'run-0001'),
+      workspaceId: 'run-0001',
       workspacePath: path.join(workDir, 'run-0001', 'workspace'),
       logsDir: path.join(workDir, 'run-0001', 'logs'),
     };

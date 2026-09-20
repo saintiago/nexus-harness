@@ -98,8 +98,8 @@ export function composeDependencies(
 
   return {
     preflight: replaced.preflight ?? real.preflight,
-    allocateRunDirectory: async (workDir: string) => {
-      const run = await allocate(workDir);
+    allocateRunDirectory: async (workDir, placement) => {
+      const run = await allocate(workDir, placement);
       onAllocated(run);
       return run;
     },

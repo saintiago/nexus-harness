@@ -111,6 +111,16 @@ export interface SourceTask {
    * (docs/implement-workspace-continuation.md).
    */
   readonly pointers: readonly string[];
+  /**
+   * The name this source prefers for the workspace a first attempt creates,
+   * when it has one: the item's canonical key, for example `HARN-23`, so
+   * retained work is recognizable as the item it belongs to. It is a
+   * preference, never a path — the naming layer validates it like a pointer
+   * label and falls back to the run's own generated id — and a source that
+   * names none (or a task file, which has no source at all) keeps that
+   * generated name (docs/implement-workspace-continuation.md).
+   */
+  readonly preferredWorkspaceId?: string;
 }
 
 /**
@@ -253,6 +263,12 @@ export interface SourceRunRequest {
    * nothing for a run that creates one.
    */
   readonly continuedWorkspace?: ContinuedWorkspace;
+  /**
+   * The name the item's source prefers for the workspace a first attempt
+   * creates, when it has one; ignored for a continued attempt, whose workspace
+   * the pointer already names.
+   */
+  readonly preferredWorkspaceId?: string;
   /**
    * Called once, after a fresh workspace exists and before any coding turn: where
    * the work lives, so the source can record it on the item it came from.

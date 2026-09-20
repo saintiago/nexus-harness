@@ -1062,6 +1062,9 @@ describe('an allocated run directory', () => {
     expect(second.runDir).not.toBe(first.runDir);
     for (const run of [first, second]) {
       expect(path.relative(fixture.workDir, run.runDir)).toBe(path.join('runs', run.runId));
+      // A caller with no preference gets the generated name it always had:
+      // the workspace the run creates is named after the run itself.
+      expect(run.workspaceId).toBe(run.runId);
       expect(run.workspacePath).toBe(path.join(fixture.workDir, 'workspaces', run.runId));
       expect(run.logsDir).toBe(path.join(run.runDir, 'logs'));
       expect(existsSync(run.logsDir)).toBe(true);
@@ -1079,7 +1082,7 @@ describe('an allocated run directory', () => {
     const before = await snapshotRepository(taken.workspacePath);
 
     let generated = 0;
-    const next = await allocateRunDirectory(fixture.workDir, () => {
+    const next = await allocateRunDirectory(fixture.workDir, { kind: 'create' }, () => {
       generated += 1;
       return generated === 1 ? taken.runId : 'run-00000000000000-00000000';
     });
@@ -1095,7 +1098,7 @@ describe('an allocated run directory', () => {
     const before = await snapshotRepository(taken.workspacePath);
 
     const error = await expectWorkspaceError(
-      () => allocateRunDirectory(fixture.workDir, () => taken.runId),
+      () => allocateRunDirectory(fixture.workDir, { kind: 'create' }, () => taken.runId),
       /no free run directory/,
       /never reused, resumed, or overwritten/,
     );
@@ -1127,7 +1130,7 @@ describe('an allocated run directory', () => {
     ];
     for (const runId of unusable) {
       await expectWorkspaceError(
-        () => allocateRunDirectory(fixture.workDir, () => runId),
+        () => allocateRunDirectory(fixture.workDir, { kind: 'create' }, () => runId),
         /not a usable run ID/,
       );
     }
@@ -1135,6 +1138,122 @@ describe('an allocated run directory', () => {
     expect(existsSync(fixture.workDir)).toBe(false);
     expect((await readdir(fixture.parent)).sort()).toEqual(before);
     expect(await readFile(sentinel, 'utf8')).toBe('untouched\n');
+  });
+
+  it('names the workspace the way its caller prefers, and not the run', async () => {
+    const fixture = await createRepository();
+
+    const run = await allocateRunDirectory(fixture.workDir, {
+      kind: 'create',
+      preferredWorkspaceId: 'HARN-23',
+    });
+
+    // The ticket key is the visible name; the run keeps its generated id for its
+    // own evidence, and the two are different directories.
+    expect(run.workspaceId).toBe('HARN-23');
+    expect(run.workspacePath).toBe(path.join(fixture.workDir, 'workspaces', 'HARN-23'));
+    expect(run.runId).not.toBe('HARN-23');
+    expect(path.relative(fixture.workDir, run.runDir)).toBe(path.join('runs', run.runId));
+    expect(run.logsDir).toBe(path.join(run.runDir, 'logs'));
+    expect(existsSync(run.logsDir)).toBe(true);
+    expect(existsSync(run.workspacePath)).toBe(true);
+    expect(await readdir(run.workspacePath)).toEqual([]);
+    expect((await readdir(fixture.workDir)).sort()).toEqual(['runs', 'workspaces']);
+  });
+
+  it('uses the generated name when the preferred one cannot name a workspace', async () => {
+    const fixture = await createRepository();
+    const unusable = [
+      '../evil',
+      'a/b',
+      'a\\b',
+      '$(rm -rf)',
+      'run id',
+      'HARN.23',
+      '..',
+      '',
+      'x'.repeat(65),
+    ];
+
+    for (const preferredWorkspaceId of unusable) {
+      const run = await allocateRunDirectory(fixture.workDir, {
+        kind: 'create',
+        preferredWorkspaceId,
+      });
+
+      // A preference is never a path: a name that cannot name a workspace is
+      // not used, and the run falls back to the generated name it would have had.
+      expect(run.workspaceId).toBe(run.runId);
+      expect(run.workspacePath).toBe(path.join(fixture.workDir, 'workspaces', run.runId));
+      expect(existsSync(run.workspacePath)).toBe(true);
+    }
+
+    expect((await readdir(fixture.workDir)).sort()).toEqual(['runs', 'workspaces']);
+    // A preference is never followed out of the output directory: nothing but
+    // the output location itself was created beside the source repository.
+    expect((await readdir(fixture.parent)).sort()).toEqual(['repo', 'runs']);
+  });
+
+  it('refuses a preferred name a directory already holds, and creates nothing else', async () => {
+    const fixture = await createRepository();
+    const held = path.join(fixture.workDir, 'workspaces', 'HARN-23');
+    await mkdir(held, { recursive: true });
+    await writeFile(path.join(held, 'PRIVATE.txt'), 'another ticket\n', 'utf8');
+    const runsRoot = path.join(fixture.workDir, 'runs');
+
+    const error = await expectWorkspaceError(
+      () =>
+        allocateRunDirectory(fixture.workDir, {
+          kind: 'create',
+          preferredWorkspaceId: 'HARN-23',
+        }),
+      /is already held/,
+      /never overwrites or adopts/,
+      /move it aside/,
+    );
+
+    // The refusal names the name it could not use, and nothing was created for
+    // the run: a preferred name is refused, never replaced by another one.
+    expect(error.message).toContain(held);
+    expect(await readFile(path.join(held, 'PRIVATE.txt'), 'utf8')).toBe('another ticket\n');
+    expect(await readdir(runsRoot)).toEqual([]);
+  });
+
+  it('refuses a preferred name only a ledger holds', async () => {
+    const fixture = await createRepository();
+    const ledgerPath = path.join(fixture.workDir, 'workspaces', 'HARN-23.json');
+    await mkdir(path.dirname(ledgerPath), { recursive: true });
+    await writeFile(ledgerPath, '{"version":1}\n', 'utf8');
+
+    const error = await expectWorkspaceError(
+      () =>
+        allocateRunDirectory(fixture.workDir, {
+          kind: 'create',
+          preferredWorkspaceId: 'HARN-23',
+        }),
+      /is already held/,
+    );
+
+    expect(error.message).toContain(ledgerPath);
+    expect(await readFile(ledgerPath, 'utf8')).toBe('{"version":1}\n');
+    expect(await readdir(path.join(fixture.workDir, 'runs'))).toEqual([]);
+  });
+
+  it('creates no workspace directory for a run that continues one', async () => {
+    const fixture = await createRepository();
+
+    const run = await allocateRunDirectory(fixture.workDir, {
+      kind: 'reopen',
+      workspaceId: 'HARN-23',
+    });
+
+    // The clone the run reopens is not allocation's to create: it only names it,
+    // so a continuation adds no second directory beside the one it works in.
+    expect(run.workspaceId).toBe('HARN-23');
+    expect(run.workspacePath).toBe(path.join(fixture.workDir, 'workspaces', 'HARN-23'));
+    expect(existsSync(run.workspacePath)).toBe(false);
+    expect(existsSync(run.logsDir)).toBe(true);
+    expect(await readdir(path.join(fixture.workDir, 'workspaces'))).toEqual([]);
   });
 });
 
