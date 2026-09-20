@@ -100,8 +100,8 @@ const terminal = {
   columns,
   rows,
   write: (chunk) => {
-    if (drawingKind !== null && !chunk.startsWith('\u001b')) {
-      const line = chunk.replace(/\n$/, '');
+    if (drawingKind !== null && !chunk.startsWith('\u001b') && !chunk.startsWith('\r')) {
+      const line = chunk.replace(/\r?\n$/, '');
       assert(stringWidth(line) < columns, 'A draw would overflow its row');
       assert(/^\d{2}:\d{2}:\d{2} /.test(line), 'A draw carries the time it arrived');
       if (HIGHLIGHTED_MESSAGE.test(line)) {
@@ -111,7 +111,7 @@ const terminal = {
         assert(!line.includes('\u001b'), 'Only an agent message is highlighted');
       }
     }
-    for (const line of chunk.split('\n')) {
+    for (const line of chunk.split(/\r?\n/)) {
       if (/^\d{2}:\d{2}:\d{2} ---- (developer|reviewer): HARN-\d+ — .* ----$/.test(line)) {
         boundaries.push(line);
       }
