@@ -12,11 +12,13 @@ pull request, or changes Jira status. By default the harness does not push or pu
 either ([docs/spec.md](spec.md) §1, [docs/WORKFLOW.md](WORKFLOW.md) §4). Two independently
 optional, explicitly configured steps change what the harness's own deterministic integration path
 does, never what a coding turn does. With `delivery`, the harness pushes a passed attempt's branch
-and opens or updates its pull request ([docs/spec.md](spec.md) §7,
-[docs/WORKFLOW.md](WORKFLOW.md) §8). With review-to-completion, it arms native GitHub auto-merge,
-verifies the configured post-merge workflows on the merge commit, and transitions the Jira item
-([docs/spec.md](spec.md) §10, [docs/WORKFLOW.md](WORKFLOW.md) §10). GitHub performs any merge under
-branch protection; the harness never merges the pull request itself, force-pushes, bypasses
+and opens or updates its pull request ([spec.md §7](spec.md#7-optional-github-delivery),
+[WORKFLOW.md §8](WORKFLOW.md#8-delivery--optional-github-pull-requests)). With review-to-completion,
+it arms native GitHub auto-merge, verifies the configured post-merge workflows on the merge commit,
+and transitions the Jira item
+([spec.md §10](spec.md#10-optional-review-to-completion),
+[WORKFLOW.md §10](WORKFLOW.md#10-review-to-completion--optional-across-both-files)). GitHub performs
+any merge under branch protection; the harness never merges the pull request itself, force-pushes, bypasses
 protection, or reruns a workflow. A configuration that enables neither step leaves the work in the
 retained workspace, as before.
 

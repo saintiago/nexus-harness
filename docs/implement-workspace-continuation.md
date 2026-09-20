@@ -31,8 +31,8 @@ limit.
     lock/
 ```
 
-- A **workspace** is the working copy: cloned once, accumulated over attempts, integrated nowhere
-  by the harness itself — a configured delivery step may push a passed attempt's branch and open or
+- A **workspace** is the working copy: cloned once, accumulated over attempts, and local by
+  default — a configured delivery step may push a passed attempt's branch and open or
   update its pull request ([WORKFLOW.md](WORKFLOW.md) §8), and the independently optional
   review-to-completion path may then arm native GitHub auto-merge, verify the configured post-merge
   workflows, and transition Jira ([spec.md](spec.md) §10, [WORKFLOW.md](WORKFLOW.md) §10) — and

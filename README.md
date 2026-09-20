@@ -628,9 +628,13 @@ reports as **In Review** — are reviewed automatically, and each verdict is pub
 one native review plus one app-owned check run. It is off unless the harness configuration asks for
 it, and the review commands themselves are read-only on Jira: they claim nothing, move nothing, post
 no comment, and never mark an issue Done. The separately configured completion path
-([docs/spec.md](docs/spec.md) §10) is what may transition an item, and only after it verifies the
-merge and the configured post-merge workflows. The repository whose pull requests are reviewed is
-the one the project's `delivery` names, so the two can never describe different artifacts.
+([docs/spec.md §10](docs/spec.md#10-optional-review-to-completion),
+[docs/WORKFLOW.md §10](docs/WORKFLOW.md#10-review-to-completion--optional-across-both-files)) may
+move an item to Done only after it verifies the merge and every configured post-merge workflow
+succeeded. A current-head request for changes or a definitive failed required PR check can instead
+return the item to To Do before merge; an unsuccessful post-merge workflow also returns it to To Do,
+with findings and its workspace pointer preserved. The repository whose pull requests are reviewed
+is the one the project's `delivery` names, so the two can never describe different artifacts.
 
 ```sh
 # Static: validates the reviewer and the project it composes with. No credential, no network.
@@ -1063,8 +1067,8 @@ Read this before pointing a run at anything you care about.
   reach a coding turn has, is told not to change anything, and is never merged or asked to fix what
   it finds. Point the App at a repository whose rules you are prepared to gate with its check.
 - **Not implemented, and not planned here:** automatic merging outside the configured completion
-  path, CI observation beyond the configured post-merge workflows, a provider registry, workflow
-  engines, background services, webhooks, parallel consumers, and a second coding runtime. Without
+  path, automatic workflow reruns, a provider registry, workflow engines, background services,
+  webhooks, parallel consumers, and a second coding runtime. Without
   `delivery`, a passed attempt's work stays local; with `delivery` alone, its branch is pushed and
   its pull request is opened or updated, and the pull request stops there; with review-to-completion
   configured, the deterministic path of [docs/spec.md](docs/spec.md) §10 carries an approved pull
