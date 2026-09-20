@@ -18,6 +18,7 @@ import { EXIT_CANCELLED, EXIT_INPUT_ERROR, EXIT_OK, EXIT_USAGE } from '../src/cl
 import type { CliContext, InterruptSignals } from '../src/cli/context.js';
 import { loadConfiguration, projectLockNamespace } from '../src/config/load.js';
 import { acquireIntakeLock, intakeLockPath } from '../src/sources/receipts.js';
+import { completionLogsDir } from '../src/sources/completion.js';
 import { git, installFakeGhCompletion, fakeCompletionCalls } from './fixtures/local-target.js';
 import {
   HARNESS_CONFIG_FILE_NAME,
@@ -359,7 +360,11 @@ describe('the queue command line', () => {
     git(root, 'clone', '--bare', fixture.repo, remote);
     git(fixture.repo, 'remote', 'add', 'origin', remote);
     mkdirSync(path.join(workDir, 'workspaces', workspace), { recursive: true });
-    const logs = path.join(workDir, 'completion-logs', '7');
+    const logs = completionLogsDir(
+      workDir,
+      { type: SOURCE.type, scope: SOURCE.siteUrl, id: '7' },
+      'saintiago/nexus-harness',
+    );
     mkdirSync(logs, { recursive: true });
     await writeFile(
       path.join(logs, 'completion-armed-head.json'),
@@ -532,7 +537,11 @@ describe('the queue command line', () => {
     mkdirSync(path.join(workDir, 'workspaces', workspace), { recursive: true });
     // The production restart: an approved In Review ticket whose completion
     // pass never wrote anything, so `completion-logs` does not exist at all.
-    const logs = path.join(workDir, 'completion-logs', '7');
+    const logs = completionLogsDir(
+      workDir,
+      { type: SOURCE.type, scope: SOURCE.siteUrl, id: '7' },
+      'saintiago/nexus-harness',
+    );
     expect(existsSync(path.join(workDir, 'completion-logs'))).toBe(false);
     const gh = await installFakeGhCompletion(root);
     const prUrl = 'https://github.com/saintiago/nexus-harness/pull/29';
@@ -923,6 +932,34 @@ describe('the queue command line', () => {
     expect(output(fixture)).not.toContain('queue idle');
     expect(fixture.turns()).toBe(0);
   });
+
+  it.each(['run', 'watch'])(
+    'refuses queue %s while a legacy consumer holds the storage root',
+    async (mode) => {
+      const fixture = await cliFixture({ config: queueConfig });
+      const workDir = path.join(path.dirname(fixture.configPath), 'out');
+      const legacy = path.join(workDir, '.intake', 'lock');
+      mkdirSync(legacy, { recursive: true });
+      const context: CliContext = {
+        ...fixture.context,
+        fetch: async () => {
+          fixture.requests.push('unexpected discovery');
+          throw new Error('legacy lock must be refused before discovery');
+        },
+      };
+      expect(
+        await runCli(
+          ['queue', mode, '--config', fixture.configPath, '--repo', fixture.repo],
+          context,
+        ),
+      ).toBe(EXIT_INPUT_ERROR);
+      expect(output(fixture)).toContain(legacy);
+      expect(output(fixture)).toContain('Inspect that lock and stop its owner');
+      expect(fixture.requests).toEqual([]);
+      expect(fixture.turns()).toBe(0);
+      expect(existsSync(legacy)).toBe(true);
+    },
+  );
 
   it('refuses to start while another consumer holds the same project lock', async () => {
     const fixture = await cliFixture({ config: queueConfig });

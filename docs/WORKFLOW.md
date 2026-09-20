@@ -117,7 +117,10 @@ is uppercased; the Jira site URL is already canonicalized during validation. Equ
 therefore hold the same lock without rewriting the configured values used by other callers. The
 offline regressions cover same-project exclusion (including equivalent spellings) and concurrent
 different-project queues. Operators must wait for this change to be integrated before relying on
-that boundary; a live concurrent-project exercise remains unverified.
+that boundary; a live concurrent-project exercise remains unverified. A legacy `.intake/lock/`
+blocks all project consumers, regardless of its age or owner metadata. Let the old consumer finish,
+then inspect and remove its lock by hand; do not interrupt active work or mix old and new consumer
+revisions under the same root, since older binaries cannot recognize the new locks.
 
 ### Fields
 
@@ -866,7 +869,15 @@ In the serial queue, arming comes first and is its own bounded step: immediately
 
 ### Recovery, and what is not merged
 
-Every command a pass runs writes its output under `<workDir>/completion-logs/<issueId>`, and the pass creates that directory before its first GitHub read: a fresh pass, or a restart after an earlier one stopped, begins with no directory at all, and a command whose log directory is missing fails before it can report anything. A directory that cannot be created stops the item for attention with the location named — nothing is armed and nothing is written in Jira.
+Every command a pass runs writes its output under `<workDir>/completion-logs/<identity-hash>`, and the pass creates that directory before its first GitHub read: a fresh pass, or a restart after an earlier one stopped, begins with no directory at all, and a command whose log directory is missing fails before it can report anything. A directory that cannot be created stops the item for attention with the location named — nothing is armed and nothing is written in Jira.
+
+Completion evidence and auto-merge admissions use a hash of the source type, canonical site,
+immutable item ID, and lowercase GitHub owner/repository. Equal Jira IDs from different sites or
+destinations cannot share logs, temporary files, admissions, or restart deadlines. A legacy
+`completion-logs/<issueId>` path has no trustworthy connection identity and stops the item for
+manual reconciliation before any GitHub command or Jira write. It is never adopted, overwritten,
+or silently treated as a fresh admission; inspect its ownership and preserve active recovery
+state before moving that old directory aside.
 
 The local admission file is persisted before requesting auto-merge and identifies only the PR/head and, once the merge wait begins, its start — never an outcome. A failed local write prevents the remote request. The admission survives a lost mutation response or failed verification read, including for a repair's new head, so a restart can find a native merge by PR number after it leaves the open list. A restart verifies the armed head against GitHub before it treats the request as present, and re-arms when GitHub no longer holds one. Merged PRs without that admission are not backfilled. Jira changelog entries distinguish a human reopening from a transition retry. GitHub's merged state and the configured post-merge runs are authoritative, and the item's own Jira thread is the record of what was already written. A comment carries a marker, so a repeated pass or a restart finds the comment it already wrote instead of writing a second one; a status move is made only while the item is really still in review. After a restart, a merge confirmed but with post-merge CI absent, pending, or unsuccessful keeps waiting or reports attention without a duplicate comment; if the comment exists but the status move did not arrive, only the transition is retried after re-reading Jira. An item that a person moved out of In Review is not touched. A comment or transition failure never starts an agent: returning an item to `toDoStatus` merely makes the normal source consumer eligible to take the next repair attempt.
 

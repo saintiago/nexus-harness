@@ -109,7 +109,11 @@ is refused while two different connected projects may work their own queues conc
 The lock uses the canonical Jira site URL, lowercase cloud UUID and GitHub owner/repository,
 and uppercase Jira project key: equivalent casing cannot start a second consumer. This boundary
 is covered by offline regressions in this change; use it operationally only after the change is
-integrated. No live concurrent-project exercise has been run.
+integrated. No live concurrent-project exercise has been run. An existing legacy
+`.intake/lock/` still blocks every project until its owner has stopped and the operator removes it;
+do not interrupt an active queue to upgrade. Do not mix old and new consumer revisions under one
+storage root. Completion logs and saved auto-merge admissions also separate immutable source
+identity and destination repository, so equal issue IDs on different Jira sites cannot share state.
 
 `docs/nexus.config.example.json` is a credential-free Nexus-wide example,
 `docs/nexus.project.example.json` a credential-free project example, and this repository's own
@@ -1102,9 +1106,15 @@ Read this before pointing a run at anything you care about.
   machines, and the receipts only protect the directory they live in.
 - **A queue from a revision before this one keeps the old lock path.** A consumer that predates the
   per-project namespace holds `.intake/lock/` under `workDir`, which names no project; this
-  revision cannot tell which queue it belongs to, so stop that queue before starting the same
-  project's queue from here, and remove the old directory by hand only once its owner has stopped.
-  Locks are never broken automatically.
+  revision refuses every project while that path exists, including stale or unreadable owner
+  metadata. Let active work finish before upgrading, inspect the owner, and remove the old directory
+  by hand only once it has stopped. Do not mix old and new consumer revisions under one storage
+  root; older binaries cannot recognize the new locks. Locks are never broken automatically.
+- **Legacy completion evidence needs manual reconciliation.** Old `completion-logs/<issueId>`
+  directories contain no source or repository identity. A matching issue ID stops completion
+  before GitHub commands or Jira writes. Verify the old evidence's ownership and preserve any
+  active admission and deadline when reconciling it, then move the old directory aside by hand;
+  the harness never adopts, overwrites, or silently resets it.
 - **A ready issue is an authorization to spend agent capacity.** The configured project, issue
   type, label, and ready status are the queue boundary, and the harness does not ask again: put
   only work you would run yourself behind that label, in a project whose issues are trusted input.

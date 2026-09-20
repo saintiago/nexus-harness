@@ -208,6 +208,11 @@ On interrupt, stop polling and claiming immediately, cancel the active run throu
 
 Store `.intake/locks/<connected-project-namespace>/` and `.intake/receipts/<identity-hash>.json` under `workDir`, outside target workspaces. The lock directory holds its owner metadata and is never broken automatically; a project whose queue is retuned keeps the same namespace, and a different connected project holds a different one. A receipt contains source identity, reservation time, and any known real run/result/feedback details. The initial creation is exclusive; subsequent replacements are atomic. Corrupt/unknown receipt formats must fail closed, not be treated as absence. This is duplicate prevention, not a new run registry or resumable workflow engine.
 
+An existing legacy `.intake/lock/` blocks all consumers because it records no project. Its owner
+metadata or age never permits bypass or automatic removal. Operators must let that consumer stop
+and inspect the lock before removing it by hand. Mixed old/new consumer revisions are unsupported:
+old binaries do not recognize the per-project locks.
+
 The lock hash uses the canonical Jira site URL, lowercase cloud UUID and GitHub owner/repository,
 and uppercase Jira project key. Case variations of these provider identifiers cannot create a
 second lock for the same connection. This normalization is confined to the lock identity; existing
@@ -309,7 +314,15 @@ A current-head `REQUEST_CHANGES` decision from that reviewer, a definitive faile
 
 Everything else — missing or inconclusive review evidence, an approval or a check on another head, a closed or ambiguous pull request, a conflict, a refused auto-merge, an authentication or permission failure, a check whose relationship to a decision is unclear — is reported for operator attention and left `In Review`. A person's status change is respected: an item that left the review status is not touched. Recovery is deterministic and agent-free: GitHub's merged state and the configured post-merge runs are authoritative, comment markers in the item's own thread are what prevents a second comment, and a status move is made only while the item is really still in review, so a restart retries only what did not happen. Nothing here starts a coding turn.
 
-A pass keeps the commands it runs under `<workDir>/completion-logs/<issueId>` and creates that directory before its first GitHub read, so a fresh or restarted pass never runs a command whose log directory is missing. A directory that cannot be created is an attention result naming the location: nothing is armed and nothing is written in Jira.
+A pass keeps the commands it runs under `<workDir>/completion-logs/<identity-hash>` and creates that directory before its first GitHub read, so a fresh or restarted pass never runs a command whose log directory is missing. A directory that cannot be created is an attention result naming the location: nothing is armed and nothing is written in Jira.
+
+Completion evidence and auto-merge admissions use a hash of the source type, canonical site,
+immutable item ID, and lowercase GitHub owner/repository. Equal Jira IDs from different sites or
+destinations cannot share logs, temporary files, admissions, or restart deadlines. A legacy
+`completion-logs/<issueId>` path has no trustworthy connection identity and stops the item for
+manual reconciliation before any GitHub command or Jira write. It is never adopted, overwritten,
+or silently treated as a fresh admission; inspect its ownership and preserve active recovery
+state before moving that old directory aside.
 
 ## 11. The serial queue
 

@@ -9,7 +9,7 @@
  * after preflight and never broken automatically.
  */
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { messageOf } from '../shared/errors.js';
 import type { RunStatus, SourceRef } from '../shared/types.js';
@@ -186,6 +186,34 @@ export interface IntakeLock {
  * root, and the same project is refused there while a consumer holds it.
  */
 export async function acquireIntakeLock(
+  workDir: string,
+  namespace: string,
+  now: () => Date,
+): Promise<IntakeLock> {
+  // An older consumer owns the whole storage root and records no project.
+  // Fail closed even for a stale, malformed, or dangling legacy lock: neither
+  // its age nor its owner metadata authorizes us to ignore or remove it.
+  const legacy = path.join(workDir, '.intake', 'lock');
+  try {
+    await lstat(legacy);
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code !== 'ENOENT') {
+      throw new SourceError(
+        'fatal',
+        `the intake lock "${legacy}" could not be inspected: ${messageOf(cause)}`,
+      );
+    }
+    return await acquireProjectLock(workDir, namespace, now);
+  }
+  throw new SourceError(
+    'fatal',
+    `another intake consumer holds "${legacy}". This legacy lock covers the whole output ` +
+      'directory and names no project. Inspect that lock and stop its owner before removing ' +
+      'it by hand; a lock is never broken automatically.',
+  );
+}
+
+async function acquireProjectLock(
   workDir: string,
   namespace: string,
   now: () => Date,

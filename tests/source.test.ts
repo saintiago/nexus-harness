@@ -1191,6 +1191,35 @@ describe('the local receipt', () => {
 // ---------------------------------------------------------------------------
 
 describe('the intake lock', () => {
+  it.each(['active', 'stale', 'malformed', 'missing owner'])(
+    'refuses a legacy lock with %s metadata for every project without changing it',
+    async (metadata) => {
+      const workDir = await createTempDir();
+      const legacy = path.join(workDir, '.intake', 'lock');
+      await mkdir(legacy, { recursive: true });
+      const owner = path.join(legacy, 'owner.json');
+      const contents =
+        metadata === 'malformed'
+          ? '{'
+          : JSON.stringify({
+              version: 1,
+              pid: metadata === 'active' ? process.pid : 999999,
+              startedAt: '2020-01-01T00:00:00.000Z',
+              token: 'legacy-owner',
+            });
+      if (metadata !== 'missing owner') await writeFile(owner, contents);
+      for (const namespace of [FIXTURE_LOCK_NAMESPACE, 'other-project']) {
+        await expect(acquireIntakeLock(workDir, namespace, () => new Date())).rejects.toThrow(
+          `Inspect that lock and stop its owner before removing it by hand`,
+        );
+        expect(existsSync(intakeLockPath(workDir, namespace))).toBe(false);
+      }
+      expect(existsSync(legacy)).toBe(true);
+      if (metadata !== 'missing owner') expect(await readFile(owner, 'utf8')).toBe(contents);
+      else expect(await readdir(legacy)).toEqual([]);
+    },
+  );
+
   it('refuses a second consumer of the same output directory', async () => {
     const workDir = await createTempDir();
     const held = await acquireIntakeLock(workDir, FIXTURE_LOCK_NAMESPACE, () => new Date());

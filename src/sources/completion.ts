@@ -27,7 +27,8 @@
  * quiet, and the item stays In Review. Nothing here starts a coding turn, and
  * nothing here merges anything.
  */
-import { mkdir, readFile, writeFile, rename } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { lstat, mkdir, readFile, writeFile, rename } from 'node:fs/promises';
 import path from 'node:path';
 import type {
   AutoMergeStatus,
@@ -163,8 +164,15 @@ function branchOf(workspaceId: string): string {
 }
 
 /** Where one item's completion evidence is kept: this pass's own log directory. */
-function completionLogsDir(workDir: string, issueId: string): string {
-  return path.join(workDir, 'completion-logs', issueId);
+export function completionLogsDir(
+  workDir: string,
+  ref: Pick<SourceRef, 'type' | 'scope' | 'id'>,
+  repository: string,
+): string {
+  const identity = createHash('sha256')
+    .update(JSON.stringify([ref.type, ref.scope, ref.id, repository.toLowerCase()]), 'utf8')
+    .digest('hex');
+  return path.join(workDir, 'completion-logs', identity);
 }
 
 /**
@@ -178,9 +186,33 @@ function completionLogsDir(workDir: string, issueId: string): string {
  */
 async function ensureCompletionLogsDir(
   workDir: string,
-  issueId: string,
+  ref: SourceRef,
+  repository: string,
 ): Promise<{ readonly ready: true } | { readonly ready: false; readonly problem: string }> {
-  const directory = completionLogsDir(workDir, issueId);
+  const directory = completionLogsDir(workDir, ref, repository);
+  // Older records name only a site-local issue ID, with no source or repository
+  // identity. Never adopt them or silently reset their restart deadline.
+  const legacy = path.join(workDir, 'completion-logs', ref.id);
+  try {
+    await lstat(legacy);
+    return {
+      ready: false,
+      problem:
+        `legacy completion evidence at "${legacy}" records no source or repository identity; ` +
+        'inspect its ownership and reconcile it by hand before moving it aside and retrying. ' +
+        'No GitHub command was run, auto-merge was not armed, and Jira was not changed',
+    };
+  } catch (cause) {
+    const code = (cause as NodeJS.ErrnoException).code;
+    // If the parent is a file, mkdir below reports the unusable evidence
+    // directory consistently on Windows (ENOENT) and POSIX (ENOTDIR).
+    if (code !== 'ENOENT' && code !== 'ENOTDIR') {
+      return {
+        ready: false,
+        problem: `legacy completion evidence "${legacy}" could not be inspected: ${messageOf(cause)}`,
+      };
+    }
+  }
   try {
     await mkdir(directory, { recursive: true });
     return { ready: true };
@@ -201,8 +233,7 @@ async function ensureCompletionLogsDir(
  * live GitHub evidence must establish the arm or the actual reviewed merge.
  */
 async function recordArmedHead(
-  workDir: string,
-  issueId: string,
+  directory: string,
   armed: {
     readonly head: string;
     readonly number: number;
@@ -211,7 +242,6 @@ async function recordArmedHead(
   },
   now: () => Date,
 ): Promise<void> {
-  const directory = completionLogsDir(workDir, issueId);
   await mkdir(directory, { recursive: true });
   const target = path.join(directory, 'completion-armed-head.json');
   const temporary = `${target}.tmp`;
@@ -229,15 +259,12 @@ async function recordArmedHead(
 }
 
 /** The PR/head a previous pass admitted for auto-merge, when it recorded one. */
-async function readArmedHead(
-  workDir: string,
-  issueId: string,
-): Promise<{
+async function readArmedHead(directory: string): Promise<{
   readonly head: string;
   readonly number: number | null;
   readonly waitingSince: string | null;
 } | null> {
-  const file = path.join(completionLogsDir(workDir, issueId), 'completion-armed-head.json');
+  const file = path.join(directory, 'completion-armed-head.json');
   try {
     const value = JSON.parse(await readFile(file, 'utf8')) as {
       head?: unknown;
@@ -259,16 +286,14 @@ async function readArmedHead(
 
 /** Records that the item is waiting for GitHub, keeping the moment it began. */
 async function rememberWaiting(
-  workDir: string,
-  issueId: string,
+  directory: string,
   head: string,
   number: number,
   waitingSince: string | null,
   now: () => Date,
 ): Promise<void> {
   await recordArmedHead(
-    workDir,
-    issueId,
+    directory,
     // The moment the item began waiting is kept as it is: `now()` here would
     // push the deadline forward on every pass that reads it back.
     {
@@ -455,7 +480,7 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
     branch: branchOf(workspaceId),
     baseBranch: parts.baseBranch,
     workspacePath: path.join(parts.workDir, 'workspaces', workspaceId),
-    logsDir: completionLogsDir(parts.workDir, item.ref.id),
+    logsDir: completionLogsDir(parts.workDir, item.ref, parts.repository),
   });
 
   const contextFor = async (
@@ -486,7 +511,9 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
   ): Promise<Arming> => {
     const { item, request, pull } = context;
     const head = pull.headRefOid;
-    const previous = await readArmedHead(parts.workDir, item.ref.id);
+    const previous = await readArmedHead(
+      completionLogsDir(parts.workDir, item.ref, parts.repository),
+    );
     if (pull.autoMergeRequest && previous?.number === pull.number && previous.head === head) {
       return {
         kind: 'armed',
@@ -513,8 +540,7 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
             ? now().toISOString()
             : null;
       await recordArmedHead(
-        parts.workDir,
-        item.ref.id,
+        request.logsDir,
         {
           head,
           number: pull.number,
@@ -573,7 +599,9 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
     // to survive a pass: it is recorded beside the arm, and read back here, so a
     // merge that never finishes reaches the configured deadline even though a
     // restart begins with a fresh pass.
-    const waitingSince = (await readArmedHead(parts.workDir, item.ref.id))?.waitingSince ?? null;
+    const waitingSince =
+      (await readArmedHead(completionLogsDir(parts.workDir, item.ref, parts.repository)))
+        ?.waitingSince ?? null;
     const deadline = mergeWaitDeadline(waitingSince, config.deadlineSeconds, now().getTime());
     for (let waited = 0; ; waited += 1) {
       if (stop.aborted) return { kind: 'observed', detail: 'Completion was interrupted' };
@@ -645,19 +673,14 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
         };
       }
       if (waited >= waits) {
-        await rememberWaiting(
-          parts.workDir,
-          item.ref.id,
-          reviewedHead,
-          pull.number,
-          waitingSince,
-          now,
-        ).catch((cause: unknown) => {
-          io.err(
-            `${item.ref.key}: how long it has been waiting could not be recorded ` +
-              `(${messageOf(cause)}); the next pass reads GitHub again`,
-          );
-        });
+        await rememberWaiting(request.logsDir, reviewedHead, pull.number, waitingSince, now).catch(
+          (cause: unknown) => {
+            io.err(
+              `${item.ref.key}: how long it has been waiting could not be recorded ` +
+                `(${messageOf(cause)}); the next pass reads GitHub again`,
+            );
+          },
+        );
         return { kind: 'pending', detail: merge.reason };
       }
       await sleep(Math.min(intervalMs, Math.max(0, deadline - now().getTime())), stop);
@@ -677,7 +700,7 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
     // auto-merge response was lost — so what decides that item is
     // the merge itself and its post-merge workflows. The reviewer's approval on
     // that same head is still what says the merged commit is the reviewed work.
-    const armed = await readArmedHead(parts.workDir, item.ref.id);
+    const armed = await readArmedHead(completionLogsDir(parts.workDir, item.ref, parts.repository));
     const merged = pull.state.toUpperCase() === 'MERGED';
     if (pull.state.toUpperCase() !== 'OPEN' && !merged) {
       return { kind: 'observed', detail: `pull request ${pull.url} is ${pull.state}, not open` };
@@ -983,7 +1006,7 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
     // first GitHub read: it is where every command this pass runs writes its
     // stdout and stderr, and a command whose log directory is absent fails
     // before it can report anything (docs/WORKFLOW.md §10).
-    const evidence = await ensureCompletionLogsDir(parts.workDir, item.ref.id);
+    const evidence = await ensureCompletionLogsDir(parts.workDir, item.ref, parts.repository);
     if (!evidence.ready) {
       return { ref, status: 'attention', detail: evidence.problem, commentId: null };
     }
@@ -1004,7 +1027,9 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
       // accepted an admitted auto-merge request and merged it even if its
       // response was lost: that pull request is read by number, and the merge and its
       // post-merge workflows decide this item from here.
-      const armed = await readArmedHead(parts.workDir, item.ref.id);
+      const armed = await readArmedHead(
+        completionLogsDir(parts.workDir, item.ref, parts.repository),
+      );
       if (armed?.number !== null && armed?.number !== undefined) {
         const request = requestFor(item, workspaceId);
         try {
@@ -1114,7 +1139,7 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
               'produced the work is ambiguous',
       };
     }
-    const evidence = await ensureCompletionLogsDir(parts.workDir, item.ref.id);
+    const evidence = await ensureCompletionLogsDir(parts.workDir, item.ref, parts.repository);
     if (!evidence.ready) {
       return { ref, status: 'attention', detail: evidence.problem };
     }
@@ -1164,7 +1189,7 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
         detail: 'Ticket left In Review',
         commentId: null,
       };
-    const evidence = await ensureCompletionLogsDir(parts.workDir, item.ref.id);
+    const evidence = await ensureCompletionLogsDir(parts.workDir, item.ref, parts.repository);
     if (!evidence.ready)
       return {
         ref: candidate.ref,
@@ -1173,7 +1198,9 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
         commentId: null,
       };
     const request = requestFor(item, item.pointers[0] ?? '');
-    const admitted = await readArmedHead(parts.workDir, item.ref.id);
+    const admitted = await readArmedHead(
+      completionLogsDir(parts.workDir, item.ref, parts.repository),
+    );
     const pull =
       admitted?.number == null
         ? await actions.findPullRequest(request, stop)
