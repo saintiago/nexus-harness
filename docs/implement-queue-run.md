@@ -7,11 +7,12 @@ resolution. Between them sat a coordinator: a person (or another agent) decided 
 reviewed, when the completion pass ran, and what happened to a ticket that came back.
 
 This increment removes that coordinator from the happy path without adding a second one. One
-foreground command takes the next eligible ticket, runs it, delivers it, has it reviewed, completes
-it, prepares the checkout for the next workspace, and takes one more ticket — or waits, visibly, for
-one to appear. Nothing about a single ticket's handling changes: the same runner, the same ladder,
-the same review verdict, the same completion rules. What is new is the order they happen in and who
-decides it.
+foreground command takes the next eligible ticket, runs it, delivers it, arms native auto-merge for
+the delivered head before the review can publish the final required check, has it reviewed,
+completes it, prepares the checkout for the next workspace, and takes one more ticket — or waits,
+visibly, for one to appear. Nothing about a single ticket's handling changes: the same runner, the
+same ladder, the same review verdict, the same completion rules. What is new is the order they
+happen in and who decides it.
 
 ## Commands
 
@@ -35,19 +36,19 @@ bounded phase, starts no next ticket, and exits after cleanup.
 ## One ticket at a time
 
 ```text
-fresh scan -> take at most one ticket -> coding attempt -> delivery
-     ^                                          |
-     |                     Nexus Lens review    v
-     |                          completion (merge + post-merge CI)
-     |                               |                    |
-     |     Done: source readiness    |                    |  To Do: repair the same ticket
-     +-------------------------------+                    +--> back to the coding attempt
+fresh scan -> take at most one ticket -> coding attempt -> delivery -> arm auto-merge
+     ^                                                                        |
+     |                                       Nexus Lens review                v
+     |                                            completion (merge + post-merge CI)
+     |                                                |                    |
+     |          Done: source readiness                |                    |  To Do: repair the same ticket
+     +------------------------------------------------+                    +--> back to the coding attempt
 ```
 
 The loop keeps one current ticket and one active phase. It never starts work for a different ticket
 while the current one is In Progress or In Review, and coding and review turns never overlap:
-`takeOneItem` prepares and claims at most one ticket per step, the review scan is narrowed to that
-ticket's immutable identity, and the completion pass is narrowed the same way.
+`takeOneItem` prepares and claims at most one ticket per step, and the arm step, the review scan and
+the completion pass are each narrowed to that ticket's immutable identity.
 
 ## Repairs, and who owns them
 
@@ -80,10 +81,11 @@ claimed.
 
 Everything that is not a confirmed completion is an actionable, nonzero exit with the current
 evidence kept: a coding attempt that failed, was cancelled, or could not be confirmed stopped; a
-ledger that could not be written; a delivery failure; a review that could not produce a usable
-verdict; a completion that needs a person; a merge or post-merge CI that was still pending when its
-deadline expired; a checkout that is not ready. The blocked ticket is never skipped for another one,
-and an infrastructure failure is never reinterpreted as coding work.
+ledger that could not be written; a delivery failure; an auto-merge request GitHub refused (a clean
+status included); a review that could not produce a usable verdict; a completion that needs a
+person; a merge or post-merge CI that was still pending when its deadline expired; a checkout that
+is not ready. The blocked ticket is never skipped for another one, and an infrastructure failure is
+never reinterpreted as coding work.
 
 ## Restarts
 
@@ -91,9 +93,11 @@ Nothing about the loop is remembered between invocations, and nothing needs to b
 the item's own comments, the workspace pointer label, and GitHub's merged/review/check/workflow
 state are the authorities; the local receipts still guard against attempting the same item twice,
 and each completion comment carries its marker so a repeated pass finds what it already wrote
-instead of writing it again. A restarted queue therefore resumes a ticket that a person or a
-conclusion returned to the ready status, and it does nothing at all about a ticket that is already
-Done.
+instead of writing it again. The recorded PR/head admission is checked against GitHub: an armed
+current head is verified without a second request, a head GitHub no longer holds is re-armed, and
+the completion phase resumes from the merge GitHub actually reports. A restarted queue therefore
+resumes a ticket that a person or a conclusion returned to the ready status, and it does nothing at
+all about a ticket that is already Done.
 
 Before every fresh claim, including after a restart or an idle poll, the queue searches the
 configured Jira project, type and label for In Progress and In Review work and re-reads each
@@ -135,10 +139,13 @@ retain their existing credential behavior.
   empty initial and final queues, idle polling in watch mode that starts no agent, a ticket
   appearing after an idle poll, cancellation while idle and during an active phase, pending review
   and post-merge CI, infrastructure failures, a checkout that cannot be proven ready, and restarts
-  that neither rerun a Done ticket nor duplicate a completion effect); the consumer step's
-  single-ticket behaviour, refusals, and lock handling; the review scan and completion pass narrowed
-  to one ticket; and source readiness against real temporary Git repositories, including the dirty,
-  diverged, wrong-remote, wrong-branch, and missing-merge refusals. `npm run validate` is green.
+  that neither rerun a Done ticket nor duplicate a completion effect); arming while the final
+  required check is still pending, re-arming a repair's new head, and a restart that verifies the
+  recorded arm without a second request or a second comment or transition; the consumer step's
+  single-ticket behaviour, refusals, and lock handling; the arm step, review scan and completion
+  pass narrowed to one ticket; and source readiness against real temporary Git repositories,
+  including the dirty, diverged, wrong-remote, wrong-branch, and missing-merge refusals.
+  `npm run validate` is green.
 - Live: **not run.** A bounded visible-terminal exercise against the configured Nexus Jira
   repository, with a real reviewer launch and a real auto-merge, is a coordinator/operator
   verification after integration; the offline tests do not establish that path.
