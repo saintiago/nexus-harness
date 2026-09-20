@@ -547,7 +547,6 @@ describe('the baseline reviewer turn', () => {
   it('inspects a read-only snapshot of the workspace and validates the finding it wrote', async () => {
     const target = await createLocalTarget({ brokenBaseline: true });
     const { dir, baseline } = await evidenceFor();
-    await mkdir(dir, { recursive: true });
     const base = git(target.repo, 'rev-parse', 'HEAD').trim();
     const reviewer = reviewerFor(target, [{ finding: JSON.stringify(REPAIR_FINDING) }]);
 
@@ -561,6 +560,9 @@ describe('the baseline reviewer turn', () => {
 
     expect(result.problem).toBeNull();
     expect(result.finding).toEqual(REPAIR_FINDING);
+    // The turn created its own evidence directory, and the finding file it was
+    // asked to write is still there.
+    expect(existsSync(path.join(dir, 'finding.json'))).toBe(true);
     // The turn really ran, in its own evidence directory, over a clone of the
     // workspace pinned at the snapshot — never over the retained workspace.
     const turns = await fakeTurns(target.state);
@@ -586,7 +588,6 @@ describe('the baseline reviewer turn', () => {
   it('accepts an inconclusive finding and reports a turn that wrote none', async () => {
     const target = await createLocalTarget({ brokenBaseline: true });
     const { dir, baseline } = await evidenceFor();
-    await mkdir(dir, { recursive: true });
     const base = git(target.repo, 'rev-parse', 'HEAD').trim();
     const request = {
       dir,
@@ -604,7 +605,6 @@ describe('the baseline reviewer turn', () => {
 
     const second = await createTempDir();
     const secondDir = path.join(second, 'diagnosis');
-    await mkdir(secondDir, { recursive: true });
     const missing = await reviewerFor(target, [{}])({ ...request, dir: secondDir });
     expect(missing.finding).toBeNull();
     expect(missing.problem).toContain('wrote no usable finding.json');
@@ -613,7 +613,6 @@ describe('the baseline reviewer turn', () => {
   it('refuses a finding from a turn that changed the snapshot it was given', async () => {
     const target = await createLocalTarget({ brokenBaseline: true });
     const { dir, baseline } = await evidenceFor();
-    await mkdir(dir, { recursive: true });
     const base = git(target.repo, 'rev-parse', 'HEAD').trim();
     const reviewer = reviewerFor(target, [
       {

@@ -18,7 +18,7 @@
  * nothing usable, or leaves its view changed has no finding, and the diagnosis
  * then records what is missing instead of guessing at a repair.
  */
-import { readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { runCodexPrompt } from '../agents/codex/adapter.js';
 import { selectedCodexRuntime } from '../agents/codex/runtime.js';
@@ -403,6 +403,23 @@ async function baselineTurn(
   const key = request.item.ref.key;
   const logPath = path.join(request.dir, BASELINE_REVIEWER_LOG);
   const failures = await baselineFailures(request.baseline);
+
+  // The diagnosis's own evidence directory is created before the first step
+  // that writes into it: the clone below needs its parent to exist, and a
+  // directory that cannot be created is named instead of surfacing as a failed
+  // clone.
+  try {
+    await mkdir(request.dir, { recursive: true });
+  } catch (cause) {
+    return {
+      summary: null,
+      finding: null,
+      problem:
+        `the baseline diagnostic's evidence directory "${request.dir}" could not be created: ` +
+        messageOf(cause),
+      logPath,
+    };
+  }
 
   let view: ReviewView;
   try {
