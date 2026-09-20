@@ -596,6 +596,10 @@ describe('review-to-completion', () => {
     expect(calls.every((call) => call.credential === REVIEWER_TOKEN)).toBe(true);
   });
 
+  // This integration-style case launches several fake `gh` subprocesses. It
+  // completes in about three seconds alone but can exceed Vitest's five-second
+  // default while the full suite runs in parallel, so retain a bounded timeout
+  // without weakening the assertions or the suite-wide guard.
   it('arms native auto-merge with the operator credential and waits for GitHub to merge', async () => {
     const fixture = await createFixture({
       pulls: [ONE_PULL_REQUEST],
@@ -650,7 +654,7 @@ describe('review-to-completion', () => {
     expect(
       await readFile(path.join(fixture.logsDir, 'completion-armed-head.json'), 'utf8'),
     ).toContain(HEAD);
-  });
+  }, 15_000);
 
   it('creates the per-issue evidence directory before its first GitHub command', async () => {
     // The production start: nothing has created `completion-logs` yet, and the
