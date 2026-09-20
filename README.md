@@ -599,11 +599,74 @@ unattended.
 
 **What stays outside.** Nothing here merges, enables auto-merge, verifies a merge, or marks an issue
 Done, and no CI result is interpreted: CI is a separate merge requirement. The coordinator — the
-operator or the next increment — enables auto-merge where it is supported, verifies the merged
-outcome, marks Done only for confirmed integration, and returns code changes, CI failures, and
-conflicts to the ready status with the retained pointer and concrete findings. A pending CI run and
-an infrastructure or authentication failure stay In Review for diagnosis rather than triggering
-code repair.
+`queue run`/`queue watch` loop of [§11](docs/spec.md) below, or a person — enables auto-merge where
+it is supported, verifies the merged outcome, marks Done only for confirmed integration, and returns
+code changes, CI failures, and conflicts to the ready status with the retained pointer and concrete
+findings. A pending CI run and an infrastructure or authentication failure stay In Review for
+diagnosis rather than triggering code repair.
+
+## `queue`: run the whole queue serially
+
+The optional `delivery.completion` path can carry an approved pull request through GitHub's own
+merge to a Jira Done. A person still had to decide when each step happened. The two `queue`
+commands make that a foreground loop: one ticket at a time through the coding attempt, the
+delivery, the Nexus Lens review, and the completion path, with the local checkout prepared for the
+next workspace in between.
+
+```sh
+# Static: validates the objects the queue needs too. No credential, no network.
+npm start -- check-config --config harness.queue.config.json
+
+# Finite: finish tickets until a fresh scan finds no eligible one, then exit 0.
+npm start -- queue run --repo ../target-project --config harness.queue.config.json
+
+# One foreground process that waits for the next eligible ticket (Ctrl+C stops it).
+npm start -- queue watch --repo ../target-project --config harness.queue.config.json
+```
+
+A queue command needs three objects to be configured: `source` (the Jira queue it takes from),
+`review` (the Nexus Lens path), and `delivery` **with** `delivery.completion` (the destination and
+the path that ends a ticket). The loader already requires those objects to agree — same repository,
+same App, same check name — so a configuration that could never complete a ticket is refused before
+any credential is resolved. The three credentials are the Jira service-account token, the App's
+private key path, and the completion path's own reviewer token; each child gets only the ones its
+phase needs. [docs/WORKFLOW.md](docs/WORKFLOW.md#11-serial-queue--queue-run-and-queue-watch) §11 is
+the command contract and [docs/spec.md](docs/spec.md) §11 the behaviour.
+
+What one invocation does:
+
+1. **One current ticket.** A fresh scan of the configured ready queue, in its own priority order,
+   offers at most one ticket; it is claimed and run through the same workspace/check/repair loop,
+   ladder included, and delivered as a pull request.
+2. **Review, then completion.** Nexus Lens reviews that ticket's head, and the completion path arms
+   native auto-merge once GitHub's rules allow it, waits for GitHub's own merge, requires every
+   configured post-merge workflow to succeed, and then comments and marks the ticket Done.
+3. **Repair before anything else.** Findings from the review, a definitively failed required check,
+   or an unsuccessful post-merge workflow return the ticket to To Do with its pointer intact. The
+   queue then continues **that** ticket in **that** retained workspace — same clone, same base,
+   same ladder — before considering unrelated ready work.
+4. **Source readiness.** After a confirmed Done, the operator's checkout must be on the configured
+   base branch, carry no uncommitted or untracked work, and have the expected delivery repository
+   as a remote; the verified merge commit must be in the fetched base branch and the local `HEAD`
+   an ancestor of it, so the only move is a fast-forward. Nothing is reset, forced, stashed,
+   discarded, committed, or reconciled; a checkout that cannot be proven ready stops the queue
+   with what to fix.
+5. **Fresh scan, or a visible wait.** `queue run` exits `0` when no eligible ticket remains.
+   `queue watch` prints an idle status, waits `source.pollIntervalSeconds`, scans again, and starts
+   no agent while it is idle.
+
+Anything a person has to decide — a failed or cancelled attempt, a delivery failure, a review with
+no usable verdict, a merge or post-merge workflow still pending at its deadline, a conflict, an
+authentication or API failure, an unsupported transition, a checkout that is not ready — exits
+nonzero with the ticket's evidence kept. The blocked ticket is never skipped for another one. One
+queue invocation holds the intake lock for its whole life, including while it waits, and it keeps
+no database, scheduler, daemon, or durable queue: Jira's status, the pointer label, GitHub's native
+state, and the existing receipts are what a restart reads.
+
+**One stated limit.** A ticket whose pull request GitHub has already merged cannot be repaired in
+place: the delivery step refuses to edit a merged pull request, so a repair after an unsuccessful
+post-merge workflow ends as an actionable stop rather than a second pull request. Turning that into
+a new ticket is an operator decision.
 
 ## Try it on a disposable project
 
@@ -886,6 +949,19 @@ Read this before pointing a run at anything you care about.
   API paths reported without an approval. The CLI path is exercised end to end with the real
   adapter and a stand-in `codex` on `PATH`, which writes the verdict file the way a reviewer turn
   does. Nothing there needs a GitHub App, a key other than a disposable test one, or a network.
+- the serial queue, against scripted phases and real temporary Git repositories
+  (`tests/queue.test.ts`, `tests/queue-cli.test.ts`, `tests/refresh.test.ts`): two tickets finished in
+  the queue's own order, a same-ticket repair before unrelated ready work, a fresh scan after every
+  confirmed Done, a finite run ending successfully on an empty initial and a drained final queue, an
+  idle watch that starts no agent and later takes a ticket that appeared, cancellation while idle and
+  during an active phase, a pending completion waited out and one that needs a person, infrastructure
+  failures, a checkout that cannot be proven ready, restarts that neither rerun a Done ticket nor
+  duplicate a completion effect, the consumer step's single-ticket and lock behaviour, the review
+  scan and completion pass narrowed to one ticket, and source readiness against real repositories —
+  the fast-forward, plus the dirty, diverged, wrong-remote, wrong-branch, and missing-merge refusals
+  that leave the checkout untouched. The `queue` command's own refusals (missing objects, a review
+  that cannot publish the completed check, a second consumer, an option it does not accept) are
+  covered at the command boundary. Nothing there contacts a Jira site, GitHub, or a provider.
 
 **Verified live (`npm run test:live`) on 2026-09-16, through the DeepSeek launch this checkout
 selects:** Codex CLI 0.154.0 answered a read-only connectivity probe, and both exercises then passed
@@ -1230,8 +1306,11 @@ explicit no-approval policy, and the Jira task source with `source list`, `sourc
 implemented and verified offline. The optional Nexus Lens review path — the `review` object and
 the `review scan` / `review watch` commands, one reviewer turn per unreviewed head, and the native
 review plus app-owned check the merge gate can require from this App — is implemented and verified
-offline; it is opt-in, read-only on Jira, and nothing in it merges or marks an issue Done. **A real
-Jira-driven continuation has since run:** Jira run
+offline; it is opt-in, read-only on Jira, and nothing in it merges or marks an issue Done. The
+serial queue — `queue run`, `queue watch`, the completion path they drive, and the source-readiness
+step between tickets — is implemented and verified offline; it starts no agent beyond the configured
+coding and reviewer turns, keeps no state of its own, and has no live evidence against a real queue,
+App installation, or auto-merge. **A real Jira-driven continuation has since run:** Jira run
 `run-20260919115244-4ff8eedf` claimed HARN-2, continued workspace `run-20260919100148-e48a9ab0` —
 same clone, same recorded base `36f62fd`, attempt 2 — and the attempt's documentation work is the
 local commit `f835c33` on that retained branch: one issue's continuation, not the full supervised
@@ -1239,11 +1318,13 @@ exercise. What remains is listed under
 [What is verified, and what is not](#what-is-verified-and-what-is-not) rather than promised here. The
 next real piece of work is the **supervised live Jira exercise**, still not run: it needs a
 service-account token, a disposable target repository, and an operator who has inspected the queue
-before the first paid call, and its restart, watch, and failure steps have no live evidence. Beside
-it, the coordinator increment — observing CI, enabling GitHub auto-merge where it is supported,
-verifying the merge outcome, marking an issue Done only for confirmed integration, and returning
-code changes, CI failures, and conflicts to the ready status — is not built here, and neither is a
-live `review scan` against the real App installation. After that, a second coding adapter (Claude
+before the first paid call, and its restart, watch, and failure steps have no live evidence. The
+bounded visible-terminal exercise of the serial queue against the configured Nexus Jira repository
+is now the operator step that will produce it: the coordinator's work — observing CI, enabling
+GitHub auto-merge where it is supported, verifying the merge outcome, marking an issue Done only for
+confirmed integration, and returning code changes, CI failures, and conflicts to the ready status —
+is built as the deterministic loop of [docs/spec.md](docs/spec.md) §11, but no live `review scan`
+against the real App installation and no live queue run have happened. After that, a second coding adapter (Claude
 Code, with its own invocation
 and event parser and its own tests — a Claude launcher behind the Codex parser would be a bug), live
 turns on POSIX hosts, and stronger isolation before unattended runs of untrusted repositories.
@@ -1270,6 +1351,11 @@ The Jira comment marker deduplicates writes; it never substitutes for those chec
 The local admission file records only the PR/head being followed and the polling deadline,
 before arming, so a restart can identify a PR that disappeared from the open list. Historical
 merged PRs without that admission are not backfilled.
+
+The `queue run` and `queue watch` commands of [docs/WORKFLOW.md](docs/WORKFLOW.md#11-serial-queue--queue-run-and-queue-watch)
+§11 are what run this path per ticket, in order, with the Nexus Lens scan in front of it and the
+checkout prepared between two tickets. Completion on its own still runs inside a `source` command
+after a batch; a configuration that selects no queue command behaves exactly as it did.
 
 Offline tests exercise the API and Jira recovery paths. A live protected-repository and Jira
 completion exercise has not been run; it remains separate operator verification.

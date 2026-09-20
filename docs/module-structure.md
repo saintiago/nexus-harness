@@ -28,6 +28,7 @@ src/
     run-command.ts                (224)  `run`: load the inputs, install the stop, print the outcome
     source-command.ts             (379)  `source list|run|watch`, the connector selection, abortable sleep
     review-command.ts             (273)  `review scan|watch`: the App client, the reviewer, the scan
+    queue-command.ts              (500)  `queue run|watch`: the three credentials, the lock, the four phases
     activity.ts                   (371)  the activity pane: a bounded, message-grouped block under the progress
     progress.ts                   (136)  what a run's own progress line reads as on an interactive terminal
     dependencies.ts               (154)  the loop's real collaborators and the wrapped set a test gets
@@ -59,6 +60,7 @@ src/
     prepare.ts                    (305)  prepareWorkspace: the clone, its branch, the ledger it writes
     state.ts                      (129)  the workspace ledger: what a clone is, every attempt in it
     reopen.ts                     (131)  resolveWorkspace/reopenWorkspace: the pointer, the checkout
+    refresh.ts                    (290)  source readiness between tickets: fetch, verify, fast-forward only
     changes.ts                    (288)  inspectWorkspaceChanges: what the copy differs from its base by
   runs/
     contracts.ts                  (345)  run and turn requests/results, RunnerDependencies, the two errors
@@ -94,6 +96,8 @@ src/
     diff.ts                       (134)  the pull request's diff, and where a finding is positioned
     reviewer.ts                   (402)  the reviewer prompt, the one bounded turn, and the verdict file
     scan.ts                       (790)  one scan or watch: eligibility, dedup, publishing, evidence
+  queue/
+    loop.ts                       (330)  the serial control loop: one current ticket, one phase at a time
   agents/
     codex/
       runtime.ts                  (110)  the launch prefix, the environment, the stop contract
@@ -210,6 +214,9 @@ further would separate one decision from itself: `runs/runner.ts` (the loop), `s
   the run's deadline and clock — each reading runs under what is left of the task time when it
   starts — and the run's stop request, and a reading without a run deadline runs under a finite
   default bound (`git.ts`), so a stalled Git cannot hold the harness past either.
+  `refresh.ts` is the one write to the operator's own checkout, and it is a fast-forward only: the
+  serial queue's source readiness, between two tickets, fetches the configured base branch and
+  moves the checkout to the verified merge commit, or refuses with what to fix.
 - **Does not own:** the coding turns, the checks, the report, or the policy that decides whether an
   item continues a workspace (that is `sources/eligibility.ts`). The ledger is derived state: a run's
   own report stays the authority on what the run did.
@@ -218,7 +225,9 @@ further would separate one decision from itself: `runs/runner.ts` (the loop), `s
   `allocateRunDirectory` (`workspace/run-directory.ts`); `PreparedWorkspace`,
   `PrepareWorkspaceBounds`, `prepareWorkspace` (`workspace/prepare.ts`); `WorkspaceAttempt`,
   `WorkspaceState`, `workspaceStatePath`, `readWorkspaceState`, `recordWorkspaceAttempt`
-  (`workspace/state.ts`); `ContinuedWorkspace`, `WorkspaceResolution`, `resolveWorkspace`,
+  (`workspace/state.ts`); `refreshSource`, `SourceRefreshRequest`, `SourceRefreshParts`,
+  `SourceRefreshResult`, `githubRepositoryOf` (`workspace/refresh.ts`); `ContinuedWorkspace`,
+  `WorkspaceResolution`, `resolveWorkspace`,
   `reopenWorkspace` (`workspace/reopen.ts`); `WORKSPACE_IDENTITY`, `configureWorkspaceIdentity`,
   `runGit`, `GitRunBounds`, `GitResult`, `GIT_COMMAND_TIMEOUT_MS` (`workspace/git.ts`);
   `inspectWorkspaceChanges` (`workspace/changes.ts`); `WorkspaceError`, `WorkspaceStepStop`,
@@ -259,9 +268,10 @@ further would separate one decision from itself: `runs/runner.ts` (the loop), `s
 - **Does not own:** Jira. The coordinator imports no connector, no JQL, and no credential. It also
   does not implement the run: it calls the runner it was handed.
 - **Entry points:** `TaskSource`, `SourceComment`, `SourceContext`, `SourceIo`, `SourceRunOutcome`,
-  `SourceSummary`, `SourceError`, `SourceFeedbackError`, `workspacePointerLabel`,
+  `SourceSummary`, `SourceTake`, `QueueTicket`, `SourceError`, `SourceFeedbackError`, `workspacePointerLabel`,
   `parseWorkspacePointers` (`sources/contract.ts`); `runSource`, `watchSource`, `SourceWatchOptions`
-  (`sources/coordinator.ts`); `listSource`, `SourceListEntry` (`sources/list.ts`);
+  (`sources/coordinator.ts`); `takeOneItem`, `SourceTakeRequest` (`sources/coordinator.ts`);
+  `listSource`, `SourceListEntry` (`sources/list.ts`);
   `acquireIntakeLock`, `readReceipt`, `reserveReceipt`, `updateReceipt`, `receiptFilePath`,
   `receiptIdentity` (`sources/receipts.ts`).
 
@@ -341,6 +351,21 @@ further would separate one decision from itself: `runs/runner.ts` (the loop), `s
   `allocateReviewDirectory` (`reviews/scan.ts`); `diffPosition`, `renderDiff`,
   `positionFindings` (`reviews/diff.ts`).
 
+### `queue/`
+
+- **Owns:** the order of one serial queue invocation, and nothing else. `loop.ts` holds one current
+  ticket, takes at most one ticket per fresh scan, runs that ticket's coding attempt and delivery,
+  reviews it, completes it, prepares the checkout between two workspaces, and repairs the same
+  ticket when the completion path returns it to its ready status. Every phase is an ordinary
+  function handed to it; a `pending` completion is waited out with the configured interval, and an
+  idle watch waits for the next ticket without starting an agent.
+- **Does not own:** any phase's implementation. It imports no connector and no credential, starts no
+  agent, merges nothing itself, and keeps no state across invocations. `src/cli/queue-command.ts` is
+  what builds the four phases, resolves the three credentials, and holds the one intake lock for the
+  whole invocation.
+- **Entry points:** `runQueue`, `QueueLoopContext`, `QueueRunMode`, `QueueSummary`,
+  `QueueTicket`, `QueueReviewOutcome`, `QueueCompletionOutcome`, `QueueIo` (`queue/loop.ts`).
+
 ## 3. Dependency direction
 
 Imports point one way, and the summary below is the whole graph between top-level modules:
@@ -368,6 +393,8 @@ cli/*  ---- the commands: parse, load, compose, print, exit
   +--> reviews/   -------> agents/codex/, reporting/ (evidence log), workspace/ (pointer ids),
   |                        sources/contract.ts, shared/
   |
+  +--> queue/     -------> sources/contract.ts only (the ticket's identity and its take result)
+  |
   +--> agents/codex/  -------> process/ (launch and stop)
   |
   +--> config/  and  shared/  (low level: schemas, data contracts, messageOf)
@@ -392,6 +419,9 @@ The rules that keep it acyclic:
   queue data, and `shared/`. Its queue is handed to it as functions, so it imports no Jira
   connector; the CLI is the one place that builds it (`cli/review-command.ts`), and nothing else
   imports `reviews/`.
+- `queue/` depends on `shared/` and on `sources/contract.ts` for the ticket it carries and the
+  result a consumer step reports; nothing under it imports a connector, a repository client, the
+  runner, or `cli/`. The CLI is the one place that builds its phases (`cli/queue-command.ts`).
 - Nothing imports `cli.ts`, and nothing outside `cli/` writes to the terminal.
 
 The two boundary rules the repository enforces mechanically are checked with ESLint and the boundary
@@ -413,6 +443,7 @@ fixtures: helper modules may not import the CLI, and `src/shared/types.ts` may n
 | Attempt guidance | `SourceComment` (`src/sources/contract.ts`), rendering and bounds in `src/sources/guidance.ts`, the prompt section in `src/agents/codex/prompt.ts` | the item's own thread and the workspace ledger, bounded, context only |
 | Delivery | `GitHubDeliveryConfig` (`src/shared/types.ts`), the `delivery` schema in `src/config/schema.ts`, `Delivery`/`DeliveryRequest`/`DeliveredPullRequest` and `createGitHubDelivery` (`src/delivery/github.ts`), the call in `src/sources/coordinator.ts` | the operator's configuration; GitHub is the record of whether a pull request exists |
 | Review | `GitHubReviewConfig` (`src/shared/types.ts`), the `review` schema in `src/config/schema.ts`, `ReviewQueue`/`ReviewRepository`/`ReviewVerdict`/`ReviewSummary` (`src/reviews/contract.ts`), `createGitHubReviewClient` (`src/reviews/github.ts`), `createReviewerTurn` (`src/reviews/reviewer.ts`), `scanReviews`/`watchReviews` (`src/reviews/scan.ts`), wired by `src/cli/review-command.ts` | the operator's configuration and the GitHub App installation; the native review pinned to a commit is the record of what was reviewed |
+| Serial queue | `QueueTicket`/`SourceTake` (`src/sources/contract.ts`), `takeOneItem` (`src/sources/coordinator.ts`), the optional one-ticket scope in `ReviewScanContext` and `CompletionPassParts`, `runQueue` (`src/queue/loop.ts`), `refreshSource` (`src/workspace/refresh.ts`), wired by `src/cli/queue-command.ts` | the operator's configuration; Jira, the pointer label, and GitHub's native state are the authorities a restart reads |
 
 The runner's collaborators are still plain functions (`RunnerDependencies`), so a test substitutes
 one function rather than a framework. `cli/dependencies.ts` is the only place that builds the real

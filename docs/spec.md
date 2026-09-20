@@ -8,6 +8,8 @@
 
 **Revision: 2026-09-19 — optional Nexus Lens reviews.** The review contract in §9 is implemented: an opt-in `review scan` / `review watch` path that reviews the pull requests of tickets the configured Jira connection reports as being in review, as an explicitly configured reviewer profile, and publishes one native GitHub review plus one app-owned check run per reviewed head. It is read-only on Jira and touches no working copy; [WORKFLOW.md](WORKFLOW.md) §9 owns its inputs and [architecture.md](architecture.md) §2 its module.
 
+**Revision: 2026-09-20 — the serial queue.** The contract in §11 is implemented: the opt-in `queue run` and `queue watch` commands compose the Jira source, the retained-workspace runner, the GitHub delivery step, the Nexus Lens review scan, and the review-to-completion pass into one serial lifecycle for one ticket at a time, and prepare the operator's checkout between tickets. They change no single-item behaviour: without them every existing command does exactly what it did, and orchestration stays ordinary deterministic code. [WORKFLOW.md](WORKFLOW.md) §11 owns the commands' inputs and defaults, [architecture.md](architecture.md) §2 the module, and [implement-queue-run.md](implement-queue-run.md) the assignment.
+
 **Completion exception:** the no-merge/no-Done defaults below are superseded only by the explicitly configured path in §10. The review commands themselves remain read/review-only.
 
 ## 1. Goal
@@ -228,9 +230,11 @@ Delivery uses the operator's own Git and `gh` authentication; the configured rep
 
 **Implemented by this increment:** optional source configuration; a small source contract; Jira Cloud mapping, discovery, claim, and result feedback; list/run/watch commands; a single-consumer lock and local receipts; offline tests and an opt-in Jira exercise. Do not require Jira credentials for existing file-task commands or ordinary validation. The later workspace-continuation increment builds on it: see [implement-workspace-continuation.md](implement-workspace-continuation.md).
 
-**Later, only when needed:** another concrete task source, real Claude Code adapter, webhooks, parallel consumers, dependency scheduling, automatic merging, coordinator-driven CI observation and merge verification, stronger isolation, or remote recovery. The optional GitHub delivery step of §7 opens or updates a pull request and stops there; merging, and reacting to CI on the pull request, stay outside the harness. Add another connector without changing Task or the coding loop; do not ship a placeholder connector now.
+**Later, only when needed:** another concrete task source, real Claude Code adapter, webhooks, parallel consumers, dependency scheduling, automatic merging, stronger isolation, or remote recovery. The optional GitHub delivery step of §7 opens or updates a pull request and stops there. Merging and reacting to CI on the pull request happen only through the explicitly configured completion path of §10, which the serial queue of §11 composes into one lifecycle per ticket; without it they stay outside the harness. Add another connector without changing Task or the coding loop; do not ship a placeholder connector now.
 
 **Implemented by the review increment:** the optional `review` object and the `review scan` / `review watch` commands of §9 below. They add no field to Task, no change to the coding loop, and no new process: a scan reads the Jira queue, starts the configured reviewer as one bounded turn, and publishes a native GitHub review and an app-owned check run. Merging, Jira completion, and coordinator decisions remain outside it.
+
+**Implemented by the queue increment:** the opt-in `queue run` and `queue watch` commands of §11 below, and the source-readiness step they use between tickets. They add no new agent, connector, or state: they compose the existing Jira source, the existing runner and delivery step, the existing Nexus Lens scan, and the existing completion pass into one serial lifecycle, and they decide only the order.
 
 Regression verification must retain baseline failure, pass without repair, repair then pass, repair exhaustion, execution/auth/protocol errors, timeout/cancellation, retained workspace/logs, and unchanged source. Add source tests without weakening those cases. Default tests must not call Jira or a real LLM. T16 is not considered passed by mocked connector tests.
 
@@ -279,6 +283,42 @@ One pass reads the In Review items of the configured queue and, for each of them
 A current-head `REQUEST_CHANGES` decision from that reviewer, a definitive failed required PR check, and a post-merge workflow that concluded unsuccessfully are conclusive findings: one concise comment naming the review or the failed check or workflow with its conclusion and link, and the item returns to `toDoStatus` with its workspace pointer untouched, so the ordinary source consumer may take the next repair attempt. A merge that GitHub has already made is never rolled back.
 
 Everything else — missing or inconclusive review evidence, an approval or a check on another head, a closed or ambiguous pull request, a conflict, a refused auto-merge, an authentication or permission failure, a check whose relationship to a decision is unclear — is reported for operator attention and left `In Review`. A person's status change is respected: an item that left the review status is not touched. Recovery is deterministic and agent-free: GitHub's merged state and the configured post-merge runs are authoritative, comment markers in the item's own thread are what prevents a second comment, and a status move is made only while the item is really still in review, so a restart retries only what did not happen. Nothing here starts a coding turn.
+
+## 11. The serial queue
+
+`queue run` and `queue watch` are opt-in and composed only from the paths above: the Jira source and retained-workspace runner of §6, the delivery step of §7, the Nexus Lens review of §9, and the review-to-completion pass of §10. Without them, every existing command keeps its own behaviour and its own options; the queue's own commands accept `--config` and `--repo` and nothing else. The loop is ordinary deterministic code: the only agents it can start are the coding turn the configured runner already starts and the reviewer turn the configured review already starts.
+
+### One ticket, one phase at a time
+
+The loop keeps one current ticket and one active phase. It takes at most one ticket from a fresh scan of the configured ready queue, in the source's own priority order, runs its coding attempt and the delivery step, reviews that ticket's pull request with the configured reviewer, and carries the delivered pull request through §10 to a verified resolution or back to the ready status. It never starts work for a different ticket while the current one is In Progress or In Review, and coding and review turns never overlap: the review scan and the completion pass are narrowed to the ticket's immutable identity, and no phase is started before the previous one has finished.
+
+### Repair before unrelated work
+
+When the review requests changes, a required pull-request check has definitively failed, or a configured post-merge workflow concluded unsuccessfully, §10 returns the item to its To Do status with its workspace pointer preserved. The loop then continues **that** ticket by identity: the next attempt reopens the workspace its pointer names, under the recorded base, through the same runner and escalation ladder, and reviews the head the repair delivered. Unrelated ready work waits until the current ticket is confirmed Done. The loop does not clear, adopt, migrate, or replace a workspace, and it does not implement a second repair system.
+
+### Source readiness between tickets
+
+After the current ticket is confirmed Done, and before another ticket may be claimed, the operator's checkout must be provably ready for the next workspace: it must be a normal checkout on the configured base branch, carry no staged, unstaged, or non-ignored untracked work, and have a remote that names the configured delivery repository (the one that is fetched). The verified merge commit must then be contained in the fetched base branch, and the local `HEAD` must be an ancestor of it, so the only move the harness can make is a fast-forward — `git merge --ff-only` to that commit. It never resets, forces, stashes, discards, cleans, commits, rebases, or reconciles local changes. A checkout that cannot be proven ready stops the queue with an actionable diagnostic before any other ticket is claimed.
+
+### Fresh scans, finite runs, and watch mode
+
+After source readiness, the loop performs another fresh eligibility scan; it never caches or pre-reserves a batch. If a valid eligible ticket exists it becomes the new current ticket. `queue run` is finite: with no valid eligible ticket it exits successfully, closes any activity display, and claims nothing. `queue watch` is one visible foreground process, not a daemon or a service: with no valid eligible ticket it prints an idle status, sleeps for `source.pollIntervalSeconds`, and scans again, and it starts no agent while it is idle. A ticket that appears later is claimed one at a time and resumes the same serial lifecycle.
+
+### What ends the loop
+
+A coding attempt that failed or was cancelled, a stop that could not be confirmed, a workspace ledger that could not be written, a delivery failure, a review that could not produce a usable verdict, a completion that needs a person, an absent or pending post-merge workflow after its deadline, a merge conflict, an authentication, API, or infrastructure failure, a checkout that cannot be proven ready, and an unsupported Jira transition are all attention results: both modes exit nonzero with the current evidence preserved. The blocked ticket is never skipped for another one, and an infrastructure failure is never reinterpreted as coding work.
+
+A user interrupt stops the wait or the active bounded phase, starts no next ticket, and exits after cleanup, with the interrupted ticket's evidence kept.
+
+### Restarts and deduplication
+
+Nothing about the loop survives an invocation in harness state of its own, and nothing needs to. Jira's status, the item's own thread, the workspace pointer label, GitHub's review/check/merge/workflow state, and the existing local receipts are the authorities. A restart therefore resumes a ticket that is really back in its ready status — its preserved pointer deciding where the work continues — does nothing at all about a ticket that is already Done, starts no second consumer, and duplicates no review, comment, transition, or auto-merge request: the existing marker, native-review, and native-merge checks of §9 and §10 are what make that true.
+
+### Shape
+
+This stays a small foreground control loop over existing modules: no database, durable queue, scheduler, detached background process, webhook system, workflow engine, multi-repository coordinator, or general dependency graph. One queue invocation per output directory holds the existing intake lock for its whole life, including while it waits in watch mode, so a second consumer of the same output directory is refused rather than interleaved; there is still no cross-machine coordination.
+
+One limitation is worth stating: a ticket whose pull request GitHub has already merged cannot be repaired in place, because the delivery step refuses to edit a merged pull request. A repair attempt after an unsuccessful post-merge workflow therefore ends with that refusal as an actionable stop rather than a second pull request; splitting such a repair into a new ticket is an operator decision.
 
 ## Jira API references
 

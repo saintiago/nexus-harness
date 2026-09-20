@@ -383,6 +383,19 @@ describe('the serial queue loop', () => {
     expect(run.log).toEqual(['+consume:next', '-consume:next']);
   });
 
+  it('stops a watch on attention instead of polling a blocker', async () => {
+    const run = await runLoop({
+      mode: 'watch',
+      take: () => attention('Jira answered HTTP 503 for the queue search'),
+    });
+
+    expect(run.summary).toMatchObject({ outcome: 'stopped', attempts: 0 });
+    expect(run.summary.problem).toContain('HTTP 503');
+    // One reading and no wait: a blocker is reported, never polled silently.
+    expect(run.log).toEqual(['+consume:next', '-consume:next']);
+    expect(run.out.some((line) => line.startsWith('queue idle'))).toBe(false);
+  });
+
   it('stops when the review needs a person', async () => {
     const ticket = queueTicket('SAM1-1');
     const run = await runLoop({

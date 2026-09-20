@@ -363,6 +363,30 @@ describe('the queue command line', () => {
     expect(fixture.requests).toHaveLength(1);
   });
 
+  it('exits nonzero on a queue the source cannot answer, instead of polling it', async () => {
+    const fixture = await cliFixture({ config: queueConfig });
+    const failing: CliContext = {
+      ...fixture.context,
+      fetch: async (input) => {
+        const url =
+          typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+        fixture.requests.push(url);
+        return new Response('the site is unavailable', { status: 503 });
+      },
+    };
+
+    const code = await runCli(
+      ['queue', 'watch', '--config', fixture.configPath, '--repo', fixture.repo],
+      failing,
+    );
+
+    expect(code).toBe(EXIT_INPUT_ERROR);
+    expect(output(fixture)).toContain('queue watch: stopped');
+    expect(output(fixture)).toContain('503');
+    expect(output(fixture)).not.toContain('queue idle');
+    expect(fixture.turns()).toBe(0);
+  });
+
   it('refuses to start while another consumer holds the intake lock', async () => {
     const fixture = await cliFixture({ config: queueConfig });
     const workDir = path.join(path.dirname(fixture.configPath), 'out');
