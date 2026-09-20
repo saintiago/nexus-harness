@@ -831,6 +831,116 @@ describe('a retained checkout that left its recorded branch', () => {
     ).toBe(prepared.baseCommit);
   });
 
+  it('fast-forwards the recorded branch even when Git configuration would squash the merge', async () => {
+    const fixture = await createExactByteRepository();
+    const prepared = await prepareRun(fixture);
+    const revision = await leaveOnBranch(prepared, 'task/side');
+
+    // Git reads `branch.<name>.mergeOptions` when merging into that branch, and
+    // `--ff-only` does not cancel a configured `--squash`: a plain fast-forward
+    // exits 0 after staging the descendant without moving the recorded branch.
+    // A return that reported that as a reconciliation would hand a coding turn
+    // a staged working copy, so the merge has to cancel the squash and the
+    // result has to be read back.
+    await gitOrFail(
+      ['config', `branch.${prepared.branch}.mergeOptions`, '--squash'],
+      prepared.workspacePath,
+    );
+
+    expect(
+      await returnToRecordedBranch(
+        prepared.workspacePath,
+        prepared.branch,
+        {},
+        {
+          requireClean: true,
+        },
+      ),
+    ).toEqual({ changed: true, from: 'task/side', revision });
+
+    // The recorded branch really moved to the commit the checkout held, the
+    // checkout is on it, and nothing was left staged for the next turn.
+    expect(await currentBranchOf(prepared.workspacePath)).toBe(prepared.branch);
+    expect(await headOf(prepared.workspacePath)).toBe(revision);
+    expect(
+      (
+        await gitOrFail(['rev-parse', `refs/heads/${prepared.branch}`], prepared.workspacePath)
+      ).trim(),
+    ).toBe(revision);
+    expect((await gitOrFail(['status', '--porcelain'], prepared.workspacePath)).trim()).toBe('');
+    expect(
+      await inspectBranchStanding(
+        prepared.workspacePath,
+        prepared.branch,
+        {},
+        { requireClean: true },
+      ),
+    ).toEqual({ kind: 'on-branch' });
+    expect(
+      (await gitOrFail(['rev-parse', 'refs/heads/task/side'], prepared.workspacePath)).trim(),
+    ).toBe(revision);
+  });
+
+  it('refuses a return that would write over an ignored local file, keeping its bytes', async () => {
+    const fixture = await createExactByteRepository();
+    await writeFile(path.join(fixture.repo, 'settings.json'), 'the committed settings\n', 'utf8');
+    await gitOrFail(['add', 'settings.json'], fixture.repo);
+    await gitOrFail(['commit', '--quiet', '--message', 'track the settings'], fixture.repo);
+    const prepared = await prepareRun(fixture);
+
+    // A turn of its own stops tracking the settings file, ignores it, and
+    // leaves a locally regenerated copy. The harness's own reading calls that
+    // checkout clean, because an ignored path never makes one dirty; checking
+    // the recorded branch out would write the committed copy over the local
+    // one, and the fast-forward would then delete it.
+    await gitOrFail(['checkout', '--quiet', '-b', 'task/side'], prepared.workspacePath);
+    await gitOrFail(['rm', '--quiet', '--cached', 'settings.json'], prepared.workspacePath);
+    await writeFile(path.join(prepared.workspacePath, '.gitignore'), 'settings.json\n', 'utf8');
+    await gitOrFail(['add', '.gitignore'], prepared.workspacePath);
+    await gitOrFail(
+      ['commit', '--quiet', '--message', 'stop tracking the settings'],
+      prepared.workspacePath,
+    );
+    await writeFile(
+      path.join(prepared.workspacePath, 'settings.json'),
+      'regenerated locally\n',
+      'utf8',
+    );
+    const revision = await headOf(prepared.workspacePath);
+
+    expect(await inspectBranchStanding(prepared.workspacePath, prepared.branch)).toEqual({
+      kind: 'recoverable',
+      currentBranch: 'task/side',
+      revision,
+      recorded: prepared.baseCommit,
+    });
+
+    const failure = await refusalOf(() =>
+      returnToRecordedBranch(prepared.workspacePath, prepared.branch),
+    );
+
+    // The refusal names both branches and the path Git would have written over,
+    // and says the local file was left alone rather than destroyed.
+    expect(failure.message).toContain('task/side');
+    expect(failure.message).toContain(`"${prepared.branch}"`);
+    expect(failure.message).toContain('settings.json');
+    expect(failure.message).toMatch(/nothing local was written over/);
+
+    // The file's own bytes survive, and nothing moved: the checkout is still on
+    // the branch the turn made, at its commit, and the recorded branch is still
+    // where the attempt started from.
+    expect(await readFile(path.join(prepared.workspacePath, 'settings.json'), 'utf8')).toBe(
+      'regenerated locally\n',
+    );
+    expect(await currentBranchOf(prepared.workspacePath)).toBe('task/side');
+    expect(await headOf(prepared.workspacePath)).toBe(revision);
+    expect(
+      (
+        await gitOrFail(['rev-parse', `refs/heads/${prepared.branch}`], prepared.workspacePath)
+      ).trim(),
+    ).toBe(prepared.baseCommit);
+  });
+
   it('leaves a checkout that is already on the recorded branch exactly as it is', async () => {
     const fixture = await createExactByteRepository();
     const prepared = await prepareRun(fixture);

@@ -28,10 +28,20 @@
  * the branch names and what an operator can do by hand. Nothing here resets,
  * force-updates, or discards a commit, and no branch is adopted because of what
  * it is called (HARN-35).
+ *
+ * The return itself is asked not to write over a local file that only the
+ * checkout knows about: the checkout and the fast-forward refuse to overwrite
+ * an ignored file, and that refusal stops the run with the path named rather
+ * than destroying it. What the two commands did is also read back rather than
+ * assumed — they inherit Git configuration and run hooks, and a fast-forward
+ * that a branch's `mergeOptions` turns into a squash exits successfully without
+ * moving the recorded branch or committing what it staged — so a return that
+ * does not end on the recorded branch, at the commit the checkout held, and
+ * clean is reported as the failure it is.
  */
 import { WorkspaceError } from './errors.js';
 import { firstLine, gitFailure, listPaths, runGit } from './git.js';
-import type { GitRunBounds } from './git.js';
+import type { GitResult, GitRunBounds } from './git.js';
 import { statusEntries } from './status.js';
 
 /** How a retained checkout stands relative to the branch its ledger records. */
@@ -357,6 +367,13 @@ async function inspectOtherBranch(
  * (docs/implement-workspace-continuation.md) — unless the caller requires a
  * clean checkout ({@link BranchRead}), which is how a coding turn is only ever
  * started from the workspace's own committed state.
+ *
+ * Both commands are asked not to overwrite an ignored file, and their result is
+ * read back before it is reported: Git configuration and hooks are inherited,
+ * so what the two commands did is measured — the recorded branch really at the
+ * checkout's commit, checked out, and clean — rather than assumed from an exit
+ * code. A return that would write over a local file, and one that ends anywhere
+ * else, is refused with what was observed and what an operator can do by hand.
  */
 export async function returnToRecordedBranch(
   workspacePath: string,
@@ -372,7 +389,15 @@ export async function returnToRecordedBranch(
     return { changed: false };
   }
 
-  const checkedOut = await runGit(['checkout', '--quiet', branch], workspacePath, bounds);
+  // `--no-overwrite-ignore`: Git overwrites an ignored local file by default
+  // when a checkout would write at its path, and this harness never destroys a
+  // file a checkout only knows about. The refusal that option produces leaves
+  // the working copy where it is, so it is reported instead of retried.
+  const checkedOut = await runGit(
+    ['checkout', '--quiet', '--no-overwrite-ignore', branch],
+    workspacePath,
+    bounds,
+  );
   if (checkedOut.outcome !== 'exited') {
     throw gitFailure(
       `the recorded branch "${branch}" could not be checked out in "${workspacePath}"`,
@@ -382,14 +407,20 @@ export async function returnToRecordedBranch(
   if (checkedOut.code !== 0) {
     throw new WorkspaceError(
       `the recorded branch "${branch}" could not be checked out in "${workspacePath}": ` +
-        `${firstLine(checkedOut.stderr)}. The checkout is still on "${standing.currentBranch}" at ` +
-        `${standing.revision}, so nothing was moved or lost: resolve what Git refused by hand in ` +
-        'the retained workspace, or move the workspace aside',
+        `${gitDiagnostic(checkedOut)}. The checkout is still on "${standing.currentBranch}" at ` +
+        `${standing.revision}, so nothing was moved and nothing local was written over — an ` +
+        'ignored file included, because Git is asked not to overwrite one and the harness never ' +
+        `forces it. Finish what Git named by hand in the retained workspace (move, commit, or ` +
+        `regenerate it), then continue the work on "${branch}", or move the workspace aside`,
     );
   }
 
+  // `--no-squash`: `branch.<name>.mergeOptions` is inherited configuration, and
+  // `--ff-only` does not cancel a configured `--squash`: Git would exit 0 after
+  // staging the descendant without moving the recorded branch. `--no-overwrite-ignore`
+  // is the same protection the checkout above carries.
   const fastForwarded = await runGit(
-    ['merge', '--ff-only', '--quiet', standing.revision],
+    ['merge', '--ff-only', '--no-squash', '--no-overwrite-ignore', '--quiet', standing.revision],
     workspacePath,
     bounds,
   );
@@ -402,11 +433,97 @@ export async function returnToRecordedBranch(
   if (fastForwarded.code !== 0) {
     throw new WorkspaceError(
       `"${branch}" could not be fast-forwarded to ${standing.revision} in "${workspacePath}": ` +
-        `${firstLine(fastForwarded.stderr)}. The checkout is on its recorded branch at the tip it ` +
+        `${gitDiagnostic(fastForwarded)}. The checkout is on its recorded branch at the tip it ` +
         `had, the commit ${standing.revision} is still on "${standing.currentBranch}", and nothing ` +
-        'was reset or discarded: fast-forward the branch by hand when that is the work to keep, or ' +
-        'move the workspace aside',
+        'was reset, discarded, or written over — no local file, an ignored one included: ' +
+        `fast-forward "${branch}" to ${standing.revision} by hand when that is the work to keep, ` +
+        'or move the workspace aside',
     );
   }
+
+  const unsettled = await unsettledReturnProblem(workspacePath, branch, standing, bounds);
+  if (unsettled !== null) {
+    throw new WorkspaceError(unsettled);
+  }
   return { changed: true, from: standing.currentBranch, revision: standing.revision };
+}
+
+/**
+ * Git's own refusal as one line. A refusal that would write over local files
+ * names them on their own lines, so the whole diagnostic is kept — the paths an
+ * operator has to deal with are the point of it — rather than its first line.
+ */
+function gitDiagnostic(result: GitResult): string {
+  const lines = result.stderr
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line !== '');
+  return lines.length === 0 ? 'no diagnostic output' : lines.join('; ');
+}
+
+/**
+ * Why the checkout a return left behind is not what the return promises, or
+ * `null` when it is: on the recorded branch, at the commit the checkout held,
+ * and clean. The two commands inherit Git configuration and run hooks, so their
+ * result is read back rather than assumed — a `branch.<name>.mergeOptions` that
+ * squashes, for example, makes `git merge --ff-only` exit successfully after
+ * staging the descendant without moving the recorded branch — and a caller
+ * about to start a coding turn must not be handed that staged working copy as a
+ * returned branch (HARN-35).
+ */
+async function unsettledReturnProblem(
+  workspacePath: string,
+  branch: string,
+  standing: { readonly currentBranch: string; readonly revision: string },
+  bounds: GitRunBounds,
+): Promise<string | null> {
+  const symbolic = await runGit(
+    ['symbolic-ref', '--quiet', '--short', 'HEAD'],
+    workspacePath,
+    bounds,
+  );
+  if (symbolic.outcome !== 'exited') {
+    throw gitFailure(`the branch of "${workspacePath}" could not be read`, symbolic);
+  }
+  const onBranch = symbolic.code === 0 && symbolic.stdout.trim() === branch;
+  const head = await readCommit(
+    workspacePath,
+    'HEAD^{commit}',
+    `the commit of "${workspacePath}"`,
+    bounds,
+  );
+  const tip = await readCommit(
+    workspacePath,
+    `refs/heads/${branch}`,
+    `the recorded branch "${branch}" of "${workspacePath}"`,
+    bounds,
+  );
+  const leftovers = await leftoversOf(workspacePath, bounds);
+  if (
+    onBranch &&
+    head === standing.revision &&
+    tip === standing.revision &&
+    leftovers.length === 0
+  ) {
+    return null;
+  }
+
+  const commit = (revision: string): string =>
+    revision === '' ? 'a commit that cannot be read' : revision;
+  const where = onBranch
+    ? `on its recorded branch at ${commit(head)}`
+    : symbolic.code === 0
+      ? `on branch "${symbolic.stdout.trim()}" at ${commit(head)}`
+      : `on no branch (a detached HEAD) at ${commit(head)}`;
+  return (
+    `the checkout of "${workspacePath}" was not returned to its recorded branch "${branch}" at ` +
+    `${standing.revision}: after the checkout and the fast-forward, it is ${where}, and ` +
+    `"${branch}" is at ${commit(tip)}` +
+    (leftovers.length === 0 ? '' : `, with uncommitted changes (${listPaths(leftovers)})`) +
+    '. Git configuration and hooks are inherited, so what those commands did is read back rather ' +
+    'than assumed, and no coding turn is started on a state the harness did not ask for. Nothing ' +
+    `was reset, force-updated, or discarded: the commit ${standing.revision} is still on ` +
+    `"${standing.currentBranch}". Read the state by hand — "${branch}" fast-forwarded to ` +
+    `${standing.revision} and checked out clean — then continue the work, or move the workspace aside`
+  );
 }

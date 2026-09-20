@@ -1256,6 +1256,83 @@ describe('a working copy a turn leaves on a branch of its own', () => {
     );
   }, 120_000);
 
+  it('fast-forwards before the repair turn even when Git configuration would squash the merge', async () => {
+    const fixture = await createFixture([{ file: 'target.txt', text: IMPLEMENTED_TEXT }]);
+    const starts: string[] = [];
+    const agent: RunnerDependencies['runAgentTurn'] = async (request) => {
+      starts.push(await branchOf(request.workspacePath));
+      if (request.turn === 1) {
+        // Git reads `branch.<name>.mergeOptions` when merging into that branch,
+        // and `--ff-only` does not cancel a configured `--squash`: a return that
+        // trusted the exit code would stage this commit without moving the
+        // recorded branch, and the repair turn would then be refused a staged
+        // working copy instead of starting on the commit the checks saw.
+        const recorded = await branchOf(request.workspacePath);
+        await gitOrFail(
+          ['config', `branch.${recorded}.mergeOptions`, '--squash'],
+          request.workspacePath,
+        );
+        await gitOrFail(['checkout', '--quiet', '-b', 'task/side'], request.workspacePath);
+        await writeFile(
+          path.join(request.workspacePath, 'target.txt'),
+          'broken by the implementation turn\n',
+          'utf8',
+        );
+        await gitOrFail(['add', 'target.txt'], request.workspacePath);
+        await gitOrFail(
+          ['commit', '--quiet', '--message', 'the first turn'],
+          request.workspacePath,
+        );
+      } else {
+        await writeFile(path.join(request.workspacePath, 'target.txt'), IMPLEMENTED_TEXT, {
+          flag: 'a',
+        });
+      }
+      return { summary: `turn ${String(request.turn)}` };
+    };
+
+    const result = await runTask(
+      request(
+        fixture,
+        configuration(fixture, {
+          checks: [command(fixture, 'check-1', 'need', 'target.txt', IMPLEMENTED_TEXT)],
+        }),
+      ),
+      dependencies(agent),
+    );
+
+    expect(result.status).toBe('passed');
+    expect(starts).toEqual([result.workspace?.branch, result.workspace?.branch]);
+    // The repair turn really worked on the commit the implementation turn made:
+    // the recorded branch took it, the checkout is on it and clean, and the
+    // repair turn's work is committed there.
+    const workspacePath = result.workspace?.workspacePath ?? '';
+    const side = await commitOf(workspacePath, 'refs/heads/task/side');
+    expect(await branchOf(workspacePath)).toBe(result.workspace?.branch);
+    expect(await commitOf(workspacePath, `refs/heads/${result.workspace?.branch ?? ''}`)).toBe(
+      side,
+    );
+    expect(await commitOf(workspacePath, 'HEAD')).toBe(side);
+    expect(
+      (
+        await git(
+          ['merge-base', '--is-ancestor', result.workspace?.baseCommit ?? '', side],
+          workspacePath,
+        )
+      ).code,
+    ).toBe(0);
+    expect(await readText(path.join(workspacePath, 'target.txt'))).toBe(
+      `broken by the implementation turn\n${IMPLEMENTED_TEXT}`,
+    );
+
+    const report = await readReport(result.reportPath);
+    expect(report.attempts.map((entry) => entry.checks?.outcome)).toEqual(['failed', 'passed']);
+    const timeline = await readText(report.runLog);
+    expect(timeline).toContain(
+      `checkout returned to branch ${result.workspace?.branch ?? ''} at ${side}, from task/side`,
+    );
+  }, 120_000);
+
   it('stops before the checks when the checkout cannot be returned, keeping its work', async () => {
     const fixture = await createFixture();
     const starts: string[] = [];
@@ -1357,6 +1434,67 @@ describe('a working copy a turn leaves on a branch of its own', () => {
       'end check-1',
     ]);
   });
+
+  it('stops before the checks when the return would write over an ignored local file', async () => {
+    const fixture = await createFixture([
+      { file: 'settings.json', text: 'the committed settings\n' },
+    ]);
+    const starts: string[] = [];
+    const agent: RunnerDependencies['runAgentTurn'] = async (request) => {
+      starts.push(await branchOf(request.workspacePath));
+      // The turn stops tracking the settings file, ignores it, and regenerates a
+      // copy locally: the recorded branch still tracks it, so returning the
+      // checkout to that branch would write the committed copy over the local
+      // one and the fast-forward would then delete it. The harness refuses
+      // instead of destroying it, before any check reads the working copy.
+      await gitOrFail(['checkout', '--quiet', '-b', 'task/side'], request.workspacePath);
+      await gitOrFail(['rm', '--quiet', '--cached', 'settings.json'], request.workspacePath);
+      await writeFile(path.join(request.workspacePath, '.gitignore'), 'settings.json\n', 'utf8');
+      await gitOrFail(['add', '.gitignore'], request.workspacePath);
+      await gitOrFail(
+        ['commit', '--quiet', '--message', 'stop tracking the settings'],
+        request.workspacePath,
+      );
+      await writeFile(
+        path.join(request.workspacePath, 'settings.json'),
+        'regenerated locally\n',
+        'utf8',
+      );
+      return { summary: 'left an ignored local file under a path the recorded branch tracks' };
+    };
+
+    const result = await runTask(request(fixture, configuration(fixture)), dependencies(agent));
+
+    expect(result.status).toBe('failed');
+    // The turn started on the branch the workspace records, and no further one
+    // was started from the state the return refused to move.
+    expect(starts).toEqual([result.workspace?.branch]);
+    expect(result.reason).toMatch(/could not be returned to the branch this workspace records/);
+    expect(result.reason).toContain('task/side');
+    expect(result.reason).toContain(`"${result.workspace?.branch ?? ''}"`);
+    expect(result.reason).toContain('settings.json');
+    expect(result.reason).toMatch(/nothing local was written over/);
+
+    // No check ran after the turn: the fixture processes only ever ran the
+    // baseline, and the turn's own record is kept without a round.
+    const report = await readReport(result.reportPath);
+    expect(report.attempts).toHaveLength(1);
+    expect(report.attempts[0]?.checks).toBeNull();
+    expect(eventOrder(await recordedEvents(fixture))).toEqual([
+      'start setup-1',
+      'end setup-1',
+      'start check-1',
+      'end check-1',
+    ]);
+
+    // The local file's bytes are still there, and neither branch moved.
+    const workspacePath = result.workspace?.workspacePath ?? '';
+    expect(await branchOf(workspacePath)).toBe('task/side');
+    expect(await readText(path.join(workspacePath, 'settings.json'))).toBe('regenerated locally\n');
+    expect(await commitOf(workspacePath, `refs/heads/${result.workspace?.branch ?? ''}`)).toBe(
+      result.workspace?.baseCommit,
+    );
+  }, 120_000);
 
   it('stops before the repair turn when the working copy still holds uncommitted work', async () => {
     const fixture = await createFixture();
