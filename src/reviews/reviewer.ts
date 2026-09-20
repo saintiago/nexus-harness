@@ -359,7 +359,7 @@ export interface ReviewerParts {
   readonly onActivity?: (activity: AgentActivity) => void;
   /**
    * That one reviewer invocation is starting, named by the ticket it reviews.
-   * A display opens a payload pane of its own for it: this is the phase that
+   * A display opens a fresh pane of its own for it: the role is the phase that
    * launched the turn, never anything read from the launch itself.
    */
   readonly onTurnStart?: (ticket: string) => void;

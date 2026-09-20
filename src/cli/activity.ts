@@ -22,24 +22,24 @@
  * timeline, so later lifecycle events and the next pane follow them in scrollback
  * order. Only the pane of the invocation running right now is cursor-managed;
  * one display never draws two panes at once. Closing the display finalizes
- * whatever is open and stops drawing, so the outcome and the paths that follow
- * are printed exactly as they were before the pane existed, and an interrupted
- * run leaves a usable terminal.
+ * whatever is on screen and stops drawing, so the outcome and the paths that
+ * follow are printed as ordinary lines after it, and an interrupted run leaves a
+ * usable terminal.
  *
  * The history is grouped by the agent's own messages: each message starts a
  * group that keeps at most the three latest work lines that followed it, and the
- * whole history is bounded, so within one invocation the messages
- * accumulate one below another while the work between them disappears
- * oldest-first.
+ * history of one pane is bounded, so the messages accumulate one below another
+ * while the work between them disappears oldest-first.
  *
- * Each entry is stamped with the local time the viewer received it — `HH:mm:ss`,
- * read once and kept for every redraw — and an agent message's own line is drawn
- * in a golden yellow, reset again inside the entry, so commands, results and
- * changed files stay in the terminal's ordinary color. The stamp is the viewer's
- * own receive time and nothing more: the runtime's event stream carries no
- * timestamp, so the pane never implies one. A redirected or too small terminal
- * carries no escape sequences at all; a terminal that asked for no color keeps
- * the pane and the stamps and carries no styling sequence.
+ * Each entry, and each ordinary line, is stamped with the local time the viewer
+ * received or emitted it — `HH:mm:ss`, read once and kept for every redraw — and
+ * an agent message's own line is drawn in a golden yellow, reset again inside the
+ * entry, so commands, results and changed files stay in the terminal's ordinary
+ * color. The stamp is the viewer's own clock and nothing more: the runtime's
+ * event stream carries no timestamp, so the terminal never implies one. A
+ * redirected or too small terminal carries no escape sequences at all; a
+ * terminal that asked for no color keeps the pane and the stamps and carries no
+ * styling sequence.
  *
  * It is presentation only. Nothing here is evidence of what a turn did: the full
  * runtime output stays in the turn's own agent log, and every decision is made
@@ -124,7 +124,7 @@ export interface ActivityInvocation {
   readonly role: ActivityRole;
   /** The ticket (or standalone task) it works on, when one is known. */
   readonly ticket?: string | null;
-  /** What the phase calls itself: `implementation turn 1`, `repair turn 2`, `review`. */
+  /** What the phase calls itself: `implementation turn`, `repair turn 2`, `review`. */
   readonly phase?: string | null;
 }
 
@@ -180,8 +180,8 @@ export interface ActivityDisplay {
  * The display for one CLI invocation: a pane on an interactive terminal, or
  * plain ordinary lines anywhere else.
  *
- * `now` is the viewer's own clock, read once for each entry the pane receives;
- * it is the time that entry is stamped with. The process clock when the caller
+ * `now` is the viewer's own clock, read once for each emission the pane receives;
+ * it is the time that emission is stamped with. The process clock when the caller
  * gives none, and a controlled clock in a test.
  */
 export function createActivityDisplay(

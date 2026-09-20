@@ -817,6 +817,28 @@ describe('the invocation timeline', () => {
     );
     expect(terminal.chunks.join('')).not.toContain('\u001b');
   });
+
+  it('keeps the boundaries and the stamps, and no styling, when no color was asked for', () => {
+    const terminal = fakeConsole({ ...FULL_TERMINAL, color: false });
+    const pane = createActivityDisplay(terminal.io, CLOCK);
+    pane.beginInvocation({ role: 'reviewer', ticket: 'HARN-3', phase: 'review' });
+    pane.activity({ kind: 'message', text: 'reading the diff' });
+    pane.endInvocation();
+    pane.line('HARN-3: Nexus Lens approved it');
+    pane.close();
+
+    // The pane still redraws in place, and every row it draws says when it
+    // arrived; what is gone is the styling (HARN-18).
+    const raw = terminal.chunks.join('');
+    expect(raw).toContain('\u001b[');
+    // eslint-disable-next-line no-control-regex
+    expect(raw).not.toMatch(/\u001b\[[0-9;]*m/);
+    expect(screenAfter(terminal.chunks)).toEqual([
+      boundary('reviewer', 'HARN-3', 'review'),
+      stamped('agent', 'reading the diff'),
+      `${STAMP} HARN-3: Nexus Lens approved it`,
+    ]);
+  });
 });
 
 // ---------------------------------------------------------------------------

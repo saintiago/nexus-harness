@@ -7,9 +7,12 @@
  * drawn by the same pane the CLI uses; the progress lines are the shapes the
  * runner and the source coordinator write. The first block is what the reported
  * screenshot showed for the same operations before HARN-16, printed here for
- * comparison; the second is what the pane shows now, with every entry carrying
- * the local time the viewer received it and each agent message highlighted in
- * yellow and reset again (HARN-18).
+ * comparison; the second is what the terminal shows now, with every entry and
+ * every ordinary line carrying the local time the viewer received or emitted
+ * it, each agent message highlighted in yellow and reset again, and every agent
+ * invocation — a developer turn, a repair turn, a Nexus Lens review, the next
+ * ticket's developer turn — opening its own bounded pane behind its own role and
+ * ticket boundary, finalized into one timeline as it ends (HARN-18, HARN-26).
  */
 import assert from 'node:assert/strict';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -91,6 +94,8 @@ const STAMPED_WORK = /^\d{2}:\d{2}:\d{2} (run|result|change): /;
 /* eslint-enable no-control-regex */
 let drawingKind = null;
 let highlighted = 0;
+/** The invocation boundaries the timeline was given, in order. */
+const boundaries = [];
 const terminal = {
   columns,
   rows,
@@ -104,6 +109,11 @@ const terminal = {
       } else {
         assert(STAMPED_WORK.test(line), `A drawn pane line is a stamped entry: ${line}`);
         assert(!line.includes('\u001b'), 'Only an agent message is highlighted');
+      }
+    }
+    for (const line of chunk.split('\n')) {
+      if (/^\d{2}:\d{2}:\d{2} ---- (developer|reviewer): HARN-\d+ — .* ----$/.test(line)) {
+        boundaries.push(line);
       }
     }
     write(chunk);
@@ -140,6 +150,11 @@ try {
     pane.line(line);
     await delay(120);
   }
+
+  // One developer invocation: it opens with its own boundary, and everything it
+  // reports belongs to this pane and no other.
+  pane.beginInvocation({ role: 'developer', ticket: 'HARN-16', phase: 'implementation turn' });
+  await delay(400);
 
   // One turn: a message, the commands that follow it, and their results.
   await draw('item.completed', {
@@ -231,6 +246,40 @@ try {
         turn === 6 ? 'all checks passed\n' : `check ${String(turn)} did not pass\n`,
     });
   }
+
+  // The invocation ends: its pane becomes the timeline segment a reader keeps,
+  // before the lifecycle lines that follow it.
+  pane.endInvocation();
+  pane.line('HARN-16: implementation turn result: completed');
+  pane.line('HARN-16: post-agent check-round result: passed');
+  await delay(400);
+
+  // A Nexus Lens reviewer invocation of the same ticket: its own pane, its own
+  // role, and no row inherited from the developer turn above it.
+  pane.beginInvocation({ role: 'reviewer', ticket: 'HARN-16', phase: 'review' });
+  await draw('item.completed', {
+    type: 'agent_message',
+    text: 'Nexus Lens is reading the diff before writing a verdict.',
+  });
+  await draw('item.started', { type: 'command_execution', command: 'git diff --stat' });
+  await draw('item.completed', {
+    type: 'command_execution',
+    command: 'git diff --stat',
+    exit_code: 0,
+    aggregated_output: ' src/cli/activity.ts | 210 +++++++++++++++++++++++++-----------\n',
+  });
+  pane.endInvocation();
+  pane.line('HARN-16: Nexus Lens approved it');
+  await delay(400);
+
+  // The next ticket, next in the queue: a fresh developer pane again.
+  pane.beginInvocation({ role: 'developer', ticket: 'HARN-26', phase: 'implementation turn' });
+  await draw('item.completed', {
+    type: 'agent_message',
+    text: 'The next ticket starts with an empty pane of its own.',
+  });
+  pane.endInvocation();
+  pane.line('HARN-26: implementation turn result: completed');
   await delay(800);
 } finally {
   pane.close();
@@ -240,6 +289,9 @@ try {
 out('Outcome block would follow here, e.g. "run run-20260919204053-1e36ccde: passed".');
 out(
   `Example paths: logs/agent-implementation.log, logs/run.log, result.json (${String(work)} synthetic activity lines, ` +
-    `${String(highlighted)} highlighted message draws).`,
+    `${String(highlighted)} highlighted message draws, ${String(boundaries.length)} invocation boundaries).`,
 );
-out('Display check finished; the activity pane should be gone.');
+for (const line of boundaries) {
+  out(`  boundary ${line}`);
+}
+out('Display check finished; the last pane is finalized above this line.');
