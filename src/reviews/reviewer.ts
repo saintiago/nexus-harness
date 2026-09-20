@@ -348,6 +348,7 @@ export function createReviewerTurn(parts: ReviewerParts): ReviewerTurn {
           prompt,
           label: `Nexus Lens reviewer turn for ${request.evidence.ref.key}`,
           workspacePath: request.dir,
+          skipGitRepoCheck: true,
           agentLog: log,
           stop: request.stop,
           ...(parts.onActivity === undefined ? {} : { onActivity: parts.onActivity }),

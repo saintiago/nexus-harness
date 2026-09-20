@@ -1430,7 +1430,7 @@ async function reviewCommandFixture(options: {
 }
 
 describe('the review command through the CLI', () => {
-  it('keeps both configured credential variables out of the reviewer process', async () => {
+  it('reviews from a non-repository evidence directory with both credential variables stripped', async () => {
     const world = fakeWorld({
       issues: [sourceIssue(['harness-ws-run-20260919100148-e48a9ab0'])],
     });
@@ -1447,8 +1447,25 @@ describe('the review command through the CLI', () => {
     const result = await fixture.run();
 
     expect(result.code).toBe(EXIT_OK);
-    expect(await fakeTurns(fixture.runtime.state)).toHaveLength(1);
-    expect((await fakeTurns(fixture.runtime.state))[0]?.environmentPresent).toEqual({
+    const turns = await fakeTurns(fixture.runtime.state);
+    expect(turns).toHaveLength(1);
+    const turn = turns[0]!;
+    expect(turn.cwd).toContain(path.join(fixture.cwd, 'runs', 'reviews'));
+    expect(existsSync(path.join(turn.cwd, '.git'))).toBe(false);
+    expect(existsSync(path.join(fixture.cwd, '.git'))).toBe(false);
+    expect(turn.argv).toEqual([
+      '--profile',
+      'nexus-astra',
+      '--ask-for-approval',
+      'never',
+      'exec',
+      '--sandbox',
+      'danger-full-access',
+      '--json',
+      '--skip-git-repo-check',
+      '-',
+    ]);
+    expect(turn.environmentPresent).toEqual({
       JIRA_API_TOKEN: false,
       NEXUS_LENS_KEY_PATH: false,
       PATH: true,

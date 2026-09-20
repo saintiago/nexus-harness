@@ -553,7 +553,9 @@ The queue is the configured project, issue type, and label in the `source`'s **r
    complete review or split the pull request into smaller changes.
 6. The `reviewer` launch runs as **one bounded turn** in its own evidence directory under
    `<workDir>/reviews/<reviewId>/`, with the same adapter, the same non-interactive launch, and
-   the same task timeout a run gets. It is instructed to review only: it must not change files,
+   the same task timeout a run gets. Review turns add `codex exec --skip-git-repo-check` because
+   the evidence directory is not a Git repository; coding turns keep the repository check.
+   It is instructed to review only: it must not change files,
    implement fixes, commit, push, merge, or edit the ticket or the pull request, and it must write
    one `verdict.json` (a `verdict` of `approve` or `request_changes`, a summary, and actionable
    findings). A turn that fails, is stopped, or writes no usable verdict is **inconclusive**:
