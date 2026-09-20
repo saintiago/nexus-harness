@@ -171,7 +171,7 @@ check-config: /home/you/project/nexus.project.json is valid
   checks                 1 command
   source                 jira https://malton-family.atlassian.net project HARN
   source queue           issuetype Task, label harness-task, To Do -> In Progress -> In Review
-  source ordering        priority: Jira priority DESC, then created ASC, then the issue key
+  source ordering        rank: Jira Rank ASC, then created ASC, then the issue key
   source polling         30s, token environment variable JIRA_API_TOKEN
   delivery               github saintiago/nexus-harness -> main
   delivery completion    reviewer nexus-lens[bot] (App 5001141), check Nexus Lens review, credential environment variable NEXUS_LENS_TOKEN
@@ -1273,6 +1273,14 @@ for one language explicitly, the same live command reports the issue `valid and 
 Nothing was claimed, no run directory was created, and no coding turn was started: that is a read,
 and only a read.
 
+**Verified live for Jira reads under Rank ordering on 2026-09-20.** With the committed
+`nexus.project.json` selecting `"ordering": "rank"`, `check-config` reported the Rank intake order
+(`source ordering  rank: Jira Rank ASC, then created ASC, then the issue key`), and `source list` on
+the same queue listed its three ready issues — `HARN-29`, `HARN-32`, `HARN-34` — in the order their
+own `Rank` values carry, compared against those values read back separately and ascending. Nothing
+was claimed, no run directory was created, and no coding turn was started: that is a read, and only
+a read.
+
 **Not verified anywhere yet:**
 
 - **any live turn through the unsandboxed launch beyond the 2026-09-19 Windows smoke.** That smoke
@@ -1298,12 +1306,11 @@ and only a read.
   `workDir` is refused, and a different connected project runs under the same harness
   configuration and storage root. No two real project queues have been started against a live Jira
   site at once;
-- **any live Rank-mode intake scan.** The operator's Jira credential has executed enhanced-search
-  JQL with `ORDER BY Rank ASC` successfully (2026-09-20), but no `source list` from this harness has
-  been compared against that answer yet. Setting `"ordering": "rank"` in the ignored local operator
-  config and comparing the printed `source list` order with the Jira Rank JQL response is an
-  **operator step** — a configuration change, not part of a coding turn — and the offline
-  regressions only prove the JQL and the order handling against a fake site;
+- **any live Rank-mode intake run.** The Rank read is verified live above (2026-09-20), and the
+  offline regressions prove the JQL and the order handling against a fake site, but no `source run`
+  or `queue run` has claimed a ticket under `"ordering": "rank"` yet: the claims made so far were
+  Priority-ordered, and the first Rank-ordered claim waits on the queue being restarted so it
+  reloads this project configuration;
 - **any live GitHub delivery.** The delivery step is verified offline against disposable Git
   repositories and a stand-in `gh` on `PATH`; no branch has been pushed to github.com and no pull
   request has been created by the harness here. The commands follow `gh`'s documented interface,
