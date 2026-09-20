@@ -285,6 +285,13 @@ export interface ReviewItemResult {
 /** What one scan did, for the caller to print and to turn into an exit code. */
 export interface ReviewSummary {
   readonly outcome: SourceOutcome;
+  /**
+   * What the scan did with each eligible ticket it considered, in the order it
+   * considered them. A caller that narrowed the scan to one ticket — the serial
+   * queue loop does — reads that ticket's own disposition and detail here
+   * (docs/WORKFLOW.md §11).
+   */
+  readonly items: readonly ReviewItemResult[];
   /** Eligible tickets the scan considered. */
   readonly scanned: number;
   /** Tickets whose verdict was published as a review and a check. */
@@ -314,6 +321,14 @@ export interface ReviewScanContext {
   readonly queue: ReviewQueue;
   readonly repository: ReviewRepository;
   readonly reviewer: ReviewerTurn;
+  /**
+   * Scan only this ticket, when the caller named one. The serial queue loop
+   * reviews exactly the ticket it is carrying, so a scan of the whole review
+   * status can never start a reviewer turn for another one. Absent means every
+   * ticket in the configured review status, exactly as before
+   * (docs/WORKFLOW.md §11).
+   */
+  readonly only?: SourceRef;
   /** The output directory the review evidence and its log live under. */
   readonly workDir: string;
   /** The App's review login: a completed review only counts when this login wrote it. */

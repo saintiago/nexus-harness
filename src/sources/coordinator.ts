@@ -21,7 +21,7 @@ import type { RunTaskResult } from '../runs/contracts.js';
 import { RunCancelledError, RunTimeoutError } from '../runs/contracts.js';
 import { messageOf } from '../shared/errors.js';
 import { workspaceStopOf } from '../workspace/errors.js';
-import type { AttemptEvidence } from '../shared/types.js';
+import type { AttemptEvidence, SourceRef } from '../shared/types.js';
 import type { ContinuedWorkspace } from '../workspace/reopen.js';
 import { reopenWorkspace } from '../workspace/reopen.js';
 import { readWorkspaceState, sourceItemFor } from '../workspace/state.js';
@@ -33,7 +33,10 @@ import type {
   SourceOutcome,
   SourceRunOutcome,
   SourceSummary,
+  SourceTake,
+  SourceTakeRun,
   SourceTask,
+  QueueTicket,
 } from './contract.js';
 import { SourceError, SourceFeedbackError } from './contract.js';
 import { decideAttempt } from './eligibility.js';
@@ -146,6 +149,13 @@ interface BatchState {
   cleanupConfirmed: boolean;
   /** What the last review-to-completion pass did; `null` when it is off. */
   completion: CompletionRunSummary | null;
+  /**
+   * The one ticket a queue consumer step took and how its last run ended. The
+   * finite batch and watch paths never read it; it is what one `queue` step
+   * reports back to the serial loop (docs/WORKFLOW.md §11).
+   */
+  taken: QueueTicket | null;
+  takenRun: SourceTakeRun | null;
 }
 
 function emptyState(): BatchState {
@@ -160,6 +170,8 @@ function emptyState(): BatchState {
     problem: null,
     cleanupConfirmed: true,
     completion: null,
+    taken: null,
+    takenRun: null,
   };
 }
 
@@ -218,6 +230,15 @@ function stopWith(state: BatchState, problem: string, confirmed = true): 'stop' 
 /** What handling one candidate did, and whether the batch should go on. */
 type Step = 'next' | 'stop' | 'cancelled';
 
+/**
+ * How one intake step is bounded. A finite batch or a watch scan processes the
+ * whole discovered queue and skips what it will not act on; a `queue` step takes
+ * at most one ticket, so an item it will not act on — a refusal, or a
+ * description that cannot be mapped to a task — is the serial loop's own
+ * actionable stop instead of a quiet skip (docs/WORKFLOW.md §11).
+ */
+type CoordinatorMode = 'batch' | 'single';
+
 /** A failed Git cleanup is an intake stop, including before a run exists. */
 function unconfirmedWorkspaceStop(
   state: BatchState,
@@ -251,6 +272,7 @@ async function refuse(
   reason: string,
   state: BatchState,
   diagnostics: Map<string, string> | null,
+  mode: CoordinatorMode,
 ): Promise<Step> {
   const { source, io, stop } = context;
   const identity = receiptIdentity(candidate.ref);
@@ -300,6 +322,15 @@ async function refuse(
   }
   state.refused += 1;
   io.out(`${item.ref.key}: refusal published and the issue taken out of the queue`);
+  if (mode === 'single') {
+    // A queue does not skip the ticket it will not act on: the refusal is the
+    // loop's actionable result, and a person decides what happens to the item
+    // before any other ticket is considered (docs/WORKFLOW.md §11).
+    return stopWith(
+      state,
+      `${item.ref.key}: the harness refused it and took it out of the queue: ${reason}`,
+    );
+  }
   return 'next';
 }
 
@@ -445,6 +476,7 @@ async function attempt(
   candidate: SourceCandidate,
   state: BatchState,
   diagnostics: Map<string, string> | null,
+  mode: CoordinatorMode,
 ): Promise<Step> {
   const { source, workDir, io, stop, now } = context;
   const file = receiptFilePath(workDir, candidate.ref);
@@ -498,6 +530,16 @@ async function attempt(
   } catch (cause) {
     if (cause instanceof SourceError && cause.kind === 'invalid-task') {
       state.invalid += 1;
+      if (mode === 'single') {
+        // A queue step does not skip past a ticket the operator put in the
+        // queue: the unusable description is its own actionable result, and
+        // the item is left in the ready status for a person to fix.
+        return stopWith(
+          state,
+          `${candidate.ref.key} (${candidate.title}) is not a usable task, so the queue stops ` +
+            `instead of taking another ticket: ${cause.message}`,
+        );
+      }
       // Suppressed until what the source reports about the issue changes: an
       // edited issue is diagnosed again (docs/spec.md §6).
       reportOnce(
@@ -529,7 +571,7 @@ async function attempt(
   const item = prepared;
   const decision = await decideAttempt(workDir, item, existing, sourceRoot);
   if (decision.kind === 'refuse') {
-    return await refuse(context, candidate, decision.reason, state, diagnostics);
+    return await refuse(context, candidate, decision.reason, state, diagnostics, mode);
   }
 
   // A continuation's checkout is read before anything is reserved: one that is
@@ -561,7 +603,7 @@ async function attempt(
         // that is not a refusal of the item, and nothing has been claimed yet.
         return 'cancelled';
       }
-      return await refuse(context, candidate, messageOf(cause), state, diagnostics);
+      return await refuse(context, candidate, messageOf(cause), state, diagnostics, mode);
     }
   }
 
@@ -576,9 +618,15 @@ async function attempt(
     };
     if (!(await reserveReceipt(file, receipt))) {
       state.skipped += 1;
-      io.out(
-        `${candidate.ref.key}: another reservation already existed, so it was not attempted (${file})`,
-      );
+      const detail =
+        `${candidate.ref.key}: another reservation already existed, so it was not attempted ` +
+        `(${file})`;
+      if (mode === 'single') {
+        // Another consumer's reservation is not something a serial queue may
+        // step over: a person has to settle which process owns the ticket.
+        return stopWith(state, `${detail}; the queue stops instead of taking another ticket`);
+      }
+      io.out(detail);
       return 'next';
     }
   } else if (existing.problem !== undefined) {
@@ -587,6 +635,10 @@ async function attempt(
     await updateReceipt(file, { problem: undefined });
   }
   state.attempted += 1;
+  // The ticket this step is now working. A `queue` step reports it back to the
+  // serial loop as soon as it is reserved, so even an attempt that produces no
+  // run of its own is named by the result (docs/WORKFLOW.md §11).
+  state.taken = { ref: item.ref, title: candidate.title };
   io.out(
     continuedWorkspace !== undefined
       ? `${item.ref.key}: reserved (${file}); continuing workspace ` +
@@ -826,6 +878,16 @@ async function attempt(
       undefined,
       context.completion !== undefined,
     );
+    // What one `queue` step reports back to the serial loop: the ticket it took,
+    // and how the run that ended the climb so far went. A later rung overwrites
+    // it, so what the loop sees is the last run this intake ended the item with.
+    state.takenRun = {
+      status: run.status,
+      runId: run.run.runId,
+      reportPath: run.reportPath,
+      reason: run.reason,
+      pullRequest,
+    };
 
     // Whether another rung follows this attempt. Only an exhausted ordinary red
     // check round climbs; the ladder's remaining rungs are the configured ones,
@@ -927,6 +989,7 @@ async function processBatch(
   limit: number | null,
   state: BatchState,
   seenDiagnostics: Map<string, string> | null,
+  mode: CoordinatorMode,
 ): Promise<Step> {
   const seen = new Set<string>();
 
@@ -942,13 +1005,15 @@ async function processBatch(
     }
     seen.add(identity);
     if (limit !== null && state.attempted >= limit) {
-      context.io.out(
-        `limit of ${String(limit)} new attempt(s) reached; the rest of the batch was left for the next scan`,
-      );
+      if (mode === 'batch') {
+        context.io.out(
+          `limit of ${String(limit)} new attempt(s) reached; the rest of the batch was left for the next scan`,
+        );
+      }
       return 'next';
     }
 
-    const step = await attempt(context, candidate, state, seenDiagnostics);
+    const step = await attempt(context, candidate, state, seenDiagnostics, mode);
     if (step !== 'next') {
       return step;
     }
@@ -1000,7 +1065,7 @@ export async function runSource(
       return summarize('stopped', { ...state, problem: `discovery failed: ${messageOf(cause)}` });
     }
 
-    const step = await processBatch(context, candidates, limit, state, null);
+    const step = await processBatch(context, candidates, limit, state, null, 'batch');
     if (step === 'cancelled') {
       return summarize('cancelled', state);
     }
@@ -1018,6 +1083,119 @@ export async function runSource(
       await lock.release();
     } else {
       context.io.err(`the intake lock was left in place for inspection: ${lock.dir}`);
+    }
+  }
+}
+
+/** Whether one candidate's reference is the ticket a repair named. */
+function sameTicket(ref: SourceRef, wanted: SourceRef): boolean {
+  return ref.type === wanted.type && ref.scope === wanted.scope && ref.id === wanted.id;
+}
+
+/** What one `queue` consumer step asks for. */
+export interface SourceTakeRequest {
+  /**
+   * The ticket a repair continues. Absent means a fresh eligibility scan, and
+   * the first ticket the source's own priority order offers.
+   */
+  readonly only?: QueueTicket;
+  /**
+   * The caller already holds the intake lock. The serial queue holds one lock
+   * for its whole invocation, so its steps must not take a second one for the
+   * same output directory.
+   */
+  readonly lockHeld?: boolean;
+}
+
+/**
+ * One `queue` consumer step: a fresh eligibility scan that takes **at most one**
+ * ticket — the ticket `only` names, or the first one the source's own priority
+ * order offers — and carries it through the coding attempt, the escalation
+ * ladder, and the delivery step, exactly as a finite batch does.
+ *
+ * It is one step of a serial loop, so two things differ from a batch or a watch
+ * scan. It never runs the review-to-completion pass: the queue loop owns the
+ * order of the review and completion phases, and a pass run here would decide
+ * them before that order exists. And it never skips past a ticket it will not
+ * act on: a published refusal, a description that is not a usable task, a
+ * reservation that already existed, an attempt that failed or whose stop was
+ * not confirmed, a workspace ledger that could not be written, and a failed
+ * delivery all come back as `attention` with what to fix, so the loop stops
+ * instead of taking another ticket (docs/WORKFLOW.md §11).
+ */
+export async function takeOneItem(
+  context: SourceContext,
+  request: SourceTakeRequest = {},
+): Promise<SourceTake> {
+  const state = emptyState();
+  const step = (outcome: SourceTake['outcome']): SourceTake => ({
+    outcome,
+    ticket: state.taken,
+    run: state.takenRun,
+    skipped: state.skipped,
+    problem: state.problem,
+    cleanupConfirmed: state.cleanupConfirmed,
+  });
+
+  // The same source/output preflight a finite batch runs, before any intake
+  // state exists: a refused checkout leaves no lock, no receipt, and nothing
+  // claimed. Its Git readings are bounded by the finite default and stopped
+  // when the queue is.
+  try {
+    await context.preflight({
+      repoPath: context.repoPath,
+      workDir: context.workDir,
+      bounds: { stop: context.stop },
+    });
+  } catch (cause) {
+    const cleanup = unconfirmedWorkspaceStop(state, cause, 'queue preflight', context.stop);
+    if (cleanup !== null) return step(cleanup === 'cancelled' ? 'cancelled' : 'attention');
+    if (context.stop.aborted) return step('cancelled');
+    stopWith(state, `the source checkout was refused: ${messageOf(cause)}`);
+    return step('attention');
+  }
+
+  const lock =
+    request.lockHeld === true ? null : await acquireIntakeLock(context.workDir, context.now);
+  try {
+    let candidates: readonly SourceCandidate[];
+    try {
+      candidates = await context.source.listEligible(context.stop);
+    } catch (cause) {
+      if (context.stop.aborted) {
+        return step('cancelled');
+      }
+      stopWith(state, `discovery failed: ${messageOf(cause)}`);
+      return step('attention');
+    }
+
+    const only = request.only;
+    const selected =
+      only === undefined
+        ? candidates
+        : candidates.filter((candidate) => sameTicket(candidate.ref, only.ref));
+    if (selected.length === 0) {
+      return step('empty');
+    }
+
+    const outcome = await processBatch(context, selected, 1, state, null, 'single');
+    if (outcome === 'cancelled') {
+      return step('cancelled');
+    }
+    if (outcome === 'stop') {
+      return step('attention');
+    }
+    // Reaching here with nothing reserved means every candidate was skipped:
+    // it left the queue, its revision changed before the claim was sent, or it
+    // was already claimed by somebody else. Nothing was run.
+    return state.takenRun === null ? step('empty') : step('taken');
+  } finally {
+    if (lock !== null) {
+      if (state.cleanupConfirmed) {
+        await lock.release();
+      } else {
+        context.io.err(`the intake lock was left in place for inspection: ${lock.dir}`);
+      }
     }
   }
 }
@@ -1105,7 +1283,7 @@ export async function watchSource(options: SourceWatchOptions): Promise<SourceSu
       // reported by `attempt` as the stop it is, and never retried here.
       let step: Step;
       try {
-        step = await processBatch(options, candidates, null, state, seenDiagnostics);
+        step = await processBatch(options, candidates, null, state, seenDiagnostics, 'batch');
       } catch (cause) {
         if (stop.aborted) {
           return summarize('cancelled', state);

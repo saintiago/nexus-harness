@@ -35,7 +35,7 @@ import type {
 } from '../delivery/completion.js';
 import { DeliveryError } from '../delivery/github.js';
 import { messageOf } from '../shared/errors.js';
-import type { CompletionConfig } from '../shared/types.js';
+import type { CompletionConfig, SourceRef } from '../shared/types.js';
 import type { CompletionRun, SourceCandidate, SourceIo } from './contract.js';
 import type { CompletionSource, IssueNote, ReviewItem } from './jira/completion.js';
 import { noteWithMarker } from './jira/completion.js';
@@ -71,6 +71,13 @@ export interface CompletionOutcome {
   readonly detail: string;
   /** The comment this pass posted or found, when there is one. */
   readonly commentId: string | null;
+  /**
+   * The merge commit this outcome is about, when the pass concluded a pull
+   * request GitHub had already merged; `null` (or absent) otherwise. The serial
+   * queue loop names the base a next workspace starts from with it
+   * (docs/WORKFLOW.md §11).
+   */
+  readonly mergeCommit?: string | null;
 }
 
 /** The pass the source command runs after a batch: one bounded scan. */
@@ -93,6 +100,14 @@ export interface CompletionPassParts {
   readonly actions: CompletionActions;
   /** `<workDir>`: the workspaces, the run logs, and this pass's own evidence. */
   readonly workDir: string;
+  /**
+   * Pass only this ticket, when the caller named one. The serial queue loop
+   * completes exactly the ticket it is carrying, so a pass can never move,
+   * comment on, or arm auto-merge for another In Review item
+   * (docs/WORKFLOW.md §11). Absent means every In Review item of the configured
+   * queue, exactly as before.
+   */
+  readonly only?: SourceRef;
   readonly io: SourceIo;
   readonly now: () => Date;
   readonly sleep: (ms: number, stop: AbortSignal) => Promise<void>;
@@ -754,6 +769,10 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
       // The note is the whole outcome: the item stays In Review for a person.
       return { ref, status: 'attention', detail: step.detail, commentId: written.commentId };
     }
+    // The merge commit this outcome is about, when the step concluded one: a
+    // resolution always names it, and a findings step names it when the pull
+    // request GitHub already merged is what went back for repair.
+    const mergeCommit = step.mergeCommit;
     const target = step.kind === 'resolution' ? config.doneStatus : config.toDoStatus;
     try {
       const moved = await source.moveTo(item.ref.id, target, stop, guard);
@@ -763,6 +782,7 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
           status: 'observed',
           detail: `it left In Review before it could be moved to "${target}", so nothing was changed`,
           commentId: written.commentId,
+          mergeCommit,
         };
       }
     } catch (cause) {
@@ -773,6 +793,7 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
           `the comment is on the issue but moving it to "${target}" failed: ${messageOf(cause)}; ` +
           'the comment will not be written twice and the move is retried on the next pass',
         commentId: written.commentId,
+        mergeCommit,
       };
     }
     return {
@@ -783,6 +804,7 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
           ? `verified merge ${step.mergeCommit} and every configured post-merge workflow; moved to "${target}"`
           : `findings published and moved back to "${target}" with the workspace pointer preserved`,
       commentId: written.commentId,
+      mergeCommit,
     };
   };
 
@@ -953,8 +975,22 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
   return {
     async run(stop) {
       const candidates = await source.listReview(stop);
+      // A caller that named one ticket — the serial queue loop completes
+      // exactly the ticket it is carrying — reads and writes nothing about
+      // another In Review item (docs/WORKFLOW.md §11). The ticket is matched by
+      // the immutable identity of a source reference, never by its key.
+      const only = parts.only;
+      const scoped =
+        only === undefined
+          ? candidates
+          : candidates.filter(
+              (candidate) =>
+                candidate.ref.type === only.type &&
+                candidate.ref.scope === only.scope &&
+                candidate.ref.id === only.id,
+            );
       const outcomes: CompletionOutcome[] = [];
-      for (const candidate of candidates) {
+      for (const candidate of scoped) {
         if (stop.aborted) {
           break;
         }
