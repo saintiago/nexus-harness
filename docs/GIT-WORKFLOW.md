@@ -2,20 +2,32 @@
 
 Small, boring, and the same for every task in this repository.
 
-This describes how a **person** (or a coding agent working in this repository) changes the harness
-itself. It is not about target projects. The two disciplines point in opposite directions on
-purpose: a harness *run* leaves its work in the retained working copy for a person to integrate —
-the local commits a coding turn makes there are part of that retained work — and the harness never
-merges. A coding turn never pushes, publishes, or opens a pull request; by default the harness does
-not either ([docs/spec.md](spec.md) §1, [docs/WORKFLOW.md](WORKFLOW.md) §4). The one exception is
-the optional delivery step of [docs/WORKFLOW.md](WORKFLOW.md) §8: when the operator configures it,
-the **harness**, not a coding turn, pushes a passed attempt's branch and opens or updates its pull
-request, and stops there — the merge is still the loop below. That holds when a run's target is
-this repository itself: the run works in its own retained clone, its coding turn commits locally at
-most, and only the loop below — run by the operator, or by an agent using the operator's own
-credentials — integrates anything. Nothing in this document is a rule about that, and nothing about
-that should shape this. They are separate on purpose; an earlier iteration of this file blurred
-them and produced a workflow that merged its own pull requests.
+This describes how a **person** (or a coding agent working in this repository, authenticated as the
+person) changes the harness itself. It is not about target projects. The two disciplines are
+separate on purpose.
+
+A harness *run* leaves its work in the retained working copy: the local commits a coding turn makes
+there are part of that retained work, and a coding turn never pushes, publishes, merges, opens a
+pull request, or changes Jira status. By default the harness does not push or publish anything
+either ([docs/spec.md](spec.md) §1, [docs/WORKFLOW.md](WORKFLOW.md) §4). Two independently
+optional, explicitly configured steps change what the harness's own deterministic integration path
+does, never what a coding turn does. With `delivery`, the harness pushes a passed attempt's branch
+and opens or updates its pull request ([docs/spec.md](spec.md) §7,
+[docs/WORKFLOW.md](WORKFLOW.md) §8). With review-to-completion, it arms native GitHub auto-merge,
+verifies the configured post-merge workflows on the merge commit, and transitions the Jira item
+([docs/spec.md](spec.md) §10, [docs/WORKFLOW.md](WORKFLOW.md) §10). GitHub performs any merge under
+branch protection; the harness never merges the pull request itself, force-pushes, bypasses
+protection, or reruns a workflow. A configuration that enables neither step leaves the work in the
+retained workspace, as before.
+
+That holds when a run's target is this repository itself: the run works in its own retained clone,
+its coding turn commits locally at most, and whatever the configured integration path does is
+governed by the sections above, not by the loop below. The loop below is still how changes to this
+repository's `main` are landed: one `task/<name>` branch, a pull request, green checks, and a merge
+made by the operator, or by an agent using the operator's own credentials. Nothing in this document
+configures or governs a harness run, and nothing about a run shapes this loop. They are separate on
+purpose; an earlier iteration of this file blurred them and produced a workflow that merged its own
+pull requests.
 
 ## The rule
 
