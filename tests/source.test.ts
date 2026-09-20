@@ -3988,6 +3988,132 @@ describe('the source commands through the CLI', () => {
     }
   });
 
+  it('refuses to deliver a recorded branch a turn left behind, and still tells the issue', async () => {
+    const target = await createTarget({ delivery: true });
+    const jira = fakeJira([
+      {
+        id: '10011',
+        key: 'SAM1-11',
+        summary: 'Create the marker',
+        status: 'To Do',
+        updated: '2026-09-16T11:00:00.000Z',
+      },
+    ]);
+    const destination = await createDeliveryDestination(target.directory);
+    const previous = process.env.JIRA_API_TOKEN;
+    process.env.JIRA_API_TOKEN = 'test-token';
+
+    try {
+      const dependencies: CliContext['dependencies'] = {
+        runAgentTurn: async (request) => {
+          // Ordinary local Git use during coding: the turn commits on a branch
+          // of its own and leaves the workspace's recorded branch behind it.
+          // The checks still pass, because they judge the working copy; what
+          // delivery must not do is push the older recorded branch instead.
+          await gitOrFail(
+            ['checkout', '--quiet', '-b', 'task/harn-17-marker'],
+            request.workspacePath,
+          );
+          await writeFile(path.join(request.workspacePath, 'MARKER.md'), 'done\n', 'utf8');
+          await gitOrFail(['add', '--all'], request.workspacePath);
+          await gitOrFail(
+            ['commit', '--quiet', '--message', 'write the marker'],
+            request.workspacePath,
+          );
+          return { summary: 'wrote and committed the marker on a branch of its own' };
+        },
+      };
+      const result = await withFakeGhOnPath(
+        destination.bin,
+        destination.state,
+        async () =>
+          await runSourceCli(
+            ['source', 'run', '--repo', target.repo, '--config', target.configPath],
+            target.directory,
+            {
+              fetch: jira.fetch,
+              dependencies,
+              deliveryParts: { pushUrl: destination.remote },
+            },
+          ),
+      );
+
+      const runDir = await onlyRunDirectory(target.workDir);
+      const report = JSON.parse(await readFile(path.join(runDir, 'result.json'), 'utf8')) as {
+        status: string;
+        workspace: { path: string; branch: string };
+      };
+      const validated = (
+        await runProcess('git', ['rev-parse', 'HEAD'], report.workspace.path)
+      ).stdout.trim();
+      const recorded = (
+        await runProcess(
+          'git',
+          ['rev-parse', `refs/heads/${report.workspace.branch}`],
+          report.workspace.path,
+        )
+      ).stdout.trim();
+      expect(recorded).not.toBe(validated);
+
+      // The run itself passed; the delivery refused to publish the older
+      // revision, named both of them, and intake stopped for a person.
+      expect(report.status).toBe('passed');
+      expect(result.code).toBe(EXIT_INPUT_ERROR);
+      expect(result.out).toContain('checked out at');
+      expect(result.out).toContain(validated);
+      expect(result.out).toContain(recorded);
+      expect(result.out).toContain(`branch this step would publish, ${report.workspace.branch}`);
+      expect(result.out).toContain('never force-pushes');
+      // The retry is an operator step with git and gh, not a return to the
+      // ready status, which would start a coding run instead.
+      expect(result.out).toContain('starts a new coding run');
+
+      // Nothing left the machine: no push, no pull request, and GitHub was not
+      // asked anything at all.
+      expect(await fakeGhCalls(destination.state)).toEqual([]);
+      const pushed = await runProcess(
+        'git',
+        ['--git-dir', destination.remote, 'rev-parse', `refs/heads/${report.workspace.branch}`],
+        target.directory,
+      );
+      expect(pushed.code).not.toBe(0);
+
+      // Every commit and branch the turn left is still there, the checkout was
+      // not switched or adopted, and the tree is still clean.
+      const taskBranch = (
+        await runProcess(
+          'git',
+          ['rev-parse', 'refs/heads/task/harn-17-marker'],
+          report.workspace.path,
+        )
+      ).stdout.trim();
+      expect(taskBranch).toBe(validated);
+      expect(
+        (await runProcess('git', ['status', '--porcelain'], report.workspace.path)).stdout.trim(),
+      ).toBe('');
+
+      // The issue is told the passed outcome with the delivery failure, and it
+      // stays in review: no coding turn was started to repair the publication.
+      const receipt = await readReceipt(
+        receiptFilePath(target.workDir, refFor('10011', 'SAM1-11')),
+      );
+      expect(receipt?.outcome).toBe('passed');
+      expect(receipt?.problem).toContain('delivery:');
+      expect(receipt?.problem).toContain(recorded);
+      expect(jira.comments).toHaveLength(1);
+      expect(jira.comments[0]).toContain('finished: passed');
+      expect(jira.comments[0]).toContain('Delivery:');
+      expect(jira.comments[0]).not.toContain('Pull request:');
+      expect(jira.issues[0]?.status).toBe('In Review');
+    } finally {
+      if (previous === undefined) {
+        delete process.env.JIRA_API_TOKEN;
+      } else {
+        process.env.JIRA_API_TOKEN = previous;
+      }
+    }
+  });
+
   it('keeps a passed attempt local when no delivery step is configured', async () => {
     const target = await createTarget();
     const jira = fakeJira([
