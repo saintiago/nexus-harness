@@ -108,7 +108,13 @@ export function workflowMatches(identifier: string, run: WorkflowRunSnapshot): b
   const file = path.split('/').at(-1) ?? path;
   const wantedPath = wanted.replace(/\\/g, '/').replace(/^\.\//, '');
   const wantedFile = wantedPath.split('/').at(-1) ?? wantedPath;
-  return wantedPath.includes('/') ? path === wantedPath : file === wantedFile;
+  // A bare file name names the workflow file wherever it lives, so it matches on
+  // the file name alone. A path names where it lives, so it matches the whole
+  // path, or a suffix of it once the leading `.github/workflows` is left out.
+  if (!wantedPath.includes('/')) {
+    return file === wantedFile;
+  }
+  return path === wantedPath || path.endsWith(`/${wantedPath}`);
 }
 
 /** What one configured workflow's latest attempt says. */
@@ -133,10 +139,7 @@ export interface WorkflowOutcome {
 }
 
 /** How one configured workflow's runs, oldest first, are read. */
-function outcomeFor(
-  identifier: string,
-  runs: readonly WorkflowRunSnapshot[],
-): WorkflowOutcome {
+function outcomeFor(identifier: string, runs: readonly WorkflowRunSnapshot[]): WorkflowOutcome {
   const matching = runs.filter((run) => workflowMatches(identifier, run));
   if (matching.length === 0) {
     return { identifier, state: 'pending', run: null, conclusion: null };
@@ -150,7 +153,10 @@ function outcomeFor(
   if (status !== 'completed') {
     return {
       identifier,
-      state: status === 'queued' || status === 'requested' || status === 'waiting' ? 'pending' : 'running',
+      state:
+        status === 'queued' || status === 'requested' || status === 'waiting'
+          ? 'pending'
+          : 'running',
       run: latest,
       conclusion: null,
     };

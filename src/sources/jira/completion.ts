@@ -189,10 +189,7 @@ function commentText(value: unknown, key: string, token: string): string {
 }
 
 /** The first comment carrying `marker`, or `null` when the thread has none. */
-export function noteWithMarker(
-  notes: readonly IssueNote[],
-  marker: string,
-): IssueNote | null {
+export function noteWithMarker(notes: readonly IssueNote[], marker: string): IssueNote | null {
   return notes.find((note) => note.text.includes(marker)) ?? null;
 }
 

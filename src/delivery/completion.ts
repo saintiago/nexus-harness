@@ -32,7 +32,13 @@ import type { CompletionConfig, SourceRef } from '../shared/types.js';
 import { gitInvocationEnvironment } from '../workspace/git.js';
 import { DeliveryError } from './github.js';
 import type { CheckSnapshot, WorkflowRunSnapshot, WorkflowOutcome } from './gate.js';
-import { checkFailed, checkPassed, checkPending, workflowMatches, workflowOutcomes } from './gate.js';
+import {
+  checkFailed,
+  checkPassed,
+  checkPending,
+  workflowMatches,
+  workflowOutcomes,
+} from './gate.js';
 
 export type { WorkflowOutcome } from './gate.js';
 
@@ -405,9 +411,7 @@ function lastLine(text: string): string {
 }
 
 /** The most a command's own output says about why it failed. */
-async function commandDiagnostic(
-  result: Awaited<ReturnType<typeof runCommand>>,
-): Promise<string> {
+async function commandDiagnostic(result: Awaited<ReturnType<typeof runCommand>>): Promise<string> {
   for (const file of [result.stderrPath, result.stdoutPath]) {
     let text: string;
     try {
@@ -620,15 +624,16 @@ export function createGitHubCompletion(
       .filter((review): review is ReviewSnapshot => review !== null);
 
     const contextReviews = reviews.filter(
-      (review) => review.state.toUpperCase() === 'APPROVED' || review.state.toUpperCase() === 'CHANGES_REQUESTED',
+      (review) =>
+        review.state.toUpperCase() === 'APPROVED' ||
+        review.state.toUpperCase() === 'CHANGES_REQUESTED',
     );
     const byReviewer = contextReviews.filter(
       (review) => review.author.toLowerCase() === config.lensApp.toLowerCase(),
     );
     const approvals = byReviewer.filter(
       (review) =>
-        review.state.toUpperCase() === 'APPROVED' &&
-        review.commitId === current.headRefOid,
+        review.state.toUpperCase() === 'APPROVED' && review.commitId === current.headRefOid,
     );
     const rejections = byReviewer.filter(
       (review) =>
@@ -640,7 +645,15 @@ export function createGitHubCompletion(
       request,
       'completion-gh-pr-checks',
       'gh pr checks',
-      ['pr', 'checks', current.url, '--repo', request.repository, '--json', 'name,state,conclusion,link'],
+      [
+        'pr',
+        'checks',
+        current.url,
+        '--repo',
+        request.repository,
+        '--json',
+        'name,state,conclusion,link',
+      ],
       operatorEnvironment,
       stop,
     );
@@ -917,8 +930,7 @@ export function createGitHubCompletion(
     findMergedPullRequest: (request, number, stop) => readPull(request, number, stop),
     readGate: (request, pull, stop) => readGate(request, pull, stop),
     readApprovedHead: (request, pull, stop) => readApprovedHead(request, pull, stop),
-    readMerge: (request, pull, reviewedHead, stop) =>
-      readMerge(request, pull, reviewedHead, stop),
+    readMerge: (request, pull, reviewedHead, stop) => readMerge(request, pull, reviewedHead, stop),
     enableAutoMerge: async (request, pull, reviewedHead, stop) => {
       const current = await readPull(request, pull.number, stop);
       if (current.state.toUpperCase() !== 'OPEN') {
@@ -953,10 +965,7 @@ export function createGitHubCompletion(
 }
 
 /** Whether one run answers for any configured workflow identifier. */
-function workflowIdentified(
-  identifiers: readonly string[],
-  run: WorkflowRunSnapshot,
-): boolean {
+function workflowIdentified(identifiers: readonly string[], run: WorkflowRunSnapshot): boolean {
   return identifiers.some((identifier) => workflowMatches(identifier, run));
 }
 

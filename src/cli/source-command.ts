@@ -15,7 +15,12 @@ import { createGitHubDelivery } from '../delivery/github.js';
 import { runTask } from '../runs/runner.js';
 import type { HarnessConfig, JiraSourceConfig } from '../shared/types.js';
 import { SourceError } from '../sources/contract.js';
-import type { CompletionRun, CompletionRunSummary, SourceContext, SourceSummary } from '../sources/contract.js';
+import type {
+  CompletionRun,
+  CompletionRunSummary,
+  SourceContext,
+  SourceSummary,
+} from '../sources/contract.js';
 import { createCompletionPass, createCompletionRun } from '../sources/completion.js';
 import { runSource, watchSource } from '../sources/coordinator.js';
 import type { SourceWatchOptions } from '../sources/coordinator.js';
@@ -77,7 +82,9 @@ function environmentWithout(environment: NodeJS.ProcessEnv, name: string): NodeJ
  * never reaches the reviewer (docs/WORKFLOW.md §9). A missing or blank variable
  * is refused before anything runs, with the variable named and no value echoed.
  */
-function resolveReviewerToken(name: string): { token: string; problem: null } | { token: ''; problem: string } {
+function resolveReviewerToken(
+  name: string,
+): { token: string; problem: null } | { token: ''; problem: string } {
   const raw = process.env[name];
   const token = typeof raw === 'string' ? raw.trim() : '';
   if (token === '') {
@@ -116,7 +123,10 @@ function exitCodeForSource(summary: SourceSummary): number {
 }
 
 /** A compact count of what one source batch did, and anything it could not. */
-function describeSourceSummary(summary: SourceSummary, completion: CompletionRunSummary | null): string {
+function describeSourceSummary(
+  summary: SourceSummary,
+  completion: CompletionRunSummary | null,
+): string {
   const lines = [
     `source ${summary.outcome}`,
     `  attempts   ${String(summary.attempted)} reserved: ${String(summary.passed)} passed, ` +

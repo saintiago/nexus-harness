@@ -55,7 +55,12 @@ every scan and keeps polling until you stop it. Runs stay sequential, and one lo
 receipt per issue prevents attempting the same issue twice. When the configuration
 also selects a \`delivery\` step, a passed attempt's branch is pushed and its pull
 request opened or updated before that result is posted; without one, nothing leaves
-the machine. \`run --task\` never delivers: its clone is fresh every time.
+the machine. \`run --task\` never delivers: its clone is fresh every time. When that
+\`delivery\` step also carries a \`completion\` object, an In Review item whose
+delivered pull request the Nexus Lens reviewer approved is carried through native
+GitHub auto-merge and the configured post-merge main workflows to a verified
+resolution, or back to its To Do status with findings; the harness never merges a
+pull request itself, and without the object nothing about the pull request changes.
 
 Exit codes:
   0    the run passed

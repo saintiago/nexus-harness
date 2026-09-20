@@ -268,6 +268,20 @@ interface FixtureOptions {
   readonly sleep?: (ms: number, stop: AbortSignal) => Promise<void>;
   /** The delivery step this fixture's coordinator uses, when it has one. */
   readonly delivery?: Delivery;
+  /**
+   * The review-to-completion pass this fixture's coordinator runs, when it has
+   * one. Absent means the path is off, which is the behavior every other test
+   * here already relies on.
+   */
+  readonly completion?: {
+    readonly run: (stop: AbortSignal) => Promise<{
+      readonly done: number;
+      readonly toDo: number;
+      readonly attention: number;
+      readonly observed: number;
+      readonly problem: string | null;
+    }>;
+  };
 }
 
 interface Fixture {
@@ -277,6 +291,8 @@ interface Fixture {
   readonly progresses: Array<{ key: string; outcome: SourceRunOutcome }>;
   readonly completions: Array<{ key: string; outcome: SourceRunOutcome }>;
   readonly refusals: Array<{ key: string; reason: string }>;
+  /** One entry per completion pass the coordinator ran, in order. */
+  readonly completionRuns: Array<{ readonly problem: string | null }>;
   readonly requests: Array<{
     readonly task: Task;
     readonly tier: string | null;
@@ -296,6 +312,7 @@ function createFixture(options: FixtureOptions): Fixture {
   const progresses: Fixture['progresses'] = [];
   const completions: Fixture['completions'] = [];
   const refusals: Fixture['refusals'] = [];
+  const completionRuns: Fixture['completionRuns'] = [];
   const requests: Fixture['requests'] = [];
   const output: string[] = [];
   const errors: string[] = [];
@@ -373,6 +390,24 @@ function createFixture(options: FixtureOptions): Fixture {
     io: { out: (text) => output.push(text), err: (text) => errors.push(text) },
     stop: stop.signal,
     ...(options.delivery === undefined ? {} : { delivery: options.delivery }),
+    ...(options.completion === undefined
+      ? {}
+      : {
+          completion: {
+            run: async (completionStop: AbortSignal) => {
+              const summary = await options.completion?.run(completionStop);
+              const recorded = summary ?? {
+                done: 0,
+                toDo: 0,
+                attention: 0,
+                observed: 0,
+                problem: null,
+              };
+              completionRuns.push({ problem: recorded.problem });
+              return recorded;
+            },
+          },
+        }),
     preflight: async () => {
       preflightCount += 1;
       log.push(`preflight:${String(preflightCount)}`);
@@ -412,6 +447,7 @@ function createFixture(options: FixtureOptions): Fixture {
     progresses,
     completions,
     refusals,
+    completionRuns,
     requests,
     output,
     errors,
@@ -426,6 +462,90 @@ function createFixture(options: FixtureOptions): Fixture {
 // One finite batch
 // ---------------------------------------------------------------------------
 
+describe('review-to-completion coordination', () => {
+  it('runs one completion pass after the batch and reports its counts', async () => {
+    const workDir = await createTempDir();
+    const fixture = createFixture({
+      workDir,
+      completion: {
+        run: async () => ({ done: 1, toDo: 0, attention: 0, observed: 0, problem: null }),
+      },
+    });
+
+    const summary = await runSource(fixture.context, null);
+
+    expect(summary.outcome).toBe('completed');
+    expect(summary.completion).toEqual({
+      done: 1,
+      toDo: 0,
+      attention: 0,
+      observed: 0,
+      problem: null,
+    });
+    expect(fixture.completionRuns).toHaveLength(1);
+  });
+
+  it('keeps the intake outcome when the completion pass reports a problem', async () => {
+    const workDir = await createTempDir();
+    const fixture = createFixture({
+      workDir,
+      completion: {
+        run: async () => ({
+          done: 0,
+          toDo: 0,
+          attention: 0,
+          observed: 0,
+          problem: 'GitHub is unreachable',
+        }),
+      },
+    });
+
+    const summary = await runSource(fixture.context, null);
+
+    expect(summary.outcome).toBe('completed');
+    expect(summary.completion?.problem).toBe('GitHub is unreachable');
+    expect(fixture.errors.join('\n')).toContain('completion pass: GitHub is unreachable');
+  });
+
+  it('leaves In Review behavior unchanged when completion is disabled', async () => {
+    const workDir = await createTempDir();
+    const fixture = createFixture({ workDir });
+
+    const summary = await runSource(fixture.context, null);
+
+    expect(summary.outcome).toBe('completed');
+    expect(summary.completion).toBeNull();
+    expect(fixture.completionRuns).toHaveLength(0);
+  });
+
+  it('runs the completion pass after each watch scan', async () => {
+    const workDir = await createTempDir();
+    let passes = 0;
+    const stop = new AbortController();
+    const fixture = createFixture({
+      workDir,
+      completion: {
+        run: async () => {
+          passes += 1;
+          if (passes >= 2) {
+            stop.abort(new Error('two scans are enough'));
+          }
+          return { done: 0, toDo: 1, attention: 0, observed: 0, problem: null };
+        },
+      },
+    });
+
+    const summary = await watchSource({
+      ...fixture.context,
+      stop: stop.signal,
+      pollIntervalMs: 1,
+    });
+
+    expect(passes).toBeGreaterThanOrEqual(2);
+    expect(summary.outcome).toBe('cancelled');
+    expect(fixture.completionRuns.length).toBeGreaterThanOrEqual(2);
+  });
+});
 describe('a finite source run', () => {
   it('discovers the whole batch before it claims anything, and runs in order', async () => {
     const workDir = await createTempDir();

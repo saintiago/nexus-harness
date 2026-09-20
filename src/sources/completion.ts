@@ -139,14 +139,24 @@ function completionLogsDir(workDir: string, issueId: string): string {
 async function recordArmedHead(
   workDir: string,
   issueId: string,
-  armed: { readonly head: string; readonly number: number },
+  armed: {
+    readonly head: string;
+    readonly number: number;
+    /** When the item began waiting for GitHub's merge; `null` while none has. */
+    readonly waitingSince: string | null;
+  },
   now: () => Date,
 ): Promise<void> {
   const directory = completionLogsDir(workDir, issueId);
   await mkdir(directory, { recursive: true });
   await writeFile(
     path.join(directory, 'completion-armed-head.json'),
-    `${JSON.stringify({ head: armed.head, number: armed.number, at: now().toISOString() })}\n`,
+    `${JSON.stringify({
+      head: armed.head,
+      number: armed.number,
+      waitingSince: armed.waitingSince,
+      at: now().toISOString(),
+    })}\n`,
     'utf8',
   );
 }
@@ -155,20 +165,67 @@ async function recordArmedHead(
 async function readArmedHead(
   workDir: string,
   issueId: string,
-): Promise<{ readonly head: string; readonly number: number | null } | null> {
+): Promise<{
+  readonly head: string;
+  readonly number: number | null;
+  readonly waitingSince: string | null;
+} | null> {
   const file = path.join(completionLogsDir(workDir, issueId), 'completion-armed-head.json');
   try {
-    const value = JSON.parse(await readFile(file, 'utf8')) as { head?: unknown; number?: unknown };
+    const value = JSON.parse(await readFile(file, 'utf8')) as {
+      head?: unknown;
+      number?: unknown;
+      waitingSince?: unknown;
+    };
     if (typeof value.head !== 'string' || !/^[0-9a-f]{7,40}$/.test(value.head)) {
       return null;
     }
     return {
       head: value.head,
       number: typeof value.number === 'number' ? value.number : null,
+      waitingSince: typeof value.waitingSince === 'string' ? value.waitingSince : null,
     };
   } catch {
     return null;
   }
+}
+
+/** Records that the item is waiting for GitHub, keeping the moment it began. */
+async function rememberWaiting(
+  workDir: string,
+  issueId: string,
+  head: string,
+  number: number,
+  waitingSince: string | null,
+  now: () => Date,
+): Promise<void> {
+  await recordArmedHead(
+    workDir,
+    issueId,
+    // The moment the item began waiting is kept as it is: `now()` here would
+    // push the deadline forward on every pass that reads it back.
+    {
+      head,
+      number,
+      waitingSince:
+        waitingSince !== null && waitingSince !== '' ? waitingSince : now().toISOString(),
+    },
+    now,
+  );
+}
+
+/**
+ * The deadline one item's merge wait is measured against: the moment it began
+ * waiting, plus the configured deadline. The beginning is what a previous pass
+ * recorded, so the deadline is a property of the item, not of one pass.
+ */
+export function mergeWaitDeadline(
+  waitingSince: string | null,
+  deadlineSeconds: number,
+  at: number,
+): number {
+  const began = waitingSince === null || waitingSince === '' ? null : Date.parse(waitingSince);
+  return (began === null || Number.isNaN(began) ? at : began) + deadlineSeconds * 1000;
 }
 
 /** One comment this pass may post. */
@@ -329,10 +386,15 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
     context: PullContext,
     reviewedHead: string,
     stop: AbortSignal,
-    deadline: number,
     waits: number,
   ): Promise<Step> => {
     const { item, request, pull } = context;
+    // How long this item has been waiting for GitHub is the one thing that has
+    // to survive a pass: it is recorded beside the arm, and read back here, so a
+    // merge that never finishes reaches the configured deadline even though a
+    // restart begins with a fresh pass.
+    const waitingSince = (await readArmedHead(parts.workDir, item.ref.id))?.waitingSince ?? null;
+    const deadline = mergeWaitDeadline(waitingSince, config.deadlineSeconds, now().getTime());
     for (let waited = 0; ; waited += 1) {
       const merge: MergeVerdict = await actions.readMerge(request, pull, reviewedHead, stop);
       if (merge.status === 'complete' && merge.mergeCommit !== null) {
@@ -372,9 +434,6 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
       // review is the ordinary answer: the next pass reads GitHub again. The
       // item's own deadline is what turns a still-pending merge into a note for
       // a person.
-      if (waited >= waits) {
-        return { kind: 'pending', detail: merge.reason };
-      }
       if (now().getTime() >= deadline) {
         return {
           kind: 'attention',
@@ -383,6 +442,22 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
             `item's deadline expired (${merge.reason})`,
           evidence: [pull.url],
         };
+      }
+      if (waited >= waits) {
+        await rememberWaiting(
+          parts.workDir,
+          item.ref.id,
+          reviewedHead,
+          pull.number,
+          waitingSince,
+          now,
+        ).catch((cause: unknown) => {
+          io.err(
+            `${item.ref.key}: how long it has been waiting could not be recorded ` +
+              `(${messageOf(cause)}); the next pass reads GitHub again`,
+          );
+        });
+        return { kind: 'pending', detail: merge.reason };
       }
       await sleep(intervalMs, stop);
     }
@@ -407,7 +482,7 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
       return { kind: 'observed', detail: `pull request ${pull.url} is ${pull.state}, not open` };
     }
     if (merged) {
-      let approval: string | null = null;
+      let approval: string | null;
       try {
         approval = await actions.readApprovedHead(request, pull, stop);
       } catch (cause) {
@@ -421,7 +496,7 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
         throw cause;
       }
       if (approval === pull.headRefOid) {
-        return await followMerge(context, pull.headRefOid, stop, deadline, MERGE_WAIT_ROUNDS);
+        return await followMerge(context, pull.headRefOid, stop, MERGE_WAIT_ROUNDS);
       }
       return {
         kind: 'observed',
@@ -502,7 +577,15 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
     await recordArmedHead(
       parts.workDir,
       item.ref.id,
-      { head: reviewedHead, number: pull.number },
+      // The arm is also the moment this item began waiting for GitHub: the
+      // deadline is measured from here, and a later pass keeps this value. An
+      // earlier pass's value is kept as it is, so re-arming an already-armed
+      // pull request never moves the item's own deadline.
+      {
+        head: reviewedHead,
+        number: pull.number,
+        waitingSince: armed?.waitingSince ?? now().toISOString(),
+      },
       now,
     ).catch((cause: unknown) => {
       io.err(
@@ -514,7 +597,7 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
       `${item.ref.key}: auto-merge enabled for ${pull.url} at approved head ${reviewedHead}; ` +
         'GitHub merges it once its branch protection allows it',
     );
-    return await followMerge(context, reviewedHead, stop, deadline, MERGE_WAIT_ROUNDS);
+    return await followMerge(context, reviewedHead, stop, MERGE_WAIT_ROUNDS);
   };
 
   /** Posts one comment unless the thread already carries its marker. */
@@ -715,11 +798,10 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
     // the record of what it settled: a repeated pass, or a restart after one
     // whose status move did not arrive, retries only the move from that. Nothing
     // is commented twice and no agent is started here.
-    let notes: readonly IssueNote[] | null;
+    let notes: readonly IssueNote[];
     try {
       notes = await source.listComments(item.ref.id, stop);
     } catch (cause) {
-      notes = null;
       return {
         ref,
         status: 'observed',
@@ -727,11 +809,11 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
         commentId: null,
       };
     }
-    const settled = notes === null ? null : settledComment(notes);
+    const settled = settledComment(notes);
     if (settled !== null) {
       return await resume(item, settled, stop);
     }
-    const thread = notes ?? [];
+    const thread = notes;
 
     let context: PullContext | null;
     try {
@@ -759,7 +841,6 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
               { item, request, pull: merged },
               armed.head,
               stop,
-              now().getTime() + config.deadlineSeconds * 1000,
               MERGE_WAIT_ROUNDS,
             );
             return await recordStep(item, thread, follow, stop);

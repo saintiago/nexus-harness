@@ -93,9 +93,7 @@ const pullFor = (repo, selector) => {
   const pulls = jsonLines('pull-requests.json');
   return pulls.find(
     (pull) =>
-      (selector === null ||
-        String(pull.number) === String(selector) ||
-        pull.url === selector) &&
+      (selector === null || String(pull.number) === String(selector) || pull.url === selector) &&
       (repo === null || pull.repo === repo),
   );
 };
@@ -187,9 +185,7 @@ if (argv[0] === 'pr' && argv[1] === 'list') {
   } else if (wrongToken('reviews')) {
     denied('reviews');
   } else {
-    process.stdout.write(
-      `${JSON.stringify(jsonDocument('pr-reviews.json', []))}\n`,
-    );
+    process.stdout.write(`${JSON.stringify(jsonDocument('pr-reviews.json', []))}\n`);
   }
 } else if (argv[0] === 'pr' && argv[1] === 'checks') {
   record({ op: 'checks', repo: optionValue('--repo'), url: argv[2] ?? null });

@@ -357,9 +357,7 @@ async function createFixture(options: FixtureOptions = {}): Promise<Fixture> {
 
   const gh = await installFakeGhCompletion(parent);
   const pulls =
-    options.merged === true
-      ? [mergedPullRequest()]
-      : (options.pulls ?? [ONE_PULL_REQUEST]);
+    options.merged === true ? [mergedPullRequest()] : (options.pulls ?? [ONE_PULL_REQUEST]);
   await writeFile(
     gh.pullRequestsFile,
     `${pulls.map((pull) => JSON.stringify(pull)).join('\n')}\n`,
@@ -393,11 +391,13 @@ function passFor(
     readonly fail?: string;
     readonly reviewsUnknown?: boolean;
     readonly clockStepMs?: number;
+    /** Where this pass's clock starts, so several passes can be ordered in time. */
+    readonly clockStartMs?: number;
     readonly onSleep?: () => Promise<void>;
     readonly sleepCalls?: { count: number };
   } = {},
 ) {
-  let clock = Date.parse('2026-09-20T12:00:00.000Z');
+  let clock = parts.clockStartMs ?? Date.parse('2026-09-20T12:00:00.000Z');
   const step = parts.clockStepMs ?? 15_000;
   const now = (): Date => {
     clock += step;
@@ -484,6 +484,9 @@ describe('review-to-completion', () => {
     expect(comment).toContain(MERGE_COMMIT);
     expect(comment).toContain(PR_URL);
     expect(comment).toContain(WORKFLOW_URL);
+    // The resolution comment is one short, evidence-based note: at most 120
+    // words, which is what the task asks the issue's thread to receive.
+    expect(comment.split(/\s+/).filter((word) => word !== '').length).toBeLessThanOrEqual(120);
 
     const calls = await fakeCompletionCalls(fixture.gh);
     // A pull request that is already merged proves its reviewed head from the
@@ -491,10 +494,12 @@ describe('review-to-completion', () => {
     // and its workflows are what is read.
     expect(calls.map((call) => call.op)).toEqual(['list', 'reviews', 'view', 'runs']);
     // The reviewer's own read is the only one made with the reviewer's token.
-    expect(calls.filter((call) => call.credential === REVIEWER_TOKEN).map((call) => call.op)).toEqual([
-      'reviews',
-    ]);
-    expect(calls.filter((call) => call.credential === OPERATOR_TOKEN).length).toBe(calls.length - 1);
+    expect(
+      calls.filter((call) => call.credential === REVIEWER_TOKEN).map((call) => call.op),
+    ).toEqual(['reviews']);
+    expect(calls.filter((call) => call.credential === OPERATOR_TOKEN).length).toBe(
+      calls.length - 1,
+    );
   });
 
   it('arms native auto-merge with the operator credential and waits for GitHub to merge', async () => {
@@ -525,11 +530,7 @@ describe('review-to-completion', () => {
           }
           runPolls += 1;
           if (runPolls === 2) {
-            await writeFile(
-              fixture.gh.runsFile,
-              `${JSON.stringify(workflowRun())}\n`,
-              'utf8',
-            );
+            await writeFile(fixture.gh.runsFile, `${JSON.stringify(workflowRun())}\n`, 'utf8');
           }
         },
       }),
@@ -545,9 +546,9 @@ describe('review-to-completion', () => {
     expect(merge?.argv).toContain('--auto');
     // No direct merge: the completion path only ever asks GitHub to arm it.
     expect(calls.some((call) => call.argv.includes('--admin'))).toBe(false);
-    expect(await readFile(path.join(fixture.logsDir, 'completion-armed-head.json'), 'utf8')).toContain(
-      HEAD,
-    );
+    expect(
+      await readFile(path.join(fixture.logsDir, 'completion-armed-head.json'), 'utf8'),
+    ).toContain(HEAD);
   });
 
   it('keeps pending pull request checks In Review without a comment', async () => {
@@ -714,9 +715,7 @@ describe('review-to-completion', () => {
   it('returns a post-merge workflow failure to To Do with its conclusion and link', async () => {
     const fixture = await createFixture({
       merged: true,
-      runs: [
-        workflowRun({ status: 'completed', conclusion: 'failure', databaseId: 5001 }),
-      ],
+      runs: [workflowRun({ status: 'completed', conclusion: 'failure', databaseId: 5001 })],
     });
 
     const outcome = only(await runPass(fixture));
@@ -804,6 +803,48 @@ describe('review-to-completion', () => {
     expect(outcome.status).toBe('attention');
     expect(fixture.jira.status).toBe('In Review');
     expect(commentTexts(fixture)[0]).toContain('no run yet');
+  });
+
+  it('bounds a merge that never finishes across passes, then reports attention once', async () => {
+    const fixture = await createFixture({
+      pulls: [ONE_PULL_REQUEST],
+      config: { deadlineSeconds: 30 },
+    });
+    const start = Date.parse('2026-09-20T12:00:00.000Z');
+    // Two passes with a one-second clock: auto-merge is armed by the first, the
+    // item is left In Review waiting, and no comment claims anything about a
+    // merge that has not happened.
+    const first = only(await runPass(fixture, { clockStartMs: start, clockStepMs: 1_000 }));
+    const second = only(
+      await runPass(fixture, { clockStartMs: start + 5_000, clockStepMs: 1_000 }),
+    );
+    expect(first.status).toBe('pending');
+    expect(second.status).toBe('pending');
+    expect(commentTexts(fixture)).toHaveLength(0);
+    // The moment the item began waiting is kept as the first pass recorded it:
+    // a later pass reads it back instead of starting the deadline again.
+    const armed = JSON.parse(
+      await readFile(path.join(fixture.logsDir, 'completion-armed-head.json'), 'utf8'),
+    ) as { waitingSince?: string };
+    expect(armed.waitingSince).toBe('2026-09-20T12:00:02.000Z');
+
+    // A later pass over the same item, far past the deadline, reports the wait
+    // once and leaves the item In Review: no failure conclusion was observed.
+    const third = only(
+      await runPass(fixture, { clockStartMs: start + 120_000, clockStepMs: 1_000 }),
+    );
+    expect(third.status).toBe('attention');
+    expect(fixture.jira.status).toBe('In Review');
+    expect(commentTexts(fixture)).toHaveLength(1);
+    expect(commentTexts(fixture)[0]).toContain('nexus-completion:attention:');
+    expect(commentTexts(fixture)[0]).toContain('deadline expired');
+
+    const fourth = only(
+      await runPass(fixture, { clockStartMs: start + 125_000, clockStepMs: 1_000 }),
+    );
+    expect(fourth.status).toBe('attention');
+    expect(fourth.detail).toContain('already on the issue');
+    expect(commentTexts(fixture)).toHaveLength(1);
   });
 
   it('writes one findings comment and one move when the pass is repeated', async () => {
@@ -969,7 +1010,10 @@ describe('the completion summary', () => {
   it('reports a discovery failure as a problem without throwing', async () => {
     const fixture = await createFixture({});
     fixture.jira.readFailure = true;
-    const run = createCompletionRun(passFor(fixture), { out: () => undefined, err: () => undefined });
+    const run = createCompletionRun(passFor(fixture), {
+      out: () => undefined,
+      err: () => undefined,
+    });
 
     const summary = await run.run(AbortSignal.timeout(30_000));
 

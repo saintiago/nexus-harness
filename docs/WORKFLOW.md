@@ -6,6 +6,8 @@ This is a human-readable reference, **not runtime configuration**. The applicati
 
 **Revision: 2026-09-19 — optional GitHub delivery.** Add independent optional `delivery`, defined in §8: with it, a passed attempt's branch is pushed and its pull request opened or updated before the result is published. Without it, nothing changes: every command and every run stays local. [spec.md](spec.md) §7 defines the behavior and [architecture.md](architecture.md) §2 the module.
 
+**Revision: 2026-09-20 — optional review-to-completion.** Add an independent optional `completion` object inside `delivery`, defined in §9: with it, an In Review item whose delivered pull request the Nexus Lens reviewer approved on its current head is carried through native GitHub auto-merge and the configured post-merge main workflows to a verified resolution, or back to its To Do status with findings. Without it, every delivered pull request waits for a person exactly as before. [spec.md](spec.md) §8 defines the behavior.
+
 ## 1. Configuration
 
 Keep the existing `harness.config.json` shape valid:
@@ -442,6 +444,63 @@ Retrying the publication is an operator step with ordinary `git` and `gh` and th
 4. A `CLOSED` or `MERGED` match is not edited: reopen it by hand if the review should continue, or open a new pull request from the same branch.
 
 Returning the issue to the ready status is **code rework**, not a delivery retry: it starts a new coding run in the same workspace. A later attempt's delivery still finds the open pull request and updates it instead of creating a second.
+
+## 9. Review-to-completion — optional, inside `delivery`
+
+Completion is off unless `delivery` carries it. With it, the harness carries an In Review item's delivered pull request the rest of the way — once the Nexus Lens reviewer has approved it — and marks the item Done only after GitHub really merged that reviewed head and every configured post-merge workflow on the base branch succeeded. Without it, nothing about §8 changes: the pull request waits for a person.
+
+```json
+{
+  "delivery": {
+    "type": "github",
+    "repository": "owner/name",
+    "baseBranch": "main",
+    "completion": {
+      "lensApp": "nexus-lens",
+      "lensCheckName": "Nexus Lens",
+      "reviewerTokenEnv": "NEXUS_LENS_TOKEN",
+      "postMergeWorkflows": ["ci.yml"],
+      "toDoStatus": "To Do",
+      "doneStatus": "Done"
+    }
+  }
+}
+```
+
+| Field | Contract |
+| --- | --- |
+| `lensApp` | Required. The login GitHub attributes the pull request review to. A review from anyone else is not that reviewer's verdict. |
+| `lensReviewContext` | Optional nonblank review context, default `"nexus-lens"`. The gate needs a completed review of this reviewer's on the current head; an approval of another commit is not one. |
+| `lensCheckName` | Required. The app-owned check the approval has to be backed by on the same head, for example `"Nexus Lens"`. |
+| `reviewerTokenEnv` | Required environment-variable name holding the **reviewer's own** credential, for example `"NEXUS_LENS_TOKEN"`. It is deliberately not the operator's Git/`gh` credential: the reviewer's token reads the reviewer's verdict and never enables auto-merge, and the operator's credential never reaches the reviewer. The value is never a configuration field. |
+| `postMergeWorkflows` | Required nonempty array. Each entry is a stable workflow file (`"ci.yml"` or `".github/workflows/ci.yml"`) or a numeric workflow ID. An empty or missing list is refused: it is not evidence that CI passed. |
+| `toDoStatus` | Required status a definitively failed outcome returns the item to (default intent `"To Do"`). It must differ from the review status and from `doneStatus`. |
+| `doneStatus` | Required status a verified completion moves the item to (default intent `"Done"`). Reached only after the merge and every configured post-merge workflow succeeded. |
+| `pollIntervalSeconds` | Optional integer at least 5, default 30. Delay between two reads of GitHub's merge and workflow state. |
+| `deadlineSeconds` | Optional integer at least 5, default 1800. How long one item may stay pending in one pass before an attention comment is posted and the item is left In Review. |
+
+### What the completion path does
+
+After a `source run` batch, and after each `source watch` scan, one bounded pass reads the configured queue's In Review items. For each one it re-reads the item, takes the single workspace pointer it carries, and looks up the one **open** pull request for that workspace's branch, the configured repository, and the configured base branch. A pass never claims an item, never changes what the batch itself did, and never starts a coding turn.
+
+1. **The reviewer gate.** It requires a completed `APPROVE` review by `lensApp` on the pull request's **current head**, and a successful `lensCheckName` check on that same head. The head is re-read immediately before every mutation. A current-head `REQUEST_CHANGES` decision, or a failed configured Lens check on that head, is a finding: one concise comment naming the review link or the failed check, and the item returns to `toDoStatus` with its workspace pointer preserved, so the ordinary source consumer can take the next repair attempt in the same workspace.
+2. **Arming.** With the operator's own `gh` credential the harness runs `gh pr merge <url> --auto --squash`. That is a per-pull-request request to enable **native** auto-merge, not a merge: GitHub enforces branch protection and every required check and performs the merge itself. A conflict, a branch-protection refusal, or an authentication/permission failure is reported as an operator problem and the item stays In Review — those are not established coding findings.
+3. **The merge.** The harness waits, bounded by `pollIntervalSeconds` and `deadlineSeconds`, until GitHub reports that exact pull request merged, with the approved head as its source, the configured base branch, and a merge commit SHA. An armed request, pending pull request checks, a closed pull request, or an absent branch is not a merge. A definitive failed required pull request check is a finding (one comment naming the check and linking its evidence, then back to `toDoStatus`); a mergeability or infrastructure problem stays In Review.
+4. **Post-merge CI.** Every configured workflow must have a run for event `push`, on the configured base branch, for that exact merge commit SHA, and the **latest attempt** must be `completed`/`success`. A run that has not appeared, or is queued or in progress, is pending and waits. A failed, cancelled, timed-out, action-required, stale, skipped, or neutral latest result is a definitive unsuccessful outcome: one comment naming each unsuccessful workflow, its conclusion, and its links, and the item returns to `toDoStatus`. The merge is never rolled back. If the deadline expires with work still pending, the harness posts one attention comment and leaves the item In Review — no failure conclusion was observed.
+5. **Completion.** Only after the verified merge and every configured post-merge workflow succeeded does the harness post one evidence-based resolution comment of at most 120 words — what changed or what the investigation concluded, the successful post-merge main workflow, any material limitation, and the pull request and workflow links — and then move the item to `doneStatus` through native transition discovery.
+
+### Recovery, and what is not merged
+
+There is no completion state to reconcile: GitHub's merged state and the configured post-merge runs are authoritative, and the item's own Jira thread is the record of what was already written. A comment carries a marker, so a repeated pass or a restart finds the comment it already wrote instead of writing a second one; a status move is made only while the item is really still in review. After a restart, a merge confirmed but with post-merge CI absent, pending, or unsuccessful keeps waiting or reports attention without a duplicate comment; if the comment exists but the status move did not arrive, only the transition is retried after re-reading Jira. An item that a person moved out of In Review is not touched. A comment or transition failure never starts an agent: returning an item to `toDoStatus` merely makes the normal source consumer eligible to take the next repair attempt.
+
+Nothing in this path merges, force-pushes, reruns a workflow, or bypasses protection. The harness never gives the reviewer the operator credential, never lets the reviewer's token arm anything, and never treats an approval, an armed request, or a green run on another commit as evidence of this merge.
+
+### Operator setup
+
+1. `gh` must be authenticated as the **operator** account that may enable auto-merge on the destination repository (the same account §8 already uses), and branch protection must require the checks you mean to gate on.
+2. Put the **Nexus Lens reviewer's** own credential in the environment variable `reviewerTokenEnv` names. It must be a different credential from the operator's: the reviewer's token only reads the reviewer's verdict, and the operator's is what asks GitHub for auto-merge. Neither is written to the configuration, a report, or a log.
+3. Name at least one post-merge workflow that really runs for `push` on the base branch, for example `"ci.yml"` for this repository's own gate.
+4. `check-config` prints the effective `delivery` line before anything runs; the completion object is validated with it.
 
 ## External references
 
