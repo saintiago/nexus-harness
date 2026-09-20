@@ -19,9 +19,9 @@ Replace all three before running anything, and keep them absolute. `npm --prefix
 with `<NEXUS_HOME>` as its working directory, so a relative path would resolve there instead of
 where you are standing. Quote a path that contains spaces. The commands below use `npm run dev`,
 which runs the CLI from TypeScript sources through the installation's `node_modules` and needs no
-build; nothing here writes inside the Nexus checkout. If the installation was never installed
-(`<NEXUS_HOME>/node_modules` is missing), run `npm --prefix <NEXUS_HOME> ci` once first: that is
-installation setup, not project configuration.
+build. The existing installation must already have its dependencies installed. If
+`<NEXUS_HOME>/node_modules` is missing, ask the Nexus operator to finish installation setup before
+continuing; the integration agent does not change the Nexus checkout.
 
 ## What the project owns, and what it does not
 
@@ -106,8 +106,13 @@ Nexus will write without creating it.
      contents;
    - the operator's own `gh`/Git login, authenticated for the destination repository
      (`gh auth status`, and `gh auth setup-git` so Git uses it). That credential pushes the branch,
-     opens the pull request, and asks GitHub for auto-merge; it is never given to a coding or
-     reviewer turn.
+     opens the pull request, and asks GitHub for auto-merge. Coding turns and checks inherit the
+     operator's Git/`gh` authentication: the retained clone is not a credential sandbox. Connect
+     only repositories and commands trusted to run with that account's privileges. Coding turns
+     are instructed to keep their work local; the deterministic delivery/completion path performs
+     the GitHub writes. Queue reviewer turns strip operator GitHub token variables from their
+     environment, but this does not isolate credentials stored on the host
+     ([WORKFLOW.md](WORKFLOW.md) §8 and §11).
 
    The shared configuration also names `completion.reviewerTokenEnv` for standalone `source`
    commands; a queue run does not need a pre-minted value there, because it reads completion
@@ -216,7 +221,7 @@ refusal by deleting a lock; resolve the other consumer first ([WORKFLOW.md](WORK
 | Delivery or review refused (`gh auth status`, no commit to publish, a dirty or wrongly checked-out workspace, no open pull request) | Delivery needs the operator's authenticated `gh`/Git account with write access to the destination repository and base branch, and a retained workspace that is clean, on its recorded branch, and holds a commit beyond its base. Review needs the Nexus Lens App installed on that repository, the key path readable, and exactly one open pull request for the ticket's branch. Uncommitted work is refused, never committed for you. |
 | Completion keeps waiting, or reports an unsuccessful post-merge workflow | The names in `delivery.completion.postMergeWorkflows` must match workflows that really run for `push` on `delivery.baseBranch` on this repository — the exact file name or numeric ID. Check the repository's Actions tab for a run on the merge commit. A definitive failure returns the ticket to `toDoStatus`; a run that never appears leaves it In Review. |
 | `queue run` refuses before it starts: the shared file has no `reviewer` object, or the project's `delivery` has no `completion` | The queue needs the whole path — the project's `source` and `delivery.completion`, and the shared configuration's `reviewer`. `check-config` alone does not require them, so it can be green while a queue command is refused. Ask the operator for the missing installation-level objects, and add only `delivery.completion` in the project file; never copy the reviewer into it. |
-| `check-config` refuses a field and names the other file | Field ownership: `workDir`, the limits, `agent`/`escalation`, `reviewer`, and `completion` belong to the shared configuration; `setup`, `checks`, `source`, and `delivery` belong to `nexus.project.json`. Move the field to the file that owns it; do not duplicate it or work around the refusal. |
+| `check-config` refuses a field and names the other file | Field ownership: `workDir`, the limits, `agent`/`escalation`, `reviewer`, and `completion` belong to the shared configuration; `setup`, `checks`, `source`, and `delivery` belong to `nexus.project.json`. Correct the project file only; ask the Nexus operator to make any required shared-file correction. Do not duplicate the field or work around the refusal. |
 
 ## Where the details live
 
