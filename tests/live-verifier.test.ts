@@ -327,10 +327,14 @@ describe('the entry point, as a process', () => {
             plans: [
               {
                 edits: [{ file: 'src/greet-all.mjs', text: GREET_ALL_SOURCE }],
+                // The repair turn of the second exercise follows this one, and a
+                // coding turn only starts from committed state (HARN-35).
+                commit: 'add greetAll',
                 summary: 'implemented greetAll',
               },
               {
                 edits: [{ file: 'src/greet-all.mjs', text: GREET_ALL_SOURCE }],
+                commit: 'add greetAll, before the injected failure',
                 summary: 'implemented greetAll',
               },
               {
@@ -624,6 +628,9 @@ describe('the exercises, through the stand-in runtime boundary', () => {
       const { state, env } = await installStandInRuntime(target, [
         {
           edits: [{ file: 'src/greet-all.mjs', text: GREET_ALL_SOURCE }],
+          // The repair turn after this one only starts from the working copy's
+          // committed state, so this turn commits what it adds (HARN-35).
+          commit: 'add greetAll, before the injected failure',
           summary: 'added greetAll',
         },
         {

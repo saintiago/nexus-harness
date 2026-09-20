@@ -874,7 +874,9 @@ describe('a run its caller stops, for real', () => {
         phases.push(`${asked.kind} ${String(asked.turn)}`);
         if (asked.kind === 'implementation') {
           // The implementation leaves the mark that makes the checks red — so the
-          // run has a completed red round to repair — and returns by itself.
+          // run has a completed red round to repair — and returns by itself. It
+          // commits the mark, because the repair turn that follows starts only
+          // from committed state (HARN-35).
           const spawned = await runProcess(
             process.execPath,
             [
@@ -889,6 +891,15 @@ describe('a run its caller stops, for real', () => {
             { cwd: asked.workspacePath },
           );
           expect(spawned.code).toBe(0);
+          expect((await git(['add', RED_FLAG], asked.workspacePath)).code).toBe(0);
+          expect(
+            (
+              await git(
+                ['commit', '--quiet', '--message', 'the implementation turn'],
+                asked.workspacePath,
+              )
+            ).code,
+          ).toBe(0);
           return { summary: 'the implementation turn made the checks red' };
         }
 
