@@ -416,6 +416,7 @@ function passFor(
   parts: {
     readonly reader?: (stop: AbortSignal) => Promise<string>;
     readonly fail?: string;
+    readonly mergeOnArm?: string;
     /** Whether the stand-in GitHub refuses to arm a pull request with green required checks. */
     readonly rejectArmWhenClean?: boolean;
     /** The required check names the stand-in GitHub uses to decide whether a head is clean. */
@@ -440,6 +441,7 @@ function passFor(
       stateDir: fixture.gh.dir,
       token: OPERATOR_TOKEN,
       ...(parts.fail === undefined ? {} : { fail: parts.fail }),
+      ...(parts.mergeOnArm === undefined ? {} : { mergeOnArm: parts.mergeOnArm }),
       ...(parts.rejectArmWhenClean === true ? { rejectArmWhenClean: true } : {}),
       ...(parts.requiredChecks === undefined ? {} : { requiredChecks: [...parts.requiredChecks] }),
     }),
@@ -1466,6 +1468,74 @@ describe('review-to-completion', () => {
  * so these tests can tell an early arm from one attempted at completion time.
  */
 describe('arming native auto-merge before the final gate', () => {
+  it.each([
+    ['merge-uncertain', false],
+    ['merge-uncertain', true],
+    ['view-after-arm', false],
+  ])('recovers a native merge after %s (repair: %s)', async (fail, repair) => {
+    const fixture = await createFixture({ runs: [] });
+    const head = repair ? OTHER_HEAD : HEAD;
+    if (repair) {
+      expect(onlyArm(await passFor(fixture).arm(AbortSignal.timeout(30_000))).status).toBe('armed');
+      await writeFile(
+        fixture.gh.pullRequestsFile,
+        `${JSON.stringify({ ...ONE_PULL_REQUEST, headRefOid: head, autoMergeRequest: null })}\n`,
+      );
+      await writeFile(
+        fixture.gh.reviewsFile,
+        JSON.stringify([{ ...APPROVED_REVIEW, commitId: head }]),
+      );
+      await writeFile(
+        fixture.gh.checksFile,
+        JSON.stringify([{ ...LENS_CHECK_PASSED, headSha: head }]),
+      );
+    }
+
+    const failed = onlyArm(
+      await passFor(fixture, { fail, mergeOnArm: MERGE_COMMIT }).arm(AbortSignal.timeout(30_000)),
+    );
+    expect(failed.status, failed.detail).toBe('attention');
+    expect(fixture.jira.status).toBe('In Review');
+    expect(commentTexts(fixture)).toHaveLength(0);
+    expect(transitions(fixture)).toHaveLength(0);
+    expect(
+      JSON.parse(await readFile(path.join(fixture.logsDir, 'completion-armed-head.json'), 'utf8')),
+    ).toMatchObject({ head, number: 29, waitingSince: null });
+
+    // GitHub accepted the request and merged, but neither a lost mutation
+    // response nor a failed verification read acknowledged the arm locally.
+    // A fresh pass must recover by number and still wait for post-merge CI.
+    expect(onlyArm(await passFor(fixture).arm(AbortSignal.timeout(30_000))).status).toBe(
+      'observed',
+    );
+    const pending = only(await runPass(fixture, { clockStepMs: 1_000 }));
+    expect(pending.status, pending.detail).toBe('pending');
+    expect(fixture.jira.status).toBe('In Review');
+    expect(transitions(fixture)).toHaveLength(0);
+    await writeFile(fixture.gh.runsFile, `${JSON.stringify(workflowRun())}\n`);
+    const done = only(await runPass(fixture, { clockStepMs: 1_000 }));
+    expect(done.status, done.detail).toBe('done');
+    expect(done.mergeCommit).toBe(MERGE_COMMIT);
+    await runPass(fixture);
+    expect(commentTexts(fixture)).toHaveLength(1);
+    expect(transitions(fixture)).toHaveLength(1);
+    expect((await fakeCompletionCalls(fixture.gh)).filter((c) => c.op === 'merge')).toHaveLength(
+      repair ? 2 : 1,
+    );
+  });
+
+  it('does not request auto-merge when its admission cannot be persisted', async () => {
+    const fixture = await createFixture();
+    await mkdir(path.join(fixture.logsDir, 'completion-armed-head.json'));
+    const outcome = onlyArm(await passFor(fixture).arm(AbortSignal.timeout(30_000)));
+    expect(outcome.status, outcome.detail).toBe('attention');
+    expect(outcome.detail).toContain('record could not be written');
+    expect((await fakeCompletionCalls(fixture.gh)).filter((c) => c.op === 'merge')).toHaveLength(0);
+    expect(fixture.jira.status).toBe('In Review');
+    expect(commentTexts(fixture)).toHaveLength(0);
+    expect(transitions(fixture)).toHaveLength(0);
+  });
+
   it('arms while the final required check is pending, then the green gate uses that arm', async () => {
     const fixture = await createFixture({
       pulls: [ONE_PULL_REQUEST],

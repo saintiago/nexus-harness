@@ -101,7 +101,13 @@ else if (argv[0] === 'api') {
           : null;
 }
 record({ op: operation, auto: operation === 'merge', squash: operation === 'merge' });
-if (failure === operation || (failure === 'checks' && operation === 'lens')) {
+if (
+  failure === operation ||
+  (failure === 'checks' && operation === 'lens') ||
+  (failure === 'view-after-arm' &&
+    operation === 'view' &&
+    jsonLines('pull-requests.json').some((pull) => pull.autoMergeRequest))
+) {
   fail('HTTP 403: GitHub refused the operation');
 } else if (wrongToken(operation)) {
   denied(operation);

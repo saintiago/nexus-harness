@@ -196,9 +196,9 @@ async function ensureCompletionLogsDir(
 }
 
 /**
- * Records the head auto-merge was armed for, beside the item's other evidence.
- * A later pass reads it to name the merge it is waiting for, so a restart after
- * an uncertain write does not have to guess from the current head.
+ * Records the PR/head admitted for an auto-merge request before contacting
+ * GitHub. This is recovery identity, not proof that the request succeeded:
+ * live GitHub evidence must establish the arm or the actual reviewed merge.
  */
 async function recordArmedHead(
   workDir: string,
@@ -228,7 +228,7 @@ async function recordArmedHead(
   await rename(temporary, target);
 }
 
-/** What a previous pass recorded when it armed auto-merge, when it recorded one. */
+/** The PR/head a previous pass admitted for auto-merge, when it recorded one. */
 async function readArmedHead(
   workDir: string,
   issueId: string,
@@ -473,11 +473,11 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
    * request's current head, before the reviewer's check can make the pull
    * request clean. A request already enabled for this exact pull request is
    * verified for the head GitHub holds now; a delivered repair's new head is
-   * re-armed. The local record is written only after GitHub acknowledged the
-   * request and a fresh read still shows it enabled, so a restart never trusts
-   * an arm that did not survive. The record's merge-wait start is written only
-   * when the completion pass first sees the approved head still awaiting its
-   * merge, so a long review does not consume the merge deadline.
+   * re-armed. The local admission is persisted before the request, so a lost
+   * response or failed verification read cannot lose a merge's identity. A
+   * restart still verifies the arm or merge from GitHub. The merge-wait start
+   * is written only when completion first sees the approved head still awaiting
+   * its merge, so a long review does not consume the merge deadline.
    */
   const ensureArmed = async (
     context: PullContext,
@@ -496,25 +496,10 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
       };
     }
 
-    let status: AutoMergeStatus;
     try {
-      status = await actions.enableAutoMerge(request, pull, head, stop, async () => {
-        const fresh = await source.readItem({ ref: item.ref, title: item.title }, stop);
-        return (
-          fresh !== null && fresh.pointers.length === 1 && fresh.pointers[0] === request.workspaceId
-        );
-      });
-    } catch (cause) {
-      return {
-        kind: 'attention',
-        detail:
-          `GitHub did not enable auto-merge for ${pull.url} at head ${head}: ` +
-          `${messageOf(cause)}; the item stays In Review and no merge is assumed`,
-        evidence: [pull.url],
-      };
-    }
-
-    try {
+      // Persist intent before the remote mutation: GitHub can accept it and
+      // merge even if the response or subsequent verification read is lost.
+      // A failed local write must therefore prevent the remote request.
       // The arm is not necessarily the moment the item begins waiting for a
       // merge: in the queue it is armed before the review runs, and the wait
       // starts when the completion pass first finds an approved head whose
@@ -541,9 +526,27 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
       return {
         kind: 'attention',
         detail:
-          `auto-merge was requested for ${pull.url} at head ${head}, but the pull request/head ` +
-          `record could not be written (${messageOf(cause)}); the item stays In Review and the ` +
-          'next pass reads GitHub again',
+          `the pull request/head record could not be written for ${pull.url} at head ${head} ` +
+          `(${messageOf(cause)}); auto-merge was not requested and the item stays In Review`,
+        evidence: [pull.url],
+      };
+    }
+
+    let status: AutoMergeStatus;
+    try {
+      status = await actions.enableAutoMerge(request, pull, head, stop, async () => {
+        const fresh = await source.readItem({ ref: item.ref, title: item.title }, stop);
+        return (
+          fresh !== null && fresh.pointers.length === 1 && fresh.pointers[0] === request.workspaceId
+        );
+      });
+    } catch (cause) {
+      return {
+        kind: 'attention',
+        detail:
+          `GitHub did not confirm auto-merge for ${pull.url} at head ${head}: ` +
+          `${messageOf(cause)}; the admission is retained for verification on restart; ` +
+          'the item stays In Review and no merge is assumed',
         evidence: [pull.url],
       };
     }
@@ -670,8 +673,8 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
     const { item, request, pull } = context;
 
     // GitHub's own merged state comes first. A pull request this path already
-    // armed may be merged by the time the next pass reads it — and a restart
-    // finds it merged without any local record — so what decides that item is
+    // admitted may be merged by the time the next pass reads it, even if the
+    // auto-merge response was lost — so what decides that item is
     // the merge itself and its post-merge workflows. The reviewer's approval on
     // that same head is still what says the merged commit is the reviewed work.
     const armed = await readArmedHead(parts.workDir, item.ref.id);
@@ -997,9 +1000,9 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
       };
     }
     if (context === null) {
-      // No open pull request matches the delivered branch. When a previous pass
-      // armed auto-merge, GitHub may have merged it and taken it out of that
-      // list: that pull request is read by number, and only the merge and its
+      // No open pull request matches the delivered branch. GitHub may have
+      // accepted an admitted auto-merge request and merged it even if its
+      // response was lost: that pull request is read by number, and the merge and its
       // post-merge workflows decide this item from here.
       const armed = await readArmedHead(parts.workDir, item.ref.id);
       if (armed?.number !== null && armed?.number !== undefined) {
