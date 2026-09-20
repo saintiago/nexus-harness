@@ -16,7 +16,16 @@
 
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, readdir, rename, symlink, writeFile } from 'node:fs/promises';
+import {
+  lstat,
+  mkdir,
+  readFile,
+  readdir,
+  readlink,
+  rename,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -2301,6 +2310,64 @@ describe('an issue that points at a workspace', () => {
 // ---------------------------------------------------------------------------
 
 describe('a workspace name a fresh claim would use', () => {
+  it.each(['SAM1-2', 'SAM1-2.json'])(
+    'refuses a dangling link at %s before claiming the issue',
+    async (entry) => {
+      const workDir = await createTempDir();
+      const root = path.join(workDir, 'workspaces');
+      await mkdir(root, { recursive: true });
+      const held = path.join(root, entry);
+      const target = path.join(root, 'missing-target');
+      await symlink(target, held, 'junction');
+      const originalLink = await readlink(held);
+      expect(existsSync(held)).toBe(false);
+      const fixture = createFixture({
+        workDir,
+        scans: [[candidateFor('2', 'SAM1-2')]],
+        prepare: (candidate) => ({
+          ...preparedFor(candidate),
+          preferredWorkspaceId: 'SAM1-2',
+        }),
+      });
+
+      const summary = await runSource(fixture.context, null);
+
+      expect(summary).toMatchObject({ outcome: 'completed', attempted: 0, refused: 1 });
+      expect(fixture.refusals[0]?.reason).toContain(held);
+      expect(fixture.refusals[0]?.reason).toContain('move it aside');
+      expect(fixture.log).not.toContain('claim:SAM1-2');
+      expect(fixture.requests).toEqual([]);
+      expect(existsSync(receiptFilePath(workDir, refFor('2', 'SAM1-2')))).toBe(false);
+      expect(existsSync(path.join(workDir, 'runs'))).toBe(false);
+      expect((await lstat(held)).isSymbolicLink()).toBe(true);
+      expect(await readlink(held)).toBe(originalLink);
+      expect(await readdir(root)).toEqual([entry]);
+      expect(existsSync(target)).toBe(false);
+    },
+  );
+
+  it('refuses a regular file at the workspace path before claiming the issue', async () => {
+    const workDir = await createTempDir();
+    const held = path.join(workDir, 'workspaces', 'SAM1-2');
+    await mkdir(path.dirname(held), { recursive: true });
+    await writeFile(held, 'retained evidence\n', 'utf8');
+    const fixture = createFixture({
+      workDir,
+      scans: [[candidateFor('2', 'SAM1-2')]],
+      prepare: (candidate) => ({ ...preparedFor(candidate), preferredWorkspaceId: 'SAM1-2' }),
+    });
+
+    const summary = await runSource(fixture.context, null);
+
+    expect(summary).toMatchObject({ outcome: 'completed', attempted: 0, refused: 1 });
+    expect(fixture.refusals[0]?.reason).toContain(held);
+    expect(fixture.log).not.toContain('claim:SAM1-2');
+    expect(fixture.requests).toEqual([]);
+    expect(existsSync(receiptFilePath(workDir, refFor('2', 'SAM1-2')))).toBe(false);
+    expect(existsSync(path.join(workDir, 'runs'))).toBe(false);
+    expect(await readFile(held, 'utf8')).toBe('retained evidence\n');
+  });
+
   it('refuses a name whose directory is a junction out of the workspaces directory', async (context) => {
     const workDir = await createTempDir();
     const outside = await createTempDir();

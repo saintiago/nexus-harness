@@ -17,7 +17,7 @@
  * continued
  * (docs/implement-workspace-continuation.md).
  */
-import { statSync } from 'node:fs';
+import { lstatSync, statSync } from 'node:fs';
 import { messageOf } from '../shared/errors.js';
 import { WorkspaceError } from './errors.js';
 import { gitFailure, runGit } from './git.js';
@@ -265,17 +265,17 @@ export async function takenWorkspaceNameProblem(
   // As for a pointer label: a ledger whose resolved path leaves the workspaces
   // root is refused before anything is read through it.
   const ledgerOutside = outsideWorkspacesProblem(workDir, ledgerPath);
-  const directory = isDirectory(workspacePath);
+  const workspaceHeld = pathExists(workspacePath);
   const ledger = ledgerOutside === null && pathExists(ledgerPath);
-  if (!directory && !ledger && ledgerOutside === null) {
+  if (!workspaceHeld && !ledger && ledgerOutside === null) {
     return null;
   }
 
   const holds =
-    directory && ledger
-      ? `the workspace directory "${workspacePath}" and the ledger beside it ("${ledgerPath}")`
-      : directory
-        ? `a directory at "${workspacePath}"`
+    workspaceHeld && ledger
+      ? `the workspace path "${workspacePath}" and the ledger beside it ("${ledgerPath}")`
+      : workspaceHeld
+        ? `a workspace path at "${workspacePath}"`
         : `a ledger at "${ledgerPath}"`;
   const opening =
     `its new workspace would be named ${workspaceId}, and ${holds} already exists, so the harness ` +
@@ -301,7 +301,7 @@ export async function takenWorkspaceNameProblem(
   }
   if (state === null) {
     return (
-      `${opening}: that directory has no ledger at "${ledgerPath}", so there is no record of what ` +
+      `${opening}: there is no ledger that can be read at "${ledgerPath}", so there is no record of what ` +
       'it was cloned from and whose work it is. The harness never adopts or overwrites a ' +
       `workspace on its own: if it holds this item's work, restore its ledger and add the ` +
       `"${continueLabel}" label, then scan again; otherwise move it aside`
@@ -401,12 +401,13 @@ function isDirectory(candidate: string): boolean {
   }
 }
 
-/** Whether anything — a directory, a file, or a link — exists at one path. */
+/** A link holds its name even when its target no longer exists. */
 function pathExists(candidate: string): boolean {
   try {
-    statSync(candidate);
+    lstatSync(candidate);
     return true;
-  } catch {
-    return false;
+  } catch (cause) {
+    // An unreadable path is not evidence that the name is free either.
+    return (cause as NodeJS.ErrnoException).code !== 'ENOENT';
   }
 }

@@ -14,7 +14,7 @@
  * inspection, and allocation itself clones nothing.
  */
 import { randomBytes } from 'node:crypto';
-import { mkdir, stat } from 'node:fs/promises';
+import { lstat, mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { messageOf } from '../shared/errors.js';
 import { WorkspaceError } from './errors.js';
@@ -390,13 +390,19 @@ export async function allocateRunDirectory(
   );
 }
 
-/** Whether anything — a directory, a file, or a link — exists at one path. */
+/** A link holds its name even when its target no longer exists. */
 async function exists(candidate: string): Promise<boolean> {
   try {
-    await stat(candidate);
+    await lstat(candidate);
     return true;
-  } catch {
-    return false;
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code === 'ENOENT') {
+      return false;
+    }
+    throw new WorkspaceError(
+      `cannot check whether workspace name "${candidate}" is held: ${messageOf(cause)}. ` +
+        'Inspect the path and its permissions before trying again.',
+    );
   }
 }
 

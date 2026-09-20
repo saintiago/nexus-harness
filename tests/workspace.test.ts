@@ -8,7 +8,17 @@
 
 import { spawn } from 'node:child_process';
 import { existsSync, realpathSync, statSync } from 'node:fs';
-import { mkdir, readFile, readdir, rename, rm, symlink, writeFile } from 'node:fs/promises';
+import {
+  lstat,
+  mkdir,
+  readFile,
+  readdir,
+  readlink,
+  rename,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -1238,6 +1248,37 @@ describe('an allocated run directory', () => {
     expect(await readFile(ledgerPath, 'utf8')).toBe('{"version":1}\n');
     expect(await readdir(path.join(fixture.workDir, 'runs'))).toEqual([]);
   });
+
+  it.each(['HARN-23', 'HARN-23.json'])(
+    'refuses a preferred name held by a dangling link at %s',
+    async (entry) => {
+      const fixture = await createRepository();
+      const root = path.join(fixture.workDir, 'workspaces');
+      await mkdir(root, { recursive: true });
+      const held = path.join(root, entry);
+      const target = path.join(root, 'missing-target');
+      // Junctions exercise dangling links on Windows without symlink privileges.
+      await symlink(target, held, 'junction');
+      const originalLink = await readlink(held);
+      expect(existsSync(held)).toBe(false);
+
+      await expectWorkspaceError(
+        () =>
+          allocateRunDirectory(fixture.workDir, {
+            kind: 'create',
+            preferredWorkspaceId: 'HARN-23',
+          }),
+        /is already held/,
+        /move it aside/,
+      );
+
+      expect((await lstat(held)).isSymbolicLink()).toBe(true);
+      expect(await readlink(held)).toBe(originalLink);
+      expect(await readdir(root)).toEqual([entry]);
+      expect(existsSync(target)).toBe(false);
+      expect(await readdir(path.join(fixture.workDir, 'runs'))).toEqual([]);
+    },
+  );
 
   it('creates no workspace directory for a run that continues one', async () => {
     const fixture = await createRepository();
