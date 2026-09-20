@@ -17,14 +17,22 @@
  * with a boundary line naming the role the phase launched — `developer` for a
  * coding or repair turn, `reviewer` for a Nexus Lens turn — and the ticket when
  * one is known, and starts an empty history: a new turn never inherits the rows
- * of the one before it. `endInvocation` finalizes the pane: it is erased where it
- * stood and its retained rows are printed as that invocation's segment of the
- * timeline, so later lifecycle events and the next pane follow them in scrollback
- * order. Only the pane of the invocation running right now is cursor-managed;
+ * of the one before it. `endInvocation` finalizes the pane: the rows it drew
+ * stay exactly where they are as that invocation's segment of the timeline, so
+ * later lifecycle events and the next pane follow them in scrollback order.
+ * Only the pane of the invocation running right now is cursor-managed;
  * one display never draws two panes at once. Closing the display finalizes
  * whatever is on screen and stops drawing, so the outcome and the paths that
  * follow are printed as ordinary lines after it, and an interrupted run leaves a
  * usable terminal.
+ *
+ * A pane owns the lines it holds and nothing else. Each of the pane's own lines
+ * is written from the terminal's first column with its line cleared first, so a
+ * repaint rewrites them where they stand instead of appending anything; nothing
+ * outside the pane's own lines is ever erased, because the display never clears
+ * to the end of the screen. The retained rows are therefore never written a
+ * second time anywhere else in the timeline: they are drawn once by the pane
+ * and, when the pane is finalized, simply left standing.
  *
  * The history is grouped by the agent's own messages: each message starts a
  * group that keeps at most the three latest work lines that followed it, and the
@@ -232,19 +240,39 @@ function paneDisplay(
   let drawn = 0;
   let closed = false;
 
-  /** Moves to the pane's first line and clears it and everything below. */
-  const erase = (): void => {
-    if (drawn > 0) {
-      write(`\u001b[${String(drawn)}A\u001b[J`);
-      drawn = 0;
-    }
-  };
-
-  /** Draws the pane from the cursor's line, leaving the cursor below it. */
-  const draw = (): void => {
+  /**
+   * Draws the pane where it stands, rewriting its own lines in place.
+   *
+   * The cursor returns to the pane's first line, every line of the pane's
+   * region — the lines it holds now and the lines it held before and no longer
+   * does — is cleared from the first column, the lines it still holds are written
+   * there, and the cursor is left on the line below the pane's own rows. Only
+   * those lines are touched: the display never clears to the end of the screen,
+   * so a repaint can never take a line the pane does not own, and a line the
+   * pane drew is never written anywhere but in the pane's own region.
+   */
+  const paint = (): void => {
     const lines = linesOf(groups);
-    for (const text of lines) {
+    const region = Math.max(drawn, lines.length);
+    if (drawn > 0) {
+      write(`\u001b[${String(drawn)}A`);
+    }
+    for (let index = 0; index < region; index += 1) {
+      // Every line the pane rewrites is cleared first, because the row it lands
+      // on may be one it drew before: a shorter line must not leave a tail.
+      write('\u001b[K');
+      const text = lines[index];
+      if (text === undefined) {
+        write('\n');
+        continue;
+      }
       write(`${text}\n`);
+    }
+    // A pane that no longer holds every line of its region leaves the cursor
+    // below the cleared lines: bring it back to the line under the pane itself.
+    const surplus = region - lines.length;
+    if (surplus > 0) {
+      write(`\u001b[${String(surplus)}A`);
     }
     drawn = lines.length;
   };
@@ -286,16 +314,16 @@ function paneDisplay(
   };
 
   /**
-   * Ends the pane on screen: it is erased where it stood and its retained rows
-   * are written to the timeline, so what it showed stays in scrollback in the
-   * order it was produced and nothing it drew is dropped.
+   * Ends the pane on screen. The rows it drew are already this invocation's
+   * segment of the timeline and stay exactly where they were written; nothing is
+   * erased and no retained row is written a second time. Only the pane's own
+   * bookkeeping is let go, so the rows that follow — the next boundary, a
+   * lifecycle block, another segment of the same invocation — start below them,
+   * and later repaints can reach nothing above their own region.
    */
   const finalize = (): void => {
-    erase();
-    for (const line of linesOf(groups)) {
-      write(`${line}\n`);
-    }
     groups = [];
+    drawn = 0;
   };
 
   /** Records one formatted activity line in its group. */
@@ -353,8 +381,7 @@ function paneDisplay(
         return;
       }
       record(activity.kind, text);
-      erase();
-      draw();
+      paint();
     },
     beginInvocation: (invocation) => {
       // The boundary is one emission with one time: what opens a pane reads as
