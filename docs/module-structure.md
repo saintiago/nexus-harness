@@ -19,9 +19,9 @@ Line counts are indicative, not a rule: they are here to show where the substanc
 
 ```text
 src/
-  cli.ts                          (140)  entry point: dispatch, bootstrap, exit code
+  cli.ts                          (161)  entry point: dispatch, bootstrap, exit code
   cli/
-    context.ts                    (103)  exit codes, CliIo, the terminal, interrupt signals, CliContext
+    context.ts                    (125)  exit codes, CliIo, the terminal, interrupt signals, CliContext
     help.ts                       (68)   the usage text and the hint that points at it
     options.ts                    (105)   each command's option table and the argument parser
     check-config.ts               (97)   `check-config` and what it prints
@@ -29,7 +29,7 @@ src/
     source-command.ts             (379)  `source list|run|watch`, the connector selection, abortable sleep
     review-command.ts             (273)  `review scan|watch`: the App client, the reviewer, the scan
     queue-command.ts              (677)  `queue run|watch`: the three credentials, the lock, the four phases
-    activity.ts                   (371)  the activity pane: a bounded, message-grouped block under the progress
+    activity.ts                   (438)  the activity pane: a bounded, message-grouped, timestamped block
     progress.ts                   (136)  what a run's own progress line reads as on an interactive terminal
     dependencies.ts               (154)  the loop's real collaborators and the wrapped set a test gets
     signals.ts                    (28)   host SIGINT/SIGTERM/SIGBREAK handling
@@ -120,16 +120,18 @@ further would separate one decision from itself: `runs/runner.ts` (the loop), `s
   everything the user sees: progress echoed from the run timeline, the outcome block, source-list
   output, and error messages. `cli/activity.ts` is the one place that draws on the terminal beyond
   ordinary lines: it keeps the runtime activity in a bounded pane under the progress — grouped by
-  the agent's messages, with the oldest work lines dropped first — and it falls back to ordinary
-  lines when the output is redirected or the terminal cannot hold a pane. `cli/progress.ts` holds
-  what those progress lines read as there, and only there: a line it does not recognize is written
-  as the run wrote it. The directory is also the only place that composes the loop's collaborators
-  (`cli/dependencies.ts`), and the only place that constructs a task source or the review path.
+  the agent's messages, with the oldest work lines dropped first, each entry stamped with the local
+  time the viewer received it, and an agent message highlighted in yellow and reset — and it falls
+  back to ordinary lines when the output is redirected or the terminal cannot hold a pane.
+  `cli/progress.ts` holds what those progress lines read as there, and only there: a line it does
+  not recognize is written as the run wrote it. The directory is also the only place that composes
+  the loop's collaborators (`cli/dependencies.ts`), and the only place that constructs a task
+  source or the review path.
 - **Does not own:** any part of the loop, any command execution, any Git or Jira call. A command
   module resolves its inputs, hands the collaborators to `runTask`/`runSource`/`watchSource` (or
   `scanReviews`/`watchReviews`), and returns an exit code.
-- **Entry points:** `runCli`, `consoleContext` (`cli.ts`); `CliContext`, `CliIo`, `InterruptSignals`,
-  `CliTerminal`, `EXIT_OK`, `EXIT_INPUT_ERROR`, `EXIT_USAGE`, `EXIT_CANCELLED`
+- **Entry points:** `runCli`, `consoleContext`, `colorAllowed` (`cli.ts`); `CliContext`, `CliIo`,
+  `InterruptSignals`, `CliTerminal`, `EXIT_OK`, `EXIT_INPUT_ERROR`, `EXIT_USAGE`, `EXIT_CANCELLED`
   (`cli/context.ts`); `createActivityDisplay`, `ActivityDisplay`, `ACTIVITY_PANE_LINES`
   (`cli/activity.ts`); `interactiveProgress` (`cli/progress.ts`).
 

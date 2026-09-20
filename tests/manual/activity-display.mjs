@@ -85,8 +85,10 @@ await delay(600);
  * it, and — for a message — is highlighted and reset inside its own line, which
  * is what this flags.
  */
+/* eslint-disable no-control-regex -- the pane's own escape sequences are what this reads */
 const HIGHLIGHTED_MESSAGE = /^\d{2}:\d{2}:\d{2} \u001b\[33magent: .*\u001b\[0m$/;
 const STAMPED_WORK = /^\d{2}:\d{2}:\d{2} (run|result|change): /;
+/* eslint-enable no-control-regex */
 let drawingKind = null;
 let highlighted = 0;
 const terminal = {
