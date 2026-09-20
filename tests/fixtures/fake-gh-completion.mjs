@@ -192,6 +192,13 @@ if (failure === operation || (failure === 'checks' && operation === 'lens')) {
     if (!p) fail('unknown PR node');
     else {
       p.autoMergeRequest = { enabledAt: '2026-09-20T12:00:00Z' };
+      if (typeof config.mergeOnArm === 'string') {
+        // GitHub performs the merge itself once auto-merge is armed: a test
+        // that wants the merge to land straight away seeds the merge commit
+        // that the configured post-merge workflows ran for.
+        p.state = 'MERGED';
+        p.mergeCommit = { oid: config.mergeOnArm };
+      }
       writeFileSync(
         path.join(stateDir, 'pull-requests.json'),
         pulls.map((p) => JSON.stringify(p)).join('\n') + '\n',
