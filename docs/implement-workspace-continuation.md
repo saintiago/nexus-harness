@@ -148,8 +148,10 @@ moved to the review status. Nothing local is created for it.
   just this attempt's part. The report also records what the attempt *found* (how many paths already
   differed) so the two are never confused.
 - The baseline round runs on that working copy and **may be red**: a continuation of failed work is
-  expected to be red, and refusing to start would make continuation useless. A baseline that could
-  not be executed still stops the run, unchanged.
+  expected to be red — the work the earlier attempts committed is what the checks judge, and
+  refusing to start would make continuation useless — while the uncommitted work they left is
+  finished by hand first (below). A baseline that could not be executed still stops the run,
+  unchanged.
 - Only the post-turn round decides the outcome.
 - Attempts commit locally, so the branch is expected to move forward from the recorded base. A
   checkout is returned to the branch the ledger records before every coding turn and before the

@@ -12,11 +12,12 @@
  * against what it would take to return it (HARN-35): a clean checkout whose
  * commit descends from the recorded branch's tip is accepted — the runner
  * fast-forwards and checks out the recorded branch before the first turn — and
- * a dirty, detached, divergent, or branchless checkout is refused here, before
- * anything is claimed, with the branch names and the manual action. The
- * checkout must be clean on the recorded branch as well: a coding turn is
- * started only from the workspace's own committed state, so a workspace left
- * with uncommitted work is refused here rather than handed on to an agent.
+ * a dirty checkout on a branch of its own, a detached one, a divergent one, and
+ * one that names no branch the workspace holds are refused here, before anything
+ * is claimed, with the branch names and the manual action. The checkout must be
+ * clean on the recorded branch as well: a coding turn is started only from the
+ * workspace's own committed state, so a workspace left with uncommitted work is
+ * refused here rather than handed on to an agent.
  *
  * A pointer label is untrusted text on the issue, so resolving it checks more
  * than that it names a directory: the id must be a usable workspace id (a

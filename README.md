@@ -533,14 +533,14 @@ declares tiers tried in order inside one claim, each with its own launch and rep
 
 Flash runs the implementation and up to two repair turns; only when its post-agent checks are still
 red does Astra run — in the **same retained workspace**, so the earlier commits are still in it —
-with its own two-repair allowance, and the tier's own launch is what really starts
-and what its report records. A turn is asked to commit what it wants the next turn to build on: the
-harness starts no further turn from a working copy that still holds uncommitted work, and one left
-that way stops the run for a person instead of climbing. Escalation is local to one coding cycle: every claim starts at the first
-tier, so a ticket that a reviewer's findings, a failed required check, a delivery failure, or a
-failed post-merge workflow sent back to its ready status returns to Flash in its retained workspace,
-with the work and guidance it accumulated, and the workspace's own attempt count never selects a
-tier.
+with its own two-repair allowance, and the tier's own launch is what really starts and what its
+report records. A turn is asked to commit what it wants the next turn to build on: the harness
+starts no further turn from a working copy that still holds uncommitted work, and one left that way
+stops the run for a person instead of climbing. Escalation is local to one coding cycle: every claim
+starts at the first tier, so a ticket that a reviewer's findings, a failed required check, a delivery
+failure, or a failed post-merge workflow sent back to its ready status returns to Flash in its
+retained workspace, with the work and guidance it accumulated, and the workspace's own attempt count
+never selects a tier.
 Only an exhausted ordinary red check round climbs: a run that ended before any coding turn, a setup,
 launch, authentication, or protocol error, a cancellation, a timeout, and an unconfirmed cleanup all
 end the intake at the rung where they happened rather than spending a stronger launch on them, and
@@ -585,9 +585,9 @@ branch of its own kept on that branch — and a detached, divergent, or branchle
 run before any check, with both branch names and what to do by hand; that is what keeps the
 validated revision and the published branch the same. A coding turn starts only from committed
 state, so a working copy left holding uncommitted work stops the run before the next agent instead
-of being handed to one. The pull request is found by repository,
-head branch, and base branch — the one open match is updated, a closed or merged one is refused
-instead of edited, and one is created only when no match exists at all. Later committed work
+of being handed to one. The pull request is found by repository, head branch, and base branch — the
+one open match is updated, a closed or merged one is refused instead of edited, and one is created
+only when no match exists at all. Later committed work
 updates the same branch and the same pull request, because a continued attempt reuses the workspace
 and its branch. The delivery step itself never merges the pull request, force-pushes, or changes
 Jira status. The

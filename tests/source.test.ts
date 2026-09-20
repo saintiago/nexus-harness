@@ -5316,6 +5316,89 @@ describe('the source commands through the CLI', () => {
     }
   }, 30_000);
 
+  it('refuses a continuation whose workspace still holds uncommitted work, and starts no turn', async () => {
+    const target = await createTarget({ markerCheck: true });
+    const jira = fakeJira([
+      {
+        id: '10011',
+        key: 'SAM1-11',
+        summary: 'Create the marker',
+        status: 'To Do',
+        updated: '2026-09-16T11:00:00.000Z',
+      },
+    ]);
+    const previous = process.env.JIRA_API_TOKEN;
+    process.env.JIRA_API_TOKEN = 'test-token';
+
+    try {
+      let turns = 0;
+      const dependencies: CliContext['dependencies'] = {
+        runAgentTurn: async (request) => {
+          turns += 1;
+          // The attempt writes the marker and never commits it: the round after
+          // it is green — it reads what the turn left — and the working copy is
+          // dirty when the run ends.
+          await writeFile(path.join(request.workspacePath, 'MARKER.md'), 'done\n', 'utf8');
+          return { summary: 'wrote the marker, and never committed it' };
+        },
+      };
+      const first = await runSourceCli(
+        ['source', 'run', '--repo', target.repo, '--config', target.configPath],
+        target.directory,
+        { fetch: jira.fetch, dependencies },
+      );
+      expect(first.code).toBe(EXIT_OK);
+      expect(first.out).toContain('1 passed');
+      const runsDir = path.join(target.workDir, 'runs');
+      const runNames = (): Promise<string[]> =>
+        readdir(runsDir).then((names) => names.filter((name) => name.startsWith('run-')));
+      const [firstRun] = await runNames();
+      const workspacePath = path.join(target.workDir, 'workspaces', 'SAM1-11');
+      expect(await readFile(path.join(workspacePath, 'MARKER.md'), 'utf8')).toBe('done\n');
+
+      // The operator moves the issue back to the ready status, so the next scan
+      // would continue that workspace. It refuses instead: a coding turn is
+      // started only from the workspace's own committed state, and no turn is
+      // started at all (HARN-35).
+      if (jira.issues[0] === undefined) {
+        throw new Error('the fixture issue disappeared');
+      }
+      jira.issues[0].status = 'To Do';
+      const second = await runSourceCli(
+        ['source', 'run', '--repo', target.repo, '--config', target.configPath],
+        target.directory,
+        { fetch: jira.fetch, dependencies },
+      );
+
+      expect(second.err).toContain('SAM1-11: refused');
+      expect(second.code).toBe(EXIT_OK);
+      expect(second.out).toContain('1 refused');
+      // No second run, and the only coding turn that ever ran was the first
+      // attempt's: the refused continuation started none.
+      expect(await runNames()).toEqual([firstRun]);
+      expect(turns).toBe(1);
+
+      // The issue is told which branch and which paths stop it, and what a
+      // person can do by hand.
+      expect(jira.comments).toHaveLength(2);
+      const refusal = jira.comments[1] ?? '';
+      expect(refusal).toContain('cannot be continued');
+      expect(refusal).toContain('harness/SAM1-11');
+      expect(refusal).toContain('MARKER.md');
+      expect(refusal).toMatch(/Commit or remove those paths by hand/);
+      expect(jira.issues[0]?.status).toBe('In Review');
+
+      // The work is kept exactly where the attempt left it.
+      expect(await readFile(path.join(workspacePath, 'MARKER.md'), 'utf8')).toBe('done\n');
+    } finally {
+      if (previous === undefined) {
+        delete process.env.JIRA_API_TOKEN;
+      } else {
+        process.env.JIRA_API_TOKEN = previous;
+      }
+    }
+  }, 30_000);
+
   it('keeps a passed attempt local when no delivery step is configured', async () => {
     const target = await createTarget();
     const jira = fakeJira([
