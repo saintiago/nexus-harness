@@ -66,6 +66,8 @@ export interface OpenPullRequest {
   /** The branch the head is on: the ticket's `harness/<workspaceId>` branch. */
   readonly headBranch: string;
   readonly baseBranch: string;
+  /** The base branch's commit when GitHub last computed the pull request. */
+  readonly baseSha: string;
   readonly draft: boolean;
   readonly author: string;
 }
@@ -126,22 +128,75 @@ export interface CheckEvidence {
   readonly conclusion: string | null;
 }
 
-/** Everything the reviewer turn is given, and everything the record keeps. */
+/**
+ * GitHub's own report of one pull request: the ticket, the pull request, the
+ * changed files whose patches position a finding, and the CI evidence at the
+ * reviewed head. It is what the reviewer turn is given about GitHub, and what
+ * the record keeps; the change itself is read from the repository view below.
+ */
 export interface ReviewEvidence {
   readonly ref: SourceRef;
   readonly task: Task;
   readonly pullRequest: OpenPullRequest;
-  /** The pull request's changed files, bounded; empty is an inconclusive review. */
+  /**
+   * The changed files GitHub reports, bounded: each patch positions a finding
+   * on the pull request's own diff. Empty means there is nothing to review.
+   */
   readonly files: readonly ChangedFile[];
   /** True when the changed-file list was bounded; the scan must refuse a reviewer turn. */
   readonly truncated: boolean;
-  /** Root and relevant nested `AGENTS.md` files at the reviewed head, or `null`. */
-  readonly instructions: string | null;
   /** Check runs reported for the reviewed head, bounded. */
   readonly checks: readonly CheckEvidence[];
   /** The combined commit status at the reviewed head, or `null` when none was read. */
   readonly combinedStatus: string | null;
   readonly fetchedAt: string;
+}
+
+/**
+ * One review's repository view: a local clone of the ticket's retained
+ * workspace, detached at the exact reviewed head and holding the change's base
+ * commit, so a reviewer turn reads files, history and diffs with ordinary read
+ * tools instead of receiving an assembled patch.
+ */
+export interface ReviewView {
+  /** Where the view is checked out, inside the review's own evidence directory. */
+  readonly path: string;
+  /** The reviewed head the view is pinned at. */
+  readonly head: string;
+  /** The change's base commit, which the view holds so the change can be read. */
+  readonly base: string;
+}
+
+/**
+ * The scan's repository-view boundary: the local snapshot a reviewer turn
+ * inspects. Production is the Git-backed `view.ts`, which reuses the workspace
+ * module's bounded Git invocation; a test hands a fake the same way it fakes the
+ * repository. The view is prepared from the retained workspace the ticket's
+ * pointer names and never from a remote, so no App key and no publication token
+ * enters it.
+ */
+export interface ReviewViewSource {
+  /**
+   * Prepares the view for one review inside its evidence directory, pinned at
+   * `head` and holding `base`. Rejects with a {@link ReviewError} when no such
+   * view can be prepared: an absent or unusable retained workspace, a head or
+   * base commit that workspace does not hold, or a view that is not clean.
+   */
+  prepare(
+    request: {
+      readonly dir: string;
+      readonly workspacePath: string;
+      readonly head: string;
+      readonly base: string;
+    },
+    stop: AbortSignal,
+  ): Promise<ReviewView>;
+  /**
+   * Why the view is no longer a clean snapshot at the head it was pinned at, or
+   * `null` when it still is. The scan checks this after the turn and publishes
+   * nothing when it is not.
+   */
+  problem(view: ReviewView, stop: AbortSignal): Promise<string | null>;
 }
 
 /**
@@ -233,10 +288,12 @@ export interface ReviewRepository {
   reviewChecks(head: string, stop: AbortSignal): Promise<readonly AppCheckRun[]>;
 }
 
-/** What one reviewer turn is given: its own evidence directory. */
+/** What one reviewer turn is given: its own evidence directory and its view. */
 export interface ReviewerTurnRequest {
   readonly dir: string;
   readonly evidence: ReviewEvidence;
+  /** The repository view the turn inspects, prepared and checked by the scan. */
+  readonly view: ReviewView;
   readonly stop: AbortSignal;
 }
 
@@ -322,6 +379,12 @@ export interface ReviewScanContext {
   readonly repository: ReviewRepository;
   readonly reviewer: ReviewerTurn;
   /**
+   * How one review's repository view is prepared and checked afterwards: the
+   * local snapshot, pinned at the reviewed head, that the reviewer inspects
+   * instead of an assembled patch (`view.ts`).
+   */
+  readonly views: ReviewViewSource;
+  /**
    * Scan only this ticket, when the caller named one. The serial queue loop
    * reviews exactly the ticket it is carrying, so a scan of the whole review
    * status can never start a reviewer turn for another one. Absent means every
@@ -331,6 +394,8 @@ export interface ReviewScanContext {
   readonly only?: SourceRef;
   /** The output directory the review evidence and its log live under. */
   readonly workDir: string;
+  /** Canonical connected project root, or null when the caller has no local project. */
+  readonly sourceRoot: string | null;
   /** The App's review login: a completed review only counts when this login wrote it. */
   readonly login: string;
   /** The app-owned check run name the merge gate requires. */

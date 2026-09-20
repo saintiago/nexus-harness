@@ -17,11 +17,13 @@ import { ReviewError } from '../reviews/contract.js';
 import { createGitHubReviewClient, resolveAppPrivateKey } from '../reviews/github.js';
 import { createReviewerTurn } from '../reviews/reviewer.js';
 import { scanReviews, watchReviews } from '../reviews/scan.js';
+import { reviewViews } from '../reviews/view.js';
 import type { SourceCandidate, SourceTask } from '../sources/contract.js';
 import { SourceError } from '../sources/contract.js';
 import { createJiraSource } from '../sources/jira/connector.js';
 import { resolveJiraToken } from '../sources/jira/http.js';
 import type { GitHubReviewConfig, JiraSourceConfig } from '../shared/types.js';
+import { canonicalPath } from '../workspace/git.js';
 import { createActivityDisplay } from './activity.js';
 import { EXIT_CANCELLED, EXIT_INPUT_ERROR, EXIT_OK, EXIT_USAGE } from './context.js';
 import type { CliContext, CliIo } from './context.js';
@@ -123,9 +125,10 @@ async function reviewCommand(
     limit = parsed;
   }
 
-  // A review never opens a working copy: the connected project's root is read
-  // for its configuration only, and the pull request itself is read from
-  // GitHub's own record (docs/WORKFLOW.md §9).
+  // A review never takes a checkout of its own: the connected project's root is
+  // read for its configuration and ledger identity, the pull request is read from GitHub's own
+  // record, and the reviewer's view is cloned from the ticket's retained
+  // workspace the scan resolves (docs/WORKFLOW.md §9).
   const configPath = path.resolve(cwd, configArgument);
   const projectPath = projectConfigFile(path.resolve(cwd, projectArgument));
   let config;
@@ -248,7 +251,9 @@ async function reviewCommand(
         },
         repository,
         reviewer,
+        views: reviewViews(),
         workDir: resolveWorkDir(config, configPath),
+        sourceRoot: canonicalPath(path.dirname(projectPath)),
         login: review.app.login,
         checkName: review.checkName,
         // The reviewer launch is bounded by the same task timeout a run gets;

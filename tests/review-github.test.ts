@@ -4,6 +4,7 @@ import { createGitHubReviewClient } from '../src/reviews/github.js';
 import type { OpenPullRequest } from '../src/reviews/contract.js';
 
 const HEAD = 'a'.repeat(40);
+const BASE = 'c'.repeat(40);
 const APP = 5001141;
 const LOGIN = 'nexus-lens[bot]';
 const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
@@ -16,6 +17,7 @@ const pull: OpenPullRequest = {
   headSha: HEAD,
   headBranch: 'harness/work',
   baseBranch: 'main',
+  baseSha: BASE,
   draft: false,
   author: 'author',
 };
@@ -242,58 +244,55 @@ describe('the review GitHub boundary', () => {
     ).rejects.toThrow();
   });
 
-  it.each([false, true])(
-    'reads nested instructions at the reviewed head, failing closed on unreadable content (%s)',
-    async (unreadable) => {
-      const { client, calls } = clientFixture((url) => {
-        if (url.pathname.endsWith('/files'))
-          return [
-            {
-              filename: 'src/feature/code.ts',
-              patch: '@@ -0,0 +1 @@\n+code',
-              additions: 1,
-              deletions: 0,
-            },
-          ];
-        if (url.pathname.includes('/contents/')) {
-          if (url.pathname.endsWith('/src/AGENTS.md')) return new Response('', { status: 404 });
-          if (unreadable) return { encoding: 'none', content: '' };
-          return {
-            encoding: 'base64',
-            content: Buffer.from(`Instructions for ${url.pathname}`).toString('base64'),
-          };
-        }
-        if (url.pathname.endsWith('/check-runs')) return { check_runs: [] };
-        return { state: 'pending' };
-      });
-      const read = client.readEvidence(
-        {
-          pullRequest: pull,
-          ref: {
-            type: 'jira',
-            scope: 'https://example.atlassian.net',
-            id: '1',
-            key: 'HARN-1',
-            url: 'https://example.atlassian.net/browse/HARN-1',
-            updatedAt: 'now',
+  it('reads the pull request’s identity, its files and the head’s CI, and nothing else', async () => {
+    const { client, calls } = clientFixture((url) => {
+      if (url.pathname.endsWith('/files'))
+        return [
+          {
+            filename: 'src/feature/code.ts',
+            patch: '@@ -0,0 +1 @@\n+code',
+            additions: 1,
+            deletions: 0,
           },
-          task: {
-            id: 'HARN-1',
-            title: 'Feature',
-            description: 'Implement feature.',
-            acceptanceCriteria: ['Works.'],
-          },
+        ];
+      if (url.pathname.endsWith('/check-runs')) return { check_runs: [] };
+      return { state: 'pending' };
+    });
+    const read = await client.readEvidence(
+      {
+        pullRequest: pull,
+        ref: {
+          type: 'jira',
+          scope: 'https://example.atlassian.net',
+          id: '1',
+          key: 'HARN-1',
+          url: 'https://example.atlassian.net/browse/HARN-1',
+          updatedAt: 'now',
         },
-        stop,
-      );
-      if (unreadable) {
-        await expect(read).rejects.toThrow('could not be read completely');
-      } else {
-        expect((await read).instructions).toContain('src/feature/AGENTS.md');
-        const contentCalls = calls.filter((call) => call.url.pathname.includes('/contents/'));
-        expect(contentCalls).toHaveLength(3);
-        expect(contentCalls.every((call) => call.url.searchParams.get('ref') === HEAD)).toBe(true);
-      }
-    },
-  );
+        task: {
+          id: 'HARN-1',
+          title: 'Feature',
+          description: 'Implement feature.',
+          acceptanceCriteria: ['Works.'],
+        },
+      },
+      stop,
+    );
+
+    // The change itself is not assembled here: the review reads it from its
+    // repository view, so the evidence carries identity, GitHub's file list (for
+    // positioning), and the head's CI — never repository contents.
+    expect(read.pullRequest).toEqual(pull);
+    expect(read.files).toEqual([
+      {
+        path: 'src/feature/code.ts',
+        patch: '@@ -0,0 +1 @@\n+code',
+        additions: 1,
+        deletions: 0,
+      },
+    ]);
+    expect(read.truncated).toBe(false);
+    expect(read.combinedStatus).toBe('pending');
+    expect(calls.some((call) => call.url.pathname.includes('/contents/'))).toBe(false);
+  });
 });

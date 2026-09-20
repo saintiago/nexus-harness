@@ -53,7 +53,7 @@ export interface CodexPromptRequest {
   readonly label: string;
   /** Working root: the runtime is started in this directory. */
   readonly workspacePath: string;
-  /** Review evidence lives outside Git; ordinary coding turns keep the repository check. */
+  /** Review evidence lives outside Git; coding turns keep the repository check. */
   readonly skipGitRepoCheck?: boolean;
   readonly agentLog: AgentLog;
   readonly stop: AbortSignal;
@@ -77,7 +77,6 @@ export async function runCodexPrompt(
   // fixed interface, in that order and never joined into one string.
   const execArguments = [...prefix, ...CODEX_EXEC_ARGUMENTS];
   if (request.skipGitRepoCheck === true) {
-    // This is an exec option, placed before the final stdin prompt argument.
     execArguments.splice(execArguments.length - 1, 0, '--skip-git-repo-check');
   }
   const invocation = [executable, ...execArguments].join(' ');
