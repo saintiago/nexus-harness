@@ -12,6 +12,8 @@ One TypeScript CLI application, a few modules, and local files. No services, fra
 
 **Revision: 2026-09-20 — one harness configuration, one file per connected project.** The configuration split [WORKFLOW.md](WORKFLOW.md) §1 defines is implemented in the existing `src/config/` module: `schema.ts` validates the Nexus-wide harness configuration and the connected project's `nexus.project.json` as two strict documents, `paths.ts` owns the two file names, and `load.ts` composes them into the effective `HarnessConfig` every command already runs on. No other module learns about the split: the runner, the source coordinator, the delivery step, the review scan, and the queue loop take the same configuration object they took before. `check-config` prints both files and what they composed to. [spec.md](spec.md) §2 defines the behavior.
 
+**Revision: 2026-09-20 — one intake lock per connected project.** `config/load.ts` derives a stable lock namespace from the composed project identity — its source type, canonical Jira site, cloud ID and project key, and its GitHub destination repository — and `sources/receipts.ts` holds one exclusive lock per namespace under `<workDir>/.intake/locks/`. `SourceContext` carries the namespace, so the coordinator, the finite and watch source commands, and the serial queue all take the same project lock; the `workDir` stays Nexus-wide storage policy. A second consumer of one connected project and `workDir` is refused with the existing ownership diagnostic, while a different connected project may consume its own queue under the same `workDir` and harness configuration. No credential, local path, or display name takes part. [spec.md](spec.md) §6 defines the behavior.
+
 **Revision: 2026-09-20 — the reviewer inspects a pinned repository view.** The review path no longer assembles the pull request's patch into the reviewer's prompt. `reviews/view.ts` clones the ticket's own retained workspace into the review's evidence directory, detaches the clone from it, pins it at the exact reviewed head, and checks it again after the turn; the scan prepares and checks it through the `ReviewViewSource` boundary, so a view that cannot be pinned or that the turn changed publishes nothing. The prompt carries identity, the ticket, the CI evidence and the verdict contract, and the reviewer reads files, history and diffs with its own tools. [spec.md](spec.md) §9 defines the behavior and [WORKFLOW.md](WORKFLOW.md) §9 the input.
 
 The review scan reuses `workspace/reopen.ts`'s read-only `resolveWorkspace` before PR lookup or
@@ -233,7 +235,7 @@ Use a plain `for...of` with awaited calls. A watch loop invokes the same finite 
 ```text
 <workDir>/
   .intake/
-    lock/                      # exclusive mkdir; owner metadata for manual inspection
+    locks/<connected-project-namespace>/  # exclusive mkdir per project; owner metadata
     receipts/
       <sha256-identity>.json    # one attempted external item; kept across restarts
   runs/<runId>/
@@ -244,9 +246,9 @@ Use a plain `for...of` with awaited calls. A watch loop invokes the same finite 
   workspaces/<workspaceId>.json # its ledger: base, branch, attempts
 ```
 
-Hash a canonical encoding of `(type, scope, immutable id)` for receipt filenames; never use issue text as a path. The source site identifies Jira for human links and receipt identity; API calls always use the service-account gateway route. Do not include issue revision, project, repo, config path, or credentials in receipt identity. One workDir must not be repurposed for a different target without explicit operator review.
+Hash a canonical encoding of `(type, scope, immutable id)` for receipt filenames; never use issue text as a path. The source site identifies Jira for human links and receipt identity; API calls always use the service-account gateway route. Do not include issue revision, project, repo, config path, or credentials in receipt identity. The lock namespace is derived the same way, from the connected project's own composed connection identity rather than from a path or a display name, so one `workDir` can serve several projects while two consumers of one project are still refused; receipts, workspaces, and review state stay apart through the immutable item identity and the existing collision and ownership checks.
 
-Take the exclusive lock only after the existing overlap/clean-checkout preflight, before discovery intended for execution. Validate the source checkout again before each reservation. A read-only preview only reads existing receipts and must not create directories. Acquire with exclusive directory creation; release only the owned lock after cleanup, not another process's lock. Never auto-break a lock on PID/age assumptions.
+Take the connected project's exclusive lock only after the existing overlap/clean-checkout preflight, before discovery intended for execution. Validate the source checkout again before each reservation. A read-only preview only reads existing receipts and must not create directories. Acquire with exclusive directory creation; release only the owned lock after cleanup, not another process's lock. Never auto-break a lock on PID/age assumptions.
 
 A receipt needs only `version: 1`, source reference, reservation timestamp, and optional actual run ID, result path, outcome, feedback state (`pending`, `sent`, `failed`), acknowledged comment ID, and a redacted diagnostic. Create with exclusive file creation; update through a same-directory temporary file and atomic replacement. Treat corruption as an error. A receipt without a run ID means reserved/uncertain, not a run that succeeded. The source snapshot in a run directory permits manual correlation after a crash before the receipt update.
 
@@ -308,5 +310,6 @@ carrying.
 `workspace/refresh.ts` owns the one new operation — fetch the configured base branch and
 fast-forward the operator's own checkout to the verified merge commit, or refuse with what
 to fix — and it is the only place the queue touches the source checkout. One intake lock is
-held for a whole queue invocation, so the existing second-consumer rule is unchanged and
-stronger while a queue waits. See spec §11 and WORKFLOW §11.
+held for a whole queue invocation, so the second-consumer rule is unchanged and stronger while a
+queue waits; a different connected project holds its own lock under the same `workDir`. See spec
+§11 and WORKFLOW §11.

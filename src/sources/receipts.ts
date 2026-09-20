@@ -1,6 +1,7 @@
 /**
- * The only retained intake state: one exclusive lock per output directory, and
- * one receipt per attempted item, keyed by the item's immutable identity.
+ * The only retained intake state: one exclusive lock per connected project
+ * under an output directory, and one receipt per attempted item, keyed by the
+ * item's immutable identity.
  *
  * A receipt is created exclusively before any remote mutation or agent work, so
  * the same item is not attempted twice by this consumer; a receipt that is not
@@ -8,7 +9,7 @@
  * after preflight and never broken automatically.
  */
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { messageOf } from '../shared/errors.js';
 import type { RunStatus, SourceRef } from '../shared/types.js';
@@ -27,9 +28,17 @@ export interface SourceReceipt {
   readonly problem?: string;
 }
 
-/** The directory holding the exclusive consumer lock, under `workDir`. */
-export function intakeLockPath(workDir: string): string {
-  return path.join(workDir, '.intake', 'lock');
+/**
+ * The directory holding one connected project's exclusive consumer lock, under
+ * `workDir`.
+ *
+ * The namespace is the stable hash the composed configuration derives
+ * (`projectLockNamespace` in `src/config/load.ts`), so two consumers of the
+ * same connected project and `workDir` share one lock while two different
+ * connected projects sharing the `workDir` hold different ones.
+ */
+export function intakeLockPath(workDir: string, namespace: string): string {
+  return path.join(workDir, '.intake', 'locks', namespace);
 }
 
 /** The directory holding the per-item receipts, under `workDir`. */
@@ -168,13 +177,48 @@ export interface IntakeLock {
 }
 
 /**
- * Takes the exclusive per-`workDir` lock by creating its directory. It is taken
- * after the source/output preflight and before discovery intended for execution,
- * and it is never broken automatically: an existing lock is reported with its
- * owner's recorded details so a human can look at it (docs/spec.md §6).
+ * Takes one connected project's exclusive consumer lock under `workDir` by
+ * creating its directory. It is taken after the source/output preflight and
+ * before discovery intended for execution, and it is never broken
+ * automatically: an existing lock is reported with its directory so a human
+ * can inspect it (docs/spec.md §6). The `workDir` is not part of the identity:
+ * different connected projects may consume their own queues under one storage
+ * root, and the same project is refused there while a consumer holds it.
  */
-export async function acquireIntakeLock(workDir: string, now: () => Date): Promise<IntakeLock> {
-  const dir = intakeLockPath(workDir);
+export async function acquireIntakeLock(
+  workDir: string,
+  namespace: string,
+  now: () => Date,
+): Promise<IntakeLock> {
+  // An older consumer owns the whole storage root and records no project.
+  // Fail closed even for a stale, malformed, or dangling legacy lock: neither
+  // its age nor its owner metadata authorizes us to ignore or remove it.
+  const legacy = path.join(workDir, '.intake', 'lock');
+  try {
+    await lstat(legacy);
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code !== 'ENOENT') {
+      throw new SourceError(
+        'fatal',
+        `the intake lock "${legacy}" could not be inspected: ${messageOf(cause)}`,
+      );
+    }
+    return await acquireProjectLock(workDir, namespace, now);
+  }
+  throw new SourceError(
+    'fatal',
+    `another intake consumer holds "${legacy}". This legacy lock covers the whole output ` +
+      'directory and names no project. Inspect that lock and stop its owner before removing ' +
+      'it by hand; a lock is never broken automatically.',
+  );
+}
+
+async function acquireProjectLock(
+  workDir: string,
+  namespace: string,
+  now: () => Date,
+): Promise<IntakeLock> {
+  const dir = intakeLockPath(workDir, namespace);
   const token = randomUUID();
   await mkdir(path.dirname(dir), { recursive: true });
   try {
@@ -183,9 +227,9 @@ export async function acquireIntakeLock(workDir: string, now: () => Date): Promi
     if ((cause as NodeJS.ErrnoException).code === 'EEXIST') {
       throw new SourceError(
         'fatal',
-        `another intake consumer holds "${dir}". Only one consumer may use this output directory ` +
-          'at a time. Inspect that lock and stop its owner before removing it by hand; a lock is ' +
-          'never broken automatically.',
+        `another intake consumer holds "${dir}". Only one consumer may take tickets for this ` +
+          `connected project under "${workDir}" at a time. Inspect that lock and stop its owner ` +
+          'before removing it by hand; a lock is never broken automatically.',
       );
     }
     throw new SourceError(

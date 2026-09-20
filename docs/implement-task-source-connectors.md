@@ -61,7 +61,7 @@ Use the supported ADF nodes and exact heading rules in WORKFLOW. Do not run an L
 
 ### S04 — Add serial intake, lock, receipts, and source provenance
 
-Put coordination outside the runner. Run the existing source/output preflight before creating intake state or making remote mutations. Acquire an exclusive per-workDir intake lock. Use the same batch function for on-demand and watch operation, and the existing runner in the same process for every valid task.
+Put coordination outside the runner. Run the existing source/output preflight before creating intake state or making remote mutations. Acquire an exclusive intake lock for the connected project under the `workDir`: the lock namespace is the project's composed connection identity, so one storage root serves several projects while two consumers of one project are refused (HARN-33). Use the same batch function for on-demand and watch operation, and the existing runner in the same process for every valid task.
 
 Implement the conservative reservation sequence in spec: fresh issue → valid Task → exclusive receipt → confirmed remote claim → existing runner → real local result → source feedback. Check receipt existence before processing old attempts. Recheck repo safety before each fresh reservation. Respect `--limit` and process one task at a time.
 
@@ -87,7 +87,7 @@ On Ctrl+C, stop taking new work, interrupt the active run through the existing s
 
 ### S06 — Finish examples, documentation, and offline acceptance
 
-Keep the supplied docs aligned with the implemented interface. Add a credential-free example config and an example Jira description to the repository's existing examples/docs convention. Document service-account creation/permissions, scoped API-token setup, persistent/session PowerShell token setup, queue readiness, source list/run/watch, read-only versus mutating commands, manual retry/lock recovery, and the one-consumer limitation.
+Keep the supplied docs aligned with the implemented interface. Add a credential-free example config and an example Jira description to the repository's existing examples/docs convention. Document service-account creation/permissions, scoped API-token setup, persistent/session PowerShell token setup, queue readiness, source list/run/watch, read-only versus mutating commands, manual retry/lock recovery, and the one-consumer-per-connected-project boundary.
 
 Explain that scans are periodic and pause during an active batch, that separate *issues* do not inherit each other's changes — since the continuation increment, one issue's attempts share and continue its workspace ([implement-workspace-continuation.md](implement-workspace-continuation.md)) — and that source results remain local until a person reviews/applies them. Do not suggest this implementation has distributed exactly-once execution or security isolation for untrusted code.
 

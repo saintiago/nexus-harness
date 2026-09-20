@@ -253,6 +253,13 @@ function preparedWorkspaceFor(runDir: string): PreparedWorkspace {
 // A fixture around the real coordinator
 // ---------------------------------------------------------------------------
 
+/**
+ * The lock namespace every fixture in this file consumes under: one connected
+ * project, as the composed configuration would name it. Tests that hold a lock
+ * beside a fixture use this same namespace.
+ */
+const FIXTURE_LOCK_NAMESPACE = 'fixture-connected-project';
+
 interface FixtureOptions {
   readonly workDir: string;
   /** The ladder this fixture's coordinator climbs; one rung by default. */
@@ -396,6 +403,7 @@ function createFixture(options: FixtureOptions): Fixture {
   const context: SourceContext = {
     source,
     workDir: options.workDir,
+    lockNamespace: FIXTURE_LOCK_NAMESPACE,
     tiers: options.tiers ?? [
       {
         name: 'default',
@@ -743,7 +751,7 @@ describe('a finite source run', () => {
     expect(fixture.completions).toEqual([]);
     const receipt = await readReceipt(file);
     expect(receipt?.problem).toContain('could not be written');
-    expect(existsSync(intakeLockPath(workDir))).toBe(false);
+    expect(existsSync(intakeLockPath(workDir, FIXTURE_LOCK_NAMESPACE))).toBe(false);
   });
 
   it('stops after a failed publication, keeping the local result and the receipt', async () => {
@@ -867,7 +875,7 @@ describe('a finite source run', () => {
     expect(summary.cleanupConfirmed).toBe(false);
     expect(fixture.completions).toEqual([]);
     // The lock is left behind deliberately: something may still be writing.
-    expect(existsSync(intakeLockPath(workDir))).toBe(true);
+    expect(existsSync(intakeLockPath(workDir, FIXTURE_LOCK_NAMESPACE))).toBe(true);
     const receipt = await readReceipt(receiptFilePath(workDir, refFor('1')));
     expect(receipt?.problem).toContain('termination was not confirmed');
   });
@@ -897,7 +905,7 @@ describe('a finite source run', () => {
     expect(summary.cleanupConfirmed).toBe(false);
     expect(fixture.completions).toEqual([]);
     expect(fixture.log).not.toContain('run:SAM1-2');
-    expect(existsSync(intakeLockPath(workDir))).toBe(true);
+    expect(existsSync(intakeLockPath(workDir, FIXTURE_LOCK_NAMESPACE))).toBe(true);
   });
 
   it('stops a fresh attempt when the caller stopped intake', async () => {
@@ -1183,9 +1191,38 @@ describe('the local receipt', () => {
 // ---------------------------------------------------------------------------
 
 describe('the intake lock', () => {
+  it.each(['active', 'stale', 'malformed', 'missing owner'])(
+    'refuses a legacy lock with %s metadata for every project without changing it',
+    async (metadata) => {
+      const workDir = await createTempDir();
+      const legacy = path.join(workDir, '.intake', 'lock');
+      await mkdir(legacy, { recursive: true });
+      const owner = path.join(legacy, 'owner.json');
+      const contents =
+        metadata === 'malformed'
+          ? '{'
+          : JSON.stringify({
+              version: 1,
+              pid: metadata === 'active' ? process.pid : 999999,
+              startedAt: '2020-01-01T00:00:00.000Z',
+              token: 'legacy-owner',
+            });
+      if (metadata !== 'missing owner') await writeFile(owner, contents);
+      for (const namespace of [FIXTURE_LOCK_NAMESPACE, 'other-project']) {
+        await expect(acquireIntakeLock(workDir, namespace, () => new Date())).rejects.toThrow(
+          `Inspect that lock and stop its owner before removing it by hand`,
+        );
+        expect(existsSync(intakeLockPath(workDir, namespace))).toBe(false);
+      }
+      expect(existsSync(legacy)).toBe(true);
+      if (metadata !== 'missing owner') expect(await readFile(owner, 'utf8')).toBe(contents);
+      else expect(await readdir(legacy)).toEqual([]);
+    },
+  );
+
   it('refuses a second consumer of the same output directory', async () => {
     const workDir = await createTempDir();
-    const held = await acquireIntakeLock(workDir, () => new Date());
+    const held = await acquireIntakeLock(workDir, FIXTURE_LOCK_NAMESPACE, () => new Date());
     const fixture = createFixture({ workDir, scans: [[candidateFor('1')]] });
 
     let thrown: unknown;
@@ -1203,7 +1240,7 @@ describe('the intake lock', () => {
 
   it('never removes a lock it does not own', async () => {
     const workDir = await createTempDir();
-    const dir = intakeLockPath(workDir);
+    const dir = intakeLockPath(workDir, FIXTURE_LOCK_NAMESPACE);
     await mkdir(dir, { recursive: true });
     await writeFile(
       path.join(dir, 'owner.json'),
@@ -1213,7 +1250,7 @@ describe('the intake lock', () => {
 
     let thrown: unknown;
     try {
-      await acquireIntakeLock(workDir, () => new Date());
+      await acquireIntakeLock(workDir, FIXTURE_LOCK_NAMESPACE, () => new Date());
     } catch (cause) {
       thrown = cause;
     }
@@ -1224,7 +1261,7 @@ describe('the intake lock', () => {
 
   it('refuses to release a lock that is no longer its own', async () => {
     const workDir = await createTempDir();
-    const lock = await acquireIntakeLock(workDir, () => new Date());
+    const lock = await acquireIntakeLock(workDir, FIXTURE_LOCK_NAMESPACE, () => new Date());
     await writeFile(
       path.join(lock.dir, 'owner.json'),
       `${JSON.stringify({ version: 1, token: 'someone-else' })}\n`,
@@ -1295,7 +1332,9 @@ describe('Git cleanup at intake boundaries', () => {
           const workDir = await createTempDir();
           const workspace = phase === 'reopen' ? await preparedWorkspaceOnDisk(workDir) : null;
           const existingLock =
-            phase === 'initial' ? await acquireIntakeLock(workDir, () => new Date()) : null;
+            phase === 'initial'
+              ? await acquireIntakeLock(workDir, FIXTURE_LOCK_NAMESPACE, () => new Date())
+              : null;
           const previousOwner =
             existingLock === null
               ? null
@@ -1353,16 +1392,19 @@ describe('Git cleanup at intake boundaries', () => {
           expect(summary.outcome).toBe(cancelled ? 'cancelled' : 'stopped');
           expect(summary.cleanupConfirmed).toBe(false);
           expect(summary.problem).toContain(cleanupProblem);
-          expect(existsSync(intakeLockPath(workDir))).toBe(true);
+          expect(existsSync(intakeLockPath(workDir, FIXTURE_LOCK_NAMESPACE))).toBe(true);
           expect(fixture.completions).toEqual([]);
           expect(fixture.progresses).toEqual([]);
           expect(fixture.refusals).toEqual([]);
           expect(fixture.requests).toHaveLength(phase === 'runner' ? 1 : 0);
           expect(fixture.log).not.toContain('prepare:SAM1-3');
           if (previousOwner !== null)
-            expect(await readFile(path.join(intakeLockPath(workDir), 'owner.json'), 'utf8')).toBe(
-              previousOwner,
-            );
+            expect(
+              await readFile(
+                path.join(intakeLockPath(workDir, FIXTURE_LOCK_NAMESPACE), 'owner.json'),
+                'utf8',
+              ),
+            ).toBe(previousOwner);
           if (retained !== null) expect(await readFile(retained, 'utf8')).toBe('keep partial work');
           if (workspace !== null)
             expect(await readReceipt(receiptFilePath(workDir, refFor('2')))).toEqual(oldReceipt);
@@ -1484,7 +1526,7 @@ describe('Git cleanup at intake boundaries', () => {
       expect(fixture.completions).toHaveLength(confirmed ? 1 : 0);
       expect(fixture.progresses).toEqual([]);
       expect(fixture.log).toContain('workspace:SAM1-1:run-1');
-      expect(existsSync(intakeLockPath(workDir))).toBe(!confirmed);
+      expect(existsSync(intakeLockPath(workDir, FIXTURE_LOCK_NAMESPACE))).toBe(!confirmed);
       const receipt = await readReceipt(receiptFilePath(workDir, refFor('1')));
       if (!confirmed) {
         expect(receipt?.feedback).toBe('pending');
@@ -2206,12 +2248,16 @@ describe('an issue that points at a workspace', () => {
       },
     ];
 
+    // Each refusal happens before the workspace is reopened or an item is
+    // reserved. Prepare the real Git workspace once, then derive each invalid
+    // ledger from its original contents instead of repeating clone setup.
+    const workDir = await createTempDir();
+    const { workspaceId, sourceRoot } = await preparedWorkspaceOnDisk(workDir);
+    const ledgerPath = workspaceStatePath(workDir, workspaceId);
+    const written = JSON.parse(await readFile(ledgerPath, 'utf8')) as Record<string, unknown>;
     for (const entry of cases) {
-      const workDir = await createTempDir();
-      const { workspaceId, sourceRoot } = await preparedWorkspaceOnDisk(workDir);
-      const ledgerPath = workspaceStatePath(workDir, workspaceId);
-      const written = JSON.parse(await readFile(ledgerPath, 'utf8')) as Record<string, unknown>;
-      await writeFile(ledgerPath, `${JSON.stringify(entry.change(written))}\n`, 'utf8');
+      const invalidLedger = `${JSON.stringify(entry.change(written))}\n`;
+      await writeFile(ledgerPath, invalidLedger, 'utf8');
       const fixture = createFixture({
         workDir,
         scans: [[candidateFor('2', 'SAM1-2')]],
@@ -2228,6 +2274,8 @@ describe('an issue that points at a workspace', () => {
       expect(reason).toContain(entry.problem);
       expect(fixture.log).not.toContain('claim:SAM1-2');
       expect(fixture.log).not.toContain('run:SAM1-2');
+      expect(existsSync(receiptFilePath(workDir, refFor('2', 'SAM1-2')))).toBe(false);
+      expect(await readFile(ledgerPath, 'utf8')).toBe(invalidLedger);
     }
   });
 
@@ -2632,7 +2680,7 @@ describe('source watch', () => {
       expect(fixture.log.indexOf('list')).toBeLessThan(fixture.log.indexOf('claim:SAM1-1'));
       expect(fixture.log.filter((entry) => entry === 'list')).toHaveLength(2);
       expect(fixture.output.join('\n')).toContain('no eligible issues');
-      expect(existsSync(intakeLockPath(workDir))).toBe(false);
+      expect(existsSync(intakeLockPath(workDir, FIXTURE_LOCK_NAMESPACE))).toBe(false);
     },
   );
 
@@ -2737,7 +2785,7 @@ describe('source watch', () => {
 
       expect(summary).toMatchObject({ outcome: 'cancelled', attempted: 0 });
       expect(fixture.scans).toBe(1);
-      expect(existsSync(intakeLockPath(workDir))).toBe(false);
+      expect(existsSync(intakeLockPath(workDir, FIXTURE_LOCK_NAMESPACE))).toBe(false);
     },
   );
 

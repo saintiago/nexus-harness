@@ -20,7 +20,13 @@
  * were (docs/WORKFLOW.md §11).
  */
 import path from 'node:path';
-import { ConfigError, escalationTiers, loadConfiguration, resolveWorkDir } from '../config/load.js';
+import {
+  ConfigError,
+  escalationTiers,
+  loadConfiguration,
+  projectLockNamespace,
+  resolveWorkDir,
+} from '../config/load.js';
 import { projectConfigFile } from '../config/paths.js';
 import { createGitHubCompletion } from '../delivery/completion.js';
 import { createGitHubDelivery } from '../delivery/github.js';
@@ -296,6 +302,11 @@ async function queueCommand(options: QueueCommandOptions, context: CliContext): 
   }
 
   const workDir = resolveWorkDir(config, configPath);
+  // The queue's exclusivity is the connected project's, not the storage
+  // root's: the same composed identity names the lock every phase of this
+  // invocation holds, so two different projects sharing this `workDir` do not
+  // exclude one another (docs/spec.md §6, docs/WORKFLOW.md §11).
+  const lockNamespace = projectLockNamespace(config);
   let token: string;
   try {
     token = resolveJiraToken(sourceConfig, process.env);
@@ -418,7 +429,7 @@ async function queueCommand(options: QueueCommandOptions, context: CliContext): 
         }
         throw cause;
       }
-      const lock = await acquireQueueLock(workDir, activeIo);
+      const lock = await acquireQueueLock(workDir, lockNamespace, activeIo);
       if (lock === null) {
         return EXIT_INPUT_ERROR;
       }
@@ -432,6 +443,7 @@ async function queueCommand(options: QueueCommandOptions, context: CliContext): 
         const intake: SourceContext = {
           source: connector,
           workDir,
+          lockNamespace,
           tiers: escalationTiers(config),
           repoPath,
           io: sourceIo,
@@ -655,10 +667,11 @@ async function queueCommand(options: QueueCommandOptions, context: CliContext): 
 /** The exclusive intake lock, reported where a person reads it. */
 async function acquireQueueLock(
   workDir: string,
+  namespace: string,
   io: CliIo,
 ): Promise<{ readonly dir: string; readonly release: () => Promise<void> } | null> {
   try {
-    return await acquireIntakeLock(workDir, () => new Date());
+    return await acquireIntakeLock(workDir, namespace, () => new Date());
   } catch (cause) {
     if (cause instanceof SourceError) {
       io.err(`error: ${cause.message}`);

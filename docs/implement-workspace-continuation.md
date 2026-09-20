@@ -28,7 +28,7 @@ limit.
       source-task.json
   .intake/
     receipts/<hash>.json    per issue: audit trail and second-consumer guard
-    lock/
+    locks/<connected-project-namespace>/   one consumer per connected project; owner metadata
 ```
 
 - A **workspace** is the working copy: cloned once, accumulated over attempts, and local by
@@ -220,7 +220,8 @@ it changes the acceptance criteria or the checks that decide the run.
   request; the independently optional completion path may then arm native GitHub auto-merge, verify
   the configured post-merge workflows, and transition Jira, as [spec.md](spec.md) §10 and
   [WORKFLOW.md](WORKFLOW.md) §10 define.
-- One consumer per output directory; the lock is never broken automatically.
+- One consumer per connected project under an output directory; a different connected project may
+  consume its own queue under the same `workDir`, and the lock is never broken automatically.
 - Receipts stay local, and remain the audit trail and the second-consumer guard.
 - `In Review` still means "an attempt finished and needs a decision", never success; only the
   explicitly configured completion path moves an issue to `Done`, after it verifies the merge and

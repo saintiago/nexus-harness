@@ -110,6 +110,18 @@ What needs both sides is composed in this order, and nothing is guessed:
 
 Missing, malformed, and mismatched configuration all fail **before anything is claimed or run**, with the file, the field, and — for a cross-file problem — both paths named. `check-config` validates and prints the composition without creating anything.
 
+`workDir` is Nexus-wide storage policy, not the queue boundary: one harness configuration and one `workDir` can serve several connected projects. Each composed project gets its own intake lock under the shared output directory, named by a stable hash of that project's own connection identity — its Jira type, canonical site, cloud ID and project key, and its GitHub destination repository. No credential, local path, or display name takes part, and changing a project's queue tuning (issue type, label, statuses, ordering, poll interval, base branch) does not change the lock it holds. Two consumers of one connected project and `workDir` are refused; two different connected projects may consume their own queues concurrently. [spec.md](spec.md) §6 owns the behavior, and §11 the queue that relies on it.
+
+Before hashing, the cloud UUID and GitHub owner/repository are lowercased and the Jira project key
+is uppercased; the Jira site URL is already canonicalized during validation. Equivalent spellings
+therefore hold the same lock without rewriting the configured values used by other callers. The
+offline regressions cover same-project exclusion (including equivalent spellings) and concurrent
+different-project queues. Operators must wait for this change to be integrated before relying on
+that boundary; a live concurrent-project exercise remains unverified. A legacy `.intake/lock/`
+blocks all project consumers, regardless of its age or owner metadata. Let the old consumer finish,
+then inspect and remove its lock by hand; do not interrupt active work or mix old and new consumer
+revisions under the same root, since older binaries cannot recognize the new locks.
+
 ### Fields
 
 Four harness fields and two project fields are required; the rest are optional, each in the file that owns it. Reject unknown top-level/nested fields and invalid types rather than coercing them, and refuse a field in the other file with where it belongs. Source commands require the project's `source`; ordinary file-task commands do not construct it or require its credentials. A review requires the project's `source` and `delivery`, because it reviews through that same connection the pull request that project delivered. Without `delivery` nothing is pushed or published, whatever else the configuration says.
@@ -118,7 +130,7 @@ In the Nexus-wide harness configuration:
 
 | Field | Meaning and validation |
 | --- | --- |
-| `workDir` | Nonblank output directory. Resolve relative to this file, not the target repo. |
+| `workDir` | Nonblank output directory. Resolve relative to this file, not the target repo. One `workDir` may serve several connected projects; their queues lock per project, not per output directory. |
 | `maxRepairs` | Nonnegative integer; additional coding turns after implementation. |
 | `taskTimeoutMinutes` | Positive integer; total run time limit. |
 | `commandTimeoutMinutes` | Positive integer; per setup/check command limit, capped by remaining task time. |
@@ -857,7 +869,15 @@ In the serial queue, arming comes first and is its own bounded step: immediately
 
 ### Recovery, and what is not merged
 
-Every command a pass runs writes its output under `<workDir>/completion-logs/<issueId>`, and the pass creates that directory before its first GitHub read: a fresh pass, or a restart after an earlier one stopped, begins with no directory at all, and a command whose log directory is missing fails before it can report anything. A directory that cannot be created stops the item for attention with the location named — nothing is armed and nothing is written in Jira.
+Every command a pass runs writes its output under `<workDir>/completion-logs/<identity-hash>`, and the pass creates that directory before its first GitHub read: a fresh pass, or a restart after an earlier one stopped, begins with no directory at all, and a command whose log directory is missing fails before it can report anything. A directory that cannot be created stops the item for attention with the location named — nothing is armed and nothing is written in Jira.
+
+Completion evidence and auto-merge admissions use a hash of the source type, canonical site,
+immutable item ID, and lowercase GitHub owner/repository. Equal Jira IDs from different sites or
+destinations cannot share logs, temporary files, admissions, or restart deadlines. A legacy
+`completion-logs/<issueId>` path has no trustworthy connection identity and stops the item for
+manual reconciliation before any GitHub command or Jira write. It is never adopted, overwritten,
+or silently treated as a fresh admission; inspect its ownership and preserve active recovery
+state before moving that old directory aside.
 
 The local admission file is persisted before requesting auto-merge and identifies only the PR/head and, once the merge wait begins, its start — never an outcome. A failed local write prevents the remote request. The admission survives a lost mutation response or failed verification read, including for a repair's new head, so a restart can find a native merge by PR number after it leaves the open list. A restart verifies the armed head against GitHub before it treats the request as present, and re-arms when GitHub no longer holds one. Merged PRs without that admission are not backfilled. Jira changelog entries distinguish a human reopening from a transition retry. GitHub's merged state and the configured post-merge runs are authoritative, and the item's own Jira thread is the record of what was already written. A comment carries a marker, so a repeated pass or a restart finds the comment it already wrote instead of writing a second one; a status move is made only while the item is really still in review. After a restart, a merge confirmed but with post-merge CI absent, pending, or unsuccessful keeps waiting or reports attention without a duplicate comment; if the comment exists but the status move did not arrive, only the transition is retried after re-reading Jira. An item that a person moved out of In Review is not touched. A comment or transition failure never starts an agent: returning an item to `toDoStatus` merely makes the normal source consumer eligible to take the next repair attempt.
 
@@ -916,6 +936,15 @@ harness configuration — and each is validated by the loader exactly as its own
 
 A composed configuration with no `source`, no reviewer, or a `delivery` without `completion` is
 refused with what is missing — and which file it belongs to — before any credential is resolved.
+
+For its whole invocation, including idle watch waits, a queue holds the connected project's intake
+lock under `workDir` — not a lock on the output directory. A second `queue run`/`queue watch` for
+the same project and `workDir` is refused with the lock's owner diagnostic, while a queue for a
+different connected project starts normally under the same `workDir` and harness configuration.
+That concurrency boundary is verified offline — a second consumer of one project and `workDir` is
+refused, and a different connected project runs under the same storage root — and no live
+concurrent exercise of two real project queues has been run. [spec.md](spec.md) §6 and §11 own the
+behavior.
 
 ### Credentials
 

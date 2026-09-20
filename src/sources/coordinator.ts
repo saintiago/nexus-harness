@@ -1060,7 +1060,7 @@ export async function runSource(
     });
   }
 
-  const lock = await acquireIntakeLock(context.workDir, context.now);
+  const lock = await acquireIntakeLock(context.workDir, context.lockNamespace, context.now);
   try {
     let candidates: readonly SourceCandidate[];
     try {
@@ -1163,7 +1163,9 @@ export async function takeOneItem(
   }
 
   const lock =
-    request.lockHeld === true ? null : await acquireIntakeLock(context.workDir, context.now);
+    request.lockHeld === true
+      ? null
+      : await acquireIntakeLock(context.workDir, context.lockNamespace, context.now);
   try {
     let candidates: readonly SourceCandidate[];
     try {
@@ -1255,7 +1257,7 @@ export async function watchSource(options: SourceWatchOptions): Promise<SourceSu
     });
   }
 
-  const lock = await acquireIntakeLock(options.workDir, options.now);
+  const lock = await acquireIntakeLock(options.workDir, options.lockNamespace, options.now);
   try {
     for (;;) {
       if (stop.aborted) {

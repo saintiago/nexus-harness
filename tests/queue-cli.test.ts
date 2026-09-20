@@ -16,9 +16,15 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { runCli } from '../src/cli.js';
 import { EXIT_CANCELLED, EXIT_INPUT_ERROR, EXIT_OK, EXIT_USAGE } from '../src/cli/context.js';
 import type { CliContext, InterruptSignals } from '../src/cli/context.js';
+import { loadConfiguration, projectLockNamespace } from '../src/config/load.js';
 import { acquireIntakeLock, intakeLockPath } from '../src/sources/receipts.js';
+import { completionLogsDir } from '../src/sources/completion.js';
 import { git, installFakeGhCompletion, fakeCompletionCalls } from './fixtures/local-target.js';
-import { HARNESS_CONFIG_FILE_NAME, PROJECT_CONFIG_FILE_NAME } from '../src/config/paths.js';
+import {
+  HARNESS_CONFIG_FILE_NAME,
+  PROJECT_CONFIG_FILE_NAME,
+  projectConfigFile,
+} from '../src/config/paths.js';
 import {
   cleanupTempDirectories,
   createTempDir,
@@ -234,6 +240,72 @@ function output(fixture: CliFixture): string {
   return fixture.lines.join('\n');
 }
 
+/**
+ * One CLI invocation of the fixture, with output and interrupt registration of
+ * its own: two queue processes in one test must not share the single handler
+ * the fixture's own context records.
+ */
+function invocation(
+  fixture: CliFixture,
+  onLine: (text: string) => void = () => undefined,
+): { readonly context: CliContext; readonly lines: string[]; interrupt(): void } {
+  let handler: (() => void) | null = null;
+  const lines: string[] = [];
+  const signals: InterruptSignals = {
+    onInterrupt: (next) => {
+      handler = next;
+      return () => {
+        handler = null;
+      };
+    },
+  };
+  return {
+    lines,
+    context: {
+      ...fixture.context,
+      signals,
+      io: {
+        out: (text) => {
+          lines.push(text);
+          onLine(text);
+        },
+        err: (text) => {
+          lines.push(`error: ${text}`);
+          onLine(`error: ${text}`);
+        },
+      },
+    },
+    interrupt: () => handler?.(),
+  };
+}
+
+/** A second connected project's own configuration: another Jira queue and destination. */
+function secondProjectConfig(): Record<string, unknown> {
+  const config = queueProjectConfig();
+  config['source'] = { ...SOURCE, projectKey: 'MAG' };
+  config['delivery'] = {
+    ...(config['delivery'] as Record<string, unknown>),
+    repository: 'saintiago/magic-collection-keeper',
+  };
+  return config;
+}
+
+/**
+ * A second connected repository beside the fixture's own, under the same Nexus
+ * installation: its `nexus.project.json` names its own queue, and the shared
+ * harness configuration stays the one file the fixture wrote.
+ */
+async function secondConnectedRepo(root: string): Promise<string> {
+  const repo = path.join(root, 'target-two');
+  mkdirSync(repo, { recursive: true });
+  await writeJsonFile(repo, PROJECT_CONFIG_FILE_NAME, secondProjectConfig());
+  git(repo, 'init', '--quiet', '--initial-branch=main');
+  await writeFile(path.join(repo, 'README.md'), 'the second target repository\n', 'utf8');
+  git(repo, 'add', '--all');
+  git(repo, 'commit', '--quiet', '--message', 'baseline');
+  return repo;
+}
+
 describe('the queue command line', () => {
   it.each(['run', 'watch'])(
     'stops %s on authoritative In Progress ownership before a ready claim',
@@ -288,7 +360,11 @@ describe('the queue command line', () => {
     git(root, 'clone', '--bare', fixture.repo, remote);
     git(fixture.repo, 'remote', 'add', 'origin', remote);
     mkdirSync(path.join(workDir, 'workspaces', workspace), { recursive: true });
-    const logs = path.join(workDir, 'completion-logs', '7');
+    const logs = completionLogsDir(
+      workDir,
+      { type: SOURCE.type, scope: SOURCE.siteUrl, id: '7' },
+      'saintiago/nexus-harness',
+    );
     mkdirSync(logs, { recursive: true });
     await writeFile(
       path.join(logs, 'completion-armed-head.json'),
@@ -461,7 +537,11 @@ describe('the queue command line', () => {
     mkdirSync(path.join(workDir, 'workspaces', workspace), { recursive: true });
     // The production restart: an approved In Review ticket whose completion
     // pass never wrote anything, so `completion-logs` does not exist at all.
-    const logs = path.join(workDir, 'completion-logs', '7');
+    const logs = completionLogsDir(
+      workDir,
+      { type: SOURCE.type, scope: SOURCE.siteUrl, id: '7' },
+      'saintiago/nexus-harness',
+    );
     expect(existsSync(path.join(workDir, 'completion-logs'))).toBe(false);
     const gh = await installFakeGhCompletion(root);
     const prUrl = 'https://github.com/saintiago/nexus-harness/pull/29';
@@ -853,10 +933,43 @@ describe('the queue command line', () => {
     expect(fixture.turns()).toBe(0);
   });
 
-  it('refuses to start while another consumer holds the intake lock', async () => {
+  it.each(['run', 'watch'])(
+    'refuses queue %s while a legacy consumer holds the storage root',
+    async (mode) => {
+      const fixture = await cliFixture({ config: queueConfig });
+      const workDir = path.join(path.dirname(fixture.configPath), 'out');
+      const legacy = path.join(workDir, '.intake', 'lock');
+      mkdirSync(legacy, { recursive: true });
+      const context: CliContext = {
+        ...fixture.context,
+        fetch: async () => {
+          fixture.requests.push('unexpected discovery');
+          throw new Error('legacy lock must be refused before discovery');
+        },
+      };
+      expect(
+        await runCli(
+          ['queue', mode, '--config', fixture.configPath, '--repo', fixture.repo],
+          context,
+        ),
+      ).toBe(EXIT_INPUT_ERROR);
+      expect(output(fixture)).toContain(legacy);
+      expect(output(fixture)).toContain('Inspect that lock and stop its owner');
+      expect(fixture.requests).toEqual([]);
+      expect(fixture.turns()).toBe(0);
+      expect(existsSync(legacy)).toBe(true);
+    },
+  );
+
+  it('refuses to start while another consumer holds the same project lock', async () => {
     const fixture = await cliFixture({ config: queueConfig });
     const workDir = path.join(path.dirname(fixture.configPath), 'out');
-    const lock = await acquireIntakeLock(workDir, () => new Date());
+    // The namespace comes from the composed configuration, exactly as the
+    // command derives it: a second consumer of this project and workDir takes
+    // the same lock.
+    const loaded = await loadConfiguration(fixture.configPath, projectConfigFile(fixture.repo));
+    const namespace = projectLockNamespace(loaded.config);
+    const lock = await acquireIntakeLock(workDir, namespace, () => new Date());
     try {
       const code = await runCli(
         ['queue', 'run', '--config', fixture.configPath, '--repo', fixture.repo],
@@ -869,9 +982,116 @@ describe('the queue command line', () => {
       // checkout preflight.
       expect(fixture.requests).toEqual([]);
       expect(fixture.turns()).toBe(0);
-      expect(existsSync(intakeLockPath(workDir))).toBe(true);
+      expect(existsSync(intakeLockPath(workDir, namespace))).toBe(true);
     } finally {
       await lock.release();
+    }
+  });
+
+  it.each(['run', 'watch'])(
+    'refuses queue %s with equivalent connection spelling',
+    async (mode) => {
+      const fixture = await cliFixture({ config: queueConfig });
+      const workDir = path.join(path.dirname(fixture.configPath), 'out');
+      const loaded = await loadConfiguration(fixture.configPath, projectConfigFile(fixture.repo));
+      const namespace = projectLockNamespace(loaded.config);
+      const lock = await acquireIntakeLock(workDir, namespace, () => new Date());
+      try {
+        await writeJsonFile(fixture.repo, PROJECT_CONFIG_FILE_NAME, {
+          ...loaded.project,
+          source: {
+            ...loaded.project.source,
+            siteUrl: 'https://EXAMPLE.atlassian.net:443/',
+            cloudId: SOURCE.cloudId.toUpperCase(),
+            projectKey: SOURCE.projectKey.toLowerCase(),
+          },
+          delivery: { ...loaded.project.delivery, repository: 'Saintiago/Nexus-Harness' },
+        });
+        git(fixture.repo, 'add', PROJECT_CONFIG_FILE_NAME);
+        git(fixture.repo, 'commit', '--quiet', '--message', 'equivalent connection spelling');
+
+        // Fail promptly if the lock is bypassed, including in watch mode.
+        const context: CliContext = {
+          ...fixture.context,
+          fetch: async () => {
+            fixture.requests.push('unexpected discovery');
+            throw new Error('equivalent identity must be refused before discovery');
+          },
+        };
+        expect(
+          await runCli(
+            ['queue', mode, '--config', fixture.configPath, '--repo', fixture.repo],
+            context,
+          ),
+        ).toBe(EXIT_INPUT_ERROR);
+        expect(output(fixture)).toContain('another intake consumer holds');
+        expect(output(fixture)).toContain('Inspect that lock and stop its owner');
+        expect(fixture.requests).toEqual([]);
+        expect(fixture.turns()).toBe(0);
+        expect(existsSync(intakeLockPath(workDir, namespace))).toBe(true);
+      } finally {
+        await lock.release();
+      }
+    },
+  );
+
+  it('refuses the same project twice while a different project consumes the same workDir', async () => {
+    const fixture = await cliFixture({ config: queueConfig });
+    const root = path.dirname(fixture.configPath);
+    const workDir = path.join(root, 'out');
+    const otherRepo = await secondConnectedRepo(root);
+    const firstNamespace = projectLockNamespace(
+      (await loadConfiguration(fixture.configPath, projectConfigFile(fixture.repo))).config,
+    );
+    const otherNamespace = projectLockNamespace(
+      (await loadConfiguration(fixture.configPath, projectConfigFile(otherRepo))).config,
+    );
+    expect(otherNamespace).not.toBe(firstNamespace);
+
+    // One queue process for the first project, held open in watch mode.
+    let idle: () => void = () => undefined;
+    const reachedIdle = new Promise<void>((resolve) => {
+      idle = resolve;
+    });
+    const first = invocation(fixture, (text) => {
+      if (text.includes('queue idle')) idle();
+    });
+    const watching = runCli(
+      ['queue', 'watch', '--config', fixture.configPath, '--repo', fixture.repo],
+      first.context,
+    );
+    await reachedIdle;
+
+    try {
+      // The same connected project and the same workDir: the running queue's
+      // lock refuses the second consumer before anything is read.
+      const requestsBefore = fixture.requests.length;
+      const same = invocation(fixture);
+      const refused = await runCli(
+        ['queue', 'run', '--config', fixture.configPath, '--repo', fixture.repo],
+        same.context,
+      );
+      expect(refused).toBe(EXIT_INPUT_ERROR);
+      expect(same.lines.join('\n')).toContain('another intake consumer holds');
+      expect(fixture.requests).toHaveLength(requestsBefore);
+      expect(fixture.turns()).toBe(0);
+
+      // A different connected project uses the same harness configuration and
+      // the same workDir, and finishes its own empty queue.
+      const other = invocation(fixture);
+      const otherCode = await runCli(
+        ['queue', 'run', '--config', fixture.configPath, '--repo', otherRepo],
+        other.context,
+      );
+      expect(otherCode).toBe(EXIT_OK);
+      expect(other.lines.join('\n')).toContain('queue run: completed');
+      expect(other.lines.join('\n')).toContain('0 ticket(s) reached the configured Done status');
+
+      // The first queue is still the only consumer of its own project.
+      expect(existsSync(intakeLockPath(workDir, firstNamespace))).toBe(true);
+    } finally {
+      first.interrupt();
+      expect(await watching).toBe(EXIT_CANCELLED);
     }
   });
 });

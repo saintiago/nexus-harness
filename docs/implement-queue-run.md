@@ -128,9 +128,11 @@ retain their existing credential behavior.
   failed post-merge workflow ends with that refusal as an actionable stop rather than a second pull
   request. Splitting such a repair into a new ticket is an operator decision, not something this
   loop invents.
-- One queue invocation per output directory holds the intake lock for its whole life, including
-  while it waits in watch mode, so a second consumer in the same `workDir` is refused rather than
-  interleaved. There is still no cross-machine coordination.
+- One queue invocation holds the connected project's intake lock under the output directory for its
+  whole life, including while it waits in watch mode, so a second consumer of the same connected
+  project in the same `workDir` is refused rather than interleaved, while a queue for a different
+  connected project may run under the same `workDir` and harness configuration. There is still no
+  cross-machine coordination, and the storage root itself is not locked.
 - The loop is deterministic: it never decides that a ticket needs different work, never edits a
   ticket's text, and never reinterprets Jira text as a command, a path, a repository, or a limit.
 

@@ -16,6 +16,7 @@ import {
   escalationTiers,
   loadConfiguration,
   loadTask,
+  projectLockNamespace,
   resolveWorkDir,
 } from '../src/config/load.js';
 import { HARNESS_CONFIG_FILE_NAME, PROJECT_CONFIG_FILE_NAME } from '../src/config/paths.js';
@@ -884,6 +885,128 @@ describe('composing two files', () => {
 
     const sameError = await rejectionFrom(() => loadConfiguration(harnessPath, sameStatuses));
     expect(sameError.message).toMatch(/toDoStatus and doneStatus must be different/);
+  });
+});
+
+describe('the connected project lock namespace', () => {
+  const SOURCE = {
+    type: 'jira',
+    siteUrl: 'https://example.atlassian.net',
+    cloudId: '9337c4da-7d33-4c1d-b03c-db207e537f88',
+    projectKey: 'SAM1',
+  };
+
+  it('is stable for one project while its queue tuning changes', async () => {
+    const first = await loadConfig({
+      ...documentedHarnessConfig,
+      ...projectWith({
+        source: SOURCE,
+        delivery: { type: 'github', repository: 'owner/one', baseBranch: 'main' },
+      }),
+    });
+    // The same connection, with a different label, statuses, ordering, poll
+    // interval, credential variable, base branch, and even output directory:
+    // none of those is the connected project's identity.
+    const retuned = await loadConfig({
+      ...documentedHarnessConfig,
+      workDir: './elsewhere',
+      setup: documentedProjectConfig.setup,
+      checks: documentedProjectConfig.checks,
+      source: {
+        ...SOURCE,
+        label: 'other-label',
+        readyStatus: 'Ready',
+        runningStatus: 'Doing',
+        reviewStatus: 'Checking',
+        ordering: 'rank',
+        pollIntervalSeconds: 300,
+        tokenEnv: 'ANOTHER_JIRA_TOKEN',
+      },
+      delivery: { type: 'github', repository: 'owner/one', baseBranch: 'develop' },
+    });
+
+    expect(projectLockNamespace(retuned)).toBe(projectLockNamespace(first));
+    expect(projectLockNamespace(first)).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it.each([
+    ['site URL', { siteUrl: 'https://EXAMPLE.atlassian.net:443/' }, 'owner/one'],
+    ['cloud ID', { cloudId: SOURCE.cloudId.toUpperCase() }, 'owner/one'],
+    ['project key', { projectKey: 'sam1' }, 'owner/one'],
+    ['GitHub repository', {}, 'Owner/One'],
+  ])('keeps the same lock for an equivalent %s spelling', async (_name, source, repository) => {
+    const first = await loadProject(
+      projectWith({
+        source: SOURCE,
+        delivery: { type: 'github', repository: 'owner/one', baseBranch: 'main' },
+      }),
+    );
+    const equivalent = await loadProject(
+      projectWith({
+        source: { ...SOURCE, ...source },
+        delivery: { type: 'github', repository, baseBranch: 'main' },
+      }),
+    );
+
+    expect(projectLockNamespace(equivalent)).toBe(projectLockNamespace(first));
+  });
+
+  it.each([
+    ['site', { siteUrl: 'https://another.atlassian.net' }, 'owner/one'],
+    ['cloud ID', { cloudId: 'aaaaaaaa-7d33-4c1d-b03c-db207e537f88' }, 'owner/one'],
+    ['project key', { projectKey: 'HARN' }, 'owner/one'],
+    ['repository', {}, 'owner/two'],
+  ])('distinguishes a different %s independently', async (_name, source, repository) => {
+    const first = await loadProject(
+      projectWith({
+        source: SOURCE,
+        delivery: { type: 'github', repository: 'owner/one', baseBranch: 'main' },
+      }),
+    );
+    const different = await loadProject(
+      projectWith({
+        source: { ...SOURCE, ...source },
+        delivery: { type: 'github', repository, baseBranch: 'main' },
+      }),
+    );
+
+    expect(projectLockNamespace(different)).not.toBe(projectLockNamespace(first));
+  });
+
+  it('distinguishes two connected projects that share one harness configuration', async () => {
+    const directory = await createTempDir();
+    const harnessPath = await writeJsonFile(
+      directory,
+      HARNESS_CONFIG_FILE_NAME,
+      documentedHarnessConfig,
+    );
+    const firstPath = await writeJsonFile(
+      path.join(directory, 'first'),
+      PROJECT_CONFIG_FILE_NAME,
+      projectWith({
+        source: SOURCE,
+        delivery: { type: 'github', repository: 'owner/first', baseBranch: 'main' },
+      }),
+    );
+    const secondPath = await writeJsonFile(
+      path.join(directory, 'second'),
+      PROJECT_CONFIG_FILE_NAME,
+      projectWith({
+        source: { ...SOURCE, projectKey: 'HARN' },
+        delivery: { type: 'github', repository: 'owner/second', baseBranch: 'main' },
+      }),
+    );
+
+    const first = (await loadConfiguration(harnessPath, firstPath)).config;
+    const second = (await loadConfiguration(harnessPath, secondPath)).config;
+
+    expect(projectLockNamespace(first)).not.toBe(projectLockNamespace(second));
+    // The namespace is an opaque derived name: no site, key, repository, or
+    // credential variable can be read out of it.
+    const namespace = projectLockNamespace(first);
+    for (const readable of ['SAM1', 'example.atlassian.net', 'owner/first', 'JIRA_API_TOKEN']) {
+      expect(namespace).not.toContain(readable);
+    }
   });
 });
 

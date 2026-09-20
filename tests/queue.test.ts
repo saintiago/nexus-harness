@@ -819,6 +819,8 @@ function preparedWorkspace(workDir: string, key: string): PreparedWorkspace {
 interface TakeFixtureOptions {
   readonly workDir: string;
   readonly candidates: readonly SourceCandidate[];
+  /** The connected project's lock namespace; one fixture project by default. */
+  readonly lockNamespace?: string;
   readonly prepare?: (candidate: SourceCandidate) => SourceTask | null;
   readonly pointers?: readonly string[];
   readonly claim?: boolean;
@@ -828,6 +830,9 @@ interface TakeFixtureOptions {
   readonly delivery?: Delivery;
   readonly stop?: AbortSignal;
 }
+
+/** The lock namespace the take fixtures consume under by default. */
+const TAKE_LOCK_NAMESPACE = 'take-fixture-connected-project';
 
 /** One fake source and one fake runner, with everything they were asked. */
 function takeFixture(options: TakeFixtureOptions): {
@@ -882,6 +887,7 @@ function takeFixture(options: TakeFixtureOptions): {
   const context: SourceContext = {
     source,
     workDir: options.workDir,
+    lockNamespace: options.lockNamespace ?? TAKE_LOCK_NAMESPACE,
     tiers,
     repoPath: path.join(options.workDir, 'source'),
     io: {
@@ -973,13 +979,34 @@ describe('the queue consumer step', () => {
 
   it('holds no lock of its own when the queue already holds one', async () => {
     const workDir = await createTempDir();
-    const lock = await acquireIntakeLock(workDir, () => new Date());
+    const lock = await acquireIntakeLock(workDir, TAKE_LOCK_NAMESPACE, () => new Date());
     try {
       const fixture = takeFixture({ workDir, candidates: [candidateFor('SAM1-1')] });
       const result = await takeOneItem(fixture.context, { lockHeld: true });
       expect(result.outcome).toBe('taken');
       // The queue's lock is still exactly the one this test took.
-      expect(existsSync(intakeLockPath(workDir))).toBe(true);
+      expect(existsSync(intakeLockPath(workDir, TAKE_LOCK_NAMESPACE))).toBe(true);
+    } finally {
+      await lock.release();
+    }
+  });
+
+  it('lets a different connected project take under the same output directory', async () => {
+    const workDir = await createTempDir();
+    const lock = await acquireIntakeLock(workDir, TAKE_LOCK_NAMESPACE, () => new Date());
+    try {
+      const other = takeFixture({
+        workDir,
+        candidates: [candidateFor('MAG-1')],
+        lockNamespace: 'other-connected-project',
+      });
+
+      const result = await takeOneItem(other.context);
+
+      expect(result.outcome).toBe('taken');
+      expect(result.ticket?.ref.key).toBe('MAG-1');
+      // The first project's lock is untouched by the other project's step.
+      expect(existsSync(intakeLockPath(workDir, TAKE_LOCK_NAMESPACE))).toBe(true);
     } finally {
       await lock.release();
     }
@@ -992,12 +1019,12 @@ describe('the queue consumer step', () => {
     const result = await takeOneItem(fixture.context);
 
     expect(result.outcome).toBe('taken');
-    expect(existsSync(intakeLockPath(workDir))).toBe(false);
+    expect(existsSync(intakeLockPath(workDir, TAKE_LOCK_NAMESPACE))).toBe(false);
   });
 
   it('refuses to start when another consumer holds the intake lock', async () => {
     const workDir = await createTempDir();
-    const lock = await acquireIntakeLock(workDir, () => new Date());
+    const lock = await acquireIntakeLock(workDir, TAKE_LOCK_NAMESPACE, () => new Date());
     const fixture = takeFixture({ workDir, candidates: [candidateFor('SAM1-1')] });
     try {
       await expect(takeOneItem(fixture.context)).rejects.toThrow(SourceError);

@@ -14,7 +14,11 @@ import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createGitHubCompletion } from '../src/delivery/completion.js';
-import { createCompletionPass, createCompletionRun } from '../src/sources/completion.js';
+import {
+  completionLogsDir,
+  createCompletionPass,
+  createCompletionRun,
+} from '../src/sources/completion.js';
 import type { ArmOutcome, CompletionOutcome } from '../src/sources/completion.js';
 import { createHttpClient } from '../src/sources/jira/http.js';
 import { createJiraCompletionSource } from '../src/sources/jira/completion.js';
@@ -365,7 +369,11 @@ interface FixtureOptions {
 async function createFixture(options: FixtureOptions = {}): Promise<Fixture> {
   const parent = await createTempDir();
   const workDir = path.join(parent, 'harness');
-  const logsDir = path.join(workDir, 'completion-logs', ISSUE_ID);
+  const logsDir = completionLogsDir(
+    workDir,
+    { type: 'jira', scope: SITE, id: ISSUE_ID },
+    REPOSITORY,
+  );
   if (options.evidenceDir === false) {
     if (options.merged === true)
       throw new Error(
@@ -415,6 +423,8 @@ async function createFixture(options: FixtureOptions = {}): Promise<Fixture> {
 function passFor(
   fixture: Fixture,
   parts: {
+    readonly source?: JiraSourceConfig;
+    readonly repository?: string;
     readonly reader?: (stop: AbortSignal) => Promise<string>;
     readonly fail?: string;
     readonly mergeOnArm?: string;
@@ -449,7 +459,8 @@ function passFor(
     GH_TOKEN: OPERATOR_TOKEN,
     NEXUS_LENS_TOKEN: REVIEWER_TOKEN,
   };
-  const http = createHttpClient(SOURCE, JIRA_TOKEN, { fetch: fixture.jira.fetch });
+  const source = parts.source ?? SOURCE;
+  const http = createHttpClient(source, JIRA_TOKEN, { fetch: fixture.jira.fetch });
   const actions = createGitHubCompletion(fixture.config, parts.reader ?? REVIEWER_TOKEN, {
     command: fixture.gh.command,
     env,
@@ -457,9 +468,9 @@ function passFor(
   const io = { out: () => undefined, err: () => undefined };
   return createCompletionPass({
     config: fixture.config,
-    repository: REPOSITORY,
+    repository: parts.repository ?? REPOSITORY,
     baseBranch: BASE_BRANCH,
-    source: createJiraCompletionSource(SOURCE, http),
+    source: createJiraCompletionSource(source, http),
     actions,
     workDir: fixture.workDir,
     io,
@@ -1469,6 +1480,85 @@ describe('review-to-completion', () => {
  * so these tests can tell an early arm from one attempted at completion time.
  */
 describe('arming native auto-merge before the final gate', () => {
+  it.each(['site', 'repository'])(
+    'keeps concurrent completion admissions separate across %s identities and restarts',
+    async (difference) => {
+      const first = await createFixture();
+      const source =
+        difference === 'site' ? { ...SOURCE, siteUrl: 'https://other.atlassian.net' } : SOURCE;
+      const repository = difference === 'repository' ? 'owner/other' : REPOSITORY;
+      const second = {
+        ...(await createFixture({
+          pulls: [{ ...ONE_PULL_REQUEST, repo: repository, headRefOid: OTHER_HEAD }],
+        })),
+        workDir: first.workDir,
+        logsDir: completionLogsDir(
+          first.workDir,
+          { type: source.type, scope: source.siteUrl, id: ISSUE_ID },
+          repository,
+        ),
+      };
+      expect(second.logsDir).not.toBe(first.logsDir);
+      expect(
+        completionLogsDir(
+          first.workDir,
+          { type: SOURCE.type, scope: SITE, id: ISSUE_ID },
+          REPOSITORY.toUpperCase(),
+        ),
+      ).toBe(first.logsDir);
+      const results = await Promise.all([
+        passFor(first).arm(AbortSignal.timeout(30_000)),
+        passFor(second, { source, repository }).arm(AbortSignal.timeout(30_000)),
+      ]);
+      for (const result of results) expect(onlyArm(result).status).toBe('armed');
+      const firstFile = path.join(first.logsDir, 'completion-armed-head.json');
+      const secondFile = path.join(second.logsDir, 'completion-armed-head.json');
+      const firstRecord = await readFile(firstFile, 'utf8');
+      const secondRecord = await readFile(secondFile, 'utf8');
+      expect(JSON.parse(firstRecord)).toMatchObject({ head: HEAD, number: 29 });
+      expect(JSON.parse(secondRecord)).toMatchObject({ head: OTHER_HEAD, number: 29 });
+      // Restart both consumers: each finds its own admission and verifies the
+      // existing arm without rewriting it or repeating the remote mutation.
+      const restarted = await Promise.all([
+        passFor(first).arm(AbortSignal.timeout(30_000)),
+        passFor(second, { source, repository }).arm(AbortSignal.timeout(30_000)),
+      ]);
+      for (const result of restarted) expect(onlyArm(result).status).toBe('armed');
+      expect(await readFile(firstFile, 'utf8')).toBe(firstRecord);
+      expect(await readFile(secondFile, 'utf8')).toBe(secondRecord);
+      for (const fixture of [first, second]) {
+        expect(
+          (await fakeCompletionCalls(fixture.gh)).filter((call) => call.op === 'merge'),
+        ).toHaveLength(1);
+      }
+    },
+  );
+
+  it.each(['arm', 'run'] as const)(
+    'refuses unidentified legacy completion evidence before %s',
+    async (phase) => {
+      const fixture = await createFixture({ evidenceDir: false });
+      const legacy = path.join(fixture.workDir, 'completion-logs', ISSUE_ID);
+      await mkdir(legacy, { recursive: true });
+      const file = path.join(legacy, 'completion-armed-head.json');
+      const contents = JSON.stringify({
+        head: OTHER_HEAD,
+        number: 29,
+        waitingSince: '2020-01-01T00:00:00.000Z',
+      });
+      await writeFile(file, contents);
+      const outcomes = await passFor(fixture)[phase](AbortSignal.timeout(30_000));
+      expect(outcomes).toHaveLength(1);
+      expect(outcomes[0]?.status).toBe('attention');
+      expect(outcomes[0]?.detail).toContain(legacy);
+      expect(outcomes[0]?.detail).toContain('records no source or repository identity');
+      expect(await readFile(file, 'utf8')).toBe(contents);
+      expect(await fakeCompletionCalls(fixture.gh)).toEqual([]);
+      expect(transitions(fixture)).toEqual([]);
+      expect(commentTexts(fixture)).toEqual([]);
+    },
+  );
+
   it.each([
     ['merge-uncertain', false],
     ['merge-uncertain', true],

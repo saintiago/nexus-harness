@@ -18,6 +18,7 @@
  * in schema.ts; this module reads files, applies them, and resolves the
  * path-valued fields against the harness configuration's own directory.
  */
+import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { z } from 'zod';
 import path from 'node:path';
@@ -403,6 +404,38 @@ export function escalationTiers(config: HarnessConfig): readonly EscalationTier[
   return (
     config.escalation ?? [{ name: 'default', agent: config.agent, maxRepairs: config.maxRepairs }]
   );
+}
+
+/**
+ * The stable namespace one connected project's intake state is locked under,
+ * derived once from the configuration the two files composed.
+ *
+ * `workDir` stays Nexus-wide, so the lock that keeps one consumer per queue has
+ * to say *which* connected project is consuming. The namespace is a hash of
+ * that project's own connection identity — its Jira type, canonical site,
+ * cloud ID and project key, and its GitHub destination — never a credential
+ * (no `tokenEnv`, key path, or token), never a local path, and never a
+ * display name. Queue tuning a project may change (issue type, label,
+ * statuses, ordering, poll interval, base branch) takes no part: those are
+ * deliberately absent, so a project that edits its queue boundary keeps the
+ * same lock and cannot run two consumers of itself by accident
+ * (docs/WORKFLOW.md §1, §11).
+ */
+export function projectLockNamespace(config: HarnessConfig): string {
+  // These identifiers are case-insensitive at their providers. Preserve the
+  // supplied configuration for callers, but hash one spelling so an equivalent
+  // UUID, Jira key or GitHub owner/name cannot admit a second consumer. The
+  // schema already canonicalizes the Jira site URL before composition.
+  const identity = [
+    'intake-lock-v1',
+    config.source?.type ?? '',
+    config.source?.siteUrl ?? '',
+    config.source?.cloudId.toLowerCase() ?? '',
+    config.source?.projectKey.toUpperCase() ?? '',
+    config.delivery?.type ?? '',
+    config.delivery?.repository.toLowerCase() ?? '',
+  ];
+  return createHash('sha256').update(JSON.stringify(identity), 'utf8').digest('hex');
 }
 
 /** Reads and validates a task file. */
