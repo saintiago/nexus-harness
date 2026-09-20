@@ -11,6 +11,7 @@
     "readyStatus": "To Do",
     "runningStatus": "In Progress",
     "reviewStatus": "In Review",
+    "ordering": "rank",
     "pollIntervalSeconds": 30,
     "tokenEnv": "JIRA_API_TOKEN"
   },
