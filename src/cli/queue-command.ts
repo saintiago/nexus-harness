@@ -371,9 +371,7 @@ async function queueCommand(options: QueueCommandOptions, context: CliContext): 
         pane.line(text);
       },
       err: (text) => {
-        pane.around(() => {
-          io.err(text);
-        });
+        pane.error(text);
       },
     };
     const sourceIo = { out: activeIo.out, err: activeIo.err };
@@ -479,6 +477,12 @@ async function queueCommand(options: QueueCommandOptions, context: CliContext): 
           environment: reviewerEnvironment,
           onActivity: (activity) => {
             pane.activity(activity);
+          },
+          onTurnStart: (ticket) => {
+            pane.beginInvocation({ role: 'reviewer', ticket, phase: 'review' });
+          },
+          onTurnEnd: () => {
+            pane.endInvocation();
           },
         });
 

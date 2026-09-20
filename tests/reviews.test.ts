@@ -50,6 +50,8 @@ import {
   createTempDir,
   documentedHarnessConfig,
   documentedProjectConfig,
+  fakeConsole,
+  screenAfter,
   writeJsonFile,
 } from './support.js';
 
@@ -1659,6 +1661,8 @@ async function reviewCommandFixture(options: {
   readonly harness?: Record<string, unknown>;
   /** The connected project's own configuration, when a test replaces it. */
   readonly project?: Record<string, unknown>;
+  /** An interactive terminal for the review to draw its reviewer pane on. */
+  readonly terminal?: CliContext['io']['terminal'];
 }): Promise<{
   readonly cwd: string;
   readonly configPath: string;
@@ -1730,7 +1734,11 @@ async function reviewCommandFixture(options: {
     }
     const context: CliContext = {
       cwd: directory,
-      io: { out: (text) => out.push(text), err: (text) => err.push(text) },
+      io: {
+        out: (text) => out.push(text),
+        err: (text) => err.push(text),
+        ...(options.terminal === undefined ? {} : { terminal: options.terminal }),
+      },
       fetch: options.world.fetch,
       signals,
     };
@@ -1758,6 +1766,35 @@ async function reviewCommandFixture(options: {
 }
 
 describe('the review command through the CLI', () => {
+  it('draws the reviewer turn in its own pane, opened by its role and ticket', async () => {
+    const world = fakeWorld({ issues: [sourceIssue(['harness-ws-run-20260919100148-e48a9ab0'])] });
+    const console = fakeConsole({ columns: 80, rows: 24 });
+    const fixture = await reviewCommandFixture({
+      world,
+      terminal: console.io.terminal,
+      plans: [
+        {
+          summary: 'the change matches the ticket',
+          edits: [{ file: 'verdict.json', text: verdictFile(APPROVE) }],
+        },
+      ],
+    });
+
+    const result = await fixture.run();
+
+    expect(result.code).toBe(EXIT_OK);
+    // The pane was drawn in place, and what it kept is the reviewer's own rows:
+    // the command the turn ran and the message it ended with.
+    expect(console.chunks.join('')).toContain('\u001b[');
+    const shown = screenAfter(console.chunks).join('\n');
+    expect(shown).toMatch(
+      /\d{2}:\d{2}:\d{2} ---- reviewer: HARN-3 — review ----\n\d{2}:\d{2}:\d{2} run: node tools\/run-checks\.mjs\n\d{2}:\d{2}:\d{2} agent: the change matches the ticket/,
+    );
+    // No coding pane is opened by a review: the reviewer role is the phase that
+    // launched the turn, and it is the only role this command draws.
+    expect(shown).not.toContain('---- developer:');
+  });
+
   it('accepts a completed but explicitly inconclusive reviewer without publishing a verdict', async () => {
     const world = fakeWorld({ issues: [sourceIssue(['harness-ws-run-20260919100148-e48a9ab0'])] });
     const fixture = await reviewCommandFixture({

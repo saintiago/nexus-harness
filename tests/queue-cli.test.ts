@@ -797,7 +797,9 @@ describe('the queue command line', () => {
       io: {
         out: (text) => {
           fixture.lines.push(text);
-          if (text.startsWith('queue idle')) {
+          // The line carries its emission time, so the act is recognized by
+          // what it says rather than by how the row begins.
+          if (text.includes('queue idle')) {
             idle();
           }
         },

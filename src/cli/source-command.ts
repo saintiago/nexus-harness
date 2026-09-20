@@ -263,9 +263,7 @@ async function sourceCommand(
       pane.line(text);
     },
     err: (text) => {
-      pane.around(() => {
-        io.err(text);
-      });
+      pane.error(text);
     },
   };
 

@@ -200,9 +200,7 @@ async function reviewCommand(
         pane.line(text);
       },
       err: (text) => {
-        pane.around(() => {
-          io.err(text);
-        });
+        pane.error(text);
       },
     };
     const reviewer = createReviewerTurn({
@@ -210,6 +208,12 @@ async function reviewCommand(
       environment: childEnvironment,
       onActivity: (activity) => {
         pane.activity(activity);
+      },
+      onTurnStart: (ticket) => {
+        pane.beginInvocation({ role: 'reviewer', ticket, phase: 'review' });
+      },
+      onTurnEnd: () => {
+        pane.endInvocation();
       },
     });
 

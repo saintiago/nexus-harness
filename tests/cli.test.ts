@@ -937,9 +937,9 @@ describe('run', () => {
     expect(report.attempts[0]?.checks?.outcome).toBe('passed');
 
     // Progress, then the outcome: the status, why, the repairs used, and where
-    // the run kept everything.
-    expect(result.out).toMatch(/^baseline check-round result: passed$/m);
-    expect(result.out).toMatch(/^implementation turn started$/m);
+    // the run kept everything. Every ordinary row carries its emission time.
+    expect(result.out).toMatch(/^\d{2}:\d{2}:\d{2} baseline check-round result: passed$/m);
+    expect(result.out).toMatch(/^\d{2}:\d{2}:\d{2} implementation turn started$/m);
     expect(result.out).toContain(`run ${report.runId}: passed`);
     expect(result.out).toContain('reason     every configured check passed');
     expect(result.out).toContain('repairs    0 of 2 repair turns used');
@@ -948,7 +948,7 @@ describe('run', () => {
       `workspace  ${path.join(path.dirname(path.dirname(runDir)), 'workspaces', path.basename(runDir))}`,
     );
     expect(result.out).toContain(`report     ${path.join(runDir, 'result.json')}`);
-    expect(result.out).toMatch(/^review warning: /m);
+    expect(result.out).toMatch(/^\d{2}:\d{2}:\d{2} review warning: /m);
 
     // The coding turn was asked once, for the implementation, in the run's own
     // working copy, with the task as it was loaded.
@@ -1088,7 +1088,7 @@ describe('run', () => {
     const { runDir, report } = await readRun(fixture.outDir);
     expect(report.status).toBe('failed');
     expect(result.out).toContain(`run ${report.runId}: failed`);
-    expect(result.out).not.toMatch(/^run \S+: passed$/m);
+    expect(result.out).not.toMatch(/^\d{2}:\d{2}:\d{2} run \S+: passed$/m);
     expect(result.out).toContain('the repair allowance is exhausted');
     expect(result.out).toContain('repairs    0 of 0 repair turns used');
     // The report exists and is named; it is a failed run, not a missing one.
@@ -1194,7 +1194,7 @@ describe('run', () => {
     expect(result.err).toMatch(/the disk is full/);
     expect(result.err).toContain(runDir);
     // ...and nothing anywhere says the run finished, or that a report exists.
-    expect(result.out).not.toMatch(/^run run-\S+: /m);
+    expect(result.out).not.toMatch(/^\d{2}:\d{2}:\d{2} run run-\S+: /m);
     expect(result.out).not.toMatch(/result\.json/);
     expect(existsSync(path.join(runDir, 'result.json'))).toBe(false);
     // What the run did produce is still there to inspect.
@@ -1225,7 +1225,7 @@ function reportingAgent(): RunnerDependencies['runAgentTurn'] {
 }
 
 describe('the activity pane under the run status', () => {
-  it('draws the activity in a pane, and takes the pane away before the outcome', async () => {
+  it('draws the activity in the developer pane, and keeps it in the timeline', async () => {
     const fixture = await createRunFixture({ agent: reportingAgent() });
     const console = fakeConsole({ columns: 80, rows: 24 });
 
@@ -1247,15 +1247,25 @@ describe('the activity pane under the run status', () => {
     expect(raw).toContain('result: exit 1');
     expect(raw).toContain('\u001b[');
 
-    // The outcome is what is left on screen: closing erased the pane, so the
-    // terminal holds the run's progress and the outcome block, and the last
-    // thing printed is where the report is.
+    // The pane is finalized into the timeline when the turn ends: the
+    // invocation's boundary and its rows stay in scrollback, the progress and
+    // the outcome block follow them in order, and the last thing printed is
+    // where the report is.
     const { runDir, report } = await readRun(fixture.outDir);
     const screen = screenAfter(console.chunks);
-    expect(screen.some((line) => line.includes('I will change one file.'))).toBe(false);
-    expect(screen).toContain('implementation turn started');
-    expect(screen.join('\n')).toMatch(new RegExp(`^run ${report.runId}: passed$`, 'm'));
-    expect(screen.at(-1)).toBe(`  report     ${path.join(runDir, 'result.json')}`);
+    const shown = screen.join('\n');
+    expect(shown).toMatch(
+      /^\d{2}:\d{2}:\d{2} ---- developer: example-001 — implementation turn ----$/m,
+    );
+    expect(shown).toMatch(/^\d{2}:\d{2}:\d{2} implementation turn started$/m);
+    // The rows the pane drew are the segment that follows the boundary, before
+    // the turn's own result line.
+    expect(shown).toMatch(
+      /\d{2}:\d{2}:\d{2} agent: I will change one file\.\n\d{2}:\d{2}:\d{2} run: npm test\n\d{2}:\d{2}:\d{2} result: exit 1\n\d{2}:\d{2}:\d{2} implementation turn result: completed/,
+    );
+    expect(shown).toMatch(new RegExp(`^\\d{2}:\\d{2}:\\d{2} run ${report.runId}: passed$`, 'm'));
+    expect(screen.at(-1)).toMatch(/^\d{2}:\d{2}:\d{2} {3}report {5}\S/);
+    expect(screen.at(-1)?.endsWith(`  report     ${path.join(runDir, 'result.json')}`)).toBe(true);
   });
 
   it('writes ordinary activity lines, with no cursor sequences, when redirected', async () => {
@@ -1344,9 +1354,11 @@ describe('the activity pane under the run status', () => {
     expect(result.code).toBe(EXIT_OK);
     // The interactive view carries the task, the phase, and the selected model.
     const screen = screenAfter(console.chunks);
-    expect(screen.join('\n')).toMatch(/^run \S+ started: task "example-001" /m);
-    expect(screen).toContain('agent: runtime codex, model deepseek-flash');
-    expect(screen).toContain('implementation turn started');
+    expect(screen.join('\n')).toMatch(/^\d{2}:\d{2}:\d{2} run \S+ started: task "example-001" /m);
+    expect(screen.some((line) => line.endsWith('agent: runtime codex, model deepseek-flash'))).toBe(
+      true,
+    );
+    expect(screen.some((line) => line.endsWith(' implementation turn started'))).toBe(true);
     // The useful path stays; the inventory a reader does not need — the launch
     // prefix, the deadline timestamp, the revision, the branch and base commit,
     // the commit identity — is left to the run log.
@@ -1361,7 +1373,7 @@ describe('the activity pane under the run status', () => {
     ]) {
       expect(shown, `the interactive view still shows "${inventory}"`).not.toContain(inventory);
     }
-    expect(screen.some((line) => line.startsWith('workspace prepared at '))).toBe(true);
+    expect(screen.some((line) => line.includes('workspace prepared at '))).toBe(true);
 
     // What the run wrote to its own timeline is untouched by the presentation.
     const { runDir } = await readRun(fixture.outDir);
@@ -1405,13 +1417,20 @@ describe('the activity pane under the run status', () => {
     const raw = console.chunks.join('');
     expect(raw).toContain('agent: turn 1 reporting');
     expect(raw).toContain('agent: turn 2 reporting');
-    // The pane is drawn under the progress and taken away at the end, whichever
-    // turn reported last.
-    expect(screenAfter(console.chunks).some((line) => line.startsWith('agent: turn '))).toBe(false);
+    // Two panes, each opened by its own boundary and each holding only its own
+    // turn's row: the implementation's pane was finalized before the repair's
+    // boundary, so the repair never inherits the row before it.
+    const shown = screenAfter(console.chunks).join('\n');
+    expect(shown).toMatch(
+      /\d{2}:\d{2}:\d{2} ---- developer: example-001 — implementation turn ----\n\d{2}:\d{2}:\d{2} agent: turn 1 reporting\n\d{2}:\d{2}:\d{2} implementation turn result: completed/,
+    );
+    expect(shown).toMatch(
+      /\d{2}:\d{2}:\d{2} ---- developer: example-001 — repair turn 2 ----\n\d{2}:\d{2}:\d{2} agent: turn 2 reporting\n\d{2}:\d{2}:\d{2} repair turn 2 result: completed/,
+    );
     expect(result.err).toBe('');
   });
 
-  it('takes the pane away before the outcome of a failed run, too', async () => {
+  it('keeps the failed turn’s pane ahead of the outcome of a failed run, too', async () => {
     const counter = path.join(await createTempDir(), 'count.txt');
     const check = path.join(await createTempDir(), 'always-red-check.cjs');
     // Green for the baseline, red from then on, with no repair allowance.
@@ -1435,10 +1454,13 @@ describe('the activity pane under the run status', () => {
     const { runDir, report } = await readRun(fixture.outDir);
     const screen = screenAfter(console.chunks);
     expect(report.status).toBe('failed');
-    expect(screen.some((line) => line.includes('I will change one file.'))).toBe(false);
-    expect(screen.join('\n')).toMatch(new RegExp(`^run ${report.runId}: failed$`, 'm'));
-    expect(screen.join('\n')).toContain(`run dir    ${runDir}`);
-    expect(screen.join('\n')).toContain(`report     ${path.join(runDir, 'result.json')}`);
+    const shown = screen.join('\n');
+    expect(shown).toMatch(
+      /\d{2}:\d{2}:\d{2} ---- developer: example-001 — implementation turn ----\n\d{2}:\d{2}:\d{2} agent: I will change one file\.\n\d{2}:\d{2}:\d{2} run: npm test\n\d{2}:\d{2}:\d{2} result: exit 1\n\d{2}:\d{2}:\d{2} implementation turn result: completed/,
+    );
+    expect(shown).toMatch(new RegExp(`^\\d{2}:\\d{2}:\\d{2} run ${report.runId}: failed$`, 'm'));
+    expect(shown).toContain(`run dir    ${runDir}`);
+    expect(shown).toContain(`report     ${path.join(runDir, 'result.json')}`);
   });
 
   it('leaves a usable screen behind an interrupt, with the outcome and its paths', async () => {
@@ -1476,10 +1498,15 @@ describe('the activity pane under the run status', () => {
 
     const { runDir, report } = await readRun(fixture.outDir);
     const screen = screenAfter(console.chunks);
-    expect(screen.some((line) => line.includes('still working'))).toBe(false);
-    expect(screen.join('\n')).toMatch(new RegExp(`^run ${report.runId}: cancelled$`, 'm'));
-    expect(screen.join('\n')).toContain(`run dir    ${runDir}`);
-    expect(screen.join('\n')).toContain(`report     ${path.join(runDir, 'result.json')}`);
+    const shown = screen.join('\n');
+    // The stopped turn's pane was finalized as it returned, so what it showed
+    // stays above the cancellation and the paths.
+    expect(shown).toMatch(
+      /\d{2}:\d{2}:\d{2} ---- developer: example-001 — implementation turn ----\n\d{2}:\d{2}:\d{2} agent: still working\n\d{2}:\d{2}:\d{2} implementation turn result: completed/,
+    );
+    expect(shown).toMatch(new RegExp(`^\\d{2}:\\d{2}:\\d{2} run ${report.runId}: cancelled$`, 'm'));
+    expect(shown).toContain(`run dir    ${runDir}`);
+    expect(shown).toContain(`report     ${path.join(runDir, 'result.json')}`);
   });
 });
 

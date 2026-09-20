@@ -59,9 +59,14 @@ function runArguments(target: LocalTarget): readonly string[] {
   return ['run', '--repo', target.repo, '--config', target.configPath, '--task', target.taskPath];
 }
 
-/** One line of the outcome block the CLI prints for a run that reached a status. */
+/**
+ * One line of the outcome block the CLI prints for a run that reached a status.
+ * The row carries the time it reached the terminal, and then its indent and its
+ * label — the indent is what separates it from a progress line that happens to
+ * begin with the same word.
+ */
 function outcomeLine(stdout: string, label: string): string {
-  const match = new RegExp(`^\\s+${label}\\s+(\\S.*)$`, 'm').exec(stdout);
+  const match = new RegExp(`^\\d{2}:\\d{2}:\\d{2}\\s{2,}${label}\\s+(\\S.*)$`, 'm').exec(stdout);
   if (match?.[1] === undefined) {
     throw new Error(`the CLI printed no "${label}" line:\n${stdout}`);
   }

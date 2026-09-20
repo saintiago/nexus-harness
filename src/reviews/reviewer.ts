@@ -22,6 +22,7 @@ import type { AgentActivity, AgentSelection } from '../shared/types.js';
 import type {
   ReviewEvidence,
   ReviewerTurn,
+  ReviewerTurnRequest,
   ReviewerTurnResult,
   ReviewerVerdict,
 } from './contract.js';
@@ -356,86 +357,111 @@ export interface ReviewerParts {
   readonly environment: NodeJS.ProcessEnv;
   /** Where the reviewer's own activity is reported, when a display is watching. */
   readonly onActivity?: (activity: AgentActivity) => void;
+  /**
+   * That one reviewer invocation is starting, named by the ticket it reviews.
+   * A display opens a payload pane of its own for it: this is the phase that
+   * launched the turn, never anything read from the launch itself.
+   */
+  readonly onTurnStart?: (ticket: string) => void;
+  /**
+   * That the invocation has ended, whatever it produced — a verdict, a
+   * problem, or a stop — so a display finalizes its pane before anything after
+   * this turn is printed.
+   */
+  readonly onTurnEnd?: () => void;
 }
 
 /** The reviewer turn one scan uses: the configured launch, bounded like every turn. */
 export function createReviewerTurn(parts: ReviewerParts): ReviewerTurn {
   return async (request): Promise<ReviewerTurnResult> => {
-    const prompt = reviewPrompt(request.evidence);
-    const inputPath = path.join(request.dir, REVIEW_INPUT_FILE);
-    const logPath = path.join(request.dir, REVIEWER_LOG_FILE);
-
-    let log: AgentLog;
+    parts.onTurnStart?.(request.evidence.ref.key);
     try {
-      await writeFile(inputPath, prompt, 'utf8');
-      log = await openEvidenceLog(logPath, "the reviewer turn's output");
-    } catch (cause) {
-      throw new ReviewError(
-        'fatal',
-        `the review evidence for ${request.evidence.ref.key} could not be written in ` +
-          `"${request.dir}": ${messageOf(cause)}`,
-        { cause },
-      );
-    }
-
-    let summary: string | null = null;
-    let problem: string | null = null;
-    try {
-      const turn = await runCodexPrompt(
-        {
-          prompt,
-          label: `Nexus Lens reviewer turn for ${request.evidence.ref.key}`,
-          workspacePath: request.dir,
-          skipGitRepoCheck: true,
-          agentLog: log,
-          stop: request.stop,
-          ...(parts.onActivity === undefined ? {} : { onActivity: parts.onActivity }),
-        },
-        selectedCodexRuntime(parts.selection, { env: parts.environment }),
-      );
-      summary = turn.summary;
-    } catch (cause) {
-      problem = `the reviewer turn for ${request.evidence.ref.key} did not complete: ${messageOf(
-        cause,
-      )}`;
-    }
-    try {
-      await log.close();
-    } catch (cause) {
-      problem ??= `the reviewer turn's own log could not be written: ${messageOf(cause)}`;
-    }
-
-    if (problem === null && request.stop.aborted) {
-      problem =
-        `the reviewer turn for ${request.evidence.ref.key} was stopped before it produced a ` +
-        'verdict — its time limit expired, or the scan was interrupted — so nothing is published';
-    }
-    if (problem !== null) {
-      return { summary, verdict: null, problem, logPath };
-    }
-
-    let text: string;
-    try {
-      text = await readFile(path.join(request.dir, REVIEW_VERDICT_FILE), 'utf8');
-    } catch (cause) {
-      return {
-        summary,
-        verdict: null,
-        problem:
-          `the reviewer turn for ${request.evidence.ref.key} completed but wrote no usable ` +
-          `${REVIEW_VERDICT_FILE}: ${messageOf(cause)}`,
-        logPath,
-      };
-    }
-    try {
-      return {
-        summary,
-        verdict: parseVerdict(text, REVIEW_VERDICT_FILE),
-        problem: null,
-        logPath,
-      };
-    } catch (cause) {
-      return { summary, verdict: null, problem: messageOf(cause), logPath };
+      return await reviewTurn(request, parts);
+    } finally {
+      parts.onTurnEnd?.();
     }
   };
+}
+
+/** One reviewer invocation: its input, its launch, and the verdict it writes. */
+async function reviewTurn(
+  request: ReviewerTurnRequest,
+  parts: ReviewerParts,
+): Promise<ReviewerTurnResult> {
+  const prompt = reviewPrompt(request.evidence);
+  const inputPath = path.join(request.dir, REVIEW_INPUT_FILE);
+  const logPath = path.join(request.dir, REVIEWER_LOG_FILE);
+
+  let log: AgentLog;
+  try {
+    await writeFile(inputPath, prompt, 'utf8');
+    log = await openEvidenceLog(logPath, "the reviewer turn's output");
+  } catch (cause) {
+    throw new ReviewError(
+      'fatal',
+      `the review evidence for ${request.evidence.ref.key} could not be written in ` +
+        `"${request.dir}": ${messageOf(cause)}`,
+      { cause },
+    );
+  }
+
+  let summary: string | null = null;
+  let problem: string | null = null;
+  try {
+    const turn = await runCodexPrompt(
+      {
+        prompt,
+        label: `Nexus Lens reviewer turn for ${request.evidence.ref.key}`,
+        workspacePath: request.dir,
+        skipGitRepoCheck: true,
+        agentLog: log,
+        stop: request.stop,
+        ...(parts.onActivity === undefined ? {} : { onActivity: parts.onActivity }),
+      },
+      selectedCodexRuntime(parts.selection, { env: parts.environment }),
+    );
+    summary = turn.summary;
+  } catch (cause) {
+    problem = `the reviewer turn for ${request.evidence.ref.key} did not complete: ${messageOf(
+      cause,
+    )}`;
+  }
+  try {
+    await log.close();
+  } catch (cause) {
+    problem ??= `the reviewer turn's own log could not be written: ${messageOf(cause)}`;
+  }
+
+  if (problem === null && request.stop.aborted) {
+    problem =
+      `the reviewer turn for ${request.evidence.ref.key} was stopped before it produced a ` +
+      'verdict — its time limit expired, or the scan was interrupted — so nothing is published';
+  }
+  if (problem !== null) {
+    return { summary, verdict: null, problem, logPath };
+  }
+
+  let text: string;
+  try {
+    text = await readFile(path.join(request.dir, REVIEW_VERDICT_FILE), 'utf8');
+  } catch (cause) {
+    return {
+      summary,
+      verdict: null,
+      problem:
+        `the reviewer turn for ${request.evidence.ref.key} completed but wrote no usable ` +
+        `${REVIEW_VERDICT_FILE}: ${messageOf(cause)}`,
+      logPath,
+    };
+  }
+  try {
+    return {
+      summary,
+      verdict: parseVerdict(text, REVIEW_VERDICT_FILE),
+      problem: null,
+      logPath,
+    };
+  } catch (cause) {
+    return { summary, verdict: null, problem: messageOf(cause), logPath };
+  }
 }

@@ -13,6 +13,7 @@ import { selectedCodexRuntime } from '../agents/codex/runtime.js';
 import { runCheckRound } from '../checks/round.js';
 import { appendRunLog, openAgentLog } from '../reporting/logs.js';
 import { writeRunReport } from '../reporting/report.js';
+import { nameTurn } from '../runs/progress.js';
 import type { RunnerDependencies } from '../runs/contracts.js';
 import type { AgentSelection } from '../shared/types.js';
 import { configureWorkspaceIdentity } from '../workspace/git.js';
@@ -79,9 +80,13 @@ const FINAL_STATUS_PREFIX = 'final status:';
  *   echoed only after it was appended, and the runner's final status is left to
  *   the outcome block.
  * - `runAgentTurn` is wrapped, when the invocation has an activity pane, to hand
- *   each turn the pane as its `onActivity` sink, so what the runtime is doing is
- *   drawn while it does it. A substituted turn that reports nothing simply
- *   leaves the pane empty.
+ *   each turn a freshly opened pane as its `onActivity` sink, so what the
+ *   runtime is doing is drawn while it does it and each coding turn gets a pane
+ *   of its own: the phase that launched it decides the `developer` role, and the
+ *   task names the ticket, never the model. The pane is finalized as soon as the
+ *   turn returns — completed, failed, or stopped — so the turn's retained rows
+ *   are in the timeline before anything after it is printed. A substituted turn
+ *   that reports nothing simply leaves the pane empty.
  */
 export function composeDependencies(
   context: CliContext,
@@ -112,12 +117,21 @@ export function composeDependencies(
       if (activity === undefined) {
         return await turn(request);
       }
-      return await turn({
-        ...request,
-        onActivity: (reported) => {
-          activity.activity(reported);
-        },
+      activity.beginInvocation({
+        role: 'developer',
+        ticket: request.task.id,
+        phase: nameTurn(request.kind, request.turn),
       });
+      try {
+        return await turn({
+          ...request,
+          onActivity: (reported) => {
+            activity.activity(reported);
+          },
+        });
+      } finally {
+        activity.endInvocation();
+      }
     },
     openAgentLog: replaced.openAgentLog ?? real.openAgentLog,
     appendRunLog: async (runLog: string, message: string) => {
