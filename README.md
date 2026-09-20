@@ -123,19 +123,14 @@ this README does not restate it.
 
 ### Connecting a new repository
 
-1. Add `nexus.project.json` to the repository's root — copy `docs/nexus.project.example.json` — with
-   its own `setup` and `checks`, its Jira connection, and, when its passed attempts should be
-   delivered and completed, its `delivery` object. None of the Nexus-wide settings are repeated in
-   it: the launches, the limits, and the reviewer stay in the one harness file. For a local-only
-   project, only `setup` and `checks` are needed; adding `source` enables Jira intake without
-   requiring delivery. Shared reviewer policy does not require either project setting.
-2. Commit it. The harness reads it from the checkout `--repo` names (and from the root `--project`
-   names for the read-only commands), so it has to be part of what a run clones.
-3. Make sure the credentials it _names_ are in the operator's environment: the Jira token under
-   `source.tokenEnv`, the operator's own `gh`/Git login for delivery. No credential goes into either
-   file.
-4. Validate both files before the first run:
-   `npm start -- check-config --config <harness config> --project <the repository>`.
+[Connect a project to Nexus](docs/connect-a-project.md) is the canonical, practical sequence: it
+takes an integration agent from an existing repository through the one committed file —
+repository-root `nexus.project.json`, copied from
+[docs/nexus.project.example.json](docs/nexus.project.example.json) — to `check-config --project`,
+the read-only `source list --project`, and a finite `queue run --repo`, with the project's
+prerequisites and the credentials that stay in the environment. This section does not restate the
+steps; the file's fields stay defined in [docs/WORKFLOW.md](docs/WORKFLOW.md) §1, §5, §8 and §10,
+and the commands in §11.
 
 ### Migrating an installation onto this split
 
@@ -1584,6 +1579,9 @@ operator's own `gh` credentials, once the check is green —
   still needs a task.
 - [docs/module-structure.md](docs/module-structure.md) — the `src/` layout as it stands, and the
   rules for placing new code in it.
+- [docs/connect-a-project.md](docs/connect-a-project.md) — the canonical project-onboarding path:
+  the one file a connected repository commits and what it owns, the prerequisites, the
+  `check-config`, `source list` and `queue run` sequence, and what Nexus creates for itself.
 - [docs/nexus.config.example.json](docs/nexus.config.example.json) — a credential-free Nexus-wide
   harness configuration to copy: the limits, the launches, and the Nexus Lens reviewer.
 - [docs/nexus.project.example.json](docs/nexus.project.example.json) — a credential-free project
