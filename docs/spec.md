@@ -8,6 +8,8 @@
 
 **Revision: 2026-09-19 — optional Nexus Lens reviews.** The review contract in §9 is implemented: an opt-in `review scan` / `review watch` path that reviews the pull requests of tickets the configured Jira connection reports as being in review, as an explicitly configured reviewer profile, and publishes one native GitHub review plus one app-owned check run per reviewed head. It is read-only on Jira and touches no working copy; [WORKFLOW.md](WORKFLOW.md) §9 owns its inputs and [architecture.md](architecture.md) §2 its module.
 
+**Completion exception:** the no-merge/no-Done defaults below are superseded only by the explicitly configured path in §10. The review commands themselves remain read/review-only.
+
 ## 1. Goal
 
 Turn an explicit development task into locally checked changes, with as little coordination code as possible:
@@ -20,7 +22,7 @@ Task → working copy → coding agent → checks → result
 
 The coding agent implements and repairs; ordinary application code decides when to check, retry the code change, or stop. The runner produces a retained working copy and a local report, not a PR, merge, or deployment: a coding turn may make small local commits in the working copy, and the harness itself never merges or otherwise integrates that work. A commit is the turn's own local arrangement of its work, never evidence that a check passed.
 
-By default nothing leaves the machine either: the harness does not push or publish a run's changes. One optional step, enabled only by an explicit `delivery` configuration and run by the harness itself, may push a **passed** attempt's branch and open or update its pull request (§7). A coding turn never performs it, and it never merges, force-pushes, or marks an issue `Done` unless that configuration also enables the completion step of §8. Everything else below is unchanged when no delivery step is configured.
+By default nothing leaves the machine either: the harness does not push or publish a run's changes. One optional step, enabled only by an explicit `delivery` configuration and run by the harness itself, may push a **passed** attempt's branch and open or update its pull request (§7). A coding turn never performs it, it never merges, force-pushes, or marks an issue `Done`, and everything else below is unchanged when no delivery step is configured.
 
 Codex CLI remains the only implemented coding runtime. Allow its launch prefix to be configured so an operator can select a native profile or model without changing the runner. DeepSeek through Codex is the immediate integration target. The coding assistant used to build this repository is a separate choice.
 
@@ -173,7 +175,7 @@ The local lock/receipt protects one consumer using the same retained `workDir`. 
 
 ### Jira feedback and completion
 
-Use existing workflow statuses, defaulting to `To Do → In Progress → In Review`. `In Review` means **the local attempt ended and needs human attention**, for `passed`, `failed`, and `cancelled` alike. A result comment must state the exact outcome; never represent a failed attempt as completed implementation. Do not automatically set `Done` or merge anything; the one exception is the explicitly configured review-to-completion path of §8, which finishes only work whose own reviewer gate, native GitHub auto-merge, and configured post-merge main workflows all succeeded. Without a configured delivery step the local commits a coding turn made stay in the retained workspace; with one, a passed attempt was delivered first, and the result comment carries the pull request URL (§7). Nothing else about the changes leaves the machine.
+Use existing workflow statuses, defaulting to `To Do → In Progress → In Review`. `In Review` means **the local attempt ended and needs human attention**, for `passed`, `failed`, and `cancelled` alike. A result comment must state the exact outcome; never represent a failed attempt as completed implementation. Do not automatically set `Done` or merge anything. Without a configured delivery step the local commits a coding turn made stay in the retained workspace; with one, a passed attempt was delivered first, and the result comment carries the pull request URL (§7). Nothing else about the changes leaves the machine.
 
 Discover available transitions for the issue and select a unique transition by its target status, not by assuming a status ID is a transition ID. If a workflow requires additional fields or offers no unambiguous transition, report that limitation rather than changing the workflow. [J2]
 
@@ -212,7 +214,7 @@ After a **passed** attempt, and before that attempt's result is published, the h
 
 The published result comment then carries the pull request URL, so Jira links to what was delivered.
 
-Delivery never merges a pull request, never force-pushes, never rewrites a run's report, and keeps no delivery database: GitHub is the record of whether a pull request exists. Without the completion object of §8 it never marks an issue `Done` either, and a delivered pull request waits for a human.
+Delivery never merges a pull request, never marks an issue `Done`, never force-pushes, never rewrites a run's report, and keeps no delivery database: GitHub is the record of whether a pull request exists.
 
 A delivery failure is not a coding failure. The run's own report, logs, and check evidence stay exactly as they were written; the receipt records the delivery problem; the issue is told the run's own outcome with the failure beside it and moved to review when Jira is reachable; and intake stops for a human. No coding turn is started to repair a publishing failure. Retrying the publication is an operator step with ordinary `git` and `gh` in the retained workspace — check GitHub first, because a push or a creation that reported a failure may already have taken effect — and returning the issue to the ready status is code rework, not a delivery retry ([WORKFLOW.md](WORKFLOW.md) §8).
 
@@ -220,31 +222,11 @@ Delivery applies to a source-triggered attempt, whose workspace and branch survi
 
 Delivery uses the operator's own Git and `gh` authentication; the configured repository and base branch are trusted local inputs, like the configured commands, and no GitHub credential is stored by the harness. A destination the harness cannot write to fails with what Git or `gh` said rather than falling back to anything else.
 
-## 8. Optional review-to-completion
-
-Completion is a second, independently optional step inside `delivery`: `delivery.completion`. Absent means §7 alone and an In Review item waits for a person. Present, it carries reviewed source work from an approved pull request through **native GitHub auto-merge** and the configured post-merge workflows on `main` to a verified Jira resolution, without a coordinator or a coding turn in between. It changes nothing about the blanket no-merge/no-`Done` rule above for a configuration that does not enable it.
-
-The configuration names the Nexus Lens reviewer (`lensApp`, `lensReviewContext`, `lensCheckName`), the environment variable holding that reviewer's own credential (`reviewerTokenEnv`), at least one expected post-merge workflow (`postMergeWorkflows`), the two Jira statuses an item can end in (`toDoStatus`, `doneStatus`), and its polling bounds. An empty or missing workflow list, or a status that is not distinct from the review status or from the other outcome, is refused rather than treated as evidence.
-
-The reviewer's credential is deliberately a different environment variable from the operator's `gh`/Git credential. The reviewer's token reads the reviewer's verdict and never enables auto-merge; the operator's credential authenticates the one per-pull-request arming request and never reaches the reviewer. The harness never merges, force-pushes, reruns a workflow, or bypasses protection: `gh pr merge --auto --squash` asks GitHub to merge once branch protection and every required check allow it, and only GitHub's own merged state is trusted.
-
-One pass reads the In Review items of the configured queue and, for each of them, the single open pull request its workspace pointer's branch has. It proceeds on an approval from the configured reviewer on the **current** head, backed by a successful check of the configured name on that same head; the head is re-read immediately before every mutation. It then:
-
-1. Arms squash auto-merge with the operator credential, and waits, bounded by its interval and deadline, for GitHub to report that exact pull request **merged**, with the approved head as its source, the configured base branch, and a merge commit SHA. An armed request, pending pull request checks, a closed pull request, or an absent branch is not a merge.
-2. Requires every configured post-merge workflow to have a run for event `push`, on the configured base branch, for that exact merge commit SHA; the **latest attempt** must be completed with conclusion `success`. A run that has not appeared, or is queued or in progress, is pending and waits; a deadline that expires with work still pending posts one attention comment and leaves the item In Review.
-3. Posts one resolution comment of at most 120 words naming what was delivered or concluded, the successful post-merge main workflow, material limitations, and the pull request and workflow links, and then moves the item to `doneStatus` through native transition discovery.
-
-A current-head `REQUEST_CHANGES` decision from that reviewer, a failed configured check on the current head, and a post-merge workflow that concluded unsuccessfully are conclusive findings: one concise comment naming the review or the failed check or workflow with its conclusion and link, and the item returns to `toDoStatus` with its workspace pointer untouched, so the ordinary source consumer may take the next repair attempt. A merge that GitHub has already made is never rolled back.
-
-Everything else — missing or inconclusive review evidence, an approval or a check on another head, a closed or ambiguous pull request, a conflict, a refused auto-merge, an authentication or permission failure, a check whose relationship to a decision is unclear — is reported for operator attention and left `In Review`. A person's status change is respected: an item that left the review status is not touched. Recovery is deterministic and agent-free: GitHub's merged state and the configured post-merge runs are authoritative, comment markers in the item's own thread are what prevents a second comment, and a status move is made only while the item is really still in review, so a restart retries only what did not happen. Nothing here starts a coding turn.
-
-## 9. Current increment and later work
+## 8. Current increment and later work
 
 **Keep:** the existing workspace/check/report loop, file-task CLI, configurable Codex adapter and DeepSeek profile selection, offline tests, logging, deadlines, cancellation, and retained artifacts. Inspect actual code and preserve user changes. The production harness still never configures the user's coding-provider account.
 
 **Implemented by this increment:** optional source configuration; a small source contract; Jira Cloud mapping, discovery, claim, and result feedback; list/run/watch commands; a single-consumer lock and local receipts; offline tests and an opt-in Jira exercise. Do not require Jira credentials for existing file-task commands or ordinary validation. The later workspace-continuation increment builds on it: see [implement-workspace-continuation.md](implement-workspace-continuation.md).
-
-**Later, only when needed:** another concrete task source, real Claude Code adapter, webhooks, parallel consumers, dependency scheduling, stronger isolation, or remote recovery. The optional GitHub delivery step of §7 opens or updates a pull request, and the optional completion path of §8 is the one configured way an approved delivered pull request is finished; no other automatic merging, CI reaction, or Jira `Done` exists. Add another connector without changing Task or the coding loop; do not ship a placeholder connector now.
 
 **Later, only when needed:** another concrete task source, real Claude Code adapter, webhooks, parallel consumers, dependency scheduling, automatic merging, coordinator-driven CI observation and merge verification, stronger isolation, or remote recovery. The optional GitHub delivery step of §7 opens or updates a pull request and stops there; merging, and reacting to CI on the pull request, stay outside the harness. Add another connector without changing Task or the coding loop; do not ship a placeholder connector now.
 
@@ -279,6 +261,24 @@ The smallest native signal that identifies Nexus Lens is that app-owned check ru
 ### Deduplication and retained evidence
 
 A head that already carries a completed review by the App's configured login whose `commit_id` is that same head is not reviewed again, and no reviewer turn is started; a later commit is a new head and is reviewed again. That native review metadata is the deduplication record: there is no check registry, delivery database, local lock, or second coding consumer. Each reviewer turn keeps its evidence (`input.md`, `reviewer.log`, `verdict.json`, and `review.json`) under `<workDir>/reviews/`, the scan appends one line per outcome to `<workDir>/reviews/review.log`, and nothing is published into a working copy. The scan never changes Jira: it claims and transitions nothing, posts no comment, and never marks an issue `Done`.
+
+## 10. Optional review-to-completion
+
+Completion is a second, independently optional step inside `delivery`: `delivery.completion`. Absent means §7 alone and an In Review item waits for a person. Present, it carries reviewed source work from an approved pull request through **native GitHub auto-merge** and the configured post-merge workflows on `main` to a verified Jira resolution, without a coordinator or a coding turn in between. It changes nothing about the blanket no-merge/no-`Done` rule above for a configuration that does not enable it.
+
+The configuration names the Nexus Lens reviewer (`lensApp`, `lensAppId`, `lensCheckName`), the environment variable holding that reviewer's own credential (`reviewerTokenEnv`), at least one expected post-merge workflow (`postMergeWorkflows`), the two Jira statuses an item can end in (`toDoStatus`, `doneStatus`), and its polling bounds. An empty or missing workflow list, or a status that is not distinct from the review status or from the other outcome, is refused rather than treated as evidence.
+
+The reviewer's credential is deliberately a different environment variable from the operator's `gh`/Git credential. The reviewer's token reads the reviewer's verdict and never enables auto-merge; the operator's credential authenticates the one per-pull-request arming request and never reaches the reviewer. The harness never merges, force-pushes, reruns a workflow, or bypasses protection: `enablePullRequestAutoMerge` with `mergeMethod: SQUASH` asks GitHub to merge once branch protection and every required check allow it, and only GitHub's own merged state is trusted.
+
+One pass reads the In Review items of the configured queue and, for each of them, the single open pull request its workspace pointer's branch has. It proceeds on an approval from the configured reviewer on the **current** head, backed by a successful check of the configured name on that same head; the head is re-read immediately before every mutation. It then:
+
+1. Arms squash auto-merge with the operator credential, and waits, bounded by its interval and deadline, for GitHub to report that exact pull request **merged**, with the approved head as its source, the configured base branch, and a merge commit SHA. An armed request, pending pull request checks, a closed pull request, or an absent branch is not a merge.
+2. Requires every configured post-merge workflow to have a run for event `push`, on the configured base branch, for that exact merge commit SHA; the **latest attempt** must be completed with conclusion `success`. A run that has not appeared, or is queued or in progress, is pending and waits; a deadline that expires with work still pending posts one attention comment and leaves the item In Review.
+3. Posts one resolution comment of at most 120 words naming what was delivered or concluded, the successful post-merge main workflow, material limitations, and the pull request and workflow links, and then moves the item to `doneStatus` through native transition discovery.
+
+A current-head `REQUEST_CHANGES` decision from that reviewer, a definitive failed required PR check, and a post-merge workflow that concluded unsuccessfully are conclusive findings: one concise comment naming the review or the failed check or workflow with its conclusion and link, and the item returns to `toDoStatus` with its workspace pointer untouched, so the ordinary source consumer may take the next repair attempt. A merge that GitHub has already made is never rolled back.
+
+Everything else — missing or inconclusive review evidence, an approval or a check on another head, a closed or ambiguous pull request, a conflict, a refused auto-merge, an authentication or permission failure, a check whose relationship to a decision is unclear — is reported for operator attention and left `In Review`. A person's status change is respected: an item that left the review status is not touched. Recovery is deterministic and agent-free: GitHub's merged state and the configured post-merge runs are authoritative, comment markers in the item's own thread are what prevents a second comment, and a status move is made only while the item is really still in review, so a restart retries only what did not happen. Nothing here starts a coding turn.
 
 ## Jira API references
 

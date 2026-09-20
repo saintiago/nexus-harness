@@ -13,12 +13,6 @@ The refactor moved code and split files. It did not change the loop, the CLI, th
 Codex adapter, or a single behaviour, and the whole suite (`npm run validate`) stayed the gate that
 decided it.
 
-**Revision: 2026-09-20 — optional review-to-completion.** Four focused files were added to the
-existing tree: `sources/completion.ts` (the one bounded pass), `sources/jira/completion.ts` (its Jira
-half), and `delivery/completion.ts` with `delivery/gate.ts` (the GitHub half and the two readings it
-decides on). The coordinator gained one optional `CompletionRun` it runs after a batch, exactly as it
-already gained the optional `Delivery`; nothing else moved.
-
 ## 1. Source tree
 
 Line counts are indicative, not a rule: they are here to show where the substance of the harness is.
@@ -75,7 +69,6 @@ src/
     feedback.ts                   (30)   the failed commands one repair turn is given
   sources/
     contract.ts                   (298)  TaskSource, the ordinary source data and errors, pointer labels
-    completion.ts                 (600)  one review-to-completion pass: read, decide, comment once, move once
     receipts.ts                   (238)  the intake lock and one receipt per attempted item
     eligibility.ts                (81)   what an item is: a first attempt, a continuation, or a refusal
     guidance.ts                   (60)   what an attempt is told, bounded: the thread and earlier attempts
@@ -83,7 +76,6 @@ src/
     list.ts                       (88)   the read-only `source list` preview
     jira/
       connector.ts                (41)   createJiraSource: the wiring of the functions below
-      completion.ts               (330)  the Jira half: the In Review queue, its thread, one comment, one move
       http.ts                     (230)  the gateway client: auth, timeouts, failure classification
       search.ts                   (109)  the queue JQL and the paged search
       issue.ts                    (131)  issue reads, eligibility, and the source reference
@@ -96,9 +88,6 @@ src/
       adf-text.ts                 (296)  rendering that description and extracting the criteria
   delivery/
     github.ts                     (425)  the optional GitHub step: push, find, create or update a PR
-    completion.ts                 (700)  native auto-merge arming, the merge, and the post-merge runs
-    gate.ts                       (170)  the pure check and workflow readings the pass decides on
-
   reviews/
     contract.ts                   (327)  the review data, failures, and the repository/queue boundary
     github.ts                     (726)  the App JWT, the installation token, and the repository calls
@@ -309,39 +298,6 @@ further would separate one decision from itself: `runs/runner.ts` (the loop), `s
 - **Entry points:** `createGitHubDelivery`, `Delivery`, `DeliveryRequest`,
   `DeliveredPullRequest`, `GitHubDeliveryParts`, `DeliveryError`,
   `DELIVERY_COMMAND_TIMEOUT_MS` (`delivery/github.ts`).
-  `createGitHubCompletion`, `CompletionActions`, `CompletionRequest`,
-  `GateVerdict`, `MergeVerdict`, `GitHubCompletionParts`, `CompletionError`,
-  `COMPLETION_COMMAND_TIMEOUT_MS` (`delivery/completion.ts`); `checkFailed`,
-  `checkPending`, `checkPassed`, `workflowMatches`, `workflowOutcomes`,
-  `CheckSnapshot`, `WorkflowRunSnapshot`, `WorkflowOutcome` (`delivery/gate.ts`).
-
-`delivery/completion.ts` is the second, independently optional step inside
-`delivery`. It reads the reviewer's verdict with the reviewer's own credential
-and asks GitHub to enable native auto-merge with the operator's, re-reading the
-head before that request; it then reads GitHub's own merged state and the
-configured post-merge workflow runs on the merge commit. It never merges a pull
-request itself, never rolls a merge back, and never touches Jira.
-
-### `sources/completion.ts` and `sources/jira/completion.ts`
-
-- **Owns:** the review-to-completion pass and its Jira half. `sources/completion.ts`
-  is one bounded scan of the In Review queue: it reads each item, decides from
-  the GitHub evidence `delivery/completion.ts` gives it, writes at most one
-  marked comment, and moves the item only while it is still in review. The
-  comment markers in the item's own thread are what prevents a second comment
-  after a restart, and GitHub's own state is what decides the outcome.
-  `sources/jira/completion.ts` is the connector half the Jira source builds: the
-  In Review queue's JQL, one item read, the thread, one comment, and one
-  transition chosen by target status.
-- **Does not own:** the GitHub commands (the actions it is handed), the run, the
-  checks, or the coding runtime. Nothing here starts a coding turn, and no
-  completion state is persisted outside Jira's own thread and GitHub's own state.
-- **Entry points:** `createCompletionPass`, `CompletionPass`, `CompletionPassParts`,
-  `CompletionOutcome`, `CompletionStatus`, `createCompletionRun`, `mergeWaitDeadline`
-  (`sources/completion.ts`); `createJiraCompletionSource`, `CompletionSource`,
-  `ReviewItem`, `IssueNote`, `reviewQueueJql`, `listReviewCandidates`,
-  `readReviewItem`, `listIssueNotes`, `postIssueComment`, `moveFromReview`,
-  `noteWithMarker` (`sources/jira/completion.ts`).
 
 ### `agents/codex/`
 
@@ -539,3 +495,9 @@ boundary.
   never configuration: it cannot become a command, a path, a repository, or a limit.
 - A module has one responsibility. If a file needs two paragraphs to say what it owns, it is two
   modules - that rule is what produced this tree, and it is how the next split should be chosen.
+
+
+The optional completion path adds `delivery/completion.ts` and `delivery/gate.ts` for
+GitHub reads and native auto-merge arming, `sources/completion.ts` for the bounded pass,
+and `sources/jira/completion.ts` for Jira feedback. It starts no agent and creates no
+workflow engine or service.

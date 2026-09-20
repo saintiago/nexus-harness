@@ -6,8 +6,6 @@ One TypeScript CLI application, a few modules, and local files. No services, fra
 
 **Revision: 2026-09-19 — optional GitHub delivery.** One optional, configured step may push a passed source attempt's branch and open or update its pull request with Git and `gh`, before that attempt's result is published. It is its own small module, it runs commands through the existing process launcher, it keeps no delivery state, and it never merges. [spec.md](spec.md) §7 defines the behavior and [WORKFLOW.md](WORKFLOW.md) §8 the input.
 
-**Revision: 2026-09-20 — optional review-to-completion.** A second, independently optional object inside `delivery` (`delivery.completion`) may carry an In Review item's delivered pull request from the Nexus Lens reviewer's current-head approval through native GitHub auto-merge and the configured post-merge workflows to a verified Jira resolution, or back to its configured To Do status with findings. It adds two small modules — `delivery/completion.ts` (the GitHub side: arming with the operator credential, the merge, the post-merge runs) with `delivery/gate.ts` (the pure check and workflow readings), and `sources/completion.ts` (the pass: read, decide, comment once, move once) with `sources/jira/completion.ts` (the Jira half) — and the `CompletionRun` the coordinator runs after a batch. The reviewer's credential comes from its own environment variable and never arms anything; the harness never merges. [spec.md](spec.md) §8 defines the behavior and [WORKFLOW.md](WORKFLOW.md) §9 the input.
-
 **Revision: 2026-09-19 — optional Nexus Lens reviews.** One optional, configured path reviews the pull requests of tickets the Jira connection reports as being in review, through an explicitly configured reviewer launch of the Codex adapter, and publishes a native GitHub review plus an app-owned check run as a GitHub App installation. It is its own small module, it is read-only on Jira and on any working copy, it keeps no registry or database, and it never merges. [spec.md](spec.md) §9 defines the behavior and [WORKFLOW.md](WORKFLOW.md) §9 the input.
 
 ## 1. Keep the existing application
@@ -54,7 +52,7 @@ cli → reviews (the optional Nexus Lens review path, with the read-only Jira qu
 
 Only `agents/codex/` talks to a coding runtime. Only `workspace/` handles Git/working-copy preparation. Only `process/` starts or stops a process, and `checks/round.ts` says what a configured command's result means. Report file writes belong in `reporting/`.
 
-`delivery/github.ts` is the one module that pushes a branch or drives `gh` for a delivery. It starts every command through `process/`, refuses a working copy that still holds uncommitted work, treats GitHub as the record of whether a pull request exists, and never merges, force-pushes, or changes an issue's state. The CLI builds it from the configuration and hands it to the source coordinator; the runner never sees it, and a run without it behaves exactly as before. `delivery/completion.ts` is the second, independently optional step: it reads the reviewer's verdict with the reviewer's own credential, asks GitHub to enable native auto-merge with the operator's, verifies GitHub's own merged state and the configured post-merge runs, and never merges directly or rolls a merge back. `sources/completion.ts` coordinates one bounded pass over the In Review items and `sources/jira/completion.ts` is its Jira half; the coordinator runs the pass it was handed after a batch and never imports either.
+`delivery/github.ts` is the one module that pushes a branch or drives `gh`. It starts every command through `process/`, refuses a working copy that still holds uncommitted work, treats GitHub as the record of whether a pull request exists, and never merges, force-pushes, or changes an issue's state. The CLI builds it from the configuration and hands it to the source coordinator; the runner never sees it, and a run without it behaves exactly as before.
 
 `reviews/` is the one module that reviews a ticket's pull request, and the only one that talks to GitHub as a GitHub App. `github.ts` owns the App JWT, the installation token, and the repository reads and writes; `reviewer.ts` owns the reviewer prompt, the one bounded Codex turn that answers it, and the verdict file it validates; `diff.ts` owns how a finding is positioned in the pull request's diff; `scan.ts` owns one scan or watch, the ticket's own intake receipt when this output directory holds one, and what it publishes; `contract.ts` is the ordinary data and failures they share. The CLI builds it from the configuration, the Jira connection, and the two credentials the configuration names. It never claims a Jira item, transitions one, or posts a comment, it never opens a working copy, and the runner never sees it.
 
@@ -204,8 +202,6 @@ This interface supports future concrete sources without a plugin loader, class i
 
 Delivery is neither a source nor a connector: it is one optional step of the source command, in `src/delivery/github.ts`. The Jira connector never pushes a branch or opens a pull request, and the coordinator knows only the small `Delivery` function it was handed.
 
-Review-to-completion is the same shape one step later. The coordinator owns only a `CompletionRun` — one bounded pass it runs after a finite batch and after each watch scan — so it imports no GitHub command, no repository URL, no credential, and no Jira rule. `sources/completion.ts` is the pass: it reads the source's In Review items, decides from the GitHub evidence the actions above give it, writes at most one marked comment, and moves the item only while it is still in review. `sources/jira/completion.ts` is the Jira half the connector builds (`createJiraCompletionSource`): the review queue's JQL, one item read, the thread, one comment, and one transition chosen by target status. `delivery/completion.ts` builds the GitHub actions from the validated `delivery.completion` object and the reviewer credential, and `delivery/gate.ts` holds the two readings they decide on as plain functions. Nothing here is a workflow engine, a service, a queue, or a second state store: the Jira thread's markers and GitHub's own merge state are the record, and no completion state is persisted anywhere else.
-
 ## 8. Coordinator and local files
 
 Load/freeze configuration once per invocation. Pass the same trusted repository/config and effective agent to each ordinary run; each run still has its own generated ID, task deadline, and bounded repairs, and a fresh attempt clones the workspace it works in. A continuation reopens the workspace its pointer label names, keeps that workspace's recorded base as the comparison base, and may start from a red baseline; a first attempt may not. Queue tasks do not select repositories or share mutable working copies.
@@ -266,3 +262,15 @@ Resolve the configured service-account token once when constructing the connecto
 [A4]: https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issue-comments/
 [A5]: https://developer.atlassian.com/cloud/jira/platform/apis/document/structure/
 [A6]: https://developer.atlassian.com/cloud/jira/platform/rate-limiting/
+
+
+## Optional completion ownership
+
+`delivery/completion.ts` reads native GitHub evidence and requests only the explicit
+`enablePullRequestAutoMerge` mutation; `delivery/gate.ts` interprets check and workflow
+results. `sources/completion.ts` runs a bounded completion pass after a source batch.
+`sources/jira/completion.ts` owns fresh issue reads, comment deduplication and native
+transition discovery. Completion never imports or starts a reviewer or coding runtime.
+The reader/reviewer token is separate from the trusted operator credential used only
+to arm auto-merge. See spec §10 and WORKFLOW §10 for this opt-in exception to the
+default no-merge/no-Done behavior.
