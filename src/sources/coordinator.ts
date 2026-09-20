@@ -21,11 +21,12 @@ import type { RunTaskResult } from '../runs/contracts.js';
 import { RunCancelledError, RunTimeoutError } from '../runs/contracts.js';
 import { messageOf } from '../shared/errors.js';
 import { workspaceStopOf } from '../workspace/errors.js';
-import type { AttemptEvidence, SourceRef } from '../shared/types.js';
+import type { AttemptEvidence, CheckRoundResult, SourceRef } from '../shared/types.js';
 import type { ContinuedWorkspace } from '../workspace/reopen.js';
 import { reopenWorkspace } from '../workspace/reopen.js';
 import { readWorkspaceState, sourceItemFor } from '../workspace/state.js';
 import type {
+  BaselineDiagnosisOutcome,
   CompletionRunSummary,
   SourceCandidate,
   SourceComment,
@@ -472,6 +473,143 @@ function exhaustedRedRound(run: RunTaskResult, allowance: number): boolean {
 }
 
 /**
+ * Whether a run ended on a completed red baseline of a fresh workspace, before
+ * any coding turn: every setup command succeeded, the check round completed with
+ * a nonzero result, and nothing else stopped the run. That is the one ending the
+ * pre-delivery diagnosis applies to.
+ *
+ * Every other ending is left exactly as it was: a baseline that could not be
+ * executed (a setup failure, a command that could not be launched, a missing
+ * host tool), a cancellation, an expired limit, an incomplete round, a
+ * continuation that started red — which may proceed to its coding turn, by
+ * contract — and a workspace whose own attempt record could not be written all
+ * keep their existing outcomes. No reason string is read, so rewording a run's
+ * sentence can never change whether this diagnosis runs.
+ */
+function completedRedBaseline(
+  run: RunTaskResult,
+): run is RunTaskResult & { readonly baseline: CheckRoundResult } {
+  return (
+    run.status === 'failed' &&
+    run.timeout === null &&
+    run.cancellation === null &&
+    run.workspace !== null &&
+    run.workspace.continued !== true &&
+    run.attempts.length === 0 &&
+    run.baseline !== null &&
+    run.baseline.outcome === 'failed'
+  );
+}
+
+/**
+ * The pre-delivery diagnosis of one completed red baseline, when the
+ * configuration provides one.
+ *
+ * `null` means the run is not one the diagnosis applies to — or none is
+ * configured — and the caller goes on to publish the run's ordinary result.
+ * `'handled'` means the item was diagnosed and this climb ends here: an
+ * actionable finding returned it to its ready status with the finding, so the
+ * next claim continues the same retained workspace and repairs the baseline
+ * before the original task; a diagnosis that is not actionable left it In
+ * Review with the evidence and what a person must do. The two other steps stop
+ * intake with the ticket's state named, exactly as every other attention result
+ * does.
+ */
+async function diagnoseBaseline(
+  context: SourceContext,
+  file: string,
+  item: SourceTask,
+  run: RunTaskResult,
+  state: BatchState,
+): Promise<Step | 'handled' | null> {
+  const diagnosis = context.baselineDiagnosis;
+  if (diagnosis === undefined || !completedRedBaseline(run)) {
+    return null;
+  }
+  const { ref } = item;
+  const key = ref.key;
+  const workspace = run.workspace;
+  if (workspace === null) {
+    // Unreachable: a baseline round only runs once a working copy exists.
+    return null;
+  }
+
+  let outcome: BaselineDiagnosisOutcome;
+  try {
+    outcome = await diagnosis.diagnose({
+      item,
+      workspace: {
+        workspaceId: workspace.workspaceId,
+        workspacePath: workspace.workspacePath,
+        branch: workspace.branch,
+        baseCommit: workspace.baseCommit,
+      },
+      baseline: run.baseline,
+      stop: context.stop,
+    });
+  } catch (cause) {
+    const problem = messageOf(cause);
+    await updateReceipt(file, { problem: `baseline: ${problem}` });
+    return stopWith(
+      state,
+      `${key}: the pre-delivery baseline diagnosis failed before it could record anything, so the ` +
+        `red baseline still needs a person: ${problem} Its report is kept (${run.reportPath}).`,
+    );
+  }
+
+  // The attempt's own run is what the item is told about, either way: the
+  // diagnosis is recorded beside it, never in place of it.
+  state.takenRun = {
+    status: run.status,
+    runId: run.run.runId,
+    reportPath: run.reportPath,
+    reason: run.reason,
+    pullRequest: null,
+    ...(outcome.kind === 'repair' ? { returnedForBaselineRepair: { detail: outcome.detail } } : {}),
+  };
+
+  if (outcome.kind === 'cancelled') {
+    await updateReceipt(file, {
+      problem: `baseline: ${outcome.detail}`,
+    });
+    return context.stop.aborted
+      ? 'cancelled'
+      : stopWith(
+          state,
+          `${key}: the baseline diagnosis was stopped before it could finish, so the red baseline ` +
+            `still needs a person: ${outcome.detail}`,
+        );
+  }
+
+  const comment = outcome.commentId === null ? '' : ` (comment ${outcome.commentId})`;
+  if (outcome.kind === 'repair') {
+    await updateReceipt(file, {
+      feedback: 'sent',
+      ...(outcome.commentId === null ? {} : { commentId: outcome.commentId }),
+    });
+    context.io.out(
+      `${key}: the red baseline is diagnosed and actionable${comment}; the issue holds the ` +
+        'finding and is back in its ready status, so its next claim continues the same workspace',
+    );
+    return 'handled';
+  }
+
+  // Not actionable: the item is In Review with the evidence and the required
+  // action, and no coding turn is started from it.
+  await updateReceipt(file, {
+    feedback: 'sent',
+    problem: `baseline: ${outcome.detail}`,
+    ...(outcome.commentId === null ? {} : { commentId: outcome.commentId }),
+  });
+  return stopWith(
+    state,
+    `${key}: no baseline repair is actionable${comment}, so the issue holds the evidence and ` +
+      `what a person must do and stays In Review: ${outcome.detail} Its report is kept ` +
+      `(${run.reportPath}).`,
+  );
+}
+
+/**
  * One item, through the documented reservation sequence: receipt first, a fresh
  * read of the item and a decision from that read, eligibility and revision
  * rechecked, an unambiguous claim, the unchanged runner, the real local result,
@@ -850,6 +988,25 @@ async function attempt(
           '(docs/implement-workspace-continuation.md), then move the issue back to the ready ' +
           'status to continue the same workspace.',
       );
+    }
+
+    // A completed red baseline on a fresh workspace, before any coding turn:
+    // the one ending the harness diagnoses instead of publishing as a plain
+    // failure. The reviewer inspects the exact snapshot and the evidence the
+    // configured commands wrote; an actionable finding returns the same ticket
+    // to its ready status with the finding, where its next claim continues this
+    // workspace and repairs the baseline before the original task. Everything
+    // else — a setup failure, a command that could not be executed, a
+    // cancellation, an expired limit, missing evidence, an environmental or
+    // unsafe diagnosis — keeps the existing behaviour: the run's own result is
+    // published and the item waits In Review for a person (docs/WORKFLOW.md
+    // §11).
+    const diagnosed = await diagnoseBaseline(context, file, item, run, state);
+    if (diagnosed === 'stop' || diagnosed === 'cancelled') {
+      return diagnosed;
+    }
+    if (diagnosed === 'handled') {
+      break;
     }
 
     // What a passed attempt produced is delivered before the issue is told it

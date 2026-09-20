@@ -31,11 +31,14 @@ import type {
 import { createCompletionPass, createCompletionRun } from '../sources/completion.js';
 import { runSource, watchSource } from '../sources/coordinator.js';
 import type { SourceWatchOptions } from '../sources/coordinator.js';
+import { createBaselineDiagnosis } from '../sources/baseline.js';
+import { createJiraBaselineRecord } from '../sources/jira/baseline.js';
 import { createJiraCompletionSource } from '../sources/jira/completion.js';
 import { createJiraSource } from '../sources/jira/connector.js';
 import { createHttpClient, resolveJiraToken } from '../sources/jira/http.js';
 import { listSource } from '../sources/list.js';
 import type { SourceListEntry } from '../sources/list.js';
+import { createBaselineReviewer } from '../reviews/baseline.js';
 import { WorkspaceError } from '../workspace/errors.js';
 import { preflightSource } from '../workspace/preflight.js';
 import { createActivityDisplay } from './activity.js';
@@ -75,9 +78,14 @@ export function abortableSleep(ms: number, stop: AbortSignal): Promise<void> {
  * project code or to the coding runtime, and `process.env` itself is not
  * modified (docs/architecture.md §9).
  */
-function environmentWithout(environment: NodeJS.ProcessEnv, name: string): NodeJS.ProcessEnv {
+function environmentWithout(
+  environment: NodeJS.ProcessEnv,
+  ...names: readonly string[]
+): NodeJS.ProcessEnv {
   const copy: NodeJS.ProcessEnv = { ...environment };
-  delete copy[name];
+  for (const name of names) {
+    delete copy[name];
+  }
   return copy;
 }
 
@@ -366,6 +374,46 @@ async function sourceCommand(
       );
     }
 
+    // The pre-delivery baseline diagnosis is built only when the configuration
+    // provides the Nexus-wide reviewer: it runs that one selection over a
+    // read-only snapshot of the red baseline's workspace, and it records what it
+    // found in the issue's own thread and status. It is read-only on GitHub —
+    // there is no pull request yet, so nothing is reviewed, approved, or checked
+    // there (docs/WORKFLOW.md §11).
+    const reviewConfig = config.review;
+    const baselineDiagnosis =
+      reviewConfig === undefined
+        ? undefined
+        : createBaselineDiagnosis({
+            reviewer: createBaselineReviewer({
+              selection: reviewConfig.reviewer,
+              environment: environmentWithout(
+                process.env,
+                sourceConfig.tokenEnv,
+                reviewConfig.app.privateKeyPathEnv,
+                ...(completionConfig === undefined ? [] : [completionConfig.reviewerTokenEnv]),
+                'GH_TOKEN',
+                'GITHUB_TOKEN',
+                'GH_ENTERPRISE_TOKEN',
+                'GITHUB_ENTERPRISE_TOKEN',
+              ),
+              onActivity: (activity) => {
+                pane.activity(activity);
+              },
+              onTurnStart: (ticket) => {
+                pane.beginInvocation({ role: 'reviewer', ticket, phase: 'baseline diagnosis' });
+              },
+              onTurnEnd: () => {
+                pane.endInvocation();
+              },
+            }),
+            record: createJiraBaselineRecord(sourceConfig, jiraHttp),
+            readyStatus: sourceConfig.readyStatus,
+            reviewStatus: sourceConfig.reviewStatus,
+            workDir,
+            io: activeIo,
+          });
+
     const intake: SourceContext = {
       source: connector,
       workDir,
@@ -379,6 +427,7 @@ async function sourceCommand(
       preflight: preflightSource,
       ...(delivery === undefined ? {} : { delivery }),
       ...(completion === undefined ? {} : { completion }),
+      ...(baselineDiagnosis === undefined ? {} : { baselineDiagnosis }),
       run: ({
         task,
         sourceRef,

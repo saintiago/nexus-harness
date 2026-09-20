@@ -45,7 +45,9 @@ import { createCompletionPass } from '../sources/completion.js';
 import type { ArmOutcome, CompletionOutcome } from '../sources/completion.js';
 import type { SourceContext, SourceTake } from '../sources/contract.js';
 import { SourceError } from '../sources/contract.js';
+import { createBaselineDiagnosis } from '../sources/baseline.js';
 import { takeOneItem } from '../sources/coordinator.js';
+import { createJiraBaselineRecord } from '../sources/jira/baseline.js';
 import { discoverQueueWork } from '../sources/jira/queue.js';
 import { createJiraCompletionSource, readReviewItem } from '../sources/jira/completion.js';
 import { createJiraSource } from '../sources/jira/connector.js';
@@ -53,6 +55,7 @@ import { createHttpClient, resolveJiraToken } from '../sources/jira/http.js';
 import { acquireIntakeLock } from '../sources/receipts.js';
 import type { ReviewScanContext, ReviewSummary } from '../reviews/contract.js';
 import { ReviewError } from '../reviews/contract.js';
+import { createBaselineReviewer } from '../reviews/baseline.js';
 import { createGitHubReviewClient, resolveAppPrivateKey } from '../reviews/github.js';
 import { createReviewerTurn } from '../reviews/reviewer.js';
 import { scanReviews } from '../reviews/scan.js';
@@ -440,6 +443,31 @@ async function queueCommand(options: QueueCommandOptions, context: CliContext): 
       // (docs/spec.md §6).
       let cleanupConfirmed = true;
       try {
+        // The pre-delivery baseline diagnosis: one reviewer turn over the
+        // snapshot a red baseline ran against, recorded in Jira only. The queue
+        // carries the ticket it returns for repair through the same runner and
+        // ladder as any other repair (docs/WORKFLOW.md §11).
+        const baselineDiagnosis = createBaselineDiagnosis({
+          reviewer: createBaselineReviewer({
+            selection: reviewConfig.reviewer,
+            environment: reviewerEnvironment,
+            onActivity: (activity) => {
+              pane.activity(activity);
+            },
+            onTurnStart: (ticket) => {
+              pane.beginInvocation({ role: 'reviewer', ticket, phase: 'baseline diagnosis' });
+            },
+            onTurnEnd: () => {
+              pane.endInvocation();
+            },
+          }),
+          record: createJiraBaselineRecord(sourceConfig, jiraHttp),
+          readyStatus: sourceConfig.readyStatus,
+          reviewStatus: sourceConfig.reviewStatus,
+          workDir,
+          io: sourceIo,
+        });
+
         const intake: SourceContext = {
           source: connector,
           workDir,
@@ -450,6 +478,7 @@ async function queueCommand(options: QueueCommandOptions, context: CliContext): 
           stop: stop.signal,
           preflight: preflightSource,
           delivery,
+          baselineDiagnosis,
           run: ({
             task,
             sourceRef,

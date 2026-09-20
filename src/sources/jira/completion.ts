@@ -276,20 +276,20 @@ export async function postIssueComment(
 }
 
 /**
- * Moves one item to `target`, but only while it is really still in the review
- * status. `null` means a human (or another process) moved it first: that is
+ * Moves one item to `target`, but only while it is really still in `from`.
+ * `left-alone` means a human (or another process) moved it first: that is
  * respected, and no transition is sent.
  */
-export async function moveFromReview(
-  config: JiraSourceConfig,
+export async function moveFromStatus(
   http: HttpClient,
   id: string,
+  from: string,
   target: string,
   stop: AbortSignal,
   beforeWrite?: () => Promise<boolean>,
 ): Promise<'moved' | 'left-alone'> {
   const current = await readIssue(http, id, stop);
-  if (current === null || !sameName(current.fields.status, config.reviewStatus)) {
+  if (current === null || !sameName(current.fields.status, from)) {
     return 'left-alone';
   }
   const chosen = selectTransition(
@@ -300,14 +300,17 @@ export async function moveFromReview(
   const fresh = await readIssue(http, id, stop);
   if (
     fresh === null ||
-    !sameName(fresh.fields.status, config.reviewStatus) ||
+    !sameName(fresh.fields.status, from) ||
     (beforeWrite !== undefined && !(await beforeWrite()))
   )
     return 'left-alone';
   await postTransition(http, id, chosen.id, stop);
   const confirmed = await readIssue(http, id, stop);
   if (confirmed === null || !sameName(confirmed.fields.status, target))
-    throw new SourceError('uncertain-write', 'Jira did not confirm the completion status');
+    throw new SourceError(
+      'uncertain-write',
+      `Jira did not confirm the move from "${from}" to "${target}"`,
+    );
   return 'moved';
 }
 
@@ -393,6 +396,6 @@ export function createJiraCompletionSource(
     listComments: (id, stop) => listIssueNotes(http, id, stop, http.token),
     postComment: (id, paragraphs, stop) => postIssueComment(http, id, paragraphs, stop),
     moveTo: (id, target, stop, beforeWrite) =>
-      moveFromReview(config, http, id, target, stop, beforeWrite),
+      moveFromStatus(http, id, config.reviewStatus, target, stop, beforeWrite),
   };
 }
