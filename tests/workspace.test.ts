@@ -941,6 +941,39 @@ describe('a retained checkout that left its recorded branch', () => {
     ).toBe(prepared.baseCommit);
   });
 
+  it('refuses a return that did not really move the branch, reading its own result back', async () => {
+    const fixture = await createExactByteRepository();
+    const prepared = await prepareRun(fixture);
+    const revision = await leaveOnBranch(prepared, 'task/side');
+
+    // Git runs hooks after a merge, and a hook can leave the recorded branch
+    // wherever it likes while the command still exits 0. The return reads its
+    // own result back instead of trusting that exit code, so what it reports is
+    // the state that really exists rather than the one it asked for.
+    await writeFile(
+      path.join(prepared.workspacePath, '.git', 'hooks', 'post-merge'),
+      `#!/bin/sh\ngit update-ref refs/heads/${prepared.branch} ${prepared.baseCommit}\n`,
+      'utf8',
+    );
+
+    const failure = await refusalOf(() =>
+      returnToRecordedBranch(prepared.workspacePath, prepared.branch),
+    );
+
+    // The refusal names the branch and the revisions it really found, and it
+    // says nothing was reset or discarded.
+    expect(failure.message).toContain(`"${prepared.branch}"`);
+    expect(failure.message).toContain(prepared.baseCommit);
+    expect(failure.message).toContain(revision);
+    expect(failure.message).toMatch(/read back rather than assumed/);
+    expect(failure.message).toMatch(/Nothing was reset, force-updated, or discarded/);
+
+    // The commit the turn made is still on the branch it made it on.
+    expect(
+      (await gitOrFail(['rev-parse', 'refs/heads/task/side'], prepared.workspacePath)).trim(),
+    ).toBe(revision);
+  });
+
   it('leaves a checkout that is already on the recorded branch exactly as it is', async () => {
     const fixture = await createExactByteRepository();
     const prepared = await prepareRun(fixture);
