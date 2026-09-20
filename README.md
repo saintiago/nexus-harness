@@ -88,11 +88,12 @@ Configuration is **two files**, and each field has exactly one owner
 
 The two are **composed, not layered**: neither file may carry a field the other owns, no field is
 defaulted from one into the other, and what the two say about each other is refused rather than
-guessed — a review belongs to the repository its own project delivers to, the reviewer and the
-completion gate must name the same Nexus Lens App, login and check, and a completed item's outcomes
-must differ from the review status it started in. Every refusal names both paths and the field. The
-configuration shape this contract replaced is refused the same way: its project fields are reported
-as belonging to the project configuration.
+guessed — a review belongs to the repository its own project delivers to, so a harness configuration
+that declares the Nexus-wide reviewer can only be used with projects that declare their Jira
+connection and that destination; the reviewer and the completion gate must name the same Nexus Lens
+App, login and check; and a completed item's outcomes must differ from the review status it started
+in. Every refusal names both paths and the field. The configuration shape this contract replaced is
+refused the same way: its project fields are reported as belonging to the project configuration.
 
 `docs/nexus.config.example.json` is a credential-free Nexus-wide example,
 `docs/nexus.project.example.json` a credential-free project example, and this repository's own

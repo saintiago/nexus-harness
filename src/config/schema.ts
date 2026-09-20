@@ -320,7 +320,7 @@ const projectDeliverySchema = z.strictObject({
   completion: projectCompletionSchema.optional(),
 });
 
-/** Documented defaults of the optional GitHub `review` object. */
+/** Documented defaults of the Nexus-wide `reviewer` object. */
 export const REVIEW_DEFAULTS = {
   checkName: 'Nexus Lens review',
 } as const;
