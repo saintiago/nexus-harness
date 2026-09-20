@@ -179,6 +179,18 @@ export interface BaselineDiagnosisParts {
 export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): BaselineDiagnosis {
   const { reviewer, record, readyStatus, reviewStatus, workDir, io } = parts;
 
+  /**
+   * One outcome for a step that did not finish: a stop the caller asked for is
+   * reported as the cancellation it is, and everything else is the attention
+   * result whose evidence a person needs.
+   */
+  const unfinished = (
+    stop: AbortSignal,
+    detail: string,
+    commentId: string | null,
+  ): BaselineDiagnosisOutcome =>
+    stop.aborted ? { kind: 'cancelled', detail } : { kind: 'attention', detail, commentId };
+
   /** One status move, reported as the step it is rather than as a refusal. */
   const move = async (
     item: SourceTask,
@@ -200,17 +212,23 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
       const evidenceId = baselineEvidenceId(item.ref, workspace.baseCommit, baseline);
       const dir = path.join(workDir, 'baseline', evidenceId);
 
+      if (stop.aborted) {
+        return {
+          kind: 'cancelled',
+          detail: `${key}: the intake was stopped before its red baseline could be diagnosed`,
+        };
+      }
+
       let notes: readonly SourceNote[];
       try {
         notes = await record.listComments(item.ref.id, stop);
       } catch (cause) {
-        return {
-          kind: 'attention',
-          detail:
-            `${key}: its thread could not be read, so its red baseline was not diagnosed and the ` +
+        return unfinished(
+          stop,
+          `${key}: its thread could not be read, so its red baseline was not diagnosed and the ` +
             `item was not moved: ${messageOf(cause)}`,
-          commentId: null,
-        };
+          null,
+        );
       }
 
       // The thread is the deduplication record: evidence that already carries a
@@ -221,13 +239,12 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
         const target = existing.kind === 'repair' ? readyStatus : reviewStatus;
         const moved = await move(item, target, stop);
         if ('problem' in moved) {
-          return {
-            kind: 'attention',
-            detail:
-              `${key}: its baseline finding is already on the issue (comment ` +
+          return unfinished(
+            stop,
+            `${key}: its baseline finding is already on the issue (comment ` +
               `${existing.note.id}), but moving it to "${target}" failed: ${moved.problem}`,
-            commentId: existing.note.id,
-          };
+            existing.note.id,
+          );
         }
         const detail =
           `${key}: this exact baseline evidence was already diagnosed (comment ` +
@@ -294,25 +311,23 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
       try {
         commentId = await record.postComment(item.ref.id, paragraphs, stop);
       } catch (cause) {
-        return {
-          kind: 'attention',
-          detail:
-            `${key}: the diagnosis could not be confirmed on the issue, so nothing was moved and ` +
+        return unfinished(
+          stop,
+          `${key}: the diagnosis could not be confirmed on the issue, so nothing was moved and ` +
             `the red baseline still needs a person: ${messageOf(cause)}`,
-          commentId: null,
-        };
+          null,
+        );
       }
 
       const target = finding.outcome === 'repair' ? readyStatus : reviewStatus;
       const moved = await move(item, target, stop);
       if ('problem' in moved) {
-        return {
-          kind: 'attention',
-          detail:
-            `${key}: the diagnosis is on the issue (comment ${commentId}) but moving it to ` +
+        return unfinished(
+          stop,
+          `${key}: the diagnosis is on the issue (comment ${commentId}) but moving it to ` +
             `"${target}" failed: ${moved.problem}`,
           commentId,
-        };
+        );
       }
 
       const where = moved.moved
