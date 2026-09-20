@@ -10,7 +10,7 @@
  * tests check rather than a claim the code makes.
  */
 
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createGitHubCompletion } from '../src/delivery/completion.js';
@@ -348,6 +348,12 @@ interface FixtureOptions {
    * no longer holds it, and the pull request read reports the merge.
    */
   readonly merged?: boolean;
+  /**
+   * Whether the pass starts with the per-issue evidence directory already
+   * there. `false` is how production begins: no `completion-logs` directory at
+   * all, so the pass itself has to create it before its first GitHub command.
+   */
+  readonly evidenceDir?: boolean;
   readonly reviews?: readonly Record<string, unknown>[];
   readonly checks?: readonly Record<string, unknown>[];
   readonly runs?: readonly Record<string, unknown>[];
@@ -358,7 +364,15 @@ async function createFixture(options: FixtureOptions = {}): Promise<Fixture> {
   const parent = await createTempDir();
   const workDir = path.join(parent, 'harness');
   const logsDir = path.join(workDir, 'completion-logs', ISSUE_ID);
-  await mkdir(logsDir, { recursive: true });
+  if (options.evidenceDir === false) {
+    if (options.merged === true)
+      throw new Error(
+        'a merged fixture seeds the admission a restart resumes from, so it needs its ' +
+          'evidence directory to be created first',
+      );
+  } else {
+    await mkdir(logsDir, { recursive: true });
+  }
   await mkdir(path.join(workDir, 'workspaces', WORKSPACE_ID), { recursive: true });
 
   const gh = await installFakeGhCompletion(parent);
@@ -605,6 +619,60 @@ describe('review-to-completion', () => {
     expect(
       await readFile(path.join(fixture.logsDir, 'completion-armed-head.json'), 'utf8'),
     ).toContain(HEAD);
+  });
+
+  it('creates the per-issue evidence directory before its first GitHub command', async () => {
+    // The production start: nothing has created `completion-logs` yet, and the
+    // first GitHub read is what has to write its output there.
+    const fixture = await createFixture({ evidenceDir: false });
+
+    const outcome = only(
+      await runPass(fixture, {
+        clockStepMs: 1_000,
+        onSleep: async () => {
+          await writeFile(
+            fixture.gh.pullRequestsFile,
+            `${JSON.stringify(mergedPullRequest())}\n`,
+            'utf8',
+          );
+        },
+      }),
+    );
+
+    expect(outcome.status, outcome.detail).toBe('done');
+    expect(fixture.jira.status).toBe('Done');
+    // The directory the pass needed did not exist when it started, and every
+    // command it ran wrote its own output into the one it created.
+    const entries = await readdir(fixture.logsDir);
+    const outputs = entries.filter((name) => name.endsWith('.stdout.log'));
+    expect(outputs.length).toBeGreaterThan(0);
+    const written = (
+      await Promise.all(outputs.map((name) => readFile(path.join(fixture.logsDir, name), 'utf8')))
+    ).join('\n');
+    expect(written).toContain('"number":29');
+    expect(entries).toContain('completion-armed-head.json');
+  });
+
+  it('stops for a person and names the location when its evidence directory cannot be created', async () => {
+    const fixture = await createFixture({ evidenceDir: false });
+    // A file where the per-issue directory belongs: creating the evidence
+    // directory fails the way a path or permission problem would, before any
+    // GitHub command has a log directory to write into.
+    await writeFile(path.join(fixture.workDir, 'completion-logs'), 'not a directory\n', 'utf8');
+
+    const outcome = only(await runPass(fixture));
+
+    expect(outcome.status, outcome.detail).toBe('attention');
+    expect(outcome.detail).toContain(fixture.logsDir);
+    expect(outcome.detail).toContain('could not be created');
+    expect(outcome.detail).toContain('auto-merge was not armed');
+    for (const credential of [OPERATOR_TOKEN, REVIEWER_TOKEN, JIRA_TOKEN])
+      expect(outcome.detail).not.toContain(credential);
+    // Nothing was read from GitHub, nothing was armed, and Jira was not touched.
+    expect(await fakeCompletionCalls(fixture.gh)).toEqual([]);
+    expect(commentTexts(fixture)).toEqual([]);
+    expect(transitions(fixture)).toEqual([]);
+    expect(fixture.jira.status).toBe('In Review');
   });
 
   it('bounds pending required pull request checks with an attention comment', async () => {

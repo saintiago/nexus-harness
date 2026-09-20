@@ -9,7 +9,7 @@
  * answers the queue's search with an empty page.
  */
 import { generateKeyPairSync } from 'node:crypto';
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -77,6 +77,28 @@ function queueConfig(workDir: string): Record<string, unknown> {
       checkName: 'Nexus Lens review',
     },
   };
+}
+
+/**
+ * The same configuration with one Nexus Lens identity on both sides, which the
+ * loader requires when the queue composes the review scan and the completion
+ * gate for the pull request it delivered.
+ */
+function lensQueueConfig(workDir: string): Record<string, unknown> {
+  const config = queueConfig(workDir);
+  const review = config['review'] as Record<string, unknown>;
+  const app = review['app'] as Record<string, unknown>;
+  app['appId'] = 123;
+  app['login'] = 'nexus-lens';
+  review['checkName'] = 'Nexus Lens';
+  const completion = (config['delivery'] as Record<string, unknown>)['completion'] as Record<
+    string,
+    unknown
+  >;
+  completion['lensAppId'] = 123;
+  completion['lensApp'] = 'nexus-lens';
+  completion['lensCheckName'] = 'Nexus Lens';
+  return config;
 }
 
 interface CliFixture {
@@ -231,24 +253,7 @@ describe('the queue command line', () => {
   );
 
   it('resumes an admitted merged In Review ticket, then a restart after Done has no completion effects', async () => {
-    const fixture = await cliFixture({
-      config: (workDir) => {
-        const config = queueConfig(workDir);
-        const review = config['review'] as Record<string, unknown>;
-        const app = review['app'] as Record<string, unknown>;
-        app['appId'] = 123;
-        app['login'] = 'nexus-lens';
-        review['checkName'] = 'Nexus Lens';
-        const completion = (config['delivery'] as Record<string, unknown>)['completion'] as Record<
-          string,
-          unknown
-        >;
-        completion['lensAppId'] = 123;
-        completion['lensApp'] = 'nexus-lens';
-        completion['lensCheckName'] = 'Nexus Lens';
-        return config;
-      },
-    });
+    const fixture = await cliFixture({ config: lensQueueConfig });
     // Queue mode must not depend on a pre-minted, expiring environment token.
     delete process.env['NEXUS_LENS_TOKEN'];
     const root = path.dirname(fixture.configPath);
@@ -416,6 +421,180 @@ describe('the queue command line', () => {
     expect(comments).toHaveLength(1);
     expect(moves).toBe(1);
     expect(tokens).toBe(1);
+  }, 30_000);
+
+  it('creates the missing completion evidence directory and resolves the ticket it resumes', async () => {
+    const fixture = await cliFixture({ config: lensQueueConfig });
+    // Queue mode must not depend on a pre-minted, expiring environment token.
+    delete process.env['NEXUS_LENS_TOKEN'];
+    const root = path.dirname(fixture.configPath);
+    const workDir = path.join(root, 'out');
+    const workspace = 'run-20260101000000-abcdef01';
+    const head = 'a'.repeat(40);
+    const merge = git(fixture.repo, 'rev-parse', 'HEAD').trim();
+    const remote = path.join(root, 'remote.git');
+    git(root, 'clone', '--bare', fixture.repo, remote);
+    git(fixture.repo, 'remote', 'add', 'origin', remote);
+    mkdirSync(path.join(workDir, 'workspaces', workspace), { recursive: true });
+    // The production restart: an approved In Review ticket whose completion
+    // pass never wrote anything, so `completion-logs` does not exist at all.
+    const logs = path.join(workDir, 'completion-logs', '7');
+    expect(existsSync(path.join(workDir, 'completion-logs'))).toBe(false);
+    const gh = await installFakeGhCompletion(root);
+    const prUrl = 'https://github.com/saintiago/nexus-harness/pull/29';
+    await writeFile(
+      gh.pullRequestsFile,
+      JSON.stringify({
+        number: 29,
+        url: prUrl,
+        repo: 'saintiago/nexus-harness',
+        state: 'OPEN',
+        isDraft: false,
+        headRefName: `harness/${workspace}`,
+        baseRefName: 'main',
+        headRefOid: head,
+        mergeCommit: null,
+      }) + '\n',
+    );
+    await writeFile(
+      gh.reviewsFile,
+      JSON.stringify([
+        {
+          id: 555,
+          url: `${prUrl}#pullrequestreview-555`,
+          author: { login: 'nexus-lens' },
+          state: 'APPROVED',
+          body: 'Approved',
+          commitId: head,
+        },
+      ]),
+    );
+    await writeFile(
+      gh.checksFile,
+      JSON.stringify([
+        { name: 'Nexus Lens', state: 'SUCCESS', conclusion: 'SUCCESS', link: prUrl },
+      ]),
+    );
+    await writeFile(
+      gh.runsFile,
+      JSON.stringify({
+        databaseId: 4242,
+        workflowId: 17,
+        name: 'CI',
+        path: '.github/workflows/ci.yml',
+        event: 'push',
+        status: 'completed',
+        conclusion: 'success',
+        headSha: merge,
+        headBranch: 'main',
+        url: 'https://github.com/saintiago/nexus-harness/actions/runs/4242',
+      }) + '\n',
+    );
+    let status = 'In Review';
+    const comments: unknown[] = [];
+    let moves = 0;
+    const context: CliContext = {
+      ...fixture.context,
+      completionParts: {
+        command: gh.command,
+        env: {
+          ...process.env,
+          GH_TOKEN: 'operator-token',
+          // GitHub performs the merge itself once the harness armed auto-merge.
+          FAKE_GH: JSON.stringify({
+            stateDir: gh.dir,
+            token: 'operator-token',
+            mergeOnArm: merge,
+          }),
+        },
+      },
+      refreshParts: { fetchUrl: remote },
+      fetch: async (input, init) => {
+        const url = new URL(String(input));
+        const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {};
+        const json = (data: unknown) => new Response(JSON.stringify(data));
+        if (url.hostname === 'api.github.com') {
+          if (url.pathname.endsWith('/access_tokens')) {
+            expect(body).toEqual({
+              repositories: ['nexus-harness'],
+              permissions: {
+                pull_requests: 'write',
+                checks: 'write',
+                contents: 'read',
+                statuses: 'read',
+                metadata: 'read',
+              },
+            });
+            return json({ token: 'fresh-app-token', expires_at: '2099-01-01T00:00:00Z' });
+          }
+          expect(url.pathname).toBe('/repos/saintiago/nexus-harness/pulls');
+          return json([]); // No reviewer turn may run in this queue test.
+        }
+        const issue = {
+          id: '7',
+          key: 'SAM1-7',
+          fields: {
+            summary: 'Delivered ticket',
+            status: { name: status },
+            labels: ['harness-task', `harness-ws-${workspace}`],
+            project: { key: 'SAM1' },
+            issuetype: { name: 'Task' },
+            updated: '2026-09-20T00:00:00Z',
+          },
+        };
+        if (url.pathname.endsWith('/search/jql')) {
+          return json({
+            issues: String(body['jql']).includes(`status = "${status}"`) ? [issue] : [],
+            isLast: true,
+          });
+        }
+        if (url.pathname.endsWith('/changelog')) return json({ values: [], isLast: true });
+        if (url.pathname.endsWith('/comment')) {
+          if (init?.method === 'POST') {
+            const comment = {
+              id: String(comments.length + 1),
+              body: body['body'],
+              created: '2026-09-20T12:00:00Z',
+            };
+            comments.push(comment);
+            return json(comment);
+          }
+          return json({ comments, total: comments.length });
+        }
+        if (url.pathname.endsWith('/transitions')) {
+          if (init?.method === 'POST') {
+            expect(body).toEqual({ transition: { id: 'done' } });
+            moves += 1;
+            status = 'Done';
+            return new Response(null, { status: 204 });
+          }
+          return json({ transitions: [{ id: 'done', name: 'Done', to: { name: 'Done' } }] });
+        }
+        expect(url.pathname).toContain('/issue/7');
+        return json(issue);
+      },
+    };
+    const args = ['queue', 'run', '--config', fixture.configPath, '--repo', fixture.repo];
+
+    expect(await runCli(args, context), output(fixture)).toBe(EXIT_OK);
+
+    expect(status).toBe('Done');
+    expect(comments).toHaveLength(1);
+    expect(moves).toBe(1);
+    expect(fixture.turns()).toBe(0);
+    const calls = await fakeCompletionCalls(gh);
+    // The one write is the operator's auto-merge request; every read the pass
+    // made used the App installation token.
+    expect(calls.filter((call) => call.op === 'merge')).toHaveLength(1);
+    expect(calls.find((call) => call.op === 'merge')?.credential).toBe('operator-token');
+    expect(
+      calls
+        .filter((call) => call.op !== 'merge')
+        .every((call) => call.credential === 'fresh-app-token'),
+    ).toBe(true);
+    // The directory that was missing now holds the pass's own evidence.
+    expect(existsSync(path.join(logs, 'completion-armed-head.json'))).toBe(true);
+    expect(readdirSync(logs).some((name) => name.endsWith('.stdout.log'))).toBe(true);
   }, 30_000);
 
   it('requires one of its two subcommands', async () => {
