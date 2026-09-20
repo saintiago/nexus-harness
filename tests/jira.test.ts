@@ -52,6 +52,7 @@ function jiraConfig(overrides: Partial<JiraSourceConfig> = {}): JiraSourceConfig
     readyStatus: 'To Do',
     runningStatus: 'In Progress',
     reviewStatus: 'In Review',
+    ordering: 'priority',
     pollIntervalSeconds: 30,
     tokenEnv: 'JIRA_API_TOKEN',
     ...overrides,
@@ -154,6 +155,13 @@ function issue(
     projectKey?: string;
     issueType?: string;
     updated?: string;
+    /**
+     * The site's own Priority and creation time. The connector neither requests
+     * nor reads them; a test carries them so that it can show a rank-mode answer
+     * is never re-sorted by what they would suggest.
+     */
+    priority?: string;
+    created?: string;
   } = {},
 ): Record<string, unknown> {
   const description =
@@ -170,6 +178,8 @@ function issue(
       project: { key: overrides.projectKey ?? 'SAM1' },
       issuetype: { name: overrides.issueType ?? 'Task' },
       updated: overrides.updated ?? '2026-09-16T11:00:00.000Z',
+      ...(overrides.priority === undefined ? {} : { priority: { name: overrides.priority } }),
+      ...(overrides.created === undefined ? {} : { created: overrides.created }),
     },
   };
 }
@@ -252,9 +262,17 @@ describe('the Jira source configuration', () => {
       readyStatus: 'To Do',
       runningStatus: 'In Progress',
       reviewStatus: 'In Review',
+      ordering: 'priority',
       pollIntervalSeconds: 30,
       tokenEnv: 'JIRA_API_TOKEN',
     });
+  });
+
+  it('accepts exactly the two documented ordering values', async () => {
+    expect((await loadSource({ ...minimalSource, ordering: 'priority' })).ordering).toBe(
+      'priority',
+    );
+    expect((await loadSource({ ...minimalSource, ordering: 'rank' })).ordering).toBe('rank');
   });
 
   it('does not give a configuration that names no source one', async () => {
@@ -302,6 +320,11 @@ describe('the Jira source configuration', () => {
       { ...minimalSource, tokenEnv: 'jira-token' },
       /tokenEnv/,
     ],
+    ['an unknown ordering value', { ...minimalSource, ordering: 'board' }, /ordering/],
+    ['an ordering of null', { ...minimalSource, ordering: null }, /ordering/],
+    ['a numeric ordering', { ...minimalSource, ordering: 1 }, /ordering/],
+    ['a boolean ordering', { ...minimalSource, ordering: true }, /ordering/],
+    ['a differently cased ordering', { ...minimalSource, ordering: 'PRIORITY' }, /ordering/],
     ['a token in the configuration', { ...minimalSource, token: 'secret' }, /token/],
   ];
 
@@ -399,6 +422,141 @@ describe('the gateway route and the queue', () => {
       'SAM1-11',
       'SAM1-12',
     ]);
+  });
+
+  it('asks for Rank, and keeps the answer order, when the configuration selects it', async () => {
+    // HARN-20: the board's native Rank is the primary order, so the answer below
+    // — which would sort another way by Priority (Lowest before Highest), by
+    // creation (newest first), and by key (13 before 11) — is taken exactly as
+    // Jira sent it. No Rank value is read back and nothing is re-sorted here.
+    const pages = [
+      {
+        issues: [
+          issue({
+            id: '10013',
+            key: 'SAM1-13',
+            priority: 'Lowest',
+            created: '2026-09-19T09:00:00.000Z',
+          }),
+          issue({
+            id: '10012',
+            key: 'SAM1-12',
+            priority: 'Low',
+            created: '2026-09-18T09:00:00.000Z',
+          }),
+        ],
+        isLast: false,
+        nextPageToken: 'page-2',
+      },
+      {
+        issues: [
+          issue({
+            id: '10011',
+            key: 'SAM1-11',
+            priority: 'Highest',
+            created: '2026-09-17T09:00:00.000Z',
+          }),
+        ],
+        isLast: true,
+      },
+    ];
+    const http = fakeHttp((_call, index) => json(pages[index] ?? { issues: [], isLast: true }));
+    const rank = jiraConfig({ ordering: 'rank' });
+    const source = createJiraSource(rank, TOKEN, { fetch: http.fetch });
+
+    const candidates = await source.listEligible(new AbortController().signal);
+
+    expect(queueJql(rank)).toBe(
+      'project = "SAM1" AND issuetype = "Task" AND labels = "harness-task" AND ' +
+        'status = "To Do" ORDER BY Rank ASC, created ASC, key ASC',
+    );
+    // Every page asked for the same rank order, and the page boundary did not
+    // re-sort the batch: the tie-breakers stay Jira's, applied after Rank.
+    expect(http.calls.map((call) => (call.body as { jql: string }).jql)).toEqual([
+      queueJql(rank),
+      queueJql(rank),
+    ]);
+    expect(
+      http.calls.map((call) => (call.body as { nextPageToken?: string }).nextPageToken),
+    ).toEqual([undefined, 'page-2']);
+    expect(candidates.map((candidate) => candidate.ref.key)).toEqual([
+      'SAM1-13',
+      'SAM1-12',
+      'SAM1-11',
+    ]);
+  });
+
+  it('reads the ordering mode at each fresh scan and never re-sorts a batch already received', async () => {
+    // The mode is a configuration choice, not a property of a batch. A scan made
+    // under Priority and the next one made under Rank ask Jira for different
+    // orders and each keeps the answer it got; the change affects the next fresh
+    // scan, and the batch already returned is untouched (HARN-20).
+    // The same two ready issues: Priority puts the Highest first, and the board
+    // order puts the Lowest first — so neither answer can be the other re-sorted.
+    const highest = issue({
+      id: '10012',
+      key: 'SAM1-12',
+      priority: 'Highest',
+      created: '2026-09-19T09:00:00.000Z',
+    });
+    const lowest = issue({
+      id: '10011',
+      key: 'SAM1-11',
+      priority: 'Lowest',
+      created: '2026-09-17T09:00:00.000Z',
+    });
+    const http = fakeHttp((_call, index) =>
+      json({ issues: index === 0 ? [highest, lowest] : [lowest, highest], isLast: true }),
+    );
+
+    const underPriority = createJiraSource(jiraConfig(), TOKEN, { fetch: http.fetch });
+    const batch = await underPriority.listEligible(new AbortController().signal);
+    const underRank = createJiraSource(jiraConfig({ ordering: 'rank' }), TOKEN, {
+      fetch: http.fetch,
+    });
+    const nextBatch = await underRank.listEligible(new AbortController().signal);
+
+    expect((http.calls[0]?.body as { jql: string }).jql).toContain(
+      'ORDER BY priority DESC, created ASC, key ASC',
+    );
+    expect((http.calls[1]?.body as { jql: string }).jql).toContain(
+      'ORDER BY Rank ASC, created ASC, key ASC',
+    );
+    expect(batch.map((candidate) => candidate.ref.key)).toEqual(['SAM1-12', 'SAM1-11']);
+    expect(nextBatch.map((candidate) => candidate.ref.key)).toEqual(['SAM1-11', 'SAM1-12']);
+  });
+
+  it('returns Jira’s own refusal of Rank JQL, claims nothing, and never falls back', async () => {
+    // A site that refuses Rank ordering — the field is unavailable or the
+    // service account may not view it — is a real failure. The bounded answer
+    // Jira gave is reported, no second search asks for Priority instead, and no
+    // issue is read, claimed, commented on, or transitioned.
+    const http = fakeHttp(() =>
+      json(
+        { errorMessages: ['Field Rank does not exist or you do not have permission to view it'] },
+        400,
+      ),
+    );
+    const source = createJiraSource(jiraConfig({ ordering: 'rank' }), TOKEN, {
+      fetch: http.fetch,
+    });
+
+    let thrown: unknown;
+    try {
+      await source.listEligible(new AbortController().signal);
+    } catch (cause) {
+      thrown = cause;
+    }
+
+    expect(thrown).toBeInstanceOf(SourceError);
+    const error = thrown as SourceError;
+    expect(error.kind).toBe('fatal');
+    expect(error.message).toContain('HTTP 400');
+    expect(error.message).toContain('Field Rank does not exist');
+    expect(http.calls).toHaveLength(1);
+    expect(http.calls[0]?.method).toBe('POST');
+    expect(http.calls[0]?.url).toBe(`${GATEWAY}/rest/api/3/search/jql`);
+    expect((http.calls[0]?.body as { jql: string }).jql).toContain('ORDER BY Rank ASC');
   });
 
   it('lists eligible issues with a Bearer token and the documented search call', async () => {

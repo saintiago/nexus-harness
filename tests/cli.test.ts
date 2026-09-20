@@ -441,6 +441,30 @@ describe('check-config', () => {
     expect(result.code).toBe(EXIT_OK);
     expect(result.out).toContain('example.atlassian.net');
     expect(result.out).toContain('NEXUS_CHECK_CONFIG_MUST_NOT_RESOLVE_THIS');
+    // The documented default: Jira's own Priority field orders the queue.
+    expect(result.out).toContain('source ordering');
+    expect(result.out).toContain('priority: Jira priority DESC');
+  });
+
+  it('prints the configured intake order without contacting Jira', async () => {
+    const { configPath } = await writeInputs({
+      ...documentedConfig,
+      source: {
+        type: 'jira',
+        siteUrl: 'https://example.atlassian.net',
+        cloudId: '9337c4da-7d33-4c1d-b03c-db207e537f88',
+        projectKey: 'SAM1',
+        tokenEnv: 'NEXUS_CHECK_CONFIG_MUST_NOT_RESOLVE_THIS',
+        ordering: 'rank',
+      },
+    });
+
+    const result = await run(['check-config', '--config', configPath]);
+
+    expect(result.err).toBe('');
+    expect(result.code).toBe(EXIT_OK);
+    expect(result.out).toContain('source ordering');
+    expect(result.out).toContain('rank: Jira Rank ASC');
   });
 
   it('prints the delivery selection without contacting GitHub', async () => {
