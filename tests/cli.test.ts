@@ -441,6 +441,73 @@ describe('help', () => {
     expect(signals.registered).toBe(0);
     expect([process.listenerCount('SIGINT'), process.listenerCount('SIGTERM')]).toEqual(before);
   });
+
+  it('composes two different projects with the same harness configuration', async () => {
+    const directory = await createTempDir();
+    const configPath = await writeJsonFile(directory, HARNESS_CONFIG_FILE_NAME, {
+      ...documentedHarnessConfig,
+      workDir: './.harness',
+    });
+    // One project per queue, each carrying its own repository and its own
+    // commands, and sharing the one Nexus-wide file beside them.
+    const first = await writeJsonFile(path.join(directory, 'first'), PROJECT_CONFIG_FILE_NAME, {
+      setup: [],
+      checks: [['node', '--version']],
+      source: {
+        type: 'jira',
+        siteUrl: 'https://example.atlassian.net',
+        cloudId: '9337c4da-7d33-4c1d-b03c-db207e537f88',
+        projectKey: 'SAM1',
+      },
+      delivery: {
+        type: 'github',
+        repository: 'example-owner/first-project',
+        baseBranch: 'main',
+      },
+    });
+    const second = await writeJsonFile(path.join(directory, 'second'), PROJECT_CONFIG_FILE_NAME, {
+      setup: [],
+      checks: [
+        ['npm', 'run', 'lint'],
+        ['npm', 'test'],
+      ],
+      source: {
+        type: 'jira',
+        siteUrl: 'https://example.atlassian.net',
+        cloudId: '9337c4da-7d33-4c1d-b03c-db207e537f88',
+        projectKey: 'HARN',
+      },
+      delivery: {
+        type: 'github',
+        repository: 'example-owner/second-project',
+        baseBranch: 'main',
+      },
+    });
+
+    const firstRun = await run(
+      checkConfigArgv({ config: configPath, project: path.dirname(first) }),
+    );
+    const secondRun = await run(
+      checkConfigArgv({ config: configPath, project: path.dirname(second) }),
+    );
+
+    expect(firstRun.code).toBe(EXIT_OK);
+    expect(secondRun.code).toBe(EXIT_OK);
+    // Each project's own queue, repository, and commands, composed with the one
+    // harness configuration's own values.
+    expect(firstRun.out).toContain('project SAM1');
+    expect(firstRun.out).toContain('github example-owner/first-project -> main');
+    expect(firstRun.out).toContain('checks                 1 command');
+    expect(secondRun.out).toContain('project HARN');
+    expect(secondRun.out).toContain('github example-owner/second-project -> main');
+    expect(secondRun.out).toContain('checks                 2 commands');
+    for (const printed of [firstRun.out, secondRun.out]) {
+      expect(printed).toContain(
+        `maxRepairs             ${String(documentedHarnessConfig.maxRepairs)}`,
+      );
+      expect(printed).toContain(path.join(directory, '.harness'));
+    }
+  });
 });
 
 describe('check-config', () => {

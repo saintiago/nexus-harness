@@ -293,17 +293,6 @@ function resolveHarnessFile(
 }
 
 /**
- * The composed configuration alone, for a command that does not print what each
- * file declared.
- */
-export async function loadEffectiveConfig(
-  harnessPath: string,
-  projectPath: string,
-): Promise<HarnessConfig> {
-  return (await loadConfiguration(harnessPath, projectPath)).config;
-}
-
-/**
  * The two files meet here and nowhere else: harness-wide fields come from the
  * harness configuration, project fields from the project configuration, and the
  * objects that need both sides — a review, and one project's completion — are
