@@ -445,7 +445,10 @@ carries the pull request URL. The destination's `gh` has to be authenticated for
 write there (`gh auth status`, and `gh auth setup-git` so Git can use those credentials); the
 harness stores no GitHub credential and never runs a login flow. A working copy that still holds
 uncommitted files is **refused**, not committed for you, and a branch with no commit beyond the
-workspace's base has nothing to publish. The pull request is found by repository, head branch, and
+workspace's base has nothing to publish. A working copy left checked out at another revision than
+its recorded branch is **refused** as well: what would be pushed is the recorded branch, and what
+the checks validated is the revision the copy is at, so nothing is switched or adopted and the
+failure names both revisions. The pull request is found by repository, head branch, and
 base branch — the one open match is updated, a closed or merged one is refused instead of edited,
 and one is created only when no match exists at all. Later committed work updates the same branch
 and the same pull request, because a continued attempt reuses the workspace and its branch. The

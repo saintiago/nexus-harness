@@ -16,6 +16,10 @@
  *
  * - A working copy that still holds uncommitted work is refused, not delivered:
  *   the harness never commits, stashes, or discards a coding turn's leftovers.
+ * - The revision that would be published is the recorded branch's own tip, and
+ *   it has to be the revision the working copy is checked out at: the checks
+ *   validated that working copy, so a checkout that was left on another branch
+ *   is refused instead of publishing the recorded branch as it stands.
  * - A branch with no commit beyond its recorded base is not delivered either;
  *   there is nothing to publish, and that is said rather than guessed at.
  * - Every command is bounded and its output is kept in the run's own log
@@ -343,6 +347,47 @@ export function createGitHubDelivery(
             'or update the pull request by hand with git and gh (docs/WORKFLOW.md §8); the ' +
             "harness never commits or discards a coding turn's leftovers itself, and it starts " +
             'no coding turn to repair a delivery failure.',
+        );
+      }
+
+      // What would be published is the recorded branch's own tip; what the
+      // checks that passed decided is the working copy as it is checked out. A
+      // coding turn may commit on any branch it likes, so the two are read from
+      // Git here rather than assumed to be the same: a checkout left on another
+      // branch must not publish the older revision that shares the recorded
+      // branch's name (HARN-17).
+      const headRead = await execute(
+        request,
+        'delivery-git-head',
+        'git rev-parse --verify HEAD',
+        ['git', 'rev-parse', '--verify', 'HEAD'],
+        stop,
+        gitHint,
+      );
+      const branchRead = await execute(
+        request,
+        'delivery-git-branch',
+        `git rev-parse --verify refs/heads/${request.branch}`,
+        ['git', 'rev-parse', '--verify', `refs/heads/${request.branch}`],
+        stop,
+        gitHint,
+      );
+      const validatedCommit = (await stdoutOf(headRead)).trim();
+      const publishedCommit = (await stdoutOf(branchRead)).trim();
+      if (validatedCommit !== publishedCommit) {
+        throw new DeliveryError(
+          `the retained workspace ${request.workspacePath} is checked out at ${validatedCommit}, ` +
+            `but the branch this step would publish, ${request.branch}, is at ${publishedCommit}. ` +
+            'The checks that decided this run ran on the working copy, so pushing that branch ' +
+            'would publish a revision they never validated. Nothing was pushed and no pull ' +
+            'request was created or updated, and every commit and branch in the retained ' +
+            'workspace is untouched. The harness never switches or adopts a branch, never commits ' +
+            "on a turn's behalf, and never force-pushes: reconcile the recorded branch with " +
+            `the validated revision by hand in the retained workspace (for example, check out ` +
+            `${request.branch} and fast-forward it to ${validatedCommit} when that is the work to ` +
+            'publish), then push the branch and create or update the pull request with git and gh ' +
+            `(docs/WORKFLOW.md §8). The run's report (${request.reportPath}) and logs are ` +
+            'unchanged.',
         );
       }
 

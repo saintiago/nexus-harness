@@ -340,6 +340,62 @@ describe('the GitHub delivery step', () => {
     expect(await fakeGhCalls(fixture.gh)).toEqual([]);
   });
 
+  it('refuses to publish a recorded branch left behind the revision that passed', async () => {
+    const fixture = await createFixture();
+    // The turn's later work landed on a branch of its own, and the recorded
+    // branch stayed where the earlier commit was: what the checks decided is
+    // the checked-out revision, not the older branch this step would push.
+    git(fixture.workspace, 'checkout', '--quiet', '-b', 'task/harn-17-work');
+    await writeFile(
+      path.join(fixture.workspace, 'src', 'greet-all.mjs'),
+      'export const greetAll = 2;\n',
+      'utf8',
+    );
+    git(fixture.workspace, 'commit', '--quiet', '--all', '--message', 'extend greetAll');
+    const validated = git(fixture.workspace, 'rev-parse', 'HEAD').trim();
+    const recordedCommit = git(fixture.workspace, 'rev-parse', `refs/heads/${BRANCH}`).trim();
+    expect(recordedCommit).not.toBe(validated);
+
+    const failure = await withFakeGhOnPath(fixture.bin, async () =>
+      refusal(
+        async () =>
+          await fixture.delivery.deliver(requestFor(fixture), new AbortController().signal),
+      ),
+    );
+
+    expect(failure).toBeInstanceOf(DeliveryError);
+    // The failure names both revisions and the branch it refused to publish.
+    expect(failure.message).toContain(validated);
+    expect(failure.message).toContain(recordedCommit);
+    expect(failure.message).toContain(BRANCH);
+    expect(failure.message).toContain('never force-pushes');
+    // Nothing was pushed and nothing was asked of GitHub.
+    expect(destinationHasBranch(fixture)).toBe(false);
+    expect(await fakeGhCalls(fixture.gh)).toEqual([]);
+    // Every commit and branch is still where the turn left it, with a clean tree.
+    expect(git(fixture.workspace, 'rev-parse', 'refs/heads/task/harn-17-work').trim()).toBe(
+      validated,
+    );
+    expect(git(fixture.workspace, 'rev-parse', `refs/heads/${BRANCH}`).trim()).toBe(recordedCommit);
+    expect(git(fixture.workspace, 'status', '--porcelain').trim()).toBe('');
+  });
+
+  it('delivers when the checkout is on another branch at the same revision', async () => {
+    const fixture = await createFixture();
+    const validated = git(fixture.workspace, 'rev-parse', 'HEAD').trim();
+    // An ordinary local branch is not itself a reason to refuse: the revision
+    // that would be published is still the one the checks validated.
+    git(fixture.workspace, 'checkout', '--quiet', '-b', 'task/harn-17-work');
+
+    const delivered = await withFakeGhOnPath(
+      fixture.bin,
+      async () => await fixture.delivery.deliver(requestFor(fixture), new AbortController().signal),
+    );
+
+    expect(delivered).toEqual({ url: `https://github.com/${REPOSITORY}/pull/1`, created: true });
+    expect(destinationCommit(fixture)).toBe(validated);
+  });
+
   it('fails with what gh said, keeping its output beside the run', async () => {
     const fixture = await createFixture({ fail: 'create' });
 
