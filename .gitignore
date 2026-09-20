@@ -13,7 +13,13 @@ coverage/
 
 # Local operator configuration. It sits in the repository because the harness is
 # invoked from here, so it must be ignored: an untracked file would make this
-# checkout dirty for a run that targets the harness itself.
+# checkout dirty for a run that targets the harness itself. The connected
+# project's own configuration, nexus.project.json, is committed instead.
+nexus.config.json
+
+# The retired single-file configuration. Kept ignored so a leftover copy does not
+# make this checkout dirty while it is migrated by hand to nexus.config.json plus
+# the project configuration (README, "Migrating this installation").
 harness.jira.config.json
 
 # Local secrets and environment

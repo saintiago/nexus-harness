@@ -1,16 +1,22 @@
 /**
- * `check-config`: read and validate a configuration file, and a task file when
- * one is given, and print what it validated.
+ * `check-config`: read and validate the Nexus-wide harness configuration, the
+ * connected project's configuration, and a task file when one is given, and
+ * print the composed effective configuration they make.
  *
  * It is static: it creates nothing, runs nothing, contacts nothing, and resolves
- * no credential.
+ * no credential. What it validates is the composition the commands run on, so a
+ * project field in the wrong file, a project that cannot supply what the
+ * Nexus-wide reviewer needs, and every other mismatch is reported here first.
  */
 import path from 'node:path';
-import { ConfigError, loadHarnessConfig, loadTask, resolveWorkDir } from '../config/load.js';
+import { ConfigError, loadConfiguration, loadTask, resolveWorkDir } from '../config/load.js';
+import { projectConfigFile } from '../config/paths.js';
+import type { HarnessFileConfig } from '../config/schema.js';
 import type { Command, HarnessConfig, JiraOrdering, Task } from '../shared/types.js';
 import { EXIT_INPUT_ERROR, EXIT_OK, EXIT_USAGE } from './context.js';
 import type { CliContext } from './context.js';
 import { USAGE_HINT } from './help.js';
+import { listOptions } from './options.js';
 import type { ParsedOptions } from './options.js';
 
 function commandCount(commands: readonly Command[]): string {
@@ -27,13 +33,50 @@ function describeOrdering(ordering: JiraOrdering): string {
     : 'priority: Jira priority DESC, then created ASC, then the issue key';
 }
 
-function describeConfig(config: HarnessConfig, configPath: string, workDir: string): string {
+/** What the Nexus-wide harness configuration file itself declared. */
+function describeHarness(harness: HarnessFileConfig, harnessPath: string, workDir: string): string {
   const lines = [
-    `check-config: ${configPath} is valid`,
+    `check-config: ${harnessPath} is valid`,
     `  workDir                ${workDir} (resolved from this file)`,
-    `  maxRepairs             ${config.maxRepairs}`,
-    `  taskTimeoutMinutes     ${config.taskTimeoutMinutes}`,
-    `  commandTimeoutMinutes  ${config.commandTimeoutMinutes}`,
+    `  maxRepairs             ${harness.maxRepairs}`,
+    `  taskTimeoutMinutes     ${harness.taskTimeoutMinutes}`,
+    `  commandTimeoutMinutes  ${harness.commandTimeoutMinutes}`,
+  ];
+  if (harness.escalation !== undefined) {
+    lines.push(
+      `  escalation             ${String(harness.escalation.length)} tier(s): ` +
+        harness.escalation.map((tier) => tier.name).join(', '),
+    );
+  }
+  const { reviewer, completion } = harness;
+  if (reviewer !== undefined) {
+    lines.push(
+      `  reviewer               github app ${String(reviewer.app.appId)} installation ` +
+        `${String(reviewer.app.installationId)} as ${reviewer.app.login}, check ` +
+        `"${reviewer.checkName}", key path environment variable ${reviewer.app.privateKeyPathEnv}`,
+      `  reviewer launch        ${reviewer.reviewer.runtime} ${reviewer.reviewer.command.join(' ')}`,
+    );
+  }
+  if (completion !== undefined) {
+    lines.push(
+      `  completion             reviewer ${completion.lensApp} ` +
+        `(App ${String(completion.lensAppId)}), check "${completion.lensCheckName}", ` +
+        `credential environment variable ${completion.reviewerTokenEnv}, ` +
+        `poll ${String(completion.pollIntervalSeconds)}s, ` +
+        `deadline ${String(completion.deadlineSeconds)}s`,
+    );
+  }
+  return lines.join('\n');
+}
+
+/**
+ * What the connected project composes to: its own fields, and the effective
+ * objects the two files produce together — which repository a review belongs
+ * to, and the completion gate one of its pull requests has to pass.
+ */
+function describeProject(config: HarnessConfig, projectPath: string): string {
+  const lines = [
+    `check-config: ${projectPath} is valid`,
     `  setup                  ${commandCount(config.setup)}`,
     `  checks                 ${commandCount(config.checks)}`,
   ];
@@ -84,22 +127,31 @@ function describeTask(task: Task, taskPath: string): string {
 
 export async function checkConfig(options: ParsedOptions, context: CliContext): Promise<number> {
   const { cwd, io } = context;
-  const { config: configArgument, task: taskArgument } = options;
+  const { config: configArgument, project: projectArgument, task: taskArgument } = options;
 
-  if (configArgument === undefined) {
-    io.err(`error: check-config requires --config\n${USAGE_HINT}`);
+  if (configArgument === undefined || projectArgument === undefined) {
+    const missing = [
+      configArgument === undefined ? '--config' : undefined,
+      projectArgument === undefined ? '--project' : undefined,
+    ].filter((name) => name !== undefined);
+    io.err(`error: check-config requires ${listOptions(missing)}\n${USAGE_HINT}`);
     return EXIT_USAGE;
   }
 
   // CLI paths resolve from the invocation directory; workDir resolves from the
-  // configuration file instead (see resolveWorkDir). A task file is optional:
-  // without one this validates the configuration alone, and still creates
-  // nothing, starts nothing, and resolves no credential.
-  const configPath = path.resolve(cwd, configArgument);
+  // harness configuration file instead (see resolveWorkDir). The project's own
+  // configuration is read from its root, and a task file is optional: without
+  // one this validates the configuration alone, and still creates nothing,
+  // starts nothing, and resolves no credential.
+  const harnessPath = path.resolve(cwd, configArgument);
+  const projectPath = projectConfigFile(path.resolve(cwd, projectArgument));
 
   try {
-    const config = await loadHarnessConfig(configPath);
-    io.out(describeConfig(config, configPath, resolveWorkDir(config, configPath)));
+    const loaded = await loadConfiguration(harnessPath, projectPath);
+    io.out(
+      describeHarness(loaded.harness, harnessPath, resolveWorkDir(loaded.config, harnessPath)),
+    );
+    io.out(describeProject(loaded.config, projectPath));
     if (taskArgument !== undefined) {
       const taskPath = path.resolve(cwd, taskArgument);
       const task = await loadTask(taskPath);
@@ -114,15 +166,3 @@ export async function checkConfig(options: ParsedOptions, context: CliContext): 
     throw cause;
   }
 }
-
-/**
- * The loop's real collaborators, and nothing else: every one of them is an
- * ordinary function of the module that owns it (docs/architecture.md §3). The
- * CLI composes them; it does not implement any part of the loop.
- *
- * The one piece of composition the selection needs is here: the adapter is
- * handed the effective agent selection, so every top-level turn of the run — the
- * implementation and every repair — starts the same configured launch prefix.
- * The runner never sees the prefix except as the value it records
- * (docs/architecture.md §2).
- */

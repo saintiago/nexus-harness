@@ -1,0 +1,27 @@
+{
+  "setup": [["npm", "ci"]],
+  "checks": [["npm", "run", "validate"]],
+  "source": {
+    "type": "jira",
+    "siteUrl": "https://malton-family.atlassian.net",
+    "cloudId": "9337c4da-7d33-4c1d-b03c-db207e537f88",
+    "projectKey": "HARN",
+    "issueType": "Task",
+    "label": "harness-task",
+    "readyStatus": "To Do",
+    "runningStatus": "In Progress",
+    "reviewStatus": "In Review",
+    "pollIntervalSeconds": 30,
+    "tokenEnv": "JIRA_API_TOKEN"
+  },
+  "delivery": {
+    "type": "github",
+    "repository": "saintiago/nexus-harness",
+    "baseBranch": "main",
+    "completion": {
+      "postMergeWorkflows": ["ci.yml"],
+      "toDoStatus": "To Do",
+      "doneStatus": "Done"
+    }
+  }
+}

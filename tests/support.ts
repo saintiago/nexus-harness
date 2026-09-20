@@ -9,6 +9,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import stringWidth from 'string-width';
 import type { CliIo } from '../src/cli/context.js';
+import { HARNESS_CONFIG_FILE_NAME, PROJECT_CONFIG_FILE_NAME } from '../src/config/paths.js';
 
 /** Repository root, derived from this file's location. */
 export const repoRoot = fileURLToPath(new URL('..', import.meta.url));
@@ -97,17 +98,32 @@ export function screenAfter(chunks: readonly string[], columns = Infinity): read
 }
 /* eslint-enable no-control-regex */
 
-/** The configuration example from docs/WORKFLOW.md §1. */
-export const documentedConfig = {
+/** The harness configuration example from docs/WORKFLOW.md §1. */
+export const documentedHarnessConfig = {
   workDir: './.harness',
   maxRepairs: 2,
   taskTimeoutMinutes: 60,
   commandTimeoutMinutes: 10,
+};
+
+/** The project configuration example from docs/WORKFLOW.md §1. */
+export const documentedProjectConfig = {
   setup: [['npm', 'ci']],
   checks: [
     ['npm', 'run', 'typecheck'],
     ['npm', 'test'],
   ],
+};
+
+/**
+ * Both documented examples as one field map. It is not itself a configuration
+ * file: a test that writes files routes these fields to the file that owns each
+ * of them with {@link splitConfig}, and the loader refuses a file that mixes
+ * the two (docs/WORKFLOW.md §1).
+ */
+export const documentedConfig = {
+  ...documentedHarnessConfig,
+  ...documentedProjectConfig,
 };
 
 /** The task example from docs/WORKFLOW.md §2. */
@@ -146,6 +162,62 @@ export async function writeJsonFile(
   await mkdir(path.dirname(file), { recursive: true });
   await writeFile(file, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
   return file;
+}
+
+/** The fields the Nexus-wide harness configuration owns (docs/WORKFLOW.md §1). */
+export const HARNESS_CONFIG_FIELDS: readonly string[] = [
+  'workDir',
+  'maxRepairs',
+  'taskTimeoutMinutes',
+  'commandTimeoutMinutes',
+  'agent',
+  'escalation',
+  'reviewer',
+  'completion',
+];
+
+/** The fields a connected project's configuration owns (docs/WORKFLOW.md §1). */
+export const PROJECT_CONFIG_FIELDS: readonly string[] = [
+  'setup',
+  'checks',
+  'source',
+  'delivery',
+];
+
+/**
+ * Routes one field map into the file that owns each field, so a fixture can
+ * describe a whole configuration in one place and still write the two files the
+ * contract is made of. A name neither file owns goes to the harness file, where
+ * the schema reports it as the unrecognized key it is.
+ */
+export function splitConfig(fields: JsonObject): { harness: JsonObject; project: JsonObject } {
+  const harness: JsonObject = {};
+  const project: JsonObject = {};
+  for (const [name, value] of Object.entries(fields)) {
+    if (PROJECT_CONFIG_FIELDS.includes(name)) {
+      project[name] = value;
+    } else {
+      harness[name] = value;
+    }
+  }
+  return { harness, project };
+}
+
+/**
+ * Writes the two configuration files a command reads and returns their paths:
+ * the Nexus-wide harness configuration in `harnessDirectory`, and the connected
+ * project's configuration at the root of `projectDirectory`.
+ */
+export async function writeConfigPair(
+  harnessDirectory: string,
+  projectDirectory: string,
+  fields: JsonObject,
+): Promise<{ harnessPath: string; projectPath: string }> {
+  const { harness, project } = splitConfig(fields);
+  return {
+    harnessPath: await writeJsonFile(harnessDirectory, HARNESS_CONFIG_FILE_NAME, harness),
+    projectPath: await writeJsonFile(projectDirectory, PROJECT_CONFIG_FILE_NAME, project),
+  };
 }
 
 /**
