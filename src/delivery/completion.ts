@@ -116,8 +116,12 @@ export interface MergeVerdict {
   readonly workflows: readonly WorkflowOutcome[];
 }
 
-/** What enabling native auto-merge did. */
-export type AutoMergeStatus = 'enabled' | 'already-enabled';
+/**
+ * What enabling native auto-merge did. `merged` is the race this path has to
+ * survive: GitHub merged the reviewed head while the request was in flight, so
+ * there is nothing left to arm and the merge itself is what gets verified.
+ */
+export type AutoMergeStatus = 'enabled' | 'already-enabled' | 'merged';
 
 /** The GitHub boundary the completion path acts through. */
 export interface CompletionActions {
@@ -174,7 +178,10 @@ export interface CompletionActions {
    * head immediately before the request and again after it. The caller arms as
    * soon as the delivered pull request exists, before the final required check
    * can turn green, because GitHub refuses to arm a pull request whose status is
-   * already clean. Throws {@link DeliveryError} when GitHub refuses it — a
+   * already clean. An unprocessable or no-longer-eligible answer — GitHub merged
+   * the pull request while the request was in flight — is settled by one fresh
+   * reconciliation read before it is classified: the merged reviewed head is
+   * reported as `merged`, and anything else throws {@link DeliveryError}. A
    * conflict, branch protection, or a missing permission is an operator
    * problem, never a coding finding.
    */
@@ -234,6 +241,25 @@ function pullFrom(value: unknown): PullRequestSnapshot {
 }
 const PULL_FIELDS =
   'id,number,url,state,isDraft,headRefName,baseRefName,headRefOid,mergeCommit,autoMergeRequest,mergeable,title,body';
+
+/**
+ * Whether what a failed read wrote is an indeterminate answer rather than a
+ * refusal GitHub meant: a server-side failure, a rate limit, a timeout, or a
+ * connection that never completed. Only these are retried, and only inside the
+ * item's deadline; a `403`, a `404`, an unprocessable `422` or a malformed
+ * answer from GitHub is a settled reading.
+ */
+function transientReadFailure(diagnostic: string): boolean {
+  return (
+    /\bHTTP (?:408|425|429|5\d\d)\b/.test(diagnostic) ||
+    /\b(?:ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|EPIPE|ELOOP)\b/i.test(diagnostic) ||
+    /\b(?:rate limit|abuse detection|secondary rate limit)\b/i.test(diagnostic) ||
+    /\b(?:timed? ?out|timeout)\b/i.test(diagnostic) ||
+    /\b(?:server error|internal server error|bad gateway|service unavailable|gateway time-?out|network error|connection reset|connection refused|socket hang up)\b/i.test(
+      diagnostic,
+    )
+  );
+}
 
 export function createGitHubCompletion(
   config: CompletionConfig,
@@ -362,6 +388,9 @@ export function createGitHubCompletion(
       throw new DeliveryError(
         `GitHub ${mutation ? 'auto-merge request' : 'evidence read'} failed ` +
           `(${result.outcome}, ${String(result.exitCode)}): ${diagnostic}; operator attention required`,
+        // A mutation is never replayed, whatever the failure looked like; only
+        // an evidence read GitHub could not answer this moment may be read again.
+        { retryable: !mutation && transientReadFailure(diagnostic) },
       );
     }
     const value: unknown = JSON.parse(await readFile(result.stdoutPath, 'utf8'));
@@ -422,14 +451,20 @@ export function createGitHubCompletion(
     p: PullRequestSnapshot,
     expected: PullRequestSnapshot,
   ): void => {
-    if (
-      p.number !== expected.number ||
-      p.url !== expected.url ||
-      p.headRefName !== r.branch ||
-      p.baseRefName !== r.baseBranch ||
-      p.headRefOid !== expected.headRefOid
-    )
-      throw new DeliveryError('Pull request identity, base or reviewed head changed');
+    if (p.number !== expected.number || p.url !== expected.url)
+      throw new DeliveryError(
+        `GitHub now reports ${p.url} where ${expected.url} was the delivered pull request`,
+      );
+    if (p.headRefName !== r.branch || p.baseRefName !== r.baseBranch)
+      throw new DeliveryError(
+        `pull request ${p.url} now carries ${p.headRefName} into ${p.baseRefName}, not ` +
+          `${r.branch} into ${r.baseBranch}`,
+      );
+    if (p.headRefOid !== expected.headRefOid)
+      throw new DeliveryError(
+        `pull request ${p.url} now holds head ${p.headRefOid}, not the reviewed head ` +
+          `${expected.headRefOid}, so a merge cannot be tied to the reviewed work`,
+      );
   };
   const gate = async (
     r: CompletionRequest,
@@ -446,7 +481,11 @@ export function createGitHubCompletion(
       findings: GateFinding[] = [],
     ): GateVerdict => ({ status, reason, review, findings });
     if (current.state !== (merged ? 'MERGED' : 'OPEN') || current.isDraft)
-      return result('attention', 'Pull request is not eligible for completion');
+      return result(
+        'attention',
+        `Pull request ${current.url} is ${current.state}${current.isDraft ? ' (draft)' : ''}, ` +
+          'not eligible for completion',
+      );
     const reviews = (await pages(r, `pulls/${String(p.number)}/reviews`, stop))
       .map(object)
       .filter(
@@ -698,10 +737,11 @@ export function createGitHubCompletion(
       identity(r, current, { ...p, headRefOid: head });
       // A pull request GitHub merged between the read and the request needs no
       // arm: the completion path verifies that merge by its own evidence.
-      if (current.state === 'MERGED') return 'already-enabled';
+      if (current.state === 'MERGED') return 'merged';
       if (current.state !== 'OPEN')
         throw new DeliveryError(
-          `Pull request is ${current.state}, so GitHub was not asked to arm auto-merge`,
+          `pull request ${current.url} is ${current.state}, so GitHub was not asked to arm ` +
+            'auto-merge',
         );
       if (current.isDraft)
         throw new DeliveryError(
@@ -714,8 +754,9 @@ export function createGitHubCompletion(
       if (beforeWrite && !(await beforeWrite()))
         throw new DeliveryError('Ticket left In Review before arming');
       if (current.autoMergeRequest) return 'already-enabled';
-      const answer = object(
-        await execute(
+      let response: unknown;
+      try {
+        response = await execute(
           r,
           [
             'api',
@@ -727,8 +768,41 @@ export function createGitHubCompletion(
           ],
           stop,
           true,
-        ),
-      );
+        );
+      } catch (cause) {
+        // GitHub refuses the request as unprocessable when the pull request is
+        // no longer armable — the merge it was asking for can land between the
+        // eligibility read and this request. One fresh reconciliation read
+        // settles what the refusal means before it is classified, and only the
+        // exact reviewed head that GitHub really merged counts as the merge.
+        let fresh: PullRequestSnapshot;
+        try {
+          fresh = await readPull(r, p.number, stop);
+        } catch {
+          throw cause;
+        }
+        if (
+          fresh.number === p.number &&
+          fresh.headRefOid === head &&
+          fresh.headRefName === r.branch &&
+          fresh.baseRefName === r.baseBranch
+        ) {
+          if (fresh.state === 'MERGED') return 'merged';
+          if (fresh.state === 'OPEN' && fresh.autoMergeRequest) return 'already-enabled';
+        }
+        if (fresh.headRefOid !== head)
+          throw new DeliveryError(
+            `pull request ${fresh.url} now holds head ${fresh.headRefOid}, not the reviewed head ` +
+              `${head}, so GitHub was not asked to arm auto-merge for it`,
+          );
+        if (fresh.state === 'CLOSED')
+          throw new DeliveryError(
+            `pull request ${fresh.url} is closed without a merge, so GitHub was not asked to ` +
+              'arm auto-merge for it',
+          );
+        throw cause;
+      }
+      const answer = object(response);
       const armed = object(
         object(object(answer['data'])['enablePullRequestAutoMerge'])['pullRequest'],
       )['autoMergeRequest'];
@@ -738,10 +812,11 @@ export function createGitHubCompletion(
       // a success rather than a lost request.
       const verified = await readPull(r, p.number, stop);
       identity(r, verified, { ...p, headRefOid: head });
-      if (verified.state === 'MERGED') return 'enabled';
+      if (verified.state === 'MERGED') return 'merged';
       if (verified.state !== 'OPEN' || !verified.autoMergeRequest)
         throw new DeliveryError(
-          'GitHub did not keep auto-merge enabled for the current head; it may still be unarmed',
+          `GitHub did not keep auto-merge enabled for ${verified.url} at head ${head}; it may ` +
+            'still be unarmed',
         );
       return 'enabled';
     },

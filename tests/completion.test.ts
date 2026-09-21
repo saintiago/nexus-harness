@@ -428,6 +428,11 @@ function passFor(
     readonly reader?: (stop: AbortSignal) => Promise<string>;
     readonly fail?: string;
     readonly mergeOnArm?: string;
+    /** The merge GitHub performs while the auto-merge request is in flight. */
+    readonly mergeBeforeArm?: string;
+    /** The `pr view` read whose answer is the merge GitHub performs between reads. */
+    readonly mergeOnView?: number;
+    readonly mergeOnViewSha?: string;
     /** Whether the stand-in GitHub refuses to arm a pull request with green required checks. */
     readonly rejectArmWhenClean?: boolean;
     /** The required check names the stand-in GitHub uses to decide whether a head is clean. */
@@ -453,6 +458,9 @@ function passFor(
       token: OPERATOR_TOKEN,
       ...(parts.fail === undefined ? {} : { fail: parts.fail }),
       ...(parts.mergeOnArm === undefined ? {} : { mergeOnArm: parts.mergeOnArm }),
+      ...(parts.mergeBeforeArm === undefined ? {} : { mergeBeforeArm: parts.mergeBeforeArm }),
+      ...(parts.mergeOnView === undefined ? {} : { mergeOnView: parts.mergeOnView }),
+      ...(parts.mergeOnViewSha === undefined ? {} : { mergeOnViewSha: parts.mergeOnViewSha }),
       ...(parts.rejectArmWhenClean === true ? { rejectArmWhenClean: true } : {}),
       ...(parts.requiredChecks === undefined ? {} : { requiredChecks: [...parts.requiredChecks] }),
     }),
@@ -1234,6 +1242,12 @@ describe('review-to-completion', () => {
       }),
     );
     expect(result.status).toBe('attention');
+    // The failure names the pull request and both heads: this is the evidence
+    // a person needs to see that the reviewed head is no longer GitHub's, and
+    // nothing may tie a merge to the work it replaced.
+    expect(result.detail).toContain(PR_URL);
+    expect(result.detail).toContain(OTHER_HEAD);
+    expect(result.detail).toContain(HEAD);
     expect(transitions(fixture)).toHaveLength(0);
     expect(commentTexts(fixture)).toHaveLength(0);
   });
@@ -1589,7 +1603,15 @@ describe('arming native auto-merge before the final gate', () => {
     const failed = onlyArm(
       await passFor(fixture, { fail, mergeOnArm: MERGE_COMMIT }).arm(AbortSignal.timeout(30_000)),
     );
-    expect(failed.status, failed.detail).toBe('attention');
+    if (fail === 'merge-uncertain') {
+      // The response was lost, but GitHub did merge: the fresh reconciliation
+      // read settles the reviewed head as merged, so the arm step reports the
+      // merge instead of asking for a person, and nothing is requested again.
+      expect(failed.status, failed.detail).toBe('observed');
+      expect(failed.detail).toContain('merged');
+    } else {
+      expect(failed.status, failed.detail).toBe('attention');
+    }
     expect(fixture.jira.status).toBe('In Review');
     expect(commentTexts(fixture)).toHaveLength(0);
     expect(transitions(fixture)).toHaveLength(0);
@@ -1844,6 +1866,236 @@ describe('arming native auto-merge before the final gate', () => {
     expect(
       (await fakeCompletionCalls(fixture.gh)).filter((call) => call.op === 'merge'),
     ).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Reconciling terminal states across a merge race
+// ---------------------------------------------------------------------------
+
+/**
+ * The race HARN-34 exposed: GitHub's auto-merge lands the reviewed head between
+ * two reads of the same pull request. Every answer here is settled by one fresh
+ * reading of GitHub's own state — a merge of the exact reviewed head continues
+ * through post-merge verification, an open pull request stays in the bounded
+ * poll loop, and a closed, moved or unapproved result is an explicit terminal
+ * failure with its evidence. Nothing assumes success.
+ */
+describe('reconciling terminal states across an auto-merge race', () => {
+  it('finishes an already-merged admission without arming or asking for a person', async () => {
+    const fixture = await createFixture({ merged: true, runs: [] });
+
+    // The merge is a fact and its post-merge workflow has not appeared yet: the
+    // item waits in the bounded poll loop, and nothing is re-armed.
+    const waiting = only(await runPass(fixture, { clockStepMs: 1_000 }));
+    expect(waiting.status, waiting.detail).toBe('pending');
+    expect(fixture.jira.status).toBe('In Review');
+    expect(commentTexts(fixture)).toHaveLength(0);
+
+    await writeFile(fixture.gh.runsFile, `${JSON.stringify(workflowRun())}\n`, 'utf8');
+    const done = only(await runPass(fixture, { clockStepMs: 1_000 }));
+
+    expect(done.status, done.detail).toBe('done');
+    expect(done.mergeCommit).toBe(MERGE_COMMIT);
+    expect(fixture.jira.status).toBe('Done');
+    expect(commentTexts(fixture)).toHaveLength(1);
+    expect(commentTexts(fixture)[0]).toContain(MERGE_COMMIT);
+    expect(transitions(fixture)).toHaveLength(1);
+    // The reviewed head was merged by GitHub before the pass ran: no arm is
+    // requested and no person is needed.
+    expect(
+      (await fakeCompletionCalls(fixture.gh)).filter((call) => call.op === 'merge'),
+    ).toHaveLength(0);
+  });
+
+  it('reconciles an unprocessable arm refusal when GitHub merged the reviewed head', async () => {
+    const fixture = await createFixture({ pulls: [ONE_PULL_REQUEST], runs: [workflowRun()] });
+
+    // GitHub merges the reviewed head while the auto-merge request is in
+    // flight: the request comes back unprocessable, and one fresh read is what
+    // says the merge it was asking for has already happened.
+    const outcome = only(
+      await runPass(fixture, { clockStepMs: 1_000, mergeBeforeArm: MERGE_COMMIT }),
+    );
+
+    expect(outcome.status, outcome.detail).toBe('done');
+    expect(outcome.mergeCommit).toBe(MERGE_COMMIT);
+    expect(fixture.jira.status).toBe('Done');
+    expect(commentTexts(fixture)).toHaveLength(1);
+    expect(transitions(fixture)).toHaveLength(1);
+    // The one request was refused and nothing was re-sent; the merge, not the
+    // refusal, is what the item was completed on.
+    expect(
+      (await fakeCompletionCalls(fixture.gh)).filter((call) => call.op === 'merge'),
+    ).toHaveLength(1);
+    expect(await readFile(fixture.gh.pullRequestsFile, 'utf8')).toContain('"state":"MERGED"');
+  });
+
+  it('follows a merge that lands between the merge read and the gate read (HARN-34)', async () => {
+    const fixture = await createFixture({ pulls: [ONE_PULL_REQUEST], runs: [workflowRun()] });
+    // The queue's arm step ran before the review: GitHub holds the native
+    // request and the completion pass recorded the admission it verifies.
+    await writeFile(
+      fixture.gh.pullRequestsFile,
+      `${JSON.stringify({
+        ...ONE_PULL_REQUEST,
+        autoMergeRequest: { enabledAt: '2026-09-20T20:12:40Z' },
+      })}\n`,
+      'utf8',
+    );
+    await writeFile(
+      path.join(fixture.logsDir, 'completion-armed-head.json'),
+      JSON.stringify({ head: HEAD, number: 29, waitingSince: null }),
+    );
+
+    // The second `pr view` — the gate read that follows the merge read that
+    // still answered "open" — is where GitHub performs the merge, the way it
+    // did in the incident two seconds after the approval landed.
+    const outcome = only(
+      await runPass(fixture, {
+        clockStepMs: 1_000,
+        mergeOnView: 2,
+        mergeOnViewSha: MERGE_COMMIT,
+      }),
+    );
+
+    expect(outcome.status, outcome.detail).toBe('done');
+    expect(outcome.mergeCommit).toBe(MERGE_COMMIT);
+    expect(fixture.jira.status).toBe('Done');
+    expect(commentTexts(fixture)).toHaveLength(1);
+    expect(commentTexts(fixture)[0]).toContain(MERGE_COMMIT);
+    expect(transitions(fixture)).toHaveLength(1);
+    // The arm was already GitHub's and the merge already happened: no request
+    // is sent, and no person is needed.
+    expect(
+      (await fakeCompletionCalls(fixture.gh)).filter((call) => call.op === 'merge'),
+    ).toHaveLength(0);
+  });
+
+  it('retries a transient GitHub failure within the deadline instead of stopping for a person', async () => {
+    const fixture = await createFixture({ merged: true, runs: [workflowRun()] });
+    // One 5xx: an answer GitHub could not give this moment, not a refusal.
+    await writeFile(
+      path.join(fixture.gh.dir, 'fail-once.json'),
+      JSON.stringify({ op: 'runs', status: 503, message: 'Server Error' }),
+      'utf8',
+    );
+    const sleepCalls = { count: 0 };
+
+    const outcome = only(await runPass(fixture, { clockStepMs: 1_000, sleepCalls }));
+
+    expect(outcome.status, outcome.detail).toBe('done');
+    expect(fixture.jira.status).toBe('Done');
+    expect(commentTexts(fixture)).toHaveLength(1);
+    expect(transitions(fixture)).toHaveLength(1);
+    expect(sleepCalls.count).toBeGreaterThan(0);
+  });
+
+  it('stops a transient GitHub failure at the deadline instead of retrying forever', async () => {
+    const fixture = await createFixture({ merged: true, runs: [workflowRun()] });
+    const marker = path.join(fixture.gh.dir, 'fail-once.json');
+    const seed = async (): Promise<void> => {
+      await writeFile(
+        marker,
+        JSON.stringify({ op: 'runs', status: 503, message: 'Server Error' }),
+        'utf8',
+      );
+    };
+    await seed();
+    const sleepCalls = { count: 0 };
+
+    const outcome = only(
+      await runPass(fixture, { clockStepMs: 10_000, sleepCalls, onSleep: seed }),
+    );
+
+    expect(outcome.status, outcome.detail).toBe('attention');
+    expect(outcome.detail).toContain('503');
+    expect(fixture.jira.status).toBe('In Review');
+    expect(transitions(fixture)).toHaveLength(0);
+    expect(commentTexts(fixture)).toHaveLength(0);
+    expect(sleepCalls.count).toBeGreaterThanOrEqual(1);
+  });
+
+  it('keeps an open pull request with unknown mergeability in the bounded poll loop', async () => {
+    const fixture = await createFixture({
+      pulls: [{ ...ONE_PULL_REQUEST, mergeable: 'UNKNOWN' }],
+      runs: [workflowRun()],
+    });
+    const sleepCalls = { count: 0 };
+
+    const outcome = only(await runPass(fixture, { clockStepMs: 20_000, sleepCalls }));
+
+    expect(outcome.status, outcome.detail).toBe('attention');
+    expect(outcome.detail).toContain('mergeability is pending');
+    expect(sleepCalls.count).toBeGreaterThan(0);
+    expect(fixture.jira.status).toBe('In Review');
+    expect(transitions(fixture)).toHaveLength(0);
+    expect(
+      (await fakeCompletionCalls(fixture.gh)).filter((call) => call.op === 'merge'),
+    ).toHaveLength(0);
+  });
+
+  it('reports an admitted pull request closed without a merge as a terminal failure', async () => {
+    const fixture = await createFixture({ pulls: [{ ...ONE_PULL_REQUEST, state: 'CLOSED' }] });
+    await writeFile(
+      path.join(fixture.logsDir, 'completion-armed-head.json'),
+      JSON.stringify({ head: HEAD, number: 29, waitingSince: null }),
+    );
+
+    const outcome = only(await runPass(fixture));
+
+    expect(outcome.status, outcome.detail).toBe('attention');
+    expect(outcome.detail).toContain(PR_URL);
+    expect(outcome.detail).toContain(HEAD);
+    expect(outcome.detail).toContain('closed without a verified merge');
+    expect(fixture.jira.status).toBe('In Review');
+    expect(transitions(fixture)).toHaveLength(0);
+    expect(commentTexts(fixture)).toHaveLength(0);
+    expect((await fakeCompletionCalls(fixture.gh)).some((call) => call.op === 'merge')).toBe(false);
+  });
+
+  it.each([
+    ['no review at all', []],
+    ['a review approving another head', [{ ...APPROVED_REVIEW, commitId: OTHER_HEAD }]],
+  ])(
+    'reports a merge the reviewer did not approve (%s) as a terminal failure',
+    async (_case, reviews) => {
+      const fixture = await createFixture({ merged: true, reviews });
+
+      const outcome = only(await runPass(fixture));
+
+      expect(outcome.status, outcome.detail).toBe('attention');
+      expect(outcome.detail).toContain(PR_URL);
+      expect(outcome.detail).toContain(MERGE_COMMIT);
+      expect(outcome.detail).toContain(HEAD);
+      expect(fixture.jira.status).toBe('In Review');
+      expect(transitions(fixture)).toHaveLength(0);
+      expect(commentTexts(fixture)).toHaveLength(0);
+    },
+  );
+
+  it('resumes post-merge verification after a restart without repeating any write', async () => {
+    const fixture = await createFixture({ merged: true, runs: [] });
+
+    const first = only(await runPass(fixture, { clockStepMs: 1_000 }));
+    expect(first.status, first.detail).toBe('pending');
+
+    // The restart reads the retained admission and the same merged head, waits
+    // for the post-merge workflow, and writes the one resolution exactly once.
+    await writeFile(fixture.gh.runsFile, `${JSON.stringify(workflowRun())}\n`, 'utf8');
+    const second = only(await runPass(fixture, { clockStepMs: 1_000 }));
+    expect(second.status, second.detail).toBe('done');
+
+    const third = await runPass(fixture);
+    expect(only(third).status).toBe('observed');
+    expect(commentTexts(fixture)).toHaveLength(1);
+    expect(transitions(fixture)).toHaveLength(1);
+    expect(
+      (await fakeCompletionCalls(fixture.gh)).filter((call) => call.op === 'merge'),
+    ).toHaveLength(0);
+    expect(
+      JSON.parse(await readFile(path.join(fixture.logsDir, 'completion-armed-head.json'), 'utf8')),
+    ).toMatchObject({ head: HEAD, number: 29 });
   });
 });
 

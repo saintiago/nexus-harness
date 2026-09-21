@@ -48,9 +48,18 @@ const DIAGNOSTIC_LIMIT = 400;
 
 /** A delivery step that could not be completed. The run it belongs to is kept. */
 export class DeliveryError extends Error {
-  constructor(message: string, options?: { cause?: unknown }) {
+  /**
+   * Whether a fresh read could still settle what this failure left open: an
+   * answer GitHub's own infrastructure could not give this moment, or one that
+   * never arrived. Only the completion path retries such a read, and only
+   * inside its item deadline; a mutation request is never retried.
+   */
+  readonly retryable: boolean;
+
+  constructor(message: string, options?: { cause?: unknown; retryable?: boolean }) {
     super(message, options);
     this.name = 'DeliveryError';
+    this.retryable = options?.retryable === true;
   }
 }
 

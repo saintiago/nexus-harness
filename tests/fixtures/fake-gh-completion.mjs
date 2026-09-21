@@ -2,7 +2,14 @@
  * Only enablePullRequestAutoMerge receives the operator token. Read commands
  * receive the separate reader token; no command launches a reviewer or agent.
  */
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import path from 'node:path';
 
 const config = JSON.parse(process.env.FAKE_GH ?? '{}');
@@ -53,8 +60,7 @@ const fail = (message) => {
 };
 
 /** The pull request one `--repo` and `<number|url>` name, or `undefined`. */
-const pullFor = (repo, selector) => {
-  const pulls = jsonLines('pull-requests.json');
+const pullFor = (repo, selector, pulls = jsonLines('pull-requests.json')) => {
   return pulls.find(
     (pull) =>
       (selector === null || String(pull.number) === String(selector) || pull.url === selector) &&
@@ -85,6 +91,31 @@ const enrich = (p) => ({
   ...p,
 });
 const reply = (value) => process.stdout.write(`${JSON.stringify(value)}\n`);
+
+/**
+ * A transient failure seeded for exactly one invocation. The test writes
+ * `<stateDir>/fail-once.json`; the first matching operation consumes it and
+ * answers the way a 5xx from GitHub would, so the completion path's retry can
+ * be told from its classification of a settled refusal.
+ */
+const failOnce = (operation) => {
+  const marker = path.join(stateDir, 'fail-once.json');
+  if (!existsSync(marker)) return null;
+  const spec = JSON.parse(readFileSync(marker, 'utf8'));
+  if (spec.op !== undefined && spec.op !== operation) return null;
+  unlinkSync(marker);
+  return spec;
+};
+
+/** How many `pr view` reads this stand-in has answered, kept across processes. */
+const viewCount = () => {
+  const file = path.join(stateDir, 'view-count.json');
+  const seen = existsSync(file) ? Number(JSON.parse(readFileSync(file, 'utf8')).count ?? 0) : 0;
+  const next = seen + 1;
+  writeFileSync(file, `${JSON.stringify({ count: next })}\n`, 'utf8');
+  return next;
+};
+
 let operation;
 if (argv[0] === 'pr') operation = argv[1];
 else if (argv[0] === 'api' && argv[1] === 'graphql') operation = 'merge';
@@ -101,7 +132,13 @@ else if (argv[0] === 'api') {
           : null;
 }
 record({ op: operation, auto: operation === 'merge', squash: operation === 'merge' });
-if (
+const injected = failOnce(operation);
+if (injected) {
+  fail(
+    `HTTP ${String(injected.status ?? 503)}: ` +
+      `${String(injected.message ?? 'GitHub is temporarily unavailable')} (${operation})`,
+  );
+} else if (
   failure === operation ||
   (failure === 'checks' && operation === 'lens') ||
   (failure === 'view-after-arm' &&
@@ -121,9 +158,26 @@ if (
   );
   reply(list.map(enrich));
 } else if (operation === 'view') {
-  const p = pullFor(optionValue('--repo'), argv[2]);
+  // One parse of the state file, so a merge this read performs and the record
+  // it writes back are the same object.
+  const pulls = jsonLines('pull-requests.json');
+  const p = pullFor(optionValue('--repo'), argv[2], pulls);
   if (!p) fail('HTTP 404');
-  else reply(enrich(p));
+  else {
+    // A merge GitHub makes between two reads of the same pull request: the
+    // answer to the named read is the merged record, exactly as a fresh read
+    // after the merge would report it.
+    const seen = viewCount();
+    if (typeof config.mergeOnView === 'number' && seen === config.mergeOnView) {
+      p.state = 'MERGED';
+      p.mergeCommit = { oid: config.mergeOnViewSha ?? 'c'.repeat(40) };
+      writeFileSync(
+        path.join(stateDir, 'pull-requests.json'),
+        `${pulls.map((entry) => JSON.stringify(entry)).join('\n')}\n`,
+      );
+    }
+    reply(enrich(p));
+  }
 } else if (operation === 'reviews') {
   reply(
     jsonDocument('pr-reviews.json', []).map((r) => ({
@@ -209,7 +263,18 @@ if (
             checks
               .filter((check) => check.required !== false)
               .every((check) => check.state === 'SUCCESS');
-      if (config.rejectArmWhenClean === true && clean) {
+      if (typeof config.mergeBeforeArm === 'string') {
+        // GitHub merges the reviewed pull request while the auto-merge request
+        // is in flight: the request is no longer acceptable, and the merge it
+        // was asking for has already happened.
+        p.state = 'MERGED';
+        p.mergeCommit = { oid: config.mergeBeforeArm };
+        writeFileSync(
+          path.join(stateDir, 'pull-requests.json'),
+          `${pulls.map((entry) => JSON.stringify(entry)).join('\n')}\n`,
+        );
+        fail('HTTP 422: Pull request is already merged (enablePullRequestAutoMerge)');
+      } else if (config.rejectArmWhenClean === true && clean) {
         // GitHub refuses to arm a pull request whose required checks are
         // already green: there is nothing left for auto-merge to wait for.
         fail('HTTP 422: Pull request is in clean status (enablePullRequestAutoMerge)');
