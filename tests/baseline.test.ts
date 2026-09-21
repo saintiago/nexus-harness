@@ -52,6 +52,7 @@ import {
   baselineCommentFinding,
   baselineEvidenceId,
   baselineFindingGuidanceLines,
+  baselineThreadFinding,
   createBaselineDiagnosis,
 } from '../src/sources/baseline.js';
 import { guidanceFrom } from '../src/sources/guidance.js';
@@ -3628,6 +3629,13 @@ describe('the next claim after a diagnosis', () => {
     // words of the repair, which the comment had to cut.
     expect(take.outcome).toBe('taken');
     expect(published[0]?.status).toBe('passed');
+    // The comment itself is still accepted as the whole comment — the harness's
+    // own bounded rendering of this finding — and what that route hands over is
+    // the finding, whole.
+    const evidenceId = baselineEvidenceId(refFor(), base, await baselineWithLogs());
+    expect(baselineThreadFinding(comment, evidenceId, WIDE_REPAIR_FINDING)).toEqual(
+      baselineFindingGuidanceLines(WIDE_REPAIR_FINDING),
+    );
     const guidance = runs[0]?.guidance ?? [];
     expect(guidance).toContain(
       `reviewed baseline finding — repair guidance: ${WIDE_REPAIR_GUIDANCE}`,
