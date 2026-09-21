@@ -234,6 +234,17 @@ function phaseFor(parts: {
   };
 }
 
+/** The real pre-delivery reviewer turn over the stand-in runtime. */
+function reviewerFor(target: LocalTarget, plans: readonly unknown[]): BaselineReview {
+  return createBaselineReviewer({
+    selection: { runtime: 'codex', command: [target.runtimePath] },
+    environment: {
+      ...process.env,
+      FAKE_CODEX: JSON.stringify({ stateDir: target.state.dir, plans }),
+    },
+  });
+}
+
 function requestFor(baseline: CheckRoundResult = redBaseline()): {
   readonly item: {
     readonly ref: SourceRef;
@@ -545,16 +556,6 @@ describe('the baseline reviewer turn', () => {
         ],
       }),
     };
-  }
-
-  function reviewerFor(target: LocalTarget, plans: readonly unknown[]) {
-    return createBaselineReviewer({
-      selection: { runtime: 'codex', command: [target.runtimePath] },
-      environment: {
-        ...process.env,
-        FAKE_CODEX: JSON.stringify({ stateDir: target.state.dir, plans }),
-      },
-    });
   }
 
   it('inspects a read-only snapshot of the workspace and validates the finding it wrote', async () => {
@@ -1210,6 +1211,64 @@ describe('finishing a diagnosis a stopped invocation left pending', () => {
     expect(resumed?.detail).toContain('the site refused the read');
     expect(record.posted).toEqual([]);
     expect(reviewer.requests).toEqual([]);
+  });
+
+  it('publishes the finding an interrupted turn already wrote, without a second turn', async () => {
+    const workDir = await createTempDir();
+    const target = await createLocalTarget({ brokenBaseline: true });
+    const { workspaceId, workspacePath, base } = await retainedWorkspace(workDir, [
+      baselineAttempt(),
+    ]);
+    const request = {
+      item: { ref: refFor(), task: taskFor() },
+      workspace: {
+        workspaceId,
+        workspacePath,
+        branch: `harness/${workspaceId}`,
+        baseCommit: base,
+      },
+      baseline: redBaseline(),
+      stop: new AbortController().signal,
+    };
+
+    // The reviewer turn really runs and really writes its finding; only the
+    // comment that would have published it never arrived.
+    const record = fakeRecord();
+    record.commentFailure = 'the connection dropped';
+    const diagnosis = createBaselineDiagnosis({
+      reviewer: reviewerFor(target, [{ finding: JSON.stringify(REPAIR_FINDING) }]),
+      record,
+      readyStatus: 'To Do',
+      reviewStatus: 'In Review',
+      reviewerTimeoutMs: 60_000,
+      workDir,
+      io: { out: () => undefined, err: () => undefined },
+    });
+    const stopped = await diagnosis.diagnose(request);
+    expect(stopped.kind).toBe('attention');
+    expect(record.notes).toEqual([]);
+    expect(await fakeTurns(target.state)).toHaveLength(1);
+    record.commentFailure = null;
+
+    // The restart spends nothing: the finding the earlier turn wrote is
+    // published as it is, and the ticket returns to its ready status.
+    const reuse = createBaselineDiagnosis({
+      reviewer: reviewerFor(target, []),
+      record,
+      readyStatus: 'To Do',
+      reviewStatus: 'In Review',
+      reviewerTimeoutMs: 60_000,
+      workDir,
+      io: { out: () => undefined, err: () => undefined },
+    });
+
+    const resumed = await reuse.resume(new AbortController().signal);
+
+    expect(resumed?.kind).toBe('repair');
+    expect(await fakeTurns(target.state)).toHaveLength(1);
+    expect(record.notes).toHaveLength(1);
+    expect(record.notes[0]?.text).toContain('Repair guidance');
+    expect(record.status).toBe('To Do');
   });
 
   it('stops a serial step for a person when the pending evidence cannot be finished', async () => {

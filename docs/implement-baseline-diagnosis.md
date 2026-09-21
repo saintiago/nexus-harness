@@ -130,7 +130,8 @@ code lives and what owns what.
   launched under the narrower policy in its own working directory, a finding from a turn that wrote
   into the retained working copy is refused, a working copy the configured commands changed is
   refused before any turn, and a finding an interrupted turn already wrote is reused without a
-  second launch; the Jira record against a fake HTTP boundary — one comment and a
+  second launch — published by the next pass through the phase itself, with the earlier turn's own
+  finding file as the only input; the Jira record against a fake HTTP boundary — one comment and a
   move by target status name for an actionable finding, In Review for an inconclusive one, and a
   second pass that spends no second turn and writes no second comment; the coordinator's ending
   table — a completed red baseline enters the diagnosis, a setup error, a cancellation, a timeout,

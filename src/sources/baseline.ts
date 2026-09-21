@@ -316,6 +316,8 @@ async function readEvidence(file: string): Promise<BaselineEvidence | null> {
   const workspacePath = textField(workspace, 'workspacePath');
   const branch = textField(workspace, 'branch');
   const baseCommit = textField(workspace, 'baseCommit');
+  const closedAt = textField(value, 'closedAt');
+  const closed = value['closed'];
   if (
     refFields.some((field) => field === null) ||
     taskId === null ||
@@ -348,6 +350,8 @@ async function readEvidence(file: string): Promise<BaselineEvidence | null> {
   if (baselineEvidenceId(sourceRef, baseCommit, round) !== evidenceId) {
     throw evidenceProblem(file, 'does not hash to the evidence identity it was kept under');
   }
+  const closedKind =
+    closed === 'repair' || closed === 'attention' || closed === 'left-alone' ? closed : null;
 
   return {
     version: 1,
@@ -361,14 +365,8 @@ async function readEvidence(file: string): Promise<BaselineEvidence | null> {
     },
     workspace: { workspaceId, workspacePath, branch, baseCommit },
     baseline: round,
-    ...(value['closed'] === 'repair' ||
-    value['closed'] === 'attention' ||
-    value['closed'] === 'left-alone'
-      ? { closed: value['closed'] as 'repair' | 'attention' | 'left-alone' }
-      : {}),
-    ...(textField(value, 'closedAt') === null
-      ? {}
-      : { closedAt: textField(value, 'closedAt') ?? '' }),
+    ...(closedKind === null ? {} : { closed: closedKind }),
+    ...(closedAt === null ? {} : { closedAt }),
   };
 }
 
@@ -391,9 +389,9 @@ async function writeEvidence(file: string, evidence: BaselineEvidence): Promise<
 /**
  * Marks one piece of evidence as finished, atomically and through a
  * same-directory temporary file, so a reader never sees half of one. A record
- * that is no longer there, or one that no longer parses, is left alone: the
- * item's own thread is the authority on what was published, and nothing here
- * rewrites a record it cannot read back.
+ * that is no longer there is left alone — the item's own thread is the authority
+ * on what was published — and one that cannot be read back is reported by the
+ * caller rather than overwritten with a record this harness did not write.
  */
 async function closeEvidence(file: string, closed: BaselineEvidence['closed']): Promise<void> {
   const current = await readEvidence(file);
