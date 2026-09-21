@@ -995,7 +995,49 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
           };
         }
         const published = markerFor(notes, evidence.evidenceId);
+        // The item has already left its running status, but that says nothing
+        // about the reviewer turn this evidence recorded: a rejection whose
+        // own process tree was not confirmed stopped may still be writing, and
+        // this route used to finish the record and report nothing. Read the
+        // record before settling anything, and refuse one that cannot be read
+        // rather than rounding it down to a confirmed stop.
+        let shutdown: AgentTurnShutdown | null;
+        try {
+          shutdown = await readBaselineReviewerShutdown(path.dirname(file));
+        } catch (cause) {
+          io.err(
+            `${key}: the baseline diagnosis retained under "${where}" is already on the issue, ` +
+              `but what its reviewer turn recorded cannot be read: ${messageOf(cause)}`,
+          );
+          return unfinished(
+            stop,
+            `${key}: the baseline diagnosis retained under "${where}" is no longer in its ` +
+              `running status, but whether its reviewer runtime was ever seen to end cannot be ` +
+              `established, so nothing is treated as settled and the intake lock is kept: ` +
+              messageOf(cause),
+            published?.note.id ?? null,
+            false,
+          );
+        }
+        const unconfirmed = unconfirmedShutdownProblem(shutdown);
         await finish(file, evidence, published?.kind ?? 'left-alone');
+        if (unconfirmed !== null) {
+          io.err(
+            `${key}: the baseline diagnosis retained under "${where}" is already on the issue, ` +
+              `but everything its reviewer runtime started was not seen to end (${oneLine(
+                unconfirmed,
+              )}), so the intake lock is kept`,
+          );
+          return unfinished(
+            stop,
+            `${key}: the baseline diagnosis retained under "${where}" is no longer in its ` +
+              `running status, and its reviewer runtime was not seen to end (${oneLine(
+                unconfirmed,
+              )}), so nothing is treated as settled and the intake lock is kept`,
+            published?.note.id ?? null,
+            false,
+          );
+        }
         io.out(
           published === null
             ? `${key}: the baseline diagnosis retained under "${where}" was not resumed: the item ` +
@@ -1025,6 +1067,18 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
         };
       }
       await noteFeedback(evidence.ref, outcome.commentId);
+      if (outcome.kind === 'attention' && !outcome.cleanupConfirmed) {
+        // A reviewer runtime that was not seen to end may still be writing:
+        // stop before this resume spends a second reviewer turn on another
+        // piece of evidence, and carry the unconfirmed stop to the caller so
+        // the intake lock is kept.
+        return {
+          kind: 'attention',
+          detail: [...resumed.map((prior) => prior.detail), outcome.detail].join(' '),
+          commentId: outcome.commentId,
+          cleanupConfirmed: false,
+        };
+      }
       resumed.push({
         kind: outcome.kind,
         detail: outcome.detail,
@@ -1037,11 +1091,19 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
     if (first === undefined) {
       return null;
     }
-    const actionable = resumed.find((outcome) => outcome.kind === 'repair');
+    // A result that needs a person dominates an actionable one: intake stops
+    // there rather than claiming another ticket on the strength of a repair,
+    // and a cleanup that was not confirmed is never rounded down by the
+    // actionable result beside it.
+    const attention = resumed.find((outcome) => outcome.kind === 'attention');
+    const detail = resumed.map((outcome) => outcome.detail).join(' ');
+    if (attention === undefined) {
+      return { kind: 'repair', detail, commentId: first.commentId };
+    }
     return {
-      kind: actionable === undefined ? 'attention' : 'repair',
-      detail: resumed.map((outcome) => outcome.detail).join(' '),
-      commentId: (actionable ?? first).commentId,
+      kind: 'attention',
+      detail,
+      commentId: attention.commentId,
       cleanupConfirmed: resumed.every((outcome) => outcome.cleanupConfirmed),
     };
   };

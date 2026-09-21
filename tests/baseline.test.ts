@@ -1896,6 +1896,57 @@ describe('finishing a diagnosis a stopped invocation left pending', () => {
     if (recovered.kind === 'finding') {
       expect(recovered.finding).toEqual(REPAIR_FINDING);
     }
+
+    // The same window, but the record beside the evidence says the reviewer
+    // runtime was not seen to end. Reopening the record is what an invocation
+    // that stopped before finishing it left, and the restart has to read that
+    // stop before it settles anything: the item still is not moved, and the
+    // unconfirmed stop keeps the intake lock instead of being skipped.
+    const reopen = async (): Promise<void> => {
+      const current = await evidenceRecordFor(workDir, PROJECT);
+      const open = { ...current.record };
+      delete open['closed'];
+      delete open['closedAt'];
+      await writeFile(current.file, `${JSON.stringify(open, null, 2)}\n`, 'utf8');
+    };
+    await reopen();
+    await writeJsonFile(path.dirname(evidence.file), 'outcome.json', {
+      version: 1,
+      state: 'rejected',
+      problem: 'the reviewer turn was not seen to end',
+      shutdown: {
+        termination: 'unconfirmed',
+        problem: 'the host could not reach the process tree',
+      },
+    });
+
+    const stopped = await restart.resume(new AbortController().signal);
+
+    expect(stopped?.kind).toBe('attention');
+    expect((stopped as { readonly cleanupConfirmed: boolean }).cleanupConfirmed).toBe(false);
+    expect((stopped as { readonly detail: string }).detail).toContain('was not seen to end');
+    // Reconciled where the item already stands: no second turn, no second
+    // comment, and no move, with the finding still readable for a later claim.
+    expect(record.notes).toHaveLength(1);
+    expect(record.moves).toEqual([{ from: 'In Progress', target: 'To Do' }]);
+    expect(await fakeTurns(target.state)).toHaveLength(1);
+    const settled = await evidenceRecordFor(workDir, PROJECT);
+    expect(settled.record['closed']).toBe('repair');
+
+    // A record that cannot be read is refused the same way, and stays pending
+    // for the person who has to inspect it before anything is settled.
+    await reopen();
+    await writeFile(path.join(path.dirname(evidence.file), 'outcome.json'), '{ not json\n', 'utf8');
+
+    const unreadable = await restart.resume(new AbortController().signal);
+
+    expect(unreadable?.kind).toBe('attention');
+    expect((unreadable as { readonly cleanupConfirmed: boolean }).cleanupConfirmed).toBe(false);
+    expect((unreadable as { readonly detail: string }).detail).toContain('cannot be read');
+    expect(record.notes).toHaveLength(1);
+    expect(record.moves).toEqual([{ from: 'In Progress', target: 'To Do' }]);
+    const pending = await evidenceRecordFor(workDir, PROJECT);
+    expect(pending.record['closed']).toBeUndefined();
   }, 60_000);
 
   it('stops a serial step for a person when the pending evidence cannot be finished', async () => {
@@ -3046,6 +3097,129 @@ describe('a resume that could not confirm its reviewer stopped', () => {
     expect(intake.runs).toEqual([]);
     expect(intake.err.join('\n')).toContain('needs a person');
     expect(existsSync(intakeLockPath(intake.workDir, 'baseline-guidance-fixture'))).toBe(false);
+  });
+
+  it('stops before a second pending diagnosis when the first reviewer stop was unconfirmed', async () => {
+    const workDir = await createTempDir();
+    const { sourceRepo, base } = await retainedWorkspace(workDir, [baselineAttempt()]);
+
+    // Two tickets each left pending evidence behind. The resume reads their
+    // evidence directories oldest name first, so this fixture sorts them that
+    // way and makes the first one's reviewer turn the one that cannot be
+    // confirmed stopped.
+    const candidates = [
+      { ref: refFor('10011', 'HARN-38'), baseCommit: 'b'.repeat(40) },
+      { ref: refFor('10012', 'HARN-39'), baseCommit: 'c'.repeat(40) },
+    ].map((candidate) => ({
+      ...candidate,
+      record: fakeRecord(),
+      evidenceId: baselineEvidenceId(candidate.ref, candidate.baseCommit, redBaseline()),
+    }));
+    candidates.sort((left, right) => left.evidenceId.localeCompare(right.evidenceId));
+    const [first, second] = candidates;
+    if (first === undefined || second === undefined) {
+      throw new Error('this fixture needs two pieces of pending evidence');
+    }
+    for (const candidate of candidates) {
+      await writeJsonFile(
+        path.join(workDir, 'baseline', PROJECT, candidate.evidenceId),
+        'evidence.json',
+        {
+          version: 1,
+          evidenceId: candidate.evidenceId,
+          project: PROJECT,
+          ref: candidate.ref,
+          task: taskFor(candidate.ref),
+          workspace: {
+            workspaceId: candidate.ref.key,
+            workspacePath: `/workspaces/${candidate.ref.key}`,
+            branch: `harness/${candidate.ref.key}`,
+            baseCommit: candidate.baseCommit,
+          },
+          baseline: redBaseline(),
+        },
+      );
+    }
+
+    const records = new Map<string, FakeRecord>(
+      candidates.map((candidate) => [candidate.ref.id, candidate.record]),
+    );
+    const pick = (id: string): FakeRecord => {
+      const found = records.get(id);
+      if (found === undefined) {
+        throw new Error(`no fixture ticket has the id "${id}"`);
+      }
+      return found;
+    };
+    const record: BaselineRecord = {
+      listComments: async (id, stop) => await pick(id).listComments(id, stop),
+      postComment: async (id, paragraphs, stop) => await pick(id).postComment(id, paragraphs, stop),
+      isRunning: async (id, stop) => await pick(id).isRunning(id, stop),
+      moveFromRunning: async (id, target, stop) => await pick(id).moveFromRunning(id, target, stop),
+    };
+
+    const firstDir = path.join(workDir, 'baseline', PROJECT, first.evidenceId);
+    const requests: { readonly dir: string; readonly base: string }[] = [];
+    const reviewer: BaselineReview = async (request) => {
+      requests.push({ dir: request.dir, base: request.workspace.baseCommit });
+      if (request.dir === firstDir) {
+        return {
+          summary: 'the reviewer turn was rejected',
+          finding: null,
+          problem: 'the reviewer turn did not complete',
+          logPath: path.join(request.dir, 'reviewer.log'),
+          shutdown: {
+            termination: 'unconfirmed',
+            problem: 'the host could not reach the process tree',
+          },
+        };
+      }
+      return {
+        summary: 'the reviewer is done',
+        finding: REPAIR_FINDING,
+        problem: null,
+        logPath: path.join(request.dir, 'reviewer.log'),
+        shutdown: null,
+      };
+    };
+    const diagnosis = createBaselineDiagnosis({
+      reviewer,
+      record,
+      readyStatus: 'To Do',
+      reviewStatus: 'In Review',
+      reviewerTimeoutMs: 60_000,
+      project: PROJECT,
+      workDir,
+      io: { out: () => undefined, err: () => undefined },
+    });
+
+    const intake = continuedIntake({
+      workDir,
+      sourceRepo,
+      base,
+      workspaceId: ISSUE_KEY,
+      findingText: findingTextFor(),
+      diagnosis,
+      run: async () => runResultFor(),
+    });
+
+    const take = await takeOneItem(intake.context, {});
+
+    expect(take.outcome).toBe('attention');
+    expect(take.cleanupConfirmed).toBe(false);
+    // Nothing was claimed and no coding turn was started.
+    expect(take.ticket).toBeNull();
+    expect(intake.runs).toEqual([]);
+    // The first reviewer really ran; the second was never asked, even though
+    // its own evidence was a running, actionable finding.
+    expect(requests.map((request) => request.dir)).toEqual([firstDir]);
+    expect(second.record.notes).toEqual([]);
+    expect(second.record.moves).toEqual([]);
+    expect(second.record.status).toBe('In Progress');
+    expect(first.record.status).toBe('In Review');
+    expect(first.record.notes).toHaveLength(1);
+    // The unconfirmed stop leaves the intake lock for inspection.
+    expect(existsSync(intakeLockPath(workDir, 'baseline-guidance-fixture'))).toBe(true);
   });
 });
 
