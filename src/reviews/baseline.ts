@@ -862,9 +862,19 @@ function diagnosticEnvironment(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   };
 }
 
-/** A refusal reached before a reviewer turn began: nothing to record. */
-function refused(problem: string, logPath: string): BaselineReviewResult {
-  return { summary: null, finding: null, problem, logPath, shutdown: null };
+/**
+ * A refusal reached before a reviewer turn began: nothing new to record here.
+ * The stop a previous invocation's reviewer turn left recorded for this exact
+ * evidence still travels with it — a refusal is not a reason to round an
+ * unconfirmed one down to a confirmed stop and let the intake release its lock
+ * over a runtime that may still be writing (docs/spec.md §3, §11).
+ */
+function refused(
+  problem: string,
+  logPath: string,
+  shutdown: AgentTurnShutdown | null = null,
+): BaselineReviewResult {
+  return { summary: null, finding: null, problem, logPath, shutdown };
 }
 
 /**
@@ -923,13 +933,36 @@ async function baselineTurn(
   const logPath = path.join(request.dir, BASELINE_REVIEWER_LOG);
   const turnDir = path.join(request.dir, BASELINE_TURN_DIRECTORY);
   const findingPath = baselineFindingPath(request.dir);
+  // What a previous invocation recorded for this exact evidence is read before
+  // anything below can refuse it. A rejection whose own process tree was not
+  // confirmed stopped has to reach the caller even when this invocation refuses
+  // before it would otherwise re-read the record — an unreadable log, a working
+  // copy that is no longer the snapshot, a directory that cannot be written —
+  // or the intake would release a lock over a runtime that may still be
+  // writing. A record that cannot be read at all fails closed the same way:
+  // whether there is a stop to carry cannot then be established.
+  let retained: AgentTurnShutdown | null;
+  try {
+    retained = await readBaselineReviewerShutdown(request.dir);
+  } catch (cause) {
+    return refused(
+      `the baseline diagnostic's ${BASELINE_OUTCOME_FILE} under "${request.dir}" cannot be read, ` +
+        `so whether the reviewer turn a previous invocation started was seen to end cannot be ` +
+        `established: ${messageOf(cause)}`,
+      logPath,
+      {
+        termination: 'unconfirmed',
+        problem: `what the earlier invocation recorded cannot be read: ${messageOf(cause)}`,
+      },
+    );
+  }
   // The evidence has to be readable before anything else is decided: a log the
   // diagnosis cannot read is incomplete evidence, and the ticket stays In Review
   // for a person with the missing paths named instead of being handed a finding
   // this diagnosis cannot show to be about the failing check.
   const evidence = await baselineFailures(request.baseline);
   if (evidence.kind === 'incomplete') {
-    return refused(evidence.problem, logPath);
+    return refused(evidence.problem, logPath, retained);
   }
   const failures = evidence.failures;
 
@@ -944,6 +977,7 @@ async function baselineTurn(
       `the baseline diagnostic's evidence directory "${request.dir}" could not be created: ` +
         messageOf(cause),
       logPath,
+      retained,
     );
   }
 
@@ -960,6 +994,7 @@ async function baselineTurn(
         `(${request.workspace.baseCommit}), so this diagnosis cannot establish what the failing ` +
         `check really ran against and nothing is published: ${before.problem}`,
       logPath,
+      retained,
     );
   }
   const pinned = pinnedSnapshotProblem(before.workingCopy, request.workspace.baseCommit);
@@ -971,6 +1006,7 @@ async function baselineTurn(
         'that changes the working copy it runs in has to be made to leave the repository alone ' +
         'before this baseline can be diagnosed',
       logPath,
+      retained,
     );
   }
 
@@ -1008,6 +1044,7 @@ async function baselineTurn(
       `the baseline diagnostic for ${key} could not pin a snapshot of its retained workspace: ` +
         messageOf(cause),
       logPath,
+      retained,
     );
   }
 
@@ -1031,6 +1068,7 @@ async function baselineTurn(
       `the baseline diagnostic evidence for ${key} could not be written in "${request.dir}": ` +
         messageOf(cause),
       logPath,
+      retained,
     );
   }
 
