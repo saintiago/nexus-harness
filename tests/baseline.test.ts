@@ -24,6 +24,7 @@ import { summarizeChanges } from '../src/reporting/changes.js';
 import type { RunTaskResult } from '../src/runs/contracts.js';
 import {
   baselineFailures,
+  baselineFindingPath,
   createBaselineReviewer,
   parseBaselineFinding,
 } from '../src/reviews/baseline.js';
@@ -2824,10 +2825,15 @@ function continuedIntake(parts: {
 
 describe('the next claim after a diagnosis', () => {
   /**
-   * One retained workspace whose red baseline was really diagnosed: the reviewer
-   * turn wrote a real finding, the diagnosis posted it, and the ticket was
-   * returned to its ready status with the evidence closed as a repair. This is
-   * what the claim that follows reads.
+   * One retained workspace whose red baseline was diagnosed: the diagnosis
+   * posted its one comment, the ticket is back in its ready status, and the
+   * evidence is closed as a repair.
+   *
+   * The reviewer turn is stood in for rather than spent here — what a continuing
+   * claim reads is the state this leaves, and the turn that produces it has its
+   * own coverage — but the finding it would have written is put exactly where
+   * the real turn writes it (`baselineFindingPath`, the path this harness reads
+   * it back from), so the record on disk is the real one.
    */
   async function diagnosedWorkspace(workDir: string): Promise<{
     readonly sourceRepo: string;
@@ -2839,11 +2845,11 @@ describe('the next claim after a diagnosis', () => {
     /** The one comment the diagnosis posted, marker and evidence identity included. */
     readonly comment: string;
   }> {
-    const target = await createLocalTarget({ brokenBaseline: true });
     const retained = await retainedWorkspace(workDir, [baselineAttempt()]);
     const record = fakeRecord();
+    const baseline = await baselineWithLogs();
     const diagnosis = createBaselineDiagnosis({
-      reviewer: reviewerFor(target, [{ finding: JSON.stringify(REPAIR_FINDING) }]),
+      reviewer: scriptedReviewer(REPAIR_FINDING).review,
       record,
       readyStatus: 'To Do',
       reviewStatus: 'In Review',
@@ -2861,12 +2867,22 @@ describe('the next claim after a diagnosis', () => {
         branch: `harness/${retained.workspaceId}`,
         baseCommit: retained.base,
       },
-      baseline: await baselineWithLogs(),
+      baseline,
       stop: new AbortController().signal,
     });
 
     expect(outcome.kind).toBe('repair');
     expect(record.status).toBe('To Do');
+    const finding = baselineFindingPath(
+      path.join(
+        workDir,
+        'baseline',
+        PROJECT,
+        baselineEvidenceId(refFor(), retained.base, baseline),
+      ),
+    );
+    await mkdir(path.dirname(finding), { recursive: true });
+    await writeFile(finding, `${JSON.stringify(REPAIR_FINDING)}\n`, 'utf8');
     return { ...retained, record, diagnosis, comment: record.notes[0]?.text ?? '' };
   }
 
