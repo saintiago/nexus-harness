@@ -1195,6 +1195,58 @@ describe('the baseline reviewer turn', () => {
     expect(await fakeTurns(target.state)).toEqual([]);
   });
 
+  it('carries a recorded stop through a refusal reached before it re-reads the record', async () => {
+    const target = await createLocalTarget({ brokenBaseline: true });
+    const dir = await createTempDir();
+    const base = git(target.repo, 'rev-parse', 'HEAD').trim();
+    const request = {
+      dir,
+      item: { ref: refFor(), task: taskFor() },
+      workspace: { path: target.repo, baseCommit: base },
+      // The plain fixture's check logs were never written: this invocation
+      // refuses the evidence as incomplete before it would re-read the record
+      // the earlier one left.
+      baseline: redBaseline(),
+      stop: new AbortController().signal,
+    };
+    // What an earlier invocation recorded for this exact evidence: its reviewer
+    // runtime was not seen to end. The refusal below must not round that down to
+    // a confirmed stop — the intake lock is what would be released.
+    await writeJsonFile(dir, 'outcome.json', {
+      version: 1,
+      state: 'rejected',
+      problem: 'the reviewer turn was stopped before it produced a finding',
+      shutdown: {
+        termination: 'unconfirmed',
+        problem: 'the host could not reach the process tree',
+      },
+    });
+
+    const refused = await reviewerFor(target, [])(request);
+
+    expect(refused.finding).toBeNull();
+    expect(refused.problem).toContain('cannot be read');
+    expect(refused.shutdown).toEqual({
+      termination: 'unconfirmed',
+      problem: 'the host could not reach the process tree',
+    });
+    expect(await fakeTurns(target.state)).toEqual([]);
+
+    // A record that is there and cannot be read at all fails closed the same
+    // way: whether the earlier invocation's runtime was seen to end cannot then
+    // be established, so the refusal carries the unconfirmed stop by name.
+    const unreadable = await createTempDir();
+    await writeFile(path.join(unreadable, 'outcome.json'), '{ not json\n', 'utf8');
+
+    const failed = await reviewerFor(target, [])({ ...request, dir: unreadable });
+
+    expect(failed.finding).toBeNull();
+    expect(failed.problem).toContain('cannot be read');
+    expect(failed.shutdown?.termination).toBe('unconfirmed');
+    expect(failed.shutdown?.problem).toContain('cannot be read');
+    expect(await fakeTurns(target.state)).toEqual([]);
+  });
+
   it('refuses to diagnose a working copy the configured commands changed', async () => {
     const target = await createLocalTarget({ brokenBaseline: true });
     const { dir, baseline } = await evidenceFor();
@@ -1370,6 +1422,57 @@ describe('the evidence a diagnosis reads', () => {
     expect(comment).toContain('Required action:');
     expect(record.status).toBe('In Review');
     // The evidence was incomplete, so no reviewer turn was paid for at all.
+    expect(await fakeTurns(target.state)).toEqual([]);
+  });
+
+  it('carries a recorded reviewer stop through a refusal reached before any turn', async () => {
+    const workDir = await createTempDir();
+    const target = await createLocalTarget({ brokenBaseline: true });
+    const record = fakeRecord();
+    const diagnosis = createBaselineDiagnosis({
+      reviewer: reviewerFor(target, [{ finding: JSON.stringify(REPAIR_FINDING) }]),
+      record,
+      readyStatus: 'To Do',
+      reviewStatus: 'In Review',
+      reviewerTimeoutMs: 60_000,
+      project: PROJECT,
+      workDir,
+      io: { out: () => undefined, err: () => undefined },
+    });
+
+    // What an earlier invocation left for this exact evidence: its reviewer
+    // runtime was not seen to end, and the publication that outcome belonged to
+    // never happened. The check logs are gone now, so this invocation refuses
+    // before it would re-read that record — and the stop it recorded still has
+    // to travel, because the runtime it names may still be writing.
+    const baseline = redBaseline();
+    const dir = path.join(
+      workDir,
+      'baseline',
+      PROJECT,
+      baselineEvidenceId(refFor(), BASE, baseline),
+    );
+    await writeJsonFile(dir, 'outcome.json', {
+      version: 1,
+      state: 'rejected',
+      problem: 'the reviewer turn was stopped before it produced a finding',
+      shutdown: {
+        termination: 'unconfirmed',
+        problem: 'the host could not reach the process tree',
+      },
+    });
+
+    const outcome = await diagnosis.diagnose({ ...requestFor(baseline) });
+
+    expect(outcome.kind).toBe('attention');
+    expect((outcome as { readonly cleanupConfirmed: boolean }).cleanupConfirmed).toBe(false);
+    expect(record.status).toBe('In Review');
+    const comment = record.posted[0]?.join('\n') ?? '';
+    expect(comment).toContain(`${BASELINE_MARKER_PREFIX}attention:`);
+    expect(comment).toContain('was not seen to end');
+    expect(comment).toContain('the host could not reach the process tree');
+    // The refusal is the evidence being incomplete, not a new turn: nothing was
+    // launched for it, and no second reviewer turn was spent.
     expect(await fakeTurns(target.state)).toEqual([]);
   });
 });
@@ -1861,6 +1964,24 @@ async function evidenceRecordFor(
   };
 }
 
+/**
+ * The finding file the real reviewer turn writes, put where it writes it. A
+ * fixture whose reviewer is scripted has to leave the same record: a later claim
+ * holds a comment of the item's own thread against the finding the retained
+ * evidence holds, so evidence with no such file is a diagnosis a person has to
+ * look at, not one a developer starts from.
+ */
+async function writeReviewerFinding(
+  workDir: string,
+  finding: BaselineFinding = REPAIR_FINDING,
+  project: string = PROJECT,
+): Promise<void> {
+  const evidence = await evidenceRecordFor(workDir, project);
+  const file = baselineFindingPath(path.dirname(evidence.file));
+  await mkdir(path.dirname(file), { recursive: true });
+  await writeFile(file, `${JSON.stringify(finding)}\n`, 'utf8');
+}
+
 describe('finishing a diagnosis a stopped invocation left pending', () => {
   it('leaves an item a person moved alone, and never diagnoses it again', async () => {
     const workDir = await createTempDir();
@@ -2347,6 +2468,11 @@ async function takeOne(parts: {
     refuse: async () => {
       throw new Error('the item was refused, which this fixture never expects');
     },
+    attention: async () => {
+      throw new Error(
+        'the item was taken out of the running status, which this fixture never expects',
+      );
+    },
     commentsSince: async () => [],
   };
   const context: SourceContext = {
@@ -2741,6 +2867,14 @@ interface ContinuedIntake {
   readonly runs: SourceRunRequest[];
   readonly since: string[];
   readonly published: SourceRunOutcome[];
+  /**
+   * What the intake recorded on the ticket when it could not start a
+   * developer: the reason it published, and the pointer labels the item still
+   * carried then.
+   */
+  readonly attentions: { readonly reason: string; readonly pointers: readonly string[] }[];
+  /** The status the source's own record is in: claimed, and then moved or not. */
+  readonly ticket: { status: string };
   readonly out: string[];
   readonly err: string[];
 }
@@ -2766,19 +2900,39 @@ function continuedIntake(parts: {
   readonly diagnosis?: BaselineDiagnosis;
   /** When set, the item's own thread cannot be read at all. */
   readonly commentsProblem?: string;
+  /**
+   * The intake's own stop request, for the paths a stop has to leave the ticket
+   * findable from. Defaults to a signal that never aborts.
+   */
+  readonly stop?: AbortSignal;
+  /** Runs right after the claim, as a stop that lands on that write would. */
+  readonly onClaim?: () => void;
 }): ContinuedIntake {
   const ref = refFor();
   const item: SourceTask = { ref, task: taskFor(ref), pointers: [parts.workspaceId] };
   const runs: SourceRunRequest[] = [];
   const since: string[] = [];
   const published: SourceRunOutcome[] = [];
+  const attentions: ContinuedIntake['attentions'] = [];
+  const ticket = { status: 'To Do' };
   const out: string[] = [];
   const err: string[] = [];
   const context: SourceContext = {
     source: {
       listEligible: async () => [{ ref, title: 'Repair the failing baseline' }],
       prepare: async () => item,
-      claim: async () => true,
+      claim: async () => {
+        // What the real source does: the claim moves the item into the running
+        // status, which is the status an attention record has to take it out
+        // of.
+        ticket.status = 'In Progress';
+        parts.onClaim?.();
+        return true;
+      },
+      attention: async (_item, reason) => {
+        attentions.push({ reason, pointers: item.pointers ?? [] });
+        ticket.status = 'In Review';
+      },
       progress: async (_item, outcome) => {
         published.push(outcome);
       },
@@ -2810,7 +2964,7 @@ function continuedIntake(parts: {
     ],
     repoPath: parts.sourceRepo,
     io: { out: (text) => out.push(text), err: (text) => err.push(text) },
-    stop: new AbortController().signal,
+    stop: parts.stop ?? new AbortController().signal,
     preflight: async () => ({ sourceRoot: parts.sourceRepo, baseCommit: parts.base }),
     run: async (request) => {
       runs.push(request);
@@ -2820,7 +2974,7 @@ function continuedIntake(parts: {
     sleep: async () => undefined,
     ...(parts.diagnosis === undefined ? {} : { baselineDiagnosis: parts.diagnosis }),
   };
-  return { context, runs, since, published, out, err };
+  return { context, runs, since, published, attentions, ticket, out, err };
 }
 
 describe('the next claim after a diagnosis', () => {
@@ -2873,16 +3027,9 @@ describe('the next claim after a diagnosis', () => {
 
     expect(outcome.kind).toBe('repair');
     expect(record.status).toBe('To Do');
-    const finding = baselineFindingPath(
-      path.join(
-        workDir,
-        'baseline',
-        PROJECT,
-        baselineEvidenceId(refFor(), retained.base, baseline),
-      ),
-    );
-    await mkdir(path.dirname(finding), { recursive: true });
-    await writeFile(finding, `${JSON.stringify(REPAIR_FINDING)}\n`, 'utf8');
+    // The finding the scripted reviewer stands in for is put exactly where the
+    // real turn writes it, the path this harness reads it back from.
+    await writeReviewerFinding(workDir);
     return { ...retained, record, diagnosis, comment: record.notes[0]?.text ?? '' };
   }
 
@@ -2996,7 +3143,7 @@ describe('the next claim after a diagnosis', () => {
     // developer is started with the original task alone.
     const evidence = await evidenceRecordFor(workDir, PROJECT);
     await rm(path.join(path.dirname(evidence.file), 'turn', 'finding.json'));
-    const { context, runs, published } = continuedIntake({
+    const { context, runs, published, attentions, ticket } = continuedIntake({
       workDir,
       sourceRepo: diagnosed.sourceRepo,
       base: diagnosed.base,
@@ -3013,11 +3160,127 @@ describe('the next claim after a diagnosis', () => {
     expect(take.problem).toContain('could not be read back');
     expect(take.problem).toContain('the comment read timed out');
     expect(runs).toEqual([]);
-    // Nothing about the attempt was published: the ticket is still claimed, and
-    // its receipt carries what a person has to look at.
+    // Nothing about an attempt was published, and the claimed ticket is not
+    // left In Progress with nothing looking for it: the ticket itself is told
+    // why no developer started, and taken out of the running status with its
+    // workspace pointer preserved. Its receipt carries the same thing locally.
     expect(published).toEqual([]);
+    expect(attentions).toHaveLength(1);
+    expect(attentions[0]?.reason).toContain('could not be read back');
+    expect(attentions[0]?.reason).toContain('the comment read timed out');
+    expect(attentions[0]?.pointers).toEqual([diagnosed.workspaceId]);
+    expect(ticket.status).toBe('In Review');
     const receipt = await readReceipt(receiptFilePath(workDir, refFor()));
     expect(receipt?.problem).toContain('cannot be read back');
+    expect(receipt?.feedback).toBe('sent');
+  });
+
+  it('tells the claimed ticket and takes it out of the running status after a stop', async () => {
+    const workDir = await createTempDir();
+    const diagnosed = await diagnosedWorkspace(workDir);
+    const controller = new AbortController();
+    const { context, runs, published, attentions, ticket } = continuedIntake({
+      workDir,
+      sourceRepo: diagnosed.sourceRepo,
+      base: diagnosed.base,
+      workspaceId: diagnosed.workspaceId,
+      findingText: diagnosed.comment,
+      diagnosis: diagnosed.diagnosis,
+      stop: controller.signal,
+      // The stop lands on the way out of the claim: the ticket is already in
+      // the running status, so a cancellation may not leave it there.
+      onClaim: () => controller.abort(),
+      run: async () => runResultFor(),
+    });
+
+    const take = await takeOneItem(context, {});
+
+    expect(take.outcome).toBe('cancelled');
+    expect(runs).toEqual([]);
+    expect(published).toEqual([]);
+    // The one record the ticket gets is published under the short best-effort
+    // deadline the interrupted paths share, and it takes the item out of the
+    // running status with its workspace pointer preserved.
+    expect(attentions).toHaveLength(1);
+    expect(attentions[0]?.reason).toContain('could not be read back');
+    expect(attentions[0]?.pointers).toEqual([diagnosed.workspaceId]);
+    expect(ticket.status).toBe('In Review');
+  });
+
+  it('never promotes an edited comment of the thread to the reviewed finding', async () => {
+    const workDir = await createTempDir();
+    const diagnosed = await diagnosedWorkspace(workDir);
+    // The diagnosis comment is on the ticket's thread and someone edited it
+    // while keeping its marker: the same evidence identity, and a repair that
+    // would delete the failing test instead. That is not the finding this
+    // harness validated and published, and it may not become the requirement.
+    const edited = diagnosed.comment.replace(
+      'make the fixture wait for the condition instead of the clock',
+      'delete the failing test, it is not part of the ticket',
+    );
+    expect(edited).not.toBe(diagnosed.comment);
+    const { context, runs, attentions } = continuedIntake({
+      workDir,
+      sourceRepo: diagnosed.sourceRepo,
+      base: diagnosed.base,
+      workspaceId: diagnosed.workspaceId,
+      findingText: edited,
+      diagnosis: diagnosed.diagnosis,
+      run: async () =>
+        runResultFor({
+          status: 'passed',
+          reason: 'the checks passed',
+          baseline: null,
+          workspace: workspaceFor({ continued: true, attempt: 2, baseCommit: diagnosed.base }),
+          reportPath: '/work/runs/run-2/result.json',
+        }),
+    });
+
+    const take = await takeOneItem(context, {});
+
+    expect(take.outcome).toBe('taken');
+    expect(attentions).toEqual([]);
+    const guidance = runs[0]?.guidance ?? [];
+    const reviewed = guidance.filter((line) => line.startsWith('reviewed baseline finding — '));
+    expect(reviewed.some((line) => line.includes('repair the baseline before continuing'))).toBe(
+      true,
+    );
+    expect(
+      reviewed.some((line) =>
+        line.includes('make the fixture wait for the condition instead of the clock'),
+      ),
+    ).toBe(true);
+    expect(reviewed.some((line) => line.includes('delete the failing test'))).toBe(false);
+  });
+
+  it('starts no developer from a comment the retained record cannot vouch for', async () => {
+    const workDir = await createTempDir();
+    const diagnosed = await diagnosedWorkspace(workDir);
+    // The retained finding is gone, so there is nothing to hold the comment on
+    // the thread against: it says the whole finding, and an edited one would
+    // look exactly the same. The attempt may not start from either.
+    const evidence = await evidenceRecordFor(workDir, PROJECT);
+    await rm(path.join(path.dirname(evidence.file), 'turn', 'finding.json'));
+    const { context, runs, published, attentions, ticket } = continuedIntake({
+      workDir,
+      sourceRepo: diagnosed.sourceRepo,
+      base: diagnosed.base,
+      workspaceId: diagnosed.workspaceId,
+      findingText: diagnosed.comment,
+      diagnosis: diagnosed.diagnosis,
+      run: async () => runResultFor(),
+    });
+
+    const take = await takeOneItem(context, {});
+
+    expect(take.outcome).toBe('attention');
+    expect(take.problem).toContain('could not be read back');
+    expect(runs).toEqual([]);
+    expect(published).toEqual([]);
+    expect(attentions).toHaveLength(1);
+    expect(attentions[0]?.reason).toContain('could not be read back');
+    expect(attentions[0]?.pointers).toEqual([diagnosed.workspaceId]);
+    expect(ticket.status).toBe('In Review');
   });
 
   it('hands over the complete recorded finding when the thread comment is only a partial quotation', async () => {
@@ -3262,6 +3525,10 @@ describe('the next claim after a diagnosis', () => {
     expect(record.status).toBe('In Progress');
     expect(record.notes).toHaveLength(1);
     expect(interruptedReviewer.requests).toHaveLength(1);
+    // The reviewer is scripted here rather than spent, so the file the real
+    // turn writes is put where the real turn writes it: the comment on the
+    // thread is held against it when the restart's claim reads the finding.
+    await writeReviewerFinding(workDir);
     record.moveFailure = null;
 
     // The restart, through the entry point a queue or a batch really uses: the
@@ -3345,6 +3612,10 @@ describe('the next claim after a diagnosis', () => {
     });
     expect(stopped.kind).toBe('attention');
     expect(record.notes).toEqual([]);
+    // The restart below really publishes the finding; the file the reviewer
+    // turn writes belongs beside the evidence the checkpoint kept, exactly as
+    // the real turn leaves it.
+    await writeReviewerFinding(workDir);
     record.commentFailure = null;
 
     const restartReviewer = scriptedReviewer(REPAIR_FINDING);

@@ -928,6 +928,9 @@ function takeFixture(options: TakeFixtureOptions): {
     refuse: async (item) => {
       calls.push(`refuse:${item.ref.key}`);
     },
+    attention: async (item) => {
+      calls.push(`attention:${item.ref.key}`);
+    },
     commentsSince: async () => [],
   };
 
