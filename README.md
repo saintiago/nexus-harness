@@ -910,8 +910,10 @@ What one invocation does:
    A completed red baseline is the same idea one step earlier: the configured reviewer diagnoses
    that exact snapshot in one bounded local turn, does not touch GitHub, and an actionable finding
    is one Jira comment plus the same return to To Do with the pointer intact. The next claim
-   continues the workspace with the finding as guidance — every field of it, on every rung of that
-   claim — repairs the baseline, and then continues the original task. That finding is read from
+   continues the workspace with the finding as guidance — every field of it whole, on every rung of
+   that claim, at the width the reviewer's finding was validated at rather than the bounded width
+   the comment on the ticket renders it as — repairs the baseline, and then continues the original
+   task. That finding is read from
    the ticket's thread, or, when the thread cannot supply it, from the evidence the diagnosis kept
    under the connected project's own namespace. The thread counts only as its whole comment: the
    marker naming the evidence the retained record closed as a repair, all four fields, and every

@@ -1063,13 +1063,17 @@ never settled: its problem and the unconfirmed stop are recorded, the item stays
 evidence and what a person must do, and the intake keeps its lock for inspection instead of
 declaring an evidence directory safe while a runtime may still be writing to it.
 
-An actionable finding becomes exactly one comment on the issue, naming the marker
+An actionable finding becomes exactly one concise comment on the issue, naming the marker
 `nexus-baseline:repair:<evidence>`, the failing check, the evidence, the likely cause and the repair
-guidance, and the issue returns to `readyStatus` with its workspace pointer untouched. The queue
-then continues that same ticket before any unrelated ready work: the next claim reopens the same
+guidance, and the issue returns to `readyStatus` with its workspace pointer untouched. That comment
+is a rendering of the finding, not the width a finding has: each of its lines is bounded, so the
+record on the ticket stays concise. The queue then continues that same ticket before any unrelated
+ready work: the next claim reopens the same
 workspace, is told the finding as guidance, repairs the baseline, and continues the
-original task. That guidance carries each field of the finding whole on its own line — the four
-things the developer has to act on are never collapsed into one bounded paragraph — and it is in the
+original task. That guidance carries each field of the finding whole on its own line, at the width
+the reviewer's finding was validated at (up to 2,000 characters per field, `finding.json` above) —
+the four things the developer has to act on are never collapsed into one bounded paragraph, and no
+part of a field is cut to the width a comment line happens to have — and it is in the
 brief of every rung of the climb that claim may take, not only its first. The finding also carries
 the order it belongs in, as a line of its own: the baseline is repaired before the original task
 continues, and the coding prompt renders the finding as a requirement of the attempt rather than as

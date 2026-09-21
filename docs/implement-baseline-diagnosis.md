@@ -113,7 +113,10 @@ workspace, receives the finding as guidance, repairs the baseline, and carries o
 carries each field of the finding whole and on its own line rather than as one collapsed comment, and
 it is in the brief of every rung of the climb that claim may take, not only the first: the collapse
 used to cut off exactly the likely cause and the repair, which are the two fields a developer acts
-on. The finding also carries the order it belongs in: the guidance and the coding prompt both say
+on. The comment on the ticket is a concise rendering of the finding and the guidance is not: each
+comment line is bounded, while a field is handed on at the width the reviewer's finding was
+validated at (`finding.json`'s own per-field bound), so a repair whose instruction runs past one
+comment line arrives complete. The finding also carries the order it belongs in: the guidance and the coding prompt both say
 that the baseline is repaired before the original task continues, so an attempt is never left to
 read the repair as optional context. That finding is not context the attempt may start without: the item's own thread is its ordinary
 source, and when the thread cannot supply it — a read that failed, a comment that no longer says the
@@ -297,7 +300,11 @@ code lives and what owns what.
   attempt and every field of the reviewed finding — and the requirement, asserted in the developer's
   own prompt, that the baseline is repaired before the original task continues — on a later rung of the same climb as well as on
   the first, and the finding recovered from the retained evidence when the thread cannot be read at
-  all; a required finding nothing can supply — the retained record cannot be read back — starting no
+  all; a field longer than one comment line, from either route: the comment the diagnosis writes
+  stays a bounded rendering of it, the comment the next claim reads is still accepted as the whole
+  comment, and the developer's guidance — and the prompt the real `source run` builds from it — carries
+  the field whole, the instruction past character 600 included; a required finding nothing can supply
+  — the retained record cannot be read back — starting no
   developer, with the claimed ticket told why and taken out of the running status under the bounded
   deadline even after a stop, with its pointer preserved, and with the receipt naming the same thing
   locally; the whole-comment check that decides whether a comment of the thread is the

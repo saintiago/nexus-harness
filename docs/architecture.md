@@ -60,7 +60,10 @@ and finishes whatever a previous invocation left pending before it discovers or 
   that continuation at all — from the item's own thread, but only as the whole comment that names the
   exact evidence the retained record closed as a repair *and* repeats every field of the finding that
   record holds — a marker names the evidence, never the text, so an edited comment is ordinary
-  context — otherwise read back from that retained evidence, otherwise intake stops with the ticket's
+  context — otherwise read back from that retained evidence: the comment is the thread's rendering
+  and the guidance is the finding, each field whole at the width the reviewer's turn was validated
+  at, so a field one bounded comment line cannot hold still reaches the developer — otherwise
+  intake stops with the ticket's
   state named and, because the item is already claimed, tells it why on its own thread and takes it
   out of the running status with its workspace pointer preserved. A stop that lands while the
   reviewer turn is running is recorded rather than dropped: the one comment and the one move run

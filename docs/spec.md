@@ -377,9 +377,12 @@ Windows and git would otherwise refuse that repository outright.
 
 An actionable finding produces **one** concise Jira comment naming those four things, and the same
 ticket returns to the status it was claimed from with its workspace pointer and its original
-acceptance criteria preserved. The loop then continues that ticket — before unrelated ready work —
+acceptance criteria preserved. The comment is a rendering of that finding and not its width: its
+own lines are bounded, while the finding a developer is handed is not cut to them. The loop then
+continues that ticket — before unrelated ready work —
 and the next claim reopens the same retained workspace, is told the original task *and* the reviewed
-finding as guidance — each field of the finding whole and on its own line, and on every rung of the
+finding as guidance — each field of the finding whole and on its own line, at the width the
+reviewer's finding was validated at, and on every rung of the
 ladder the returned ticket climbs, not only the first — repairs the baseline first, and only then
 continues the original task. That ordering is stated, not left to inference: the guidance carries
 the requirement that the baseline is repaired before the original task continues, and the coding

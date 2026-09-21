@@ -75,7 +75,7 @@ src/
     receipts.ts                   (238)  the per-project intake lock and one receipt per attempted item
     eligibility.ts                (81)   what an item is: a first attempt, a continuation, or a refusal
     guidance.ts                   (92)   what an attempt is told, bounded: the finding, the thread, attempts
-    baseline.ts                   (1384) the pre-delivery diagnosis: its evidence, one comment, one move
+    baseline.ts                   (1419) the pre-delivery diagnosis: its evidence, one comment, one move
     coordinator.ts                (1804) runSource and watchSource: discovery, the ladder, publication
     list.ts                       (88)   the read-only `source list` preview
     jira/
@@ -316,7 +316,9 @@ further would separate one decision from itself: `runs/runner.ts` (the loop), `s
   to be told, which is that same recorded outcome rather than the turn's own file — with the
   identity it was published for, and with the whole-comment check that decides
   whether a comment of the thread is that same finding, field for field, rather than an edited
-  comment that kept the marker — through the reviewer and record functions it
+  comment that kept the marker, and with the one rendering that becomes guidance — each field whole,
+  at the width the reviewer's finding was validated at rather than the bounded width one comment
+  line has, whichever of the two routes supplied it — through the reviewer and record functions it
   is handed — and `resumeStop`, the one
   reading of what a resume outcome means for its caller's intake: a stop, and whether everything the
   diagnosis started was confirmed stopped.
