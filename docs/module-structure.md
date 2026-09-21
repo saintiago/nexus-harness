@@ -75,17 +75,17 @@ src/
     receipts.ts                   (238)  the per-project intake lock and one receipt per attempted item
     eligibility.ts                (81)   what an item is: a first attempt, a continuation, or a refusal
     guidance.ts                   (92)   what an attempt is told, bounded: the finding, the thread, attempts
-    baseline.ts                   (1315) the pre-delivery diagnosis: its evidence, one comment, one move
+    baseline.ts                   (1313) the pre-delivery diagnosis: its evidence, one comment, one move
     coordinator.ts                (1772) runSource and watchSource: discovery, the ladder, publication
     list.ts                       (88)   the read-only `source list` preview
     jira/
-      connector.ts                (42)   createJiraSource: the wiring of the functions below
+      connector.ts                (48)   createJiraSource: the wiring of the functions below
       http.ts                     (230)  the gateway client: auth, timeouts, failure classification
       search.ts                   (109)  the queue JQL and the paged search
       issue.ts                    (131)  issue reads, eligibility, and the source reference
       tasks.ts                    (96)   one issue mapped onto the existing four-field Task
       transitions.ts              (142)  transition discovery, selection by target status, posting
-      comments.ts                 (463)  the thread read, the result, refusal and attention comments
+      comments.ts                 (469)  the thread read, the result, refusal and attention comments
       baseline.ts                 (35)   the thread, one comment, one move, and whether it is still running
       labels.ts                   (32)   the workspace pointer label, added once
       json.ts                     (20)   the narrow readers every Jira answer goes through
