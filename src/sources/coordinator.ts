@@ -719,8 +719,8 @@ function threadFinding(
  * The reviewed finding one retained workspace was returned for repair with,
  * read back from the evidence beside it. It is how a claim that continues such
  * a workspace is guaranteed the finding even when the item's own thread cannot
- * supply it:
- * `none` means nothing was returned for repair — an ordinary continuation —
+ * supply it: `none` means nothing was returned for repair — an ordinary
+ * continuation —
  * while `problem` means the evidence cannot be read clearly enough to say
  * whether one is required, so no developer may start (docs/WORKFLOW.md §11). A
  * `finding` carries the identity of the evidence the workspace was returned for
