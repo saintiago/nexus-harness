@@ -45,7 +45,7 @@ import { createCompletionPass } from '../sources/completion.js';
 import type { ArmOutcome, CompletionOutcome } from '../sources/completion.js';
 import type { SourceContext, SourceTake } from '../sources/contract.js';
 import { SourceError } from '../sources/contract.js';
-import { createBaselineDiagnosis } from '../sources/baseline.js';
+import { createBaselineDiagnosis, resumeStop } from '../sources/baseline.js';
 import { takeOneItem } from '../sources/coordinator.js';
 import { createJiraBaselineRecord } from '../sources/jira/baseline.js';
 import { discoverQueueWork } from '../sources/jira/queue.js';
@@ -558,15 +558,17 @@ async function queueCommand(options: QueueCommandOptions, context: CliContext): 
               // ordinary repair claim continues the same retained workspace
               // (docs/WORKFLOW.md §11).
               const resumed = await baselineDiagnosis.resume(stop.signal);
+              const stopped = resumeStop(resumed);
+              if (stopped !== null) {
+                // Nothing else is discovered or claimed: the item needs a
+                // person, or the intake is being stopped. `cleanupConfirmed`
+                // travels with the stop, so a reviewer runtime that could not
+                // be confirmed ended keeps this invocation's intake lock
+                // instead of being rounded into an ordinary clean stop.
+                return { problem: stopped.detail, cleanupConfirmed: stopped.cleanupConfirmed };
+              }
               if (resumed !== null) {
-                if (resumed.kind === 'problem' || resumed.kind === 'attention') {
-                  throw new SourceError('fatal', resumed.detail);
-                }
-                if (resumed.kind === 'repair') {
-                  sourceIo.out(resumed.detail);
-                }
-                // `cancelled` wrote nothing: the loop checks the stop request
-                // before it consumes anything.
+                sourceIo.out(resumed.detail);
               }
               return await discoverQueueWork(sourceConfig, jiraHttp, stop.signal);
             },

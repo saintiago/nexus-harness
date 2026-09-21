@@ -17,9 +17,10 @@ import { runCli } from '../src/cli.js';
 import { EXIT_CANCELLED, EXIT_INPUT_ERROR, EXIT_OK, EXIT_USAGE } from '../src/cli/context.js';
 import type { CliContext, InterruptSignals } from '../src/cli/context.js';
 import { loadConfiguration, projectLockNamespace } from '../src/config/load.js';
+import { baselineEvidenceId } from '../src/sources/baseline.js';
 import { acquireIntakeLock, intakeLockPath } from '../src/sources/receipts.js';
 import { completionLogsDir } from '../src/sources/completion.js';
-import type { RunReport, SourceRef } from '../src/shared/types.js';
+import type { CheckRoundResult, RunReport, SourceRef } from '../src/shared/types.js';
 import { prepareWorkspace } from '../src/workspace/prepare.js';
 import { preflightSource } from '../src/workspace/preflight.js';
 import { allocateRunDirectory } from '../src/workspace/run-directory.js';
@@ -355,6 +356,157 @@ describe('the queue command line', () => {
       expect(fixture.release()).toBe(true);
     },
   );
+
+  it('stops before discovery, and keeps the lock, when a resumed diagnosis could not confirm its reviewer stopped', async () => {
+    const fixture = await cliFixture({ config: queueConfig });
+    const root = path.dirname(fixture.configPath);
+    const workDir = path.join(root, 'out');
+    const loaded = await loadConfiguration(fixture.configPath, projectConfigFile(fixture.repo));
+    const namespace = projectLockNamespace(loaded.config);
+    const base = git(fixture.repo, 'rev-parse', 'HEAD').trim();
+
+    // What a stopped invocation left behind: the evidence of one red baseline
+    // (recorded before its reviewer turn), an outcome recording that the turn
+    // was rejected because the runtime's own stop could not be confirmed, and
+    // the issue still in the status it was claimed into. Nothing is on the
+    // thread yet, so the restart has to publish what that outcome says.
+    const ref = {
+      type: 'jira',
+      scope: SOURCE.siteUrl,
+      id: '7',
+      key: 'SAM1-7',
+      url: `${SOURCE.siteUrl}/browse/SAM1-7`,
+      updatedAt: '2026-09-20T00:00:00Z',
+    };
+    const logsDir = path.join(root, 'pending');
+    mkdirSync(logsDir, { recursive: true });
+    const stdoutPath = path.join(logsDir, 'baseline-check-1.stdout.log');
+    const stderrPath = path.join(logsDir, 'baseline-check-1.stderr.log');
+    await writeFile(stdoutPath, 'the check failed on this machine\n', 'utf8');
+    await writeFile(stderrPath, '', 'utf8');
+    const round: CheckRoundResult = {
+      outcome: 'failed',
+      setup: [],
+      checks: [
+        {
+          command: ['node', '--version'],
+          cwd: fixture.repo,
+          startedAt: '2026-09-20T00:00:00.000Z',
+          endedAt: '2026-09-20T00:00:01.000Z',
+          outcome: 'exited',
+          exitCode: 1,
+          signal: null,
+          launchError: null,
+          timeoutMs: 600_000,
+          termination: null,
+          terminationProblem: null,
+          stdoutPath,
+          stderrPath,
+        },
+      ],
+      problem: null,
+    };
+    const evidenceId = baselineEvidenceId(ref, base, round);
+    const evidenceDir = path.join(workDir, 'baseline', namespace, evidenceId);
+    await writeJsonFile(evidenceDir, 'evidence.json', {
+      version: 1,
+      evidenceId,
+      project: namespace,
+      ref,
+      task: {
+        id: 'SAM1-7',
+        title: 'Repair the failing baseline and finish the ticket',
+        description: 'The tiny target needs the ticket work finished.',
+        acceptanceCriteria: ['The configured checks exit 0.'],
+      },
+      workspace: {
+        workspaceId: 'SAM1-7',
+        workspacePath: fixture.repo,
+        branch: 'harness/SAM1-7',
+        baseCommit: base,
+      },
+      baseline: round,
+    });
+    await writeJsonFile(evidenceDir, 'outcome.json', {
+      version: 1,
+      state: 'rejected',
+      problem: 'the baseline reviewer turn for SAM1-7 was stopped before it wrote a finding',
+      shutdown: {
+        termination: 'unconfirmed',
+        problem: 'the host could not reach the process tree',
+      },
+    });
+
+    // The issue as the diagnosis reads and writes it: still In Progress, with a
+    // workflow that reaches In Review, and no comment yet.
+    let status = 'In Progress';
+    const searches: string[] = [];
+    const comments: unknown[] = [];
+    const transitions: unknown[] = [];
+    const issue = (): unknown => ({
+      id: '7',
+      key: 'SAM1-7',
+      fields: {
+        summary: 'Repair the failing baseline and finish the ticket',
+        status: { name: status },
+        labels: ['harness-task'],
+        project: { key: 'SAM1' },
+        issuetype: { name: 'Task' },
+        updated: '2026-09-20T00:00:00Z',
+      },
+    });
+    const jira: typeof fetch = async (input, init) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      const method = init?.method ?? 'GET';
+      const body = typeof init?.body === 'string' ? (JSON.parse(init.body) as unknown) : undefined;
+      const answer = (value: unknown): Response =>
+        new Response(JSON.stringify(value), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      if (url.includes('/search/jql')) {
+        searches.push(url);
+        return answer({ issues: [], isLast: true });
+      }
+      if (url.includes('/comment')) {
+        if (method === 'POST') {
+          comments.push(body);
+          return answer({ id: 'c1' });
+        }
+        return answer({ startAt: 0, maxResults: 100, total: 0, comments: [] });
+      }
+      if (url.includes('/transitions')) {
+        if (method === 'POST') {
+          transitions.push(body);
+          status = 'In Review';
+          return new Response(null, { status: 204 });
+        }
+        return answer({
+          transitions: [{ id: '12', name: 'Send to review', to: { name: 'In Review' } }],
+        });
+      }
+      return answer(issue());
+    };
+
+    const code = await runCli(
+      ['queue', 'run', '--config', fixture.configPath, '--repo', fixture.repo],
+      { ...fixture.context, fetch: jira },
+    );
+
+    // The restart finished the pending diagnosis and stopped there: one
+    // comment, one move, no coding turn, and no discovery of any other ticket.
+    expect(code).toBe(EXIT_INPUT_ERROR);
+    expect(comments).toHaveLength(1);
+    expect(transitions).toHaveLength(1);
+    expect(searches).toEqual([]);
+    expect(fixture.turns()).toBe(0);
+    expect(output(fixture)).toContain('the red baseline is not actionable');
+    expect(output(fixture)).toContain('In Review');
+    // The reviewer runtime that could not be confirmed stopped keeps the lock:
+    // something this invocation started may still be writing.
+    expect(existsSync(intakeLockPath(workDir, namespace))).toBe(true);
+    expect(output(fixture)).toContain('was left in place for inspection');
+  });
 
   it('resumes an admitted merged In Review ticket, then a restart after Done has no completion effects', async () => {
     const fixture = await cliFixture({ config: lensQueueConfig });

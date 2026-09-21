@@ -21,9 +21,10 @@ const GUIDANCE_LINE_CHARS = 600;
 /**
  * How many lines the reviewed baseline findings may take by themselves. The
  * finding is what the attempt must address before it goes on with the ticket, so
- * it is never the context this budget drops to make room for later chatter: two
- * findings' worth of fields fit, and anything older than that is history the
- * workspace's own ledger still holds.
+ * it is never the context this budget drops to make room for later chatter: one
+ * finding's own fields and the order they belong in fit whole — two of them
+ * nearly do — and anything older than that is history the workspace's own
+ * ledger still holds.
  */
 const GUIDANCE_FINDING_MAX_LINES = 8;
 

@@ -52,12 +52,34 @@ export const CODEX_EXECUTABLE = 'codex';
  * retained working copy, so it needs the unsandboxed policy above. A turn that
  * must not change what it is looking at — the pre-delivery baseline diagnostic —
  * runs under `workspace-write` instead: it reads anywhere, and the runtime's own
- * sandbox refuses every write outside the turn's working root and the host's
- * temporary directory (docs/spec.md §11). The policy is a property of the turn,
- * never of the failure that follows it: nothing widens a launch, and a coding
- * turn is never started from a diagnostic.
+ * sandbox refuses every write outside the turn's own working root — the host's
+ * temporary roots are excluded from that policy, not granted by it
+ * (docs/spec.md §11). The policy is a property of the turn, never of the failure
+ * that follows it: nothing widens a launch, and a coding turn is never started
+ * from a diagnostic.
  */
 export type CodexSandboxPolicy = 'danger-full-access' | 'workspace-write';
+
+/**
+ * What one `workspace-write` launch adds to its policy: the host's temporary
+ * roots are taken out of the writable set, so the writable roots are exactly the
+ * turn's own working directory. The runtime's `workspace-write` policy otherwise
+ * also permits writes under the host's temporary directory, and `workDir` is an
+ * arbitrary path: with a `workDir` beneath a temporary root, the retained
+ * working copy and the snapshot a diagnosis inspects would both sit inside a
+ * writable root, and starting the turn in `turn/` would not make either of them
+ * read-only. The keys are the runtime's own configuration for that policy
+ * (`sandbox_workspace_write.exclude_tmpdir_env_var` and
+ * `sandbox_workspace_write.exclude_slash_tmp`), passed as `-c` overrides beside
+ * the policy they narrow; the subcommand accepts them, and a runtime that
+ * refuses one refuses the launch instead of widening it.
+ */
+const WORKSPACE_WRITE_EXCLUSIONS: readonly string[] = [
+  '-c',
+  'sandbox_workspace_write.exclude_tmpdir_env_var=true',
+  '-c',
+  'sandbox_workspace_write.exclude_slash_tmp=true',
+];
 
 /**
  * The complete suffix the adapter appends to the configured launch prefix for
@@ -65,7 +87,16 @@ export type CodexSandboxPolicy = 'danger-full-access' | 'workspace-write';
  * there is the comment above.
  */
 export function codexExecArguments(policy: CodexSandboxPolicy): readonly string[] {
-  return ['--ask-for-approval', 'never', 'exec', '--sandbox', policy, '--json', '-'];
+  return [
+    '--ask-for-approval',
+    'never',
+    'exec',
+    '--sandbox',
+    policy,
+    ...(policy === 'workspace-write' ? WORKSPACE_WRITE_EXCLUSIONS : []),
+    '--json',
+    '-',
+  ];
 }
 
 /** The suffix every coding turn of a run uses: the unsandboxed policy. */

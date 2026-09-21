@@ -11,6 +11,7 @@
  */
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { runCli } from '../src/cli.js';
@@ -47,10 +48,11 @@ import type {
 import {
   BASELINE_MARKER_PREFIX,
   baselineEvidenceId,
+  baselineFindingGuidanceLines,
   createBaselineDiagnosis,
 } from '../src/sources/baseline.js';
 import { guidanceFrom } from '../src/sources/guidance.js';
-import { takeOneItem } from '../src/sources/coordinator.js';
+import { runSource, takeOneItem, watchSource } from '../src/sources/coordinator.js';
 import { intakeLockPath, readReceipt, receiptFilePath } from '../src/sources/receipts.js';
 import type { CheckRoundResult, CommandResult } from '../src/shared/types.js';
 import type { SourceRef, Task } from '../src/shared/types.js';
@@ -748,6 +750,17 @@ describe('the baseline reviewer turn', () => {
     expect(sandbox).toBeGreaterThanOrEqual(0);
     expect(argv[sandbox + 1]).toBe('workspace-write');
     expect(argv).not.toContain('danger-full-access');
+    // The policy's writable roots are the turn's own working root: the host's
+    // temporary roots are excluded, so a `workDir` beneath one cannot put the
+    // retained working copy or the snapshot inside a writable root.
+    expect(argv).toContain('sandbox_workspace_write.exclude_tmpdir_env_var=true');
+    expect(argv).toContain('sandbox_workspace_write.exclude_slash_tmp=true');
+    // This fixture is that supported configuration: its evidence directory —
+    // with the snapshot, the turn's working root, and the retained workspace's
+    // sibling evidence — really does sit beneath the host's temporary
+    // directory, so the exclusion is what keeps the two inspected trees out of
+    // the launch's writable roots here.
+    expect(path.relative(os.tmpdir(), dir).startsWith('..')).toBe(false);
     expect(turns[0]?.argv.at(-2)).toBe('--skip-git-repo-check');
     // The turn's own environment tells git that the pinned snapshot is a
     // repository it may read: the sandbox runs its commands under another
@@ -1157,6 +1170,11 @@ describe('the guidance one continued attempt is given', () => {
     );
 
     const joined = guidance.join('\n');
+    // The actionable finding carries the ordering requirement as its first
+    // line: the baseline is repaired before the original task continues.
+    expect(guidance[0]).toBe(
+      'reviewed baseline finding — repair the baseline before continuing the original task',
+    );
     // Each field is its own line, at the width the comment itself wrote, so the
     // collapsed-comment truncation cannot eat the cause and the repair.
     for (const field of ['failing check', 'evidence', 'likely cause', 'repair guidance']) {
@@ -1191,6 +1209,26 @@ describe('the guidance one continued attempt is given', () => {
       guidance.some((line) => line.includes('reviewed baseline finding — repair guidance: ')),
     ).toBe(true);
     expect(guidance.length).toBeLessThanOrEqual(12);
+  });
+
+  it('carries the repair-first requirement from the evidence as well as from the thread', () => {
+    // The same actionable finding, read back from the evidence the diagnosis
+    // kept beside the workspace instead of from the thread: the requirement
+    // that the baseline comes first is part of it either way, and it is never
+    // dropped from a finding a developer is handed.
+    const fromEvidence = baselineFindingGuidanceLines(REPAIR_FINDING);
+    expect(fromEvidence[0]).toBe(
+      'reviewed baseline finding — repair the baseline before continuing the original task',
+    );
+    expect(
+      fromEvidence.some((line) => line.startsWith('reviewed baseline finding — repair guidance: ')),
+    ).toBe(true);
+
+    // A non-actionable diagnosis names no repair, so it carries no ordering
+    // requirement: no developer is started from it in the first place.
+    const inconclusive = baselineFindingGuidanceLines(INCONCLUSIVE_FINDING);
+    expect(inconclusive.some((line) => line.includes('repair the baseline before'))).toBe(false);
+    expect(inconclusive.some((line) => line.includes('required action: '))).toBe(true);
   });
 });
 
@@ -2821,6 +2859,112 @@ describe('the next claim after a diagnosis', () => {
   });
 });
 
+describe('a resume that could not confirm its reviewer stopped', () => {
+  /** One intake whose pending diagnosis reports what its reviewer stop observed. */
+  async function resumeIntake(cleanupConfirmed: boolean): Promise<{
+    readonly workDir: string;
+    readonly context: SourceContext;
+    readonly runs: SourceRunRequest[];
+    readonly err: string[];
+    readonly probes: () => { readonly discoveries: number; readonly sleeps: number };
+  }> {
+    const workDir = await createTempDir();
+    const { sourceRepo, base, workspaceId } = await retainedWorkspace(workDir, [baselineAttempt()]);
+    const probe = continuedIntake({
+      workDir,
+      sourceRepo,
+      base,
+      workspaceId,
+      findingText: findingTextFor(),
+      // The pending diagnosis reports a reviewer runtime the harness could not
+      // confirm stopped — the outcome only a real launch can produce, handed
+      // here as the diagnosis boundary hands it to its callers.
+      diagnosis: {
+        diagnose: async () => {
+          throw new Error('nothing on this path diagnoses fresh evidence');
+        },
+        resume: async () => ({
+          kind: 'attention',
+          detail: cleanupConfirmed
+            ? `${ISSUE_KEY}: the baseline diagnosis needs a person`
+            : `${ISSUE_KEY}: the reviewer runtime could not be confirmed stopped`,
+          commentId: 'c1',
+          cleanupConfirmed,
+        }),
+        reviewedFinding: async () => ({ kind: 'none' }),
+      },
+      run: async () => {
+        throw new Error('no coding turn may start');
+      },
+    });
+    let discoveries = 0;
+    let sleeps = 0;
+    const context: SourceContext = {
+      ...probe.context,
+      sleep: async () => {
+        sleeps += 1;
+      },
+      source: {
+        ...probe.context.source,
+        listEligible: async () => {
+          discoveries += 1;
+          return [];
+        },
+      },
+    };
+    return {
+      workDir,
+      context,
+      runs: probe.runs,
+      err: probe.err,
+      probes: () => ({ discoveries, sleeps }),
+    };
+  }
+
+  it('stops `source run` before discovery and keeps the lock', async () => {
+    const intake = await resumeIntake(false);
+
+    const summary = await runSource(intake.context, 10);
+
+    expect(summary.outcome).toBe('stopped');
+    expect(summary.cleanupConfirmed).toBe(false);
+    expect(summary.problem).toContain('could not be confirmed stopped');
+    // Nothing was discovered and nothing was claimed: a reviewer runtime may
+    // still be running, and intake stops rather than taking the next ticket.
+    expect(intake.probes().discoveries).toBe(0);
+    expect(intake.runs).toEqual([]);
+    expect(intake.err.join('\n')).toContain('left in place for inspection');
+    expect(existsSync(intakeLockPath(intake.workDir, 'baseline-guidance-fixture'))).toBe(true);
+  });
+
+  it('stops `source watch` the same way, without waiting for another scan', async () => {
+    const intake = await resumeIntake(false);
+
+    const summary = await watchSource({ ...intake.context, pollIntervalMs: 5 });
+
+    expect(summary.outcome).toBe('stopped');
+    expect(summary.cleanupConfirmed).toBe(false);
+    expect(intake.probes()).toEqual({ discoveries: 0, sleeps: 0 });
+    expect(intake.runs).toEqual([]);
+    expect(existsSync(intakeLockPath(intake.workDir, 'baseline-guidance-fixture'))).toBe(true);
+  });
+
+  it('lets a batch go on past a diagnosis that needs a person but stopped cleanly', async () => {
+    const intake = await resumeIntake(true);
+
+    const summary = await runSource(intake.context, 10);
+
+    // The item is reported and left where the diagnosis left it; the batch goes
+    // on with the tickets it may take, and the lock is released as usual.
+    expect(summary.outcome).toBe('completed');
+    expect(summary.cleanupConfirmed).toBe(true);
+    expect(intake.probes().discoveries).toBe(1);
+    expect(intake.runs).toEqual([]);
+    expect(intake.err.join('\n')).toContain('needs a person');
+    expect(existsSync(intakeLockPath(intake.workDir, 'baseline-guidance-fixture'))).toBe(false);
+  });
+});
+
 describe('the serial queue after a baseline diagnosis', () => {
   const ticket: QueueTicket = { ref: refFor(), title: 'Repair the failing baseline' };
 
@@ -3056,6 +3200,13 @@ describe('the diagnosis through `source run`', () => {
       expect(turns).toHaveLength(2);
       const developer = turns[1]?.prompt ?? '';
       expect(developer).toContain(`## Task ${ISSUE_KEY}`);
+      // The finding is a requirement, not ordinary context: the prompt says the
+      // baseline comes first, and carries the ordering line with its fields.
+      expect(developer).toContain('## Repair the baseline before the task');
+      expect(developer).toContain(
+        'reviewed baseline finding — repair the baseline before continuing the original task',
+      );
+      expect(developer).toContain('may continue the original task only after it');
       expect(developer).toContain('## Guidance for this attempt');
       expect(developer).toContain('attempt 1');
       expect(developer).toContain('the baseline checks did not pass');

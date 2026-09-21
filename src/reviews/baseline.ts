@@ -73,7 +73,9 @@ export const BASELINE_OUTCOME_FILE = 'outcome.json';
  * The turn's own working root inside its evidence directory: the one place the
  * launch permits it to write. It sits beside the snapshot rather than inside it,
  * so the inspected source and the retained workspace are outside the writable
- * root the runtime's sandbox enforces.
+ * root the runtime's sandbox enforces — and the launch takes the host's
+ * temporary roots out of that policy, so `workDir` living under one of them
+ * cannot put either tree inside a writable root.
  */
 export const BASELINE_TURN_DIRECTORY = 'turn';
 
@@ -432,9 +434,10 @@ export function baselinePrompt(request: {
       'changed since: no coding turn ran, and the checks themselves changed no tracked file the',
       'snapshot reports.',
       '',
-      'The launch runs under a filesystem policy that allows writes only in your working directory',
-      `and the host's temporary directory, so the snapshot and the ticket's retained working copy`,
-      'are read-only to you: an attempted edit there fails instead of being quietly accepted.',
+      'The launch runs under a filesystem policy that allows writes only in your working directory:',
+      `the host's temporary roots are excluded from it, so the snapshot and the ticket's retained`,
+      'working copy are read-only to you wherever they live — an attempted edit there fails instead',
+      'of being quietly accepted.',
       '',
       'Inspect it with your ordinary read tools — for example:',
       '',
@@ -828,8 +831,7 @@ export function createBaselineReviewer(parts: BaselineReviewerParts): BaselineRe
  * unable to use the ordinary read tools this turn is built around. The
  * declaration covers this turn's process only — the harness's own Git calls are
  * unaffected — and it names the tree the harness itself created and pinned, in a
- * turn that can write nowhere but its own working directory and the host's
- * temporary directory.
+ * turn that can write nowhere but its own working directory.
  */
 function diagnosticEnvironment(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return {

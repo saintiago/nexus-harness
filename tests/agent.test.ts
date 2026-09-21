@@ -28,6 +28,7 @@ import { AgentError, runCodexTurn } from '../src/agents/codex/adapter.js';
 import {
   CODEX_EXECUTABLE,
   CODEX_EXEC_ARGUMENTS,
+  codexExecArguments,
   codexRuntime,
 } from '../src/agents/codex/runtime.js';
 import type { CodexRuntime } from '../src/agents/codex/runtime.js';
@@ -911,6 +912,31 @@ describe('the launch every turn is given', () => {
     expect(CODEX_EXEC_ARGUMENTS[approval + 1]).toBe('never');
     expect(CODEX_EXEC_ARGUMENTS.indexOf('exec')).toBeGreaterThan(approval);
     expect(CODEX_EXEC_ARGUMENTS.slice(-2)).toEqual(['--json', '-']);
+  });
+
+  it('narrows the diagnostic policy to its own working root', () => {
+    // The one turn that must not change what it inspects — the pre-delivery
+    // baseline diagnosis — names `workspace-write`, and that policy's writable
+    // roots are exactly the turn's own working root: the host's temporary roots
+    // are excluded, so a `workDir` beneath one cannot put the retained working
+    // copy or the snapshot inside a writable root. A coding turn keeps the
+    // unsandboxed policy above and carries no such override.
+    expect(codexExecArguments('workspace-write')).toEqual([
+      '--ask-for-approval',
+      'never',
+      'exec',
+      '--sandbox',
+      'workspace-write',
+      '-c',
+      'sandbox_workspace_write.exclude_tmpdir_env_var=true',
+      '-c',
+      'sandbox_workspace_write.exclude_slash_tmp=true',
+      '--json',
+      '-',
+    ]);
+    const coding = codexExecArguments('danger-full-access').join(' ');
+    expect(coding).not.toContain('sandbox_workspace_write');
+    expect(coding).not.toContain('exclude_tmpdir_env_var');
   });
 });
 

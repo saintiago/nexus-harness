@@ -42,7 +42,7 @@ import type {
   QueueTicket,
 } from './contract.js';
 import { SourceError, SourceFeedbackError } from './contract.js';
-import { baselineFindingGuidanceLines, baselineGuidanceLines } from './baseline.js';
+import { baselineFindingGuidanceLines, baselineGuidanceLines, resumeStop } from './baseline.js';
 import { decideAttempt } from './eligibility.js';
 import { guidanceFrom } from './guidance.js';
 import {
@@ -662,28 +662,30 @@ async function resumeBaseline(
     context.io.out(outcome.detail);
     return 'none';
   }
-  if (outcome.kind === 'cancelled') {
-    // The recovery itself may leave a reviewer runtime the harness could not
-    // confirm stopped: the lock is kept, exactly as it is for a run's own
-    // unconfirmed stop (docs/spec.md §3).
-    if (!outcome.cleanupConfirmed) {
-      state.cleanupConfirmed = false;
-    }
-    return context.stop.aborted ? 'cancelled' : stopWith(state, `${phase}: ${outcome.detail}`);
+  // Nothing actionable was resumed: the item carries the evidence and what a
+  // person must do, and intake stops here rather than discovering or claiming
+  // anything else. That holds for a reviewer runtime the recovery could not
+  // confirm stopped as much as for one that ended: an unconfirmed stop keeps
+  // the lock, exactly as it does for a run's own unconfirmed stop
+  // (docs/spec.md §3), and nothing starts while it may still be writing.
+  const stopped = resumeStop(outcome);
+  if (stopped === null) {
+    return 'none';
   }
-  if (outcome.kind === 'attention') {
-    if (!outcome.cleanupConfirmed) {
-      state.cleanupConfirmed = false;
-    }
-    if (onAttention === 'continue') {
-      // The item stays In Review with the evidence and what a person must do,
-      // exactly as a failed attempt leaves it; nothing about it is claimed here.
-      context.io.err(outcome.detail);
-      return 'none';
-    }
-    return stopWith(state, `${phase}: ${outcome.detail}`, outcome.cleanupConfirmed);
+  if (!stopped.cleanupConfirmed) {
+    state.cleanupConfirmed = false;
   }
-  return stopWith(state, `${phase}: ${outcome.detail}`);
+  if (outcome.kind === 'cancelled' && context.stop.aborted) {
+    return 'cancelled';
+  }
+  if (outcome.kind === 'attention' && onAttention === 'continue' && stopped.cleanupConfirmed) {
+    // A batch that is not stopped and carries no unconfirmed shutdown reports
+    // the item and goes on with the tickets it may take; the item itself is
+    // left exactly as the diagnosis left it.
+    context.io.err(outcome.detail);
+    return 'none';
+  }
+  return stopWith(state, `${phase}: ${stopped.detail}`, stopped.cleanupConfirmed);
 }
 
 /** Whether one comment of the item's own thread carries a reviewed baseline finding. */

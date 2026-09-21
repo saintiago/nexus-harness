@@ -92,6 +92,26 @@ export interface QueueRecovery {
 }
 
 /**
+ * A discovery that stopped intake before anything was claimed, with what it
+ * found: a pending diagnosis that could not be finished — or one whose own
+ * reviewer stop could not be confirmed. `cleanupConfirmed` is carried so the
+ * caller keeps its intake lock when something the discovery started may still
+ * be writing, exactly as it does for a run whose own stop was unconfirmed
+ * (docs/spec.md §3, §11).
+ */
+export interface QueueDiscoveryStop {
+  readonly problem: string;
+  readonly cleanupConfirmed: boolean;
+}
+
+/** Whether one discovery result is the stop, rather than a recovery to resume. */
+function isDiscoveryStop(
+  discovered: QueueRecovery | QueueDiscoveryStop,
+): discovered is QueueDiscoveryStop {
+  return 'problem' in discovered;
+}
+
+/**
  * Everything one queue invocation needs, as ordinary functions and values.
  *
  * `consume` is the existing source intake, narrowed to at most one ticket;
@@ -109,8 +129,13 @@ export interface QueueLoopContext {
   readonly pollIntervalMs: number;
   /** How long the loop waits between two readings of a pending completion. */
   readonly completionPollIntervalMs: number;
-  /** Discover unfinished Jira work before any unrelated ready claim. */
-  readonly discover: () => Promise<QueueRecovery | null>;
+  /**
+   * Discover unfinished Jira work before any unrelated ready claim, or stop
+   * with what a pending recovery found. A stop is reported as itself — never as
+   * an ordinary recovery failure — so an unconfirmed reviewer shutdown keeps
+   * this invocation's intake lock instead of being rounded into a clean stop.
+   */
+  readonly discover: () => Promise<QueueRecovery | QueueDiscoveryStop | null>;
   /**
    * Take at most one ticket and carry it through the coding attempt and its
    * delivery. `only` names the ticket a repair must continue; `null` asks for a
@@ -231,14 +256,25 @@ export async function runQueue(
       return cancelled();
     }
 
-    let recovery: QueueRecovery | null;
+    let discovered: QueueRecovery | QueueDiscoveryStop | null;
     try {
-      recovery = await context.discover();
+      discovered = await context.discover();
     } catch (cause) {
       if (stop.aborted) return cancelled();
       return stopped(`Queue recovery failed: ${messageOf(cause)}`);
     }
+    if (discovered !== null && isDiscoveryStop(discovered)) {
+      // The flag is folded in before anything is returned: a stop the user
+      // asked for at the same moment still carries what the discovery observed,
+      // and an unconfirmed one keeps the lock for inspection either way.
+      cleanupConfirmed = cleanupConfirmed && discovered.cleanupConfirmed;
+      if (stop.aborted) {
+        return cancelled();
+      }
+      return stopped(discovered.problem);
+    }
     if (stop.aborted) return cancelled();
+    const recovery: QueueRecovery | null = discovered;
     active = recovery?.ticket ?? null;
     if (recovery?.phase !== 'review') {
       // A fresh eligibility scan, in the source's own order. At most one ticket

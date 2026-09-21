@@ -60,6 +60,17 @@ export class RunCancelledError extends Error {
   }
 }
 
+/**
+ * The prefix of every guidance line a source renders from a reviewed baseline
+ * finding: the failing check, the evidence, the likely cause, the repair, and
+ * the requirement that the baseline is repaired before the original task
+ * continues. The coding prompt recognizes the prefix and puts those lines in a
+ * section of their own, as what this turn has to do first, instead of the
+ * ordinary context a comment contributes; the string is shared here so the two
+ * layers cannot drift apart (docs/WORKFLOW.md §11).
+ */
+export const BASELINE_GUIDANCE_PREFIX = 'reviewed baseline finding — ';
+
 /** What one run is asked to do: the loaded inputs, already validated and resolved. */
 export interface RunTaskRequest {
   /** The task as it was loaded from its file, fixed for the whole run. */

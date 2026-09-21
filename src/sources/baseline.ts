@@ -36,6 +36,7 @@ import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promise
 import path from 'node:path';
 import { messageOf } from '../shared/errors.js';
 import { readBaselineFinding } from '../reviews/baseline.js';
+import { BASELINE_GUIDANCE_PREFIX } from '../runs/contracts.js';
 import { unconfirmedShutdownProblem } from '../runs/progress.js';
 import type { CheckRoundResult, CommandResult, SourceRef, Task } from '../shared/types.js';
 import type {
@@ -176,10 +177,22 @@ const REPAIR_FIELD_LABELS = [
 const ATTENTION_FIELD_LABELS = ['Why no repair', 'Required action'] as const;
 
 /**
+ * The requirement every actionable finding carries before its own fields: the
+ * baseline is what the attempt repairs first, and the original task continues
+ * only after it. It travels with the fields, as a guidance line of its own, so
+ * neither the thread nor the evidence can hand a developer the finding without
+ * the order it belongs in — and the coding prompt renders it as the requirement
+ * it is rather than as context (docs/WORKFLOW.md §11).
+ */
+const REPAIR_FIRST_GUIDANCE = 'repair the baseline before continuing the original task';
+
+/**
  * The reviewed finding one diagnosis comment carries, as separate guidance
  * lines: one line per field, each one exactly as wide as the comment's own
  * bound, so a later attempt is handed every field whole instead of one collapsed
  * paragraph whose tail — the likely cause and the repair — is what got cut.
+ * An actionable finding carries the requirement to repair the baseline first
+ * ahead of its fields; a non-actionable one carries its own two fields.
  *
  * A comment without a diagnosis marker, or without any of the fields, produces
  * nothing: the caller falls back to the ordinary one-line rendering of it. The
@@ -189,24 +202,38 @@ export function baselineGuidanceLines(text: string): readonly string[] {
   if (!text.includes(BASELINE_MARKER_PREFIX)) {
     return [];
   }
-  const lines: string[] = [];
+  const repair: string[] = [];
+  const attention: string[] = [];
   for (const raw of text.split('\n')) {
     const line = raw.trim();
-    for (const label of [...REPAIR_FIELD_LABELS, ...ATTENTION_FIELD_LABELS]) {
+    for (const label of REPAIR_FIELD_LABELS) {
       const prefix = `${label}: `;
-      if (!line.startsWith(prefix)) {
-        continue;
+      if (line.startsWith(prefix)) {
+        repair.push(findingGuidanceLine(label, line.slice(prefix.length)));
       }
-      lines.push(findingGuidanceLine(label, line.slice(prefix.length)));
+    }
+    for (const label of ATTENTION_FIELD_LABELS) {
+      const prefix = `${label}: `;
+      if (line.startsWith(prefix)) {
+        attention.push(findingGuidanceLine(label, line.slice(prefix.length)));
+      }
     }
   }
-  return lines;
+  // The two shapes are exclusive in a comment this harness wrote. Should a
+  // thread ever carry a mix, the actionable fields win: the ordering
+  // requirement is never dropped from a finding a developer may act on.
+  return repair.length > 0 ? [repairFirstGuidanceLine(), ...repair] : attention;
+}
+
+/** The one line that says what comes first, in the shape of a finding field. */
+function repairFirstGuidanceLine(): string {
+  return `${BASELINE_GUIDANCE_PREFIX}${REPAIR_FIRST_GUIDANCE}`;
 }
 
 /** One labelled field of a reviewed finding, as the line a later attempt reads. */
 function findingGuidanceLine(label: string, value: string): string {
   const field = `${label.charAt(0).toLowerCase()}${label.slice(1)}`;
-  return `reviewed baseline finding — ${field}: ${value}`;
+  return `${BASELINE_GUIDANCE_PREFIX}${field}: ${value}`;
 }
 
 /**
@@ -214,7 +241,8 @@ function findingGuidanceLine(label: string, value: string): string {
  * comment that carries it, as the same guidance lines: each field bounded
  * exactly as the comment bounds it, so a developer who cannot be handed the
  * thread is handed the same finding the thread would have given them
- * (docs/WORKFLOW.md §11).
+ * (docs/WORKFLOW.md §11). An actionable finding is the same finding either way,
+ * ordering requirement included.
  */
 export function baselineFindingGuidanceLines(finding: BaselineFinding): readonly string[] {
   const labelled: readonly (readonly [string, string])[] =
@@ -229,7 +257,8 @@ export function baselineFindingGuidanceLines(finding: BaselineFinding): readonly
           [ATTENTION_FIELD_LABELS[0], finding.reason],
           [ATTENTION_FIELD_LABELS[1], finding.requiredAction],
         ];
-  return labelled.map(([label, value]) => findingGuidanceLine(label, oneLine(value)));
+  const fields = labelled.map(([label, value]) => findingGuidanceLine(label, oneLine(value)));
+  return finding.outcome === 'repair' ? [repairFirstGuidanceLine(), ...fields] : fields;
 }
 
 /** The file one pending diagnosis keeps what a restart resumes from. */
@@ -497,6 +526,31 @@ async function evidenceFiles(workDir: string, project: string): Promise<readonly
     .map((entry) => entry.name)
     .sort()
     .map((name) => path.join(root, name, BASELINE_EVIDENCE_FILE));
+}
+
+/**
+ * What one resume outcome means for the intake that asked for it: `null` when
+ * the pending diagnosis left nothing in the way — nothing was pending, or the
+ * finding is published and the item is back in its ready status — and the stop
+ * the caller has to make otherwise, with whether everything the diagnosis
+ * started was confirmed stopped.
+ *
+ * An unconfirmed stop is never rounded down: the caller keeps its intake lock
+ * and starts nothing else, because a reviewer runtime may still be running and
+ * writing to the evidence (docs/spec.md §3, §11). The rule lives here once, so
+ * the source command and the serial queue cannot read the same outcome
+ * differently.
+ */
+export function resumeStop(
+  resumed: BaselineResumeOutcome | null,
+): { readonly detail: string; readonly cleanupConfirmed: boolean } | null {
+  if (resumed === null || resumed.kind === 'repair') {
+    return null;
+  }
+  return {
+    detail: resumed.detail,
+    cleanupConfirmed: resumed.kind === 'problem' ? true : resumed.cleanupConfirmed,
+  };
 }
 
 /** What one pre-delivery diagnosis is built from, all ordinary pieces. */
