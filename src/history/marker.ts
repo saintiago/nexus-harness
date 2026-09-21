@@ -50,8 +50,3 @@ export function historyMarkerOf(text: string): HistoryMarker | null {
   }
   return { kind, id };
 }
-
-/** The entry id a marker names, when the local report it names is present. */
-export function markerEntryId(marker: HistoryMarker): string {
-  return `harness:${marker.kind}-report:${marker.id}`;
-}
