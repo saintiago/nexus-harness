@@ -612,6 +612,75 @@ describe('the pre-delivery baseline diagnosis', () => {
     expect(comment).toContain('was not seen to end');
     expect(comment).toContain('the intake lock is kept');
   });
+
+  it('keeps the lock when the bounded reviewer timeout cannot confirm its stop', async () => {
+    const workDir = await createTempDir();
+    const record = fakeRecord();
+    const target = await createLocalTarget({ brokenBaseline: true });
+    const retained = await retainedWorkspace(workDir, [baselineAttempt()]);
+    const reviewer = createBaselineReviewer({
+      selection: { runtime: 'codex', command: [target.runtimePath] },
+      environment: {
+        ...process.env,
+        FAKE_CODEX: JSON.stringify({
+          stateDir: target.state.dir,
+          plans: [{ holdMs: 30_000, summary: 'still working' }],
+        }),
+      },
+      // The turn's own limit ends it, and the host cannot carry the stop out:
+      // nothing of the runtime was seen to end, so nothing is reported as ended.
+      runtime: {
+        stopTree: async () => 'the host could not reach the process tree',
+        stopGraceMs: 60,
+      },
+    });
+    const diagnosis = createBaselineDiagnosis({
+      reviewer,
+      record,
+      readyStatus: 'To Do',
+      reviewStatus: 'In Review',
+      reviewerTimeoutMs: 2_000,
+      project: PROJECT,
+      workDir,
+      io: { out: () => undefined, err: () => undefined },
+    });
+
+    const diagnosing = diagnosis.diagnose({
+      item: { ref: refFor(), task: taskFor() },
+      workspace: {
+        workspaceId: retained.workspaceId,
+        workspacePath: retained.workspacePath,
+        branch: `harness/${retained.workspaceId}`,
+        baseCommit: retained.base,
+      },
+      baseline: await baselineWithLogs(),
+      stop: new AbortController().signal,
+    });
+    await waitForTurnRecorded(target.state);
+    const outcome = await diagnosing;
+
+    // The runtime the harness could not stop is this test's own to release, and
+    // it is released before anything is asserted: an assertion that fails must
+    // not leave it holding its working directory for the suite's teardown.
+    const [turn] = await fakeTurns(target.state);
+    expect(
+      await endFixtureTree({
+        pid: turn?.pid ?? 0,
+        token: turn?.pidToken ?? null,
+        beaconDirectory: target.state.dir,
+      }),
+    ).toBe(true);
+
+    expect(outcome.kind).toBe('attention');
+    if (outcome.kind === 'attention') {
+      expect(outcome.cleanupConfirmed).toBe(false);
+    }
+    expect(record.status).toBe('In Review');
+    const comment = record.posted[0]?.join('\n') ?? '';
+    expect(comment).toContain(`${BASELINE_MARKER_PREFIX}attention:`);
+    expect(comment).toContain('time limit expired');
+    expect(comment).toContain('the intake lock is kept');
+  }, 60_000);
 });
 
 describe('the baseline reviewer turn', () => {
@@ -954,6 +1023,18 @@ describe('the baseline reviewer turn', () => {
     controller.abort();
     const result = await running;
 
+    // The runtime the harness could not stop is this test's own to release, and
+    // it is released before anything is asserted: an assertion that fails must
+    // not leave it holding its working directory for the suite's teardown.
+    const [turn] = await fakeTurns(target.state);
+    expect(
+      await endFixtureTree({
+        pid: turn?.pid ?? 0,
+        token: turn?.pidToken ?? null,
+        beaconDirectory: target.state.dir,
+      }),
+    ).toBe(true);
+
     expect(result.finding).toBeNull();
     expect(result.problem).toContain('stopped before it produced a finding');
     expect(result.problem).toContain('could not confirm');
@@ -967,15 +1048,6 @@ describe('the baseline reviewer turn', () => {
       shutdown?: { termination?: string };
     };
     expect(recorded.shutdown?.termination).toBe('unconfirmed');
-
-    const [turn] = await fakeTurns(target.state);
-    expect(
-      await endFixtureTree({
-        pid: turn?.pid ?? 0,
-        token: turn?.pidToken ?? null,
-        beaconDirectory: target.state.dir,
-      }),
-    ).toBe(true);
   }, 60_000);
 });
 

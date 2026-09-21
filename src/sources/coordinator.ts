@@ -585,7 +585,6 @@ async function diagnoseBaseline(
           state,
           `${key}: the baseline diagnosis was stopped before it could finish, so the red baseline ` +
             `still needs a person: ${outcome.detail}`,
-          outcome.cleanupConfirmed,
         );
   }
 
@@ -667,10 +666,10 @@ async function resumeBaseline(
     // The recovery itself may leave a reviewer runtime the harness could not
     // confirm stopped: the lock is kept, exactly as it is for a run's own
     // unconfirmed stop (docs/spec.md §3).
-    state.cleanupConfirmed = state.cleanupConfirmed && outcome.cleanupConfirmed;
-    return context.stop.aborted
-      ? 'cancelled'
-      : stopWith(state, `${phase}: ${outcome.detail}`, outcome.cleanupConfirmed);
+    if (!outcome.cleanupConfirmed) {
+      state.cleanupConfirmed = false;
+    }
+    return context.stop.aborted ? 'cancelled' : stopWith(state, `${phase}: ${outcome.detail}`);
   }
   if (outcome.kind === 'attention') {
     if (!outcome.cleanupConfirmed) {
