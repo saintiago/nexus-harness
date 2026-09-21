@@ -238,8 +238,11 @@ historical discussion without a bound. Unresolved findings themselves remain who
 
 Edits to published review renderings are compared with their recorded publication hash even when
 the remote API supplies no edit timestamp. Their changed text stays in the actionable responses
-beside the original outstanding findings across refreshes, role consumption and restarts; an earlier
-snapshot that held only the unchanged mirror is not evidence that a later edit was consumed.
+beside outstanding findings across refreshes, role consumption and restarts; an earlier snapshot
+that held only the unchanged mirror is not evidence that a later edit was consumed. A detected edit
+with no edit timestamp is conservatively included even when its review was submitted before a newer
+outstanding round from the same reviewer. This applies to human reviews as well as App renderings;
+the original submission time is not evidence of when the edit occurred, and no edit time is invented.
 
 Retain files by default; cleanup is manual. A crash can leave an incomplete directory without a final report. Do not treat that as success, automatically resume it, or delete it on the next run. The user inspects/stops leftovers before reuse. Source intake adds only the local exclusion lock and per-issue receipt described below, not a transactional store, journal, or background reconciliation service.
 

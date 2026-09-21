@@ -288,6 +288,104 @@ describe('the ticket conversation snapshot', () => {
     },
   );
 
+  it.each(['nexus-lens[bot]', 'Jane Reviewer'])(
+    'keeps timestamp-free edits to an older round actionable after a newer review by %s',
+    async (author) => {
+      const workDir = await createTempDir();
+      const original = 'Original older review';
+      const correction = 'Correction to the older round: preserve this requirement too.';
+      let body = original;
+      const makeHistory = () =>
+        createTicketHistory({
+          workDir,
+          harnessAuthors: ['nexus-lens[bot]'],
+          readers: readers({
+            pull: () =>
+              pullConversation([
+                {
+                  sourceId: '555',
+                  author,
+                  createdAt: '2026-09-21T08:00:00.000Z',
+                  updatedAt: null,
+                  text: body,
+                  url: 'https://github.com/example/repo/pull/27#review-555',
+                  state: 'CHANGES_REQUESTED',
+                  commit: HEAD,
+                },
+                {
+                  sourceId: '556',
+                  author,
+                  createdAt: '2026-09-21T09:00:00.000Z',
+                  updatedAt: null,
+                  text: 'Newer outstanding review',
+                  url: 'https://github.com/example/repo/pull/27#review-556',
+                  state: 'CHANGES_REQUESTED',
+                  commit: HEAD,
+                },
+              ]),
+          }),
+        });
+      const history = makeHistory();
+      if (author === 'nexus-lens[bot]') {
+        for (const [round, id, text, at] of [
+          [1, 555, original, '2026-09-21T08:00:00.000Z'],
+          [2, 556, 'Newer outstanding review', '2026-09-21T09:00:00.000Z'],
+        ] as const) {
+          await history.recordReviewerReport?.({
+            ref: REF,
+            workspaceId: WORKSPACE_ID,
+            task: TASK,
+            reviewId: `review-${String(id)}`,
+            round,
+            head: HEAD,
+            decision: 'request_changes',
+            summary: text,
+            findings: [{ path: 'src/a.ts', line: 1, body: `${text}: complete finding` }],
+            now: new Date(at),
+          });
+          await notePublishedReview(
+            workspaceHistoryRoot(workDir, WORKSPACE_ID),
+            `review-${String(id)}`,
+            { id, url: `https://github.com/example/repo/pull/27#review-${String(id)}`, body: text },
+          );
+        }
+      }
+      const initial = [];
+      for (const role of ['developer', 'reviewer'] as const) {
+        const snapshot = await history.prepare(prepareRequest(workDir, role));
+        initial.push(snapshot);
+        expect(snapshot.brief.unresolvedReviews).toHaveLength(1);
+        expect(snapshot.brief.unresolved?.nativeReviewId).toBe(556);
+        expect(snapshot.brief.responses).toEqual([]);
+        await history.consumed?.(snapshot);
+      }
+      body += '\n' + correction;
+      for (let refresh = 0; refresh < 2; refresh++) {
+        for (const role of ['developer', 'reviewer'] as const) {
+          const restarted = makeHistory();
+          const snapshot = await restarted.prepare(prepareRequest(workDir, role));
+          expect(snapshot.brief.unresolved?.nativeReviewId).toBe(556);
+          expect(snapshot.brief.responses).toEqual([
+            expect.objectContaining({ sourceId: '555', text: body, edited: true, updatedAt: null }),
+          ]);
+          expect(snapshot.brief.newHumanFeedback.map((entry) => entry.text)).toEqual(
+            author === 'Jane Reviewer' && refresh === 0 ? [body] : [],
+          );
+          const prompt =
+            role === 'developer'
+              ? promptFor(developerRequest(snapshot))
+              : reviewPrompt(EVIDENCE, VIEW, '/verdict.json', snapshot);
+          expect(prompt).toContain(correction);
+          expect(prompt).toContain('Newer outstanding review');
+          await restarted.consumed?.(snapshot);
+        }
+      }
+      for (const snapshot of initial) {
+        expect(await readFile(snapshot.entriesPath, 'utf8')).not.toContain(correction);
+      }
+    },
+  );
+
   it('keeps mixed-offset responses after both roles consume them, ordering reviews by instant', async () => {
     const workDir = await createTempDir();
     const native = [

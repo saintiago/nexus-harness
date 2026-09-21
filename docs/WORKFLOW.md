@@ -811,8 +811,11 @@ Native GitHub reviews have no edit timestamp. Synchronization compares their bod
 recorded publication hash and marks changed renderings as edited, including when the prior snapshot
 held only a mirror. A legacy publication without a saved hash uses an earlier unchanged mirror as
 its comparison when available. That status survives subsequent refreshes and restarts, so both roles continue
-to receive the correction as a response alongside the outstanding original findings after consuming
-an earlier snapshot.
+to receive the correction as a response alongside outstanding findings after consuming an earlier
+snapshot. When an edit has no timestamp, its original submission time cannot establish whether it
+predates an outstanding round. Such corrections remain responses even when a newer review from the
+same reviewer supplies the outstanding findings. This conservative rule applies to human reviews too;
+it does not invent an edit time or change which review round is outstanding.
 
 Every entry keeps its source's own identity (a Jira comment id, a GitHub review or comment id, a run
 or review id), its author, time, round and the reviewed or delivered commit where that applies, and

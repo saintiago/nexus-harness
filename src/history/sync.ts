@@ -930,7 +930,12 @@ export function createTicketHistory(parts: TicketHistoryParts): TicketHistory {
           : entries.filter(
               (entry) =>
                 (!ownEntryIds.has(entry.id) || entry.edited) &&
-                compareHistoryTime(entry.updatedAt ?? entry.createdAt, earliest) >= 0 &&
+                // A detected edit without an edit timestamp may postdate any
+                // outstanding round, even when the review was submitted earlier.
+                // Keep it actionable after consumption and restart rather than
+                // treating the original submission time as the time of the edit.
+                ((entry.edited && entry.updatedAt === null) ||
+                  compareHistoryTime(entry.updatedAt ?? entry.createdAt, earliest) >= 0) &&
                 (entry.role !== 'harness' || entry.edited),
             );
       // Preparation alone consumes nothing. Compare with this role's last

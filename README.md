@@ -472,7 +472,9 @@ entry. Outstanding findings are tracked separately for each reviewer; unrelated 
 comment-only reviews cannot clear them. Each developer report names the commit its delivery verified.
 Edits to an App review remain actionable responses beside its outstanding findings, even when GitHub
 provides no edit timestamp. The recorded publication hash detects the change; refreshes, restarts and
-either role consuming the feedback do not hide it.
+either role consuming the feedback do not hide it. A detected edit without an edit timestamp remains
+a response even if its original review predates a newer outstanding round from the same reviewer.
+Human review edits follow the same rule; the harness does not infer an edit time.
 The harness re-reads requirements before each turn and refuses the turn if they cannot be obtained.
 Developer turns with a history snapshot use it for conversation guidance, including on repairs;
 old comment excerpts collected at intake are not repeated alongside edited or consumed feedback.
