@@ -371,6 +371,12 @@ to arm auto-merge. The serial queue's arm step runs the completion pass's arm op
 immediately after delivery and before the review scan can publish the final required
 check; the completion pass then verifies the recorded PR/head or re-arms it. See spec
 §10 and WORKFLOW §10 for this opt-in exception to the default no-merge/no-Done behavior.
+GitHub's own state is what classifies every completion mutation and every ambiguous
+answer: `delivery/completion.ts` re-reads the pull request after an unprocessable arm
+request, `sources/completion.ts` reconciles a reading that no longer approves the
+current head, `DeliveryError.retryable` marks the reads a transient failure left
+indeterminate so only those are repeated inside the item deadline, and a closed, moved,
+or unapproved merged result is a terminal report rather than an assumption.
 
 The serial queue adds no owner to that list: `queue/loop.ts` is sequencing only, and the
 arm operation, the review scan and the completion pass take an optional one-ticket scope so

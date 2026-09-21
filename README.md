@@ -1835,6 +1835,12 @@ infrastructure failures stay In Review.
 
 GitHub merged state and the expected push workflows on the exact merge commit are authoritative.
 The Jira comment marker deduplicates writes; it never substitutes for those checks.
+Every mutation and every ambiguous answer is settled by one fresh read of the pull request, because
+GitHub can merge the reviewed head between two reads of it: an unprocessable auto-merge refusal and
+a reading that no longer approves the head are reconciled the same way. The exact reviewed head
+merged continues through post-merge verification without a second arm; a closed pull request, a head
+that moved, or a merge the reviewer's approval does not cover is reported for a person and never
+assumed. Only reads GitHub could not answer this moment are retried, inside the item deadline.
 The local admission file records only the PR/head being followed and the polling deadline, once
 GitHub acknowledged the arm, so a restart verifies the armed head instead of arming twice and can
 identify a PR that disappeared from the open list. Historical merged PRs without that admission are

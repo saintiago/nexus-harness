@@ -252,7 +252,7 @@ const PULL_FIELDS =
 function transientReadFailure(diagnostic: string): boolean {
   return (
     /\bHTTP (?:408|425|429|5\d\d)\b/.test(diagnostic) ||
-    /\b(?:ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|EPIPE|ELOOP)\b/i.test(diagnostic) ||
+    /\b(?:ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|EPIPE)\b/i.test(diagnostic) ||
     /\b(?:rate limit|abuse detection|secondary rate limit)\b/i.test(diagnostic) ||
     /\b(?:timed? ?out|timeout)\b/i.test(diagnostic) ||
     /\b(?:server error|internal server error|bad gateway|service unavailable|gateway time-?out|network error|connection reset|connection refused|socket hang up)\b/i.test(
@@ -754,6 +754,28 @@ export function createGitHubCompletion(
       if (beforeWrite && !(await beforeWrite()))
         throw new DeliveryError('Ticket left In Review before arming');
       if (current.autoMergeRequest) return 'already-enabled';
+      /**
+       * One fresh reading of the pull request while an answer about the request
+       * is unsettled, and what it settles: only the exact reviewed head counts
+       * — merged is the merge the request was asking for, and still open with a
+       * request recorded is the arm. Anything else leaves the refusal or the
+       * lost answer as it was.
+       */
+      const readBack = async (): Promise<PullRequestSnapshot | null> =>
+        await readPull(r, p.number, stop).catch(() => null);
+      const settledBy = (fresh: PullRequestSnapshot | null): AutoMergeStatus | null => {
+        if (
+          fresh === null ||
+          fresh.number !== p.number ||
+          fresh.headRefOid !== head ||
+          fresh.headRefName !== r.branch ||
+          fresh.baseRefName !== r.baseBranch
+        )
+          return null;
+        if (fresh.state === 'MERGED') return 'merged';
+        if (fresh.state === 'OPEN' && fresh.autoMergeRequest) return 'already-enabled';
+        return null;
+      };
       let response: unknown;
       try {
         response = await execute(
@@ -775,27 +797,15 @@ export function createGitHubCompletion(
         // eligibility read and this request. One fresh reconciliation read
         // settles what the refusal means before it is classified, and only the
         // exact reviewed head that GitHub really merged counts as the merge.
-        let fresh: PullRequestSnapshot;
-        try {
-          fresh = await readPull(r, p.number, stop);
-        } catch {
-          throw cause;
-        }
-        if (
-          fresh.number === p.number &&
-          fresh.headRefOid === head &&
-          fresh.headRefName === r.branch &&
-          fresh.baseRefName === r.baseBranch
-        ) {
-          if (fresh.state === 'MERGED') return 'merged';
-          if (fresh.state === 'OPEN' && fresh.autoMergeRequest) return 'already-enabled';
-        }
-        if (fresh.headRefOid !== head)
+        const fresh = await readBack();
+        const settled = settledBy(fresh);
+        if (settled !== null) return settled;
+        if (fresh !== null && fresh.headRefOid !== head)
           throw new DeliveryError(
             `pull request ${fresh.url} now holds head ${fresh.headRefOid}, not the reviewed head ` +
               `${head}, so GitHub was not asked to arm auto-merge for it`,
           );
-        if (fresh.state === 'CLOSED')
+        if (fresh !== null && fresh.state === 'CLOSED')
           throw new DeliveryError(
             `pull request ${fresh.url} is closed without a merge, so GitHub was not asked to ` +
               'arm auto-merge for it',
@@ -806,7 +816,16 @@ export function createGitHubCompletion(
       const armed = object(
         object(object(answer['data'])['enablePullRequestAutoMerge'])['pullRequest'],
       )['autoMergeRequest'];
-      if (!armed) throw new DeliveryError('GitHub did not acknowledge auto-merge');
+      if (!armed) {
+        // An answer that does not carry the request is ambiguous too: one fresh
+        // read settles whether the request landed or the pull request merged.
+        const settled = settledBy(await readBack());
+        if (settled !== null) return settled;
+        throw new DeliveryError(
+          `GitHub did not acknowledge auto-merge for ${p.url} at head ${head}, and a fresh ` +
+            'read holds no request for that head; it may still be unarmed',
+        );
+      }
       // Read the pull request back: the request is only recorded for the exact
       // head GitHub still holds, and a native merge that landed in the window is
       // a success rather than a lost request.

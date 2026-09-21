@@ -1889,6 +1889,9 @@ describe('reconciling terminal states across an auto-merge race', () => {
     // item waits in the bounded poll loop, and nothing is re-armed.
     const waiting = only(await runPass(fixture, { clockStepMs: 1_000 }));
     expect(waiting.status, waiting.detail).toBe('pending');
+    // The merge commit GitHub reported is recorded with the wait, so a later
+    // pass and the resolution name the same merged result.
+    expect(waiting.mergeCommit).toBe(MERGE_COMMIT);
     expect(fixture.jira.status).toBe('In Review');
     expect(commentTexts(fixture)).toHaveLength(0);
 
@@ -1970,6 +1973,32 @@ describe('reconciling terminal states across an auto-merge race', () => {
     expect(
       (await fakeCompletionCalls(fixture.gh)).filter((call) => call.op === 'merge'),
     ).toHaveLength(0);
+  });
+
+  it('continues when GitHub merges the head before the arm is verified', async () => {
+    const fixture = await createFixture({ pulls: [ONE_PULL_REQUEST], runs: [workflowRun()] });
+
+    // GitHub accepts the request and merges the head before the pass reads the
+    // pull request back to verify the arm: the third `pr view` — the
+    // verification read after the request — is the merge.
+    const outcome = only(
+      await runPass(fixture, {
+        clockStepMs: 1_000,
+        mergeOnView: 3,
+        mergeOnViewSha: MERGE_COMMIT,
+      }),
+    );
+
+    expect(outcome.status, outcome.detail).toBe('done');
+    expect(outcome.mergeCommit).toBe(MERGE_COMMIT);
+    expect(fixture.jira.status).toBe('Done');
+    expect(commentTexts(fixture)).toHaveLength(1);
+    expect(transitions(fixture)).toHaveLength(1);
+    // One request was made, and the merge it produced is what completed the
+    // item: nothing was requested a second time.
+    expect(
+      (await fakeCompletionCalls(fixture.gh)).filter((call) => call.op === 'merge'),
+    ).toHaveLength(1);
   });
 
   it('retries a transient GitHub failure within the deadline instead of stopping for a person', async () => {
@@ -2068,6 +2097,7 @@ describe('reconciling terminal states across an auto-merge race', () => {
       expect(outcome.detail).toContain(PR_URL);
       expect(outcome.detail).toContain(MERGE_COMMIT);
       expect(outcome.detail).toContain(HEAD);
+      expect(outcome.mergeCommit).toBe(MERGE_COMMIT);
       expect(fixture.jira.status).toBe('In Review');
       expect(transitions(fixture)).toHaveLength(0);
       expect(commentTexts(fixture)).toHaveLength(0);

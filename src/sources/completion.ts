@@ -79,10 +79,11 @@ export interface CompletionOutcome {
   /** The comment this pass posted or found, when there is one. */
   readonly commentId: string | null;
   /**
-   * The merge commit this outcome is about, when the pass concluded a pull
-   * request GitHub had already merged; `null` (or absent) otherwise. The serial
-   * queue loop names the base a next workspace starts from with it
-   * (docs/WORKFLOW.md §11).
+   * The merge commit this outcome is about, when the pass verified that GitHub
+   * merged the reviewed head — whether it concluded there, is still waiting for
+   * the post-merge workflows, or found the merge untied to the approval; `null`
+   * (or absent) otherwise. The serial queue loop names the base a next
+   * workspace starts from with it (docs/WORKFLOW.md §11).
    */
   readonly mergeCommit?: string | null;
 }
@@ -423,7 +424,7 @@ function attentionNote(
 
 /** What one pull request's live evidence says this item should do now. */
 type Step =
-  | { readonly kind: 'pending'; readonly detail: string }
+  | { readonly kind: 'pending'; readonly detail: string; readonly mergeCommit?: string | null }
   | { readonly kind: 'observed'; readonly detail: string }
   /**
    * A settled state this path may not act past: the pull request was closed
@@ -431,8 +432,17 @@ type Step =
    * result the reviewer's approval does not cover. It is never retried, never
    * read as success, and is reported to a person with its evidence.
    */
-  | { readonly kind: 'unresolved'; readonly detail: string }
-  | { readonly kind: 'attention'; readonly detail: string; readonly evidence: readonly string[] }
+  | {
+      readonly kind: 'unresolved';
+      readonly detail: string;
+      readonly mergeCommit?: string | null;
+    }
+  | {
+      readonly kind: 'attention';
+      readonly detail: string;
+      readonly evidence: readonly string[];
+      readonly mergeCommit?: string | null;
+    }
   | {
       readonly kind: 'findings';
       readonly pull: PullRequestSnapshot;
@@ -612,13 +622,17 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
   const settledFailure = (
     settled: Extract<FreshReading, { kind: 'closed' | 'changed' }>,
     expectedHead: string,
-  ): string =>
-    settled.kind === 'closed'
-      ? `pull request ${settled.pull.url} is closed without a verified merge of the reviewed ` +
-        `head ${expectedHead}, so this work cannot be completed; nothing was armed, written or ` +
-        'moved, and this state is not retried'
-      : `${settled.detail}, so it is no longer the reviewed delivery head ${expectedHead}; ` +
-        'nothing was armed, written or moved, and no merge will be tied to it';
+  ): { readonly kind: 'unresolved'; readonly detail: string; readonly mergeCommit: null } => ({
+    kind: 'unresolved',
+    detail:
+      settled.kind === 'closed'
+        ? `pull request ${settled.pull.url} is closed without a verified merge of the reviewed ` +
+          `head ${expectedHead}, so this work cannot be completed; nothing was armed, written or ` +
+          'moved, and this state is not retried'
+        : `${settled.detail}, so it is no longer the reviewed delivery head ${expectedHead}; ` +
+          'nothing was armed, written or moved, and no merge will be tied to it',
+    mergeCommit: null,
+  });
 
   /**
    * The explicit failure a merge leaves when the reviewer's approval does not
@@ -630,10 +644,18 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
     expectedHead: string,
     why: string,
     mergeCommit: string | null,
-  ): string =>
-    `pull request ${pull.url} is merged${mergeCommit === null ? '' : ` as ${mergeCommit}`} but ` +
-    `cannot be tied to the reviewed head ${expectedHead}: ${oneLine(why, 200)}. Nothing was ` +
-    'rolled back, written or moved, and Nexus does not assume this merge is the reviewed work';
+  ): {
+    readonly kind: 'unresolved';
+    readonly detail: string;
+    readonly mergeCommit: string | null;
+  } => ({
+    kind: 'unresolved',
+    detail:
+      `pull request ${pull.url} is merged${mergeCommit === null ? '' : ` as ${mergeCommit}`} but ` +
+      `cannot be tied to the reviewed head ${expectedHead}: ${oneLine(why, 200)}. Nothing was ` +
+      'rolled back, written or moved, and Nexus does not assume this merge is the reviewed work',
+    mergeCommit,
+  });
 
   /**
    * Makes sure GitHub holds a native auto-merge request for the open pull
@@ -782,10 +804,7 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
         // fresh reading settles which of the two it is; only a merge of this
         // exact reviewed head continues the merge path.
         if (pull.state.toUpperCase() === 'MERGED')
-          return {
-            kind: 'unresolved',
-            detail: mergeNotTied(pull, reviewedHead, approved.reason, merge.mergeCommit),
-          };
+          return mergeNotTied(pull, reviewedHead, approved.reason, merge.mergeCommit);
         const fresh = await readFresh(
           item,
           request,
@@ -798,15 +817,11 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
           pull = fresh.pull;
           continue;
         }
-        if (fresh.kind !== 'open')
-          return { kind: 'unresolved', detail: settledFailure(fresh, reviewedHead) };
+        if (fresh.kind !== 'open') return settledFailure(fresh, reviewedHead);
         return { kind: 'observed', detail: approved.reason };
       }
       if (merge.status !== 'pending' && approved.status !== 'approved')
-        return {
-          kind: 'unresolved',
-          detail: mergeNotTied(pull, reviewedHead, approved.reason, merge.mergeCommit),
-        };
+        return mergeNotTied(pull, reviewedHead, approved.reason, merge.mergeCommit);
       if (merge.status === 'complete' && merge.mergeCommit !== null && approved.review !== null) {
         io.out(`${item.ref.key}: ${merge.reason}`);
         return {
@@ -853,6 +868,7 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
             'the merge or its configured post-merge workflows were still pending when this ' +
             `item's deadline expired (${merge.reason})`,
           evidence: [pull.url],
+          mergeCommit: merge.mergeCommit,
         };
       }
       if (waited >= waits) {
@@ -864,7 +880,7 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
             );
           },
         );
-        return { kind: 'pending', detail: merge.reason };
+        return { kind: 'pending', detail: merge.reason, mergeCommit: merge.mergeCommit };
       }
       await sleep(Math.min(intervalMs, Math.max(0, deadline - now().getTime())), stop);
     }
@@ -912,17 +928,14 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
       if (approval === pull.headRefOid) {
         return await followMerge(context, pull.headRefOid, stop, MERGE_WAIT_ROUNDS);
       }
-      return {
-        kind: 'unresolved',
-        detail: mergeNotTied(
-          pull,
-          pull.headRefOid,
-          approval === null
-            ? 'GitHub records no review approving the merged head'
-            : `the reviewer approved ${approval}, not the merged head`,
-          pull.mergeCommit?.oid ?? null,
-        ),
-      };
+      return mergeNotTied(
+        pull,
+        pull.headRefOid,
+        approval === null
+          ? 'GitHub records no review approving the merged head'
+          : `the reviewer approved ${approval}, not the merged head`,
+        pull.mergeCommit?.oid ?? null,
+      );
     }
 
     if (pull.autoMergeRequest && armed?.head === pull.headRefOid && armed.number === pull.number) {
@@ -967,8 +980,7 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
           MERGE_WAIT_ROUNDS,
         );
       }
-      if (fresh.kind !== 'open')
-        return { kind: 'unresolved', detail: settledFailure(fresh, pull.headRefOid) };
+      if (fresh.kind !== 'open') return settledFailure(fresh, pull.headRefOid);
       return { kind: 'observed', detail: gate.reason };
     }
     if (gate.status === 'pending') {
@@ -1056,12 +1068,21 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
         status: step.kind,
         detail: step.detail,
         commentId: null,
+        ...(step.kind === 'pending' && step.mergeCommit !== undefined
+          ? { mergeCommit: step.mergeCommit }
+          : {}),
       };
     }
     if (step.kind === 'unresolved') {
       // A settled state this path may not act past: reported for a person, with
       // no comment (nothing about it is a completion) and nothing retried.
-      return { ref, status: 'attention', detail: step.detail, commentId: null };
+      return {
+        ref,
+        status: 'attention',
+        detail: step.detail,
+        commentId: null,
+        ...(step.mergeCommit === undefined ? {} : { mergeCommit: step.mergeCommit }),
+      };
     }
     const body =
       step.kind === 'resolution'
@@ -1152,7 +1173,13 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
 
     if (step.kind === 'attention') {
       // The note is the whole outcome: the item stays In Review for a person.
-      return { ref, status: 'attention', detail: step.detail, commentId: written.commentId };
+      return {
+        ref,
+        status: 'attention',
+        detail: step.detail,
+        commentId: written.commentId,
+        ...(step.mergeCommit === undefined ? {} : { mergeCommit: step.mergeCommit }),
+      };
     }
     // The merge commit this outcome is about, when the step concluded one: a
     // resolution always names it, and a findings step names it when the pull
@@ -1294,17 +1321,19 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
               );
               return await recordStep(item, thread, follow, stop, { item, request, pull });
             }
+            const untied = mergeNotTied(
+              pull,
+              armed.head,
+              approval === null
+                ? 'GitHub records no review approving the merged head'
+                : `the reviewer approved ${approval}, not the merged head`,
+              pull.mergeCommit?.oid ?? null,
+            );
             return {
               ref,
               status: 'attention',
-              detail: mergeNotTied(
-                pull,
-                armed.head,
-                approval === null
-                  ? 'GitHub records no review approving the merged head'
-                  : `the reviewer approved ${approval}, not the merged head`,
-                pull.mergeCommit?.oid ?? null,
-              ),
+              detail: untied.detail,
+              mergeCommit: untied.mergeCommit,
               commentId: null,
             };
           }
@@ -1312,7 +1341,7 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
             return {
               ref,
               status: 'attention',
-              detail: settledFailure(settled, armed.head),
+              detail: settledFailure(settled, armed.head).detail,
               commentId: null,
             };
         } catch (cause) {
