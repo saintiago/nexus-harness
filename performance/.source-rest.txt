@@ -14,6 +14,7 @@
  * network, and the only stand-in inside the harness is the coding turn.
  */
 
+import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import {
   lstat,
@@ -25,9 +26,9 @@ import {
   symlink,
   writeFile,
 } from 'node:fs/promises';
-import path from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
 import { spawnSync } from 'node:child_process';
+import path from 'node:path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as invocation from '../src/process/invocation.js';
 import { appendRunLog } from '../src/reporting/logs.js';
 import { writeRunReport } from '../src/reporting/report.js';
@@ -35,6 +36,9 @@ import { createRunFinalizer } from '../src/runs/finalize.js';
 import { WorkspaceError } from '../src/workspace/errors.js';
 import { configureWorkspaceIdentity, runGit } from '../src/workspace/git.js';
 import { inspectWorkspaceChanges } from '../src/workspace/changes.js';
+import { runCli } from '../src/cli.js';
+import { EXIT_CANCELLED, EXIT_INPUT_ERROR, EXIT_OK } from '../src/cli/context.js';
+import type { CliContext, InterruptSignals } from '../src/cli/context.js';
 import type { Delivery, DeliveryRequest } from '../src/delivery/github.js';
 import { DeliveryError } from '../src/delivery/github.js';
 import type { TicketHistory } from '../src/history/contract.js';
@@ -72,6 +76,7 @@ import type {
   RoundOutcome,
   RunReport,
   RunStatus,
+  SourceRef,
   Task,
 } from '../src/shared/types.js';
 import type { PreparedWorkspace } from '../src/workspace/prepare.js';
@@ -80,19 +85,49 @@ import { preflightSource } from '../src/workspace/preflight.js';
 import { allocateRunDirectory } from '../src/workspace/run-directory.js';
 import type { RunDirectory } from '../src/workspace/run-directory.js';
 import type { WorkspaceSourceItem } from '../src/workspace/state.js';
-import { readWorkspaceState, sourceItemFor, workspaceStatePath } from '../src/workspace/state.js';
+import {
+  readWorkspaceState,
+  recordWorkspaceAttempt,
+  sourceItemFor,
+  workspaceStatePath,
+} from '../src/workspace/state.js';
+import {
+  fakeGhCalls,
+  fakeTurns,
+  installFakeGh,
+  installFakeRuntime,
+} from './fixtures/local-target.js';
+import type { FakeGhState, FakePlan } from './fixtures/local-target.js';
 import {
   cleanupTempDirectories,
   createTempDir,
   documentedConfig,
+  documentedHarnessConfig,
+  fakeConsole,
+  latestHistorySnapshot,
   publishedComment,
+  screenAfter,
+  writeJsonFile,
 } from './support.js';
-import { SCOPE, refFor, until } from './fixtures/source.js';
+import { HARNESS_CONFIG_FILE_NAME, PROJECT_CONFIG_FILE_NAME } from '../src/config/paths.js';
 
 afterEach(async () => {
   vi.restoreAllMocks();
   await cleanupTempDirectories();
 });
+
+const SCOPE = 'https://example.atlassian.net';
+
+function refFor(id: string, key = `SAM1-${id}`, updatedAt = '2026-09-16T11:00:00.000Z'): SourceRef {
+  return {
+    type: 'jira',
+    scope: SCOPE,
+    id,
+    key,
+    url: `${SCOPE}/browse/${key}`,
+    updatedAt,
+  };
+}
 
 function candidateFor(id: string, key = `SAM1-${id}`): SourceCandidate {
   return { ref: refFor(id, key), title: `Task ${key}` };
@@ -2886,6 +2921,16 @@ function controlledSleep(): {
 }
 
 /** Waits, bounded, until the fixture has done what a test is waiting for. */
+async function until(condition: () => boolean, what: string, timeoutMs = 5000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!condition()) {
+    if (Date.now() > deadline) {
+      throw new Error(`this test waited for ${what}, and it never happened`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
 describe('source watch', () => {
   it(
     'scans, processes a batch, waits the configured interval, and picks up later work',
