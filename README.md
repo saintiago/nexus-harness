@@ -284,7 +284,12 @@ read from the checkout `--repo` names, so the repository a run clones describes 
    `workspace-write` policy, with only its own working directory writable — the launch states that
    policy's additional writable roots as none and takes the host's temporary roots out of it, so
    neither tree is writable even when `workDir` sits beneath one or the operator's own configuration
-   grants a root over it — so it cannot change the snapshot it reads or the retained working copy.
+   grants a root over it — so it cannot change the snapshot it reads or the retained working copy. A
+   configured reviewer launch that carries a switch of its own — `--add-dir`, `--cd`/`-C`,
+   `--worktree`, `-s`/`--sandbox`, `--dangerously-bypass-approvals-and-sandbox` — is refused before
+   any turn starts, because those grants are applied beside that policy rather than through a key
+   the launch's own arguments could take back; the ticket stays In Review with the reason and the
+   required human action.
    A finding that is actionable carries the order it belongs in: the next claim is told, in its
    prompt, to repair the baseline before continuing the original task. A diagnosis a stopped invocation left
    pending is finished before anything else is discovered: the missing status move, or the
@@ -1513,13 +1518,22 @@ single non-interactive turn on this platform and needs no extra client library i
   launch that names the narrower policy instead — `exec --sandbox workspace-write`, started in its
   own working directory, with its own `sandbox_workspace_write.writable_roots` stated as the empty
   list and `.exclude_tmpdir_env_var` and `.exclude_slash_tmp` set to `true`, so its working directory
-  is the only writable root it has even when the operator's own configuration or the configured
-  launch prefix would grant another one. Probed on this host, `codex debug prompt-input`
+  is the only writable root it has even when the operator's own configuration states another one
+  through that policy's own keys. Probed on this host, `codex debug prompt-input`
   under that policy renders the permission profile with the working directory as its only write
   entry — the `:tmpdir` and `:slash_tmp` entries the plain `workspace-write` policy carries are gone,
-  and so is a root granted in front of the adapter's own overrides — and the host's restricted-token
-  sandbox refuses a write outside the writable roots with
-  `EPERM`. The harness checks the snapshot and the retained working copy after the turn as well.
+  and so is a root a configured prefix states through `sandbox_workspace_write.writable_roots` in
+  front of the adapter's own value — and the host's restricted-token
+  sandbox refuses a write outside the writable roots with `EPERM`. Two grants do not go through a
+  configuration key at all, which is why the diagnostic refuses the switches that carry them rather
+  than trusting the overrides: probed the same way, `-s workspace-write --add-dir <dir>` keeps
+  `<dir>` as a write entry even beside the empty writable-root list and the two exclusions, and
+  `-C <dir>` makes `<dir>` the working root and the policy's only write entry. A diagnostic
+  therefore starts no runtime at all for a prefix that carries `--add-dir`, `--cd`/`-C`,
+  `--worktree`, `-s`/`--sandbox`, or `--dangerously-bypass-approvals-and-sandbox`: the refusal is
+  the turn's own failure, and the diagnosis records it on the ticket In Review like any other turn
+  that produced nothing usable. The harness checks the snapshot and the retained working copy after
+  a turn that did run as well.
   That turn's process also carries git's `safe.directory` declaration for the snapshot
   (`GIT_CONFIG_*` in its environment), because a restricted sandbox on Windows runs its commands
   under an identity that does not own the files, and git refuses a repository it does not own as

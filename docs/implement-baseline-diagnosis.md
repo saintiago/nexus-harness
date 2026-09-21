@@ -51,8 +51,16 @@ the retained workspace: it runs as `exec --sandbox workspace-write` with its own
 as none and takes the host's temporary roots out of it (the runtime's own
 `sandbox_workspace_write.writable_roots` as the empty list,
 `sandbox_workspace_write.exclude_tmpdir_env_var` and `.exclude_slash_tmp`), so neither a `workDir`
-beneath a temporary root nor a root the operator's own configuration or the configured launch
-prefix grants can put the clone or the retained working copy inside a writable root. The clone and
+beneath a temporary root nor a root the operator's own configuration states through that policy's
+own keys can put the clone or the retained working copy inside a writable root. Those keys are not
+the only place a configured launch prefix can widen a launch, so a prefix that carries a switch of
+its own — `--add-dir`, `--cd`/`-C`, `--worktree`, `-s`/`--sandbox`,
+`--dangerously-bypass-approvals-and-sandbox` — is refused before the turn starts: those grants are
+applied beside the policy rather than through a key this launch's own values take back, so no
+runtime is started under one, and the refusal is recorded on the ticket In Review with what a person
+must do (probed against the installed CLI 0.154.0 with `codex debug prompt-input`: `--add-dir` keeps
+its write entry even beside the empty writable-root list and the two exclusions, and `-C` moves the
+working root, which is then the policy's only write entry). The clone and
 the retained working copy are both checked after the turn: either one that changed produces no
 finding. An `EPERM` from the sandbox is the
 boundary working, not a failure of the turn. The turn's own environment also declares the snapshot a repository git
@@ -243,7 +251,10 @@ code lives and what owns what.
   launched under the narrower policy in its own working directory, with the host's temporary roots
   excluded from that policy's writable set and its additional writable roots stated as none, so
   neither a `workDir` beneath one nor a root the configured launch grants can expose the retained
-  working copy or the snapshot, a finding from a turn that wrote
+  working copy or the snapshot, and a configured prefix that grants a root or moves the working root
+  with a switch of its own — `--add-dir`, `--cd`/`-C`, the other spellings included — refused
+  before any runtime starts, with the refusal recorded as that turn's rejection and no writable
+  grant ever handed to a process, a finding from a turn that wrote
   into the retained working copy is refused, a working copy the configured commands changed is
   refused before any turn, a check log that cannot be read is refused before any turn — while a log
   the command really left empty is read as a check that said nothing — and a refusal reached there

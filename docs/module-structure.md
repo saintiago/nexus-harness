@@ -377,6 +377,8 @@ further would separate one decision from itself: `runs/runner.ts` (the loop), `s
 - **Owns:** the only implemented coding runtime. `runtime.ts` is the launch prefix and the host
   contract (environment, process-tree stop, grace) plus the one filesystem policy a turn names —
   the coding policy by default, and the narrower one the pre-delivery baseline diagnosis asks for;
+  it is also where that diagnosis refuses a configured prefix that carries a switch of its own — a
+  writable root, a working root, or a policy the launch's own overrides cannot take back;
   `adapter.ts` is one top-level turn through the
   host's `codex exec`, normalized to the runner's `AgentTurnResult`; `prompt.ts` is what a turn is
   told, the bounded guidance included; `events.ts` reads the runtime's JSON event stream. No Codex
@@ -387,7 +389,7 @@ further would separate one decision from itself: `runs/runner.ts` (the loop), `s
 - **Entry points:** `runCodexTurn`, `runCodexPrompt`, `CodexPromptRequest`, `AgentError`
   (`agents/codex/adapter.ts`); `codexRuntime`,
   `selectedCodexRuntime`, `CodexRuntime`, `CodexSandboxPolicy`, `codexExecArguments`,
-  `CODEX_EXECUTABLE`, `CODEX_EXEC_ARGUMENTS`
+  `diagnosticLaunchProblem`, `CODEX_EXECUTABLE`, `CODEX_EXEC_ARGUMENTS`
   (`agents/codex/runtime.ts`).
 
 ### `reviews/`

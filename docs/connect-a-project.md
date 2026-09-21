@@ -211,7 +211,10 @@ From here Nexus is autonomous, one ticket at a time, and needs no further setup:
     evidence the retained record closed as a repair, and all four fields; anything less is context,
     and the recorded finding is handed over instead. The reviewer turn runs under a narrower
    filesystem policy than a coding turn: it writes only its own finding file, and the snapshot it
-   reads and the ticket's workspace stay read-only to it. A green baseline starts the implementation
+   reads and the ticket's workspace stay read-only to it; a reviewer launch that carries a switch of
+   its own — `--add-dir`, `--cd`/`-C`, `--worktree`, `-s`/`--sandbox`,
+   `--dangerously-bypass-approvals-and-sandbox` — is refused before any turn starts, and the ticket
+   stays In Review with the reason and the required human action instead. A green baseline starts the implementation
    turn, and a completed red round starts repair turns within the shared ladder instead of giving
    up. Every turn is asked to finish with the work it wants the next turn to build on committed: a
    working copy left holding uncommitted work stops the run before the next agent, names the paths,
