@@ -76,7 +76,7 @@ src/
     eligibility.ts                (81)   what an item is: a first attempt, a continuation, or a refusal
     guidance.ts                   (95)   what an attempt is told, bounded: the finding, the thread, attempts
     baseline.ts                   (1055) the pre-delivery diagnosis: its evidence, one comment, one move
-    coordinator.ts                (1691) runSource and watchSource: discovery, the ladder, publication
+    coordinator.ts                (1690) runSource and watchSource: discovery, the ladder, publication
     list.ts                       (88)   the read-only `source list` preview
     jira/
       connector.ts                (41)   createJiraSource: the wiring of the functions below
