@@ -575,12 +575,17 @@ async function diagnoseBaseline(
     await updateReceipt(file, {
       problem: `baseline: ${outcome.detail}`,
     });
+    // A reviewer turn whose own stop could not be confirmed may still be
+    // writing to the diagnosis's evidence: the lock is kept rather than
+    // released, exactly as a run's own unconfirmed stop does (docs/spec.md §3).
+    state.cleanupConfirmed = state.cleanupConfirmed && outcome.cleanupConfirmed;
     return context.stop.aborted
       ? 'cancelled'
       : stopWith(
           state,
           `${key}: the baseline diagnosis was stopped before it could finish, so the red baseline ` +
             `still needs a person: ${outcome.detail}`,
+          outcome.cleanupConfirmed,
         );
   }
 
@@ -609,6 +614,7 @@ async function diagnoseBaseline(
     `${key}: no baseline repair is actionable${comment}, so the issue holds the evidence and ` +
       `what a person must do and stays In Review: ${outcome.detail} Its report is kept ` +
       `(${run.reportPath}).`,
+    outcome.cleanupConfirmed,
   );
 }
 
@@ -658,13 +664,25 @@ async function resumeBaseline(
     return 'none';
   }
   if (outcome.kind === 'cancelled') {
-    return context.stop.aborted ? 'cancelled' : stopWith(state, `${phase}: ${outcome.detail}`);
+    // The recovery itself may leave a reviewer runtime the harness could not
+    // confirm stopped: the lock is kept, exactly as it is for a run's own
+    // unconfirmed stop (docs/spec.md §3).
+    state.cleanupConfirmed = state.cleanupConfirmed && outcome.cleanupConfirmed;
+    return context.stop.aborted
+      ? 'cancelled'
+      : stopWith(state, `${phase}: ${outcome.detail}`, outcome.cleanupConfirmed);
   }
-  if (outcome.kind === 'attention' && onAttention === 'continue') {
-    // The item stays In Review with the evidence and what a person must do,
-    // exactly as a failed attempt leaves it; nothing about it is claimed here.
-    context.io.err(outcome.detail);
-    return 'none';
+  if (outcome.kind === 'attention') {
+    if (!outcome.cleanupConfirmed) {
+      state.cleanupConfirmed = false;
+    }
+    if (onAttention === 'continue') {
+      // The item stays In Review with the evidence and what a person must do,
+      // exactly as a failed attempt leaves it; nothing about it is claimed here.
+      context.io.err(outcome.detail);
+      return 'none';
+    }
+    return stopWith(state, `${phase}: ${outcome.detail}`, outcome.cleanupConfirmed);
   }
   return stopWith(state, `${phase}: ${outcome.detail}`);
 }

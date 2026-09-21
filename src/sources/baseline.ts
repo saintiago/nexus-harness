@@ -36,6 +36,7 @@ import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promise
 import path from 'node:path';
 import { messageOf } from '../shared/errors.js';
 import { readBaselineFinding } from '../reviews/baseline.js';
+import { unconfirmedShutdownProblem } from '../runs/progress.js';
 import type { CheckRoundResult, CommandResult, SourceRef, Task } from '../shared/types.js';
 import type {
   BaselineDiagnosis,
@@ -539,14 +540,20 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
   /**
    * One outcome for a step that did not finish: a stop the caller asked for is
    * reported as the cancellation it is, and everything else is the attention
-   * result whose evidence a person needs.
+   * result whose evidence a person needs. `cleanupConfirmed` is `false` only
+   * when the reviewer turn's own stop could not be confirmed: the intake then
+   * keeps its lock instead of declaring an evidence directory safe while a
+   * runtime may still be writing to it.
    */
   const unfinished = (
     stop: AbortSignal,
     detail: string,
     commentId: string | null,
+    cleanupConfirmed = true,
   ): BaselineDiagnosisOutcome =>
-    stop.aborted ? { kind: 'cancelled', detail } : { kind: 'attention', detail, commentId };
+    stop.aborted
+      ? { kind: 'cancelled', detail, cleanupConfirmed }
+      : { kind: 'attention', detail, commentId, cleanupConfirmed };
 
   /** One status move, reported as the step it is rather than as a refusal. */
   const move = async (
@@ -617,6 +624,7 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
       return {
         kind: 'cancelled',
         detail: `${key}: the intake was stopped before its red baseline could be diagnosed`,
+        cleanupConfirmed: true,
       };
     }
 
@@ -695,11 +703,9 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
           : `, and the item had already left its running status`);
       await finish(file, recorded, existing.kind);
       io.out(detail);
-      return {
-        kind: existing.kind === 'repair' ? 'repair' : 'attention',
-        detail,
-        commentId: existing.note.id,
-      };
+      return existing.kind === 'repair'
+        ? { kind: 'repair', detail, commentId: existing.note.id }
+        : { kind: 'attention', detail, commentId: existing.note.id, cleanupConfirmed: true };
     }
 
     io.out(
@@ -725,8 +731,14 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
         finding: null,
         problem: messageOf(cause),
         logPath: path.join(dir, 'reviewer.log'),
+        shutdown: null,
       };
     }
+
+    // The reviewer turn's own stop is carried, never rounded down: an
+    // unconfirmed one means the intake must keep its lock, because something
+    // the reviewer runtime started may still be writing to its evidence.
+    const unconfirmed = unconfirmedShutdownProblem(reviewed.shutdown ?? null);
 
     // A turn that failed, was stopped, wrote nothing usable, or left its view
     // changed has no finding: the diagnosis records that instead of guessing
@@ -737,9 +749,15 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
         reviewed.problem ?? 'no reason was recorded'
       }`,
       requiredAction:
-        'Check the configured reviewer launch, its credentials, and the evidence under ' +
-        `"${dir}", then move the item back to "${readyStatus}" to continue it, or repair the ` +
-        'baseline by hand.',
+        unconfirmed === null
+          ? 'Check the configured reviewer launch, its credentials, and the evidence under ' +
+            `"${dir}", then move the item back to "${readyStatus}" to continue it, or repair the ` +
+            'baseline by hand.'
+          : 'Everything the reviewer runtime started was not seen to end ' +
+            `(${oneLine(unconfirmed)}), so the intake lock is kept for inspection and nothing the ` +
+            `diagnosis wrote is treated as settled. Check the reviewer launch and the evidence ` +
+            `under "${dir}" by hand, then move the item back to "${readyStatus}" to continue it, ` +
+            'or repair the baseline by hand.',
     };
 
     const marker =
@@ -761,6 +779,7 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
         `${key}: the diagnosis could not be confirmed on the issue, so nothing was moved and ` +
           `the red baseline still needs a person: ${messageOf(cause)}`,
         null,
+        unconfirmed === null,
       );
     }
 
@@ -772,6 +791,7 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
         `${key}: the diagnosis is on the issue (comment ${commentId}) but moving it to ` +
           `"${target}" failed: ${moved.problem}`,
         commentId,
+        unconfirmed === null,
       );
     }
 
@@ -791,7 +811,7 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
       `${key}: the red baseline is not actionable (comment ${commentId}); ${where} with the ` +
       'evidence and the required action, so a person decides what happens next';
     io.err(detail);
-    return { kind: 'attention', detail, commentId };
+    return { kind: 'attention', detail, commentId, cleanupConfirmed: unconfirmed === null };
   };
 
   /**
@@ -811,6 +831,7 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
       return {
         kind: 'cancelled',
         detail: 'the intake was stopped before any pending baseline diagnosis could be resumed',
+        cleanupConfirmed: true,
       };
     }
 
@@ -825,12 +846,14 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
       readonly kind: 'repair' | 'attention';
       readonly detail: string;
       readonly commentId: string | null;
+      readonly cleanupConfirmed: boolean;
     }[] = [];
     for (const file of files) {
       if (stop.aborted) {
         return {
           kind: 'cancelled',
           detail: 'the intake was stopped while a pending baseline diagnosis was being resumed',
+          cleanupConfirmed: true,
         };
       }
       let evidence: BaselineEvidence | null;
@@ -857,12 +880,42 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
         };
       }
       if (!running) {
-        // A person moved the item: what they decided stands, and this diagnosis
-        // is not written into a status they did not choose.
-        await finish(file, evidence, 'left-alone');
+        // The item is not in the running status. That may be a person's
+        // decision, which stands — or this harness's own move, made before the
+        // local record was finished. The item's own thread says which: evidence
+        // that already carries its own marker was published, so the record is
+        // finished with the outcome it published and the workspace's next claim
+        // is still told the finding. Nothing is moved and nothing is written to
+        // the thread: the item stays exactly where it is.
+        let notes: readonly SourceNote[];
+        try {
+          notes = await record.listComments(evidence.ref.id, stop);
+        } catch (cause) {
+          if (stop.aborted) {
+            return {
+              kind: 'cancelled',
+              detail:
+                `${key}: the intake was stopped before the retained baseline diagnosis under ` +
+                `"${where}" could be reconciled with its item`,
+              cleanupConfirmed: true,
+            };
+          }
+          return {
+            kind: 'problem',
+            detail:
+              `${key}: the baseline diagnosis retained under "${where}" could not be reconciled ` +
+              `with the item's own thread, so intake stops for a person: ${messageOf(cause)}`,
+          };
+        }
+        const published = markerFor(notes, evidence.evidenceId);
+        await finish(file, evidence, published?.kind ?? 'left-alone');
         io.out(
-          `${key}: the baseline diagnosis retained under "${where}" was not resumed: the item has ` +
-            'left the running status, so it is left exactly where it is',
+          published === null
+            ? `${key}: the baseline diagnosis retained under "${where}" was not resumed: the item ` +
+                'has left the running status, so it is left exactly where it is'
+            : `${key}: the baseline diagnosis retained under "${where}" is already on the issue ` +
+                `(comment ${published.note.id}); the item has left the running status, so it stays ` +
+                'where it is and the retained evidence now records the finding it published',
         );
         continue;
       }
@@ -878,10 +931,19 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
         stop,
       });
       if (outcome.kind === 'cancelled') {
-        return { kind: 'cancelled', detail: outcome.detail };
+        return {
+          kind: 'cancelled',
+          detail: outcome.detail,
+          cleanupConfirmed: outcome.cleanupConfirmed,
+        };
       }
       await noteFeedback(evidence.ref, outcome.commentId);
-      resumed.push({ kind: outcome.kind, detail: outcome.detail, commentId: outcome.commentId });
+      resumed.push({
+        kind: outcome.kind,
+        detail: outcome.detail,
+        commentId: outcome.commentId,
+        cleanupConfirmed: outcome.kind === 'repair' ? true : outcome.cleanupConfirmed,
+      });
     }
 
     const [first] = resumed;
@@ -893,6 +955,7 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
       kind: actionable === undefined ? 'attention' : 'repair',
       detail: resumed.map((outcome) => outcome.detail).join(' '),
       commentId: (actionable ?? first).commentId,
+      cleanupConfirmed: resumed.every((outcome) => outcome.cleanupConfirmed),
     };
   };
 

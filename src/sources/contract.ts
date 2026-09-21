@@ -10,7 +10,7 @@
  * connector.
  */
 import type { DeliveredPullRequest, Delivery } from '../delivery/github.js';
-import type { RunTaskResult } from '../runs/contracts.js';
+import type { AgentTurnShutdown, RunTaskResult } from '../runs/contracts.js';
 import type {
   CheckRoundResult,
   EscalationTier,
@@ -346,20 +346,40 @@ export interface BaselineDiagnosisRequest {
   readonly stop: AbortSignal;
 }
 
-/** What one pre-delivery baseline diagnosis did with the item. */
+/**
+ * What one pre-delivery baseline diagnosis did with the item.
+ *
+ * `cleanupConfirmed` is the diagnosis's own answer to what a run's report asks
+ * about its turns: whether everything the diagnosis started was seen to end. It
+ * is `false` only for a reviewer turn whose own stop could not be confirmed,
+ * and the coordinator then keeps the intake lock instead of releasing it —
+ * something may still be writing to the diagnosis's evidence directory
+ * (docs/spec.md §3, §11).
+ */
 export type BaselineDiagnosisOutcome =
   /**
    * An actionable finding is on the item's thread (at most once) and the item
    * is back in the status it was claimed from, ready for the next claim.
+   * Actionable findings are only ever published from a reviewer turn that
+   * produced one and stopped nothing, so nothing unconfirmed is carried here.
    */
   | { readonly kind: 'repair'; readonly detail: string; readonly commentId: string | null }
   /**
    * Nothing actionable: the item carries what was observed and what a person
    * must do, and it stays in the review status. No coding turn is started.
    */
-  | { readonly kind: 'attention'; readonly detail: string; readonly commentId: string | null }
+  | {
+      readonly kind: 'attention';
+      readonly detail: string;
+      readonly commentId: string | null;
+      readonly cleanupConfirmed: boolean;
+    }
   /** The intake was stopped while the diagnosis ran. */
-  | { readonly kind: 'cancelled'; readonly detail: string };
+  | {
+      readonly kind: 'cancelled';
+      readonly detail: string;
+      readonly cleanupConfirmed: boolean;
+    };
 
 /**
  * What finishing a pending pre-delivery diagnosis did, as the coordinator and
@@ -375,11 +395,20 @@ export type BaselineResumeOutcome =
    * Nothing actionable: the item carries the evidence and what a person must
    * do, and it stays in the review status. No coding turn is started from it.
    */
-  | { readonly kind: 'attention'; readonly detail: string; readonly commentId: string | null }
+  | {
+      readonly kind: 'attention';
+      readonly detail: string;
+      readonly commentId: string | null;
+      readonly cleanupConfirmed: boolean;
+    }
   /** The pending diagnosis could not be finished, so nothing else is taken. */
   | { readonly kind: 'problem'; readonly detail: string }
   /** The caller stopped the intake while the pending diagnosis was finished. */
-  | { readonly kind: 'cancelled'; readonly detail: string };
+  | {
+      readonly kind: 'cancelled';
+      readonly detail: string;
+      readonly cleanupConfirmed: boolean;
+    };
 
 /**
  * What reading back the reviewed finding of one retained workspace produced.
@@ -464,6 +493,14 @@ export interface BaselineReviewResult {
   readonly problem: string | null;
   /** The turn's own log file, kept beside its evidence. */
   readonly logPath: string;
+  /**
+   * How the turn's own stop of the runtime it started went, or `null` when it
+   * stopped nothing. An `unconfirmed` termination is never rounded down: the
+   * diagnosis carries it to its caller, which keeps the intake lock rather than
+   * declaring an evidence directory safe while a runtime may still be writing
+   * to it (docs/spec.md §3, §11).
+   */
+  readonly shutdown: AgentTurnShutdown | null;
 }
 
 /**

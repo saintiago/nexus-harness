@@ -20,13 +20,22 @@
  * before the turn: a log file the diagnosis cannot read now is incomplete
  * evidence, not a check that said nothing, so no reviewer is shown it as if it
  * were whole.
+ *
+ * What one piece of evidence's one turn produced is recorded here before
+ * anything is published: the validated finding, or the problem that rejected
+ * it. A restart reads that record rather than the finding file the turn may
+ * have written before it failed — the file alone cannot tell a completed turn
+ * from an unsuccessful one, and it must never upgrade one.
  */
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { runCodexPrompt } from '../agents/codex/adapter.js';
 import { selectedCodexRuntime } from '../agents/codex/runtime.js';
+import type { CodexRuntime } from '../agents/codex/runtime.js';
 import { openEvidenceLog, readCommandOutputEvidence } from '../reporting/logs.js';
 import type { AgentLog } from '../reporting/logs.js';
+import type { AgentTurnShutdown } from '../runs/contracts.js';
+import { unconfirmedShutdownProblem } from '../runs/progress.js';
 import { messageOf } from '../shared/errors.js';
 import { firstLine, listPaths, runGit } from '../workspace/git.js';
 import type {
@@ -54,6 +63,13 @@ export const BASELINE_FINDING_FILE = 'finding.json';
 /** The baseline reviewer turn's own log file. */
 export const BASELINE_REVIEWER_LOG = 'reviewer.log';
 /**
+ * The record of what this evidence's one reviewer turn produced, written by
+ * the harness — never by the turn, whose writable root is `turn/` — before the
+ * diagnosis publishes anything. It holds the validated finding, or the problem
+ * that rejected the turn; a restart reads this rather than the finding file.
+ */
+export const BASELINE_OUTCOME_FILE = 'outcome.json';
+/**
  * The turn's own working root inside its evidence directory: the one place the
  * launch permits it to write. It sits beside the snapshot rather than inside it,
  * so the inspected source and the retained workspace are outside the writable
@@ -64,6 +80,152 @@ export const BASELINE_TURN_DIRECTORY = 'turn';
 /** The file one baseline reviewer turn writes its finding to. */
 export function baselineFindingPath(dir: string): string {
   return path.join(dir, BASELINE_TURN_DIRECTORY, BASELINE_FINDING_FILE);
+}
+
+/** The file the validated outcome of this evidence's one turn is kept in. */
+function outcomeRecordPath(dir: string): string {
+  return path.join(dir, BASELINE_OUTCOME_FILE);
+}
+
+/**
+ * The validated outcome of one piece of evidence's one reviewer turn: the
+ * finding that turn produced, or the problem that rejected it — with the turn's
+ * own stop for a rejection, so an unconfirmed one is still known to a restart.
+ *
+ * It is written before the diagnosis publishes anything. The turn's own
+ * `finding.json` cannot stand in for it: a turn that failed, was stopped, or
+ * timed out after writing a valid finding leaves exactly the same file as a
+ * turn that completed, and reading that file as a finding would upgrade a
+ * rejected turn into an actionable repair on the next invocation.
+ */
+type BaselineOutcomeRecord =
+  | { readonly version: 1; readonly state: 'finding'; readonly finding: BaselineFinding }
+  | {
+      readonly version: 1;
+      readonly state: 'rejected';
+      readonly problem: string;
+      readonly shutdown: AgentTurnShutdown | null;
+    };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** One stored stop, as this harness writes it, or a refusal by name. */
+function storedShutdown(value: unknown, file: string): AgentTurnShutdown | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  const termination = isRecord(value) ? value['termination'] : null;
+  if (termination !== 'confirmed' && termination !== 'unconfirmed') {
+    throw new ReviewError(
+      'inconclusive',
+      `the baseline diagnostic's ${BASELINE_OUTCOME_FILE} at "${file}" holds a stop this harness ` +
+        'did not write, so the outcome it records cannot be read.',
+    );
+  }
+  const problem = isRecord(value) ? value['problem'] : null;
+  return {
+    termination,
+    problem: termination === 'unconfirmed' && typeof problem === 'string' ? problem : null,
+  };
+}
+
+/**
+ * The recorded outcome of this evidence's one reviewer turn, or `null` when
+ * nothing was recorded. A record that is there and is not one this harness
+ * wrote is refused by name: treating a corrupt record as "nothing recorded"
+ * would let the turn's own finding file decide what happened, which is exactly
+ * what this record exists to prevent.
+ */
+async function readOutcomeRecord(file: string): Promise<BaselineOutcomeRecord | null> {
+  let text: string;
+  try {
+    text = await readFile(file, 'utf8');
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code === 'ENOENT') {
+      return null;
+    }
+    throw new ReviewError(
+      'inconclusive',
+      `the baseline diagnostic's ${BASELINE_OUTCOME_FILE} at "${file}" could not be read: ` +
+        messageOf(cause),
+      { cause },
+    );
+  }
+  let value: unknown;
+  try {
+    value = JSON.parse(text) as unknown;
+  } catch (cause) {
+    throw new ReviewError(
+      'inconclusive',
+      `the baseline diagnostic's ${BASELINE_OUTCOME_FILE} at "${file}" is not valid JSON ` +
+        `(${messageOf(cause)}), so the outcome of its reviewer turn cannot be read.`,
+      { cause },
+    );
+  }
+  if (!isRecord(value) || value['version'] !== 1) {
+    throw new ReviewError(
+      'inconclusive',
+      `the baseline diagnostic's ${BASELINE_OUTCOME_FILE} at "${file}" is not a record this ` +
+        'harness wrote, so the outcome of its reviewer turn cannot be read.',
+    );
+  }
+  if (value['state'] === 'finding') {
+    let finding: BaselineFinding;
+    try {
+      finding = parseBaselineFinding(
+        JSON.stringify(value['finding'] ?? null),
+        BASELINE_OUTCOME_FILE,
+      );
+    } catch (cause) {
+      throw new ReviewError(
+        'inconclusive',
+        `the baseline diagnostic's ${BASELINE_OUTCOME_FILE} at "${file}" holds no usable finding ` +
+          `(${messageOf(cause)}), so nothing is published from it.`,
+        { cause },
+      );
+    }
+    return { version: 1, state: 'finding', finding };
+  }
+  if (value['state'] === 'rejected') {
+    const problem = value['problem'];
+    if (typeof problem !== 'string' || problem.trim() === '') {
+      throw new ReviewError(
+        'inconclusive',
+        `the baseline diagnostic's ${BASELINE_OUTCOME_FILE} at "${file}" records no reason for ` +
+          'rejecting its reviewer turn, so nothing is published from it.',
+      );
+    }
+    return {
+      version: 1,
+      state: 'rejected',
+      problem,
+      shutdown: storedShutdown(value['shutdown'], file),
+    };
+  }
+  throw new ReviewError(
+    'inconclusive',
+    `the baseline diagnostic's ${BASELINE_OUTCOME_FILE} at "${file}" names neither a finding nor ` +
+      'a rejection, so nothing is published from it.',
+  );
+}
+
+/** Records one validated outcome, once, beside the evidence it belongs to. */
+async function writeOutcomeRecord(file: string, record: BaselineOutcomeRecord): Promise<void> {
+  try {
+    await writeFile(file, `${JSON.stringify(record, null, 2)}\n`, {
+      encoding: 'utf8',
+      flag: 'wx',
+    });
+  } catch (cause) {
+    throw new ReviewError(
+      'inconclusive',
+      `the baseline diagnostic's ${BASELINE_OUTCOME_FILE} at "${file}" could not be recorded: ` +
+        messageOf(cause),
+      { cause },
+    );
+  }
 }
 
 /**
@@ -524,41 +686,62 @@ function changedWorkingCopyProblem(before: WorkingCopy, after: WorkingCopy): str
 type PriorTurn =
   /** No turn began here: the snapshot copy was never made. */
   | { readonly kind: 'none' }
-  /** A turn completed: the finding it wrote is published unchanged. */
-  | { readonly kind: 'finding'; readonly text: string }
-  /** A turn began and left no usable finding; no second turn is started. */
-  | { readonly kind: 'unfinished'; readonly problem: string };
+  /** A turn completed: the recorded finding is published unchanged. */
+  | { readonly kind: 'finding'; readonly finding: BaselineFinding }
+  /**
+   * A turn began and left nothing this diagnosis may publish; no second turn is
+   * started. `shutdown` is the recorded stop, when the turn left one.
+   */
+  | {
+      readonly kind: 'unfinished';
+      readonly problem: string;
+      readonly shutdown: AgentTurnShutdown | null;
+    };
 
 /**
  * What a previous invocation left in this evidence directory, if anything.
  *
  * A restart resumes from here rather than spending a second reviewer turn on the
- * same snapshot, commands, and results: the finding an earlier turn completed is
- * reused unchanged while the snapshot it inspected is still the clean snapshot
- * it was pinned at, and a turn that began without producing one is reported as
- * the incomplete evidence it is. The reviewer turn never starts for an evidence
- * directory whose earlier turn's outcome is not established first.
+ * same snapshot, commands, and results. What it resumes from is the outcome the
+ * earlier invocation recorded — the validated finding, or the problem that
+ * rejected the turn — and never the turn's own finding file: that file alone
+ * cannot tell a completed turn from a failed one, and reading it as a finding
+ * would upgrade a rejected turn into an actionable repair. A recorded finding
+ * is reused unchanged while the snapshot it inspected is still the clean
+ * snapshot it was pinned at, and a turn that began without a usable outcome is
+ * reported as the incomplete evidence it is. The reviewer turn never starts for
+ * an evidence directory whose earlier turn's outcome is not established first.
  */
 async function priorTurn(request: BaselineReviewRequest, logPath: string): Promise<PriorTurn> {
   const findingPath = baselineFindingPath(request.dir);
   const viewPath = path.join(request.dir, REVIEW_VIEW_DIRECTORY);
+  const outcome = await readOutcomeRecord(outcomeRecordPath(request.dir));
+  if (outcome !== null && outcome.state === 'rejected') {
+    return {
+      kind: 'unfinished',
+      problem:
+        `an earlier reviewer turn for ${request.item.ref.key} was rejected over this exact ` +
+        `snapshot, commands, and results — ${outcome.problem} — and no second reviewer turn is ` +
+        'started for the same evidence',
+      shutdown: outcome.shutdown,
+    };
+  }
+
   const began = (await exists(viewPath)) || (await exists(logPath)) || (await exists(findingPath));
   if (!began) {
     return { kind: 'none' };
   }
-
-  let text: string;
-  try {
-    text = await readFile(findingPath, 'utf8');
-  } catch (cause) {
+  if (outcome === null) {
     return {
       kind: 'unfinished',
       problem:
         `an earlier reviewer turn for ${request.item.ref.key} already began over this exact ` +
-        `snapshot, commands, and results and wrote no finding this diagnosis may publish ` +
-        `(${messageOf(cause)}), so no second reviewer turn is started for the same evidence. ` +
-        `The turn's own log and any snapshot copy it made are kept under "${request.dir}", and a ` +
+        'snapshot, commands, and results and left no recorded outcome, so this diagnosis cannot ' +
+        'tell a completed turn from one that failed and starts no second reviewer turn for the ' +
+        `same evidence. The turn's own log, any snapshot copy it made, and any finding it wrote ` +
+        `are kept under "${request.dir}", and a ` +
         'person decides what happens next',
+      shutdown: null,
     };
   }
 
@@ -574,9 +757,10 @@ async function priorTurn(request: BaselineReviewRequest, logPath: string): Promi
         `inspected is no longer the clean snapshot it was pinned at (${problem}), so the finding ` +
         `cannot be trusted and is not published. The evidence is kept under "${request.dir}", and ` +
         'a person decides what happens next',
+      shutdown: null,
     };
   }
-  return { kind: 'finding', text };
+  return { kind: 'finding', finding: outcome.finding };
 }
 
 /** Whether one path exists, without following it. */
@@ -605,6 +789,13 @@ export interface BaselineReviewerParts {
    * Jira token, the App private-key path, and every GitHub credential removed.
    */
   readonly environment: NodeJS.ProcessEnv;
+  /**
+   * The rest of the host the runtime is composed with: this host's own process
+   * tree stop and the grace it is given, unless a caller names its own. The
+   * launch, the log, and the sandbox policy are this module's and are not
+   * replaceable here.
+   */
+  readonly runtime?: Partial<CodexRuntime>;
   /** Where the reviewer's own activity is reported, when a display is watching. */
   readonly onActivity?: (activity: AgentActivity) => void;
   /** That one baseline reviewer invocation is starting, named by the ticket. */
@@ -649,6 +840,53 @@ function diagnosticEnvironment(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   };
 }
 
+/** A refusal reached before a reviewer turn began: nothing to record. */
+function refused(problem: string, logPath: string): BaselineReviewResult {
+  return { summary: null, finding: null, problem, logPath, shutdown: null };
+}
+
+/**
+ * One reviewer turn's outcome that produced nothing this diagnosis may publish:
+ * it is recorded in the evidence directory before it is reported, with the
+ * turn's own stop, so a restart reuses the rejection — no second turn — and
+ * never reads the finding file the turn may have left as if it had completed.
+ */
+async function rejectTurn(
+  request: BaselineReviewRequest,
+  parts: {
+    readonly summary: string | null;
+    readonly problem: string;
+    readonly shutdown: AgentTurnShutdown | null;
+    readonly logPath: string;
+  },
+): Promise<BaselineReviewResult> {
+  try {
+    await writeOutcomeRecord(outcomeRecordPath(request.dir), {
+      version: 1,
+      state: 'rejected',
+      problem: parts.problem,
+      shutdown: parts.shutdown,
+    });
+  } catch (cause) {
+    return {
+      summary: parts.summary,
+      finding: null,
+      problem:
+        `${parts.problem}. Recording that rejection also failed (${messageOf(cause)}), so nothing ` +
+        'is published from this evidence and a person decides what happens next',
+      logPath: parts.logPath,
+      shutdown: parts.shutdown,
+    };
+  }
+  return {
+    summary: parts.summary,
+    finding: null,
+    problem: parts.problem,
+    logPath: parts.logPath,
+    shutdown: parts.shutdown,
+  };
+}
+
 /**
  * One baseline reviewer invocation: the snapshot clone, its input, the launch,
  * and the finding it writes. The turn runs in the diagnostic's own evidence
@@ -669,7 +907,7 @@ async function baselineTurn(
   // this diagnosis cannot show to be about the failing check.
   const evidence = await baselineFailures(request.baseline);
   if (evidence.kind === 'incomplete') {
-    return { summary: null, finding: null, problem: evidence.problem, logPath };
+    return refused(evidence.problem, logPath);
   }
   const failures = evidence.failures;
 
@@ -680,14 +918,11 @@ async function baselineTurn(
   try {
     await mkdir(request.dir, { recursive: true });
   } catch (cause) {
-    return {
-      summary: null,
-      finding: null,
-      problem:
-        `the baseline diagnostic's evidence directory "${request.dir}" could not be created: ` +
+    return refused(
+      `the baseline diagnostic's evidence directory "${request.dir}" could not be created: ` +
         messageOf(cause),
       logPath,
-    };
+    );
   }
 
   // The reviewer is handed a snapshot of what the checks really ran against, so
@@ -698,49 +933,41 @@ async function baselineTurn(
   // reviewer turn is started for it.
   const before = await readWorkingCopy(request.workspace.path, request.stop);
   if ('problem' in before) {
-    return {
-      summary: null,
-      finding: null,
-      problem:
-        `the retained workspace is not the snapshot the baseline ran against ` +
+    return refused(
+      `the retained workspace is not the snapshot the baseline ran against ` +
         `(${request.workspace.baseCommit}), so this diagnosis cannot establish what the failing ` +
         `check really ran against and nothing is published: ${before.problem}`,
       logPath,
-    };
+    );
   }
   const pinned = pinnedSnapshotProblem(before.workingCopy, request.workspace.baseCommit);
   if (pinned !== null) {
-    return {
-      summary: null,
-      finding: null,
-      problem:
-        `the retained workspace is not the snapshot the baseline ran against ` +
+    return refused(
+      `the retained workspace is not the snapshot the baseline ran against ` +
         `(${request.workspace.baseCommit}), so this diagnosis cannot establish what the failing ` +
         `check really ran against and nothing is published: ${pinned}. A setup or check command ` +
         'that changes the working copy it runs in has to be made to leave the repository alone ' +
         'before this baseline can be diagnosed',
       logPath,
-    };
+    );
   }
 
   // What this evidence already holds, when a previous invocation was stopped
   // after its reviewer turn started: a restart finishes that one, never a second
-  // turn for the same snapshot, the same commands, and the same results.
+  // turn for the same snapshot, the same commands, and the same results, and
+  // never publishes a finding the earlier turn's own ending rejected.
   const prior = await priorTurn(request, logPath);
   if (prior.kind === 'unfinished') {
-    return { summary: null, finding: null, problem: prior.problem, logPath };
+    return {
+      summary: null,
+      finding: null,
+      problem: prior.problem,
+      logPath,
+      shutdown: prior.shutdown,
+    };
   }
   if (prior.kind === 'finding') {
-    try {
-      return {
-        summary: null,
-        finding: parseBaselineFinding(prior.text, BASELINE_FINDING_FILE),
-        problem: null,
-        logPath,
-      };
-    } catch (cause) {
-      return { summary: null, finding: null, problem: messageOf(cause), logPath };
-    }
+    return { summary: null, finding: prior.finding, problem: null, logPath, shutdown: null };
   }
 
   let view: ReviewView;
@@ -755,14 +982,11 @@ async function baselineTurn(
       request.stop,
     );
   } catch (cause) {
-    return {
-      summary: null,
-      finding: null,
-      problem:
-        `the baseline diagnostic for ${key} could not pin a snapshot of its retained workspace: ` +
+    return refused(
+      `the baseline diagnostic for ${key} could not pin a snapshot of its retained workspace: ` +
         messageOf(cause),
       logPath,
-    };
+    );
   }
 
   const prompt = baselinePrompt({
@@ -781,18 +1005,16 @@ async function baselineTurn(
     await writeFile(path.join(request.dir, BASELINE_INPUT_FILE), prompt, 'utf8');
     log = await openEvidenceLog(logPath, "the baseline reviewer turn's output");
   } catch (cause) {
-    return {
-      summary: null,
-      finding: null,
-      problem:
-        `the baseline diagnostic evidence for ${key} could not be written in "${request.dir}": ` +
+    return refused(
+      `the baseline diagnostic evidence for ${key} could not be written in "${request.dir}": ` +
         messageOf(cause),
       logPath,
-    };
+    );
   }
 
   let summary: string | null = null;
   let problem: string | null = null;
+  let shutdown: AgentTurnShutdown | null = null;
   try {
     const turn = await runCodexPrompt(
       {
@@ -805,9 +1027,13 @@ async function baselineTurn(
         stop: request.stop,
         ...(parts.onActivity === undefined ? {} : { onActivity: parts.onActivity }),
       },
-      selectedCodexRuntime(parts.selection, { env: diagnosticEnvironment(parts.environment) }),
+      selectedCodexRuntime(parts.selection, {
+        ...parts.runtime,
+        env: diagnosticEnvironment(parts.environment),
+      }),
     );
     summary = turn.summary;
+    shutdown = turn.shutdown ?? null;
   } catch (cause) {
     problem = `the baseline reviewer turn for ${key} did not complete: ${messageOf(cause)}`;
   }
@@ -822,20 +1048,26 @@ async function baselineTurn(
       `the baseline reviewer turn for ${key} was stopped before it produced a finding — its time ` +
       'limit expired, or the intake was interrupted — so nothing is published';
   }
+  const unconfirmed = unconfirmedShutdownProblem(shutdown);
+  if (problem !== null && unconfirmed !== null) {
+    problem =
+      `${problem}. The harness could not confirm that everything the reviewer runtime started ` +
+      `had ended (${oneLine(unconfirmed)})`;
+  }
   if (problem !== null) {
-    return { summary, finding: null, problem, logPath };
+    return await rejectTurn(request, { summary, problem, shutdown, logPath });
   }
 
   const changed = await reviewViewProblem(view, request.stop);
   if (changed !== null) {
-    return {
+    return await rejectTurn(request, {
       summary,
-      finding: null,
       problem:
         `the baseline reviewer turn for ${key} changed the snapshot it was given (${changed}), so ` +
         'its finding is not trustworthy and nothing is published',
+      shutdown,
       logPath,
-    };
+    });
   }
 
   // The launch makes the retained workspace read-only, and this is the check
@@ -847,37 +1079,55 @@ async function baselineTurn(
       ? after.problem
       : changedWorkingCopyProblem(before.workingCopy, after.workingCopy);
   if (changedWorkspace !== null) {
-    return {
+    return await rejectTurn(request, {
       summary,
-      finding: null,
       problem:
         `the baseline reviewer turn for ${key} did not leave the retained workspace as it found ` +
         `it: ${changedWorkspace}, so its finding is not trustworthy and nothing is published`,
+      shutdown,
       logPath,
-    };
+    });
   }
 
   let text: string;
   try {
     text = await readFile(findingPath, 'utf8');
   } catch (cause) {
-    return {
+    return await rejectTurn(request, {
       summary,
-      finding: null,
       problem:
         `the baseline reviewer turn for ${key} completed but wrote no usable ` +
         `${BASELINE_FINDING_FILE}: ${messageOf(cause)}`,
+      shutdown,
       logPath,
-    };
+    });
   }
+  let finding: BaselineFinding;
   try {
+    finding = parseBaselineFinding(text, BASELINE_FINDING_FILE);
+  } catch (cause) {
+    return await rejectTurn(request, { summary, problem: messageOf(cause), shutdown, logPath });
+  }
+
+  // The turn completed and its finding is valid: that is what this evidence's
+  // one turn produced, and it is recorded before anything is published, so a
+  // publication retry reuses exactly what this invocation validated — and a
+  // turn that failed is never re-read from its own finding file as if it had
+  // produced one.
+  try {
+    await writeOutcomeRecord(outcomeRecordPath(request.dir), {
+      version: 1,
+      state: 'finding',
+      finding,
+    });
+  } catch (cause) {
     return {
       summary,
-      finding: parseBaselineFinding(text, BASELINE_FINDING_FILE),
-      problem: null,
+      finding: null,
+      problem: `${messageOf(cause)}, so this diagnosis publishes nothing from it`,
       logPath,
+      shutdown,
     };
-  } catch (cause) {
-    return { summary, finding: null, problem: messageOf(cause), logPath };
   }
+  return { summary, finding, problem: null, logPath, shutdown };
 }
