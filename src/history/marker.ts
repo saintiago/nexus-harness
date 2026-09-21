@@ -5,9 +5,12 @@
  * A complete developer or reviewer report is saved locally before anything is
  * published, and the concise Jira comment or GitHub review that renders it is
  * the same text coming back on the next read. The marker names the complete
- * report the rendering belongs to; when synchronization reads the rendering and
- * the local report is present, the rendering is recorded as a mirror of it and
- * does not become a second conversation entry.
+ * report the rendering belongs to, and the source's acknowledgement of the
+ * publication is recorded with it; synchronization treats the rendering as a
+ * mirror of that report only when the recorded publication identity — and, when
+ * one was kept, the published text's own digest — authenticates it. A marker in
+ * some other author's text never removes that message: it stays the comment its
+ * author wrote.
  *
  * The marker is plain text in the published rendering — one short line naming a
  * local record — and carries no path, credential, or command.

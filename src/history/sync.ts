@@ -7,8 +7,9 @@
  * with its ordinary tools and never needs a Jira or GitHub connector call. An
  * entry keeps the source's own identity, so a later read that reports an edit
  * updates that entry instead of adding a second one, and a published rendering
- * of a complete local report is recognized by its marker and recorded as a
- * mirror rather than duplicated as conversation.
+ * of a complete local report is recognized by the publication identity this
+ * machine recorded — never by its wording alone — and recorded as a mirror
+ * rather than duplicated as conversation.
  */
 import type { HistoryReaders, TicketHistory } from './contract.js';
 import { messageOf } from '../shared/errors.js';

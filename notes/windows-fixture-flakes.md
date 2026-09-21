@@ -286,3 +286,28 @@ race under load, but nothing below has been established yet.
 
 Each is checkable from the captures above. None is established, and none should be fixed by relaxing
 an assertion: the assertions are the only thing that noticed.
+
+## The 2026-09-21 full-suite timeouts: the host, not the assertions
+
+While HARN-41's post-agent `npm run validate` was being reproduced by hand, full `vitest run` runs
+failed one to four tests on the default 5 s timeout — `tests/workspace.test.ts` >
+`is returned to the recorded branch by fast-forwarding it, losing no commit`,
+`tests/completion.test.ts` > `bounds a merge that never finishes across passes, then reports
+attention once`, and (once each) `tests/queue-cli.test.ts` >
+`continues the workspace its pointer names under watch` and `tests/delivery.test.ts` >
+`finds the pull request it created, and updates the same branch and pull request`. Every one of
+them passed when its file ran alone, and the same runs' format, lint, typecheck, and build phases
+passed.
+
+The timeouts are the host's, not the change's. Those tests do 3–4.5 s of real Git and stand-in
+process work in isolation (measured: the workspace one 2.9 s, the completion one 4.3 s), so the
+default 5 s leaves little headroom once 34 files run in parallel. A detached worktree at
+`2d57612` — the previous commit, whose own full `npm run validate` was green on this machine at
+12:48 the same day — failed **four** tests the same way when the suite was run again that
+afternoon, including the same two. Nothing in those files imports the module the later change
+touched.
+
+What was and was not done: no test, timeout, or Vitest configuration was changed for this — the
+assertions and the checks stay exactly as they were, and the harness's own `npm run validate`
+remains the thing that decides. What is recorded here is the reproduction, so a later failure of
+this shape on a loaded host is read as the host's, not as a regression in the change under test.
