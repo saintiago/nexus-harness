@@ -3485,7 +3485,13 @@ function recordingSignals(): InterruptSignals & { interrupt(): void; registered(
   };
 }
 
-describe('the source commands through the CLI', () => {
+// Every test in this suite drives the real CLI: real Git and child processes on
+// the host, whose wall-clock cost follows the machine's load rather than any
+// wait the harness itself keeps. The five-second default is a stopwatch, not an
+// assertion, and a busy host can run it out without anything hanging — the
+// watch tests above already take the same room for the same reason. A test that
+// really hangs still fails here.
+describe('the source commands through the CLI', { timeout: 20_000 }, () => {
   it('previews the queue, claims nothing, and writes nothing', async () => {
     const target = await createTarget();
     const jira = fakeJira([
