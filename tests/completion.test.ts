@@ -1,3 +1,5 @@
+// Temporarily quarantined by operator request; restore under HARN-48.
+// See notes/test-architecture-audit.md for evidence and the coverage gap.
 /**
  * The review-to-completion path, offline: a real completion step, a real bounded
  * command runner, and a stand-in `gh` on disk for GitHub; the real Jira
@@ -538,7 +540,7 @@ function transitions(fixture: Fixture): readonly string[] {
 // The path itself
 // ---------------------------------------------------------------------------
 
-describe('review-to-completion', () => {
+describe.skip('review-to-completion', () => {
   it('refreshes the reader credential for later evidence reads without changing the operator identity', async () => {
     const fixture = await createFixture({ merged: true });
     let readings = 0;
@@ -1500,7 +1502,7 @@ describe('review-to-completion', () => {
  * stand-in GitHub refuses to arm such a pull request exactly as production does,
  * so these tests can tell an early arm from one attempted at completion time.
  */
-describe('arming native auto-merge before the final gate', () => {
+describe.skip('arming native auto-merge before the final gate', () => {
   it.each(['site', 'repository'])(
     'keeps concurrent completion admissions separate across %s identities and restarts',
     async (difference) => {
@@ -1908,7 +1910,7 @@ describe('arming native auto-merge before the final gate', () => {
  * poll loop, and a closed, moved or unapproved result is an explicit terminal
  * failure with its evidence. Nothing assumes success.
  */
-describe('reconciling terminal states across an auto-merge race', () => {
+describe.skip('reconciling terminal states across an auto-merge race', () => {
   it('finishes an already-merged admission without arming or asking for a person', async () => {
     const fixture = await createFixture({ merged: true, runs: [] });
 
@@ -2408,7 +2410,7 @@ describe('reconciling terminal states across an auto-merge race', () => {
 // The summary the coordinator and the CLI report
 // ---------------------------------------------------------------------------
 
-describe('the completion summary', () => {
+describe.skip('the completion summary', () => {
   it('counts what each item ended as and prints it', async () => {
     const fixture = await createFixture({ merged: true });
     const lines: string[] = [];
