@@ -1006,8 +1006,9 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
           shutdown = await readBaselineReviewerShutdown(path.dirname(file));
         } catch (cause) {
           io.err(
-            `${key}: the baseline diagnosis retained under "${where}" is already on the issue, ` +
-              `but what its reviewer turn recorded cannot be read: ${messageOf(cause)}`,
+            `${key}: the baseline diagnosis retained under "${where}" is no longer in its ` +
+              `running status, but what its reviewer turn recorded cannot be read: ` +
+              messageOf(cause),
           );
           return unfinished(
             stop,
@@ -1023,10 +1024,9 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
         await finish(file, evidence, published?.kind ?? 'left-alone');
         if (unconfirmed !== null) {
           io.err(
-            `${key}: the baseline diagnosis retained under "${where}" is already on the issue, ` +
-              `but everything its reviewer runtime started was not seen to end (${oneLine(
-                unconfirmed,
-              )}), so the intake lock is kept`,
+            `${key}: the baseline diagnosis retained under "${where}" is no longer in its ` +
+              `running status, and everything its reviewer runtime started was not seen to end ` +
+              `(${oneLine(unconfirmed)}), so the intake lock is kept`,
           );
           return unfinished(
             stop,
