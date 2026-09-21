@@ -1,3 +1,5 @@
+// Temporarily quarantined by operator request; restore under HARN-48.
+// See notes/test-architecture-audit.md for evidence and the coverage gap.
 /**
  * The opt-in live check, verified offline.
  *
@@ -136,7 +138,7 @@ async function installStandInRuntime(
   };
 }
 
-describe('the prerequisite gate', () => {
+describe.skip('the prerequisite gate', () => {
   it('refuses when nothing named like a coding runtime can be started', async () => {
     const report = checkPrerequisites({
       command: ['nexus-no-such-runtime-9f3c'],
@@ -214,7 +216,7 @@ describe('the prerequisite gate', () => {
   });
 });
 
-describe('the entry point, as a process', () => {
+describe.skip('the entry point, as a process', () => {
   it(
     'stops with its prerequisite exit code, and starts no exercise, when nothing it needs is there',
     async () => {
@@ -430,7 +432,7 @@ describe('the entry point, as a process', () => {
   });
 });
 
-describe('the disposable project', () => {
+describe.skip('the disposable project', () => {
   it('is a real repository on a committed, green baseline', async () => {
     const target = await track(createLiveTarget());
     const state = checkoutState(target.repo);
@@ -508,7 +510,7 @@ describe('the disposable project', () => {
   });
 });
 
-describe('the repair fixture’s injected failure', () => {
+describe.skip('the repair fixture’s injected failure', () => {
   it(
     'waits for the arm file it is given, injects once, and never repairs itself',
     async () => {
@@ -576,7 +578,7 @@ describe('the repair fixture’s injected failure', () => {
   );
 });
 
-describe('the exercises, through the stand-in runtime boundary', () => {
+describe.skip('the exercises, through the stand-in runtime boundary', () => {
   beforeAll(() => {
     // The same artifact `npm run test:live` builds and starts; a bare `npm test`
     // on a fresh checkout has to produce it before the entry point can run.

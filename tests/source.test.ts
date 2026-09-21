@@ -1,3 +1,5 @@
+// Temporarily quarantined by operator request; restore under HARN-48.
+// See notes/test-architecture-audit.md for evidence and the coverage gap.
 /**
  * Task-source intake: one serial coordinator, its lock and receipts, and the
  * three CLI commands around it.
@@ -506,7 +508,7 @@ function createFixture(options: FixtureOptions): Fixture {
 // One finite batch
 // ---------------------------------------------------------------------------
 
-describe('review-to-completion coordination', () => {
+describe.skip('review-to-completion coordination', () => {
   it('saves the complete developer report before the outcome is published', async () => {
     const workDir = await createTempDir();
     const events: string[] = [];
@@ -704,7 +706,7 @@ describe('review-to-completion coordination', () => {
     expect(fixture.completionRuns.length).toBeGreaterThanOrEqual(2);
   });
 });
-describe('a finite source run', () => {
+describe.skip('a finite source run', () => {
   it('discovers the whole batch before it claims anything, and runs in order', async () => {
     const workDir = await createTempDir();
     const fixture = createFixture({
@@ -1072,7 +1074,7 @@ describe('a finite source run', () => {
 // The optional delivery step
 // ---------------------------------------------------------------------------
 
-describe('delivering a passed attempt', () => {
+describe.skip('delivering a passed attempt', () => {
   /** A run that passed in a working copy the delivery step can be handed. */
   async function passedRun(_task: Task, _call: number, runDir: string): Promise<RunTaskResult> {
     return resultFor(
@@ -1252,7 +1254,7 @@ describe('delivering a passed attempt', () => {
 // Duplicate prevention and the retained state
 // ---------------------------------------------------------------------------
 
-describe('the local receipt', () => {
+describe.skip('the local receipt', () => {
   it('identifies an issue by type, site, and immutable ID only', () => {
     const identity = receiptFilePath('/work', refFor('10011', 'SAM1-11'));
     const renamed = receiptFilePath(
@@ -1330,7 +1332,7 @@ describe('the local receipt', () => {
 // The consumer lock
 // ---------------------------------------------------------------------------
 
-describe('the intake lock', () => {
+describe.skip('the intake lock', () => {
   it.each(['active', 'stale', 'malformed', 'missing owner'])(
     'refuses a legacy lock with %s metadata for every project without changing it',
     async (metadata) => {
@@ -1433,7 +1435,7 @@ describe('the intake lock', () => {
 // Continuation
 // ---------------------------------------------------------------------------
 
-describe('Git cleanup at intake boundaries', () => {
+describe.skip('Git cleanup at intake boundaries', () => {
   const cleanupProblem = 'owned fake Git tree did not stop';
   const failure = () =>
     new WorkspaceError('Git inspection did not finish', {
@@ -1826,7 +1828,7 @@ function redRoundAttempts(): readonly AttemptEvidence[] {
   ];
 }
 
-describe('the escalation ladder', () => {
+describe.skip('the escalation ladder', () => {
   const TIERS: readonly EscalationTier[] = [
     {
       name: 'flash',
@@ -2216,7 +2218,7 @@ describe('the escalation ladder', () => {
   });
 });
 
-describe('an issue that points at a workspace', () => {
+describe.skip('an issue that points at a workspace', () => {
   it('records a fresh workspace on the issue, and the run is told to do it', async () => {
     const workDir = await createTempDir();
     const fixture = createFixture({ workDir, scans: [[candidateFor('1')]] });
@@ -2642,7 +2644,7 @@ describe('an issue that points at a workspace', () => {
 // The name a fresh claim would use
 // ---------------------------------------------------------------------------
 
-describe('a workspace name a fresh claim would use', () => {
+describe.skip('a workspace name a fresh claim would use', () => {
   it.each(['SAM1-2', 'SAM1-2.json'])(
     'refuses a dangling link at %s before claiming the issue',
     async (entry) => {
@@ -2796,7 +2798,7 @@ describe('a workspace name a fresh claim would use', () => {
 // The preview
 // ---------------------------------------------------------------------------
 
-describe('source list', () => {
+describe.skip('source list', () => {
   it('shows valid, refused, continuable, invalid, and stale issues without changing anything', async () => {
     const workDir = await createTempDir();
     const attempted = candidateFor('9');
@@ -2930,7 +2932,7 @@ async function until(condition: () => boolean, what: string, timeoutMs = 5000): 
   }
 }
 
-describe('source watch', () => {
+describe.skip('source watch', () => {
   it(
     'scans, processes a batch, waits the configured interval, and picks up later work',
     { timeout: 20_000 },
@@ -3621,7 +3623,7 @@ function recordingSignals(): InterruptSignals & { interrupt(): void; registered(
 // assertion, and a busy host can run it out without anything hanging — the
 // watch tests above already take the same room for the same reason. A test that
 // really hangs still fails here.
-describe('the source commands through the CLI', { timeout: 20_000 }, () => {
+describe.skip('the source commands through the CLI', { timeout: 20_000 }, () => {
   it('previews the queue, claims nothing, and writes nothing', async () => {
     const target = await createTarget();
     const jira = fakeJira([

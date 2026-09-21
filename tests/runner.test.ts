@@ -1,3 +1,5 @@
+// Temporarily quarantined by operator request; restore under HARN-48.
+// See notes/test-architecture-audit.md for evidence and the coverage gap.
 /**
  * Runner tests: one task through the loop, with a fake coding agent.
  *
@@ -651,7 +653,7 @@ function lifecyclePhases(messages: readonly string[]): string[] {
     });
 }
 
-describe('a run that stops before any coding turn', () => {
+describe.skip('a run that stops before any coding turn', () => {
   it('stops as failed, keeps the evidence, and never calls the agent', async () => {
     const fixture = await createFixture();
     // The committed working copy cannot satisfy this check, so the baseline is
@@ -782,7 +784,7 @@ describe('a run that stops before any coding turn', () => {
   }, 60_000);
 });
 
-describe('a run that continues a workspace', () => {
+describe.skip('a run that continues a workspace', () => {
   it('starts from the red working copy it was pointed at, reaches its turn, and records the attempt', async () => {
     const fixture = await createFixture();
 
@@ -852,7 +854,7 @@ describe('a run that continues a workspace', () => {
   }, 120_000);
 });
 
-describe('a run whose attempt cannot be recorded in its workspace ledger', () => {
+describe.skip('a run whose attempt cannot be recorded in its workspace ledger', () => {
   it('keeps the report and its check evidence, and names the ledger that did not record it', async () => {
     const fixture = await createFixture();
     const agent = fakeAgent(fixture);
@@ -913,7 +915,7 @@ describe('a run whose attempt cannot be recorded in its workspace ledger', () =>
   }, 120_000);
 });
 
-describe('a working copy a coding turn commits in', () => {
+describe.skip('a working copy a coding turn commits in', () => {
   it('has its repository-local identity before the turn runs, and keeps the commit', async () => {
     const fixture = await createFixture();
     const agent = fakeAgent(fixture, {
@@ -1177,7 +1179,7 @@ describe('a working copy a coding turn commits in', () => {
  * before the round reads the working copy, and a checkout that cannot be
  * returned that way ends the run before any check (HARN-35).
  */
-describe('a working copy a turn leaves on a branch of its own', () => {
+describe.skip('a working copy a turn leaves on a branch of its own', () => {
   /** The branch a checkout is on, or `''` when it is on no branch. */
   async function branchOf(workspacePath: string): Promise<string> {
     return (await gitOrFail(['symbolic-ref', '--quiet', '--short', 'HEAD'], workspacePath)).trim();
@@ -1554,7 +1556,7 @@ describe('a working copy a turn leaves on a branch of its own', () => {
   }, 60_000);
 });
 
-describe('a continued run whose source checkout moved on', () => {
+describe.skip('a continued run whose source checkout moved on', () => {
   it('keeps the recorded base for comparisons, with commits and leftovers both visible', async () => {
     const fixture = await createFixture();
     const firstAgent = fakeAgent(fixture, {
@@ -1621,7 +1623,7 @@ describe('a continued run whose source checkout moved on', () => {
   }, 120_000);
 });
 
-describe('a run whose baseline passes', () => {
+describe.skip('a run whose baseline passes', () => {
   it('runs one implementation turn, then setup and every check, and passes', async () => {
     const fixture = await createFixture();
     const config = configuration(fixture, {
@@ -1930,7 +1932,7 @@ describe('a run whose baseline passes', () => {
   }, 60_000);
 });
 
-describe('the bounded repair loop', () => {
+describe.skip('the bounded repair loop', () => {
   it('repairs a red round once, stops at the first green one, and keeps both attempts', async () => {
     const fixture = await createFixture();
     const config = configuration(fixture);
@@ -2461,7 +2463,7 @@ function awaitStop(request: AgentTurnRequest): Promise<void> {
   });
 }
 
-describe('a run that runs out of task time', () => {
+describe.skip('a run that runs out of task time', () => {
   it('spends one budget from preparation through the repair turns', async () => {
     const fixture = await createFixture();
     const clock = testClock();
@@ -3070,7 +3072,7 @@ async function expectNoPendingTimers(timers: TimerSpy): Promise<void> {
  * so a stop can be delivered at exactly the moment under test. See docs/tasks.md
  * T09.
  */
-describe('a run the caller stops', () => {
+describe.skip('a run the caller stops', () => {
   for (const phase of ['preflight', 'preparation', 'identity'] as const) {
     it.each(['timeout', 'cancelled'] as const)(
       `retains Git's %s and cleanup evidence from ${phase} without relying on the clock`,
@@ -3611,7 +3613,7 @@ describe('a run the caller stops', () => {
   }, 60_000);
 });
 
-describe('the collaborators a run is given', () => {
+describe.skip('the collaborators a run is given', () => {
   it('runs the loaded plan through the functions it was handed', async () => {
     const workDir = path.join(await createTempDir(), 'runs');
     const run: RunDirectory = {
@@ -3767,7 +3769,7 @@ describe('the collaborators a run is given', () => {
   });
 });
 
-describe('what a run records about the working copy it left', () => {
+describe.skip('what a run records about the working copy it left', () => {
   it('lists and flags the changes a coding turn left, against the base it recorded', async () => {
     const fixture = await createFixture();
     const config = configuration(fixture, {
@@ -3910,7 +3912,7 @@ describe('what a run records about the working copy it left', () => {
   }, 60_000);
 });
 
-describe('the ticket conversation history before a coding turn', () => {
+describe.skip('the ticket conversation history before a coding turn', () => {
   it('retains the full previous turn report before a repair and advances only consumed input', async () => {
     const fixture = await createFixture();
     const config = configuration(fixture, {

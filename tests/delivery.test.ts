@@ -1,3 +1,5 @@
+// Temporarily quarantined by operator request; restore under HARN-48.
+// See notes/test-architecture-audit.md for evidence and the coverage gap.
 /**
  * The optional GitHub delivery step: the push, the pull request lookup, and the
  * create-or-update decision, against a disposable Git repository and a stand-in
@@ -236,7 +238,7 @@ async function refusal(deliver: () => Promise<unknown>): Promise<Error> {
   return cause;
 }
 
-describe('the GitHub delivery step', () => {
+describe.skip('the GitHub delivery step', () => {
   it('pushes the attempt branch and creates one pull request with the issue and the checks', async () => {
     const fixture = await createFixture();
     const request = requestFor(fixture);

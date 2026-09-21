@@ -1,3 +1,5 @@
+// Temporarily quarantined by operator request; restore under HARN-48.
+// See notes/test-architecture-audit.md for evidence and the coverage gap.
 /**
  * The pre-delivery baseline diagnosis, offline.
  *
@@ -477,7 +479,7 @@ async function writeTurnFinding(
   });
 }
 
-describe('the pre-delivery baseline diagnosis', () => {
+describe.skip('the pre-delivery baseline diagnosis', () => {
   /** One prepared conversation snapshot, as the reviewer turn receives it. */
   const HISTORY: HistorySnapshot = {
     version: 1,
@@ -1310,7 +1312,7 @@ describe('the pre-delivery baseline diagnosis', () => {
 // machine's load rather than any wait the harness keeps. The five-second
 // default is a stopwatch, not an assertion, and a loaded host ran it out at
 // 5.1s with every assertion holding; a test that really hangs still fails here.
-describe('the baseline reviewer turn', { timeout: 30_000 }, () => {
+describe.skip('the baseline reviewer turn', { timeout: 30_000 }, () => {
   /** One evidence directory with the check output the prompt quotes. */
   async function evidenceFor(): Promise<{
     readonly dir: string;
@@ -1830,7 +1832,7 @@ describe('the baseline reviewer turn', { timeout: 30_000 }, () => {
   }, 60_000);
 });
 
-describe('the evidence a diagnosis reads', () => {
+describe.skip('the evidence a diagnosis reads', () => {
   it('tells a log it cannot read apart from one the command left empty', async () => {
     // The plain fixture's log paths name files nothing wrote: the evidence is
     // incomplete, and the failing check is named by the paths that are missing.
@@ -1940,7 +1942,7 @@ describe('the evidence a diagnosis reads', () => {
   });
 });
 
-describe('the finding file', () => {
+describe.skip('the finding file', () => {
   it('validates both documented shapes and refuses anything else', () => {
     expect(parseBaselineFinding(JSON.stringify(REPAIR_FINDING), 'finding.json')).toEqual(
       REPAIR_FINDING,
@@ -2004,7 +2006,7 @@ describe('the finding file', () => {
   });
 });
 
-describe('the reviewed finding one continued attempt is given', () => {
+describe.skip('the reviewed finding one continued attempt is given', () => {
   const EVIDENCE_ID = baselineEvidenceId(refFor(), BASE, redBaseline());
 
   /** One realistic diagnosis comment: the fields near the width a finding may have. */
@@ -2384,7 +2386,7 @@ function fakeJira(status = 'In Progress'): FakeJira {
   };
 }
 
-describe('the Jira record of one diagnosis', () => {
+describe.skip('the Jira record of one diagnosis', () => {
   /** The real Jira record and a scripted reviewer, as the phase is composed in production. */
   function jiraDiagnosis(record: BaselineRecord, reviewer: BaselineReview, workDir: string) {
     return createBaselineDiagnosis({
@@ -2568,7 +2570,7 @@ async function writeReviewerFinding(
   await writeJsonFile(dir, 'outcome.json', { version: 1, state: 'finding', finding });
 }
 
-describe('finishing a diagnosis a stopped invocation left pending', () => {
+describe.skip('finishing a diagnosis a stopped invocation left pending', () => {
   it('leaves an item a person moved alone, and never diagnoses it again', async () => {
     const workDir = await createTempDir();
     const record = await pendingEvidence(workDir);
@@ -2933,7 +2935,7 @@ describe('finishing a diagnosis a stopped invocation left pending', () => {
   });
 });
 
-describe('the connected project a diagnosis belongs to', () => {
+describe.skip('the connected project a diagnosis belongs to', () => {
   it("never resumes, comments on, moves, or closes another project's pending evidence", async () => {
     // Two connected projects share one Nexus-wide `workDir`, exactly as the
     // intake lock and the queue already allow. Project A leaves a diagnosis
@@ -3189,7 +3191,7 @@ function diagnosisFor(
   };
 }
 
-describe('the coordinator around the diagnosis', () => {
+describe.skip('the coordinator around the diagnosis', () => {
   it('diagnoses a completed red baseline, publishes nothing else, and reports the repair', async () => {
     const diagnosed: BaselineDiagnosisRequest[] = [];
     const { take, calls, workDir } = await takeOne({
@@ -3791,7 +3793,7 @@ function continuedIntake(parts: {
   return { context, runs, since, published, attentions, ticket, out, err };
 }
 
-describe('the next claim after a diagnosis', () => {
+describe.skip('the next claim after a diagnosis', () => {
   /**
    * One retained workspace whose red baseline was diagnosed: the diagnosis
    * posted its one comment, the ticket is back in its ready status, and the
@@ -4646,7 +4648,7 @@ describe('the next claim after a diagnosis', () => {
   });
 });
 
-describe('a resume that could not confirm its reviewer stopped', () => {
+describe.skip('a resume that could not confirm its reviewer stopped', () => {
   /** One intake whose pending diagnosis reports what its reviewer stop observed. */
   async function resumeIntake(cleanupConfirmed: boolean): Promise<{
     readonly workDir: string;
@@ -4875,7 +4877,7 @@ describe('a resume that could not confirm its reviewer stopped', () => {
   });
 });
 
-describe('the serial queue after a baseline diagnosis', () => {
+describe.skip('the serial queue after a baseline diagnosis', () => {
   const ticket: QueueTicket = { ref: refFor(), title: 'Repair the failing baseline' };
 
   function take(overrides: Partial<SourceTake> = {}): SourceTake {
@@ -5015,7 +5017,7 @@ describe('the serial queue after a baseline diagnosis', () => {
 // The source command: the composition the CLI hands the coordinator
 // ---------------------------------------------------------------------------
 
-describe('the diagnosis through `source run`', () => {
+describe.skip('the diagnosis through `source run`', () => {
   async function runIn(
     target: LocalTarget,
     site: FakeJira,

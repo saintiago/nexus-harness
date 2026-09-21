@@ -71,6 +71,12 @@ CLI from TypeScript sources through `tsx` if you would rather not build.
 | `npm run validate`     | Format, lint, typecheck, build, test — the gate CI runs.         |
 | `npm run test:live`    | The opt-in **live** check: builds, then drives a real Codex CLI. |
 
+Temporary test quarantine (2026-09-21): nine process-heavy or overlapping suites are visibly
+skipped by operator request pending [HARN-48](https://malton-family.atlassian.net/browse/HARN-48).
+Their sources still lint and typecheck; a passing validation currently covers only the active
+suites. See the [test architecture audit](notes/test-architecture-audit.md) for the exact list,
+lost coverage, timing evidence and restoration requirements. Test workers are capped at four.
+
 `npm start -- --help` prints the full usage text, and `npm start -- run` with a missing option
 prints a usage error and exits `2`.
 
