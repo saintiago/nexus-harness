@@ -1,6 +1,7 @@
 /**
  * The launch prefix of the Codex runtime, the environment it is started in, and
- * the host's one supported way to stop a process tree it started.
+ * the host's one supported way to stop a process tree it started — plus what a
+ * diagnostic launch refuses to be given.
  *
  * How the runtime is started is configuration: one executable followed by
  * literal prefix arguments, which is what lets an operator select the installed
@@ -114,6 +115,112 @@ export function codexExecArguments(policy: CodexSandboxPolicy): readonly string[
 export const CODEX_EXEC_ARGUMENTS: readonly string[] = codexExecArguments('danger-full-access');
 /** The launch prefix an ordinary run uses: the installed CLI, no extra arguments. */
 export const DEFAULT_CODEX_COMMAND: readonly string[] = [CODEX_EXECUTABLE];
+
+/**
+ * The switches a diagnostic launch refuses when the configured launch prefix
+ * carries them, and what each would do that the launch cannot take back.
+ *
+ * The prefix is prepended exactly as configured, and the narrowing above only
+ * states the `workspace-write` policy's own configuration keys: the value
+ * applied last for a key is the one the launch uses, so an additional root a
+ * prefix grants through `sandbox_workspace_write.writable_roots` cannot survive
+ * it. Other ways to widen a `workspace-write` launch are not keys of that policy
+ * at all and are applied beside it, so no later `-c` value can revoke them: the
+ * CLI's own `--add-dir` (its directories become writable beside the primary
+ * workspace however the writable-root list reads, because the sandbox's
+ * effective roots are assembled from that switch separately), `--cd`/`-C` (which
+ * moves the working root — and the working root is the one directory a
+ * `workspace-write` turn may write in), and a working root or policy of the
+ * prefix's own choosing (`--worktree`, `-s`/`--sandbox`, and
+ * `--dangerously-bypass-approvals-and-sandbox`).
+ *
+ * Probed against the installed CLI (0.154.0) with `codex debug prompt-input`,
+ * which renders the effective permission profile: `-s workspace-write --add-dir
+ * <dir> -c sandbox_workspace_write.writable_roots=[] -c
+ * sandbox_workspace_write.exclude_tmpdir_env_var=true -c
+ * sandbox_workspace_write.exclude_slash_tmp=true` still renders `<dir>` as a
+ * write entry, and `-C <dir> -s workspace-write` with the same overrides renders
+ * `<dir>` as the working root and its only write entry. A write the sandbox lets
+ * through cannot be undone by checking the trees afterwards, so a diagnostic
+ * refuses such a prefix before it starts anything rather than run under a grant
+ * it cannot take back. The refusal is an execution failure of that turn, which
+ * the diagnosis records and leaves on the ticket In Review with what a person
+ * must do (docs/spec.md §11, docs/WORKFLOW.md §11).
+ */
+const DIAGNOSTIC_REFUSED_SWITCHES: ReadonlyMap<string, string> = new Map([
+  [
+    '--add-dir',
+    'its directories are made writable beside the primary workspace, and the policy is assembled ' +
+      'from that switch separately from the additional writable roots this launch states as empty',
+  ],
+  [
+    '--cd',
+    "it would move the turn's working root, and the working root is the one directory this launch " +
+      'lets the turn write in',
+  ],
+  [
+    '-C',
+    "it would move the turn's working root, and the working root is the one directory this launch " +
+      'lets the turn write in',
+  ],
+  [
+    '--worktree',
+    'it would run the turn in a new managed worktree instead of the working root it was given',
+  ],
+  [
+    '--sandbox',
+    "it names a filesystem policy of its own, and this launch states the diagnostic's policy itself",
+  ],
+  [
+    '-s',
+    "it names a filesystem policy of its own, and this launch states the diagnostic's policy itself",
+  ],
+  [
+    '--dangerously-bypass-approvals-and-sandbox',
+    'it would run the turn without the sandbox this policy depends on',
+  ],
+]);
+
+/**
+ * The option one launch-prefix argument names, or `null` when it is a value or
+ * the `--` that ends the options. A switch can arrive separated from its value,
+ * as `--cd=<dir>`, or — for a short option — with its value attached
+ * (`-C<dir>`); all three spellings name the same option here.
+ */
+function optionName(argument: string): string | null {
+  if (argument === '-' || argument === '--' || !argument.startsWith('-')) {
+    return null;
+  }
+  if (argument.startsWith('--')) {
+    const equals = argument.indexOf('=');
+    return equals === -1 ? argument : argument.slice(0, equals);
+  }
+  return argument.slice(0, 2);
+}
+
+/**
+ * What a diagnostic refuses in the configured launch prefix, or `null` when
+ * every argument it carries is one the launch's own promises survive. The
+ * diagnostic is the one turn that must not change what it inspects, so a prefix
+ * that names a writable root, a working root, or a policy of its own is refused
+ * rather than run: nothing widens a launch, and nothing narrows it afterwards by
+ * watching for writes.
+ */
+export function diagnosticLaunchProblem(prefix: readonly string[]): string | null {
+  for (const argument of prefix) {
+    const name = optionName(argument);
+    const problem = name === null ? undefined : DIAGNOSTIC_REFUSED_SWITCHES.get(name);
+    if (name !== null && problem !== undefined) {
+      return (
+        `the configured launch prefix carries "${name}", which this read-only diagnostic cannot ` +
+        `be launched under: ${problem}. The diagnostic was not started, so its configured launch ` +
+        'has to drop that switch before a red baseline can be diagnosed'
+      );
+    }
+  }
+  return null;
+}
+
 /**
  * What this module needs from its host to run one turn: the runtime to start,
  * the environment to start it in, and the one supported way to end a process
