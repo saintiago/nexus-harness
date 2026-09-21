@@ -42,10 +42,12 @@ started: a log file that is missing or cannot be read is incomplete evidence —
 said nothing — and the item stays In Review with the paths named instead of being shown to a
 reviewer as if the evidence were whole. It receives no coding instruction. It cannot change
 the retained workspace: it runs as `exec --sandbox workspace-write` with its own working directory
-(`turn/`) as the writable root, so the clone and the retained working copy are outside what the
-runtime lets it write, and the clone and the retained working copy are both checked after the turn:
-either one that changed produces no finding. An `EPERM` from the sandbox is the boundary working,
-not a failure of the turn. The turn's own environment also declares the snapshot a repository git
+(`turn/`) as its only writable root, and that launch takes the host's temporary roots out of the
+policy (the runtime's own `sandbox_workspace_write.exclude_tmpdir_env_var` and
+`.exclude_slash_tmp`), so a `workDir` beneath a temporary root cannot put the clone or the retained
+working copy inside a writable root either. The clone and the retained working copy are both checked
+after the turn: either one that changed produces no finding. An `EPERM` from the sandbox is the
+boundary working, not a failure of the turn. The turn's own environment also declares the snapshot a repository git
 may read (git's `safe.directory` through the `GIT_CONFIG_*` variables): the sandbox runs its commands
 under an identity that does not own the files on Windows, and git refuses such a repository as
 "dubious ownership" before reading anything, which would otherwise leave the reviewer unable to use
@@ -84,7 +86,9 @@ workspace, receives the finding as guidance, repairs the baseline, and carries o
 carries each field of the finding whole and on its own line rather than as one collapsed comment, and
 it is in the brief of every rung of the climb that claim may take, not only the first: the collapse
 used to cut off exactly the likely cause and the repair, which are the two fields a developer acts
-on. That finding is not context the attempt may start without: the item's own thread is its ordinary
+on. The finding also carries the order it belongs in: the guidance and the coding prompt both say
+that the baseline is repaired before the original task continues, so an attempt is never left to
+read the repair as optional context. That finding is not context the attempt may start without: the item's own thread is its ordinary
 source, and when the thread cannot supply it — a read that failed, or a thread that no longer carries
 it — the evidence kept beside the workspace is. A finding that is required this way and cannot be
 read back stops intake with the ticket's state named, so a developer never starts a baseline
@@ -108,7 +112,11 @@ workspace, the round, and the connected project that wrote it, so an invocation 
 that record was written and before the item was told
 is finished by the next one instead of leaving the ticket in the running status, where a fresh scan
 never looks. That resume step runs before anything is discovered or claimed, in a finite batch, a
-watch scan, and a serial queue step alike. It makes only the step that is missing: the status move
+watch scan, and a serial queue step alike, and it stops that intake when what it finds needs a
+person: a pending diagnosis that cannot be finished, and one whose reviewer runtime was not seen to
+end, both stop the batch, the watch scan, or the queue before anything else is discovered or
+claimed, and an unconfirmed stop carries that observation all the way to the intake lock, which is
+then kept instead of released. It makes only the step that is missing: the status move
 for a finding that is already on the thread, or the publication of the outcome the interrupted
 invocation recorded beside its evidence. That outcome — `outcome.json`, written once the reviewer
 turn has ended and before anything is published — holds the validated finding or the problem that
@@ -132,7 +140,9 @@ post on, transition, or close another project's issue.
   project's own namespace, so one `workDir` can serve several projects — the step that finishes what
   a previous invocation left pending, reconciling a record this harness left unfinished after its
   own move with the finding the item's thread carries, and the read-back of a finding a continuation
-  is required to be told.
+  is required to be told — and the one reading of a resume outcome its callers share: what stops an
+  intake, and whether everything the diagnosis started was confirmed stopped, so a batch, a watch
+  scan, and the serial queue cannot read the same outcome differently.
 - `src/reviews/baseline.ts` — the one reviewer turn over the snapshot clone, its prompt, and the
   finding file it validates, the outcome record it writes before anything is published and reuses on
   a restart — the validated finding, or the problem that rejected the turn, with the turn's own stop
@@ -141,9 +151,12 @@ post on, transition, or close another project's issue.
   as a check that said nothing.
 - `src/sources/jira/baseline.ts` — the Jira side: the thread, one comment, one move out of the
   running status, and whether the item is still there, over the completion path's existing helpers.
-- `src/sources/contract.ts` — the ordinary data between them; `src/sources/coordinator.ts` decides
-  which ending qualifies, runs the resume step before discovery, and requires the reviewed finding
-  before it starts a baseline continuation; `src/sources/guidance.ts` carries
+- `src/sources/contract.ts` — the ordinary data between them; the guidance prefix in
+  `src/runs/contracts.ts` marks a finding's lines for the coding prompt, which renders them as the
+  requirement to repair the baseline before the original task — `src/sources/coordinator.ts` decides
+  which ending qualifies, runs the resume step before discovery, requires the reviewed finding
+  before it starts a baseline continuation, and stops intake rather than claiming another ticket
+  when a resume reports an unconfirmed reviewer shutdown; `src/sources/guidance.ts` carries
   the reviewed finding into every later attempt of that workspace, from the thread or from the
   evidence; `src/queue/loop.ts` carries a
   diagnosed ticket into its repair attempt;
@@ -162,7 +175,9 @@ code lives and what owns what.
   the reviewer turn through the real view and the stand-in runtime, over a disposable repository
   whose failing baseline is real — the prompt carries the commands, the bounded output and the
   snapshot, the finding is validated, a missing file and a changed clone are refused, the turn is
-  launched under the narrower policy in its own working directory, a finding from a turn that wrote
+  launched under the narrower policy in its own working directory, with the host's temporary roots
+  excluded from that policy's writable set so a `workDir` beneath one cannot expose the retained
+  working copy or the snapshot, a finding from a turn that wrote
   into the retained working copy is refused, a working copy the configured commands changed is
   refused before any turn, a check log that cannot be read is refused before any turn — while a log
   the command really left empty is read as a check that said nothing — and a finding an interrupted
@@ -172,7 +187,11 @@ code lives and what owns what.
   stops, or times out is rejected on that invocation and on every restart after it, with its own
   finding file never read as if the turn had completed; a turn that left a finding but no recorded
   outcome is refused rather than diagnosed again; and a reviewer stop the harness could not confirm
-  is reported, recorded, and carried to the coordinator, which keeps its intake lock. A retained
+  is reported, recorded, and carried to the coordinator, which keeps its intake lock; a resume that
+  reports one stops a finite batch, a watch scan, and the serial queue before either discovers or
+  claims anything, and the queue's own summary and final lock decision carry the flag — covered
+  through the commands' real compositions, including the queue path that used to spend a coding
+  turn's discovery before stopping. A retained
   record this harness left unfinished after it really moved the item is reconciled with the finding
   the thread carries, so the next claim is still told it; the Jira record against a fake HTTP boundary — one comment and a
   move by target status name for an actionable finding, In Review for an inconclusive one, and a
@@ -180,9 +199,11 @@ code lives and what owns what.
   table — a completed red baseline enters the diagnosis, a setup error, a cancellation, a timeout,
   a continuation that starts red, and a post-agent red round do not, no diagnosis configured keeps
   the old publication, a red result is never delivered, and a diagnosis that reports an unconfirmed
-  reviewer stop keeps the intake lock where a confirmed one releases it; the next claim through the real
+  reviewer stop keeps the intake lock where a confirmed one releases it, as does a discovery that
+  reports the same; the next claim through the real
   `reopenWorkspace` and a real ledger, where the developer's guidance carries both the earlier
-  attempt and every field of the reviewed finding, on a later rung of the same climb as well as on
+  attempt and every field of the reviewed finding — and the requirement, asserted in the developer's
+  own prompt, that the baseline is repaired before the original task continues — on a later rung of the same climb as well as on
   the first, and the finding recovered from the retained evidence when the thread cannot be read at
   all, with a missing finding file stopping the intake for a person instead of starting the
   developer without it; two connected projects sharing one `workDir` never resuming, commenting on,

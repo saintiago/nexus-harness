@@ -28,7 +28,7 @@ src/
     run-command.ts                (224)  `run`: load the inputs, install the stop, print the outcome
     source-command.ts             (379)  `source list|run|watch`, the connector selection, abortable sleep
     review-command.ts             (273)  `review scan|watch`: the App client, the reviewer, the scan
-    queue-command.ts              (677)  `queue run|watch`: the three credentials, the lock, the four phases
+    queue-command.ts              (816)  `queue run|watch`: the three credentials, the lock, the four phases
     activity.ts                   (604)  the activity timeline: one bounded, timestamped pane per invocation
     progress.ts                   (136)  what a run's own progress line reads as on an interactive terminal
     dependencies.ts               (168)  the loop's real collaborators and the wrapped set a test gets
@@ -64,7 +64,7 @@ src/
     refresh.ts                    (376)  source readiness between tickets: fetch, verify, fast-forward only
     changes.ts                    (288)  inspectWorkspaceChanges: what the copy differs from its base by
   runs/
-    contracts.ts                  (345)  run and turn requests/results, RunnerDependencies, the two errors
+    contracts.ts                  (419)  run and turn requests/results, the guidance prefix, the two errors
     runner.ts                     (668)  runTask: the loop (prepare or continue -> baseline -> turns -> checks)
     finalize.ts                   (462)  how a run ends: stop evidence, change summary, report
     stops.ts                      (113)  the stop request one phase works under, and the stop cause
@@ -75,8 +75,8 @@ src/
     receipts.ts                   (238)  the per-project intake lock and one receipt per attempted item
     eligibility.ts                (81)   what an item is: a first attempt, a continuation, or a refusal
     guidance.ts                   (95)   what an attempt is told, bounded: the finding, the thread, attempts
-    baseline.ts                   (1055) the pre-delivery diagnosis: its evidence, one comment, one move
-    coordinator.ts                (1690) runSource and watchSource: discovery, the ladder, publication
+    baseline.ts                   (1109) the pre-delivery diagnosis: its evidence, one comment, one move
+    coordinator.ts                (1696) runSource and watchSource: discovery, the ladder, publication
     list.ts                       (88)   the read-only `source list` preview
     jira/
       connector.ts                (41)   createJiraSource: the wiring of the functions below
@@ -98,15 +98,15 @@ src/
     github.ts                     (726)  the App JWT, the installation token, and the repository calls
     diff.ts                       (134)  the pull request's diff, and where a finding is positioned
     reviewer.ts                   (402)  the reviewer prompt, the one bounded turn, and the verdict file
-    baseline.ts                   (1133) the pre-delivery reviewer turn, its prompt, and its outcome record
+    baseline.ts                   (1135) the pre-delivery reviewer turn, its prompt, and its outcome record
     scan.ts                       (790)  one scan or watch: eligibility, dedup, publishing, evidence
   queue/
-    loop.ts                       (370)  the serial control loop: one current ticket, one phase at a time
+    loop.ts                       (488)  the serial control loop: one current ticket, one phase at a time
   agents/
     codex/
-      runtime.ts                  (135)  the launch prefix, the sandbox policy, the environment, the stop contract
+      runtime.ts                  (166)  the launch prefix, the two sandbox policies, the environment, the stop contract
       adapter.ts                  (462)  runCodexTurn/runCodexPrompt: one turn, normalized for the runner
-      prompt.ts                   (137)  what one turn is told, the bounded guidance included
+      prompt.ts                   (178)  what one turn is told, the bounded guidance and the reviewed baseline finding included
       events.ts                   (355)  the JSON event stream, and the activity lines read from it
 ```
 
@@ -275,7 +275,7 @@ further would separate one decision from itself: `runs/runner.ts` (the loop), `s
 - **Entry points:** `runTask` (`runs/runner.ts`); `RunTaskRequest`, `RunTaskResult`,
   `RunnerDependencies`, `AgentTurnRequest`, `AgentTurnResult`, `AgentTurnShutdown`,
   `RunCancelledError`, `RunTimeoutError` (`runs/contracts.ts`); `RunFinalizerContext`,
-  `createRunFinalizer` (`runs/finalize.ts`).
+  `createRunFinalizer` (`runs/finalize.ts`); `BASELINE_GUIDANCE_PREFIX` (`runs/contracts.ts`).
 
 ### `sources/`
 
@@ -302,7 +302,9 @@ further would separate one decision from itself: `runs/runner.ts` (the loop), `s
   `resume` step that finishes what an invocation left pending before anything is discovered or
   claimed, which reconciles a record this harness left unfinished after its own status move with the
   finding the item's own thread carries, and the read-back of a finding a continuation is required
-  to be told, through the reviewer and record functions it is handed.
+  to be told, through the reviewer and record functions it is handed — and `resumeStop`, the one
+  reading of what a resume outcome means for its caller's intake: a stop, and whether everything the
+  diagnosis started was confirmed stopped.
 - **Does not own:** Jira. The coordinator imports no connector, no JQL, and no credential. It also
   does not implement the run: it calls the runner it was handed.
 - **Entry points:** `TaskSource`, `SourceComment`, `SourceContext`, `SourceIo`, `SourceRunOutcome`,
@@ -311,7 +313,7 @@ further would separate one decision from itself: `runs/runner.ts` (the loop), `s
   (`sources/coordinator.ts`); `takeOneItem`, `SourceTakeRequest` (`sources/coordinator.ts`);
   `createBaselineDiagnosis`, `baselineEvidenceId`, `baselineGuidanceLines`,
   `baselineFindingGuidanceLines`, `BaselineDiagnosisParts`, `BASELINE_EVIDENCE_FILE`,
-  `BASELINE_MARKER_PREFIX` (`sources/baseline.ts`); `guidanceFrom` (`sources/guidance.ts`);
+  `BASELINE_MARKER_PREFIX`, `resumeStop` (`sources/baseline.ts`); `guidanceFrom` (`sources/guidance.ts`);
   `listSource`, `SourceListEntry` (`sources/list.ts`);
   `acquireIntakeLock`, `readReceipt`, `reserveReceipt`, `updateReceipt`, `receiptFilePath`,
   `receiptIdentity` (`sources/receipts.ts`).
@@ -423,13 +425,17 @@ further would separate one decision from itself: `runs/runner.ts` (the loop), `s
   reviews it, completes it, prepares the checkout between two workspaces, and repairs the same
   ticket when the completion path returns it to its ready status. Every phase is an ordinary
   function handed to it; a `pending` completion is waited out with the configured interval, and an
-  idle watch waits for the next ticket without starting an agent.
+  idle watch waits for the next ticket without starting an agent. Its discovery step reports a
+  pending recovery it could not finish as a stop of its own — never as a failure it goes on
+  past — and carries whether everything that recovery started was confirmed stopped, so the
+  invocation's intake lock is kept when something may still be writing.
 - **Does not own:** any phase's implementation. It imports no connector and no credential, starts no
   agent, merges nothing itself, and keeps no state across invocations. `src/cli/queue-command.ts` is
   what builds the four phases, resolves the three credentials, and holds the connected project's
   intake lock for the whole invocation.
 - **Entry points:** `runQueue`, `QueueLoopContext`, `QueueRunMode`, `QueueSummary`,
-  `QueueTicket`, `QueueReviewOutcome`, `QueueCompletionOutcome`, `QueueIo` (`queue/loop.ts`).
+  `QueueTicket`, `QueueRecovery`, `QueueDiscoveryStop`, `QueueReviewOutcome`,
+  `QueueCompletionOutcome`, `QueueIo` (`queue/loop.ts`).
 
 ## 3. Dependency direction
 

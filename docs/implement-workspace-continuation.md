@@ -280,7 +280,9 @@ pointer label written once, the eligibility table with its refusals, reopening w
 exception, the report's workspace fields; the ladder — `escalation` tiers, one attempt per rung
 climbed inside a single claim, each with its own run, comment, launch, and repair allowance; and the
 guidance a continued attempt is told, which is the attempts its ledger records plus the item's own
-comments since that workspace's first attempt ended, bounded, and context only.
+comments since that workspace's first attempt ended, bounded, and context only — except for a
+reviewed baseline finding, which the turn's prompt renders as the repair that comes before the
+original task ([spec.md](spec.md) §11).
 
 **Defects fixed since, in HARN-7.** The contract above is the intended behaviour and it now holds in
 the implementation: the ladder launches the tier it reports (for a continued workspace included),

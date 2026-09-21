@@ -281,13 +281,16 @@ read from the checkout `--repo` names, so the repository a run clones describes 
    The diagnosis establishes the snapshot before it spends anything: a working copy whose recorded
    base commit has moved, or whose tracked files a configured command changed, is refused as
    incomplete evidence and left In Review instead. The reviewer turn itself runs under the narrower
-   `workspace-write` policy, with only its own working directory writable, so it cannot change the
-   snapshot it reads or the retained working copy. A diagnosis a stopped invocation left pending is
-   finished before anything else is discovered: the missing status move, or the validated outcome
-   the reviewer turn's invocation recorded — never a second turn or a second comment for the same
-   evidence, and never the finding file a turn that then failed left behind. A log file
-   the diagnosis cannot read is incomplete evidence, not a check that said nothing: the ticket
-   stays In Review with the paths named, and no reviewer turn is started from it. The diagnosis's
+   `workspace-write` policy, with only its own working directory writable — the launch takes the
+   host's temporary roots out of that policy, so neither tree is writable even when `workDir` sits
+   beneath one — so it cannot change the snapshot it reads or the retained working copy. A finding
+   that is actionable carries the order it belongs in: the next claim is told, in its prompt, to
+   repair the baseline before continuing the original task. A diagnosis a stopped invocation left
+   pending is finished before anything else is discovered: the missing status move, or the
+   validated outcome the reviewer turn's invocation recorded — never a second turn or a second
+   comment for the same evidence, and never the finding file a turn that then failed left behind. A
+   log file the diagnosis cannot read is incomplete evidence, not a check that said nothing: the
+   ticket stays In Review with the paths named, and no reviewer turn is started from it. The diagnosis's
    own evidence lives under the connected project's namespace, so two projects sharing one output
    directory never act on each other's pending diagnosis, and the claim that follows a repair
    always carries the finding — from the thread, or read back from that evidence.
@@ -1110,9 +1113,10 @@ Read this before pointing a run at anything you care about.
   work (`git add` fails on `.git/index.lock`; HARN-2). An unattended run still never waits for a
   prompt. The one turn that is not a coding turn is the pre-delivery baseline diagnosis (§11): it
   stages nothing and must not change what it inspects, so it runs as `--sandbox workspace-write`
-  with its own working directory as the writable root, and the snapshot and the retained working
-  copy are read-only to it. Treat a target project's configuration the way you would treat a script
-  you are about to run.
+  with its own working directory as the only writable root — that launch excludes the host's
+  temporary roots from the policy — and the snapshot and the retained working copy are read-only to
+  it however `workDir` is placed. Treat a target project's configuration the way you would treat a
+  script you are about to run.
 - **A clone is not a sandbox.** The working copy is a separate directory and a separate branch, so
   your source checkout is not where the work happens — but the code in it runs as you, and it can
   write anywhere your user can.
@@ -1407,10 +1411,13 @@ a read.
   incomplete evidence before any reviewer turn. A turn that writes a valid finding and then fails,
   stops, or times out is refused then and on every restart after it, its own finding file never
   published as if the turn had completed; a reviewer stop the harness could not confirm is reported
-  and keeps the intake lock; and a publication this harness already made before its local record
+  and keeps the intake lock — from a first diagnosis and from a resume that runs one, in a finite
+  batch, a watch scan, and the queue, each of which stops there instead of discovering or claiming
+  anything else; and a publication this harness already made before its local record
   was finished still reaches the workspace's next claim. The narrower launch the diagnostic asks for is
-  still the runtime's to enforce: the offline fixtures record the policy the harness composes, and
-  the enforcement behind it was probed separately on this host, not inside a live run. HARN-34's
+  still the runtime's to enforce: the offline fixtures record the policy the harness composes —
+  temporary roots excluded — and the enforcement behind it was probed separately on this host, not
+  inside a live run. HARN-34's
   load-sensitive baseline has not been replayed against a real Jira ticket with a real reviewer
   launch, no live queue has returned a diagnosed ticket to To Do, and the finding quality of a live
   reviewer is not established by the offline fixtures;
@@ -1474,9 +1481,13 @@ single non-interactive turn on this platform and needs no extra client library i
   for every coding turn; there is no `--dangerously-bypass-approvals-and-sandbox`, no retry with a
   wider policy, and no automatic approval service. The pre-delivery baseline diagnosis is the one
   launch that names the narrower policy instead — `exec --sandbox workspace-write`, started in its
-  own working directory, which the host's restricted-token sandbox enforces (probed on this host:
-  a write outside that directory and the temporary directory was refused with `EPERM`), and the
-  harness checks the snapshot and the retained working copy after the turn as well.
+  own working directory, with the host's temporary roots excluded from that policy through its own
+  `sandbox_workspace_write.exclude_tmpdir_env_var` and `.exclude_slash_tmp` set to `true`, so its
+  working directory is the only writable root it has. Probed on this host, `codex debug prompt-input`
+  under that policy renders the permission profile with the working directory as its only write
+  entry — the `:tmpdir` and `:slash_tmp` entries the plain `workspace-write` policy carries are gone
+  — and the host's restricted-token sandbox refuses a write outside the writable roots with
+  `EPERM`. The harness checks the snapshot and the retained working copy after the turn as well.
   That turn's process also carries git's `safe.directory` declaration for the snapshot
   (`GIT_CONFIG_*` in its environment), because a restricted sandbox on Windows runs its commands
   under an identity that does not own the files, and git refuses a repository it does not own as

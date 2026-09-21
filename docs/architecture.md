@@ -55,7 +55,9 @@ and transition helpers.
 `sources/contract.ts` declares the ordinary data between them, `sources/coordinator.ts` decides
 which ending qualifies and what follows (a return to the ready status, or In Review for a person),
 and finishes whatever a previous invocation left pending before it discovers or claims anything,
-and requires the reviewed finding before it starts that continuation at all — from the thread, or
+stopping that intake there when the resume reports a person is needed — an unconfirmed reviewer
+shutdown included, which keeps the intake lock — and requires the reviewed finding before it starts
+that continuation at all — from the thread, or
 read back from the retained evidence, or intake stops with the ticket's state named —
 and `src/cli/` composes the diagnosis from the configured reviewer and the source's own statuses
 beside the delivery and completion steps it already builds. The phase starts no coding turn,
@@ -187,7 +189,7 @@ The adapter sends the prompt through stdin, runs in the retained workspace, cons
 
 The unsandboxed policy is the adapter's own and is stated in that same invocation: `exec --sandbox danger-full-access`, with approvals never asked. It is an explicit, documented choice rather than a hidden fallback, because a turn has to be able to stage and commit inside the retained working copy — and the narrower `workspace-write` policy, in either its `--sandbox` spelling or its native permission-profile spelling, carves that copy's Git metadata out read-only on this Windows installation, where `git add` then fails on `.git/index.lock` (HARN-2, HARN-10). A turn therefore has the same unrestricted file and network reach as the harness's own configured `setup` and `checks` commands. The suffix is fixed for every turn of a run: no scoped variant, no retry, and no widening after a failed turn.
 
-The pre-delivery baseline diagnosis is the one turn that is not a coding turn, and it names the narrower policy instead: `exec --sandbox workspace-write`, started in its own working directory inside the diagnosis's evidence directory. That is the same adapter — one launch interface, one place where a sandbox policy is chosen — with the writable root moved off the trees the turn must not change: the snapshot clone and the ticket's retained working copy stay read-only to it, and the reviewer's one finding file is written in the directory it was started in (`reviews/baseline.ts`).
+The pre-delivery baseline diagnosis is the one turn that is not a coding turn, and it names the narrower policy instead: `exec --sandbox workspace-write`, started in its own working directory inside the diagnosis's evidence directory, with the host's temporary roots excluded from that policy's writable set (`runtime.ts`). That is the same adapter — one launch interface, one place where a sandbox policy is chosen — with the writable root moved off the trees the turn must not change: the snapshot clone and the ticket's retained working copy stay read-only to it however `workDir` is placed, and the reviewer's one finding file is written in the directory it was started in (`reviews/baseline.ts`).
 
 That turn's environment carries one addition the adapter does not make for a coding turn: git's declaration that the snapshot is a repository git may read (`GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_0`/`GIT_CONFIG_VALUE_0` = `safe.directory`). The restricted sandbox runs a turn's commands under an identity that does not own the files on Windows, and git refuses such a repository as "dubious ownership" before reading anything; the harness's own Git calls are unaffected, and the declaration is the reason the reviewer can use ordinary git reads inside the tree it may not write.
 

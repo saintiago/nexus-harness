@@ -68,6 +68,9 @@ baseline is completed red is diagnosed locally before any developer turn, and an
 returns it to its ready status with the comment carrying the repair guidance. The loop then carries
 that ticket through its repair attempt before unrelated ready work, exactly as it does a ticket the
 completion path returned ([implement-baseline-diagnosis.md](implement-baseline-diagnosis.md)).
+Its pending half is finished before anything is discovered or claimed, and a resume that cannot
+finish it — or that could not confirm the reviewer runtime it started had ended — stops the queue
+there, before any claim, with the intake lock kept for inspection in the unconfirmed case.
 
 ## Source readiness, and only forward
 
