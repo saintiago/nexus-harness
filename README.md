@@ -470,6 +470,9 @@ that comes back through Jira or GitHub is recognized by that recorded identity a
 a comment that merely quotes a marker, or a rendering edited after publication, stays an ordinary
 entry. Outstanding findings are tracked separately for each reviewer; unrelated approvals and
 comment-only reviews cannot clear them. Each developer report names the commit its delivery verified.
+Edits to an App review remain actionable responses beside its outstanding findings, even when GitHub
+provides no edit timestamp. The recorded publication hash detects the change; refreshes, restarts and
+either role consuming the feedback do not hide it.
 The harness re-reads requirements before each turn and refuses the turn if they cannot be obtained.
 `consumed-developer.json` and `consumed-reviewer.json` track feedback separately after usable turn
 output. A prepared snapshot never advances them; legacy workspaces without cursors replay feedback.

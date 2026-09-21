@@ -225,6 +225,11 @@ entries, newest first in selection. Overflow remains complete in the immutable `
 acting, or reporting a gap if it cannot be read; even a long outstanding review cannot expand its
 historical discussion without a bound. Unresolved findings themselves remain whole.
 
+Edits to published review renderings are compared with their recorded publication hash even when
+the remote API supplies no edit timestamp. Their changed text stays in the actionable responses
+beside the original outstanding findings across refreshes, role consumption and restarts; an earlier
+snapshot that held only the unchanged mirror is not evidence that a later edit was consumed.
+
 Retain files by default; cleanup is manual. A crash can leave an incomplete directory without a final report. Do not treat that as success, automatically resume it, or delete it on the next run. The user inspects/stops leftovers before reuse. Source intake adds only the local exclusion lock and per-issue receipt described below, not a transactional store, journal, or background reconciliation service.
 
 ## 5. Practical safeguards and limits

@@ -1,9 +1,12 @@
 /** Offline runner policy tests: no Git, check process, or coding runtime is launched. */
 import path from 'node:path';
+import { readFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createTicketHistory } from '../src/history/sync.js';
 import { runTask } from '../src/runs/runner.js';
-import type { RunnerDependencies } from '../src/runs/contracts.js';
+import type { RunnerDependencies, RunTaskRequest } from '../src/runs/contracts.js';
+import { HistoryError } from '../src/history/contract.js';
 import { writeRunReport } from '../src/reporting/report.js';
 import { allocateRunDirectory } from '../src/workspace/run-directory.js';
 import * as changes from '../src/workspace/changes.js';
@@ -13,6 +16,155 @@ afterEach(async () => {
   vi.useRealTimers();
   vi.restoreAllMocks();
   await cleanupTempDirectories();
+});
+
+/** Real history/report files, with all process boundaries replaced by ordinary functions. */
+async function historyRunner() {
+  const workDir = await createTempDir();
+  const history = createTicketHistory({
+    workDir,
+    readers: {
+      jiraThread: async () => ({ comments: [], truncated: false }),
+      pullRequestConversation: async () => null,
+    },
+  });
+  const checks = vi.fn<RunnerDependencies['runCheckRound']>().mockResolvedValue({
+    outcome: 'passed',
+    setup: [],
+    checks: [],
+    problem: null,
+  });
+  const agent = vi.fn<RunnerDependencies['runAgentTurn']>().mockResolvedValue({
+    summary: 'Complete developer report',
+    shutdown: null,
+  });
+  vi.spyOn(changes, 'inspectWorkspaceChanges').mockResolvedValue([]);
+  const dependencies: RunnerDependencies = {
+    preflight: async () => ({ sourceRoot: workDir, baseCommit: 'a'.repeat(40) }),
+    allocateRunDirectory,
+    prepareWorkspace: async (run, source) => ({
+      ...run,
+      ...source,
+      branch: 'harness/test',
+      continued: false,
+      attempt: 1,
+    }),
+    configureWorkspaceIdentity: async () => undefined,
+    returnToRecordedBranch: async () => ({ changed: false }),
+    recordWorkspaceAttempt: async () => undefined,
+    runCheckRound: checks,
+    runAgentTurn: agent,
+    openAgentLog: async () => ({
+      path: 'unused.log',
+      write: () => undefined,
+      close: async () => undefined,
+    }),
+    appendRunLog: async () => undefined,
+    writeRunReport,
+    now: () => new Date('2026-09-21T10:00:00Z'),
+  };
+  const request: RunTaskRequest = {
+    task: { id: 'test', title: 'test', description: 'test', acceptanceCriteria: ['test'] },
+    sourceRef: {
+      type: 'jira',
+      scope: 'offline',
+      id: '1',
+      key: 'TEST-1',
+      url: 'https://example.test/1',
+      updatedAt: '2026-09-21T10:00:00Z',
+    },
+    config: {
+      workDir,
+      setup: [],
+      checks: [['unused']],
+      maxRepairs: 1,
+      taskTimeoutMinutes: 1,
+      commandTimeoutMinutes: 1,
+      agent: { runtime: 'codex', command: ['unused'] },
+    },
+    repoPath: path.join(workDir, 'unused-source'),
+    workDir,
+    stop: new AbortController().signal,
+    history,
+  };
+  return { request, dependencies, history, agent, checks };
+}
+
+describe('developer history turn policy without subprocesses', () => {
+  it('prepares readable immutable input before the coding turn and acknowledges that exact input', async () => {
+    const fixture = await historyRunner();
+    const prepare = vi.spyOn(fixture.history, 'prepare');
+    const consumed = vi.spyOn(fixture.history, 'consumed');
+    fixture.agent.mockImplementation(async (asked) => {
+      expect(prepare).toHaveBeenCalledOnce();
+      expect(consumed).not.toHaveBeenCalled();
+      expect(asked.history?.role).toBe('developer');
+      expect(await readFile(asked.history?.indexPath ?? '', 'utf8')).toContain(asked.history?.id);
+      expect(await readFile(asked.history?.entriesPath ?? '', 'utf8')).toBe('');
+      return { summary: 'Done', shutdown: null };
+    });
+    const result = await runTask(fixture.request, fixture.dependencies);
+    expect(result.status).toBe('passed');
+    expect(prepare.mock.calls[0]?.[0]).toMatchObject({
+      role: 'developer',
+      round: 1,
+      ref: fixture.request.sourceRef,
+      workspace: { workspaceId: result.workspace?.workspaceId },
+    });
+    expect(consumed).toHaveBeenCalledWith(fixture.agent.mock.calls[0]?.[0].history);
+  });
+
+  it('starts no coding turn when required local input cannot be prepared and retains the reason', async () => {
+    const fixture = await historyRunner();
+    vi.spyOn(fixture.history, 'prepare').mockRejectedValue(
+      new HistoryError('essential', 'the history directory could not be written'),
+    );
+    const consumed = vi.spyOn(fixture.history, 'consumed');
+    const result = await runTask(fixture.request, fixture.dependencies);
+    expect(result.status).toBe('failed');
+    expect(result.reason).toContain('local conversation history could not be prepared');
+    expect(result.reason).toContain('the history directory could not be written');
+    expect(result.attempts).toEqual([]);
+    expect(fixture.agent).not.toHaveBeenCalled();
+    expect(consumed).not.toHaveBeenCalled();
+    expect(fixture.checks).toHaveBeenCalledOnce();
+    expect(JSON.parse(await readFile(result.reportPath, 'utf8'))).toMatchObject({
+      reason: result.reason,
+    });
+  });
+
+  it('retains the entire previous message before preparing a repair and preserves the repair input', async () => {
+    const fixture = await historyRunner();
+    const summary = 'Full implementation details\n'.repeat(1_000) + 'END-REPORT';
+    fixture.checks
+      .mockResolvedValueOnce({ outcome: 'passed', setup: [], checks: [], problem: null })
+      .mockResolvedValueOnce({
+        outcome: 'failed',
+        setup: [],
+        checks: [],
+        problem: 'repair needed',
+      });
+    fixture.agent.mockResolvedValueOnce({ summary, shutdown: null });
+    fixture.agent.mockImplementationOnce(async (asked) => {
+      expect(asked.kind).toBe('repair');
+      expect(
+        asked.history?.entries.find((entry) => entry.kind === 'developer-report')?.text,
+      ).toContain(summary);
+      expect(asked.history?.reports[0]?.status).toBe('in-progress');
+      expect(await readFile(asked.history?.entriesPath ?? '', 'utf8')).toContain('END-REPORT');
+      return { summary: 'Repair completed.', shutdown: null };
+    });
+    const result = await runTask(fixture.request, fixture.dependencies);
+    expect(result.status).toBe('passed');
+    expect(fixture.agent).toHaveBeenCalledTimes(2);
+    const repair = fixture.agent.mock.calls[1]?.[0].history;
+    expect(
+      JSON.parse(await readFile(path.join(repair?.root ?? '', 'consumed-developer.json'), 'utf8')),
+    ).toMatchObject({ snapshotId: repair?.id });
+    expect(existsSync(path.join(repair?.root ?? '', 'consumed-reviewer.json'))).toBe(false);
+    expect(await readFile(repair?.entriesPath ?? '', 'utf8')).not.toContain('Repair completed.');
+    expect(result.attempts[0]?.agentSummary).toBe(summary);
+  });
 });
 
 describe('developer report persistence and shutdown evidence', () => {

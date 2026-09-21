@@ -803,6 +803,13 @@ Published findings without a retained report remain visible with an explicit pro
 Responses include older comments edited after the review. This does not enforce remediation of
 individual findings.
 
+Native GitHub reviews have no edit timestamp. Synchronization compares their bodies against the
+recorded publication hash and marks changed renderings as edited, including when the prior snapshot
+held only a mirror. A legacy publication without a saved hash uses an earlier unchanged mirror as
+its comparison when available. That status survives subsequent refreshes and restarts, so both roles continue
+to receive the correction as a response alongside the outstanding original findings after consuming
+an earlier snapshot.
+
 Every entry keeps its source's own identity (a Jira comment id, a GitHub review or comment id, a run
 or review id), its author, time, round and the reviewed or delivered commit where that applies, and
 its original wording. A read that reports an edited comment updates that entry in the next snapshot;

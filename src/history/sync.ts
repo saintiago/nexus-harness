@@ -350,6 +350,8 @@ function mirroredEntryId(
     readonly harnessAuthors: readonly string[];
     /** The renderings an earlier snapshot already recognized, by source identity. */
     readonly mirroredBefore: ReadonlyMap<string, string>;
+    /** A legacy rendering already retained as edited must not become a mirror again. */
+    readonly editedBefore: boolean;
   },
 ): string | null {
   const entry = candidate.entry;
@@ -357,9 +359,11 @@ function mirroredEntryId(
   if (entry.source === 'jira' && entry.kind === 'jira-comment') {
     const recorded = parts.index.jiraByComment.get(entry.sourceId);
     if (recorded !== undefined) {
-      return recorded.textSha256 !== null && textSha256(entry.text) !== recorded.textSha256
-        ? null
-        : recorded.entryId;
+      const changed =
+        recorded.textSha256 === null
+          ? parts.editedBefore || editedSinceMirrored(entry, parts.mirroredBefore)
+          : textSha256(entry.text) !== recorded.textSha256;
+      return changed ? null : recorded.entryId;
     }
     const marker = historyMarkerOf(entry.text);
     const runId = marker?.kind === 'developer' ? marker.id : legacyRunIdOf(entry.text);
@@ -370,7 +374,9 @@ function mirroredEntryId(
       isHarnessAuthor(entry.author, parts.harnessAuthors) &&
       isDeveloperRenderingShape(entry.text, parts.ref, runId)
     ) {
-      return editedSinceMirrored(entry, parts.mirroredBefore) ? null : retained;
+      return parts.editedBefore || editedSinceMirrored(entry, parts.mirroredBefore)
+        ? null
+        : retained;
     }
     return null;
   }
@@ -383,9 +389,11 @@ function mirroredEntryId(
       ? parts.index.reviewById.get(numeric)
       : undefined;
     if (recorded !== undefined) {
-      return recorded.bodySha256 !== null && textSha256(entry.text) !== recorded.bodySha256
-        ? null
-        : recorded.entryId;
+      const changed =
+        recorded.bodySha256 === null
+          ? parts.editedBefore || editedSinceMirrored(entry, parts.mirroredBefore)
+          : textSha256(entry.text) !== recorded.bodySha256;
+      return changed ? null : recorded.entryId;
     }
     // A rendering published before the publication id was recorded: the App's
     // own review, carrying the marker for a retained report. Only the login the
@@ -396,7 +404,10 @@ function mirroredEntryId(
       return null;
     }
     const retained = parts.index.reviewByLocalId.get(marker.id) ?? null;
-    return retained !== null && editedSinceMirrored(entry, parts.mirroredBefore) ? null : retained;
+    return retained !== null &&
+      (parts.editedBefore || editedSinceMirrored(entry, parts.mirroredBefore))
+      ? null
+      : retained;
   }
   if (entry.kind === 'pr-review-comment' && comment !== null && comment !== undefined) {
     // A reply is its own conversational entry, never a mirrored finding.
@@ -787,6 +798,9 @@ export function createTicketHistory(parts: TicketHistoryParts): TicketHistory {
           ref: request.ref,
           harnessAuthors,
           mirroredBefore,
+          editedBefore:
+            previous?.entries.some((entry) => entry.id === candidate.entry.id && entry.edited) ??
+            false,
         });
         if (mirrored !== null) {
           const contextText =
@@ -816,10 +830,33 @@ export function createTicketHistory(parts: TicketHistoryParts): TicketHistory {
       const entries = [...byId.values()]
         .map((candidate) => candidate.entry)
         .map((entry) => {
+          // Completion mirrors keep separate context text in the conversation.
+          // Its wording is intentionally different from the original rendering,
+          // whose hash was already verified above; that is not a remote edit.
+          if (
+            mirrors.some(
+              (mirror) => mirror.source === entry.source && mirror.sourceId === entry.sourceId,
+            )
+          ) {
+            return entry;
+          }
           const before = previous === null ? undefined : previousOf(previous.entries, entry.id);
+          // Native GitHub reviews have no updated_at. Their recorded publication
+          // hash is the baseline even when the preceding snapshot omitted the
+          // unchanged mirror. Keep the edit flag across refreshes/restarts too.
+          const publishedHash =
+            entry.kind === 'pr-review'
+              ? publications.reviewById.get(Number(entry.sourceId))?.bodySha256
+              : entry.kind === 'jira-comment'
+                ? publications.jiraByComment.get(entry.sourceId)?.textSha256
+                : undefined;
           const edited =
             entry.edited ||
-            (before !== undefined && before.source !== 'harness' && before.text !== entry.text);
+            (publishedHash != null && publishedHash !== textSha256(entry.text)) ||
+            editedSinceMirrored(entry, mirroredBefore) ||
+            (before !== undefined &&
+              before.source !== 'harness' &&
+              (before.edited || before.text !== entry.text));
           return { ...entry, edited };
         })
         .toSorted(

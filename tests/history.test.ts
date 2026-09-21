@@ -192,6 +192,102 @@ function prepareRequest(
 }
 
 describe('the ticket conversation snapshot', () => {
+  it.each([
+    { readMirrorFirst: true, retainHash: true },
+    { readMirrorFirst: false, retainHash: true },
+    { readMirrorFirst: true, retainHash: false },
+  ])(
+    'keeps timestamp-free native review edits actionable across roles and restarts ($readMirrorFirst, $retainHash)',
+    async ({ readMirrorFirst, retainHash }) => {
+      const workDir = await createTempDir();
+      const original = 'Original published review';
+      const correction = 'Additional correction: preserve the complete operator response.';
+      let body = original;
+      const makeHistory = () =>
+        createTicketHistory({
+          workDir,
+          harnessAuthors: ['nexus-lens[bot]'],
+          readers: readers({
+            pull: () =>
+              pullConversation([
+                {
+                  sourceId: '555',
+                  author: 'nexus-lens[bot]',
+                  createdAt: '2026-09-21T08:00:00.000Z',
+                  updatedAt: null,
+                  text: body,
+                  url: 'https://github.com/example/repo/pull/27#review-555',
+                  state: 'CHANGES_REQUESTED',
+                  commit: HEAD,
+                },
+              ]),
+          }),
+        });
+      const history = makeHistory();
+      await history.recordReviewerReport?.({
+        ref: REF,
+        workspaceId: WORKSPACE_ID,
+        task: TASK,
+        reviewId: 'review-edited',
+        round: 1,
+        head: HEAD,
+        decision: 'request_changes',
+        summary: 'Original full report',
+        findings: [{ path: 'src/a.ts', line: 1, body: 'Original complete finding' }],
+        now: new Date('2026-09-21T08:00:00.000Z'),
+      });
+      await notePublishedReview(workspaceHistoryRoot(workDir, WORKSPACE_ID), 'review-edited', {
+        id: 555,
+        url: 'https://github.com/example/repo/pull/27#review-555',
+        body: original,
+      });
+      if (!retainHash) {
+        // A legacy publication kept the native identity, but no original body hash.
+        const file = path.join(
+          workspaceHistoryRoot(workDir, WORKSPACE_ID),
+          'reports',
+          'reviewer-review-edited.json',
+        );
+        const digest = JSON.parse(await readFile(file, 'utf8')) as Record<string, unknown>;
+        await writeFile(
+          file,
+          JSON.stringify({
+            ...digest,
+            published: {
+              id: 555,
+              url: 'https://github.com/example/repo/pull/27#review-555',
+              bodySha256: null,
+            },
+          }),
+        );
+      }
+      const first = readMirrorFirst ? await history.prepare(prepareRequest(workDir)) : null;
+      if (first !== null) expect(first.mirrors).toHaveLength(1);
+      body += '\n' + correction;
+      for (let refresh = 0; refresh < 2; refresh++) {
+        for (const role of ['developer', 'reviewer'] as const) {
+          const restarted = makeHistory();
+          const snapshot = await restarted.prepare(prepareRequest(workDir, role));
+          expect(snapshot.gaps).toEqual([]);
+          expect(snapshot.mirrors).toHaveLength(0);
+          expect(snapshot.brief.responses).toEqual([
+            expect.objectContaining({ sourceId: '555', text: body, edited: true, updatedAt: null }),
+          ]);
+          const prompt =
+            role === 'developer'
+              ? promptFor(developerRequest(snapshot))
+              : reviewPrompt(EVIDENCE, VIEW, '/verdict.json', snapshot);
+          expect(prompt).toContain(correction);
+          expect(prompt).toContain('Original complete finding');
+          await restarted.consumed?.(snapshot);
+        }
+      }
+      if (first !== null) {
+        expect(await readFile(first.entriesPath, 'utf8')).not.toContain(correction);
+      }
+    },
+  );
+
   it('keeps mixed-offset responses after both roles consume them, ordering reviews by instant', async () => {
     const workDir = await createTempDir();
     const native = [
@@ -437,6 +533,7 @@ describe('the ticket conversation snapshot', () => {
     expect(first.entries.filter((entry) => entry.kind === 'reviewer-report')).toHaveLength(1);
     const context = first.entries.find((entry) => entry.sourceId === 'completion-comment');
     expect(context?.role).toBe('harness');
+    expect(context?.edited).toBe(false);
     expect(context?.text).toContain('Distinct check failure');
     expect(context?.text).toContain('Returned to To Do');
     expect(context?.text).not.toContain('Concise mirrored finding');
