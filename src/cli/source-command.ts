@@ -438,6 +438,7 @@ async function sourceCommand(
             project: lockNamespace,
             workDir,
             io: activeIo,
+            history,
           });
 
     const intake: SourceContext = {

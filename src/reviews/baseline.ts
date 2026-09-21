@@ -34,6 +34,8 @@ import { selectedCodexRuntime } from '../agents/codex/runtime.js';
 import type { CodexRuntime } from '../agents/codex/runtime.js';
 import { openEvidenceLog, readCommandOutputEvidence } from '../reporting/logs.js';
 import type { AgentLog } from '../reporting/logs.js';
+import { renderHistorySection } from '../history/prompt.js';
+import type { HistorySnapshot } from '../history/contract.js';
 import type { AgentTurnShutdown } from '../runs/contracts.js';
 import { unconfirmedShutdownProblem } from '../runs/progress.js';
 import { messageOf } from '../shared/errors.js';
@@ -378,6 +380,7 @@ export function baselinePrompt(request: {
   readonly failures: readonly BaselineFailure[];
   readonly view: ReviewView;
   readonly dir: string;
+  readonly history?: HistorySnapshot;
 }): string {
   const { item, baseline, failures, view, dir } = request;
   const { ref, task } = item;
@@ -397,6 +400,10 @@ export function baselinePrompt(request: {
       'ticket, and not the configuration. This turn produces one finding file and nothing else.',
     ].join('\n'),
   );
+
+  if (request.history !== undefined) {
+    sections.push(renderHistorySection(request.history, 'reviewer'));
+  }
 
   sections.push(
     [
@@ -1111,6 +1118,7 @@ async function baselineTurn(
     failures,
     view,
     dir: request.dir,
+    ...(request.history === undefined ? {} : { history: request.history }),
   });
 
   let log: AgentLog;

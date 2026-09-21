@@ -24,6 +24,7 @@ import { workspaceHistoryRoot } from '../src/history/paths.js';
 import { renderHistorySection } from '../src/history/prompt.js';
 import { createTicketHistory } from '../src/history/sync.js';
 import type { ReviewEvidence, ReviewView } from '../src/reviews/contract.js';
+import { baselinePrompt } from '../src/reviews/baseline.js';
 import { reviewPrompt } from '../src/reviews/reviewer.js';
 import { readCommentThread } from '../src/sources/jira/comments.js';
 import type { HttpClient } from '../src/sources/jira/http.js';
@@ -360,7 +361,15 @@ describe('the ticket conversation snapshot', () => {
 
     const developer = promptFor(developerRequest(snapshot));
     const reviewer = reviewPrompt(EVIDENCE, VIEW, '/evidence/review-1', snapshot);
-    for (const prompt of [developer, reviewer]) {
+    const diagnostic = baselinePrompt({
+      item: { ref: REF, task: TASK },
+      baseline: { outcome: 'failed', setup: [], checks: [], problem: null },
+      failures: [],
+      view: VIEW,
+      dir: '/evidence/baseline',
+      history: snapshot,
+    });
+    for (const prompt of [developer, reviewer, diagnostic]) {
       expect(prompt).toContain(snapshot.indexPath);
       expect(prompt).toContain(snapshot.entriesPath);
       expect(prompt).toContain(snapshot.dir);

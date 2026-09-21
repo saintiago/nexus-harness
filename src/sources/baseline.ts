@@ -44,6 +44,7 @@ import { messageOf } from '../shared/errors.js';
 import { readBaselineOutcome } from '../reviews/baseline.js';
 import { BASELINE_GUIDANCE_PREFIX, FEEDBACK_DEADLINE_MS } from '../runs/contracts.js';
 import { unconfirmedShutdownProblem } from '../runs/progress.js';
+import type { HistorySnapshot, TicketHistory } from '../history/contract.js';
 import type { BaselineOutcome } from '../reviews/baseline.js';
 import type { CheckRoundResult, CommandResult, SourceRef, Task } from '../shared/types.js';
 import type {
@@ -727,6 +728,14 @@ export interface BaselineDiagnosisParts {
   /** `<workDir>`: where the diagnosis's own evidence directories are kept. */
   readonly workDir: string;
   readonly io: SourceIo;
+  /**
+   * The ticket conversation history the diagnostic reviewer turn reads, when
+   * the caller configured one. It is prepared before that turn exactly as it is
+   * for a developer or review turn, so a ticket whose own thread explains the
+   * failing baseline is diagnosed with that thread in hand
+   * (docs/WORKFLOW.md §9 and §11).
+   */
+  readonly history?: TicketHistory;
 }
 
 /**
@@ -957,6 +966,36 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
       `${key}: a completed red baseline before any coding turn; one reviewer turn is diagnosing ` +
         `the snapshot at ${workspace.baseCommit} (evidence under ${dir})`,
     );
+    // The one local conversation history the reviewer turn reads, prepared
+    // before it starts: the same organization and local paths a developer turn
+    // is given. A snapshot that cannot be written stops the turn rather than
+    // starting one whose promised history does not exist; the ticket keeps its
+    // evidence and stays In Review for a person.
+    let history: HistorySnapshot | undefined;
+    if (parts.history !== undefined) {
+      try {
+        history = await parts.history.prepare({
+          ref: item.ref,
+          task: item.task,
+          workspace: {
+            workspaceId: workspace.workspaceId,
+            workspacePath: workspace.workspacePath,
+            branch: workspace.branch,
+            baseCommit: workspace.baseCommit,
+          },
+          role: 'reviewer',
+          round: null,
+          stop,
+        });
+      } catch (cause) {
+        return unfinished(
+          stop,
+          `${key}: its conversation history could not be prepared, so its red baseline was not ` +
+            `diagnosed and nothing was published or moved: ${messageOf(cause)}`,
+          null,
+        );
+      }
+    }
     let reviewed: BaselineReviewResult;
     try {
       // The one turn is bounded like every other launch: the run's own stop
@@ -968,6 +1007,7 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
         item,
         workspace: { path: workspace.workspacePath, baseCommit: workspace.baseCommit },
         baseline,
+        ...(history === undefined ? {} : { history }),
         stop: turnStop,
       });
     } catch (cause) {

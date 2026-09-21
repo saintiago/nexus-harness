@@ -10,7 +10,7 @@
  * connector.
  */
 import type { DeliveredPullRequest, Delivery } from '../delivery/github.js';
-import type { TicketHistory } from '../history/contract.js';
+import type { HistorySnapshot, TicketHistory } from '../history/contract.js';
 import type { AgentTurnShutdown, RunTaskResult } from '../runs/contracts.js';
 import type {
   CheckRoundResult,
@@ -525,6 +525,14 @@ export interface BaselineReviewRequest {
   readonly workspace: { readonly path: string; readonly baseCommit: string };
   /** The completed red baseline round: the configured commands and their evidence. */
   readonly baseline: CheckRoundResult;
+  /**
+   * The ticket's conversation snapshot, prepared before this reviewer turn when
+   * the caller configured one: the same organization and local paths a
+   * developer or review turn receives, so a ticket whose thread explains the
+   * baseline failure is diagnosed with that thread in hand
+   * (docs/WORKFLOW.md §9 and §11).
+   */
+  readonly history?: HistorySnapshot;
   readonly stop: AbortSignal;
 }
 

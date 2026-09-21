@@ -22,6 +22,11 @@ import type { QueueLoopContext } from '../src/queue/loop.js';
 import { runQueue } from '../src/queue/loop.js';
 import { summarizeChanges } from '../src/reporting/changes.js';
 import type { RunTaskResult } from '../src/runs/contracts.js';
+import type {
+  HistoryPrepareRequest,
+  HistorySnapshot,
+  TicketHistory,
+} from '../src/history/contract.js';
 import {
   baselineFailures,
   baselineFindingPath,
@@ -321,6 +326,8 @@ function phaseFor(parts: {
   readonly readyStatus?: string;
   readonly reviewStatus?: string;
   readonly project?: string;
+  /** The conversation history the diagnostic reviewer turn is given. */
+  readonly history?: TicketHistory;
 }): { readonly diagnosis: ReturnType<typeof createBaselineDiagnosis>; readonly out: string[] } {
   const out: string[] = [];
   const reviewer = typeof parts.reviewer === 'function' ? parts.reviewer : parts.reviewer.review;
@@ -335,6 +342,7 @@ function phaseFor(parts: {
       project: parts.project ?? PROJECT,
       workDir: parts.workDir,
       io: { out: (text) => out.push(text), err: (text) => out.push(text) },
+      ...(parts.history === undefined ? {} : { history: parts.history }),
     }),
   };
 }
@@ -465,6 +473,103 @@ async function writeTurnFinding(
 }
 
 describe('the pre-delivery baseline diagnosis', () => {
+  /** One prepared conversation snapshot, as the reviewer turn receives it. */
+  const HISTORY: HistorySnapshot = {
+    version: 1,
+    id: 'snapshot-baseline',
+    role: 'reviewer',
+    round: null,
+    takenAt: '2026-09-21T10:00:00.000Z',
+    root: '/history',
+    dir: '/history/snapshots/snapshot-baseline',
+    indexPath: '/history/snapshots/snapshot-baseline/index.md',
+    indexJsonPath: '/history/snapshots/snapshot-baseline/index.json',
+    entriesPath: '/history/snapshots/snapshot-baseline/entries.jsonl',
+    reportsDir: '/history/reports',
+    brief: {
+      ref: refFor(),
+      task: taskFor(refFor()),
+      latestDelivery: null,
+      unresolved: null,
+      responses: [],
+      newHumanFeedback: [],
+    },
+    entries: [],
+    reports: [],
+    gaps: [],
+    mirrors: [],
+    sources: [],
+  };
+
+  it('prepares one conversation snapshot before the diagnostic reviewer turn', async () => {
+    const workDir = await createTempDir();
+    const record = fakeRecord();
+    const request = requestFor();
+    const prepared: HistoryPrepareRequest[] = [];
+    const seen: Array<HistorySnapshot | undefined> = [];
+    const reviewer: BaselineReview = async (asked) => {
+      seen.push(asked.history);
+      return {
+        summary: null,
+        finding: REPAIR_FINDING,
+        problem: null,
+        logPath: path.join(asked.dir, 'reviewer.log'),
+        shutdown: null,
+      };
+    };
+    const history: TicketHistory = {
+      prepare: async (asked) => {
+        prepared.push(asked);
+        return HISTORY;
+      },
+    };
+    const { diagnosis } = phaseFor({ record, reviewer, workDir, history });
+
+    const outcome = await diagnosis.diagnose(request);
+
+    expect(outcome.kind).toBe('repair');
+    expect(prepared).toHaveLength(1);
+    expect(prepared[0]).toMatchObject({
+      role: 'reviewer',
+      round: null,
+      ref: { id: request.item.ref.id },
+      workspace: { workspaceId: request.workspace.workspaceId },
+    });
+    expect(seen[0]).toBe(HISTORY);
+  });
+
+  it('starts no diagnostic turn when its conversation snapshot cannot be prepared', async () => {
+    const workDir = await createTempDir();
+    const record = fakeRecord();
+    const request = requestFor();
+    let turns = 0;
+    const reviewer: BaselineReview = async (asked) => {
+      turns += 1;
+      return {
+        summary: null,
+        finding: REPAIR_FINDING,
+        problem: null,
+        logPath: path.join(asked.dir, 'reviewer.log'),
+        shutdown: null,
+      };
+    };
+    const history: TicketHistory = {
+      prepare: async () => {
+        throw new Error('the history directory could not be written beside the workspace');
+      },
+    };
+    const { diagnosis } = phaseFor({ record, reviewer, workDir, history });
+
+    const outcome = await diagnosis.diagnose(request);
+
+    expect(outcome.kind).toBe('attention');
+    expect(turns).toBe(0);
+    // The diagnosis leaves the claimed ticket to its caller, which publishes
+    // the attention record; nothing was diagnosed from an incomplete history.
+    expect(outcome.detail).toContain('its conversation history could not be prepared');
+    expect(record.posted).toEqual([]);
+  });
+
   it('publishes one actionable comment and returns the same ticket to its ready status', async () => {
     const workDir = await createTempDir();
     const record = fakeRecord();

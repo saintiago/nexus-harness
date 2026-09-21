@@ -1292,7 +1292,8 @@ Read this before pointing a run at anything you care about.
   cycle that picks up a later issue, and the behaviour of a stop, a failed feedback, and a corrupt
   receipt. Nothing in that suite needs a Jira site, a token, or a network.
 - the ticket conversation history, through temporary directories and faked readers: both role
-  prompts carrying the same organization and local paths, a finding past the old per-comment
+  prompts (developer, review, and the pre-delivery baseline diagnosis) carrying the same
+  organization and local paths, a finding past the old per-comment
   budgets and past the reviewer verdict bound staying whole, a long history kept as one file per
   entry while the inline block names what it did not fit, an edited comment updating its identity in
   a new snapshot while the old snapshot is unchanged, pagination of both the Jira thread and the

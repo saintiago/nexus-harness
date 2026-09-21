@@ -409,7 +409,11 @@ result, and no coding turn ran. The source path hands that attempt to the config
 Nexus-wide selection, never a coding tier — for one bounded local turn before any developer turn. The
 reviewer receives the exact source snapshot (a read-only clone of the retained workspace, pinned at
 the commit the baseline ran against), the configured commands, and the bounded stdout/stderr each of
-them wrote; it receives no coding instruction, may inspect that snapshot with its normal local tools,
+them wrote, together with the ticket's own conversation snapshot when one can be prepared — the same
+organization and local paths a developer or review turn is given, so a thread that explains the
+failing baseline is in hand; a snapshot that cannot be prepared starts no diagnostic turn and leaves
+the item In Review with the paths named. It receives no coding instruction, may inspect that snapshot
+with its normal local tools,
 and cannot change the retained workspace it was cloned from. That recorded evidence has to be
 readable before the turn starts: a log file that is missing or cannot be read is incomplete
 evidence, not a check that said nothing, and leaves the item In Review with the paths named instead

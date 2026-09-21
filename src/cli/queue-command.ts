@@ -479,6 +479,7 @@ async function queueCommand(options: QueueCommandOptions, context: CliContext): 
           project: lockNamespace,
           workDir,
           io: sourceIo,
+          history,
         });
 
         const intake: SourceContext = {

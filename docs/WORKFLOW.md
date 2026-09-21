@@ -1060,6 +1060,9 @@ several projects — bounded by the harness configuration's
   exited with;
 - the bounded stdout/stderr each failing check wrote (the same bounded reading a repair turn is
   given), with the log file paths beside it;
+- the ticket's conversation history (§9, "The ticket conversation history"), prepared as the
+  identified local snapshot a developer and a review turn receive; a snapshot that cannot be
+  prepared starts no diagnostic turn and leaves the item In Review with the paths named;
 - a read-only clone of the retained workspace (`repo/` in the evidence directory), pinned at the
   commit the baseline ran against, which the reviewer may inspect with ordinary read tools. The
   snapshot has to be established before the turn: a working copy whose recorded base commit has
