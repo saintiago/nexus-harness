@@ -1,5 +1,3 @@
-// Temporarily quarantined by operator request; restore under HARN-48.
-// See notes/test-architecture-audit.md for evidence and the coverage gap.
 /**
  * The command line: what it accepts, what it refuses, what it prints, and what
  * it exits with.
@@ -418,7 +416,7 @@ function recordingSignals(): RecordingSignals {
 // Help, and the static command
 // ---------------------------------------------------------------------------
 
-describe.skip('help', () => {
+describe('help', () => {
   for (const argv of [[], ['--help'], ['-h'], ['check-config', '--help'], ['run', '--help']]) {
     it(`prints help and succeeds for: ${argv.join(' ') || '(no arguments)'}`, async () => {
       const result = await run(argv);
@@ -512,7 +510,7 @@ describe.skip('help', () => {
   });
 });
 
-describe.skip('check-config', () => {
+describe('check-config', () => {
   it('validates the checked-in examples and task file', async () => {
     const result = await run(
       checkConfigArgv({
@@ -746,7 +744,7 @@ describe.skip('check-config', () => {
   });
 });
 
-describe.skip('usage errors', () => {
+describe('usage errors', () => {
   const rejections: Array<[name: string, argv: string[], problem: RegExp]> = [
     ['a check-config with no --config', ['check-config'], /--config/],
     ['an unknown command', ['deploy'], /unknown command "deploy"/],
@@ -834,7 +832,7 @@ describe.skip('usage errors', () => {
 // The paths a run resolves
 // ---------------------------------------------------------------------------
 
-describe.skip('run path resolution', () => {
+describe('run path resolution', () => {
   it('resolves CLI paths from the invocation directory and workDir from the config directory', async () => {
     // The configuration sits beside the source, the command is run from a third
     // directory, and every argument is relative to where it was invoked.
@@ -917,7 +915,7 @@ describe.skip('run path resolution', () => {
 // What a run does, and what it refuses to do
 // ---------------------------------------------------------------------------
 
-describe.skip('run', () => {
+describe('run', () => {
   it('runs a task, reports the pass, and keeps the working copy and the report', async () => {
     const fixture = await createRunFixture();
 
@@ -1226,7 +1224,7 @@ function reportingAgent(): RunnerDependencies['runAgentTurn'] {
   };
 }
 
-describe.skip('the activity pane under the run status', () => {
+describe('the activity pane under the run status', () => {
   it('draws the activity in the developer pane, and keeps it in the timeline', async () => {
     const fixture = await createRunFixture({ agent: reportingAgent() });
     const console = fakeConsole({ columns: 80, rows: 24 });
@@ -1511,7 +1509,7 @@ describe.skip('the activity pane under the run status', () => {
   });
 });
 
-describe.skip('the terminal’s color request', () => {
+describe('the terminal’s color request', () => {
   it('reads only a set, non-empty NO_COLOR as a request for no color', () => {
     expect(colorAllowed({})).toBe(true);
     expect(colorAllowed({ NO_COLOR: '' })).toBe(true);
@@ -1524,7 +1522,7 @@ describe.skip('the terminal’s color request', () => {
 // Refusals that must happen before anything runs
 // ---------------------------------------------------------------------------
 
-describe.skip('run refusals', () => {
+describe('run refusals', () => {
   it('refuses an invalid configuration before starting anything', async () => {
     const fixture = await createRunFixture();
     // The Nexus-wide file carries the invalid limit; the connected project's
@@ -1678,7 +1676,7 @@ function waitingAgent(marks: {
   };
 }
 
-describe.skip('interrupts', () => {
+describe('interrupts', () => {
   it('cancels the run, waits for it to finalize, and exits 130', async () => {
     const marks = { started: false, sawStop: false };
     const fixture = await createRunFixture({ agent: waitingAgent(marks) });
@@ -1766,7 +1764,7 @@ describe.skip('interrupts', () => {
 // The real process
 // ---------------------------------------------------------------------------
 
-describe.skip('as a process', () => {
+describe('as a process', () => {
   const cli = path.join(repoRoot, 'src', 'cli.ts');
 
   it('prints help and exits 0', async () => {

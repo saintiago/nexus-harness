@@ -1,5 +1,3 @@
-// Temporarily quarantined by operator request; restore under HARN-48.
-// See notes/test-architecture-audit.md for evidence and the coverage gap.
 /**
  * Task-source intake: one serial coordinator, its lock and receipts, and the
  * three CLI commands around it.
@@ -106,6 +104,7 @@ import {
   documentedConfig,
   documentedHarnessConfig,
   fakeConsole,
+  latestHistorySnapshot,
   publishedComment,
   screenAfter,
   writeJsonFile,
@@ -508,7 +507,7 @@ function createFixture(options: FixtureOptions): Fixture {
 // One finite batch
 // ---------------------------------------------------------------------------
 
-describe.skip('review-to-completion coordination', () => {
+describe('review-to-completion coordination', () => {
   it('saves the complete developer report before the outcome is published', async () => {
     const workDir = await createTempDir();
     const events: string[] = [];
@@ -706,7 +705,7 @@ describe.skip('review-to-completion coordination', () => {
     expect(fixture.completionRuns.length).toBeGreaterThanOrEqual(2);
   });
 });
-describe.skip('a finite source run', () => {
+describe('a finite source run', () => {
   it('discovers the whole batch before it claims anything, and runs in order', async () => {
     const workDir = await createTempDir();
     const fixture = createFixture({
@@ -1074,7 +1073,7 @@ describe.skip('a finite source run', () => {
 // The optional delivery step
 // ---------------------------------------------------------------------------
 
-describe.skip('delivering a passed attempt', () => {
+describe('delivering a passed attempt', () => {
   /** A run that passed in a working copy the delivery step can be handed. */
   async function passedRun(_task: Task, _call: number, runDir: string): Promise<RunTaskResult> {
     return resultFor(
@@ -1254,7 +1253,7 @@ describe.skip('delivering a passed attempt', () => {
 // Duplicate prevention and the retained state
 // ---------------------------------------------------------------------------
 
-describe.skip('the local receipt', () => {
+describe('the local receipt', () => {
   it('identifies an issue by type, site, and immutable ID only', () => {
     const identity = receiptFilePath('/work', refFor('10011', 'SAM1-11'));
     const renamed = receiptFilePath(
@@ -1332,7 +1331,7 @@ describe.skip('the local receipt', () => {
 // The consumer lock
 // ---------------------------------------------------------------------------
 
-describe.skip('the intake lock', () => {
+describe('the intake lock', () => {
   it.each(['active', 'stale', 'malformed', 'missing owner'])(
     'refuses a legacy lock with %s metadata for every project without changing it',
     async (metadata) => {
@@ -1435,7 +1434,7 @@ describe.skip('the intake lock', () => {
 // Continuation
 // ---------------------------------------------------------------------------
 
-describe.skip('Git cleanup at intake boundaries', () => {
+describe('Git cleanup at intake boundaries', () => {
   const cleanupProblem = 'owned fake Git tree did not stop';
   const failure = () =>
     new WorkspaceError('Git inspection did not finish', {
@@ -1828,7 +1827,7 @@ function redRoundAttempts(): readonly AttemptEvidence[] {
   ];
 }
 
-describe.skip('the escalation ladder', () => {
+describe('the escalation ladder', () => {
   const TIERS: readonly EscalationTier[] = [
     {
       name: 'flash',
@@ -2218,7 +2217,7 @@ describe.skip('the escalation ladder', () => {
   });
 });
 
-describe.skip('an issue that points at a workspace', () => {
+describe('an issue that points at a workspace', () => {
   it('records a fresh workspace on the issue, and the run is told to do it', async () => {
     const workDir = await createTempDir();
     const fixture = createFixture({ workDir, scans: [[candidateFor('1')]] });
@@ -2644,7 +2643,7 @@ describe.skip('an issue that points at a workspace', () => {
 // The name a fresh claim would use
 // ---------------------------------------------------------------------------
 
-describe.skip('a workspace name a fresh claim would use', () => {
+describe('a workspace name a fresh claim would use', () => {
   it.each(['SAM1-2', 'SAM1-2.json'])(
     'refuses a dangling link at %s before claiming the issue',
     async (entry) => {
@@ -2798,7 +2797,7 @@ describe.skip('a workspace name a fresh claim would use', () => {
 // The preview
 // ---------------------------------------------------------------------------
 
-describe.skip('source list', () => {
+describe('source list', () => {
   it('shows valid, refused, continuable, invalid, and stale issues without changing anything', async () => {
     const workDir = await createTempDir();
     const attempted = candidateFor('9');
@@ -2932,7 +2931,7 @@ async function until(condition: () => boolean, what: string, timeoutMs = 5000): 
   }
 }
 
-describe.skip('source watch', () => {
+describe('source watch', () => {
   it(
     'scans, processes a batch, waits the configured interval, and picks up later work',
     { timeout: 20_000 },
@@ -3623,7 +3622,7 @@ function recordingSignals(): InterruptSignals & { interrupt(): void; registered(
 // assertion, and a busy host can run it out without anything hanging — the
 // watch tests above already take the same room for the same reason. A test that
 // really hangs still fails here.
-describe.skip('the source commands through the CLI', { timeout: 20_000 }, () => {
+describe('the source commands through the CLI', { timeout: 20_000 }, () => {
   it('previews the queue, claims nothing, and writes nothing', async () => {
     const target = await createTarget();
     const jira = fakeJira([
@@ -4743,12 +4742,27 @@ describe.skip('the source commands through the CLI', { timeout: 20_000 }, () => 
         ['astra', 'passed'],
       ]);
 
-      // The stronger attempt is told what the weaker one did — its ledger line,
-      // and the comment the harness published for it before the next rung ran.
+      // The stronger attempt is told what the weaker one did through the one
+      // identified history snapshot a developer turn is handed (HARN-41): the
+      // ledger keeps the tier that ran each attempt (asserted above), and the
+      // comment the harness published for the weaker attempt before the next
+      // rung ran is part of the snapshot. The intake's own excerpts are not
+      // replayed beside it (docs/spec.md §11).
       const strongerPrompt = turns[3]?.prompt ?? '';
-      expect(strongerPrompt).toContain('attempt 1 (tier flash) failed');
-      expect(strongerPrompt).toContain('comment by Harness');
-      expect(strongerPrompt).toContain('finished: failed');
+      const strongerSnapshot = await latestHistorySnapshot(target.workDir, workspaceId);
+      expect(strongerPrompt).toContain(strongerSnapshot.dir);
+      // The weaker attempt's complete report is what the stronger one reads:
+      // its outcome, and every turn it spent before its allowance ran out.
+      const weakerAttempt = strongerSnapshot.index.entries.find(
+        (entry) => entry.kind === 'developer-report',
+      );
+      expect(weakerAttempt?.text).toContain('Outcome: failed');
+      expect(weakerAttempt?.text).toContain('flash: second repair, still wrong');
+      // The comment the harness published for it is the report's own rendering,
+      // recognised rather than duplicated beside it.
+      expect(strongerSnapshot.index.mirrors.map((mirror) => mirror.ofEntryId)).toContain(
+        weakerAttempt?.id,
+      );
 
       // Jira: one comment per attempt, the issue still in the running status when
       // the climb moved on, and exactly one move to review, after both comments.
@@ -4885,13 +4899,22 @@ describe.skip('the source commands through the CLI', { timeout: 20_000 }, () => 
       expect(turns).toHaveLength(5);
       expect(turns[4]?.argv.slice(0, 2)).toEqual(['--profile', 'nexus-flash']);
       // The new cycle's attempt is told what the earlier cycles did and what the
-      // item's own thread said since: the ledger's lines for both attempts
-      // before it, and the harness's own comment for the rung before it.
+      // item's own thread said since through the identified history snapshot it
+      // is handed (HARN-41): the ledger keeps every attempt and its tier, and
+      // the harness's own comment for each spent rung is part of the snapshot.
+      // The intake's own excerpts are not replayed beside it (docs/spec.md §11).
       const prompt = turns[4]?.prompt ?? '';
-      expect(prompt).toContain('attempt 1 (tier flash) failed');
-      expect(prompt).toContain('attempt 2 (tier astra) failed');
-      expect(prompt).toContain('comment by Harness');
-      expect(prompt).toContain('finished: failed');
+      const snapshot = await latestHistorySnapshot(target.workDir, 'SAM1-11');
+      expect(prompt).toContain(snapshot.dir);
+      // Both earlier cycles are what the snapshot holds: one complete report per
+      // attempt, and each of the two comments the harness published for them
+      // authenticated as that report's own rendering.
+      const earlier = snapshot.index.entries.filter((entry) => entry.kind === 'developer-report');
+      expect(earlier).toHaveLength(2);
+      expect(earlier.every((entry) => entry.text.includes('Outcome: failed'))).toBe(true);
+      expect(snapshot.index.mirrors.map((mirror) => mirror.ofEntryId)).toEqual(
+        earlier.map((entry) => entry.id),
+      );
       // The reports are ordered by the attempt each one records, not by their
       // directory names: run IDs have second resolution, so two runs of one
       // intake can share a second and sorting the names could reverse them.

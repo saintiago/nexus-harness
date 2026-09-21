@@ -1,5 +1,3 @@
-// Temporarily quarantined by operator request; restore under HARN-48.
-// See notes/test-architecture-audit.md for evidence and the coverage gap.
 /**
  * The offline local-loop milestone: `runTask` exercised end to end against a real
  * target project, with only the coding agent substituted.
@@ -1053,7 +1051,7 @@ const HANGING_GREET_ALL_SOURCE = [
   '',
 ].join('\n');
 
-describe.skip('the offline local loop, end to end', () => {
+describe('the offline local loop, end to end', () => {
   it('passes a task whose implementation turn really implements it', async () => {
     const target = await createTarget();
     const before = await checkoutState(target.repo);

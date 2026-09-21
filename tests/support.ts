@@ -3,13 +3,14 @@
  * the repository nor the real environment is touched.
  */
 
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import stringWidth from 'string-width';
 import type { CliIo } from '../src/cli/context.js';
 import { HARNESS_CONFIG_FILE_NAME, PROJECT_CONFIG_FILE_NAME } from '../src/config/paths.js';
+import { historyCurrentPath, workspaceHistoryRoot } from '../src/history/paths.js';
 import type { PublishedComment } from '../src/sources/contract.js';
 
 /**
@@ -232,6 +233,48 @@ export const HARNESS_CONFIG_FIELDS: readonly string[] = [
 
 /** The fields a connected project's configuration owns (docs/WORKFLOW.md §1). */
 export const PROJECT_CONFIG_FIELDS: readonly string[] = ['setup', 'checks', 'source', 'delivery'];
+
+/**
+ * The snapshot the last history-backed turn of one workspace was handed
+ * (HARN-41): `current.json` names it, and `index.json` is what the prompt points
+ * the turn at. The complete entries, the retained report summaries and the gaps
+ * a source read left are all in `index`, so a test can tell what the turn could
+ * read without starting one.
+ */
+export interface HistorySnapshotFiles {
+  /** The snapshot's own directory, which the prompt names. */
+  readonly dir: string;
+  /** `index.json`, parsed. */
+  readonly index: {
+    readonly id: string;
+    readonly role: string;
+    readonly gaps: readonly string[];
+    readonly entries: readonly {
+      readonly id: string;
+      readonly kind: string;
+      readonly author: string;
+      readonly text: string;
+    }[];
+    readonly reports: readonly { readonly entryId: string }[];
+    readonly mirrors: readonly { readonly sourceId: string; readonly ofEntryId: string }[];
+  };
+}
+
+/** Reads the snapshot `current.json` beside one workspace points at. */
+export async function latestHistorySnapshot(
+  workDir: string,
+  workspaceId: string,
+): Promise<HistorySnapshotFiles> {
+  const current = JSON.parse(
+    await readFile(historyCurrentPath(workspaceHistoryRoot(workDir, workspaceId)), 'utf8'),
+  ) as { readonly dir: string; readonly indexJsonPath: string };
+  return {
+    dir: current.dir,
+    index: JSON.parse(
+      await readFile(current.indexJsonPath, 'utf8'),
+    ) as HistorySnapshotFiles['index'],
+  };
+}
 
 /**
  * Routes one field map into the file that owns each field, so a fixture can

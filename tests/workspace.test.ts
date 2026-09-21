@@ -1,5 +1,3 @@
-// Temporarily quarantined by operator request; restore under HARN-48.
-// See notes/test-architecture-audit.md for evidence and the coverage gap.
 /**
  * Preflight, run-directory, and working-copy tests. Fixtures are real local Git
  * repositories in temporary directories, inspected through real child
@@ -273,7 +271,7 @@ const FIXTURE_SOURCE_ITEM: WorkspaceSourceItem = {
   key: 'SAM1-11',
 };
 
-describe.skip('a workspace that outlives its run', () => {
+describe('a workspace that outlives its run', () => {
   it('is recorded in a ledger beside the clone, and reopens by its id', async () => {
     const fixture = await createRepository();
     const prepared = await prepareRun(fixture);
@@ -711,7 +709,7 @@ describe.skip('a workspace that outlives its run', () => {
  * fast-forwarding, and a checkout that cannot be returned that way is refused
  * with the branch names and the manual action (HARN-35).
  */
-describe.skip('a retained checkout that left its recorded branch', () => {
+describe('a retained checkout that left its recorded branch', () => {
   /** The failure one call rejects with, as a `WorkspaceError` to assert on. */
   async function refusalOf(call: () => Promise<unknown>): Promise<WorkspaceError> {
     const failure = await call().then(
@@ -1207,7 +1205,7 @@ describe.skip('a retained checkout that left its recorded branch', () => {
   });
 });
 
-describe.skip('a clean source repository', () => {
+describe('a clean source repository', () => {
   it('returns the real repository root and the exact committed HEAD', async () => {
     const fixture = await createRepository();
 
@@ -1286,7 +1284,7 @@ describe.skip('a clean source repository', () => {
   });
 });
 
-describe.skip('a source that cannot be used', () => {
+describe('a source that cannot be used', () => {
   it('rejects a directory that is not a Git repository', async () => {
     const parent = await createTempDir();
     const plain = path.join(parent, 'plain');
@@ -1338,7 +1336,7 @@ describe.skip('a source that cannot be used', () => {
   });
 });
 
-describe.skip('a dirty source repository', () => {
+describe('a dirty source repository', () => {
   const dirt: ReadonlyArray<
     readonly [name: string, prepare: (repo: string) => Promise<void>, problem: RegExp]
   > = [
@@ -1408,7 +1406,7 @@ describe.skip('a dirty source repository', () => {
   });
 });
 
-describe.skip('unsafe output locations', () => {
+describe('unsafe output locations', () => {
   it('rejects a workDir equal to the repository root', async () => {
     const fixture = await createRepository();
 
@@ -1537,7 +1535,7 @@ describe.skip('unsafe output locations', () => {
   });
 });
 
-describe.skip('read-only preflight', () => {
+describe('read-only preflight', () => {
   it('leaves an accepted source unchanged', async () => {
     const fixture = await createRepository();
     await writeFile(path.join(fixture.repo, 'ignored.txt'), 'local noise\n', 'utf8');
@@ -1574,7 +1572,7 @@ describe.skip('read-only preflight', () => {
   });
 });
 
-describe.skip('an allocated run directory', () => {
+describe('an allocated run directory', () => {
   it('is new for every run and holds a workspace and a logs directory', async () => {
     const fixture = await createRepository();
 
@@ -1812,7 +1810,7 @@ describe.skip('an allocated run directory', () => {
   });
 });
 
-describe.skip('a prepared working copy', () => {
+describe('a prepared working copy', () => {
   it('starts from the recorded committed contents on its own branch', async () => {
     const fixture = await createRepository();
     const source = await preflightSource({ repoPath: fixture.repo, workDir: fixture.workDir });
@@ -1903,7 +1901,7 @@ describe.skip('a prepared working copy', () => {
   }, 60_000);
 });
 
-describe.skip('preparation that cannot finish', () => {
+describe('preparation that cannot finish', () => {
   it('refuses a destination that already holds work, and keeps it', async () => {
     const fixture = await createRepository();
     const source = await preflightSource({ repoPath: fixture.repo, workDir: fixture.workDir });
@@ -1975,7 +1973,7 @@ describe.skip('preparation that cannot finish', () => {
   });
 });
 
-describe.skip('preparation that runs out of time', () => {
+describe('preparation that runs out of time', () => {
   it('stops at the run deadline and keeps what it had already written', async () => {
     const fixture = await createRepository();
     const source = await preflightSource({ repoPath: fixture.repo, workDir: fixture.workDir });
@@ -2033,7 +2031,7 @@ describe.skip('preparation that runs out of time', () => {
   });
 });
 
-describe.skip('task IDs as labels', () => {
+describe('task IDs as labels', () => {
   const taskIds = [
     '../evil',
     'a/b',
@@ -2132,7 +2130,7 @@ async function prepareChangedRun(): Promise<{
   return { fixture, prepared };
 }
 
-describe.skip('what a run left in its working copy', () => {
+describe('what a run left in its working copy', () => {
   it('reports every kind of change against the base the run recorded', async () => {
     const { prepared } = await prepareChangedRun();
 
