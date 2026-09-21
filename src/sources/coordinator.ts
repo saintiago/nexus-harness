@@ -1046,49 +1046,46 @@ async function attempt(
     // instead. A finding that is required and that neither source can supply
     // stops intake rather than starting a developer without it
     // (docs/WORKFLOW.md §11).
-    let recoveredFinding: readonly string[] = [];
+    let reviewedFinding: readonly string[] = [];
+    /**
+     * What a claim does when it cannot be told the reviewed finding its
+     * workspace was returned for: nothing is started, the ticket is left as
+     * it is, and the receipt names what a person has to read.
+     */
+    const withoutFinding = async (detail: string): Promise<Step> => {
+      if (stop.aborted) {
+        return 'cancelled';
+      }
+      const problem =
+        `${item.ref.key}: the reviewed finding its baseline repair was returned with could ` +
+        `not be read back, so no developer was started` +
+        (commentsProblem === null
+          ? ''
+          : ` (its thread could not be read either: ${commentsProblem})`) +
+        `: ${detail}`;
+      await updateReceipt(file, { problem: `baseline: ${detail}` });
+      return stopWith(state, problem);
+    };
     if (workspaceId !== undefined) {
       const recovered = await reviewedBaselineGuidance(context, workspaceId, stop);
       if (recovered.kind === 'problem') {
-        if (stop.aborted) {
-          return 'cancelled';
-        }
-        const problem =
-          `${item.ref.key}: the reviewed finding its baseline repair was returned with could ` +
-          `not be read back, so no developer was started` +
-          (commentsProblem === null
-            ? ''
-            : ` (its thread could not be read either: ${commentsProblem})`) +
-          `: ${recovered.detail}`;
-        await updateReceipt(file, { problem: `baseline: ${recovered.detail}` });
-        return stopWith(state, problem);
+        return await withoutFinding(recovered.detail);
       }
       if (recovered.kind === 'finding' || recovered.kind === 'unreadable') {
         const fromThread = threadFinding(comments, recovered.evidenceId);
         if (fromThread !== null) {
-          recoveredFinding = fromThread;
+          reviewedFinding = fromThread;
         } else if (recovered.kind === 'finding') {
-          recoveredFinding = recovered.lines;
+          reviewedFinding = recovered.lines;
         } else {
           // The record says a repair is required, its own finding cannot be
           // read back, and the thread does not carry the whole comment for
           // that evidence: nothing may start without it.
-          if (stop.aborted) {
-            return 'cancelled';
-          }
-          const problem =
-            `${item.ref.key}: the reviewed finding its baseline repair was returned with could ` +
-            `not be read back, so no developer was started` +
-            (commentsProblem === null
-              ? ''
-              : ` (its thread could not be read either: ${commentsProblem})`) +
-            `: ${recovered.detail}`;
-          await updateReceipt(file, { problem: `baseline: ${recovered.detail}` });
-          return stopWith(state, problem);
+          return await withoutFinding(recovered.detail);
         }
       }
     }
-    const guidance = guidanceFrom(earlier, comments, recoveredFinding);
+    const guidance = guidanceFrom(earlier, comments, reviewedFinding);
     try {
       run = await context.run({
         task: item.task,

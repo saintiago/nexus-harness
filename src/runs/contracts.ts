@@ -77,7 +77,7 @@ export const BASELINE_GUIDANCE_PREFIX = 'reviewed baseline finding — ';
  * claimed now stands. A caller's own stop must not strand a ticket in the
  * running status, so the result of a stopped run, a refusal, and an interrupted
  * pre-delivery diagnosis all run under this deadline instead of the aborted
- * signal they were given (docs/spec.md §3, docs/WORKFLOW.md §11). The bound is
+ * signal they were given (docs/spec.md §6 and §11, docs/WORKFLOW.md §11). The bound is
  * shared here so those paths cannot drift apart.
  */
 export const FEEDBACK_DEADLINE_MS = 10_000;
