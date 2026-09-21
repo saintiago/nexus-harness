@@ -69,7 +69,12 @@ failing check, the evidence, the likely cause, and the repair guidance), or an i
 (why no repository-local repair can be named, and what a person must supply, do, or decide). A turn
 that fails, is stopped, writes nothing usable, or leaves a changed clone has no finding, and is
 handled exactly like an inconclusive one. The finding file lives in the turn's own working
-directory, which is the only place the launch lets it write.
+directory, which is the only place the launch lets it write. The finding file decides nothing on its
+own: what the turn produced is recorded as `outcome.json` beside the evidence, before anything is
+published — the validated finding, or the problem that rejected the turn, with the turn's own stop —
+and a restart reads that record. A turn whose own process tree could not be confirmed stopped is
+never settled: the item stays In Review with the evidence and what a person must do, and the intake
+keeps its lock for inspection while the runtime may still be writing.
 
 **What happens next.** An actionable finding is recorded as exactly one comment on the issue,
 carrying the marker `nexus-baseline:repair:<evidence>` and the four things above, and the issue
@@ -104,12 +109,17 @@ that record was written and before the item was told
 is finished by the next one instead of leaving the ticket in the running status, where a fresh scan
 never looks. That resume step runs before anything is discovered or claimed, in a finite batch, a
 watch scan, and a serial queue step alike. It makes only the step that is missing: the status move
-for a finding that is already on the thread, or the publication of the finding the interrupted
-reviewer turn already wrote in its own evidence directory. A turn that was interrupted before it
-wrote a finding is not run again for the same evidence — one reviewer turn per piece of evidence is
-the bound — and the item stays In Review with the retained evidence and what a person must do. An
-item a person moved in the meantime is left exactly where that person left it, and its evidence is
-closed rather than diagnosed. One `workDir` serves several connected projects, and the project is
+for a finding that is already on the thread, or the publication of the outcome the interrupted
+invocation recorded beside its evidence. That outcome — `outcome.json`, written once the reviewer
+turn has ended and before anything is published — holds the validated finding or the problem that
+rejected the turn, so the finding file a failed, stopped, or timed-out turn left behind is never
+read as if the turn had completed. A turn that was interrupted before it wrote a finding is not run
+again for the same evidence — one reviewer turn per piece of evidence is the bound — and the item
+stays In Review with the retained evidence and what a person must do. An item a person moved in the
+meantime is left exactly where that person left it, and its evidence is closed rather than diagnosed;
+a record this harness left unfinished after it really made the move is reconciled with the finding
+the item's own thread carries, so that workspace's next claim is still told it. One `workDir` serves
+several connected projects, and the project is
 part of where evidence lives: a resume, a read-back, or a closure reads this project's own directory
 only, and a record that names another project is refused by name, so starting one project can never
 post on, transition, or close another project's issue.
@@ -117,15 +127,18 @@ post on, transition, or close another project's issue.
 ## Modules
 
 - `src/sources/baseline.ts` — the phase: the evidence identity, the marker, the one comment, and the
-  one status move, the retained evidence record a restart resumes from — named by the connected
+  one status move — with the intake lock kept when the reviewer runtime's own stop could not be
+  confirmed — the retained evidence record a restart resumes from — named by the connected
   project's own namespace, so one `workDir` can serve several projects — the step that finishes what
-  a previous invocation left pending, and the read-back of a finding a continuation is required to
-  be told.
+  a previous invocation left pending, reconciling a record this harness left unfinished after its
+  own move with the finding the item's thread carries, and the read-back of a finding a continuation
+  is required to be told.
 - `src/reviews/baseline.ts` — the one reviewer turn over the snapshot clone, its prompt, and the
-  finding file it validates, the snapshot checks that hold the turn to the tree the checks really
-  ran against, the reuse of a finding an interrupted turn already wrote, and the bounded reading of
-  the evidence: a log that cannot be read is refused by name instead of rendered as a check that
-  said nothing.
+  finding file it validates, the outcome record it writes before anything is published and reuses on
+  a restart — the validated finding, or the problem that rejected the turn, with the turn's own stop
+  — the snapshot checks that hold the turn to the tree the checks really ran against, and the
+  bounded reading of the evidence: a log that cannot be read is refused by name instead of rendered
+  as a check that said nothing.
 - `src/sources/jira/baseline.ts` — the Jira side: the thread, one comment, one move out of the
   running status, and whether the item is still there, over the completion path's existing helpers.
 - `src/sources/contract.ts` — the ordinary data between them; `src/sources/coordinator.ts` decides
@@ -154,13 +167,20 @@ code lives and what owns what.
   refused before any turn, a check log that cannot be read is refused before any turn — while a log
   the command really left empty is read as a check that said nothing — and a finding an interrupted
   turn already wrote is reused without a
-  second launch — published by the next pass through the phase itself, with the earlier turn's own
-  finding file as the only input; the Jira record against a fake HTTP boundary — one comment and a
+  second launch — published by the next pass through the phase itself, with the outcome record the
+  earlier invocation wrote as its only input. A turn that writes a valid finding and *then* fails,
+  stops, or times out is rejected on that invocation and on every restart after it, with its own
+  finding file never read as if the turn had completed; a turn that left a finding but no recorded
+  outcome is refused rather than diagnosed again; and a reviewer stop the harness could not confirm
+  is reported, recorded, and carried to the coordinator, which keeps its intake lock. A retained
+  record this harness left unfinished after it really moved the item is reconciled with the finding
+  the thread carries, so the next claim is still told it; the Jira record against a fake HTTP boundary — one comment and a
   move by target status name for an actionable finding, In Review for an inconclusive one, and a
   second pass that spends no second turn and writes no second comment; the coordinator's ending
   table — a completed red baseline enters the diagnosis, a setup error, a cancellation, a timeout,
   a continuation that starts red, and a post-agent red round do not, no diagnosis configured keeps
-  the old publication, and a red result is never delivered; the next claim through the real
+  the old publication, a red result is never delivered, and a diagnosis that reports an unconfirmed
+  reviewer stop keeps the intake lock where a confirmed one releases it; the next claim through the real
   `reopenWorkspace` and a real ledger, where the developer's guidance carries both the earlier
   attempt and every field of the reviewed finding, on a later rung of the same climb as well as on
   the first, and the finding recovered from the retained evidence when the thread cannot be read at

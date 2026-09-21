@@ -1006,8 +1006,8 @@ The recorded evidence has to be readable before the turn is started. A log file 
 cannot be read now is incomplete evidence, not a check that said nothing: the item stays In Review
 with the paths named, and no reviewer is launched to reason from a rendering that would pass for a
 silent command. A log the command really wrote and really left empty stays readable evidence — the
-two are kept apart — and this comes before a finding an interrupted turn already wrote, so evidence
-that is incomplete now is never published from.
+two are kept apart — and this comes before any recorded finding, so evidence that is incomplete now
+is never published from.
 
 The turn receives no coding instruction and changes nothing: it runs as `exec --sandbox
 workspace-write` with its own working directory (`turn/`) as the writable root, so the only file it
@@ -1040,7 +1040,13 @@ repository-local repair, or why none may be made:
 
 Every field shown is required, nonblank, and bounded; anything else — a missing field, invalid
 JSON, no file at all, a turn that failed or was stopped, or a clone the turn changed — is a
-diagnosis with no usable finding, and is handled like an inconclusive one.
+diagnosis with no usable finding, and is handled like an inconclusive one. The finding file alone
+decides nothing: what the turn produced is recorded as `outcome.json` beside the evidence, before
+anything is published — either the validated finding or the problem that rejected the turn — and a
+restart reads that record. A reviewer turn whose own process tree could not be confirmed stopped is
+never settled: its problem and the unconfirmed stop are recorded, the item stays In Review with the
+evidence and what a person must do, and the intake keeps its lock for inspection instead of
+declaring an evidence directory safe while a runtime may still be writing to it.
 
 An actionable finding becomes exactly one comment on the issue, naming the marker
 `nexus-baseline:repair:<evidence>`, the failing check, the evidence, the likely cause and the repair
@@ -1063,15 +1069,20 @@ reuses the comment it already wrote — no second reviewer turn, no second comme
 the step that had not happened yet. What it resumes from is kept locally as well: `<workDir>/
 baseline/<project>/<evidence>/evidence.json` records the item, the task, the workspace, the round,
 and the connected project that wrote it, before
-the reviewer turn runs, and the finding the turn writes is reused if the invocation that wrote it
-stopped before the comment. The project is part of the path, so two projects sharing one `workDir`
-never read, finish, or publish each other's pending evidence — a record that names another project
-is refused by name — and starting one project's intake never comments on, transitions, or closes
-another project's issue. That recovery runs before anything is discovered or claimed, so a
-ticket left in the running status by an interrupted diagnosis is finished instead of being reported
-as a stuck consumer; a turn interrupted before it wrote a finding is not run again for the same
-evidence, and the item stays In Review with what a person must do. An item a person has moved is
-left exactly where that person left it.
+the reviewer turn runs, and the outcome the turn produced is recorded beside it as `outcome.json`
+once the turn has ended: the validated finding, or the problem that rejected the turn. That record
+is what an invocation interrupted before the comment resumes from, so a finding a failed or stopped
+turn left in its own file is never published as if the turn had completed, and a turn that left no
+recorded outcome is not diagnosed again either. The project is part of the path, so two projects
+sharing one `workDir` never read, finish, or publish each other's pending evidence — a record that
+names another project is refused by name — and starting one project's intake never comments on,
+transitions, or closes another project's issue. That recovery runs before anything is discovered or
+claimed, so a ticket left in the running status by an interrupted diagnosis is finished instead of
+being reported as a stuck consumer; a turn interrupted before it wrote a finding is not run again
+for the same evidence, and the item stays In Review with what a person must do. An item a person has
+moved is left exactly where that person left it; a record this harness left unfinished after it
+really made the move is reconciled with the finding the item's own thread already carries, so that
+workspace's next claim is still told it.
 
 ### Exits
 

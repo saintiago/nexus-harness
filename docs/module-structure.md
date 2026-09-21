@@ -71,12 +71,12 @@ src/
     progress.ts                   (152)  timeline lines, reasons, and the counts they carry
     feedback.ts                   (30)   the failed commands one repair turn is given
   sources/
-    contract.ts                   (697)  TaskSource, the ordinary source data and errors, pointer labels
+    contract.ts                   (734)  TaskSource, the ordinary source data and errors, pointer labels
     receipts.ts                   (238)  the per-project intake lock and one receipt per attempted item
     eligibility.ts                (81)   what an item is: a first attempt, a continuation, or a refusal
     guidance.ts                   (95)   what an attempt is told, bounded: the finding, the thread, attempts
-    baseline.ts                   (992)  the pre-delivery diagnosis: its evidence, one comment, one move
-    coordinator.ts                (1673) runSource and watchSource: discovery, the ladder, publication
+    baseline.ts                   (1055) the pre-delivery diagnosis: its evidence, one comment, one move
+    coordinator.ts                (1691) runSource and watchSource: discovery, the ladder, publication
     list.ts                       (88)   the read-only `source list` preview
     jira/
       connector.ts                (41)   createJiraSource: the wiring of the functions below
@@ -98,7 +98,7 @@ src/
     github.ts                     (726)  the App JWT, the installation token, and the repository calls
     diff.ts                       (134)  the pull request's diff, and where a finding is positioned
     reviewer.ts                   (402)  the reviewer prompt, the one bounded turn, and the verdict file
-    baseline.ts                   (883)  the pre-delivery reviewer turn, its prompt, and its finding file
+    baseline.ts                   (1133) the pre-delivery reviewer turn, its prompt, and its outcome record
     scan.ts                       (790)  one scan or watch: eligibility, dedup, publishing, evidence
   queue/
     loop.ts                       (370)  the serial control loop: one current ticket, one phase at a time
@@ -298,9 +298,11 @@ further would separate one decision from itself: `runs/runner.ts` (the loop), `s
   diagnosis of one completed red baseline: the evidence identity, the marker a restart reads, the
   evidence record it writes before its reviewer turn under the connected project's own namespace —
   so one `workDir` never mixes two projects' evidence — one comment, the one status move the finding
-  asks for, the `resume` step that finishes what an invocation left pending before anything is
-  discovered or claimed, and the read-back of a finding a continuation is required to be told,
-  through the reviewer and record functions it is handed.
+  asks for — the intake lock kept when the reviewer runtime's own stop could not be confirmed — the
+  `resume` step that finishes what an invocation left pending before anything is discovered or
+  claimed, which reconciles a record this harness left unfinished after its own status move with the
+  finding the item's own thread carries, and the read-back of a finding a continuation is required
+  to be told, through the reviewer and record functions it is handed.
 - **Does not own:** Jira. The coordinator imports no connector, no JQL, and no credential. It also
   does not implement the run: it calls the runner it was handed.
 - **Entry points:** `TaskSource`, `SourceComment`, `SourceContext`, `SourceIo`, `SourceRunOutcome`,
@@ -394,9 +396,11 @@ further would separate one decision from itself: `runs/runner.ts` (the loop), `s
   each attempt keeps. `baseline.ts` is the same reviewer over a different subject: the one bounded
   turn a completed red baseline enters before any coding turn, its prompt over the configured
   commands and their bounded output, the snapshot clone it inspects, the checks that hold that
-  clone and the retained working copy to the tree the checks really ran against, the reuse of a
-  finding an interrupted turn already wrote, and the strict reader of the `finding.json` that turn
-  has to write in its own writable working directory.
+  clone and the retained working copy to the tree the checks really ran against, the outcome
+  record it writes before anything is published — the validated finding, or the problem that
+  rejected the turn, with the turn's own stop — which a restart reuses instead of the turn's
+  finding file, and the strict reader of the `finding.json` that turn has to write in its own
+  writable working directory.
 - **Does not own:** the coding loop, the working copy, Jira writes, delivery, or merging. It
   claims nothing, moves nothing, posts no Jira comment, starts no coding turn, and keeps no
   registry: a completed review pinned to a commit is the deduplication record.
