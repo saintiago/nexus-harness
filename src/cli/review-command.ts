@@ -21,10 +21,12 @@ import { reviewViews } from '../reviews/view.js';
 import type { SourceCandidate, SourceTask } from '../sources/contract.js';
 import { SourceError } from '../sources/contract.js';
 import { createJiraSource } from '../sources/jira/connector.js';
+import { createHttpClient } from '../sources/jira/http.js';
 import { resolveJiraToken } from '../sources/jira/http.js';
 import type { GitHubReviewConfig, JiraSourceConfig } from '../shared/types.js';
 import { canonicalPath } from '../workspace/git.js';
 import { createActivityDisplay } from './activity.js';
+import { createConfiguredHistory } from './history.js';
 import { EXIT_CANCELLED, EXIT_INPUT_ERROR, EXIT_OK, EXIT_USAGE } from './context.js';
 import type { CliContext, CliIo } from './context.js';
 import { USAGE_HINT } from './help.js';
@@ -188,13 +190,29 @@ async function reviewCommand(
     // The review queue is the existing Jira connector read-only, with its
     // eligibility status set to the status a review scans: nothing else about
     // the connection changes, and no claim, transition, or comment is made.
+    const jiraHttp = createHttpClient(
+      source,
+      token,
+      context.fetch === undefined ? {} : { fetch: context.fetch },
+    );
     const jira = createJiraSource(
       { ...source, readyStatus: source.reviewStatus },
       token,
       context.fetch === undefined ? {} : { fetch: context.fetch },
+      jiraHttp,
     );
     const repository = createGitHubReviewClient(review, privateKey, {
       ...(context.fetch === undefined ? {} : { fetch: context.fetch }),
+      now: () => new Date(),
+    });
+    // The same ticket history the coding path prepares: the reviewer sees the
+    // organization and the local paths a developer turn is given.
+    const workDir = resolveWorkDir(config, configPath);
+    const history = createConfiguredHistory({
+      workDir,
+      jira: { http: jiraHttp, config: source, token },
+      openRepository: async () => repository,
+      login: review.app.login,
       now: () => new Date(),
     });
 
@@ -252,7 +270,8 @@ async function reviewCommand(
         repository,
         reviewer,
         views: reviewViews(),
-        workDir: resolveWorkDir(config, configPath),
+        workDir,
+        history,
         sourceRoot: canonicalPath(path.dirname(projectPath)),
         login: review.app.login,
         checkName: review.checkName,

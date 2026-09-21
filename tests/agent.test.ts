@@ -1118,6 +1118,33 @@ describe('how a turn ends, and what it reports', () => {
     expect(await readTurnLog(turn)).toContain('"type":"turn.completed"');
   }, 60_000);
 
+  it.each([false, true])(
+    'retains a full developer message across the adapter (stopped=%s)',
+    async (stopped) => {
+      const fixture = await createFixture();
+      const controller = new AbortController();
+      const turn = await openTurn(fixture, { stop: controller.signal });
+      const summary = `  ${'Detailed remediation.\n'.repeat(200)}Required final follow-up.  `;
+      const running = runCodexTurn(
+        turn.request,
+        standInRuntime(
+          fixture,
+          { summary, ...(stopped ? { holdMs: 400 } : {}) },
+          stopped ? { stopTree: async () => null } : {},
+        ),
+      );
+      if (stopped) {
+        await waitForStart(fixture);
+        controller.abort();
+      }
+      const result = await running;
+      await turn.close();
+      expect(result.summary).toBe(summary);
+      if (stopped) expect(result.shutdown?.termination).toBe('confirmed');
+    },
+    60_000,
+  );
+
   it('reports a completed turn as the agent’s own summary, and nothing more', async () => {
     const fixture = await createFixture();
     const turn = await openTurn(fixture);

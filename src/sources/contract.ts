@@ -10,6 +10,7 @@
  * connector.
  */
 import type { DeliveredPullRequest, Delivery } from '../delivery/github.js';
+import type { HistorySnapshot, TicketHistory } from '../history/contract.js';
 import type { AgentTurnShutdown, RunTaskResult } from '../runs/contracts.js';
 import type {
   CheckRoundResult,
@@ -72,6 +73,17 @@ export class SourceFeedbackError extends Error {
     this.stage = stage;
     this.commentId = commentId;
   }
+}
+
+/**
+ * One comment a source acknowledged publishing. It carries the source's own
+ * identity for the comment and the exact text it was handed, so the history can
+ * record what was published — which is what later authenticates the rendering
+ * when synchronization reads it back.
+ */
+export interface PublishedComment {
+  readonly commentId: string;
+  readonly text: string;
 }
 
 /** One eligible external item, before its content has been read. */
@@ -224,10 +236,20 @@ export interface TaskSource {
    * ladder will run in the same retained workspace — so the item stays in the
    * running status and this comment is how the item's own thread holds the
    * attempt's outcome (docs/implement-workspace-continuation.md). Throws
-   * {@link SourceFeedbackError} when the comment cannot be published.
+   * {@link SourceFeedbackError} when the comment cannot be published. Returns
+   * the acknowledged comment, so the history can record the publication
+   * identity the comment will be read back by.
    */
-  progress(item: SourceTask, outcome: SourceRunOutcome, stop: AbortSignal): Promise<void>;
-  complete(item: SourceTask, outcome: SourceRunOutcome, stop: AbortSignal): Promise<void>;
+  progress(
+    item: SourceTask,
+    outcome: SourceRunOutcome,
+    stop: AbortSignal,
+  ): Promise<PublishedComment>;
+  complete(
+    item: SourceTask,
+    outcome: SourceRunOutcome,
+    stop: AbortSignal,
+  ): Promise<PublishedComment>;
   /**
    * Records where the item's work lives, as the pointer label naming its
    * workspace. Called once, for the run that creates a workspace, after that
@@ -282,6 +304,12 @@ export interface SourceRunRequest {
    * (docs/implement-workspace-continuation.md).
    */
   readonly guidance?: readonly string[];
+  /**
+   * The ticket conversation history this attempt's coding turns prepare their
+   * snapshots from, when the caller configured one
+   * (docs/WORKFLOW.md §9 and §11).
+   */
+  readonly history?: TicketHistory;
   /**
    * A workspace this run continues, resolved and verified by the coordinator, or
    * nothing for a run that creates one.
@@ -518,6 +546,14 @@ export interface BaselineReviewRequest {
   readonly workspace: { readonly path: string; readonly baseCommit: string };
   /** The completed red baseline round: the configured commands and their evidence. */
   readonly baseline: CheckRoundResult;
+  /**
+   * The ticket's conversation snapshot, prepared before this reviewer turn when
+   * the caller configured one: the same organization and local paths a
+   * developer or review turn receives, so a ticket whose thread explains the
+   * baseline failure is diagnosed with that thread in hand
+   * (docs/WORKFLOW.md §9 and §11).
+   */
+  readonly history?: HistorySnapshot;
   readonly stop: AbortSignal;
 }
 
@@ -648,6 +684,13 @@ export interface SourceContext {
   readonly preflight: (request: PreflightRequest) => Promise<SourcePreflight>;
   /** The existing runner, as one ordinary function. */
   readonly run: (request: SourceRunRequest) => Promise<RunTaskResult>;
+  /**
+   * The ticket conversation history this intake prepares before every coding
+   * turn, when the caller configured one, and records each complete developer
+   * report into before its comment is published. Absent means the existing
+   * behavior: the thread and the ledger remain what a continuation is told.
+   */
+  readonly history?: TicketHistory;
   readonly now: () => Date;
   /** An abortable wait; resolves early when the stop request arrives. */
   readonly sleep: (ms: number, stop: AbortSignal) => Promise<void>;

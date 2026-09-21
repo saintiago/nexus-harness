@@ -28,6 +28,8 @@ import type {
   PublishReviewRequest,
   PublishedCheck,
   PublishedReview,
+  PullRequestConversation,
+  PullRequestConversationEntry,
   PullRequestReview,
   ReviewEvidence,
   ReviewRepository,
@@ -44,6 +46,13 @@ export const GITHUB_API_VERSION = '2022-11-28';
 const MAX_DIAGNOSTIC_CHARS = 400;
 /** How many pages of one list endpoint a read follows, at 100 items a page. */
 const MAX_LIST_PAGES = 3;
+/**
+ * How many pages the history's conversation read follows. It is higher than the
+ * bounded list reads above because the history is the complete local record, and
+ * a page limit that is reached is reported rather than passed off as the whole
+ * conversation.
+ */
+const MAX_CONVERSATION_PAGES = 20;
 /** The largest list a single read carries. */
 const LIST_PAGE_SIZE = 100;
 /** How many of the head's check runs the evidence keeps. */
@@ -264,6 +273,84 @@ function parseAppCheck(value: unknown, what: string): AppCheckRun {
   };
 }
 
+/** One instant GitHub reports, or `null` when it reports none. */
+function optionalInstant(value: unknown): string | null {
+  return typeof value === 'string' && !Number.isNaN(Date.parse(value)) ? value : null;
+}
+
+/** One native review of the conversation read. */
+function parseConversationReview(
+  value: unknown,
+  what: string,
+): PullRequestConversationEntry | null {
+  const review = recordOf(value, what);
+  const submitted = optionalInstant(review['submitted_at']);
+  if (submitted === null) {
+    // A pending review has not been submitted: it is not conversation yet.
+    return null;
+  }
+  const user = isRecord(review['user']) ? review['user'] : null;
+  const body = typeof review['body'] === 'string' ? review['body'] : '';
+  const state = typeof review['state'] === 'string' ? review['state'] : null;
+  return {
+    id: numberField(review, 'id', what),
+    kind: 'review',
+    login:
+      user === null ? 'unknown' : typeof user['login'] === 'string' ? user['login'] : 'unknown',
+    createdAt: submitted,
+    updatedAt: optionalInstant(review['updated_at']),
+    body:
+      body.trim() === ''
+        ? `(this review carried no body text; GitHub reports its state as ${state ?? 'unknown'})`
+        : body,
+    url: typeof review['html_url'] === 'string' ? review['html_url'] : null,
+    state,
+    commitId: typeof review['commit_id'] === 'string' ? review['commit_id'] : null,
+    path: null,
+    line: null,
+    reviewId: null,
+    inReplyToId: null,
+  };
+}
+
+/** One conversation comment of a pull request. */
+function parseConversationComment(
+  value: unknown,
+  what: string,
+  kind: 'comment' | 'review-comment',
+): PullRequestConversationEntry {
+  const comment = recordOf(value, what);
+  const user = isRecord(comment['user']) ? comment['user'] : null;
+  const line = kind === 'review-comment' ? (comment['line'] ?? comment['original_line']) : null;
+  const parent =
+    kind === 'review-comment' && typeof comment['pull_request_review_id'] === 'number'
+      ? comment['pull_request_review_id']
+      : null;
+  const reply =
+    kind === 'review-comment' && typeof comment['in_reply_to_id'] === 'number'
+      ? comment['in_reply_to_id']
+      : null;
+  return {
+    id: numberField(comment, 'id', what),
+    kind,
+    login:
+      user === null ? 'unknown' : typeof user['login'] === 'string' ? user['login'] : 'unknown',
+    createdAt: stringField(comment, 'created_at', what),
+    updatedAt: optionalInstant(comment['updated_at']),
+    body: typeof comment['body'] === 'string' ? comment['body'] : '',
+    url: typeof comment['html_url'] === 'string' ? comment['html_url'] : null,
+    state: null,
+    commitId:
+      kind === 'review-comment' && typeof comment['commit_id'] === 'string'
+        ? comment['commit_id']
+        : null,
+    path: kind === 'review-comment' && typeof comment['path'] === 'string' ? comment['path'] : null,
+    line: typeof line === 'number' && Number.isSafeInteger(line) && line >= 1 ? line : null,
+    reviewId: parent,
+    inReplyToId: reply,
+  };
+}
+
 /** A server-directed wait, as milliseconds, from an HTTP `Retry-After` header. */
 function retryAfterMs(header: string | null, now: Date): number | null {
   if (header === null) {
@@ -279,13 +366,20 @@ function retryAfterMs(header: string | null, now: Date): number | null {
 
 /**
  * The GitHub App client: one installation token, cached until it is close to
- * expiring, and the repository reads and writes the scan needs.
+ * expiring, and the repository reads and writes the scan needs. The conversation
+ * read is part of this client even though the repository boundary keeps it
+ * optional for callers that only fake the parts a scan itself uses.
  */
+export type GitHubReviewClient = ReviewRepository & {
+  installationToken(stop: AbortSignal): Promise<string>;
+  readConversation(number: number, stop: AbortSignal): Promise<PullRequestConversation>;
+};
+
 export function createGitHubReviewClient(
   config: GitHubReviewConfig,
   privateKeyPem: string,
   parts: Partial<GitHubReviewParts> = {},
-): ReviewRepository & { installationToken(stop: AbortSignal): Promise<string> } {
+): GitHubReviewClient {
   const doFetch: typeof fetch =
     parts.fetch ?? ((input, init) => globalThis.fetch(input as string, init));
   const now = parts.now ?? ((): Date => new Date());
@@ -458,9 +552,10 @@ export function createGitHubReviewClient(
     what: string,
     stop: AbortSignal,
     entry: (value: unknown, index: number) => unknown,
+    limit = MAX_LIST_PAGES,
   ): Promise<{ readonly entries: readonly unknown[]; readonly truncated: boolean }> => {
     const entries: unknown[] = [];
-    for (let page = 1; page <= MAX_LIST_PAGES; page += 1) {
+    for (let page = 1; page <= limit; page += 1) {
       const separator = basePath.includes('?') ? '&' : '?';
       const answer = await api({
         method: 'GET',
@@ -550,6 +645,53 @@ export function createGitHubReviewClient(
         );
       }
       return entries as readonly PullRequestReview[];
+    },
+
+    async readConversation(number: number, stop: AbortSignal): Promise<PullRequestConversation> {
+      const reviews = await pages(
+        `${repoPath}/pulls/${String(number)}/reviews`,
+        `the review list of pull request ${String(number)}`,
+        stop,
+        (value, index) =>
+          parseConversationReview(
+            value,
+            `review ${String(index + 1)} of pull request ${String(number)}`,
+          ),
+        MAX_CONVERSATION_PAGES,
+      );
+      const comments = await pages(
+        `${repoPath}/issues/${String(number)}/comments`,
+        `the conversation of pull request ${String(number)}`,
+        stop,
+        (value, index) =>
+          parseConversationComment(
+            value,
+            `comment ${String(index + 1)} of pull request ${String(number)}`,
+            'comment',
+          ),
+        MAX_CONVERSATION_PAGES,
+      );
+      const reviewComments = await pages(
+        `${repoPath}/pulls/${String(number)}/comments`,
+        `the inline review comments of pull request ${String(number)}`,
+        stop,
+        (value, index) =>
+          parseConversationComment(
+            value,
+            `inline review comment ${String(index + 1)} of pull request ${String(number)}`,
+            'review-comment',
+          ),
+        MAX_CONVERSATION_PAGES,
+      );
+      const entries = [
+        ...(reviews.entries as readonly (PullRequestConversationEntry | null)[]),
+        ...(comments.entries as readonly PullRequestConversationEntry[]),
+        ...(reviewComments.entries as readonly PullRequestConversationEntry[]),
+      ].filter((entry): entry is PullRequestConversationEntry => entry !== null);
+      return {
+        entries: entries.toSorted((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id - b.id),
+        truncated: reviews.truncated || comments.truncated || reviewComments.truncated,
+      };
     },
 
     async readEvidence(

@@ -44,6 +44,7 @@ import { messageOf } from '../shared/errors.js';
 import { readBaselineOutcome } from '../reviews/baseline.js';
 import { BASELINE_GUIDANCE_PREFIX, FEEDBACK_DEADLINE_MS } from '../runs/contracts.js';
 import { unconfirmedShutdownProblem } from '../runs/progress.js';
+import type { HistorySnapshot, TicketHistory } from '../history/contract.js';
 import type { BaselineOutcome } from '../reviews/baseline.js';
 import type { CheckRoundResult, CommandResult, SourceRef, Task } from '../shared/types.js';
 import type {
@@ -424,6 +425,8 @@ export interface BaselineEvidence {
   /** How this piece of evidence ended; absent while its diagnosis is unfinished. */
   readonly closed?: 'repair' | 'attention' | 'left-alone';
   readonly closedAt?: string;
+  /** Acknowledged Jira rendering, used only to authenticate a history mirror. */
+  readonly publication?: { readonly commentId: string; readonly textSha256: string };
 }
 
 /**
@@ -469,7 +472,10 @@ function evidenceProblem(file: string, problem: string): SourceError {
  * another project under the same output directory is refused rather than
  * finished or published through this project's connection.
  */
-async function readEvidence(file: string, project: string): Promise<BaselineEvidence | null> {
+export async function readBaselineEvidence(
+  file: string,
+  project: string,
+): Promise<BaselineEvidence | null> {
   let text: string;
   try {
     text = await readFile(file, 'utf8');
@@ -524,6 +530,7 @@ async function readEvidence(file: string, project: string): Promise<BaselineEvid
   const baseCommit = textField(workspace, 'baseCommit');
   const closedAt = textField(value, 'closedAt');
   const closed = value['closed'];
+  const publication = value['publication'];
   if (
     refFields.some((field) => field === null) ||
     taskId === null ||
@@ -574,6 +581,16 @@ async function readEvidence(file: string, project: string): Promise<BaselineEvid
     baseline: round,
     ...(closedKind === null ? {} : { closed: closedKind }),
     ...(closedAt === null ? {} : { closedAt }),
+    ...(isRecord(publication) &&
+    typeof publication['commentId'] === 'string' &&
+    typeof publication['textSha256'] === 'string'
+      ? {
+          publication: {
+            commentId: publication['commentId'],
+            textSha256: publication['textSha256'],
+          },
+        }
+      : {}),
   };
 }
 
@@ -605,7 +622,7 @@ async function closeEvidence(
   project: string,
   closed: BaselineEvidence['closed'],
 ): Promise<void> {
-  const current = await readEvidence(file, project);
+  const current = await readBaselineEvidence(file, project);
   if (current === null) {
     return;
   }
@@ -727,6 +744,14 @@ export interface BaselineDiagnosisParts {
   /** `<workDir>`: where the diagnosis's own evidence directories are kept. */
   readonly workDir: string;
   readonly io: SourceIo;
+  /**
+   * The ticket conversation history the diagnostic reviewer turn reads, when
+   * the caller configured one. It is prepared before that turn exactly as it is
+   * for a developer or review turn, so a ticket whose own thread explains the
+   * failing baseline is diagnosed with that thread in hand
+   * (docs/WORKFLOW.md §9 and §11).
+   */
+  readonly history?: TicketHistory;
 }
 
 /**
@@ -836,7 +861,7 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
     // recomputed from everything the diagnosis acts on — and is reused.
     let recorded: BaselineEvidence | null;
     try {
-      recorded = await readEvidence(file, project);
+      recorded = await readBaselineEvidence(file, project);
     } catch (cause) {
       return unfinished(stop, `${key}: ${messageOf(cause)}`, null);
     }
@@ -957,6 +982,41 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
       `${key}: a completed red baseline before any coding turn; one reviewer turn is diagnosing ` +
         `the snapshot at ${workspace.baseCommit} (evidence under ${dir})`,
     );
+    // The one local conversation history the reviewer turn reads, prepared
+    // before it starts: the same organization and local paths a developer turn
+    // is given. A snapshot that cannot be written stops the turn rather than
+    // starting one whose promised history does not exist; the ticket keeps its
+    // evidence and stays In Review for a person.
+    let history: HistorySnapshot | undefined;
+    if (parts.history !== undefined) {
+      try {
+        // A retained outcome is replayed by the reviewer without starting a
+        // turn. Do not make that recovery depend on new remote requirements,
+        // or lose the recorded unconfirmed-stop evidence when a read fails.
+        if ((await readBaselineOutcome(dir)) === null) {
+          history = await parts.history.prepare({
+            ref: item.ref,
+            task: item.task,
+            workspace: {
+              workspaceId: workspace.workspaceId,
+              workspacePath: workspace.workspacePath,
+              branch: workspace.branch,
+              baseCommit: workspace.baseCommit,
+            },
+            role: 'reviewer',
+            round: null,
+            stop,
+          });
+        }
+      } catch (cause) {
+        return unfinished(
+          stop,
+          `${key}: its conversation history could not be prepared, so its red baseline was not ` +
+            `diagnosed and nothing was published or moved: ${messageOf(cause)}`,
+          null,
+        );
+      }
+    }
     let reviewed: BaselineReviewResult;
     try {
       // The one turn is bounded like every other launch: the run's own stop
@@ -968,8 +1028,12 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
         item,
         workspace: { path: workspace.workspacePath, baseCommit: workspace.baseCommit },
         baseline,
+        ...(history === undefined ? {} : { history }),
         stop: turnStop,
       });
+      if (reviewed.summary !== null && history !== undefined) {
+        await parts.history?.consumed?.(history).catch(() => undefined);
+      }
     } catch (cause) {
       reviewed = {
         summary: null,
@@ -1042,6 +1106,33 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
     let commentId: string;
     try {
       commentId = await record.postComment(item.ref.id, paragraphs, feedbackStop());
+      // Save the acknowledged identity, never infer a mirror from a quoted marker.
+      const current = await readBaselineEvidence(file, project);
+      if (current !== null) {
+        const temporary = `${file}.tmp-${randomUUID()}`;
+        try {
+          await writeFile(
+            temporary,
+            JSON.stringify(
+              {
+                ...current,
+                publication: {
+                  commentId,
+                  textSha256: createHash('sha256')
+                    .update(paragraphs.join('\n'), 'utf8')
+                    .digest('hex'),
+                },
+              },
+              null,
+              2,
+            ),
+            'utf8',
+          );
+          await rename(temporary, file);
+        } finally {
+          await rm(temporary, { force: true });
+        }
+      }
     } catch (cause) {
       return unfinished(
         stop,
@@ -1127,7 +1218,7 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
       }
       let evidence: BaselineEvidence | null;
       try {
-        evidence = await readEvidence(file, project);
+        evidence = await readBaselineEvidence(file, project);
       } catch (cause) {
         return { kind: 'problem', detail: messageOf(cause) };
       }
@@ -1368,7 +1459,7 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
       }
       let evidence: BaselineEvidence | null;
       try {
-        evidence = await readEvidence(file, project);
+        evidence = await readBaselineEvidence(file, project);
       } catch (cause) {
         return { kind: 'problem', detail: messageOf(cause) };
       }

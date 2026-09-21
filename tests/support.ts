@@ -10,6 +10,16 @@ import { fileURLToPath } from 'node:url';
 import stringWidth from 'string-width';
 import type { CliIo } from '../src/cli/context.js';
 import { HARNESS_CONFIG_FILE_NAME, PROJECT_CONFIG_FILE_NAME } from '../src/config/paths.js';
+import type { PublishedComment } from '../src/sources/contract.js';
+
+/**
+ * What a fake source acknowledges publishing: an identity and the text it was
+ * handed. Nothing remote happens, and a test that does not care about the
+ * publication identity can return this.
+ */
+export function publishedComment(text = 'a published comment'): PublishedComment {
+  return { commentId: 'comment-1', text };
+}
 
 /** Repository root, derived from this file's location. */
 export const repoRoot = fileURLToPath(new URL('..', import.meta.url));

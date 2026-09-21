@@ -7,6 +7,7 @@
  * about. There is no default and no fake in these types.
  */
 import type { CheckRoundRequest } from '../checks/round.js';
+import type { HistorySnapshot, TicketHistory } from '../history/contract.js';
 import type { AgentLog } from '../reporting/logs.js';
 import type { RunReportRequest } from '../reporting/report.js';
 import type {
@@ -142,11 +143,23 @@ export interface RunTaskRequest {
    */
   readonly onWorkspaceReady?: (workspace: PreparedWorkspace) => Promise<void>;
   /**
-   * Context for a continued attempt, passed to every coding turn of this run and
-   * recorded nowhere else: what a source learned from the issue and from the
-   * harness's own earlier attempts (docs/implement-workspace-continuation.md).
+   * Legacy context for a continued attempt: what a source learned from the issue
+   * and earlier attempts. A turn with a prepared history receives only the
+   * separately validated BASELINE_GUIDANCE_PREFIX lines from this array; ordinary
+   * conversation context comes from its current snapshot instead. Without a
+   * snapshot every turn receives these lines (docs/implement-workspace-continuation.md).
    */
   readonly guidance?: readonly string[];
+  /**
+   * The ticket's conversation history, when the caller has one: before every
+   * coding turn the runner prepares one identified snapshot of the ticket's
+   * requirements, its Jira thread, its pull request conversation and the
+   * harness's own reports, and hands the turn the snapshot's local paths and
+   * brief. A snapshot that cannot be prepared stops the turn before it starts,
+   * rather than starting one whose promised history does not exist
+   * (docs/WORKFLOW.md §9 and §11).
+   */
+  readonly history?: TicketHistory;
   /**
    * The name of the escalation tier this attempt runs, for the workspace ledger:
    * a label the runner records and never interprets, like `sourceRef`.
@@ -197,6 +210,12 @@ export interface AgentTurnRequest {
    */
   readonly guidance?: readonly string[];
   /**
+   * The conversation snapshot prepared for this turn, with its local paths and
+   * its brief. The prompt renders it; nothing in it is a command, a path the
+   * turn may write to, or a permission (docs/WORKFLOW.md §9 and §11).
+   */
+  readonly history?: HistorySnapshot;
+  /**
    * Where a turn reports what it is doing as it goes, line by line: the runtime's
    * own messages, commands, their results, and the files it changed. It is
    * presentation for whoever is watching the terminal; a display that is not
@@ -242,7 +261,7 @@ export interface AgentTurnShutdown {
  * not complete has no checks observed after it, and none are invented.
  */
 export interface AgentTurnResult {
-  /** The agent's own short summary of the turn, or `null` when it gave none. */
+  /** The agent's complete final message, or `null` when it gave none. */
   readonly summary: string | null;
   /**
    * How the turn's own stop of the execution it started went, or nothing at all

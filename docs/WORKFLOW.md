@@ -12,6 +12,8 @@ This is a human-readable reference, **not runtime configuration**. The applicati
 
 **Revision: 2026-09-20 — one harness configuration, one file per connected project.** Configuration is two files with disjoint ownership, defined in §1: the Nexus-wide `nexus.config.json` an operator keeps (limits, coding launches, reviewer integration, completion policy) and the `nexus.project.json` each connected repository carries at its root (its own setup/checks, its Jira connection, and its GitHub destination with the workflows and statuses it completes through). The single-file configuration the earlier revisions described is no longer read: its project fields are reported as belonging to the project configuration. The commands, their options, and the composed objects they validate are in §§3, 7, 8, 9, 10, and 11. [spec.md](spec.md) §2 and [architecture.md](architecture.md) §2 own the behaviour and the module.
 
+**Revision: 2026-09-21 — one complete local conversation history for both roles.** §4, §9 and §11 are extended: before every developer and reviewer turn the harness prepares one identified snapshot of the ticket's requirements, its Jira discussion, its pull request conversation and reviews, and the complete developer and reviewer reports, and both turns are given the same organization and the same local paths. The prompt carries the current brief, the latest delivery, every complete unresolved finding with its latest responses, and the human feedback this role’s last consumed snapshot did not hold — new or edited since it; a source that could not be read, a page bound that was reached, and a report that is missing are named as gaps rather than presented as a complete history. Complete reports are saved under the workspace's own history directory before their concise Jira or GitHub rendering is published, the acknowledged comment or native review is recorded as the report's publication, and a rendering that comes back through Jira or GitHub is recognized by that recorded identity — never by its wording alone — and not duplicated. The local files are in §9, "The ticket conversation history".
+
 **Completion exception:** the no-merge/no-Done defaults below are superseded only by the explicitly configured path in §10. The review commands themselves remain read/review-only.
 
 ## 1. Configuration
@@ -290,6 +292,8 @@ prepare → setup → baseline checks
 ```
 
 A red baseline stops a **fresh attempt** before any coding turn; a **continuation** may start red, because its workspace may already carry committed work the checks reject, and only its post-turn check round decides. A setup/launch/authentication/protocol error, expired timeout, cancellation, or exhausted repair allowance stops the loop and preserves work, fresh or continued. Only ordinary completed red check rounds trigger repair. Checks are rerun by the harness regardless of the agent's claims. The selected agent does not change between turns. Before every coding turn, and before the round that follows it, the checkout is returned to the branch its workspace records: a turn may have committed on a branch of its own, and what the checks judge and a delivery step publishes is the recorded branch's own revision. That return fast-forwards and checks out a clean checkout whose commit descends from the recorded branch, keeping the commit the turn made on the branch it made it on; a detached, divergent, or branchless checkout stops the run before that turn or check, naming both branches and the manual action, and nothing is reset, force-updated, or discarded (HARN-35). A return that would write over a local file the checkout ignores is **refused** with the paths named and the file's bytes kept, and what the checkout and the fast-forward did is read back rather than taken from their exit codes, so a Git configuration that squashed the merge cannot pass for a returned branch. A coding turn is also started only from the workspace's own committed state: a checkout that still holds uncommitted work — on the recorded branch included — stops the run before the agent, naming the branch, the paths, and the manual action, while the round that judges a turn still reads what that turn left, uncommitted work included. See the specification for reporting and safety semantics.
+
+Before every coding turn the harness also prepares the ticket's **conversation history** — the current requirements, the Jira thread, the pull request conversation and the harness's own complete reports — and hands the turn its brief and local paths (§9, "The ticket conversation history"). A run whose task came from a file rather than a source has no such history and behaves exactly as before.
 
 The delivery step is **outside the run**: the run's own report is written first, and only a `passed` attempt is delivered. A delivery failure changes neither the run's status nor its evidence, and it never starts a coding turn (§8). A red baseline never reaches it either: for a fresh source attempt the ending is diagnosed locally first (§11, "The pre-delivery baseline diagnosis"), so an attempt is delivered only after a post-agent round passed every configured setup and check and the ticket's own work is on the recorded branch.
 
@@ -754,6 +758,137 @@ an approval and never as a reason to start a coding turn.
 CI status stays a separate merge requirement: a review verdict does not depend on CI being green,
 and an approved check run does not mean CI passed.
 
+### The ticket conversation history
+
+Before every developer turn and every reviewer turn, the harness prepares one identified snapshot of
+what the ticket and its work say, and hands the turn its local paths. Both roles receive the same
+organization and the same layout, beside the retained workspace the ticket's pointer names:
+
+```text
+<workDir>/workspaces/<workspaceId>.history/
+  current.json                  # points at the newest prepared snapshot
+  consumed-developer.json       # last snapshot consumed by a developer turn
+  consumed-reviewer.json        # last snapshot consumed by a reviewer turn
+  reports/                      # complete developer and reviewer reports, saved before publication
+  snapshots/<snapshot-id>/
+    index.md                    # concise index: role, author, time, round, source id, commit
+    index.json                  # the same index, machine-readable
+    entries.jsonl               # one JSON object per entry, with its file
+    entries/                    # one file per entry: provenance header, then the wording verbatim
+    task.json                   # the ticket's current requirements, whole
+```
+
+The prompt carries the current brief (the ticket's title, description and acceptance criteria), the
+latest delivery, every complete unresolved review finding with the discussion that answered it, and
+the human feedback this role's last consumed snapshot did not hold. The two role cursors advance
+only after a turn returns usable output; preparation and the other role never consume feedback.
+An absent legacy cursor replays feedback, and a restart reads the cursor from disk. Requirements
+are re-read before each turn, including repairs, and every task section uses that reading. Invalid
+or unreadable current requirements stop the turn. Developer turns with a prepared snapshot do not
+also receive the ordinary comment and prior-attempt excerpts collected at intake: those can be
+stale after an edit or repeat feedback already consumed. Only the separately validated baseline
+repair requirement is carried forward beside the snapshot, including on every repair. Without a
+prepared history, legacy guidance is unchanged. The full conversation remains in the
+snapshot for the turn to read and search with its ordinary tools (`rg <text> <index or entries
+directory>`), so no Jira or GitHub call of its own is needed or wanted. Findings and human feedback
+are rendered whole: the history section is bounded only by dropping whole entries from the inline
+block. Responses and new feedback each have a 60,000-character inline budget, selecting newest
+whole entries first. Overflow points to the complete `brief.responses` or `brief.newHumanFeedback`
+array in that snapshot's `index.json` and requires the turn to read it
+before acting or report an input gap. If a source could not be read, a page bound was
+reached while following pagination, or a complete report is missing, the prompt opens with the gaps
+it knows about, so a turn is never told the history is complete when it is not; a snapshot that
+cannot be written at all stops the turn before it starts.
+
+Outstanding findings are reconciled across retained and native reviews, independently by reviewer.
+A later published approval from that reviewer at the current head clears their request; another reviewer's
+approval, an old-head approval, a comment-only review or an inconclusive verdict cannot clear it.
+Published findings without a retained report remain visible with an explicit provenance gap.
+Responses include older comments edited after the review. This does not enforce remediation of
+individual findings.
+
+Native GitHub reviews have no edit timestamp. Synchronization compares their bodies against the
+recorded publication hash and marks changed renderings as edited, including when the prior snapshot
+held only a mirror. A legacy publication without a saved hash uses an earlier unchanged mirror as
+its comparison when available. That status survives subsequent refreshes and restarts, so both roles continue
+to receive the correction as a response alongside outstanding findings after consuming an earlier
+snapshot. When an edit has no timestamp, its original submission time cannot establish whether it
+predates an outstanding round. Such corrections remain responses even when a newer review from the
+same reviewer supplies the outstanding findings. This conservative rule applies to human reviews too;
+it does not invent an edit time or change which review round is outstanding.
+
+Every entry keeps its source's own identity (a Jira comment id, a GitHub review or comment id, a run
+or review id), its author, time, round and the reviewed or delivered commit where that applies, and
+its original wording. A read that reports an edited comment updates that entry in the next snapshot;
+it never adds a second one. A snapshot is named by the hash of its own content, so a refresh with
+nothing new reuses it and a refresh with something new writes a new directory: the snapshot a running
+turn holds is never rewritten. A concise Jira result comment or native GitHub review carries a
+`nexus-history:` marker naming the complete report it renders, and the acknowledged comment id or
+native review id is recorded with the report when the publication succeeds; when synchronization
+reads that rendering back it checks it against that recorded publication identity and, if the text
+is still the text that was published, records a mirror of the local report instead of a duplicate
+conversation entry. A comment that merely quotes a marker, a rendering that was edited after
+publication, and an unauthenticated rendering whose publication was never recorded all stay
+attributed entries: wording alone never removes a message. A rendering published before the harness
+recorded publication identities is recognized only from a configured harness author and the
+harness's own rendering shape — its run
+result line, the marker naming the same run, and its artifacts and repairs lines — which a comment
+that quotes a marker does not match. The inline findings of a native review published by the App are
+the retained report's own findings, mapped by the review's identity; a reply to one stays a reply.
+
+The normal completion pass records its acknowledged Jira findings comment with the exact local
+reviewer's native review identity and head. Its review excerpt becomes a mirror; its distinct
+completion context stays a harness entry, even when Jira's service account name differs from the
+GitHub App login. Both role prompts include that context among responses after an outstanding
+review, including distinct check failures and the repair disposition. It stays actionable after
+consumption and restart while the review is outstanding; whole-entry overflow requires reading
+`brief.responses` locally, just as for other responses. The report digest retains the published
+text and hash. The snapshot's
+`mirrors[].originalEntry` in `index.json` retains the whole rendering and source provenance, and
+`index.md` points to it. Later edits remain complete separate entries. A pre-existing comment or
+an uncertain write found only by a marker does not acquire publication provenance from that marker;
+without a recorded acknowledgement it remains attributed remote evidence. A provenance write
+failure is reported as attention before the status move.
+
+Review order, earliest outstanding review, latest delivery and response selection compare parsed
+timestamp instants, including Jira numeric timezone offsets. Stored timestamps keep their original
+spelling. Invalid or unavailable timestamps are named as gaps, with possible responses included
+conservatively rather than silently dropped after a feedback cursor advances.
+
+Complete developer messages pass through the runtime adapter without truncation and are saved
+under `reports/` after every turn, so repairs see earlier turns
+from their own run. The final run enriches that same entry before the result comment is published.
+After a restart or early coordinator return, preparation reconciles any `in-progress` digest with
+the finished attempt in the workspace ledger and its `result.json`. The new snapshot includes the
+final outcome, reason and check results while keeping the original turn wording. If final evidence
+cannot be recovered, the retained report remains readable and is marked incomplete with the path
+and reason. Recovery changes neither prior snapshots nor the saved digest and invents no publication
+or delivered commit; an attempt not yet recorded as finished remains in progress.
+Reviewer verdicts are saved before publication checks, including inconclusive and stale verdicts; each developer report records the
+commit its delivery verified, so successive rounds to the same pull request each keep their own
+revision. Reports recorded before this increment are rebuilt from the run's own `result.json` and
+from the reviewer's retained verdict beside its review record under `<workDir>/reviews/`; a record
+that cannot be read back as that conversation — invalid JSON, no list of coding turns — is marked
+incomplete and names what is missing. A legacy adapter truncation suffix also marks the report
+incomplete, even if its shortened message has a Markdown copy; raw logs do not make it complete.
+A report whose file is really gone is marked missing, with
+the path that was looked for; the workspace stays usable either way. Nothing in the history is a
+command, a configuration value, or a permission: it is attributed external text for the turn to
+weigh.
+
+Baseline reviewer outcomes are included from `baseline/<project>/<evidenceId>/outcome.json`, using
+the existing validated evidence record to match the ticket and retained workspace. An accepted
+repair appears as an outstanding diagnostic request; rejected outcomes remain attributed reports
+and never lend their unaccepted finding file to a prompt. An unavailable legacy outcome is a named
+gap. The report records the evidence identity and reviewed base commit; its round is unknown and
+its time is labeled as the outcome file modification time because legacy outcomes have no turn
+timestamp. Baseline comments are deduplicated only with their recorded acknowledged Jira identity
+and matching text hash; unauthenticated legacy renderings remain visible.
+
+If saving a developer report fails during cancellation or timeout, both failures remain in the
+result. Unconfirmed termination still prevents a final workspace inspection and automatic reuse;
+a report-write failure cannot convert it into a clean stop.
+
 ### The merge signal, and what stays outside
 
 The branch rule for the destination should require **both** the configured CI check and the
@@ -1011,6 +1146,9 @@ several projects — bounded by the harness configuration's
   exited with;
 - the bounded stdout/stderr each failing check wrote (the same bounded reading a repair turn is
   given), with the log file paths beside it;
+- the ticket's conversation history (§9, "The ticket conversation history"), prepared as the
+  identified local snapshot a developer and a review turn receive; a snapshot that cannot be
+  prepared starts no diagnostic turn and leaves the item In Review with the paths named;
 - a read-only clone of the retained workspace (`repo/` in the evidence directory), pinned at the
   commit the baseline ran against, which the reviewer may inspect with ordinary read tools. The
   snapshot has to be established before the turn: a working copy whose recorded base commit has

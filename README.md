@@ -406,6 +406,11 @@ completion, and never names a report that does not exist.
   workspaces/<workspaceId>/      the working copy: a clone, on branch harness/<workspaceId>
   workspaces/<workspaceId>.json  the workspace ledger: what it was cloned from, the item it was
                                  created for, and its attempts
+  workspaces/<workspaceId>.history/
+    current.json                 points at the newest conversation snapshot
+    reports/                     the complete developer and reviewer reports
+    snapshots/<snapshot-id>/     one immutable snapshot: index.md, index.json, entries.jsonl,
+                                 entries/ (one file per entry), and task.json
 ```
 
 A run ID is generated (`run-<UTC timestamp>-<8 hex>`) and never comes from task text, so no task can
@@ -440,6 +445,79 @@ git status                             # plus untracked and staged state
 `changes.highlighted` picks out the ones that touch **tests, tooling, or configuration**, because a
 change to those can change what the checks that decided the run actually did. `changes.warnings`
 records, in the report itself, what the run's status does and does not prove.
+
+### The ticket conversation history
+
+A source-backed ticket also keeps one local conversation history beside its workspace, prepared by
+the harness before every developer and reviewer turn and never fetched by an agent itself:
+
+```sh
+cat <workDir>/workspaces/<workspaceId>.history/current.json   # the newest snapshot
+cat <workDir>/workspaces/<workspaceId>.history/snapshots/<id>/index.md
+rg "<text>" <workDir>/workspaces/<workspaceId>.history/snapshots/<id>/entries/
+ls  <workDir>/workspaces/<workspaceId>.history/reports         # complete developer/reviewer reports
+```
+
+The index names each entry's role, author, time, round, source id, and the reviewed or delivered
+commit where it has one; each entry file holds its provenance header and the original wording
+below it, unchanged. The prompt a turn receives carries the current brief, the latest delivery, the
+complete unresolved review findings with their latest responses, and the human feedback since the
+same role's last consumed snapshot (including comments arriving or edited during its last turn);
+everything else stays in the snapshot for the turn to search. A complete developer report is saved
+under `reports/` before its Jira comment is published, and a complete reviewer report before its
+GitHub review is; the acknowledged comment or review is recorded with the report, and a rendering
+that comes back through Jira or GitHub is recognized by that recorded identity and not duplicated —
+a comment that merely quotes a marker, or a rendering edited after publication, stays an ordinary
+entry. Outstanding findings are tracked separately for each reviewer; unrelated approvals and
+comment-only reviews cannot clear them. Each developer report names the commit its delivery verified.
+Edits to an App review remain actionable responses beside its outstanding findings, even when GitHub
+provides no edit timestamp. The recorded publication hash detects the change; refreshes, restarts and
+either role consuming the feedback do not hide it. A detected edit without an edit timestamp remains
+a response even if its original review predates a newer outstanding round from the same reviewer.
+Human review edits follow the same rule; the harness does not infer an edit time.
+The harness re-reads requirements before each turn and refuses the turn if they cannot be obtained.
+Developer turns with a history snapshot use it for conversation guidance, including on repairs;
+old comment excerpts collected at intake are not repeated alongside edited or consumed feedback.
+The accepted baseline-repair requirement still appears on every turn. Runs without a history
+snapshot retain their existing guidance behavior.
+`consumed-developer.json` and `consumed-reviewer.json` track feedback separately after usable turn
+output. A prepared snapshot never advances them; legacy workspaces without cursors replay feedback.
+Developer messages are retained in full through the runtime adapter. Old messages marked with the
+adapter's truncation suffix are explicitly incomplete; their raw logs remain supporting evidence.
+Responses and new feedback each have a 60,000-character inline budget. When the prompt names
+`brief.responses` or `brief.newHumanFeedback` in its immutable `index.json` as required reading,
+read that whole array before acting, or report the input gap.
+
+Jira timezone offsets and UTC timestamps are compared as instants, so consuming a snapshot does
+not hide a later response to an outstanding review. Invalid timestamps are named as gaps.
+Normal completion comments are matched to the retained review by acknowledged publication identity:
+the review excerpt is a mirror, while separate completion context stays an attributed harness entry.
+Check failures and repair dispositions after an outstanding review appear in both prompts' responses,
+even after consumption or restart while that review remains outstanding. If the response section
+overflows, its required local reading includes this completion context in full.
+For the whole original completion rendering, read `mirrors[].originalEntry` in the snapshot's
+`index.json`; its report digest also retains the published text and hash. Edits and older comments
+without recorded acknowledgement remain separate entries. A marker alone does not authenticate them.
+
+Baseline reviewer reports are recovered from the matching `baseline/<project>/<evidenceId>/outcome.json`
+for both roles. Missing or corrupt outcomes are named as gaps; an unaccepted `finding.json` cannot
+replace them. Baseline entries name their evidence ID and reviewed commit, and label the file
+modification time used when the original turn time is unavailable. New baseline comments are
+matched to those reports by acknowledged Jira identity and unchanged text.
+
+Developer summaries are retained before the next repair; reviewer verdicts are kept even if later
+publication checks refuse them.
+If a run finished but its coordinator stopped before saving the final history report, the next
+snapshot recovers its outcome, reason and checks from the ledger and `result.json`. An unavailable
+or unusable final report is an explicit gap naming that path; the saved turn messages remain
+readable. Earlier snapshots and saved digests stay unchanged, and recovery assumes no delivery.
+A reviewer's retained `verdict.json` is read back instead of being reported missing, and a source the
+harness could not read, a pagination bound that was reached, and a report that is missing or cannot
+be read as the conversation it claims to be (an older workspace whose `result.json` or review record
+is unusable) are named as gaps in the snapshot and in the prompt, so a turn is told what is
+incomplete instead of being started as though the history were whole. Snapshots are immutable: a
+refresh writes a new one and leaves the one a running turn holds exactly as it was. See
+[docs/WORKFLOW.md](docs/WORKFLOW.md) §9.
 
 ## `source`: tasks from a Jira queue
 
@@ -1266,6 +1344,30 @@ Read this before pointing a run at anything you care about.
   result comment, the per-issue receipt and the per-project intake lock, a finite `source run`, a watch
   cycle that picks up a later issue, and the behaviour of a stop, a failed feedback, and a corrupt
   receipt. Nothing in that suite needs a Jira site, a token, or a network.
+- the ticket conversation history, through temporary directories and faked readers: both role
+  prompts (developer, review, and the pre-delivery baseline diagnosis) carrying the same
+  organization and local paths, a finding past the old per-comment
+  budgets and past the reviewer verdict bound staying whole, a long history kept as one file per
+  entry while the inline block names what it did not fit, an edited comment updating its identity in
+  a new snapshot while the old snapshot is unchanged, pagination of both the Jira thread and the
+  pull request conversation (with a page bound that is reached reported as a gap), a report
+  mirrored back through its recorded Jira comment or native review not becoming a second entry —
+  and the inline findings of a published review not being kept beside the report while a reply
+  stays its own entry — a comment that quotes a marker, or a rendering edited after publication,
+  staying an attributed entry, feedback that arrived while the previous turn ran (and a comment
+  edited after the last report) reaching the next brief while one this role already consumed
+  is not repeated, a restart reusing an identical snapshot and re-deriving that input from the
+  store on disk, an older local approval not hiding a newer native review that requests changes, a
+  person's change request staying visible after a later harness report, reports the harness knows
+  existed but cannot read marked missing rather than invented — a legacy workspace's attempt rebuilt
+  from its own `result.json`, its retained reviewer `verdict.json` read back, and an unreadable or
+  turn-less record marked incomplete instead of complete — the delivered commit recorded per
+  delivery, and a snapshot that cannot be written stopping the turn before it starts.
+  Additional regressions cover per-role cursors across preparation, edits and restart; fresh
+  requirements in both prompts; independent reviewers, comment-only reviews, old-head and
+  unpublished approvals; summaries retained before repair; and inconclusive verdict retention. The
+  connector reads themselves are covered against fake HTTP boundaries; no live Jira or GitHub read
+  was made for this increment.
 - workspace continuation through the same fakes and real temporary Git repositories: a continued
   attempt reopening the workspace its pointer label names and keeping its recorded base, the
   per-attempt run directories and ledger, the escalation ladder's tiers — the tier's own launch, each
@@ -1685,21 +1787,22 @@ the same launch: the repair exercise in step 1 is already a later turn in one re
 `src/` is a small hierarchy of responsibility-based modules; [docs/module-structure.md](docs/module-structure.md)
 is the full tree, the placement rules, and the steps for adding a source or a runtime.
 
-| Module                    | Responsibility                                                                                                                |
-| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `src/cli.ts` + `src/cli/` | Arguments, help, exit codes, command dispatch, and top-level wiring. Owns all presentation.                                   |
-| `src/config/`             | The input schemas and their documented defaults, and reading/validating the two JSON inputs.                                  |
-| `src/shared/`             | The data contracts (data only: no imports, no runtime I/O) and the one message helper.                                        |
-| `src/process/`            | Starting one command or Git reading, its limit, and stopping its process tree.                                                |
-| `src/checks/`             | One setup/check round and what a command's result means.                                                                      |
-| `src/workspace/`          | Preflight, run directory allocation, the working copy, the ledger, and the change summary.                                    |
-| `src/runs/`               | The order the work happens in: baseline, turns, checks, repair, deadlines, the report.                                        |
-| `src/reporting/`          | `result.json`, the logs under `<runDir>/logs`, and the change summary.                                                        |
-| `src/sources/`            | The task-source contract, receipts, eligibility, guidance, and the serial coordinator.                                        |
-| `src/sources/jira/`       | The Jira Cloud connector: HTTP, search, reads, transitions, comments, the ADF reader.                                         |
-| `src/delivery/`           | The optional GitHub step: push a passed attempt's branch, create or update its pull request.                                  |
-| `src/reviews/`            | The optional Nexus Lens path: one scan or watch, the App installation, the reviewer turn, and the published review and check. |
-| `src/agents/codex/`       | The coding runtime: one turn through the Codex CLI, normalized for the runner.                                                |
+| Module                    | Responsibility                                                                                                                 |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `src/cli.ts` + `src/cli/` | Arguments, help, exit codes, command dispatch, and top-level wiring. Owns all presentation.                                    |
+| `src/config/`             | The input schemas and their documented defaults, and reading/validating the two JSON inputs.                                   |
+| `src/shared/`             | The data contracts (data only: no imports, no runtime I/O) and the one message helper.                                         |
+| `src/process/`            | Starting one command or Git reading, its limit, and stopping its process tree.                                                 |
+| `src/checks/`             | One setup/check round and what a command's result means.                                                                       |
+| `src/workspace/`          | Preflight, run directory allocation, the working copy, the ledger, and the change summary.                                     |
+| `src/runs/`               | The order the work happens in: baseline, turns, checks, repair, deadlines, the report.                                         |
+| `src/reporting/`          | `result.json`, the logs under `<runDir>/logs`, and the change summary.                                                         |
+| `src/sources/`            | The task-source contract, receipts, eligibility, guidance, and the serial coordinator.                                         |
+| `src/sources/jira/`       | The Jira Cloud connector: HTTP, search, reads, transitions, comments, the ADF reader.                                          |
+| `src/delivery/`           | The optional GitHub step: push a passed attempt's branch, create or update its pull request.                                   |
+| `src/reviews/`            | The optional Nexus Lens path: one scan or watch, the App installation, the reviewer turn, and the published review and check.  |
+| `src/history/`            | The ticket conversation snapshot both roles read, complete developer/reviewer report retention, and the shared prompt section. |
+| `src/agents/codex/`       | The coding runtime: one turn through the Codex CLI, normalized for the runner.                                                 |
 
 `src/cli.ts` (and `src/cli/`) depends on the modules below it; nothing depends on `cli.ts`. Helper
 modules never import the CLI, and `src/shared/types.ts` is data only. Both rules are enforced by

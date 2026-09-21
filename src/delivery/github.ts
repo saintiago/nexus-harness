@@ -89,6 +89,15 @@ export interface DeliveryRequest {
 export interface DeliveredPullRequest {
   /** The pull request's browser URL: what the issue's comment links to. */
   readonly url: string;
+  /** The pull request's number, parsed from its URL: what the history records. */
+  readonly number: number | null;
+  /**
+   * The revision this delivery published and verified: the branch tip the step
+   * pushed, which is also the commit the checks validated. It is carried into
+   * the run's retained developer report, so a later turn knows which commit an
+   * attempt delivered even after the branch moves on.
+   */
+  readonly head: string;
   /** Whether this delivery created the pull request, or found and updated it. */
   readonly created: boolean;
 }
@@ -200,6 +209,16 @@ function pullRequestBody(request: DeliveryRequest): string {
 function pullRequestUrl(output: string): string | null {
   const match = /https?:\/\/\S+\/pull\/\d+/.exec(output);
   return match === null ? null : match[0];
+}
+
+/** The number one pull request URL names, or `null` when it names none. */
+function pullRequestNumber(url: string): number | null {
+  const match = /\/pull\/(\d+)(?:\D|$)/.exec(url);
+  if (match === null) {
+    return null;
+  }
+  const number = Number.parseInt(match[1] ?? '', 10);
+  return Number.isSafeInteger(number) && number > 0 ? number : null;
 }
 
 /** What `gh pr list --json url,state` answered, or a failure naming what it said. */
@@ -365,24 +384,38 @@ export function createGitHubDelivery(
       // Git here rather than assumed to be the same: a checkout left on another
       // branch must not publish the older revision that shares the recorded
       // branch's name (HARN-17).
-      const headRead = await execute(
+      // Both identities can be read by one Git invocation. This avoids a
+      // second process launch (notably expensive on Windows) while still
+      // refusing missing refs and checking both returned commits before push.
+      const revisions = await execute(
         request,
-        'delivery-git-head',
-        'git rev-parse --verify HEAD',
-        ['git', 'rev-parse', '--verify', 'HEAD'],
+        'delivery-git-revisions',
+        'git rev-parse HEAD and recorded branch',
+        [
+          'git',
+          'rev-parse',
+          '--revs-only',
+          '--end-of-options',
+          'HEAD^{commit}',
+          `refs/heads/${request.branch}^{commit}`,
+        ],
         stop,
         gitHint,
       );
-      const branchRead = await execute(
-        request,
-        'delivery-git-branch',
-        `git rev-parse --verify refs/heads/${request.branch}`,
-        ['git', 'rev-parse', '--verify', `refs/heads/${request.branch}`],
-        stop,
-        gitHint,
-      );
-      const validatedCommit = (await stdoutOf(headRead)).trim();
-      const publishedCommit = (await stdoutOf(branchRead)).trim();
+      const commitsRead = (await stdoutOf(revisions)).trim().split(/\r?\n/);
+      const [validatedCommit, publishedCommit] = commitsRead;
+      if (
+        commitsRead.length !== 2 ||
+        validatedCommit === undefined ||
+        publishedCommit === undefined ||
+        !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(validatedCommit) ||
+        !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(publishedCommit)
+      ) {
+        throw new DeliveryError(
+          'git rev-parse did not return both the checked-out and recorded-branch commits; ' +
+            'nothing was pushed and no pull request was created or updated.',
+        );
+      }
       if (validatedCommit !== publishedCommit) {
         throw new DeliveryError(
           `the retained workspace ${request.workspacePath} is checked out at ${validatedCommit}, ` +
@@ -503,7 +536,12 @@ export function createGitHubDelivery(
           stop,
           ghHint,
         );
-        return { url: found.url, created: false };
+        return {
+          url: found.url,
+          number: pullRequestNumber(found.url),
+          head: validatedCommit,
+          created: false,
+        };
       }
 
       // A match that is no longer open receives no edit: editing it would report
@@ -552,7 +590,7 @@ export function createGitHubDelivery(
             'than creating a second one.',
         );
       }
-      return { url, created: true };
+      return { url, number: pullRequestNumber(url), head: validatedCommit, created: true };
     },
   };
 }

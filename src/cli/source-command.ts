@@ -42,6 +42,7 @@ import { createBaselineReviewer } from '../reviews/baseline.js';
 import { WorkspaceError } from '../workspace/errors.js';
 import { preflightSource } from '../workspace/preflight.js';
 import { createActivityDisplay } from './activity.js';
+import { createConfiguredHistory, lazyGitHubRepository } from './history.js';
 import { EXIT_CANCELLED, EXIT_INPUT_ERROR, EXIT_OK, EXIT_USAGE } from './context.js';
 import type { CliContext, CliIo } from './context.js';
 import { composeDependencies } from './dependencies.js';
@@ -270,6 +271,26 @@ async function sourceCommand(
   const jiraParts = context.fetch === undefined ? {} : { fetch: context.fetch };
   const jiraHttp = createHttpClient(sourceConfig, token, jiraParts);
   const connector = createJiraSource(sourceConfig, token, jiraParts, jiraHttp);
+  // The ticket conversation history: the Jira thread is read through the
+  // connection this command already has, and the pull request conversation
+  // through the reviewer App when the configuration declares one. The App key
+  // is resolved on first use, so a command that never prepares a snapshot — a
+  // local-only run, or one with no review path — never reads it.
+  const reviewConfig = config.review;
+  const history = createConfiguredHistory({
+    workDir,
+    jira: { http: jiraHttp, config: sourceConfig, token },
+    ...(reviewConfig === undefined
+      ? {}
+      : {
+          openRepository: lazyGitHubRepository(
+            reviewConfig,
+            context.fetch === undefined ? {} : { fetch: context.fetch },
+          ),
+        }),
+    login: reviewConfig?.app.login ?? null,
+    now: () => new Date(),
+  });
 
   // One display for the whole invocation: every attempt of every issue writes
   // its progress and its activity through it, so the pane that sits under the
@@ -384,7 +405,6 @@ async function sourceCommand(
     // found in the issue's own thread and status. It is read-only on GitHub —
     // there is no pull request yet, so nothing is reviewed, approved, or checked
     // there (docs/WORKFLOW.md §11).
-    const reviewConfig = config.review;
     const baselineDiagnosis =
       reviewConfig === undefined
         ? undefined
@@ -418,6 +438,7 @@ async function sourceCommand(
             project: lockNamespace,
             workDir,
             io: activeIo,
+            history,
           });
 
     const intake: SourceContext = {
@@ -431,6 +452,7 @@ async function sourceCommand(
       io: activeIo,
       stop: stop.signal,
       preflight: preflightSource,
+      history,
       ...(delivery === undefined ? {} : { delivery }),
       ...(completion === undefined ? {} : { completion }),
       ...(baselineDiagnosis === undefined ? {} : { baselineDiagnosis }),
@@ -443,6 +465,7 @@ async function sourceCommand(
         preferredWorkspaceId,
         onWorkspaceReady,
         guidance,
+        history: runHistory,
       }) => {
         // What this attempt really starts is the rung's own launch, and what its
         // report records is the same selection: composing the turn's runtime from
@@ -470,6 +493,7 @@ async function sourceCommand(
             sourceRef,
             ...(tier === undefined ? {} : { tierName: tier.name }),
             ...(guidance === undefined ? {} : { guidance }),
+            ...(runHistory === undefined ? {} : { history: runHistory }),
             ...(continuedWorkspace === undefined ? {} : { continuedWorkspace }),
             ...(preferredWorkspaceId === undefined ? {} : { preferredWorkspaceId }),
             ...(onWorkspaceReady === undefined ? {} : { onWorkspaceReady }),

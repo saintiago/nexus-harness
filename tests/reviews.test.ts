@@ -23,6 +23,10 @@ import { EXIT_INPUT_ERROR, EXIT_OK } from '../src/cli/context.js';
 import type { CliContext, InterruptSignals } from '../src/cli/context.js';
 import { loadConfiguration } from '../src/config/load.js';
 import { HARNESS_CONFIG_FILE_NAME, PROJECT_CONFIG_FILE_NAME } from '../src/config/paths.js';
+import type { TicketHistory } from '../src/history/contract.js';
+import { createTicketHistory } from '../src/history/sync.js';
+import { workspaceHistoryRoot } from '../src/history/paths.js';
+import { textSha256 } from '../src/history/reports.js';
 import type {
   AppCheckRun,
   OpenPullRequest,
@@ -31,6 +35,7 @@ import type {
   ReviewQueue,
   ReviewRepository,
   ReviewerTurn,
+  ReviewerTurnRequest,
   ReviewScanContext,
   ReviewVerdict,
   ReviewView,
@@ -452,6 +457,8 @@ interface ScanFixture {
   readonly errors: string[];
   readonly workDir: string;
   readonly reviewerRuns: ReviewEvidence[];
+  /** The conversation snapshot each reviewer turn was handed, in order. */
+  readonly histories: Array<ReviewerTurnRequest['history']>;
   readonly views: FakeViews;
 }
 
@@ -506,14 +513,18 @@ async function scanFixture(
       candidate: SourceCandidate,
       call: number,
     ) => Promise<SourceTask | null> | SourceTask | null;
+    readonly history?: TicketHistory;
+    /** A caller-owned output directory, when the test prepared one itself. */
+    readonly workDir?: string;
     readonly stop?: AbortSignal;
   } = {},
 ): Promise<ScanFixture> {
-  const workDir = await createTempDir();
+  const workDir = options.workDir ?? (await createTempDir());
   await writeReviewLedger(workDir);
   const output: string[] = [];
   const errors: string[] = [];
   const reviewerRuns: ReviewEvidence[] = [];
+  const histories: Array<ReviewerTurnRequest['history']> = [];
   const repository = options.repository ?? fakeRepository();
   const views = options.views ?? fakeViews();
   const items = options.items ?? [preparedFor()];
@@ -535,6 +546,7 @@ async function scanFixture(
     options.reviewer ??
     (async (request) => {
       reviewerRuns.push(request.evidence);
+      histories.push(request.history);
       return {
         summary: 'approved',
         verdict: APPROVE,
@@ -547,6 +559,7 @@ async function scanFixture(
     queue,
     repository: repository.repository,
     reviewer,
+    ...(options.history === undefined ? {} : { history: options.history }),
     views: views.source,
     workDir,
     sourceRoot: canonicalPath(path.dirname(workDir)),
@@ -561,7 +574,7 @@ async function scanFixture(
     now: () => new Date('2026-09-19T12:00:00.000Z'),
     sleep: async () => undefined,
   };
-  return { context, output, errors, workDir, reviewerRuns, views };
+  return { context, output, errors, workDir, reviewerRuns, histories, views };
 }
 
 /** The one review directory a scan left, when it left one. */
@@ -768,6 +781,249 @@ describe('one review scan', () => {
     expect(fixture.reviewerRuns).toEqual([]);
     expect(repository.calls.publishedReviews).toEqual([]);
     expect(repository.calls.publishedChecks).toEqual([]);
+  });
+
+  it('carries the ticket conversation into the reviewer turn, whole, without a connector call', async () => {
+    const workDir = await createTempDir();
+    await writeReviewLedger(workDir);
+    const longFinding = `A finding past the old per-comment budgets. ${'y'.repeat(4_000)}`;
+    const history = createTicketHistory({
+      workDir,
+      readers: {
+        jiraThread: async () => ({
+          comments: [
+            {
+              sourceId: '7001',
+              author: 'Jane Reviewer',
+              createdAt: '2026-09-19T10:00:00.000Z',
+              updatedAt: null,
+              text: 'Please keep the complete wording locally.',
+              url: null,
+            },
+          ],
+          truncated: false,
+        }),
+        pullRequestConversation: async () => null,
+      },
+      now: () => new Date('2026-09-19T12:00:00.000Z'),
+    });
+    await history.recordReviewerReport?.({
+      ref: refFor(),
+      workspaceId: WORKSPACE_ID,
+      task: taskFor(),
+      reviewId: 'review-previous',
+      round: 1,
+      head: BASE,
+      decision: 'request_changes',
+      summary: 'One finding.',
+      findings: [{ path: REVIEWED_FILE, line: 2, body: longFinding }],
+      now: new Date('2026-09-19T11:00:00.000Z'),
+    });
+    const repository = fakeRepository();
+    const fixture = await scanFixture({ repository, history, workDir });
+
+    const summary = await scanReviews(fixture.context);
+
+    expect(summary).toMatchObject({ reviewed: 1, attention: 0 });
+    const snapshot = fixture.histories[0];
+    expect(snapshot).toBeDefined();
+    expect(snapshot?.role).toBe('reviewer');
+    expect(snapshot?.indexPath).toBe(
+      path.join(
+        workspaceHistoryRoot(workDir, WORKSPACE_ID),
+        'snapshots',
+        snapshot?.id ?? '',
+        'index.md',
+      ),
+    );
+    expect(snapshot?.brief.unresolved?.findings[0]?.body).toBe(longFinding);
+    const prompt = reviewPrompt(
+      evidenceFor(),
+      { path: '/evidence/repo', head: HEAD, base: BASE },
+      '/evidence',
+      snapshot,
+    );
+    expect(prompt).toContain(snapshot?.indexPath ?? '');
+    expect(prompt).toContain(longFinding);
+    // The complete reviewer report was saved before the native rendering, and
+    // the rendering names it so a later synchronization does not duplicate it.
+    const reports = await readdir(
+      path.join(workspaceHistoryRoot(workDir, WORKSPACE_ID), 'reports'),
+    );
+    expect(reports.some((name) => name.startsWith('reviewer-') && name.endsWith('.json'))).toBe(
+      true,
+    );
+    expect(repository.calls.publishedReviews[0]?.body).toContain('nexus-history: reviewer review-');
+    // The scan's own record names the snapshot the turn was given.
+    const reviewDir = (await reviewDirectories(workDir))[0] ?? '';
+    const record = JSON.parse(
+      await readFile(path.join(workDir, 'reviews', reviewDir, 'review.json'), 'utf8'),
+    ) as { history?: string | null };
+    expect(record.history).toBe(snapshot?.dir);
+  });
+
+  it('leaves the ticket for attention, and starts no turn, when the conversation cannot be prepared', async () => {
+    const history: TicketHistory = {
+      prepare: async () => {
+        throw new Error('the history directory could not be written beside the workspace');
+      },
+    };
+    const repository = fakeRepository();
+    const fixture = await scanFixture({ repository, history });
+
+    const summary = await scanReviews(fixture.context);
+
+    expect(summary).toMatchObject({ attention: 1, reviewed: 0, reviewerRuns: 0 });
+    expect(fixture.errors.join('\n')).toContain('local conversation history could not be prepared');
+    expect(fixture.reviewerRuns).toEqual([]);
+    expect(repository.calls.publishedReviews).toEqual([]);
+  });
+
+  it('retains an inconclusive reviewer report even though it publishes no review', async () => {
+    const workDir = await createTempDir();
+    const history = createTicketHistory({
+      workDir,
+      readers: {
+        jiraThread: async () => ({ comments: [], truncated: false }),
+        pullRequestConversation: async () => null,
+      },
+    });
+    const body = 'Unable to assess the change. ' + 'Full evidence\n'.repeat(800);
+    const repository = fakeRepository();
+    const fixture = await scanFixture({
+      repository,
+      workDir,
+      history,
+      reviewer: async (request) => ({
+        summary: body,
+        verdict: { decision: 'inconclusive', summary: body, findings: [] },
+        problem: null,
+        logPath: path.join(request.dir, 'reviewer.log'),
+      }),
+    });
+    await scanReviews(fixture.context);
+    expect(repository.calls.publishedReviews).toHaveLength(0);
+    const root = workspaceHistoryRoot(workDir, WORKSPACE_ID);
+    const files = await readdir(path.join(root, 'reports'));
+    const report = files.find((file) => file.endsWith('.md'));
+    expect(report).toBeDefined();
+    expect(await readFile(path.join(root, 'reports', report ?? ''), 'utf8')).toContain(body.trim());
+  });
+
+  it('saves the complete reviewer report before the native review that renders it', async () => {
+    const workDir = await createTempDir();
+    await writeReviewLedger(workDir);
+    const events: string[] = [];
+    const real = createTicketHistory({
+      workDir,
+      readers: {
+        jiraThread: async () => ({ comments: [], truncated: false }),
+        pullRequestConversation: async () => null,
+      },
+      now: () => new Date('2026-09-19T12:00:00.000Z'),
+    });
+    const history: TicketHistory = {
+      prepare: real.prepare,
+      recordReviewerReport: async (request) => {
+        events.push('record');
+        return await real.recordReviewerReport!(request);
+      },
+    };
+    const base = fakeRepository();
+    const repository = {
+      repository: {
+        ...base.repository,
+        publishReview: async (
+          request: Parameters<ReviewRepository['publishReview']>[0],
+          stop: AbortSignal,
+        ) => {
+          events.push('publish');
+          return await base.repository.publishReview(request, stop);
+        },
+      } satisfies ReviewRepository,
+      calls: base.calls,
+    };
+    const findingBody = `The complete finding, longer than an ordinary comment budget. ${'z'.repeat(3_000)}`;
+    const fixture = await scanFixture({
+      repository,
+      history,
+      workDir,
+      reviewer: async (request) => ({
+        summary: 'changes requested',
+        verdict: {
+          decision: 'request_changes',
+          summary: 'One blocking finding.',
+          findings: [{ path: REVIEWED_FILE, line: 2, body: findingBody }],
+        },
+        problem: null,
+        logPath: path.join(request.dir, 'reviewer.log'),
+      }),
+    });
+
+    const summary = await scanReviews(fixture.context);
+
+    expect(summary).toMatchObject({ reviewed: 1, changesRequested: 1 });
+    expect(events).toEqual(['record', 'publish']);
+    const reports = await readdir(
+      path.join(workspaceHistoryRoot(workDir, WORKSPACE_ID), 'reports'),
+    );
+    const completeName = reports.find(
+      (name) => name.startsWith('reviewer-') && name.endsWith('.md'),
+    );
+    expect(completeName).toBeDefined();
+    const complete = await readFile(
+      path.join(workspaceHistoryRoot(workDir, WORKSPACE_ID), 'reports', completeName ?? ''),
+      'utf8',
+    );
+    expect(complete).toContain(findingBody);
+    // The native review that rendered it is recorded as the report's
+    // publication, with the body it published: a later synchronization
+    // authenticates the review by that identity, not by the marker wording.
+    const digestName = reports.find(
+      (name) =>
+        name.startsWith('reviewer-') && name.endsWith('.json') && !name.endsWith('.verdict.json'),
+    );
+    const digest = JSON.parse(
+      await readFile(
+        path.join(workspaceHistoryRoot(workDir, WORKSPACE_ID), 'reports', digestName ?? ''),
+        'utf8',
+      ),
+    ) as {
+      readonly published: {
+        readonly id: number;
+        readonly url: string;
+        readonly bodySha256: string | null;
+      } | null;
+    };
+    expect(digest.published?.id).toBe(5256006204);
+    expect(digest.published?.url).toContain('#review');
+    expect(digest.published?.bodySha256).toBe(
+      textSha256(repository.calls.publishedReviews[0]?.body ?? ''),
+    );
+  });
+
+  it('reviews a ticket description too large for the prompt when the history carries it whole', async () => {
+    const workDir = await createTempDir();
+    await writeReviewLedger(workDir);
+    const history = createTicketHistory({
+      workDir,
+      readers: {
+        jiraThread: async () => ({ comments: [], truncated: false }),
+        pullRequestConversation: async () => null,
+      },
+      now: () => new Date('2026-09-19T12:00:00.000Z'),
+    });
+    const repository = fakeRepository();
+    const fixture = await scanFixture({ repository, history, workDir });
+    fixture.context.queue.prepare = async () => ({
+      ...preparedFor(),
+      task: { ...taskFor(), description: 'x'.repeat(8_001) },
+    });
+
+    const summary = await scanReviews(fixture.context);
+
+    expect(summary).toMatchObject({ reviewed: 1, attention: 0 });
+    expect(fixture.histories[0]?.brief.task.description).toHaveLength(8_001);
   });
 
   it('publishes nothing when the reviewer changed its repository view', async () => {

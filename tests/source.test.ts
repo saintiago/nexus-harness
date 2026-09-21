@@ -43,6 +43,9 @@ import { EXIT_CANCELLED, EXIT_INPUT_ERROR, EXIT_OK } from '../src/cli/context.js
 import type { CliContext, InterruptSignals } from '../src/cli/context.js';
 import type { Delivery, DeliveryRequest } from '../src/delivery/github.js';
 import { DeliveryError } from '../src/delivery/github.js';
+import type { TicketHistory } from '../src/history/contract.js';
+import { createTicketHistory } from '../src/history/sync.js';
+import { workspaceHistoryRoot } from '../src/history/paths.js';
 import { summarizeChanges } from '../src/reporting/changes.js';
 import { ReportError } from '../src/reporting/errors.js';
 import type { RunTaskResult } from '../src/runs/contracts.js';
@@ -103,6 +106,7 @@ import {
   documentedConfig,
   documentedHarnessConfig,
   fakeConsole,
+  publishedComment,
   screenAfter,
   writeJsonFile,
 } from './support.js';
@@ -309,6 +313,8 @@ interface FixtureOptions {
       readonly problem: string | null;
     }>;
   };
+  /** The ticket conversation history the coordinator records reports through. */
+  readonly history?: TicketHistory;
 }
 
 interface Fixture {
@@ -384,12 +390,14 @@ function createFixture(options: FixtureOptions): Fixture {
       log.push(`progress:${item.ref.key}:${outcome.status}`);
       progresses.push({ key: item.ref.key, outcome });
       await options.progress?.(item, outcome, progressCount);
+      return publishedComment();
     },
     complete: async (item, outcome) => {
       completeCount += 1;
       log.push(`complete:${item.ref.key}:${outcome.status}`);
       completions.push({ key: item.ref.key, outcome });
       await options.complete?.(item, outcome, completeCount);
+      return publishedComment();
     },
     recordWorkspace: async (item, workspaceId) => {
       log.push(`workspace:${item.ref.key}:${workspaceId}`);
@@ -425,6 +433,7 @@ function createFixture(options: FixtureOptions): Fixture {
     repoPath: '/repo',
     io: { out: (text) => output.push(text), err: (text) => errors.push(text) },
     stop: stop.signal,
+    ...(options.history === undefined ? {} : { history: options.history }),
     ...(options.delivery === undefined ? {} : { delivery: options.delivery }),
     ...(options.completion === undefined
       ? {}
@@ -500,6 +509,120 @@ function createFixture(options: FixtureOptions): Fixture {
 // ---------------------------------------------------------------------------
 
 describe.skip('review-to-completion coordination', () => {
+  it('saves the complete developer report before the outcome is published', async () => {
+    const workDir = await createTempDir();
+    const events: string[] = [];
+    const history: TicketHistory = {
+      prepare: async () => {
+        throw new Error('the coordinator does not prepare snapshots itself');
+      },
+      recordDeveloperReport: async (request) => {
+        events.push(`record:${request.runId}`);
+        return { file: '', completeFile: null, round: request.round };
+      },
+    };
+    const fixture = createFixture({
+      workDir,
+      history,
+      complete: () => {
+        events.push('publish');
+      },
+      run: async (_task, _call, runDir) =>
+        resultFor(
+          runDir,
+          'passed',
+          'every configured check exited 0',
+          null,
+          preparedWorkspaceFor(runDir),
+        ),
+    });
+
+    const summary = await runSource(fixture.context, null);
+
+    expect(summary.passed).toBe(1);
+    expect(events).toEqual(['record:run-1', 'publish']);
+  });
+
+  it('records the delivered revision and the published comment of each developer report', async () => {
+    const workDir = await createTempDir();
+    const delivered = 'c'.repeat(40);
+    const history = createTicketHistory({
+      workDir,
+      readers: {
+        jiraThread: async () => ({ comments: [], truncated: false }),
+        pullRequestConversation: async () => null,
+      },
+      now: () => new Date('2026-09-21T10:00:00.000Z'),
+    });
+    const fixture = createFixture({
+      workDir,
+      history,
+      delivery: {
+        deliver: async () => ({
+          url: 'https://github.com/example-owner/example-repo/pull/9',
+          number: 9,
+          head: delivered,
+          created: true,
+        }),
+      },
+      run: async (_task, _call, runDir) =>
+        resultFor(
+          runDir,
+          'passed',
+          'every configured check exited 0',
+          null,
+          preparedWorkspaceFor(runDir),
+        ),
+    });
+
+    const summary = await runSource(fixture.context, null);
+
+    expect(summary.passed).toBe(1);
+    // The run's own report is saved before the comment rendering it, and it
+    // names the commit this attempt delivered — not just the pull request.
+    const root = workspaceHistoryRoot(workDir, 'run-1');
+    const digest = JSON.parse(
+      await readFile(path.join(root, 'reports', 'developer-run-1.json'), 'utf8'),
+    ) as {
+      readonly pullRequest: { readonly number: number | null; readonly head: string | null } | null;
+      readonly published: { readonly commentId: string; readonly textSha256: string } | null;
+    };
+    expect(digest.pullRequest).toEqual({
+      number: 9,
+      url: 'https://github.com/example-owner/example-repo/pull/9',
+      title: null,
+      branch: 'harness/run-1',
+      baseBranch: null,
+      head: delivered,
+      observedAt: expect.any(String) as unknown as string,
+      round: 1,
+      entryId: null,
+    });
+    // The acknowledged comment is recorded as this report's publication, which
+    // is what a later synchronization authenticates its rendering by.
+    expect(digest.published?.commentId).toBe('comment-1');
+    expect(digest.published?.textSha256).toMatch(/^[0-9a-f]{64}$/);
+
+    const candidate = candidateFor('1');
+    const snapshot = await history.prepare({
+      ref: candidate.ref,
+      task: taskFor(candidate),
+      workspace: {
+        workspaceId: 'run-1',
+        workspacePath: path.join(workDir, 'workspaces', 'run-1'),
+        branch: 'harness/run-1',
+        baseCommit: 'base-commit',
+      },
+      role: 'developer',
+      round: 2,
+      stop: new AbortController().signal,
+    });
+    const report = snapshot.entries.find((entry) => entry.kind === 'developer-report');
+    expect(report?.commit).toBe(delivered);
+    expect(snapshot.brief.latestDelivery?.head).toBe(delivered);
+    expect(await readFile(snapshot.indexPath, 'utf8')).toContain(`commit ${delivered}`);
+  });
+
   it('runs one completion pass after the batch and reports its counts', async () => {
     const workDir = await createTempDir();
     const fixture = createFixture({
@@ -812,7 +935,7 @@ describe.skip('a finite source run', () => {
     const originalComplete = fixture.context.source.complete;
     fixture.context.source.complete = async (item, outcome, signal) => {
       feedbackSignals.push(signal);
-      await originalComplete(item, outcome, signal);
+      return await originalComplete(item, outcome, signal);
     };
 
     const summary = await runSource(fixture.context, null);
@@ -972,7 +1095,12 @@ describe.skip('delivering a passed attempt', () => {
       delivery: {
         deliver: async (request) => {
           requests.push(request);
-          return { url: 'https://github.com/example-owner/example-repo/pull/7', created: true };
+          return {
+            url: 'https://github.com/example-owner/example-repo/pull/7',
+            number: 7,
+            head: 'b'.repeat(40),
+            created: true,
+          };
         },
       },
     });
@@ -995,6 +1123,8 @@ describe.skip('delivering a passed attempt', () => {
     expect(fixture.completions).toHaveLength(1);
     expect(fixture.completions[0]?.outcome.pullRequest).toEqual({
       url: 'https://github.com/example-owner/example-repo/pull/7',
+      number: 7,
+      head: 'b'.repeat(40),
       created: true,
     });
     expect(fixture.log).toContain('complete:SAM1-1:passed');
@@ -3734,7 +3864,7 @@ describe.skip('the source commands through the CLI', { timeout: 20_000 }, () => 
       expect(workspaceId).toBe(jira.issues[0]?.key);
       expect(
         (await readdir(path.join(target.workDir, 'workspaces'))).filter(
-          (name) => !name.endsWith('.json'),
+          (name) => !name.endsWith('.json') && !name.endsWith('.history'),
         ),
       ).toEqual([workspaceId]);
       const ledgerPath = path.join(target.workDir, 'workspaces', `${workspaceId}.json`);
@@ -3796,7 +3926,7 @@ describe.skip('the source commands through the CLI', { timeout: 20_000 }, () => 
       ).toEqual([`harness-ws-${workspaceId}`]);
       expect(
         (await readdir(path.join(target.workDir, 'workspaces'))).filter(
-          (name) => !name.endsWith('.json'),
+          (name) => !name.endsWith('.json') && !name.endsWith('.history'),
         ),
       ).toEqual([workspaceId]);
       const after = JSON.parse(await readFile(ledgerPath, 'utf8')) as { attempts?: unknown[] };
@@ -3953,7 +4083,7 @@ describe.skip('the source commands through the CLI', { timeout: 20_000 }, () => 
       const workspacePath = path.join(target.workDir, 'workspaces', 'SAM1-23');
       expect(
         (await readdir(path.join(target.workDir, 'workspaces'))).filter(
-          (name) => !name.endsWith('.json'),
+          (name) => !name.endsWith('.json') && !name.endsWith('.history'),
         ),
       ).toEqual(['SAM1-23']);
       // The attempt's own evidence keeps its generated run id, beside the
@@ -4060,7 +4190,7 @@ describe.skip('the source commands through the CLI', { timeout: 20_000 }, () => 
       // nothing, and nothing was renamed to it.
       expect(
         (await readdir(path.join(target.workDir, 'workspaces'))).filter(
-          (name) => !name.endsWith('.json'),
+          (name) => !name.endsWith('.json') && !name.endsWith('.history'),
         ),
       ).toEqual(['SAM1-11']);
       expect(existsSync(path.join(target.workDir, 'workspaces', 'SAM1-99'))).toBe(false);
@@ -4149,7 +4279,7 @@ describe.skip('the source commands through the CLI', { timeout: 20_000 }, () => 
       // was created for the ticket key, and nothing was migrated or renamed.
       expect(
         (await readdir(path.join(target.workDir, 'workspaces'))).filter(
-          (name) => !name.endsWith('.json'),
+          (name) => !name.endsWith('.json') && !name.endsWith('.history'),
         ),
       ).toEqual([legacyId]);
       expect(existsSync(path.join(target.workDir, 'workspaces', 'SAM1-11'))).toBe(false);
@@ -4585,7 +4715,7 @@ describe.skip('the source commands through the CLI', { timeout: 20_000 }, () => 
       // continuation adds no directory of its own beside the clone it reopened.
       expect(
         (await readdir(path.join(target.workDir, 'workspaces'))).filter(
-          (name) => !name.endsWith('.json'),
+          (name) => !name.endsWith('.json') && !name.endsWith('.history'),
         ),
       ).toEqual(['SAM1-11']);
       // The pointer label records the workspace the reports name, and every turn

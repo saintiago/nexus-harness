@@ -40,7 +40,8 @@
  * executable, or a flag.
  */
 import { runLogPath } from '../reporting/logs.js';
-import { writeSourceTaskSnapshot } from '../reporting/report.js';
+import { runReportPath, writeSourceTaskSnapshot } from '../reporting/report.js';
+import type { HistorySnapshot } from '../history/contract.js';
 import { messageOf } from '../shared/errors.js';
 import type {
   AttemptEvidence,
@@ -61,7 +62,7 @@ import type {
   RunTaskResult,
   RunnerDependencies,
 } from './contracts.js';
-import { RunCancelledError, RunTimeoutError } from './contracts.js';
+import { BASELINE_GUIDANCE_PREFIX, RunCancelledError, RunTimeoutError } from './contracts.js';
 import { failedCommands } from './feedback.js';
 import { createRunFinalizer } from './finalize.js';
 import {
@@ -769,6 +770,43 @@ export async function runTask(
     // observe a working copy nothing else is writing to. The turn is also given
     // the run's own remaining time as a stop request, so work that would run
     // past the deadline is asked to stop rather than left to.
+    const stop = phaseStop(left, callerStop);
+    // The ticket's own conversation history, prepared before every coding turn:
+    // one identified local snapshot of the requirements, the Jira thread, the
+    // pull request conversation, and the harness's own reports. A snapshot that
+    // cannot be prepared stops the turn before it starts — a turn is not handed
+    // a promised local history that does not exist — and the failure names the
+    // ticket and the reason in the run's own report.
+    let turnHistory: HistorySnapshot | undefined;
+    if (request.history !== undefined && request.sourceRef !== undefined) {
+      try {
+        turnHistory = await request.history.prepare({
+          ref: request.sourceRef,
+          task,
+          workspace: {
+            workspaceId: workspace.workspaceId,
+            workspacePath: workspace.workspacePath,
+            branch: workspace.branch,
+            baseCommit: workspace.baseCommit,
+          },
+          role: 'developer',
+          round: workspace.attempt,
+          stop: stop.signal,
+        });
+      } catch (cause) {
+        stop.cancel();
+        return endRun({
+          status: 'failed',
+          reason:
+            `the ticket's local conversation history could not be prepared, so ` +
+            `${describeTurn(kind, turn)} was not started: ${oneLine(messageOf(cause))}`,
+          baseline,
+          attempts,
+          timeout: null,
+          cancellation: null,
+        });
+      }
+    }
     await dependencies.appendRunLog(
       timeline,
       kind === 'implementation'
@@ -776,20 +814,27 @@ export async function runTask(
         : `${nameTurn(kind, turn)} started: repair ${String(turn - 1)} of ${String(config.maxRepairs)} allowed`,
     );
     const agentLog = await dependencies.openAgentLog(run.logsDir, turn);
-    const stop = phaseStop(left, callerStop);
+    // Intake's ordinary excerpts predate this snapshot and may now be edited
+    // or already consumed. Conversation context comes only from the refreshed
+    // history; keep the separately validated baseline repair requirement.
+    const guidance =
+      turnHistory === undefined
+        ? request.guidance
+        : request.guidance?.filter((line) => line.startsWith(BASELINE_GUIDANCE_PREFIX));
     let completed: AgentTurnResult | null = null;
     let turnProblem: string | null = null;
     try {
       completed = await dependencies.runAgentTurn({
         kind,
         turn,
-        task,
+        task: turnHistory?.brief.task ?? task,
         workspacePath,
         sourceRoot: workspace.sourceRoot,
         baseCommit: workspace.baseCommit,
         agentLog,
         repair,
-        ...(request.guidance === undefined ? {} : { guidance: request.guidance }),
+        ...(guidance === undefined ? {} : { guidance }),
+        ...(turnHistory === undefined ? {} : { history: turnHistory }),
         stop: stop.signal,
       });
     } catch (cause) {
@@ -802,6 +847,49 @@ export async function runTask(
     // The log is closed either way: a turn that failed keeps whatever it wrote
     // before the failure, and a log that cannot be flushed is a reporting failure.
     await agentLog.close();
+    let reportProblem = '';
+    if (request.sourceRef !== undefined && request.history?.recordDeveloperReport !== undefined) {
+      const recordedAttempts = [
+        ...attempts,
+        {
+          turn,
+          kind,
+          agentLog: agentLog.path,
+          agentSummary: completed?.summary ?? null,
+          checks: null,
+        },
+      ];
+      try {
+        await request.history.recordDeveloperReport({
+          ref: turnHistory?.brief.ref ?? request.sourceRef,
+          workspaceId: workspace.workspaceId,
+          task: turnHistory?.brief.task ?? task,
+          round: workspace.attempt,
+          runId: run.runId,
+          reportPath: runReportPath(run.runDir),
+          status: 'in-progress',
+          reason: 'Coding turn reports retained; this run has not finished its checks or delivery.',
+          repairsUsed: turn - 1,
+          attempts: recordedAttempts.map((attempt) => ({
+            turn: attempt.turn,
+            kind: attempt.kind,
+            agentSummary: attempt.agentSummary,
+            checks: attempt.checks?.outcome ?? null,
+          })),
+          pullRequest: null,
+          deliveryFailure: null,
+          now: dependencies.now(),
+        });
+      } catch (cause) {
+        // Finalize only after processing the runtime's stop evidence. A report
+        // write failure cannot make a possibly still-mutating workspace safe.
+        reportProblem = `; the complete developer turn report could not be retained: ${messageOf(cause)}`;
+      }
+    }
+    if (reportProblem === '' && completed?.summary != null && turnHistory !== undefined) {
+      // Failure to save a cursor only replays feedback; it must not lose a report.
+      await request.history?.consumed?.(turnHistory).catch(() => undefined);
+    }
     await dependencies.appendRunLog(
       timeline,
       completed === null
@@ -845,7 +933,8 @@ export async function runTask(
                 kind: 'timeout',
                 reason:
                   `${describeTurn(kind, turn)} was stopped when the run's remaining task time ran out, so no check was run after it and no further turn was started` +
-                  shutdownNote(shutdownProblem),
+                  shutdownNote(shutdownProblem) +
+                  reportProblem,
                 evidence: timedOut({
                   limit: 'task',
                   phase,
@@ -857,7 +946,8 @@ export async function runTask(
             : callerStopped(
                 phase,
                 `${describeTurn(kind, turn)} was stopped because the run was stopped by its caller, so no check was run after it and no further turn was started` +
-                  shutdownNote(shutdownProblem),
+                  shutdownNote(shutdownProblem) +
+                  reportProblem,
                 reported,
               ),
         baseline,
@@ -883,7 +973,8 @@ export async function runTask(
         cause: callerStopped(
           nameTurn(kind, turn),
           `${describeTurn(kind, turn)} returned, and the run was stopped by its caller before any check could run after it, so no check and no further turn was started` +
-            shutdownNote(shutdownProblem),
+            shutdownNote(shutdownProblem) +
+            reportProblem,
           shutdown === null ? undefined : shutdown,
         ),
         baseline,
@@ -909,7 +1000,8 @@ export async function runTask(
         status: 'failed',
         reason:
           `${describeTurn(kind, turn)} stopped the coding runtime it started and could not confirm that it had ended ` +
-          `(${oneLine(shutdownProblem)}), so no check was run on a working copy that may still be written to`,
+          `(${oneLine(shutdownProblem)}), so no check was run on a working copy that may still be written to` +
+          reportProblem,
         baseline,
         attempts,
         timeout: null,
@@ -918,6 +1010,26 @@ export async function runTask(
           `the run ended without confirming that everything the coding runtime of ${describeTurn(kind, turn)} ` +
           `had started had stopped (${oneLine(shutdownProblem)}), so the working copy may still be written to ` +
           'and is not a final record of what this run left behind',
+      });
+    }
+
+    if (reportProblem !== '') {
+      return endRun({
+        status: 'failed',
+        reason: reportProblem.slice(2),
+        baseline,
+        attempts: [
+          ...attempts,
+          {
+            turn,
+            kind,
+            agentLog: agentLog.path,
+            agentSummary: completed?.summary ?? null,
+            checks: null,
+          },
+        ],
+        timeout: null,
+        cancellation: null,
       });
     }
 

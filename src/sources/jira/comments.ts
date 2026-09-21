@@ -11,6 +11,7 @@
 import type { JiraSourceConfig, SourceRef } from '../../shared/types.js';
 import { SourceFeedbackError } from '../contract.js';
 import type { SourceComment, SourceRunOutcome, SourceTask } from '../contract.js';
+import type { PublishedComment } from '../contract.js';
 import { parseDescription } from './adf.js';
 import { buildCommentDocument, renderDescription } from './adf-text.js';
 import { diagnosticOf } from './http.js';
@@ -18,11 +19,101 @@ import type { HttpClient } from './http.js';
 import { malformed, readIssue, sameName } from './issue.js';
 import type { JiraIssue } from './issue.js';
 import { isRecord, nested, stringField } from './json.js';
+import { developerHistoryMarker } from '../../history/marker.js';
 import { postTransition, readTransitions, selectTransition } from './transitions.js';
 
 /** How many comments one request may return, and how many pages are followed. */
 const COMMENT_PAGE_SIZE = 100;
-const COMMENT_PAGE_LIMIT = 10;
+/**
+ * How many pages the history read follows. It is higher than the guidance
+ * read's bound because the history is the complete local record, and a page
+ * limit that is reached is reported rather than presented as the whole thread.
+ */
+const THREAD_PAGE_LIMIT = 50;
+
+/** One comment of the issue's own thread, with the identity a later read matches. */
+export interface JiraThreadComment {
+  readonly id: string;
+  readonly author: string;
+  readonly createdAt: string;
+  /** When the comment was last edited; Jira reports the write time either way. */
+  readonly updatedAt: string | null;
+  readonly text: string;
+}
+
+/** One whole thread read: the comments, and whether more pages remained. */
+export interface JiraCommentThread {
+  readonly comments: readonly JiraThreadComment[];
+  readonly truncated: boolean;
+}
+
+/**
+ * Every comment of one issue's thread, oldest first, whole and with its own
+ * identity. Pagination follows `startAt`/`total` as the connector always has,
+ * and a page limit that is reached is reported by `truncated`: a partial thread
+ * is never handed back as if it were the whole conversation.
+ */
+export async function readCommentThread(
+  http: HttpClient,
+  token: string,
+  id: string,
+  key: string,
+  stop: AbortSignal,
+): Promise<JiraCommentThread> {
+  const comments: JiraThreadComment[] = [];
+  let startAt = 0;
+  let truncated = false;
+
+  for (let page = 0; page < THREAD_PAGE_LIMIT; page += 1) {
+    const answer = await http.request({
+      method: 'GET',
+      path:
+        `/rest/api/3/issue/${encodeURIComponent(id)}/comment` +
+        `?startAt=${String(startAt)}&maxResults=${String(COMMENT_PAGE_SIZE)}`,
+      signal: stop,
+    });
+    if (!isRecord(answer) || !Array.isArray(answer['comments'])) {
+      throw malformed(`the comments of issue ${id}`, 'no comments array');
+    }
+    const raw = answer['comments'];
+    for (const value of raw) {
+      if (!isRecord(value)) {
+        throw malformed(`the comments of issue ${id}`, 'a comment is not an object');
+      }
+      const commentId = stringField(value, 'id');
+      if (commentId === null) {
+        throw malformed(`the comments of issue ${id}`, 'a comment carries no id');
+      }
+      const created = stringField(value, 'created');
+      if (created === null) {
+        throw malformed(
+          `the comments of issue ${id}`,
+          `comment ${commentId} carries no created instant`,
+        );
+      }
+      const author = nested(value, 'author');
+      const updated = stringField(value, 'updated');
+      comments.push({
+        id: commentId,
+        author: (author === null ? null : stringField(author, 'displayName')) ?? 'unknown',
+        createdAt: created,
+        updatedAt: updated !== null && updated !== created ? updated : null,
+        text: renderCommentBody(value['body'], key, token),
+      });
+    }
+    const total = typeof answer['total'] === 'number' ? answer['total'] : startAt + raw.length;
+    startAt += raw.length;
+    if (raw.length === 0 || startAt >= total) {
+      truncated = startAt < total;
+      break;
+    }
+    if (page === THREAD_PAGE_LIMIT - 1) {
+      truncated = true;
+    }
+  }
+
+  return { comments, truncated };
+}
 /** One comment, posted as ordinary ADF paragraphs. */
 async function postComment(
   http: HttpClient,
@@ -92,6 +183,8 @@ function commentParagraphs(
     `Repairs used: ${String(outcome.repairsUsed)}`,
     `Local artifacts on the machine that ran this harness (local paths, not Jira attachments): ` +
       `run directory ${oneLine(outcome.runDir)}; report ${oneLine(outcome.reportPath)}`,
+    `Harness record: ${developerHistoryMarker(outcome.runId)} — the complete developer report is ` +
+      'kept beside the ticket’s retained workspace, before this comment was published.',
     closingParagraph(pullRequest?.url, deliveryFailure, climbs, outcome.completionEnabled === true),
   ];
 }
@@ -216,14 +309,10 @@ async function resultComment(
   outcome: SourceRunOutcome,
   climbs: boolean,
   stop: AbortSignal,
-): Promise<string> {
-  return await publishComment(
-    http,
-    token,
-    item,
-    commentParagraphs(item.ref, outcome, climbs),
-    stop,
-  );
+): Promise<PublishedComment> {
+  const paragraphs = commentParagraphs(item.ref, outcome, climbs);
+  const commentId = await publishComment(http, token, item, paragraphs, stop);
+  return { commentId, text: paragraphs.join('\n') };
 }
 
 /**
@@ -238,8 +327,8 @@ export async function progressItem(
   item: SourceTask,
   outcome: SourceRunOutcome,
   stop: AbortSignal,
-): Promise<void> {
-  await resultComment(http, token, item, outcome, true, stop);
+): Promise<PublishedComment> {
+  return await resultComment(http, token, item, outcome, true, stop);
 }
 
 /**
@@ -255,8 +344,9 @@ export async function completeItem(
   item: SourceTask,
   outcome: SourceRunOutcome,
   stop: AbortSignal,
-): Promise<void> {
-  const commentId = await resultComment(http, token, item, outcome, false, stop);
+): Promise<PublishedComment> {
+  const published = await resultComment(http, token, item, outcome, false, stop);
+  const commentId = published.commentId;
 
   // The result was published; the status change happens only while the issue is
   // still in the running status, so a later human decision stands.
@@ -272,7 +362,7 @@ export async function completeItem(
     );
   }
   if (current === null || !sameName(current.fields.status, config.runningStatus)) {
-    return;
+    return published;
   }
 
   try {
@@ -290,6 +380,7 @@ export async function completeItem(
       commentId,
     );
   }
+  return published;
 }
 
 /**
@@ -428,42 +519,14 @@ export async function commentsSince(
   stop: AbortSignal,
 ): Promise<readonly SourceComment[]> {
   const moment = Date.parse(since);
+  const thread = await readCommentThread(http, token, item.ref.id, item.ref.key, stop);
   const comments: SourceComment[] = [];
-  let startAt = 0;
-
-  for (let page = 0; page < COMMENT_PAGE_LIMIT; page += 1) {
-    const answer = await http.request({
-      method: 'GET',
-      path:
-        `/rest/api/3/issue/${encodeURIComponent(item.ref.id)}/comment` +
-        `?startAt=${String(startAt)}&maxResults=${String(COMMENT_PAGE_SIZE)}`,
-      signal: stop,
-    });
-    if (!isRecord(answer) || !Array.isArray(answer['comments'])) {
-      throw malformed(`the comments of issue ${item.ref.id}`, 'no comments array');
+  for (const comment of thread.comments) {
+    const created = comment.createdAt;
+    if (Date.parse(created) <= moment) {
+      continue;
     }
-    for (const raw of answer['comments']) {
-      if (!isRecord(raw)) {
-        throw malformed(`the comments of issue ${item.ref.id}`, 'a comment is not an object');
-      }
-      const created = stringField(raw, 'created');
-      if (created === null || Date.parse(created) <= moment) {
-        continue;
-      }
-      const author = nested(raw, 'author');
-      comments.push({
-        author: (author === null ? null : stringField(author, 'displayName')) ?? 'unknown',
-        createdAt: created,
-        text: renderCommentBody(raw['body'], item.ref.key, token),
-      });
-    }
-
-    const total = typeof answer['total'] === 'number' ? answer['total'] : comments.length;
-    startAt += Array.isArray(answer['comments']) ? answer['comments'].length : 0;
-    if (startAt >= total) {
-      break;
-    }
+    comments.push({ author: comment.author, createdAt: created, text: comment.text });
   }
-
   return comments;
 }

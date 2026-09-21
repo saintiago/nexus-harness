@@ -50,7 +50,7 @@ import { takeOneItem } from '../src/sources/coordinator.js';
 import type { CompletionSource } from '../src/sources/jira/completion.js';
 import { acquireIntakeLock, intakeLockPath } from '../src/sources/receipts.js';
 import type { PreparedWorkspace } from '../src/workspace/prepare.js';
-import { cleanupTempDirectories, createTempDir } from './support.js';
+import { cleanupTempDirectories, createTempDir, publishedComment } from './support.js';
 
 afterEach(async () => {
   await cleanupTempDirectories();
@@ -89,7 +89,12 @@ function took(ticket: QueueTicket, status: RunStatus = 'passed'): SourceTake {
       reason: `the attempt ended ${status}`,
       pullRequest:
         status === 'passed'
-          ? { url: `https://github.com/o/r/pull/${ticket.ref.key}`, created: true }
+          ? {
+              url: `https://github.com/o/r/pull/${ticket.ref.key}`,
+              number: 1,
+              head: 'e'.repeat(40),
+              created: true,
+            }
           : null,
     },
     skipped: 0,
@@ -918,9 +923,11 @@ function takeFixture(options: TakeFixtureOptions): {
     },
     progress: async (item) => {
       calls.push(`progress:${item.ref.key}`);
+      return publishedComment();
     },
     complete: async (item) => {
       calls.push(`complete:${item.ref.key}`);
+      return publishedComment();
     },
     recordWorkspace: async (item, workspaceId) => {
       calls.push(`pointer:${item.ref.key}:${workspaceId}`);

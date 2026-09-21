@@ -248,7 +248,14 @@ describe.skip('the GitHub delivery step', () => {
       async () => await fixture.delivery.deliver(request, new AbortController().signal),
     );
 
-    expect(delivered).toEqual({ url: `https://github.com/${REPOSITORY}/pull/1`, created: true });
+    // The delivery reports the revision it published and verified, which is the
+    // working copy's own checked-out tip.
+    expect(delivered).toEqual({
+      url: `https://github.com/${REPOSITORY}/pull/1`,
+      number: 1,
+      head: git(fixture.workspace, 'rev-parse', 'HEAD').trim(),
+      created: true,
+    });
     // The destination holds the branch the workspace holds, at the same commit.
     expect(destinationCommit(fixture)).toBe(
       git(fixture.workspace, 'rev-parse', `refs/heads/${BRANCH}`).trim(),
@@ -308,7 +315,16 @@ describe.skip('the GitHub delivery step', () => {
         ),
     );
 
-    expect(second).toEqual({ url: first?.url, created: false });
+    // A later delivery to the same pull request reports its own, later
+    // revision: the commit each round delivered is not lost when the branch
+    // moves on.
+    expect(second).toEqual({
+      url: first?.url,
+      number: 1,
+      head: git(fixture.workspace, 'rev-parse', 'HEAD').trim(),
+      created: false,
+    });
+    expect(second?.head).not.toBe(first?.head);
     expect(destinationCommit(fixture)).toBe(
       git(fixture.workspace, 'rev-parse', `refs/heads/${BRANCH}`).trim(),
     );
@@ -382,6 +398,27 @@ describe.skip('the GitHub delivery step', () => {
     expect(git(fixture.workspace, 'status', '--porcelain').trim()).toBe('');
   });
 
+  it('refuses a missing recorded branch even when HEAD resolves successfully', async () => {
+    const fixture = await createFixture();
+    const head = git(fixture.workspace, 'rev-parse', 'HEAD').trim();
+    const failure = await withFakeGhOnPath(fixture.bin, async () =>
+      refusal(
+        async () =>
+          await fixture.delivery.deliver(
+            { ...requestFor(fixture), branch: 'harness/missing-branch' },
+            new AbortController().signal,
+          ),
+      ),
+    );
+
+    expect(failure).toBeInstanceOf(DeliveryError);
+    expect(failure.message).toContain('git rev-parse');
+    expect(destinationHasBranch(fixture)).toBe(false);
+    expect(await fakeGhCalls(fixture.gh)).toEqual([]);
+    expect(git(fixture.workspace, 'rev-parse', 'HEAD').trim()).toBe(head);
+    expect(git(fixture.workspace, 'status', '--porcelain').trim()).toBe('');
+  });
+
   it('delivers when the checkout is on another branch at the same revision', async () => {
     const fixture = await createFixture();
     const validated = git(fixture.workspace, 'rev-parse', 'HEAD').trim();
@@ -394,7 +431,12 @@ describe.skip('the GitHub delivery step', () => {
       async () => await fixture.delivery.deliver(requestFor(fixture), new AbortController().signal),
     );
 
-    expect(delivered).toEqual({ url: `https://github.com/${REPOSITORY}/pull/1`, created: true });
+    expect(delivered).toEqual({
+      url: `https://github.com/${REPOSITORY}/pull/1`,
+      number: 1,
+      head: validated,
+      created: true,
+    });
     expect(destinationCommit(fixture)).toBe(validated);
   });
 
@@ -477,7 +519,12 @@ describe.skip('the GitHub delivery step', () => {
     );
 
     const url = `https://github.com/${REPOSITORY}/pull/2`;
-    expect(delivered).toEqual({ url, created: false });
+    expect(delivered).toEqual({
+      url,
+      number: 2,
+      head: git(fixture.workspace, 'rev-parse', 'HEAD').trim(),
+      created: false,
+    });
     const calls = await fakeGhCalls(fixture.gh);
     expect(calls.map((call) => call.op)).toEqual(['list', 'edit']);
     expect(calls[1]?.url).toBe(url);
