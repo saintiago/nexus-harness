@@ -1460,6 +1460,11 @@ single non-interactive turn on this platform and needs no extra client library i
   own working directory, which the host's restricted-token sandbox enforces (probed on this host:
   a write outside that directory and the temporary directory was refused with `EPERM`), and the
   harness checks the snapshot and the retained working copy after the turn as well.
+  That turn's process also carries git's `safe.directory` declaration for the snapshot
+  (`GIT_CONFIG_*` in its environment), because a restricted sandbox on Windows runs its commands
+  under an identity that does not own the files, and git refuses a repository it does not own as
+  "dubious ownership" — without it the reviewer could not read the snapshot with ordinary git
+  commands at all. The harness's own Git calls are unaffected.
 - **Non-interactive by construction.** `--ask-for-approval never` is the adapter's own argument, so a
   run never waits for a human: a turn that would ask for an approval is refused instead of pausing,
   and the failure stops the run. On the installed CLI the approval option is accepted **before** the

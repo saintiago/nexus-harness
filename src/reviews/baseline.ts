@@ -580,6 +580,30 @@ export function createBaselineReviewer(parts: BaselineReviewerParts): BaselineRe
 }
 
 /**
+ * The environment the diagnostic turn runs in: what its caller provided, plus
+ * git's own declaration that the repository the harness cloned for it is one git
+ * may read.
+ *
+ * The runtime's sandbox is what makes the snapshot read-only, and on Windows it
+ * does that by running model-generated commands under a restricted identity that
+ * does not own the files: git then refuses such a repository outright as
+ * "dubious ownership" before reading anything, which would leave the reviewer
+ * unable to use the ordinary read tools this turn is built around. The
+ * declaration covers this turn's process only — the harness's own Git calls are
+ * unaffected — and it names the tree the harness itself created and pinned, in a
+ * turn that can write nowhere but its own working directory and the host's
+ * temporary directory.
+ */
+function diagnosticEnvironment(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return {
+    ...base,
+    GIT_CONFIG_COUNT: '1',
+    GIT_CONFIG_KEY_0: 'safe.directory',
+    GIT_CONFIG_VALUE_0: '*',
+  };
+}
+
+/**
  * One baseline reviewer invocation: the snapshot clone, its input, the launch,
  * and the finding it writes. The turn runs in the diagnostic's own evidence
  * directory with the supported repository-check bypass, so nothing inside the
@@ -727,7 +751,7 @@ async function baselineTurn(
         stop: request.stop,
         ...(parts.onActivity === undefined ? {} : { onActivity: parts.onActivity }),
       },
-      selectedCodexRuntime(parts.selection, { env: parts.environment }),
+      selectedCodexRuntime(parts.selection, { env: diagnosticEnvironment(parts.environment) }),
     );
     summary = turn.summary;
   } catch (cause) {

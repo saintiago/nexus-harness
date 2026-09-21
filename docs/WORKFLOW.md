@@ -1004,8 +1004,12 @@ The turn receives no coding instruction and changes nothing: it runs as `exec --
 workspace-write` with its own working directory (`turn/`) as the writable root, so the only file it
 can write is its `finding.json` there, and the harness checks after the turn that the clone is still
 the clean snapshot it was given and that the retained working copy is exactly what it was before the
-turn. `finding.json` is exactly one of two shapes — a repository-local repair, or why none may be
-made:
+turn. That turn's own environment also declares the snapshot a repository git may read (git's
+`safe.directory`, through the `GIT_CONFIG_*` variables): the runtime's sandbox runs the reviewer's
+commands under an identity that does not own the files on Windows, and git refuses such a repository
+as "dubious ownership" before reading anything, which would leave the reviewer unable to use the
+read tools this turn is built around. `finding.json` is exactly one of two shapes — a
+repository-local repair, or why none may be made:
 
 ```json
 {

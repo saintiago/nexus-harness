@@ -562,7 +562,12 @@ describe('the baseline reviewer turn', () => {
     const target = await createLocalTarget({ brokenBaseline: true });
     const { dir, baseline } = await evidenceFor();
     const base = git(target.repo, 'rev-parse', 'HEAD').trim();
-    const reviewer = reviewerFor(target, [{ finding: JSON.stringify(REPAIR_FINDING) }]);
+    const reviewer = reviewerFor(target, [
+      {
+        inspectEnvironment: ['GIT_CONFIG_KEY_0', 'GIT_CONFIG_VALUE_0'],
+        finding: JSON.stringify(REPAIR_FINDING),
+      },
+    ]);
 
     const result = await reviewer({
       dir,
@@ -589,6 +594,11 @@ describe('the baseline reviewer turn', () => {
     expect(argv[sandbox + 1]).toBe('workspace-write');
     expect(argv).not.toContain('danger-full-access');
     expect(turns[0]?.argv.at(-2)).toBe('--skip-git-repo-check');
+    // The turn's own environment tells git that the pinned snapshot is a
+    // repository it may read: the sandbox runs its commands under another
+    // identity on Windows, which git otherwise refuses outright.
+    expect(turns[0]?.environmentPresent['GIT_CONFIG_KEY_0']).toBe(true);
+    expect(turns[0]?.environmentPresent['GIT_CONFIG_VALUE_0']).toBe(true);
     expect(existsSync(path.join(dir, 'repo', '.git'))).toBe(true);
     expect(git(path.join(dir, 'repo'), 'rev-parse', 'HEAD').trim()).toBe(base);
     expect(git(target.repo, 'status', '--porcelain').trim()).toBe('');

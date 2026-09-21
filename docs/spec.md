@@ -359,7 +359,9 @@ or whose tracked files the configured commands changed, cannot be shown to be th
 check really ran against, and is refused as incomplete evidence instead of being diagnosed from a
 clone of the wrong tree. It writes one structured finding: either the failing check, the evidence,
 the likely cause and the repair a later coding turn can make, or why no repair may be made
-automatically.
+automatically. Its own environment carries git's declaration that the snapshot it was given is a
+repository git may read, because the sandbox runs the turn's commands under a different identity on
+Windows and git would otherwise refuse that repository outright.
 
 An actionable finding produces **one** concise Jira comment naming those four things, and the same
 ticket returns to the status it was claimed from with its workspace pointer and its original

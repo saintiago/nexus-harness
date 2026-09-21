@@ -41,7 +41,11 @@ the retained workspace: it runs as `exec --sandbox workspace-write` with its own
 (`turn/`) as the writable root, so the clone and the retained working copy are outside what the
 runtime lets it write, and the clone and the retained working copy are both checked after the turn:
 either one that changed produces no finding. An `EPERM` from the sandbox is the boundary working,
-not a failure of the turn.
+not a failure of the turn. The turn's own environment also declares the snapshot a repository git
+may read (git's `safe.directory` through the `GIT_CONFIG_*` variables): the sandbox runs its commands
+under an identity that does not own the files on Windows, and git refuses such a repository as
+"dubious ownership" before reading anything, which would otherwise leave the reviewer unable to use
+the ordinary git reads this turn is built around.
 
 **The snapshot has to be established first.** The recorded base commit is what the clone is pinned
 at, so the failure can only be attributed to that tree while the retained workspace still stands at
