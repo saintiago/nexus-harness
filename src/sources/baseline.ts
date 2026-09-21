@@ -200,11 +200,18 @@ const REPAIR_FIRST_GUIDANCE = 'repair the baseline before continuing the origina
  * what says which finding a continuation was returned with, and the comment is
  * accepted only when the two agree (docs/WORKFLOW.md §11).
  *
+ * `fields` are those four values in the order the comment writes them, one line
+ * each: what a caller holds against the finding the retained record validated,
+ * because the marker alone names the evidence, never the text (see
+ * {@link baselineThreadFinding}).
+ *
  * The labels are this harness's own, written by `diagnosisParagraphs` above.
  */
-export function baselineCommentFinding(
-  text: string,
-): { readonly evidenceId: string; readonly lines: readonly string[] } | null {
+export function baselineCommentFinding(text: string): {
+  readonly evidenceId: string;
+  readonly lines: readonly string[];
+  readonly fields: readonly string[];
+} | null {
   const marker = `${BASELINE_MARKER_PREFIX}repair:`;
   const at = text.indexOf(marker);
   if (at < 0) {
@@ -232,14 +239,55 @@ export function baselineCommentFinding(
     }
   }
   const fields: string[] = [];
+  const lines: string[] = [];
   for (const label of REPAIR_FIELD_LABELS) {
     const value = written.get(label);
     if (value === undefined) {
       return null;
     }
-    fields.push(findingGuidanceLine(label, oneLine(value)));
+    const field = oneLine(value);
+    fields.push(field);
+    lines.push(findingGuidanceLine(label, field));
   }
-  return { evidenceId, lines: [repairFirstGuidanceLine(), ...fields] };
+  return { evidenceId, lines: [repairFirstGuidanceLine(), ...lines], fields };
+}
+
+/**
+ * The reviewed finding one comment of the item's own thread supplies for one
+ * piece of evidence, or `null` when it is not that finding.
+ *
+ * The marker inside a comment names the evidence a comment claims to be about;
+ * it cannot vouch for the text around it — anyone who can edit the issue can
+ * change a field and keep the marker. So a comment is this workspace's reviewed
+ * outcome only as its whole self *and* only when every field of it is the one
+ * the retained record beside the workspace holds: the finding this harness
+ * validated and published for that evidence. A comment whose field was edited
+ * after the diagnosis wrote it is ordinary thread context, and the caller hands
+ * the complete recorded finding over instead (docs/WORKFLOW.md §11).
+ */
+export function baselineThreadFinding(
+  text: string,
+  evidenceId: string,
+  finding: BaselineFinding,
+): readonly string[] | null {
+  if (finding.outcome !== 'repair') {
+    return null;
+  }
+  const written = baselineCommentFinding(text);
+  if (written === null || written.evidenceId !== evidenceId) {
+    return null;
+  }
+  // The comment renders each field with `oneLine`, and reading it back applies
+  // that same rendering, so the two are the same string exactly while the
+  // comment still says what this finding says.
+  const expected = [
+    finding.failingCheck,
+    finding.evidence,
+    finding.likelyCause,
+    finding.repairGuidance,
+  ].map((value) => oneLine(value));
+  const matches = expected.every((value, index) => written.fields[index] === value);
+  return matches ? baselineFindingGuidanceLines(finding) : null;
 }
 
 /** The one line that says what comes first, in the shape of a finding field. */
@@ -1159,8 +1207,10 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
    * `none` means nothing was returned for repair and nothing has to be
    * recovered. `unreadable` means the workspace was returned for repair and
    * the finding kept under its evidence cannot supply it — gone, unusable, or
-   * not the actionable finding its own record closed as — so the item's own
-   * thread has to, and the identity says which comment that would be.
+   * not the actionable finding its own record closed as — so there is nothing
+   * to hold a comment of the item's own thread against either, and no attempt
+   * may start from one: a comment carrying the marker with an edited field
+   * would look exactly like the finding this harness published.
    * `problem` means the evidence itself cannot be read clearly enough to say
    * either, and that leaves the caller stopping rather than starting a
    * developer without the finding.
@@ -1236,7 +1286,6 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
     } catch (cause) {
       return {
         kind: 'unreadable',
-        evidenceId: newest.evidence.evidenceId,
         detail:
           `the reviewed baseline finding of workspace "${workspaceId}" is required — its evidence ` +
           `under "${newest.where}" says it was returned for repair — and cannot be read back: ` +
@@ -1250,7 +1299,6 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
       // started and a person reads the two records.
       return {
         kind: 'unreadable',
-        evidenceId: newest.evidence.evidenceId,
         detail:
           `the reviewed baseline finding of workspace "${workspaceId}" is required — its evidence ` +
           `under "${newest.where}" says it was returned for repair — but the finding kept beside ` +

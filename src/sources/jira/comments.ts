@@ -1,6 +1,7 @@
 /**
- * The issue's own thread and the two comments the harness posts: the compact
- * result comment, and the refusal that takes an item out of the queue.
+ * The issue's own thread and the comments the harness posts: the compact result
+ * comment, the refusal that takes an unclaimed item out of the queue, and the
+ * attention record for an item that was claimed and could not be started.
  *
  * A comment carries no transcript, diff, environment, or credential. A result
  * is published before the issue is moved, and an acknowledged comment is
@@ -164,6 +165,44 @@ function refusalParagraphs(ref: SourceRef, reason: string): readonly string[] {
 }
 
 /**
+ * What an attention record says: why the item the harness claimed was not
+ * started, and that a person decides what happens next. It never claims an
+ * attempt ran, and never describes the item as unclaimed: the harness did claim
+ * it, and then found something it will not start a developer without.
+ */
+function attentionParagraphs(ref: SourceRef, reason: string): readonly string[] {
+  return [
+    `Harness held ${ref.key} for attention: no coding turn was started.`,
+    `Reason: ${oneLine(reason)}`,
+    'The ticket had already been claimed for the workspace its pointer names, and no attempt was ' +
+      'published for it. The harness will not start a developer without what the claim was made ' +
+      'for; the issue was moved out of the queue so a later scan does not read it again and ' +
+      'again, and a person decides what happens next.',
+  ];
+}
+
+/**
+ * Posts one comment of plain paragraphs, as every publication path here does.
+ * A comment whose answer acknowledged no ID is never reported as delivered.
+ */
+async function publishComment(
+  http: HttpClient,
+  token: string,
+  item: SourceTask,
+  paragraphs: readonly string[],
+  stop: AbortSignal,
+): Promise<string> {
+  try {
+    return await postComment(http, item.ref.id, paragraphs, stop);
+  } catch (cause) {
+    if (cause instanceof SourceFeedbackError) {
+      throw cause;
+    }
+    throw new SourceFeedbackError('comment', diagnosticOf(cause, token));
+  }
+}
+
+/**
  * Posts one run's compact result comment, as the two publication paths below
  * send it: the ladder's intermediate attempt comments and its final result are
  * the same comment, and only the closing paragraph and the status move after it
@@ -178,14 +217,13 @@ async function resultComment(
   climbs: boolean,
   stop: AbortSignal,
 ): Promise<string> {
-  try {
-    return await postComment(http, item.ref.id, commentParagraphs(item.ref, outcome, climbs), stop);
-  } catch (cause) {
-    if (cause instanceof SourceFeedbackError) {
-      throw cause;
-    }
-    throw new SourceFeedbackError('comment', diagnosticOf(cause, token));
-  }
+  return await publishComment(
+    http,
+    token,
+    item,
+    commentParagraphs(item.ref, outcome, climbs),
+    stop,
+  );
 }
 
 /**
@@ -255,37 +293,30 @@ export async function completeItem(
 }
 
 /**
- * Publishes a refusal: one comment naming why the harness will not act on the
- * item, and the item taken out of the queue, so a later scan does not read it
- * again and again. Nothing was claimed and nothing ran. It moves only while the
- * issue is still in the queue it was found in — a later decision by anyone else
- * stands.
+ * Moves one issue to review while it is still in the queue the harness found it
+ * in — either the ready status or the running status it claimed it into — so a
+ * later scan does not read it again and again and a later decision by anyone
+ * else stands. The acknowledged comment is carried in any failure, so a comment
+ * that was posted is never lost. `what` names that comment in the failures, and
+ * `reason` is what the transition itself reports it is being sent for.
  */
-export async function refuseItem(
+async function takeOutOfQueue(
   config: JiraSourceConfig,
   http: HttpClient,
   token: string,
   item: SourceTask,
-  reason: string,
+  commentId: string,
   stop: AbortSignal,
+  what: string,
+  reason: string,
 ): Promise<void> {
-  let commentId: string;
-  try {
-    commentId = await postComment(http, item.ref.id, refusalParagraphs(item.ref, reason), stop);
-  } catch (cause) {
-    if (cause instanceof SourceFeedbackError) {
-      throw cause;
-    }
-    throw new SourceFeedbackError('comment', diagnosticOf(cause, token));
-  }
-
   let current: JiraIssue | null;
   try {
     current = await readIssue(http, item.ref.id, stop);
   } catch (cause) {
     throw new SourceFeedbackError(
       'transition',
-      `issue ${item.ref.key}: the refusal comment ${commentId} was posted, but the issue could ` +
+      `issue ${item.ref.key}: the ${what} comment ${commentId} was posted, but the issue could ` +
         `not be re-read to take it out of the queue (${diagnosticOf(cause, token)})`,
       commentId,
     );
@@ -304,17 +335,85 @@ export async function refuseItem(
     const chosen = selectTransition(
       await readTransitions(http, item.ref.id, stop),
       config.reviewStatus,
-      `issue ${item.ref.key}: taking it out of the queue after a refusal`,
+      `issue ${item.ref.key}: ${reason}`,
     );
     await postTransition(http, item.ref.id, chosen.id, stop);
   } catch (cause) {
     throw new SourceFeedbackError(
       'transition',
-      `issue ${item.ref.key}: the refusal comment ${commentId} was posted, but moving the issue ` +
+      `issue ${item.ref.key}: the ${what} comment ${commentId} was posted, but moving the issue ` +
         `to "${config.reviewStatus}" failed (${diagnosticOf(cause, token)})`,
       commentId,
     );
   }
+}
+
+/**
+ * Publishes a refusal: one comment naming why the harness will not act on the
+ * item, and the item taken out of the queue, so a later scan does not read it
+ * again and again. Nothing was claimed and nothing ran. It moves only while the
+ * issue is still in the queue it was found in — a later decision by anyone else
+ * stands.
+ */
+export async function refuseItem(
+  config: JiraSourceConfig,
+  http: HttpClient,
+  token: string,
+  item: SourceTask,
+  reason: string,
+  stop: AbortSignal,
+): Promise<void> {
+  const commentId = await publishComment(
+    http,
+    token,
+    item,
+    refusalParagraphs(item.ref, reason),
+    stop,
+  );
+  await takeOutOfQueue(
+    config,
+    http,
+    token,
+    item,
+    commentId,
+    stop,
+    'refusal',
+    'taking it out of the queue after a refusal',
+  );
+}
+
+/**
+ * Publishes one attention record: the comment naming why the claimed item was
+ * not started, and the item taken out of the running status so it is not left
+ * claimed with nothing looking for it. It moves only while the issue is still
+ * in the queue the harness found it in — a later decision by anyone else stands
+ * — and it touches neither the workspace pointer nor the acceptance criteria.
+ */
+export async function attentionItem(
+  config: JiraSourceConfig,
+  http: HttpClient,
+  token: string,
+  item: SourceTask,
+  reason: string,
+  stop: AbortSignal,
+): Promise<void> {
+  const commentId = await publishComment(
+    http,
+    token,
+    item,
+    attentionParagraphs(item.ref, reason),
+    stop,
+  );
+  await takeOutOfQueue(
+    config,
+    http,
+    token,
+    item,
+    commentId,
+    stop,
+    'attention',
+    'moving the claimed issue out of the running status after an attention stop',
+  );
 }
 
 /**

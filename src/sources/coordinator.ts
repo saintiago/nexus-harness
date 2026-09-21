@@ -26,6 +26,7 @@ import type { ContinuedWorkspace } from '../workspace/reopen.js';
 import { reopenWorkspace } from '../workspace/reopen.js';
 import { readWorkspaceState, sourceItemFor } from '../workspace/state.js';
 import type {
+  BaselineFinding,
   BaselineDiagnosisOutcome,
   BaselineReviewedFinding,
   BaselineResumeOutcome,
@@ -42,7 +43,7 @@ import type {
   QueueTicket,
 } from './contract.js';
 import { SourceError, SourceFeedbackError } from './contract.js';
-import { baselineCommentFinding, baselineFindingGuidanceLines, resumeStop } from './baseline.js';
+import { baselineFindingGuidanceLines, baselineThreadFinding, resumeStop } from './baseline.js';
 import { decideAttempt } from './eligibility.js';
 import { guidanceFrom } from './guidance.js';
 import {
@@ -692,9 +693,10 @@ async function resumeBaseline(
  * The finding one item's own thread carries for one piece of evidence, or
  * `null` when it carries none.
  *
- * Only a comment that says the whole finding and names the exact evidence this
- * workspace's retained record closed as a repair counts: a comment that is
- * partial, rewritten, or about some other evidence is not this workspace's
+ * Only a comment that says the whole finding, names the exact evidence this
+ * workspace's retained record closed as a repair, and carries every field of
+ * the finding that record holds counts: a comment that is partial, edited after
+ * the diagnosis wrote it, or about some other evidence is not this workspace's
  * reviewed outcome, and the complete finding the evidence kept beside the
  * workspace is handed over instead. A comment that carries no diagnosis marker
  * is the ordinary thread context it always was (docs/WORKFLOW.md §11).
@@ -702,11 +704,12 @@ async function resumeBaseline(
 function threadFinding(
   comments: readonly SourceComment[],
   evidenceId: string,
+  finding: BaselineFinding,
 ): readonly string[] | null {
   for (const comment of comments) {
-    const finding = baselineCommentFinding(comment.text);
-    if (finding !== null && finding.evidenceId === evidenceId) {
-      return finding.lines;
+    const lines = baselineThreadFinding(comment.text, evidenceId, finding);
+    if (lines !== null) {
+      return lines;
     }
   }
   return null;
@@ -714,17 +717,17 @@ function threadFinding(
 
 /**
  * The reviewed finding one retained workspace was returned for repair with,
- * read back from the evidence beside it and rendered as the very lines the
- * thread would have supplied. It is how a claim that continues such a workspace
- * is guaranteed the finding even when the item's own thread cannot supply it:
+ * read back from the evidence beside it. It is how a claim that continues such
+ * a workspace is guaranteed the finding even when the item's own thread cannot
+ * supply it:
  * `none` means nothing was returned for repair — an ordinary continuation —
  * while `problem` means the evidence cannot be read clearly enough to say
  * whether one is required, so no developer may start (docs/WORKFLOW.md §11). A
- * `finding` and an `unreadable` one both carry the identity of the evidence the
- * workspace was returned for repair with, so a comment on the item's own thread
- * can be held against it before that comment is treated as the same reviewed
- * outcome — and `unreadable` says the finding file itself cannot supply it, so
- * the thread is the only source left.
+ * `finding` carries the identity of the evidence the workspace was returned for
+ * repair with and the validated finding itself, so a comment on the item's own
+ * thread is held against both before it is treated as the same reviewed
+ * outcome; `unreadable` says the retained record cannot supply that finding at
+ * all, so no comment can be held against it and nothing may start.
  */
 async function reviewedBaselineGuidance(
   context: SourceContext,
@@ -735,9 +738,9 @@ async function reviewedBaselineGuidance(
   | {
       readonly kind: 'finding';
       readonly evidenceId: string;
-      readonly lines: readonly string[];
+      readonly finding: BaselineFinding;
     }
-  | { readonly kind: 'unreadable'; readonly evidenceId: string; readonly detail: string }
+  | { readonly kind: 'unreadable'; readonly detail: string }
   | { readonly kind: 'problem'; readonly detail: string }
 > {
   const diagnosis = context.baselineDiagnosis;
@@ -756,7 +759,7 @@ async function reviewedBaselineGuidance(
     return {
       kind: 'finding',
       evidenceId: recovered.evidenceId,
-      lines: baselineFindingGuidanceLines(recovered.finding),
+      finding: recovered.finding,
     };
   }
   return recovered;
@@ -1039,23 +1042,27 @@ async function attempt(
     // not context this attempt may start without: the next claim after a red
     // baseline was returned for repair has to be told it, and the retained
     // evidence is what says one is required and which one it is. The item's
-    // own thread is the ordinary source of it, but only as its whole comment:
-    // one that is partial, rewritten, or about some other evidence is not
-    // this workspace's reviewed outcome and is never promoted to the
-    // requirement, so the complete finding the evidence kept is handed over
-    // instead. A finding that is required and that neither source can supply
-    // stops intake rather than starting a developer without it
+    // own thread is the ordinary source of it, but only as its whole comment
+    // *and* only when every field of that comment is the one the retained
+    // record holds: a comment that is partial, edited after the diagnosis
+    // wrote it, or about some other evidence is not this workspace's reviewed
+    // outcome and is never promoted to the requirement, so the complete
+    // finding the evidence kept is handed over instead. A required finding
+    // nothing can supply stops intake — on the item's own thread, not only in
+    // a receipt — rather than starting a developer without it
     // (docs/WORKFLOW.md §11).
     let reviewedFinding: readonly string[] = [];
     /**
      * What a claim does when it cannot be told the reviewed finding its
-     * workspace was returned for: nothing is started, the ticket is left as
-     * it is, and the receipt names what a person has to read.
+     * workspace was returned for: nothing is started, and the claimed ticket
+     * is told why on its own thread and taken out of the running status, so it
+     * is not left In Progress with nothing looking for it. The receipt names
+     * the same thing locally. That record and move run under the short
+     * best-effort deadline even when the caller stopped the intake, exactly as
+     * an interrupted run's own result does: the ticket is already claimed, so
+     * leaving it where a person cannot find it is not what a stop may do.
      */
     const withoutFinding = async (detail: string): Promise<Step> => {
-      if (stop.aborted) {
-        return 'cancelled';
-      }
       const problem =
         `${item.ref.key}: the reviewed finding its baseline repair was returned with could ` +
         `not be read back, so no developer was started` +
@@ -1064,25 +1071,47 @@ async function attempt(
           : ` (its thread could not be read either: ${commentsProblem})`) +
         `: ${detail}`;
       await updateReceipt(file, { problem: `baseline: ${detail}` });
-      return stopWith(state, problem);
+      const feedbackStop = stop.aborted ? AbortSignal.timeout(FEEDBACK_DEADLINE_MS) : stop;
+      try {
+        await source.attention(item, problem, feedbackStop);
+      } catch (cause) {
+        await updateReceipt(file, {
+          problem: `baseline: ${detail}; attention: ${messageOf(cause)}`,
+        });
+        return stopWith(
+          state,
+          `${problem}. Telling the issue also failed, so the claimed ticket is still in the ` +
+            `running status and intake stops for inspection: ${messageOf(cause)}`,
+        );
+      }
+      await updateReceipt(file, { feedback: 'sent' });
+      io.err(problem);
+      return stop.aborted
+        ? 'cancelled'
+        : stopWith(
+            state,
+            `${problem} The issue was told and taken out of the running status with its ` +
+              'workspace pointer preserved, so a person decides what happens next.',
+          );
     };
     if (workspaceId !== undefined) {
       const recovered = await reviewedBaselineGuidance(context, workspaceId, stop);
       if (recovered.kind === 'problem') {
         return await withoutFinding(recovered.detail);
       }
-      if (recovered.kind === 'finding' || recovered.kind === 'unreadable') {
-        const fromThread = threadFinding(comments, recovered.evidenceId);
-        if (fromThread !== null) {
-          reviewedFinding = fromThread;
-        } else if (recovered.kind === 'finding') {
-          reviewedFinding = recovered.lines;
-        } else {
-          // The record says a repair is required, its own finding cannot be
-          // read back, and the thread does not carry the whole comment for
-          // that evidence: nothing may start without it.
-          return await withoutFinding(recovered.detail);
-        }
+      if (recovered.kind === 'finding') {
+        // A comment of the thread is this finding only while it is the whole
+        // comment and every field of it is the one the retained record holds;
+        // otherwise the complete recorded finding is what the attempt is told.
+        reviewedFinding =
+          threadFinding(comments, recovered.evidenceId, recovered.finding) ??
+          baselineFindingGuidanceLines(recovered.finding);
+      } else if (recovered.kind === 'unreadable') {
+        // The record says a repair is required and cannot supply the finding
+        // this harness validated and published, so there is nothing to hold a
+        // comment of the thread against — an edited one would look exactly
+        // like the real one. Nothing may start from it.
+        return await withoutFinding(recovered.detail);
       }
     }
     const guidance = guidanceFrom(earlier, comments, reviewedFinding);

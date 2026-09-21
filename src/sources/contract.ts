@@ -209,6 +209,10 @@ export interface SourceComment {
  * - `complete` publishes a bounded summary and moves the item to review: the
  *   ladder's last word, whether it passed, failed terminally, or ran out of
  *   rungs. It throws {@link SourceFeedbackError} when delivery fails.
+ * - `refuse` and `attention` are the two ways a claimed or unclaimed item is
+ *   taken out of the queue with the reason on its own thread: a refusal before
+ *   anything ran, and the stop a claim reached when it cannot start the
+ *   attempt it was made for.
  */
 export interface TaskSource {
   listEligible(stop: AbortSignal): Promise<readonly SourceCandidate[]>;
@@ -236,6 +240,17 @@ export interface TaskSource {
    * ran. Throws {@link SourceFeedbackError} when delivery fails.
    */
   refuse(item: SourceTask, reason: string, stop: AbortSignal): Promise<void>;
+  /**
+   * Publishes one attention comment and takes the item out of the running
+   * status, while it is still there: the harness claimed the item and then
+   * found, before any coding turn, something that needs a person — so no
+   * developer is started, the reason is recorded on the item's own thread, and
+   * the item is not left claimed with nothing looking for it. The workspace
+   * pointer and the acceptance criteria are untouched, and the comment never
+   * claims an attempt ran. Throws {@link SourceFeedbackError} when delivery
+   * fails.
+   */
+  attention(item: SourceTask, reason: string, stop: AbortSignal): Promise<void>;
   /**
    * The comments added after one instant, oldest first: what the item's own
    * thread says since the attempt being continued. A source that has no such
@@ -426,19 +441,22 @@ export type BaselineReviewedFinding =
    * The workspace was returned for repair and this is the reviewed finding,
    * with the identity of the evidence it was published for: a comment on the
    * item's own thread is this same reviewed outcome only when it carries that
-   * identity and says the whole finding.
+   * identity, says the whole finding, and every field of it is the one this
+   * finding records — a comment carrying the marker with an edited field is
+   * ordinary thread context, never the requirement, and this finding is handed
+   * over instead.
    */
   | { readonly kind: 'finding'; readonly finding: BaselineFinding; readonly evidenceId: string }
   /** This workspace has no reviewed finding its next attempt must be told. */
   | { readonly kind: 'none' }
   /**
-   * The workspace was returned for repair with this evidence, and the finding
-   * the record kept beside it cannot be read back. The item's own thread is
-   * the ordinary source of that finding, so the whole comment it carries for
-   * this identity still supplies it; when there is none either, nothing may
-   * start and `detail` names what a person has to inspect.
+   * The workspace was returned for repair, and the finding the record kept
+   * beside it cannot be read back. There is then nothing to hold a comment of
+   * the item's own thread against — an edited one would look exactly like the
+   * finding this harness published — so nothing may start and `detail` names
+   * what a person has to inspect.
    */
-  | { readonly kind: 'unreadable'; readonly evidenceId: string; readonly detail: string }
+  | { readonly kind: 'unreadable'; readonly detail: string }
   /** A reviewed finding is required and cannot be read back; nothing is started. */
   | { readonly kind: 'problem'; readonly detail: string };
 
@@ -548,10 +566,11 @@ export interface BaselineDiagnosis {
   /**
    * The reviewed finding one retained workspace was returned for repair with,
    * read back from the evidence this harness kept beside it. A claim that
-   * continues such a workspace is required to be told that finding, and the
-   * item's own thread — the ordinary path — may not be readable or may not
-   * carry it; this is the second source, and `problem` is the stop for when a
-   * required finding cannot be read back (docs/WORKFLOW.md §11).
+   * continues such a workspace is required to be told that finding. The item's
+   * own thread supplies it only when its comment is that whole finding, field
+   * for field; this is the second source, and `problem`, `unreadable` and an
+   * unusable thread are the stops for when a required finding cannot be read
+   * back (docs/WORKFLOW.md §11).
    */
   reviewedFinding(workspaceId: string, stop: AbortSignal): Promise<BaselineReviewedFinding>;
 }
