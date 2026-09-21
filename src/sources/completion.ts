@@ -58,6 +58,14 @@ const LINE_LIMIT = 400;
  */
 const MERGE_WAIT_ROUNDS = 2;
 
+/**
+ * How long the one note that reports an expired completion deadline may take to
+ * write. It is the same ten seconds its own stop signal allows, so the reads
+ * that guard that note are bounded by it instead of minting a fresh completion
+ * budget after the item's own deadline has already passed.
+ */
+const DEADLINE_REPORT_BUDGET_MS = 10_000;
+
 /** What one In Review item ended as. */
 export type CompletionStatus =
   /** Merge and post-merge CI verified: comment written, item moved to Done. */
@@ -658,6 +666,54 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
   });
 
   /**
+   * Records the exact pull request and reviewed head this pass is about to
+   * verify as merged, before anything is written for the item. GitHub can merge
+   * the reviewed head in a window where no auto-merge request was ever made —
+   * while the gate or its evidence is read, or between the eligibility read and
+   * the request — and a merge takes the pull request out of the open list, so
+   * without this record a later pass could neither find the pull request again
+   * nor resume the post-merge verification: a resolution comment whose status
+   * move failed would sit on the thread while the item stayed In Review for
+   * good. The wait start is kept when this exact merge was already recorded, so
+   * a restart never gets a fresh deadline; a refusal to keep the identity stops
+   * the item instead of concluding an outcome no later pass could resume.
+   */
+  const rememberMerge = async (
+    item: ReviewItem,
+    merged: { readonly number: number; readonly head: string; readonly url: string },
+  ): Promise<{ readonly ready: true } | { readonly ready: false; readonly problem: string }> => {
+    const directory = completionLogsDir(parts.workDir, item.ref, parts.repository);
+    const previous = await readArmedHead(directory);
+    const inherited =
+      previous !== null && previous.number === merged.number && previous.head === merged.head
+        ? previous.waitingSince
+        : null;
+    try {
+      await recordArmedHead(
+        directory,
+        {
+          head: merged.head,
+          number: merged.number,
+          // The moment the wait began is kept as it is; a merge this pass is the
+          // first to see starts the wait here rather than resetting it later.
+          waitingSince: inherited === null || inherited === '' ? now().toISOString() : inherited,
+        },
+        now,
+      );
+      return { ready: true };
+    } catch (cause) {
+      return {
+        ready: false,
+        problem:
+          `GitHub merged ${merged.url} at the reviewed head ${merged.head}, but the ` +
+          `pull-request/head record for it could not be written (${messageOf(cause)}); nothing was ` +
+          'written or moved, and the item stays In Review rather than concluding an outcome no ' +
+          'later pass could resume',
+      };
+    }
+  };
+
+  /**
    * Makes sure GitHub holds a native auto-merge request for the open pull
    * request's current head, before the reviewer's check can make the pull
    * request clean. A request already enabled for this exact pull request is
@@ -855,6 +911,18 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
   ): Promise<Step> => {
     const { item, request } = context;
     let pull = context.pull;
+    // The identity of the merge this pass is about to verify is recorded before
+    // the item's first reading of it and before any comment or move it may
+    // conclude: GitHub merges the reviewed head in windows where the pass never
+    // armed anything, and this is the evidence a restart resumes from once the
+    // pull request has left the open list.
+    const retained = await rememberMerge(item, {
+      number: pull.number,
+      head: reviewedHead,
+      url: pull.url,
+    });
+    if (!retained.ready)
+      return { kind: 'attention', detail: retained.problem, evidence: [pull.url] };
     // How long this item has been waiting for GitHub is the one thing that has
     // to survive a pass: it is recorded beside the arm, and read back here, so a
     // merge that never finishes reaches the configured deadline even though a
@@ -1146,6 +1214,7 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
     step: Step,
     stop: AbortSignal,
     context: PullContext,
+    deadline: number,
   ): Promise<CompletionOutcome> => {
     const { ref } = item;
     if (step.kind === 'observed' || step.kind === 'pending') {
@@ -1187,9 +1256,11 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
     const guard = async (): Promise<boolean> => {
       if (stop.aborted) return false;
       // The verify-before-write reads are reads like any other: a transient
-      // GitHub failure is retried inside the item deadline instead of turning
-      // into a reason to stop for a person.
-      const until = now().getTime() + config.deadlineSeconds * 1000;
+      // GitHub failure is retried inside the deadline the pass is already
+      // holding for this item instead of turning into a reason to stop for a
+      // person. Each of the two writes this step may make — the comment, and
+      // then the status move — reads under that one absolute bound: a pass that
+      // has spent its budget does not get a second one here.
       const currentItem = await source.readItem({ ref, title: item.title }, stop);
       if (
         currentItem === null ||
@@ -1198,11 +1269,11 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
       )
         return false;
       if (step.kind === 'resolution' || (step.kind === 'findings' && step.mergeCommit !== null)) {
-        const approval = await readEvidence(item, stop, until, () =>
+        const approval = await readEvidence(item, stop, deadline, () =>
           actions.readApprovedHead(context.request, context.pull, stop),
         );
         if (approval !== context.pull.headRefOid) return false;
-        const merge = await readEvidence(item, stop, until, () =>
+        const merge = await readEvidence(item, stop, deadline, () =>
           actions.readMerge(context.request, context.pull, approval, stop),
         );
         if (
@@ -1211,12 +1282,12 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
         )
           return false;
       } else if (step.kind === 'findings') {
-        const gate = await readEvidence(item, stop, until, () =>
+        const gate = await readEvidence(item, stop, deadline, () =>
           actions.readGate(context.request, context.pull, stop),
         );
         if (gate.status !== 'failed') return false;
       }
-      const live = await readEvidence(item, stop, until, () =>
+      const live = await readEvidence(item, stop, deadline, () =>
         actions.findMergedPullRequest(context.request, context.pull.number, stop),
       );
       return (
@@ -1405,7 +1476,14 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
                 stop,
                 MERGE_WAIT_ROUNDS,
               );
-              return await recordStep(item, thread, follow, stop, { item, request, pull });
+              return await recordStep(
+                item,
+                thread,
+                follow,
+                stop,
+                { item, request, pull },
+                deadline,
+              );
             }
             const untied = mergeNotTied(
               pull,
@@ -1464,7 +1542,7 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
       throw cause;
     }
     try {
-      return await recordStep(item, thread, step, stop, context);
+      return await recordStep(item, thread, step, stop, context, deadline);
     } catch (cause) {
       return {
         ref,
@@ -1614,6 +1692,9 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
       },
       stop,
       { item, request, pull },
+      // The item's own budget is already spent: this note reads under the short
+      // feedback budget it is given, never under a fresh completion deadline.
+      now().getTime() + DEADLINE_REPORT_BUDGET_MS,
     );
   };
 
@@ -1647,7 +1728,7 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
         if (deadline.signal.aborted && !stop.aborted) {
           outcome = await reportDeadline(
             candidate,
-            AbortSignal.any([stop, AbortSignal.timeout(10_000)]),
+            AbortSignal.any([stop, AbortSignal.timeout(DEADLINE_REPORT_BUDGET_MS)]),
           ).catch(() => ({
             ref: candidate.ref,
             status: 'attention' as const,

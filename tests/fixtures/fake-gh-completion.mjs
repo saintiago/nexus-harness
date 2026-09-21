@@ -99,6 +99,10 @@ const reply = (value) => process.stdout.write(`${JSON.stringify(value)}\n`);
  * be told from its classification of a settled refusal. With
  * `afterMerge: true`, only a read that follows a recorded auto-merge request
  * matches — that is the reading a mutation's answer is reconciled with.
+ * `occurrence: n` matches only the *n*-th invocation of that operation, which
+ * is how a read taken by one of the completion path's two write guards is
+ * named; with `hang: true` the invocation instead stalls with no output at
+ * all, so only the harness's own command limit can end it.
  */
 const failOnce = (operation) => {
   const marker = path.join(stateDir, 'fail-once.json');
@@ -106,6 +110,13 @@ const failOnce = (operation) => {
   const spec = JSON.parse(readFileSync(marker, 'utf8'));
   if (spec.op !== undefined && spec.op !== operation) return null;
   if (spec.afterMerge === true && !jsonLines('calls.jsonl').some((call) => call.op === 'merge'))
+    return null;
+  // This invocation is already recorded, so the n-th one is the call whose own
+  // count equals the number the test named.
+  if (
+    typeof spec.occurrence === 'number' &&
+    jsonLines('calls.jsonl').filter((call) => call.op === operation).length !== spec.occurrence
+  )
     return null;
   unlinkSync(marker);
   return spec;
@@ -138,6 +149,11 @@ else if (argv[0] === 'api') {
 record({ op: operation, auto: operation === 'merge', squash: operation === 'merge' });
 const injected = failOnce(operation);
 if (injected) {
+  if (injected.hang === true) {
+    // A read that never answers: it writes nothing on either stream and stays
+    // alive until the harness stops it at its own command limit.
+    await new Promise((resolve) => setTimeout(resolve, 60_000));
+  }
   fail(
     `HTTP ${String(injected.status ?? 503)}: ` +
       `${String(injected.message ?? 'GitHub is temporarily unavailable')} (${operation})`,

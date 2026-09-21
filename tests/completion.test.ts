@@ -441,6 +441,8 @@ function passFor(
     readonly clockStepMs?: number;
     /** Where this pass's clock starts, so several passes can be ordered in time. */
     readonly clockStartMs?: number;
+    /** How long one stand-in `gh` command may run before the harness stops it. */
+    readonly commandTimeoutMs?: number;
     readonly onSleep?: () => Promise<void>;
     readonly sleepCalls?: { count: number };
   } = {},
@@ -472,6 +474,7 @@ function passFor(
   const actions = createGitHubCompletion(fixture.config, parts.reader ?? REVIEWER_TOKEN, {
     command: fixture.gh.command,
     env,
+    ...(parts.commandTimeoutMs === undefined ? {} : { commandTimeoutMs: parts.commandTimeoutMs }),
   });
   const io = { out: () => undefined, err: () => undefined };
   return createCompletionPass({
@@ -2153,9 +2156,10 @@ describe('reconciling terminal states across an auto-merge race', () => {
     await seed();
     const sleepCalls = { count: 0 };
 
-    const outcome = only(
-      await runPass(fixture, { clockStepMs: 10_000, sleepCalls, onSleep: seed }),
-    );
+    // The merge identity is recorded before the first reading, so the fake
+    // clock advances once more than it did before that record existed; the poll
+    // step is what keeps this pass inside its own deadline while it retries.
+    const outcome = only(await runPass(fixture, { clockStepMs: 5_000, sleepCalls, onSleep: seed }));
 
     expect(outcome.status, outcome.detail).toBe('attention');
     expect(outcome.detail).toContain('503');
@@ -2163,6 +2167,41 @@ describe('reconciling terminal states across an auto-merge race', () => {
     expect(transitions(fixture)).toHaveLength(0);
     expect(commentTexts(fixture)).toHaveLength(0);
     expect(sleepCalls.count).toBeGreaterThanOrEqual(1);
+  });
+
+  it('retries a read the harness stopped at its command limit without any answer', async () => {
+    const fixture = await createFixture({ merged: true, runs: [workflowRun()] });
+    // A stalled read: it never answers and writes nothing on either stream, so
+    // the harness's own command limit is what ends it. The recorded outcome —
+    // not the empty log — is what says GitHub's answer is still outstanding, so
+    // the reading is repeated inside the item deadline instead of stopping the
+    // item for a person while the merge and its workflow are verifiable.
+    await writeFile(
+      path.join(fixture.gh.dir, 'fail-once.json'),
+      JSON.stringify({ op: 'runs', hang: true }),
+      'utf8',
+    );
+    const sleepCalls = { count: 0 };
+
+    const outcome = only(
+      await runPass(fixture, { clockStepMs: 1_000, sleepCalls, commandTimeoutMs: 1_000 }),
+    );
+
+    expect(outcome.status, outcome.detail).toBe('done');
+    expect(outcome.mergeCommit).toBe(MERGE_COMMIT);
+    expect(fixture.jira.status).toBe('Done');
+    expect(commentTexts(fixture)).toHaveLength(1);
+    expect(transitions(fixture)).toHaveLength(1);
+    expect(sleepCalls.count).toBeGreaterThan(0);
+    // The stalled read was answered on the retry — the two reads that follow it
+    // are the two write guards' own — and no coding finding, person, or merge
+    // was invented from the answer that never came.
+    expect(
+      (await fakeCompletionCalls(fixture.gh)).filter((call) => call.op === 'runs'),
+    ).toHaveLength(4);
+    expect(
+      (await fakeCompletionCalls(fixture.gh)).filter((call) => call.op === 'merge'),
+    ).toHaveLength(0);
   });
 
   it('keeps an open pull request with unknown mergeability in the bounded poll loop', async () => {
@@ -2271,6 +2310,97 @@ describe('reconciling terminal states across an auto-merge race', () => {
     expect(
       JSON.parse(await readFile(path.join(fixture.logsDir, 'completion-armed-head.json'), 'utf8')),
     ).toMatchObject({ head: HEAD, number: 29 });
+  });
+
+  it('records a merge it discovers before arming so a restart finishes the failed move', async () => {
+    const fixture = await createFixture({ pulls: [ONE_PULL_REQUEST], runs: [workflowRun()] });
+    fixture.jira.transitionFailure = true;
+
+    // No admission exists yet: the pass reads an open pull request, and GitHub
+    // merges the reviewed head while the gate's own read is taken. Nothing was
+    // ever armed, so the merge this pass discovers is the only identity a later
+    // pass can resume from once the pull request has left the open list.
+    const first = only(await runPass(fixture, { clockStepMs: 1_000, mergeOnView: 1 }));
+
+    expect(first.status, first.detail).toBe('attention');
+    expect(first.detail).toContain('moving it to "Done" failed');
+    expect(first.mergeCommit).toBe(MERGE_COMMIT);
+    expect(fixture.jira.status).toBe('In Review');
+    expect(commentTexts(fixture)).toHaveLength(1);
+    expect(commentTexts(fixture)[0]).toContain('nexus-completion:resolution:');
+    // The reconciled identity was retained before the comment was published, so
+    // the restart can find the merge GitHub no longer lists as open.
+    expect(
+      JSON.parse(await readFile(path.join(fixture.logsDir, 'completion-armed-head.json'), 'utf8')),
+    ).toMatchObject({ head: HEAD, number: 29 });
+
+    fixture.jira.transitionFailure = false;
+    const second = only(await runPass(fixture, { clockStepMs: 1_000 }));
+
+    expect(second.status, second.detail).toBe('done');
+    expect(second.mergeCommit).toBe(MERGE_COMMIT);
+    expect(fixture.jira.status).toBe('Done');
+    // One resolution comment and one successful move: the restart repeats no
+    // review read as a mutation, writes no second comment, and arms nothing.
+    expect(commentTexts(fixture)).toHaveLength(1);
+    expect(
+      (await fakeCompletionCalls(fixture.gh)).filter((call) => call.op === 'merge'),
+    ).toHaveLength(0);
+  });
+
+  it('does not mint a fresh deadline for the guard before the resolution comment', async () => {
+    const fixture = await createFixture({
+      merged: true,
+      runs: [workflowRun()],
+      config: { deadlineSeconds: 20 },
+    });
+    // Almost the whole item budget is gone by the time the verify-before-write
+    // reads run, and the third `pr reviews` read — the guard's own approval read
+    // — is unavailable once. A pass that has spent its budget does not get a new
+    // one: the read is not repeated, and nothing is written from a state it
+    // could not re-verify.
+    await writeFile(
+      path.join(fixture.gh.dir, 'fail-once.json'),
+      JSON.stringify({ op: 'reviews', occurrence: 3, status: 503, message: 'Server Error' }),
+      'utf8',
+    );
+    const sleepCalls = { count: 0 };
+
+    const outcome = only(await runPass(fixture, { clockStepMs: 15_000, sleepCalls }));
+
+    expect(outcome.status, outcome.detail).toBe('attention');
+    expect(outcome.detail).toContain('503');
+    expect(sleepCalls.count).toBe(0);
+    expect(commentTexts(fixture)).toHaveLength(0);
+    expect(transitions(fixture)).toHaveLength(0);
+  });
+
+  it('does not mint a fresh deadline for the guard before the status move', async () => {
+    const fixture = await createFixture({
+      merged: true,
+      runs: [workflowRun()],
+      config: { deadlineSeconds: 20 },
+    });
+    // The same bound covers the second guard, which the status move takes: the
+    // fourth `pr reviews` read — that guard's own approval read — is unavailable
+    // once after the item budget is spent, so the move is not made and is left
+    // to the next pass instead of being retried under a new full deadline.
+    await writeFile(
+      path.join(fixture.gh.dir, 'fail-once.json'),
+      JSON.stringify({ op: 'reviews', occurrence: 4, status: 503, message: 'Server Error' }),
+      'utf8',
+    );
+    const sleepCalls = { count: 0 };
+
+    const outcome = only(await runPass(fixture, { clockStepMs: 15_000, sleepCalls }));
+
+    expect(outcome.status, outcome.detail).toBe('attention');
+    expect(outcome.detail).toContain('moving it to "Done" failed');
+    expect(outcome.detail).toContain('503');
+    expect(sleepCalls.count).toBe(0);
+    expect(commentTexts(fixture)).toHaveLength(1);
+    expect(commentTexts(fixture)[0]).toContain('nexus-completion:resolution:');
+    expect(fixture.jira.status).toBe('In Review');
   });
 });
 

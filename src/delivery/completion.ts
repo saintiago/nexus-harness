@@ -2,7 +2,7 @@
 import { readFile } from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
 import { runCommand } from '../process/command.js';
-import type { CompletionConfig, SourceRef } from '../shared/types.js';
+import type { CommandOutcome, CompletionConfig, SourceRef } from '../shared/types.js';
 import { gitInvocationEnvironment } from '../workspace/git.js';
 import { DeliveryError } from './github.js';
 import { checkFailed, checkPending, workflowOutcomes } from './gate.js';
@@ -205,6 +205,13 @@ export interface GitHubCompletionParts {
   readonly command?: string;
   /** What the operator's own commands inherit. Defaults to this process's. */
   readonly env?: NodeJS.ProcessEnv;
+  /**
+   * How long one `gh` command may run before the harness stops it and records
+   * the read as `timed-out`. Defaults to {@link COMPLETION_COMMAND_TIMEOUT_MS};
+   * only a test names a shorter bound, so a stalled read can be exercised
+   * without waiting five minutes for the production limit.
+   */
+  readonly commandTimeoutMs?: number;
 }
 
 type ObjectValue = Record<string, unknown>;
@@ -248,13 +255,20 @@ const PULL_FIELDS =
   'id,number,url,state,isDraft,headRefName,baseRefName,headRefOid,mergeCommit,autoMergeRequest,mergeable,title,body';
 
 /**
- * Whether what a failed read wrote is an indeterminate answer rather than a
- * refusal GitHub meant: a server-side failure, a rate limit, a timeout, or a
- * connection that never completed. Only these are retried, and only inside the
- * item's deadline; a `403`, a `404`, an unprocessable `422` or a malformed
- * answer from GitHub is a settled reading.
+ * Whether a failed read left GitHub's answer indeterminate rather than refused:
+ * a server-side failure, a rate limit, a timeout, or a connection that never
+ * completed. Only these are retried, and only inside the item's deadline; a
+ * `403`, a `404`, an unprocessable `422` or a malformed answer from GitHub is a
+ * settled reading.
+ *
+ * A read the harness stopped at its own command limit is indeterminate by its
+ * own recorded outcome, whatever it wrote — a stalled command is recorded as
+ * `timed-out` and often has no diagnostic line at all — while a command the
+ * caller's stop ended is reported as `stopped` and never retried here, because
+ * the caller's cancellation, not GitHub, decided it.
  */
-function transientReadFailure(diagnostic: string): boolean {
+function transientReadFailure(outcome: CommandOutcome, diagnostic: string): boolean {
+  if (outcome === 'timed-out') return true;
   return (
     /\bHTTP (?:408|425|429|5\d\d)\b/.test(diagnostic) ||
     /\b(?:ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|EPIPE)\b/i.test(diagnostic) ||
@@ -376,7 +390,7 @@ export function createGitHubCompletion(
       cwd: request.workspacePath,
       logsDir: request.logsDir,
       label: `completion-${tag}-${String(++sequence)}`,
-      timeoutMs: COMPLETION_COMMAND_TIMEOUT_MS,
+      timeoutMs: parts.commandTimeoutMs ?? COMPLETION_COMMAND_TIMEOUT_MS,
       stop,
       env: environment,
     });
@@ -410,7 +424,7 @@ export function createGitHubCompletion(
           'operator attention required',
         // A mutation is never replayed, whatever the failure looked like; only
         // an evidence read GitHub could not answer this moment may be read again.
-        { retryable: !mutation && transientReadFailure(diagnostic) },
+        { retryable: !mutation && transientReadFailure(result.outcome, diagnostic) },
       );
     }
     if (typeof value === 'object' && value !== null && 'errors' in value)
