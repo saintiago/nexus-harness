@@ -696,7 +696,7 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
     cleanupConfirmed = true,
   ): BaselineDiagnosisOutcome =>
     stop.aborted
-      ? { kind: 'cancelled', detail, cleanupConfirmed }
+      ? { kind: 'cancelled', detail, commentId, cleanupConfirmed }
       : { kind: 'attention', detail, commentId, cleanupConfirmed };
 
   /** One status move, reported as the step it is rather than as a refusal. */
@@ -768,6 +768,7 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
       return {
         kind: 'cancelled',
         detail: `${key}: the intake was stopped before its red baseline could be diagnosed`,
+        commentId: null,
         cleanupConfirmed: true,
       };
     }

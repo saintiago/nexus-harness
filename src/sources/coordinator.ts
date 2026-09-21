@@ -580,13 +580,45 @@ async function diagnoseBaseline(
     // writing to the diagnosis's evidence: the lock is kept rather than
     // released, exactly as a run's own unconfirmed stop does (docs/spec.md §3).
     state.cleanupConfirmed = state.cleanupConfirmed && outcome.cleanupConfirmed;
-    return context.stop.aborted
-      ? 'cancelled'
-      : stopWith(
-          state,
-          `${key}: the baseline diagnosis was stopped before it could finish, so the red baseline ` +
-            `still needs a person: ${outcome.detail}`,
-        );
+    if (!context.stop.aborted) {
+      return stopWith(
+        state,
+        `${key}: the baseline diagnosis was stopped before it could finish, so the red baseline ` +
+          `still needs a person: ${outcome.detail}`,
+      );
+    }
+    if (outcome.commentId !== null) {
+      // The diagnosis published this evidence's one comment; the step it did
+      // not make is the status move, and a later invocation's own recovery
+      // makes it from the retained evidence and that comment instead of a
+      // second comment being written here.
+      return 'cancelled';
+    }
+    // The stop reached the pre-delivery diagnosis before it published anything:
+    // the ticket this attempt claimed would otherwise be left in the running
+    // status with nothing looking for it. It is told, and taken out of the
+    // running status, under the same short best-effort deadline an interrupted
+    // run's own result gets — a fresh deadline rather than the aborted stop.
+    const problem =
+      `${item.ref.key}: the intake was stopped before its red baseline could be diagnosed, so no ` +
+      `coding turn was started and nothing was delivered; the workspace pointer is preserved and ` +
+      `a person decides what happens next: ${outcome.detail}`;
+    try {
+      await context.source.attention(item, problem, AbortSignal.timeout(FEEDBACK_DEADLINE_MS));
+    } catch (cause) {
+      await updateReceipt(file, {
+        problem: `baseline: ${outcome.detail}; attention: ${messageOf(cause)}`,
+      });
+      return stopWith(
+        state,
+        `${item.ref.key}: the baseline diagnosis was stopped before it could finish and telling ` +
+          `the issue also failed, so the claimed ticket is still in the running status and intake ` +
+          `stops for inspection: ${messageOf(cause)}`,
+      );
+    }
+    await updateReceipt(file, { feedback: 'sent' });
+    context.io.err(problem);
+    return 'cancelled';
   }
 
   const comment = outcome.commentId === null ? '' : ` (comment ${outcome.commentId})`;

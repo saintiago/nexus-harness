@@ -393,6 +393,15 @@ export type BaselineDiagnosisOutcome =
   | {
       readonly kind: 'cancelled';
       readonly detail: string;
+      /**
+       * The id of the one comment this evidence already has on the item's
+       * thread — published by this invocation or by an earlier one — or `null`
+       * when nothing was published for it. A caller reads it as whether the
+       * claimed ticket still has retained evidence and a thread record looking
+       * for it, or whether only that caller can keep it from being left in the
+       * running status with nothing looking for it.
+       */
+      readonly commentId: string | null;
       readonly cleanupConfirmed: boolean;
     };
 

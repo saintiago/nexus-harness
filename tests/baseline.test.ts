@@ -2576,6 +2576,8 @@ interface CoordinatorCalls {
   readonly progress: SourceRunOutcome[];
   readonly diagnosed: BaselineDiagnosisRequest[];
   readonly delivered: string[];
+  /** What the ticket was told when the coordinator took it out of the running status. */
+  readonly attentions: string[];
 }
 
 /**
@@ -2588,6 +2590,10 @@ async function takeOne(parts: {
   readonly diagnosis?: BaselineDiagnosis;
   /** Whether a recording delivery step is configured for this step. */
   readonly delivery?: boolean;
+  /** A stop a test drives itself, e.g. one that lands as the run returns. */
+  readonly stop?: AbortSignal;
+  /** Whether telling the ticket also fails, as a refused transition does. */
+  readonly attentionFailure?: string;
 }): Promise<{
   readonly take: SourceTake;
   readonly calls: CoordinatorCalls;
@@ -2596,7 +2602,13 @@ async function takeOne(parts: {
   const workDir = await createTempDir();
   const ref = refFor();
   const item: SourceTask = { ref, task: taskFor(ref), pointers: [] };
-  const calls: CoordinatorCalls = { complete: [], progress: [], diagnosed: [], delivered: [] };
+  const calls: CoordinatorCalls = {
+    complete: [],
+    progress: [],
+    diagnosed: [],
+    delivered: [],
+    attentions: [],
+  };
   const source: TaskSource = {
     listEligible: async () => [{ ref, title: 'Repair the failing baseline' }],
     prepare: async () => item,
@@ -2611,10 +2623,11 @@ async function takeOne(parts: {
     refuse: async () => {
       throw new Error('the item was refused, which this fixture never expects');
     },
-    attention: async () => {
-      throw new Error(
-        'the item was taken out of the running status, which this fixture never expects',
-      );
+    attention: async (_item, reason) => {
+      if (parts.attentionFailure !== undefined) {
+        throw new Error(parts.attentionFailure);
+      }
+      calls.attentions.push(reason);
     },
     commentsSince: async () => [],
   };
@@ -2625,7 +2638,7 @@ async function takeOne(parts: {
     tiers: [{ name: 'default', agent: { runtime: 'codex', command: ['codex'] }, maxRepairs: 1 }],
     repoPath: '/repo',
     io: { out: () => undefined, err: () => undefined },
-    stop: new AbortController().signal,
+    stop: parts.stop ?? new AbortController().signal,
     preflight: async () => ({ sourceRoot: '/repo', baseCommit: BASE }),
     run: async (request) => {
       await request.onWorkspaceReady?.({ workspaceId: ref.key });
@@ -2787,6 +2800,182 @@ describe('the coordinator around the diagnosis', () => {
     expect(take.problem).toContain('no baseline repair is actionable');
     expect(existsSync(intakeLockPath(workDir, 'baseline-fixture'))).toBe(true);
     expect(calls.complete).toEqual([]);
+  });
+
+  it('tells the claimed ticket and takes it out of the running status when the stop lands before the diagnosis', async () => {
+    // The stop lands between the completed red run and the diagnosis — the
+    // window in which the run's own result is never published. The ticket is
+    // already claimed, so the cancellation may not leave it In Progress with
+    // nothing looking for it: bounded feedback and a move out of the running
+    // status are what the diagnosis never got to write.
+    const diagnosed: BaselineDiagnosisRequest[] = [];
+    const controller = new AbortController();
+    const { take, calls, workDir } = await takeOne({
+      result: runResultFor(),
+      stop: controller.signal,
+      diagnosis: {
+        diagnose: async (request) => {
+          diagnosed.push(request);
+          controller.abort(new Error('the user interrupted intake'));
+          return {
+            kind: 'cancelled',
+            detail: 'HARN-38: the intake was stopped before its red baseline could be diagnosed',
+            commentId: null,
+            cleanupConfirmed: true,
+          };
+        },
+        resume: async () => null,
+        reviewedFinding: async () => ({ kind: 'none' }),
+      },
+    });
+
+    expect(diagnosed).toHaveLength(1);
+    expect(take.outcome).toBe('cancelled');
+    expect(calls.complete).toEqual([]);
+    expect(calls.attentions).toHaveLength(1);
+    expect(calls.attentions[0]).toContain('stopped before its red baseline could be diagnosed');
+    expect(calls.attentions[0]).toContain('no coding turn was started');
+    expect(calls.attentions[0]).toContain('the workspace pointer is preserved');
+    // The receipt records the record the ticket really holds: it was told.
+    const receipt = await readReceipt(receiptFilePath(workDir, refFor()));
+    expect(receipt?.feedback).toBe('sent');
+    expect(receipt?.problem).toContain('stopped before its red baseline could be diagnosed');
+    // Nothing unconfirmed came out of this stop, so the lock is released as it
+    // always is when the intake is stopped cleanly.
+    expect(take.cleanupConfirmed).toBe(true);
+    expect(existsSync(intakeLockPath(workDir, 'baseline-fixture'))).toBe(false);
+  });
+
+  it('writes no second record when the diagnosis already published its own comment', async () => {
+    // The diagnosis published this evidence's one comment and stopped before
+    // the status move. A second comment would be a second record for the same
+    // evidence; the next invocation's own resume makes the missing move from
+    // the retained evidence and that comment instead.
+    const controller = new AbortController();
+    const { take, calls, workDir } = await takeOne({
+      result: runResultFor(),
+      stop: controller.signal,
+      diagnosis: {
+        diagnose: async () => {
+          controller.abort(new Error('the user interrupted intake'));
+          return {
+            kind: 'cancelled',
+            detail: 'HARN-38: its comment is on the issue, but the status move did not happen',
+            commentId: 'c1',
+            cleanupConfirmed: true,
+          };
+        },
+        resume: async () => null,
+        reviewedFinding: async () => ({ kind: 'none' }),
+      },
+    });
+
+    expect(take.outcome).toBe('cancelled');
+    expect(calls.attentions).toEqual([]);
+    const receipt = await readReceipt(receiptFilePath(workDir, refFor()));
+    expect(receipt?.feedback).toBe('pending');
+    expect(receipt?.problem).toContain('the status move did not happen');
+  });
+
+  it('adds nothing of its own when the interrupt landed inside the reviewer turn', async () => {
+    // The other window a stop can reach: the turn really ran and was
+    // interrupted, so its own attention comment is this evidence's one record
+    // and the item is already In Review. The coordinator publishes no second
+    // record for it and starts nothing else.
+    const controller = new AbortController();
+    const { take, calls, workDir } = await takeOne({
+      result: runResultFor(),
+      stop: controller.signal,
+      diagnosis: {
+        diagnose: async () => {
+          controller.abort(new Error('the user interrupted intake'));
+          return {
+            kind: 'attention',
+            detail:
+              'HARN-38: the interruption is what this evidence’s one comment records (comment c1)',
+            commentId: 'c1',
+            cleanupConfirmed: true,
+          };
+        },
+        resume: async () => null,
+        reviewedFinding: async () => ({ kind: 'none' }),
+      },
+    });
+
+    expect(take.outcome).toBe('attention');
+    expect(take.problem).toContain('no baseline repair is actionable');
+    expect(calls.attentions).toEqual([]);
+    expect(calls.complete).toEqual([]);
+    const receipt = await readReceipt(receiptFilePath(workDir, refFor()));
+    expect(receipt?.feedback).toBe('sent');
+    expect(receipt?.commentId).toBe('c1');
+  });
+
+  it('stops for inspection, with the lock kept, when the stopped diagnosis cannot tell the ticket', async () => {
+    const controller = new AbortController();
+    const { take, calls, workDir } = await takeOne({
+      result: runResultFor(),
+      stop: controller.signal,
+      attentionFailure: 'the transition was refused',
+      diagnosis: {
+        diagnose: async () => {
+          controller.abort(new Error('the user interrupted intake'));
+          return {
+            kind: 'cancelled',
+            detail: 'HARN-38: the intake was stopped before its red baseline could be diagnosed',
+            commentId: null,
+            cleanupConfirmed: true,
+          };
+        },
+        resume: async () => null,
+        reviewedFinding: async () => ({ kind: 'none' }),
+      },
+    });
+
+    expect(take.outcome).toBe('attention');
+    expect(take.problem).toContain('still in the running status');
+    expect(take.problem).toContain('the transition was refused');
+    expect(calls.complete).toEqual([]);
+    // Telling the ticket failed after the stop, and the receipt says both: the
+    // claimed ticket is still In Progress, and intake stops for a person to put
+    // it where the next invocation can see it.
+    const receipt = await readReceipt(receiptFilePath(workDir, refFor()));
+    expect(receipt?.problem).toContain('the transition was refused');
+    expect(receipt?.problem).toContain('stopped before its red baseline could be diagnosed');
+  });
+
+  it('takes the ticket out of the running status when the stop lands as the pre-review thread is read', async () => {
+    // The other pre-review window: the stop arrives while the item's own thread
+    // is being read, after the evidence record was written and before anything
+    // was published. The phase reports the cancellation; the claimed ticket is
+    // still the coordinator's to take out of the running status.
+    const workDir = await createTempDir();
+    const record = fakeRecord();
+    const controller = new AbortController();
+    const listing = record.listComments.bind(record);
+    record.listComments = async (id, stop) => {
+      controller.abort(new Error('the user interrupted intake'));
+      return listing(id, stop);
+    };
+    const reviewer = scriptedReviewer(REPAIR_FINDING);
+    const { diagnosis } = phaseFor({ record, reviewer, workDir });
+    const { take, calls } = await takeOne({
+      result: runResultFor(),
+      stop: controller.signal,
+      diagnosis,
+    });
+
+    expect(take.outcome).toBe('cancelled');
+    expect(reviewer.requests).toEqual([]);
+    expect(record.posted).toEqual([]);
+    expect(record.moves).toEqual([]);
+    expect(record.status).toBe('In Progress');
+    // The evidence the stop left is recorded, and the phase published nothing;
+    // the ticket is told and taken out of the running status all the same.
+    expect(calls.attentions).toHaveLength(1);
+    expect(calls.attentions[0]).toContain('stopped before its red baseline could be diagnosed');
+    expect(calls.attentions[0]).toContain('the request was stopped by the caller');
+    expect((await evidenceRecordFor(workDir, PROJECT)).record['closed']).toBeUndefined();
   });
 
   it('publishes the run itself when the baseline could not be executed', async () => {
