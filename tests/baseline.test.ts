@@ -403,6 +403,24 @@ const REPAIR_FINDING: BaselineFinding = {
   repairGuidance: 'make the fixture wait for the condition instead of the clock',
 };
 
+/**
+ * Repair guidance longer than one Jira comment line and well inside the 2,000
+ * characters a reviewer's field may have, whose last words are the concrete
+ * instruction: a handoff that keeps only the bounded rendering a comment holds
+ * loses exactly what the developer has to do.
+ */
+const WIDE_GUIDANCE_TAIL =
+  'and then give the load test a per-test timeout that reflects a loaded machine';
+const WIDE_REPAIR_GUIDANCE =
+  'make the load test wait for the condition instead of the clock. '.repeat(12) +
+  WIDE_GUIDANCE_TAIL;
+
+/** The same finding, with guidance no single comment line can hold whole. */
+const WIDE_REPAIR_FINDING: BaselineFinding = {
+  ...REPAIR_FINDING,
+  repairGuidance: WIDE_REPAIR_GUIDANCE,
+};
+
 const INCONCLUSIVE_FINDING: BaselineFinding = {
   outcome: 'inconclusive',
   reason: 'the check fails because the host has no docker daemon',
@@ -1764,32 +1782,26 @@ describe('the reviewed finding one continued attempt is given', () => {
     ].join('\n');
   }
 
-  it('accepts only the whole comment, and carries every field of it whole', () => {
+  it('accepts only the whole comment, and reads every field of it as written', () => {
     const comment = commentFor();
 
     const finding = baselineCommentFinding(comment);
 
-    // The comment is this evidence's finding, and the ordering requirement is
-    // its first line: the baseline is repaired before the original task.
+    // The comment is this evidence's finding, and every field comes back as the
+    // comment wrote it: that is what a caller holds against the finding the
+    // retained record validated, because the marker names the evidence, never
+    // the text.
     expect(finding?.evidenceId).toBe(EVIDENCE_ID);
-    expect(finding?.lines[0]).toBe(
-      'reviewed baseline finding — repair the baseline before continuing the original task',
-    );
-    // Each field is its own line, at the width the comment itself wrote, so the
-    // collapsed-comment truncation cannot eat the cause and the repair.
-    for (const field of ['failing check', 'evidence', 'likely cause', 'repair guidance']) {
-      const line = finding?.lines.find((entry) =>
-        entry.startsWith(`reviewed baseline finding — ${field}: `),
-      );
-      expect(line, `the finding carries the ${field}`).toBeDefined();
-      const written = comment
-        .split('\n')
-        .find((entry) => entry.startsWith(`${field.charAt(0).toUpperCase()}${field.slice(1)}: `));
-      expect(line?.slice(`reviewed baseline finding — ${field}: `.length)).toBe(
-        written?.slice(field.length + 2).trim(),
-      );
-    }
-    expect(finding?.lines.join('\n')).not.toContain('…');
+    const lines = comment.split('\n');
+    const written = (label: string): string =>
+      lines.find((line) => line.startsWith(`${label}: `))?.slice(label.length + 2) ?? '';
+    expect(finding?.fields).toEqual([
+      written('Failing check'),
+      written('Evidence'),
+      written('Likely cause'),
+      written('Repair guidance'),
+    ]);
+    expect(finding?.fields.join('\n')).not.toContain('…');
 
     // A partial quotation is not the finding: the marker without every field —
     // or a marker that names no evidence identity at all — produces nothing, so
@@ -1811,7 +1823,9 @@ describe('the reviewed finding one continued attempt is given', () => {
 
   it('keeps the established finding even when the thread holds more recent chatter', () => {
     const comment = commentFor();
-    const finding = baselineCommentFinding(comment)?.lines ?? [];
+    // What the coordinator establishes for this workspace: the finding its
+    // retained evidence holds, as the guidance lines a later attempt reads.
+    const finding = baselineFindingGuidanceLines(REPAIR_FINDING);
     const chatter = Array.from({ length: 12 }, (_entry, index) => ({
       author: 'Someone',
       createdAt: `2026-09-21T11:${String(index).padStart(2, '0')}:00.000Z`,
@@ -1862,6 +1876,45 @@ describe('the reviewed finding one continued attempt is given', () => {
     const inconclusive = baselineFindingGuidanceLines(INCONCLUSIVE_FINDING);
     expect(inconclusive.some((line) => line.includes('repair the baseline before'))).toBe(false);
     expect(inconclusive.some((line) => line.includes('required action: '))).toBe(true);
+  });
+
+  it('hands over a field longer than one comment line in full', () => {
+    // A valid field runs to the reviewer's own per-field bound, and the
+    // instruction that matters can sit past the 600 characters one comment line
+    // holds: the comment is the concise record, and the developer is handed the
+    // field the outcome record validated — with its last words included.
+    expect(WIDE_REPAIR_GUIDANCE.length).toBeGreaterThan(600);
+    expect(WIDE_REPAIR_GUIDANCE.length).toBeLessThanOrEqual(2_000);
+    expect(WIDE_REPAIR_GUIDANCE.indexOf(WIDE_GUIDANCE_TAIL)).toBeGreaterThan(600);
+
+    const lines = baselineFindingGuidanceLines(WIDE_REPAIR_FINDING);
+
+    expect(lines[0]).toBe(
+      'reviewed baseline finding — repair the baseline before continuing the original task',
+    );
+    expect(lines).toContain(`reviewed baseline finding — repair guidance: ${WIDE_REPAIR_GUIDANCE}`);
+    // Nothing in the guidance is cut, and nothing carries a truncation mark.
+    expect(lines.join('\n')).not.toContain('…');
+
+    // The whole field is within the brief the prompt budget keeps: the finding
+    // is carried ahead of the rest and none of it is dropped for the context
+    // beside it.
+    const guidance = guidanceFrom(
+      [
+        {
+          runId: 'run-1',
+          outcome: 'failed',
+          reason: 'the baseline checks did not pass',
+          endedAt: '2026-09-21T10:04:00.000Z',
+          reportPath: '/work/runs/run-1/result.json',
+        },
+      ],
+      [{ author: 'Someone', createdAt: '2026-09-21T11:00:00.000Z', text: 'a later note' }],
+      lines,
+    );
+    expect(guidance.slice(0, lines.length)).toEqual(lines);
+    expect(guidance.length).toBeLessThanOrEqual(12);
+    expect(guidance.join('\n')).toContain(WIDE_GUIDANCE_TAIL);
   });
 });
 
@@ -3438,7 +3491,11 @@ describe('the next claim after a diagnosis', () => {
    * the real turn writes it (`baselineFindingPath`, the path this harness reads
    * it back from), so the record on disk is the real one.
    */
-  async function diagnosedWorkspace(workDir: string): Promise<{
+  async function diagnosedWorkspace(
+    workDir: string,
+    /** The finding the diagnosis's reviewer turn stands in for. */
+    finding: BaselineFinding = REPAIR_FINDING,
+  ): Promise<{
     readonly sourceRepo: string;
     readonly workspaceId: string;
     readonly workspacePath: string;
@@ -3452,7 +3509,7 @@ describe('the next claim after a diagnosis', () => {
     const record = fakeRecord();
     const baseline = await baselineWithLogs();
     const diagnosis = createBaselineDiagnosis({
-      reviewer: scriptedReviewer(REPAIR_FINDING).review,
+      reviewer: scriptedReviewer(finding).review,
       record,
       readyStatus: 'To Do',
       reviewStatus: 'In Review',
@@ -3478,7 +3535,7 @@ describe('the next claim after a diagnosis', () => {
     expect(record.status).toBe('To Do');
     // The finding the scripted reviewer stands in for is put exactly where the
     // real turn writes it, the path this harness reads it back from.
-    await writeReviewerFinding(workDir);
+    await writeReviewerFinding(workDir, finding);
     return { ...retained, record, diagnosis, comment: record.notes[0]?.text ?? '' };
   }
 
@@ -3532,6 +3589,86 @@ describe('the next claim after a diagnosis', () => {
           line.includes('make the fixture wait for the condition instead of the clock'),
       ),
     ).toBe(true);
+  });
+
+  it('hands the developer a field whole where the comment could only render it concisely', async () => {
+    const workDir = await createTempDir();
+    const { sourceRepo, workspaceId, base, diagnosis, comment } = await diagnosedWorkspace(
+      workDir,
+      WIDE_REPAIR_FINDING,
+    );
+
+    // The one Jira comment stays concise: the guidance field is rendered as one
+    // bounded line, and the instruction that comes after it is not in it.
+    const asComment = comment.split('\n').find((line) => line.startsWith('Repair guidance: '));
+    expect(asComment).toBe(`Repair guidance: ${WIDE_REPAIR_GUIDANCE.slice(0, 600)}…`);
+    expect(comment).not.toContain(WIDE_GUIDANCE_TAIL);
+
+    const { context, runs, published } = continuedIntake({
+      workDir,
+      sourceRepo,
+      base,
+      workspaceId,
+      findingText: comment,
+      diagnosis,
+      run: async () =>
+        runResultFor({
+          status: 'passed',
+          reason: 'the checks passed',
+          baseline: null,
+          workspace: workspaceFor({ continued: true, attempt: 2, baseCommit: base }),
+          reportPath: '/work/runs/run-2/result.json',
+        }),
+    });
+
+    const take = await takeOneItem(context, {});
+
+    // The comment is the thread's rendering of the finding, and the developer is
+    // handed the finding the retained record validated — including the last
+    // words of the repair, which the comment had to cut.
+    expect(take.outcome).toBe('taken');
+    expect(published[0]?.status).toBe('passed');
+    const guidance = runs[0]?.guidance ?? [];
+    expect(guidance).toContain(
+      `reviewed baseline finding — repair guidance: ${WIDE_REPAIR_GUIDANCE}`,
+    );
+  });
+
+  it('hands over the same whole field when the thread cannot be read either', async () => {
+    const workDir = await createTempDir();
+    const diagnosed = await diagnosedWorkspace(workDir, WIDE_REPAIR_FINDING);
+    const { context, runs, published } = continuedIntake({
+      workDir,
+      sourceRepo: diagnosed.sourceRepo,
+      base: diagnosed.base,
+      workspaceId: diagnosed.workspaceId,
+      findingText: diagnosed.comment,
+      commentsProblem: 'the comment read timed out',
+      diagnosis: diagnosed.diagnosis,
+      run: async () =>
+        runResultFor({
+          status: 'passed',
+          reason: 'the checks passed',
+          baseline: null,
+          workspace: workspaceFor({
+            continued: true,
+            attempt: 2,
+            baseCommit: diagnosed.base,
+          }),
+          reportPath: '/work/runs/run-2/result.json',
+        }),
+    });
+
+    const take = await takeOneItem(context, {});
+
+    // Nothing of the thread is available here: the finding is the one the
+    // retained evidence holds, whole, with the same field the comment cut.
+    expect(take.outcome).toBe('taken');
+    expect(published[0]?.status).toBe('passed');
+    const guidance = runs[0]?.guidance ?? [];
+    expect(guidance).toContain(
+      `reviewed baseline finding — repair guidance: ${WIDE_REPAIR_GUIDANCE}`,
+    );
   });
 
   it('recovers the reviewed finding from the evidence when the thread cannot be read', async () => {
@@ -4531,8 +4668,9 @@ describe('the diagnosis through `source run`', () => {
     process.env.FAKE_CODEX = JSON.stringify({
       stateDir: target.state.dir,
       plans: [
-        // The pre-delivery reviewer turn: one finding and nothing else.
-        { finding: JSON.stringify(REPAIR_FINDING) },
+        // The pre-delivery reviewer turn: one finding and nothing else, its
+        // repair longer than the one comment line the diagnosis renders.
+        { finding: JSON.stringify(WIDE_REPAIR_FINDING) },
         // The next claim's developer turn: it continues the ticket's own work
         // and does not repair the baseline it was told about, so the round that
         // judges it is still red.
@@ -4557,6 +4695,8 @@ describe('the diagnosis through `source run`', () => {
       const diagnosisComment = JSON.stringify(site.comments[0]?.body);
       expect(diagnosisComment).toContain(`${BASELINE_MARKER_PREFIX}repair:`);
       expect(diagnosisComment).toContain('Repair guidance');
+      // The comment stays concise: the repair's last words are not in it.
+      expect(diagnosisComment).not.toContain(WIDE_GUIDANCE_TAIL);
       const reviewerTurns = await fakeTurns(target.state);
       expect(reviewerTurns).toHaveLength(1);
       expect(reviewerTurns[0]?.prompt).toContain('You are Nexus Lens');
@@ -4591,8 +4731,13 @@ describe('the diagnosis through `source run`', () => {
       expect(developer).toContain(
         `reviewed baseline finding — likely cause: ${REPAIR_FINDING.likelyCause}`,
       );
-      expect(developer).toContain('reviewed baseline finding — repair guidance:');
-      expect(developer).toContain(REPAIR_FINDING.repairGuidance);
+      // The repair reaches the developer whole: the field is carried at the
+      // width the reviewer's finding was validated at, not the width the
+      // comment renders, so the instruction past character 600 is there too.
+      expect(developer).toContain(
+        `reviewed baseline finding — repair guidance: ${WIDE_REPAIR_GUIDANCE}`,
+      );
+      expect(developer).toContain(WIDE_GUIDANCE_TAIL);
       // The round that judged the turn is still red, so delivery is never
       // reached: the issue is told the failed attempt and waits In Review, and
       // the failed result carries no pull request.

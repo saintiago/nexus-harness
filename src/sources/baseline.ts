@@ -22,6 +22,12 @@
  * and no separate ticket, label, or manual ranking step is invented. Everything
  * else leaves the item In Review with the evidence and what a person must do.
  *
+ * That comment is one concise Jira record of the finding, and the finding is not
+ * cut to fit it: a field the comment renders as one bounded line is handed to the
+ * next coding turn whole, read back from the outcome the reviewer turn recorded,
+ * so the actionable end of a long repair is not lost between the ticket and the
+ * developer.
+ *
  * Nothing here is published anywhere but Jira, and nothing here is evidence of
  * a review: there is no pull request yet, so no GitHub review, Lens approval, or
  * check is fabricated for one.
@@ -60,7 +66,7 @@ import { readReceipt, receiptFilePath, updateReceipt } from './receipts.js';
 /** The prefix of the marker one diagnosis comment carries, in the Jira thread. */
 export const BASELINE_MARKER_PREFIX = 'nexus-baseline:';
 
-/** How wide one comment line may grow before it is truncated. */
+/** How wide one line of this module's own text may grow before it is cut: a comment paragraph. */
 const LINE_LIMIT = 600;
 
 /** The marker naming one actionable finding for one evidence identity. */
@@ -108,10 +114,30 @@ export function baselineEvidenceId(
     .slice(0, 32);
 }
 
-/** One line of text, so a finding cannot grow a comment without limit. */
+/**
+ * One line of text, no wider than `limit`: how one paragraph of the diagnosis's
+ * own Jira comment is rendered. This is the *comment's* bound, and only the
+ * comment's — the finding the next coding turn is handed is not cut here
+ * (see {@link wholeField}).
+ */
 function oneLine(text: string, limit = LINE_LIMIT): string {
-  const flat = text.replace(/\s+/g, ' ').trim();
+  const flat = wholeField(text);
   return flat.length <= limit ? flat : `${flat.slice(0, limit)}…`;
+}
+
+/**
+ * One field of a finding as one line, with nothing cut off.
+ *
+ * A field was bounded once, where the reviewer's turn was accepted
+ * (`MAX_FINDING_FIELD_CHARS`, src/reviews/baseline.ts), and that is the width a
+ * developer is handed: the 600-character line a Jira comment renders a field as
+ * is the comment's own business. Cutting the field again here — the way that
+ * comment rendering does — is how a valid repair whose concrete change or
+ * necessary qualification comes after character 600 would reach the next coding
+ * turn with exactly that instruction missing.
+ */
+function wholeField(text: string): string {
+  return text.replace(/\s+/g, ' ').trim();
 }
 
 /** The one marker on the thread that belongs to this evidence, and what it is. */
@@ -213,8 +239,8 @@ const ATTENTION_FIELD_LABELS = ['Why no repair', 'Required action'] as const;
 const REPAIR_FIRST_GUIDANCE = 'repair the baseline before continuing the original task';
 
 /**
- * The reviewed finding one diagnosis comment carries, or `null` when the text
- * is not that whole comment.
+ * The fields one diagnosis comment of the item's own thread wrote, or `null`
+ * when the text is not that whole comment.
  *
  * Only a complete comment counts: the repair marker naming the evidence it was
  * written for, and all four fields nonblank, each one whole as the comment wrote
@@ -226,15 +252,17 @@ const REPAIR_FIRST_GUIDANCE = 'repair the baseline before continuing the origina
  * accepted only when the two agree (docs/WORKFLOW.md §11).
  *
  * `fields` are those four values in the order the comment writes them, one line
- * each: what a caller holds against the finding the retained record validated,
- * because the marker alone names the evidence, never the text (see
- * {@link baselineThreadFinding}).
+ * each and exactly as the comment wrote them: what a caller holds against the
+ * finding the retained record validated, because the marker alone names the
+ * evidence, never the text (see {@link baselineThreadFinding}). A comment renders
+ * a long field concisely, so this parse can only ever say what the comment says:
+ * the finding a developer is handed is the validated one the outcome record
+ * holds, never this text ({@link baselineFindingGuidanceLines}).
  *
  * The labels are this harness's own, written by `diagnosisParagraphs` above.
  */
 export function baselineCommentFinding(text: string): {
   readonly evidenceId: string;
-  readonly lines: readonly string[];
   readonly fields: readonly string[];
 } | null {
   const marker = `${BASELINE_MARKER_PREFIX}repair:`;
@@ -264,17 +292,14 @@ export function baselineCommentFinding(text: string): {
     }
   }
   const fields: string[] = [];
-  const lines: string[] = [];
   for (const label of REPAIR_FIELD_LABELS) {
     const value = written.get(label);
     if (value === undefined) {
       return null;
     }
-    const field = oneLine(value);
-    fields.push(field);
-    lines.push(findingGuidanceLine(label, field));
+    fields.push(wholeField(value));
   }
-  return { evidenceId, lines: [repairFirstGuidanceLine(), ...lines], fields };
+  return { evidenceId, fields };
 }
 
 /**
@@ -289,6 +314,12 @@ export function baselineCommentFinding(text: string): {
  * validated and published for that evidence. A comment whose field was edited
  * after the diagnosis wrote it is ordinary thread context, and the caller hands
  * the complete recorded finding over instead (docs/WORKFLOW.md §11).
+ *
+ * The comment is the thread's own rendering of the finding, and this is where the
+ * two part: the fields it holds against the record are the comment's bounded
+ * lines, while the guidance it returns is built from the record, each field whole
+ * — so a repair the comment had to render concisely reaches the developer
+ * complete.
  */
 export function baselineThreadFinding(
   text: string,
@@ -327,12 +358,16 @@ function findingGuidanceLine(label: string, value: string): string {
 }
 
 /**
- * The same reviewed finding, read back from the evidence instead of from the
- * comment that carries it, as the same guidance lines: each field bounded
- * exactly as the comment bounds it, so a developer who cannot be handed the
- * thread is handed the same finding the thread would have given them
- * (docs/WORKFLOW.md §11). An actionable finding is the same finding either way,
- * ordering requirement included.
+ * The reviewed finding as the guidance lines a later attempt reads, each field
+ * whole and on a line of its own — the failing check, the evidence, the likely
+ * cause, and the repair — at the width the reviewer's finding was validated at
+ * (`MAX_FINDING_FIELD_CHARS`, src/reviews/baseline.ts) rather than the concise
+ * width one Jira comment line has. This is the one place a finding becomes
+ * guidance, for the thread route and the retained-record route alike
+ * (docs/WORKFLOW.md §11): nothing here cuts a field a second time, so a developer
+ * who cannot be handed the thread is handed the same complete finding the thread
+ * stands for. An actionable finding is the same finding either way, ordering
+ * requirement included.
  */
 export function baselineFindingGuidanceLines(finding: BaselineFinding): readonly string[] {
   const labelled: readonly (readonly [string, string])[] =
@@ -347,7 +382,7 @@ export function baselineFindingGuidanceLines(finding: BaselineFinding): readonly
           [ATTENTION_FIELD_LABELS[0], finding.reason],
           [ATTENTION_FIELD_LABELS[1], finding.requiredAction],
         ];
-  const fields = labelled.map(([label, value]) => findingGuidanceLine(label, oneLine(value)));
+  const fields = labelled.map(([label, value]) => findingGuidanceLine(label, wholeField(value)));
   return finding.outcome === 'repair' ? [repairFirstGuidanceLine(), ...fields] : fields;
 }
 
