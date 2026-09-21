@@ -18,7 +18,7 @@ This is a human-readable reference, **not runtime configuration**. The applicati
 
 Configuration is **two files**, and each field has exactly one owner. One Nexus-wide harness configuration says how this instance runs work; one project configuration, at a connected repository's root, says what that repository is. Every command is given both: `--config` names the harness configuration, and the connected project is named by `--repo` (the commands that clone from a checkout — `run`, `source run`, `source watch`, `queue run`, `queue watch`) or by `--project` (the commands that only read that project's configuration — `check-config`, `source list`, `review scan`, `review watch`). A command runs on what the two compose.
 
-The practical sequence for connecting one project — the single file it commits, its prerequisites, the credentials that stay in the environment, and the `check-config`, `source list`, `queue run` order — is [connect-a-project.md](connect-a-project.md). That guide links back here rather than restating the field contracts below.
+The practical sequence for connecting one project to an already installed runtime — the single file it commits, the project-side checks it must satisfy, and the `check-config`, `source list`, `queue run` order — is [connect-a-project.md](connect-a-project.md). That guide keeps installation-wide setup with the operator and links back here rather than restating the field contracts below.
 
 The Nexus-wide harness configuration:
 
@@ -924,7 +924,7 @@ Nothing else is accepted: `--task` belongs to `run`, and `--limit` to `source ru
 commands are opt-in; `check-config` validates the objects they need without approving any of them
 for use.
 
-For the end-to-end onboarding sequence a project follows before these commands — prerequisites, the committed `nexus.project.json`, and the validated `check-config` → `source list` → `queue run` order — see [connect-a-project.md](connect-a-project.md).
+For the end-to-end onboarding sequence a project follows before these commands — the project-side preparation, the committed `nexus.project.json`, and the validated `check-config` → `source list` → `queue run` order against a prepared installation — see [connect-a-project.md](connect-a-project.md).
 
 ### What the configuration must carry
 
