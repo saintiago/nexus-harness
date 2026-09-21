@@ -55,10 +55,14 @@ and transition helpers.
 `sources/contract.ts` declares the ordinary data between them, `sources/coordinator.ts` decides
 which ending qualifies and what follows (a return to the ready status, or In Review for a person),
 and finishes whatever a previous invocation left pending before it discovers or claims anything,
-stopping that intake there when the resume reports a person is needed — an unconfirmed reviewer
-shutdown included, which keeps the intake lock — and requires the reviewed finding before it starts
-that continuation at all — from the thread, or
-read back from the retained evidence, or intake stops with the ticket's state named —
+  stopping that intake there when the resume reports a person is needed — an unconfirmed reviewer
+  shutdown included, which keeps the intake lock — and requires the reviewed finding before it starts
+  that continuation at all — from the item's own thread, but only as the whole comment that names the
+  exact evidence the retained record closed as a repair, otherwise read back from that retained
+  evidence, otherwise intake stops with the ticket's state named. A stop that lands while the
+  reviewer turn is running is recorded rather than dropped: the one comment and the one move run
+  under their own bounded best-effort deadline, so the claimed ticket is never stranded in the
+  running status —
 and `src/cli/` composes the diagnosis from the configured reviewer and the source's own statuses
 beside the delivery and completion steps it already builds. The phase starts no coding turn,
 imports no connector, resolves no credential, and never touches GitHub: there is no pull request

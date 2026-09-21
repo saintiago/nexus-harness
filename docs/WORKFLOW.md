@@ -1062,10 +1062,16 @@ brief of every rung of the climb that claim may take, not only its first. The fi
 the order it belongs in, as a line of its own: the baseline is repaired before the original task
 continues, and the coding prompt renders the finding as a requirement of the attempt rather than as
 context it may weigh. The finding reaches that
-claim from the item's own thread, and when the thread cannot supply it — a read that failed, or a
-thread that no longer carries it — from the evidence this harness kept beside the workspace: a
-required finding that cannot be read back stops intake with the ticket's state named instead of
-starting a developer with the original task alone. An inconclusive,
+claim from the item's own thread, and when the thread cannot supply it — a read that failed, a
+comment that no longer says the whole finding, or a comment that names some other evidence — from
+the evidence this harness kept beside the workspace: a required finding that neither source can
+supply stops intake with the ticket's state named instead of starting a developer with the original
+task alone. The retained evidence is what says a finding is required and which evidence it belongs
+to, and a comment is that finding only as its whole self: the `nexus-baseline:repair:<evidence>`
+marker with that exact identity, and all four fields nonblank. A partial quotation, a rewritten
+comment, a marker without an identity, or a complete comment about other evidence is ordinary
+thread context — it is never promoted to what the attempt has to repair first, and the complete
+recorded finding is handed over instead. An inconclusive,
 environmental, or unsafe finding posts one comment carrying
 `nexus-baseline:attention:<evidence>`, the reason and the required action, moves the issue to
 `reviewStatus`, and stops the queue for a person. Nothing is posted to GitHub, and no coding turn
@@ -1100,8 +1106,17 @@ the intake lock, in a `source` command and in the queue both, because something 
 started may still be writing. A turn interrupted before it wrote a finding is not run again
 for the same evidence, and the item stays In Review with what a person must do. An item a person has
 moved is left exactly where that person left it; a record this harness left unfinished after it
-really made the move is reconciled with the finding the item's own thread already carries, so that
-workspace's next claim is still told it.
+really made the move is reconciled with the finding the item’s own thread already carries, so that
+workspace’s next claim is still told it.
+
+A stop that arrives while the reviewer turn is running is not a window where the claimed ticket is
+abandoned: the turn’s interruption is what this evidence’s one comment records, and the item is
+moved to `reviewStatus` with it. That one comment and one move run under their own short
+best-effort deadline rather than the aborted stop they were given — the same bound an interrupted
+run’s own result gets — so the ticket is never left in the running status with nothing looking for
+it, and an unconfirmed reviewer shutdown keeps the intake lock exactly as it does anywhere else. A
+stop the caller asked for *before* the turn began still writes nothing: the record is not on the
+issue yet, and the next invocation’s own recovery finishes it.
 
 ### Exits
 

@@ -73,7 +73,9 @@ behaviour, and a file-task run has no ticket to return in any case.
 failing check, the evidence, the likely cause, and the repair guidance), or an inconclusive one
 (why no repository-local repair can be named, and what a person must supply, do, or decide). A turn
 that fails, is stopped, writes nothing usable, or leaves a changed clone has no finding, and is
-handled exactly like an inconclusive one. The finding file lives in the turn's own working
+handled exactly like an inconclusive one; when the stop that ended it was the caller's own, the
+interruption is what that inconclusive record names, and it is still published. The finding file
+lives in the turn's own working
 directory, which is the only place the launch lets it write. The finding file decides nothing on its
 own: what the turn produced is recorded as `outcome.json` beside the evidence, before anything is
 published — the validated finding, or the problem that rejected the turn, with the turn's own stop —
@@ -95,9 +97,13 @@ used to cut off exactly the likely cause and the repair, which are the two field
 on. The finding also carries the order it belongs in: the guidance and the coding prompt both say
 that the baseline is repaired before the original task continues, so an attempt is never left to
 read the repair as optional context. That finding is not context the attempt may start without: the item's own thread is its ordinary
-source, and when the thread cannot supply it — a read that failed, or a thread that no longer carries
-it — the evidence kept beside the workspace is. A finding that is required this way and cannot be
-read back stops intake with the ticket's state named, so a developer never starts a baseline
+source, and when the thread cannot supply it — a read that failed, a comment that no longer says the
+whole finding, or a comment that names some other evidence — the evidence kept beside the workspace
+is. The thread's comment counts as that finding only as its whole self: the marker naming the exact
+evidence the retained record closed as a repair, and all four fields nonblank. Anything else is
+ordinary thread context — never promoted to what the attempt must repair first — and the complete
+recorded finding is handed over instead. A finding that is required this way and that neither source
+can supply stops intake with the ticket's state named, so a developer never starts a baseline
 continuation with the original task alone. Nothing about that attempt is special — the same runner, the same escalation ladder starting
 again at its first tier, the same checks, and the same delivery refusal for a still-red result. An
 inconclusive, environmental, or unsafe diagnosis posts one
@@ -143,15 +149,27 @@ part of where evidence lives: a resume, a read-back, or a closure reads this pro
 only, and a record that names another project is refused by name, so starting one project can never
 post on, transition, or close another project's issue.
 
+A stop that lands while the reviewer turn is running is not a window in which the ticket is
+abandoned. The turn ends, and the interruption is what this evidence's one comment then records:
+the item the attempt claimed is moved to `reviewStatus` with it, under the same short best-effort
+deadline an interrupted run's own result gets rather than the aborted stop that ended the turn.
+That one comment and one move are the whole of it — no coding turn, no repair guessed at — and an
+unconfirmed reviewer shutdown keeps the intake lock exactly as it does anywhere else. A stop the
+caller asked for *before* the turn began still writes nothing: nothing is on the issue yet, and the
+next invocation's own recovery finishes what that one recorded.
+
 ## Modules
 
 - `src/sources/baseline.ts` — the phase: the evidence identity, the marker, the one comment, and the
   one status move — with the intake lock kept when the reviewer runtime's own stop could not be
-  confirmed — the retained evidence record a restart resumes from — named by the connected
+  confirmed, and with the interruption published under its own bounded best-effort deadline when the
+  stop was the caller's own — the retained evidence record a restart resumes from — named by the connected
   project's own namespace, so one `workDir` can serve several projects — the step that finishes what
   a previous invocation left pending, reconciling a record this harness left unfinished after its
   own move with the finding the item's thread carries, and the read-back of a finding a continuation
-  is required to be told — and the one reading of a resume outcome its callers share: what stops an
+  is required to be told — with the identity that read-back publishes, and with the whole-comment
+  check that decides whether a comment of the thread is that same finding or ordinary context — and
+  the one reading of a resume outcome its callers share: what stops an
   intake, and whether everything the diagnosis started was confirmed stopped, so a batch, a watch
   scan, and the serial queue cannot read the same outcome differently.
 - `src/reviews/baseline.ts` — the one reviewer turn over the snapshot clone, its prompt, and the
@@ -168,8 +186,8 @@ post on, transition, or close another project's issue.
   which ending qualifies, runs the resume step before discovery, requires the reviewed finding
   before it starts a baseline continuation, and stops intake rather than claiming another ticket
   when a resume reports an unconfirmed reviewer shutdown; `src/sources/guidance.ts` carries
-  the reviewed finding into every later attempt of that workspace, from the thread or from the
-  evidence; `src/queue/loop.ts` carries a
+  the reviewed finding the coordinator established into every later attempt of that workspace —
+  never one a comment merely claims by carrying a marker; `src/queue/loop.ts` carries a
   diagnosed ticket into its repair attempt;
   `src/cli/source-command.ts` and `src/cli/queue-command.ts` compose the phase from the configured
   reviewer and the source's own statuses.
@@ -182,7 +200,10 @@ code lives and what owns what.
 - Offline: the phase against an in-memory thread and a scripted reviewer — an actionable finding
   becomes one marker comment and a return to the ready status, an inconclusive one becomes one
   comment and In Review, a failed reviewer turn becomes the same attention record, a stop is not
-  written, a failed comment or move moves nothing, and a thread that cannot be read starts no turn;
+  written, an interrupt that really lands while the reviewer turn is running is recorded as the
+  attention comment that moves the ticket to In Review — with the lock kept when that turn could not
+  confirm its own stop, and with a restart then spending neither a second turn nor a second comment —
+  a failed comment or move moves nothing, and a thread that cannot be read starts no turn;
   the reviewer turn through the real view and the stand-in runtime, over a disposable repository
   whose failing baseline is real — the prompt carries the commands, the bounded output and the
   snapshot, the finding is validated, a missing file and a changed clone are refused, the turn is
@@ -224,7 +245,12 @@ code lives and what owns what.
   own prompt, that the baseline is repaired before the original task continues — on a later rung of the same climb as well as on
   the first, and the finding recovered from the retained evidence when the thread cannot be read at
   all, with a missing finding file stopping the intake for a person instead of starting the
-  developer without it; two connected projects sharing one `workDir` never resuming, commenting on,
+  developer without it; the whole-comment check that decides whether a comment of the thread is the
+  reviewed finding — a partial quotation and a complete comment naming other evidence both fall
+  back to the complete recorded finding, and a marker-carrying comment nothing establishes stays
+  ordinary context and never becomes what the turn must repair first — with the finding one
+  diagnosis comment carries, field by field, accepted only as its whole self; two connected projects
+  sharing one `workDir` never resuming, commenting on,
   moving, or closing each other's pending evidence, and evidence that names another project being
   refused by name; the restart through the entry point a batch or a queue really uses — a diagnosis
   interrupted between its comment and its status move, resumed with no second turn and no second

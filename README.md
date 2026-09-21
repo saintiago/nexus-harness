@@ -290,11 +290,17 @@ read from the checkout `--repo` names, so the repository a run clones describes 
    pending is finished before anything else is discovered: the missing status move, or the
    validated outcome the reviewer turn's invocation recorded — never a second turn or a second
    comment for the same evidence, and never the finding file a turn that then failed left behind. A
+   stop that lands while the reviewer turn is running is recorded rather than dropped: that one
+   comment and that one move run under their own bounded best-effort deadline, so the claimed
+   ticket is never left In Progress with nothing looking for it. A
    log file the diagnosis cannot read is incomplete evidence, not a check that said nothing: the
    ticket stays In Review with the paths named, and no reviewer turn is started from it. The diagnosis's
    own evidence lives under the connected project's namespace, so two projects sharing one output
    directory never act on each other's pending diagnosis, and the claim that follows a repair
-   always carries the finding — from the thread, or read back from that evidence.
+   always carries the finding — from the thread, or read back from that evidence. Only a comment
+   that says the whole finding and names the exact evidence the retained record closed as a repair
+   counts as coming from the thread; a partial, rewritten, or differently attributed comment is
+   context, and the recorded finding is handed over in its place.
 5. **Coding turns**: one fresh invocation of the configured launch per top-level turn, started in
    the working copy and never asking for approval. The implementation turn is given the task; each
    repair turn is given the failures the harness observed for itself. Every turn of the run uses the
@@ -890,7 +896,10 @@ What one invocation does:
    continues the workspace with the finding as guidance — every field of it, on every rung of that
    claim — repairs the baseline, and then continues the original task. That finding is read from
    the ticket's thread, or, when the thread cannot supply it, from the evidence the diagnosis kept
-   under the connected project's own namespace; when neither can, the queue stops with the
+   under the connected project's own namespace. The thread counts only as its whole comment: the
+   marker naming the evidence the retained record closed as a repair, and all four fields. A
+   partial, rewritten, or differently attributed comment is ordinary context, and the recorded
+   finding is handed over instead; when neither source can supply it, the queue stops with the
    ticket's state named instead of starting the developer without it.
 4. **Source readiness.** After a confirmed Done, the operator's checkout must be on the configured
    base branch, carry no uncommitted or untracked work, and have the expected delivery repository

@@ -239,7 +239,10 @@ workspace's own history began — the first attempt that workspace's ledger reco
 attempt reads the whole thread. That window is what keeps a reviewed baseline finding in every
 rung's brief: the diagnosis writes it to the thread between two attempts of the same workspace, so a
 window that began at the previous attempt would drop exactly the guidance a later rung still has to
-act on. Every rung of one climb reads the thread for itself, so a later rung is not handed the
+act on — and the same finding is read back from the retained evidence when the thread cannot supply
+it whole. The evidence is also what says which comment is that finding: only one carrying the marker
+with that exact evidence identity, and all four fields nonblank, counts — anything else is ordinary
+thread context ([WORKFLOW.md](WORKFLOW.md) §11). Every rung of one climb reads the thread for itself, so a later rung is not handed the
 previous rung's stale view of it — the harness's own comment for the attempt before it included. A
 continuation is also told what its workspace
 ledger records of the attempts before it: tier, outcome, and the reason each run ended with. All of

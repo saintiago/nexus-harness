@@ -64,19 +64,19 @@ src/
     refresh.ts                    (376)  source readiness between tickets: fetch, verify, fast-forward only
     changes.ts                    (288)  inspectWorkspaceChanges: what the copy differs from its base by
   runs/
-    contracts.ts                  (419)  run and turn requests/results, the guidance prefix, the two errors
+    contracts.ts                  (430)  run and turn requests/results, the guidance prefix, the feedback deadline, the two errors
     runner.ts                     (668)  runTask: the loop (prepare or continue -> baseline -> turns -> checks)
     finalize.ts                   (462)  how a run ends: stop evidence, change summary, report
     stops.ts                      (113)  the stop request one phase works under, and the stop cause
     progress.ts                   (152)  timeline lines, reasons, and the counts they carry
     feedback.ts                   (30)   the failed commands one repair turn is given
   sources/
-    contract.ts                   (734)  TaskSource, the ordinary source data and errors, pointer labels
+    contract.ts                   (747)  TaskSource, the ordinary source data and errors, pointer labels
     receipts.ts                   (238)  the per-project intake lock and one receipt per attempted item
     eligibility.ts                (81)   what an item is: a first attempt, a continuation, or a refusal
-    guidance.ts                   (95)   what an attempt is told, bounded: the finding, the thread, attempts
-    baseline.ts                   (1204) the pre-delivery diagnosis: its evidence, one comment, one move
-    coordinator.ts                (1696) runSource and watchSource: discovery, the ladder, publication
+    guidance.ts                   (92)   what an attempt is told, bounded: the finding, the thread, attempts
+    baseline.ts                   (1262) the pre-delivery diagnosis: its evidence, one comment, one move
+    coordinator.ts                (1746) runSource and watchSource: discovery, the ladder, publication
     list.ts                       (88)   the read-only `source list` preview
     jira/
       connector.ts                (41)   createJiraSource: the wiring of the functions below
@@ -289,8 +289,10 @@ further would separate one decision from itself: `runs/runner.ts` (the loop), `s
   what an item is — a first attempt, a continuation of the workspace its pointer names, or a refusal —
   and `guidance.ts` renders what an attempt is told from the item's own thread and its earlier
   attempts, bounded: a reviewed baseline finding is carried field by field, ahead of the rest, and
-  never dropped for later chatter — from the thread, or, for an attempt whose thread cannot supply it,
-  read back from the retained evidence by `baseline.ts`. `coordinator.ts` discovers a finite batch, reserves, claims, climbs the
+  never dropped for later chatter — but only one the coordinator established, from the whole finding
+  comment that names the evidence the retained record closed as a repair or, when the thread cannot
+  supply it, from that record through `baseline.ts`; a comment is never promoted to that requirement
+  merely because it carries a marker. `coordinator.ts` discovers a finite batch, reserves, claims, climbs the
   configured escalation ladder one rung per attempt inside that claim — publishing each attempt's
   own comment while the item stays in the running status, and the final result and review move when
   the climb ends — refuses to start a baseline continuation whose required finding cannot be read
@@ -299,12 +301,16 @@ further would separate one decision from itself: `runs/runner.ts` (the loop), `s
   evidence record it writes before its reviewer turn under the connected project's own namespace —
   so one `workDir` never mixes two projects' evidence — one comment, the one status move the finding
   asks for — the intake lock kept when the reviewer runtime's own stop could not be confirmed — the
-  stop read back from that recorded outcome when a resume finds the comment already on the thread,
+  interruption a caller's own stop caused published under its own bounded best-effort deadline
+  rather than the aborted signal, so the ticket it claimed is never stranded in the running status —
+  the stop read back from that recorded outcome when a resume finds the comment already on the thread,
   so a deduplicated finding never releases a lock its own record says to keep — the
   `resume` step that finishes what an invocation left pending before anything is discovered or
   claimed, which reconciles a record this harness left unfinished after its own status move with the
   finding the item's own thread carries, and the read-back of a finding a continuation is required
-  to be told, through the reviewer and record functions it is handed — and `resumeStop`, the one
+  to be told — with the identity it was published for, and with the whole-comment check that decides
+  whether a comment of the thread is that same finding — through the reviewer and record functions it
+  is handed — and `resumeStop`, the one
   reading of what a resume outcome means for its caller's intake: a stop, and whether everything the
   diagnosis started was confirmed stopped.
 - **Does not own:** Jira. The coordinator imports no connector, no JQL, and no credential. It also
@@ -313,7 +319,7 @@ further would separate one decision from itself: `runs/runner.ts` (the loop), `s
   `SourceSummary`, `SourceTake`, `QueueTicket`, `SourceError`, `SourceFeedbackError`, `workspacePointerLabel`,
   `parseWorkspacePointers` (`sources/contract.ts`); `runSource`, `watchSource`, `SourceWatchOptions`
   (`sources/coordinator.ts`); `takeOneItem`, `SourceTakeRequest` (`sources/coordinator.ts`);
-  `createBaselineDiagnosis`, `baselineEvidenceId`, `baselineGuidanceLines`,
+    `createBaselineDiagnosis`, `baselineEvidenceId`, `baselineCommentFinding`,
   `baselineFindingGuidanceLines`, `BaselineDiagnosisParts`, `BASELINE_EVIDENCE_FILE`,
   `BASELINE_MARKER_PREFIX`, `resumeStop` (`sources/baseline.ts`); `guidanceFrom` (`sources/guidance.ts`);
   `listSource`, `SourceListEntry` (`sources/list.ts`);
@@ -516,12 +522,11 @@ fixtures: helper modules may not import the CLI, and `src/shared/types.ts` may n
 | Workspace layout and ledger | `WorkspaceState`/`WorkspaceAttempt` (`src/workspace/state.ts`), `ContinuedWorkspace` (`src/workspace/reopen.ts`); the paths in `src/workspace/run-directory.ts` | the runner, as each attempt finishes; the coordinator resolves it, and refuses rather than guesses |
 | Pointer label | `workspacePointerLabel`/`parseWorkspacePointers` (`src/sources/contract.ts`), written through `src/sources/jira/labels.ts` | the run that creates a workspace, once, before any coding turn |
 | Escalation ladder | `EscalationTier` (`src/shared/types.ts`), the `escalation` schema in `src/config/schema.ts`, the climb in `src/sources/coordinator.ts` | the Nexus-wide harness configuration |
-| Attempt guidance | `SourceComment` (`src/sources/contract.ts`), rendering and bounds in `src/sources/guidance.ts`, the prompt section in `src/agents/codex/prompt.ts` | the item's own thread and the workspace ledger, bounded, context only |
+| Attempt guidance | `SourceComment` (`src/sources/contract.ts`), rendering and bounds in `src/sources/guidance.ts`, the prompt section in `src/agents/codex/prompt.ts` | the item's own thread and the workspace ledger, bounded; the reviewed baseline finding the coordinator establishes is carried as its own lines, ahead of the context |
 | Delivery | `GitHubDeliveryConfig` (`src/shared/types.ts`), the project `delivery` schema in `src/config/schema.ts`, `Delivery`/`DeliveryRequest`/`DeliveredPullRequest` and `createGitHubDelivery` (`src/delivery/github.ts`), the call in `src/sources/coordinator.ts` | the connected project's configuration; GitHub is the record of whether a pull request exists |
 | Review | `GitHubReviewConfig` (`src/shared/types.ts`), the Nexus-wide `reviewer` schema composed with the project's `source` and `delivery` in `src/config/load.ts`, `ReviewQueue`/`ReviewRepository`/`ReviewVerdict`/`ReviewSummary` (`src/reviews/contract.ts`), `createGitHubReviewClient` (`src/reviews/github.ts`), `createReviewerTurn` (`src/reviews/reviewer.ts`), `scanReviews`/`watchReviews` (`src/reviews/scan.ts`), wired by `src/cli/review-command.ts` | the harness configuration's reviewer integration, the connected project's own repository, and the GitHub App installation; the native review pinned to a commit is the record of what was reviewed |
 | Serial queue | `QueueTicket`/`SourceTake` (`src/sources/contract.ts`), `takeOneItem` (`src/sources/coordinator.ts`), the optional one-ticket scope in `ReviewScanContext` and `CompletionPassParts`, `runQueue` (`src/queue/loop.ts`), `refreshSource` (`src/workspace/refresh.ts`), wired by `src/cli/queue-command.ts` | the operator's configuration; Jira, the pointer label, and GitHub's native state are the authorities a restart reads |
-| Baseline diagnosis | `BaselineFinding`/`BaselineDiagnosis`/`BaselineRecord`/`BaselineReview` (`src/sources/contract.ts`), `createBaselineDiagnosis` (`src/sources/baseline.ts`), `createBaselineReviewer` (`src/reviews/baseline.ts`), `createJiraBaselineRecord` (`src/sources/jira/baseline.ts`), wired by `src/cli/source-command.ts` and `src/cli/queue-command.ts` | the configured reviewer, the source's own thread and statuses, and the completed red round; the marker comment in the item's own thread is the remote half of the record a restart reads, and the evidence file the phase writes under `<workDir>/baseline/<evidence>/` is the local half |
-| Baseline diagnosis | `BaselineFinding`/`BaselineDiagnosis`/`BaselineRecord`/`BaselineReview`/`BaselineReviewedFinding` (`src/sources/contract.ts`), `createBaselineDiagnosis` (`src/sources/baseline.ts`), `createBaselineReviewer` (`src/reviews/baseline.ts`), `createJiraBaselineRecord` (`src/sources/jira/baseline.ts`), wired by `src/cli/source-command.ts` and `src/cli/queue-command.ts` | the configured reviewer, the source's own thread and statuses, and the completed red round; the marker comment in the item's own thread is the remote half of the record a restart reads, and the evidence file the phase writes under `<workDir>/baseline/<project>/<evidence>/` — the connected project's own namespace, the same one its intake lock is named by — is the local half |
+| Baseline diagnosis | `BaselineFinding`/`BaselineDiagnosis`/`BaselineRecord`/`BaselineReview`/`BaselineReviewedFinding` (`src/sources/contract.ts`), `createBaselineDiagnosis`/`baselineCommentFinding` (`src/sources/baseline.ts`), `createBaselineReviewer` (`src/reviews/baseline.ts`), `createJiraBaselineRecord` (`src/sources/jira/baseline.ts`), wired by `src/cli/source-command.ts` and `src/cli/queue-command.ts` | the configured reviewer, the source's own thread and statuses, and the completed red round; the marker comment in the item's own thread is the remote half of the record a restart reads — and only as its whole comment, naming the exact evidence identity the record closed as a repair — and the evidence file the phase writes under `<workDir>/baseline/<project>/<evidence>/`, the connected project's own namespace, is the local half |
 
 The runner's collaborators are still plain functions (`RunnerDependencies`), so a test substitutes
 one function rather than a framework. `cli/dependencies.ts` is the only place that builds the real

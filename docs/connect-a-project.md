@@ -204,10 +204,12 @@ From here Nexus is autonomous, one ticket at a time, and needs no further setup:
 2. The baseline round runs `setup` and every `check`; a red baseline stops a fresh attempt before
    any coding turn, and is then diagnosed in one local reviewer turn over the snapshot and the
    command evidence: an actionable finding is one comment and a return of the same ticket to the
-   ready status, whose next claim repairs the baseline and then continues the original task, with
-   every field of the finding in the developer's brief — from the ticket's thread, or, when that
-   thread cannot be read, read back from the evidence the diagnosis kept for this connected
-   project. The reviewer turn runs under a narrower
+    ready status, whose next claim repairs the baseline and then continues the original task, with
+    every field of the finding in the developer's brief — from the ticket's thread, or, when that
+    thread cannot be read, read back from the evidence the diagnosis kept for this connected
+    project. Only the whole comment counts as coming from the thread: the marker naming the exact
+    evidence the retained record closed as a repair, and all four fields; anything less is context,
+    and the recorded finding is handed over instead. The reviewer turn runs under a narrower
    filesystem policy than a coding turn: it writes only its own finding file, and the snapshot it
    reads and the ticket's workspace stay read-only to it. A green baseline starts the implementation
    turn, and a completed red round starts repair turns within the shared ladder instead of giving
