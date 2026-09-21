@@ -12,23 +12,27 @@
  */
 import type { HistoryReaders, TicketHistory } from './contract.js';
 import { messageOf } from '../shared/errors.js';
+import type { SourceRef } from '../shared/types.js';
 import {
   type DeveloperReportRequest,
   type HistoryBrief,
   type HistoryDelivery,
   type HistoryEntry,
+  type HistoryFinding,
   type HistoryMirror,
   type HistoryReportSummary,
   type ReviewerReportRequest,
   type ReadComment,
 } from './contract.js';
-import { historyMarkerOf, markerEntryId } from './marker.js';
+import { historyMarkerOf } from './marker.js';
 import { workspaceHistoryRoot } from './paths.js';
 import {
+  notePublishedDeveloperReport,
   readLocalReports,
   recordDeveloperReport,
   recordReviewerReport,
   reportSummaryOf,
+  textSha256,
 } from './reports.js';
 import type { LocalReport } from './reports.js';
 import { readLatestEntries, writeSnapshot } from './store.js';
@@ -60,13 +64,15 @@ function legacyRunIdOf(text: string): string | null {
  */
 const HARNESS_COMMENT_SHAPES = /(^|\n)Harness (run|refused|held) /;
 
-/** Whether one piece of external text is this harness's own publication. */
+/**
+ * Whether one comment reads as this harness speaking rather than as a person:
+ * it is written by the configured harness author, or it carries one of the
+ * result shapes the harness's own comments have always had. A bare marker is
+ * deliberately not enough — any author can quote one — so a quoted marker
+ * stays human feedback and is never classified away.
+ */
 function isHarnessText(text: string, author: string, harnessAuthors: readonly string[]): boolean {
-  if (
-    historyMarkerOf(text) !== null ||
-    legacyRunIdOf(text) !== null ||
-    HARNESS_COMMENT_SHAPES.test(text)
-  ) {
+  if (HARNESS_COMMENT_SHAPES.test(text)) {
     return true;
   }
   return harnessAuthors.some((name) => name !== '' && name === author);
@@ -178,82 +184,370 @@ function previousOf(previous: readonly HistoryEntry[], id: string): HistoryEntry
   return previous.find((entry) => entry.id === id);
 }
 
-/** Where the last report sits in time, or `null` when there is none. */
-function lastReportAt(reports: readonly HistoryReportSummary[]): string | null {
-  let latest: string | null = null;
-  for (const report of reports) {
-    if (latest === null || report.createdAt > latest) {
-      latest = report.createdAt;
-    }
+/**
+ * Whether one entry is new to this snapshot: it was not in the previous
+ * snapshot at all, or its text or edit instant changed since. A comment that
+ * arrived while the previous turn was running was absent from the immutable
+ * input that turn held, and an edited comment carries wording that input never
+ * had; both are feedback the next turn has to see.
+ */
+function unseenInPrevious(entry: HistoryEntry, previous: readonly HistoryEntry[] | null): boolean {
+  if (previous === null) {
+    return true;
   }
-  return latest;
+  const before = previousOf(previous, entry.id);
+  if (before === undefined) {
+    return true;
+  }
+  return before.text !== entry.text || before.updatedAt !== entry.updatedAt;
+}
+
+/** Whether one review decision or state asked for changes. */
+function requestsChanges(value: string | null | undefined): boolean {
+  return (
+    value !== null && value !== undefined && /changes[_ ]requested|request[_ ]changes/i.test(value)
+  );
 }
 
 /**
- * The latest reviewer round whose decision requested changes, when the newest
- * reviewer report still does. A published native review is used when no complete
- * local report was kept for it; the caller records the gap.
+ * The publication identities this machine recorded for the retained reports:
+ * the Jira comment each developer report was published as, and the native
+ * review each reviewer report was published as. A mirror is only ever
+ * recognized through one of these, never through wording alone.
+ */
+interface PublicationIndex {
+  /** Every retained developer report by the Jira comment it was published as. */
+  readonly developerByComment: ReadonlyMap<
+    string,
+    { readonly entryId: string; readonly textSha256: string | null }
+  >;
+  /** Every retained developer report by the run it reports, for the legacy shape check. */
+  readonly developerByRun: ReadonlyMap<string, string>;
+  /** Every retained reviewer report by the native review it was published as. */
+  readonly reviewById: ReadonlyMap<
+    number,
+    {
+      readonly entryId: string;
+      readonly bodySha256: string | null;
+      readonly findings: readonly HistoryFinding[];
+    }
+  >;
+  /** Every retained reviewer report by its own review id. */
+  readonly reviewByLocalId: ReadonlyMap<string, string>;
+}
+
+/** What one set of local reports recorded about its own publications. */
+function publicationIndexOf(reports: readonly LocalReport[]): PublicationIndex {
+  const developerByComment = new Map<string, { entryId: string; textSha256: string | null }>();
+  const developerByRun = new Map<string, string>();
+  const reviewById = new Map<
+    number,
+    { entryId: string; bodySha256: string | null; findings: readonly HistoryFinding[] }
+  >();
+  const reviewByLocalId = new Map<string, string>();
+  for (const report of reports) {
+    if (report.kind === 'developer-report') {
+      const entryId = `harness:developer-report:${report.digest.runId}`;
+      developerByRun.set(report.digest.runId, entryId);
+      if (report.digest.published !== null) {
+        developerByComment.set(report.digest.published.commentId, {
+          entryId,
+          textSha256:
+            report.digest.published.textSha256 === '' ? null : report.digest.published.textSha256,
+        });
+      }
+      continue;
+    }
+    if (report.kind === 'reviewer-report') {
+      const entryId = `harness:reviewer-report:${report.digest.reviewId}`;
+      reviewByLocalId.set(report.digest.reviewId, entryId);
+      if (report.digest.published !== null) {
+        reviewById.set(report.digest.published.id, {
+          entryId,
+          bodySha256: report.digest.published.bodySha256,
+          findings: report.digest.findings,
+        });
+      }
+    }
+  }
+  return { developerByComment, developerByRun, reviewById, reviewByLocalId };
+}
+
+/**
+ * Whether one Jira comment carries this harness's own rendering of a retained
+ * developer report: the run's result line, the marker naming that same report,
+ * and the artifacts and repairs lines every result comment has carried. It is
+ * the compatibility path for renderings published before their comment
+ * identity was recorded. A comment that merely quotes a marker does not match,
+ * and stays a comment.
+ */
+function isDeveloperRenderingShape(text: string, ref: SourceRef, runId: string): boolean {
+  const marker = historyMarkerOf(text);
+  if (marker === null || marker.kind !== 'developer' || marker.id !== runId) {
+    return false;
+  }
+  const lines = text.split('\n').map((line) => line.trim());
+  return (
+    lines.some((line) => line.startsWith(`Harness run ${runId} for ${ref.key} finished: `)) &&
+    lines.some((line) => line.startsWith('Repairs used: ')) &&
+    lines.some((line) => line.startsWith('Local artifacts on the machine that ran this harness'))
+  );
+}
+
+/** One external comment as a candidate entry, with the read that produced it. */
+interface Candidate {
+  readonly entry: HistoryEntry;
+  /**
+   * The raw comment, for the fields an entry does not keep: an inline
+   * comment's own body and the native review it belongs to.
+   */
+  readonly comment: ReadComment | null;
+}
+
+/** Whether one inline review comment published one of a report's findings. */
+function isPublishedFinding(findings: readonly HistoryFinding[], comment: ReadComment): boolean {
+  const body = (comment.body ?? comment.text).trim();
+  return findings.some(
+    (finding) =>
+      finding.body.trim() === body &&
+      (comment.path === undefined || comment.path === null || finding.path === comment.path),
+  );
+}
+
+/**
+ * Whether an entry an earlier snapshot already recognized as a rendering no
+ * longer reads as the same text. A mirror tracked by a recorded publication
+ * identity is checked against that record; one recognized only by its shape is
+ * checked against the snapshot that recognized it, so an edit to a legacy
+ * rendering becomes a distinct message rather than a silent duplicate.
+ */
+function editedSinceMirrored(
+  entry: HistoryEntry,
+  mirroredBefore: ReadonlyMap<string, string>,
+): boolean {
+  const seen = mirroredBefore.get(`${entry.source}:${entry.sourceId}`);
+  return seen !== undefined && seen !== textSha256(entry.text);
+}
+
+/**
+ * The retained report one external entry is the published rendering of, or
+ * `null` when no recorded publication identity authenticates it. An entry
+ * whose text no longer matches what was published is not a mirror: it is an
+ * edited or distinct message, and it stays attributed conversation.
+ */
+function mirroredEntryId(
+  candidate: Candidate,
+  parts: {
+    readonly index: PublicationIndex;
+    readonly ref: SourceRef;
+    readonly harnessAuthors: readonly string[];
+    /** The renderings an earlier snapshot already recognized, by source identity. */
+    readonly mirroredBefore: ReadonlyMap<string, string>;
+  },
+): string | null {
+  const entry = candidate.entry;
+  const comment = candidate.comment;
+  if (entry.source === 'jira' && entry.kind === 'jira-comment') {
+    const recorded = parts.index.developerByComment.get(entry.sourceId);
+    if (recorded !== undefined) {
+      return recorded.textSha256 !== null && textSha256(entry.text) !== recorded.textSha256
+        ? null
+        : recorded.entryId;
+    }
+    const marker = historyMarkerOf(entry.text);
+    const runId = marker?.kind === 'developer' ? marker.id : legacyRunIdOf(entry.text);
+    const retained = runId === null ? undefined : parts.index.developerByRun.get(runId);
+    if (
+      retained !== undefined &&
+      runId !== null &&
+      isDeveloperRenderingShape(entry.text, parts.ref, runId)
+    ) {
+      return editedSinceMirrored(entry, parts.mirroredBefore) ? null : retained;
+    }
+    return null;
+  }
+  if (entry.source !== 'github') {
+    return null;
+  }
+  if (entry.kind === 'pr-review') {
+    const numeric = Number(entry.sourceId);
+    const recorded = Number.isSafeInteger(numeric)
+      ? parts.index.reviewById.get(numeric)
+      : undefined;
+    if (recorded !== undefined) {
+      return recorded.bodySha256 !== null && textSha256(entry.text) !== recorded.bodySha256
+        ? null
+        : recorded.entryId;
+    }
+    // A rendering published before the publication id was recorded: the App's
+    // own review, carrying the marker for a retained report. Only the login the
+    // harness publishes as can have written it.
+    const marker = historyMarkerOf(entry.text);
+    const authored = parts.harnessAuthors.some((name) => name !== '' && name === entry.author);
+    if (!authored || marker?.kind !== 'reviewer') {
+      return null;
+    }
+    const retained = parts.index.reviewByLocalId.get(marker.id) ?? null;
+    return retained !== null && editedSinceMirrored(entry, parts.mirroredBefore) ? null : retained;
+  }
+  if (entry.kind === 'pr-review-comment' && comment !== null && comment !== undefined) {
+    // A reply is its own conversational entry, never a mirrored finding.
+    if (comment.inReplyToId !== undefined && comment.inReplyToId !== null) {
+      return null;
+    }
+    const parent =
+      comment.reviewId === undefined || comment.reviewId === null
+        ? undefined
+        : parts.index.reviewById.get(comment.reviewId);
+    if (parent !== undefined && isPublishedFinding(parent.findings, comment)) {
+      return parent.entryId;
+    }
+    // The same association for a review published before its inline comments
+    // carried a parent identity: only the App's own login, with a body that is
+    // one of a retained report's findings, is such a rendering.
+    if (!parts.harnessAuthors.some((name) => name !== '' && name === entry.author)) {
+      return null;
+    }
+    for (const published of parts.index.reviewById.values()) {
+      if (isPublishedFinding(published.findings, comment)) {
+        return editedSinceMirrored(entry, parts.mirroredBefore) ? null : published.entryId;
+      }
+    }
+    return null;
+  }
+  return null;
+}
+
+/** One review round the brief may name as the unresolved one. */
+interface ReviewRoundCandidate {
+  readonly at: string;
+  /** The decision or native state, lower case. */
+  readonly decision: string;
+  readonly summary: HistoryReportSummary;
+  /** The round's own entries: its review, and the findings it published. */
+  readonly ownEntryIds: readonly string[];
+}
+
+/**
+ * The latest review round that requested changes, or `null` when the latest
+ * review decided something else. Every round counts: a complete local report,
+ * and a native review GitHub reports — by any author — that has no matching
+ * retained report. A newer native review is never ignored because an older
+ * local report exists, and a local approval never hides a later request for
+ * changes.
  */
 function unresolvedRound(
   reports: readonly HistoryReportSummary[],
-  entries: readonly HistoryEntry[],
-): { readonly round: HistoryReportSummary; readonly reconstructed: boolean } | null {
-  const reviewer = reports
-    .filter((report) => report.kind === 'reviewer-report')
-    .toSorted((a, b) => a.createdAt.localeCompare(b.createdAt));
-  const latest = reviewer.at(-1);
-  if (latest !== undefined) {
-    const decision = (latest.decision ?? '').toLowerCase();
-    return decision.includes('change') ? { round: latest, reconstructed: !latest.complete } : null;
+  candidates: readonly Candidate[],
+): {
+  readonly round: HistoryReportSummary;
+  readonly ownEntryIds: readonly string[];
+  readonly reconstructed: boolean;
+} | null {
+  const rounds: ReviewRoundCandidate[] = [];
+  const coveredReviews = new Set<string>();
+
+  /** The inline comments one native review published, by the review's own id. */
+  const inlineOf = (reviewId: string): readonly Candidate[] =>
+    candidates.filter((candidate) => {
+      if (candidate.entry.kind !== 'pr-review-comment') {
+        return false;
+      }
+      const comment = candidate.comment;
+      if (comment === null || comment.reviewId === undefined || comment.reviewId === null) {
+        return false;
+      }
+      if (comment.inReplyToId !== undefined && comment.inReplyToId !== null) {
+        // A reply is a response to a finding, not part of the review itself.
+        return false;
+      }
+      return String(comment.reviewId) === reviewId;
+    });
+
+  for (const report of reports) {
+    if (report.kind !== 'reviewer-report') {
+      continue;
+    }
+    if (report.nativeReviewId !== null) {
+      coveredReviews.add(String(report.nativeReviewId));
+    }
+    const decision = (report.decision ?? '').toLowerCase();
+    if (decision.includes('inconclusive')) {
+      // A review that concluded nothing published nothing and decides nothing;
+      // its own gap is still named in the incomplete-input list.
+      continue;
+    }
+    const own = [report.entryId];
+    for (const inline of inlineOf(String(report.nativeReviewId ?? ''))) {
+      own.push(inline.entry.id);
+    }
+    if (report.nativeReviewId !== null) {
+      own.push(`github:pr-review:${String(report.nativeReviewId)}`);
+    }
+    rounds.push({ at: report.createdAt, decision, summary: report, ownEntryIds: own });
   }
-  // No local reviewer report at all: fall back to the native review the App
-  // published, and to its inline comments, which are complete external text.
-  const reviews = entries
-    .filter((entry) => entry.kind === 'pr-review' && entry.role !== 'human')
-    .toSorted((a, b) => a.createdAt.localeCompare(b.createdAt));
-  const last = reviews.at(-1);
-  if (last === undefined) {
-    return null;
+
+  for (const candidate of candidates) {
+    const entry = candidate.entry;
+    if (entry.kind !== 'pr-review' || coveredReviews.has(entry.sourceId)) {
+      continue;
+    }
+    const own = [entry.id];
+    const findings: HistoryFinding[] = [];
+    for (const inline of inlineOf(entry.sourceId)) {
+      own.push(inline.entry.id);
+      const comment = inline.comment;
+      if (comment === null) {
+        continue;
+      }
+      findings.push({
+        path: comment.path ?? '(inline review comment)',
+        line: comment.line ?? null,
+        body: comment.body ?? comment.text,
+      });
+    }
+    const requested =
+      requestsChanges(entry.state) || requestsChanges(entry.text) || requestsChanges(entry.problem);
+    rounds.push({
+      at: entry.createdAt,
+      decision: requested ? 'request_changes' : (entry.state ?? 'commented').toLowerCase(),
+      summary: {
+        entryId: entry.id,
+        kind: 'reviewer-report',
+        round: null,
+        author: entry.author,
+        createdAt: entry.createdAt,
+        sourceId: entry.sourceId,
+        complete: false,
+        problem:
+          'the complete reviewer report was not kept on this machine; this round is ' +
+          'reconstructed from the published native review and its inline comments',
+        status: null,
+        reason: null,
+        head: entry.commit,
+        nativeReviewId: Number.isSafeInteger(Number(entry.sourceId))
+          ? Number(entry.sourceId)
+          : null,
+        decision: requested ? 'request_changes' : null,
+        summary: entry.text,
+        findings,
+        pullRequest: null,
+      },
+      ownEntryIds: own,
+    });
   }
-  const requested = /changes[_ ]requested|request_changes/i.test(
-    `${last.state ?? ''} ${last.problem ?? ''} ${last.text}`,
+
+  rounds.sort(
+    (a, b) => a.at.localeCompare(b.at) || a.summary.entryId.localeCompare(b.summary.entryId),
   );
-  if (!requested) {
+  const latest = rounds.at(-1);
+  if (latest === undefined || !requestsChanges(latest.decision)) {
     return null;
   }
-  const findings = entries
-    .filter(
-      (entry) =>
-        entry.kind === 'pr-review-comment' &&
-        entry.author === last.author &&
-        entry.createdAt >= last.createdAt,
-    )
-    .map((entry) => ({
-      path: entry.url ?? '(inline review comment)',
-      line: null,
-      body: entry.text,
-    }));
   return {
-    round: {
-      entryId: last.id,
-      kind: 'reviewer-report',
-      round: null,
-      author: last.author,
-      createdAt: last.createdAt,
-      sourceId: last.sourceId,
-      complete: false,
-      problem:
-        'the complete reviewer report was not kept on this machine; this round is reconstructed ' +
-        'from the published native review and its inline comments',
-      status: null,
-      reason: null,
-      head: last.commit,
-      decision: 'request_changes',
-      summary: last.text,
-      findings,
-      pullRequest: null,
-    },
-    reconstructed: true,
+    round: latest.summary,
+    ownEntryIds: latest.ownEntryIds,
+    reconstructed: !latest.summary.complete,
   };
 }
 
@@ -374,19 +668,20 @@ export function createTicketHistory(parts: TicketHistoryParts): TicketHistory {
       });
       gaps.push(...local.problems);
 
-      const candidates: HistoryEntry[] = [];
+      const candidates: Candidate[] = [];
       for (const comment of jiraComments) {
         const role = isHarnessText(comment.text, comment.author, harnessAuthors)
           ? 'harness'
           : 'human';
-        candidates.push(
-          entryOfComment(comment, {
+        candidates.push({
+          entry: entryOfComment(comment, {
             source: 'jira',
             kind: 'jira-comment',
             role,
             commit: null,
           }),
-        );
+          comment,
+        });
       }
       if (pullRequest !== null) {
         for (const comment of pullRequest.comments) {
@@ -399,62 +694,71 @@ export function createTicketHistory(parts: TicketHistoryParts): TicketHistory {
           const role = isHarnessText(comment.text, comment.author, harnessAuthors)
             ? 'harness'
             : 'human';
-          candidates.push(
-            entryOfComment(comment, {
+          candidates.push({
+            entry: entryOfComment(comment, {
               source: 'github',
               kind,
               role,
               commit: comment.commit ?? null,
             }),
-          );
+            comment,
+          });
         }
       }
       for (const report of local.reports) {
-        candidates.push(entryOfReport(report));
+        candidates.push({ entry: entryOfReport(report), comment: null });
       }
 
       // Deduplicate by source identity: the newest read of one identity wins,
       // and an entry whose wording changed is marked edited rather than
       // duplicated. A complete local report is never replaced by its rendering.
-      const byId = new Map<string, HistoryEntry>();
+      const byId = new Map<string, Candidate>();
       for (const candidate of candidates) {
-        const existing = byId.get(candidate.id);
+        const existing = byId.get(candidate.entry.id);
         if (existing === undefined) {
-          byId.set(candidate.id, candidate);
-        } else if (existing.source === 'harness' && candidate.source !== 'harness') {
+          byId.set(candidate.entry.id, candidate);
+        } else if (existing.entry.source === 'harness' && candidate.entry.source !== 'harness') {
           continue;
         } else {
-          byId.set(candidate.id, candidate);
+          byId.set(candidate.entry.id, candidate);
         }
       }
 
-      // A rendering of a complete report is a mirror, not a second entry: the
-      // marker names the report, and a legacy result comment names its run.
+      // A rendering of a complete report is a mirror, not a second entry — but
+      // only when a recorded publication identity authenticates it. Wording
+      // alone never removes an entry, so a comment that quotes a marker stays
+      // the comment its author wrote.
+      const publications = publicationIndexOf(local.reports);
+      const mirroredBefore = new Map<string, string>();
+      for (const mirror of previous?.mirrors ?? []) {
+        if (typeof mirror.textSha256 === 'string') {
+          mirroredBefore.set(`${mirror.source}:${mirror.sourceId}`, mirror.textSha256);
+        }
+      }
       const mirrors: HistoryMirror[] = [];
-      const localReportIds = new Set(
-        [...byId.values()]
-          .filter((entry) => entry.source === 'harness' && entry.kind !== 'missing-report')
-          .map((entry) => entry.id),
-      );
-      for (const entry of [...byId.values()]) {
-        if (entry.source === 'harness') {
+      for (const candidate of [...byId.values()]) {
+        if (candidate.entry.source === 'harness') {
           continue;
         }
-        const marker = historyMarkerOf(entry.text);
-        const legacyRunId = entry.kind === 'jira-comment' ? legacyRunIdOf(entry.text) : null;
-        const mirrored =
-          marker !== null && localReportIds.has(markerEntryId(marker))
-            ? markerEntryId(marker)
-            : legacyRunId !== null && localReportIds.has(`harness:developer-report:${legacyRunId}`)
-              ? `harness:developer-report:${legacyRunId}`
-              : null;
+        const mirrored = mirroredEntryId(candidate, {
+          index: publications,
+          ref: request.ref,
+          harnessAuthors,
+          mirroredBefore,
+        });
         if (mirrored !== null) {
-          mirrors.push({ sourceId: entry.sourceId, source: entry.source, ofEntryId: mirrored });
-          byId.delete(entry.id);
+          mirrors.push({
+            sourceId: candidate.entry.sourceId,
+            source: candidate.entry.source,
+            ofEntryId: mirrored,
+            textSha256: textSha256(candidate.entry.text),
+          });
+          byId.delete(candidate.entry.id);
         }
       }
 
       const entries = [...byId.values()]
+        .map((candidate) => candidate.entry)
         .map((entry) => {
           const before = previous === null ? undefined : previousOf(previous.entries, entry.id);
           const edited =
@@ -497,7 +801,7 @@ export function createTicketHistory(parts: TicketHistoryParts): TicketHistory {
         );
       }
 
-      const unresolved = unresolvedRound(reports, entries);
+      const unresolved = unresolvedRound(reports, [...byId.values()]);
       const reconstructedGap =
         unresolved !== null && unresolved.reconstructed
           ? 'the latest review that requested changes has no complete local report; its findings ' +
@@ -508,19 +812,23 @@ export function createTicketHistory(parts: TicketHistoryParts): TicketHistory {
         gaps.push(reconstructedGap);
       }
       const round = unresolved?.round ?? null;
+      const ownEntryIds = new Set(unresolved?.ownEntryIds ?? []);
       const responses =
         round === null
           ? []
           : entries.filter(
               (entry) =>
-                entry.id !== round.entryId &&
+                !ownEntryIds.has(entry.id) &&
                 entry.createdAt >= round.createdAt &&
                 entry.role !== 'harness',
             );
-      const lastReport = lastReportAt(reports);
+      // Feedback is tracked against the input a turn actually consumed: the
+      // previous snapshot's own entries. A comment that is new to this snapshot
+      // — or that the source has edited since — is feedback, whenever it was
+      // written; a comment the previous turn already held is not repeated as
+      // new.
       const newHumanFeedback = entries.filter(
-        (entry) =>
-          entry.role === 'human' && (lastReport === null ? true : entry.createdAt > lastReport),
+        (entry) => entry.role === 'human' && unseenInPrevious(entry, previous?.entries ?? null),
       );
 
       const brief: HistoryBrief = {
@@ -554,6 +862,11 @@ export function createTicketHistory(parts: TicketHistoryParts): TicketHistory {
     async recordReviewerReport(request: ReviewerReportRequest) {
       const root = workspaceHistoryRoot(parts.workDir, request.workspaceId);
       return await recordReviewerReport(root, request);
+    },
+
+    async notePublishedDeveloperReport(request) {
+      const root = workspaceHistoryRoot(parts.workDir, request.workspaceId);
+      await notePublishedDeveloperReport(root, request);
     },
   };
 }

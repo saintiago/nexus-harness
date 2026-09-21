@@ -133,6 +133,12 @@ export interface HistoryReportSummary {
   readonly reason: string | null;
   /** The reviewed head, for a reviewer report. */
   readonly head: string | null;
+  /**
+   * The native review this report was published as, when the harness recorded
+   * that publication. It is the identity synchronization authenticates a
+   * mirrored review rendering against.
+   */
+  readonly nativeReviewId: number | null;
   /** The review decision, for a reviewer report. */
   readonly decision: string | null;
   readonly summary: string | null;
@@ -168,6 +174,12 @@ export interface HistoryMirror {
   readonly source: HistorySourceKind;
   /** The complete local entry it mirrors. */
   readonly ofEntryId: string;
+  /**
+   * The SHA-256 of the rendering that was recognized as this report's own. A
+   * later read whose text no longer hashes to it is a rendering that was edited
+   * after publication: it is kept as an entry, never folded away again.
+   */
+  readonly textSha256: string;
 }
 
 /** What one source read produced, and why it may be incomplete. */
@@ -223,6 +235,23 @@ export interface ReadComment {
   readonly commit?: string | null;
   readonly path?: string | null;
   readonly line?: number | null;
+  /**
+   * The comment's own body, without the path and line the reader composes into
+   * {@link text} for an inline review comment. Used to match a published inline
+   * finding against the complete report that holds the same finding.
+   */
+  readonly body?: string | null;
+  /**
+   * The native review an inline review comment belongs to, when the source
+   * reports one. It is the parent identity that maps the comment to the report
+   * the harness published as that review.
+   */
+  readonly reviewId?: number | null;
+  /**
+   * The inline comment this comment replies to, when the source reports one. A
+   * reply is its own conversational entry and is never a mirrored finding.
+   */
+  readonly inReplyToId?: number | null;
 }
 
 /** What one Jira thread read produced. */
@@ -366,4 +395,25 @@ export interface TicketHistory {
   recordDeveloperReport?(request: DeveloperReportRequest): Promise<RecordedReport>;
   /** Saves the complete reviewer verdict before its native review is published. */
   recordReviewerReport?(request: ReviewerReportRequest): Promise<RecordedReport>;
+  /**
+   * Notes the comment a complete developer report was published as, once the
+   * source acknowledged it. It is enrichment after publication: the report and
+   * the comment already exist, the identity is what lets a later
+   * synchronization recognize the rendering as a mirror instead of a second
+   * conversational entry, and a failure here invalidates neither.
+   */
+  notePublishedDeveloperReport?(request: PublishedDeveloperReport): Promise<void>;
+}
+
+/** The acknowledged publication of one complete developer report. */
+export interface PublishedDeveloperReport {
+  readonly workspaceId: string;
+  /** The run whose report was published. */
+  readonly runId: string;
+  /** The source's own identity for the comment: a Jira comment id. */
+  readonly commentId: string;
+  /** A browser link to the comment, when one is known. */
+  readonly url: string | null;
+  /** The complete text the comment was published with, exactly as it was sent. */
+  readonly text: string;
 }

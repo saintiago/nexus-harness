@@ -89,6 +89,15 @@ export interface DeliveryRequest {
 export interface DeliveredPullRequest {
   /** The pull request's browser URL: what the issue's comment links to. */
   readonly url: string;
+  /** The pull request's number, parsed from its URL: what the history records. */
+  readonly number: number | null;
+  /**
+   * The revision this delivery published and verified: the branch tip the step
+   * pushed, which is also the commit the checks validated. It is carried into
+   * the run's retained developer report, so a later turn knows which commit an
+   * attempt delivered even after the branch moves on.
+   */
+  readonly head: string;
   /** Whether this delivery created the pull request, or found and updated it. */
   readonly created: boolean;
 }
@@ -200,6 +209,16 @@ function pullRequestBody(request: DeliveryRequest): string {
 function pullRequestUrl(output: string): string | null {
   const match = /https?:\/\/\S+\/pull\/\d+/.exec(output);
   return match === null ? null : match[0];
+}
+
+/** The number one pull request URL names, or `null` when it names none. */
+function pullRequestNumber(url: string): number | null {
+  const match = /\/pull\/(\d+)(?:\D|$)/.exec(url);
+  if (match === null) {
+    return null;
+  }
+  const number = Number.parseInt(match[1] ?? '', 10);
+  return Number.isSafeInteger(number) && number > 0 ? number : null;
 }
 
 /** What `gh pr list --json url,state` answered, or a failure naming what it said. */
@@ -503,7 +522,12 @@ export function createGitHubDelivery(
           stop,
           ghHint,
         );
-        return { url: found.url, created: false };
+        return {
+          url: found.url,
+          number: pullRequestNumber(found.url),
+          head: validatedCommit,
+          created: false,
+        };
       }
 
       // A match that is no longer open receives no edit: editing it would report
@@ -552,7 +576,7 @@ export function createGitHubDelivery(
             'than creating a second one.',
         );
       }
-      return { url, created: true };
+      return { url, number: pullRequestNumber(url), head: validatedCommit, created: true };
     },
   };
 }

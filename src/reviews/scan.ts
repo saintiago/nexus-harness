@@ -733,6 +733,14 @@ async function reviewWithTurn(
   }
 
   const positioned = positionFindings(verdict.findings, evidence.files);
+  const body = reviewBody(
+    ref,
+    item.task,
+    pullRequest,
+    verdict,
+    positioned.unpositioned,
+    reviewDir.reviewId,
+  );
   // The complete reviewer report is saved before anything renders it: the
   // native review body and its inline comments are the concise rendering, and
   // Jira and a later developer turn read the complete report from the local
@@ -766,14 +774,7 @@ async function reviewWithTurn(
         pullRequest,
         head,
         decision: verdict.decision,
-        body: reviewBody(
-          ref,
-          item.task,
-          pullRequest,
-          verdict,
-          positioned.unpositioned,
-          reviewDir.reviewId,
-        ),
+        body,
         comments: positioned.comments,
       },
       context.stop,
@@ -796,6 +797,7 @@ async function reviewWithTurn(
       {
         id: review.id,
         url: review.url,
+        body,
       },
     ).catch(() => undefined);
   }

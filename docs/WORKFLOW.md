@@ -12,7 +12,7 @@ This is a human-readable reference, **not runtime configuration**. The applicati
 
 **Revision: 2026-09-20 — one harness configuration, one file per connected project.** Configuration is two files with disjoint ownership, defined in §1: the Nexus-wide `nexus.config.json` an operator keeps (limits, coding launches, reviewer integration, completion policy) and the `nexus.project.json` each connected repository carries at its root (its own setup/checks, its Jira connection, and its GitHub destination with the workflows and statuses it completes through). The single-file configuration the earlier revisions described is no longer read: its project fields are reported as belonging to the project configuration. The commands, their options, and the composed objects they validate are in §§3, 7, 8, 9, 10, and 11. [spec.md](spec.md) §2 and [architecture.md](architecture.md) §2 own the behaviour and the module.
 
-**Revision: 2026-09-21 — one complete local conversation history for both roles.** §4, §9 and §11 are extended: before every developer and reviewer turn the harness prepares one identified snapshot of the ticket's requirements, its Jira discussion, its pull request conversation and reviews, and the complete developer and reviewer reports, and both turns are given the same organization and the same local paths. The prompt carries the current brief, the latest delivery, every complete unresolved finding with its latest responses, and the human feedback since the last report; a source that could not be read, a page bound that was reached, and a report that is missing are named as gaps rather than presented as a complete history. Complete reports are saved under the workspace's own history directory before their concise Jira or GitHub rendering is published, and a rendering that comes back through Jira or GitHub is recognized and not duplicated. The local files are in §9, "The ticket conversation history".
+**Revision: 2026-09-21 — one complete local conversation history for both roles.** §4, §9 and §11 are extended: before every developer and reviewer turn the harness prepares one identified snapshot of the ticket's requirements, its Jira discussion, its pull request conversation and reviews, and the complete developer and reviewer reports, and both turns are given the same organization and the same local paths. The prompt carries the current brief, the latest delivery, every complete unresolved finding with its latest responses, and the human feedback the previous snapshot did not hold — new or edited since it; a source that could not be read, a page bound that was reached, and a report that is missing are named as gaps rather than presented as a complete history. Complete reports are saved under the workspace's own history directory before their concise Jira or GitHub rendering is published, the acknowledged comment or native review is recorded as the report's publication, and a rendering that comes back through Jira or GitHub is recognized by that recorded identity — never by its wording alone — and not duplicated. The local files are in §9, "The ticket conversation history".
 
 **Completion exception:** the no-merge/no-Done defaults below are superseded only by the explicitly configured path in §10. The review commands themselves remain read/review-only.
 
@@ -778,7 +778,9 @@ organization and the same layout, beside the retained workspace the ticket's poi
 
 The prompt carries the current brief (the ticket's title, description and acceptance criteria), the
 latest delivery, every complete unresolved review finding with the discussion that answered it, and
-the human feedback written since the last harness report; the full conversation remains in the
+the human feedback this ticket's previous snapshot did not hold — comments that are new to it, and
+comments the source has edited since, so a comment written while the previous turn was running is
+not lost to a timestamp comparison; the full conversation remains in the
 snapshot for the turn to read and search with its ordinary tools (`rg <text> <index or entries
 directory>`), so no Jira or GitHub call of its own is needed or wanted. Findings and human feedback
 are rendered whole: the history section is bounded only by dropping whole entries from the inline
@@ -787,21 +789,41 @@ reached while following pagination, or a complete report is missing, the prompt 
 it knows about, so a turn is never told the history is complete when it is not; a snapshot that
 cannot be written at all stops the turn before it starts.
 
+The unresolved findings are reconciled across both sides. The unresolved round is the latest review
+that requested changes — a complete retained report, or a native GitHub review (by the App or by a
+person) with no matching retained report, in which case its inline comments are the findings and the
+prompt says the complete report was not kept. A newer approval clears an older request, and an older
+local approval never hides a newer native review. An inconclusive verdict decides nothing and is
+never turned into findings.
+
 Every entry keeps its source's own identity (a Jira comment id, a GitHub review or comment id, a run
 or review id), its author, time, round and the reviewed or delivered commit where that applies, and
 its original wording. A read that reports an edited comment updates that entry in the next snapshot;
 it never adds a second one. A snapshot is named by the hash of its own content, so a refresh with
 nothing new reuses it and a refresh with something new writes a new directory: the snapshot a running
 turn holds is never rewritten. A concise Jira result comment or native GitHub review carries a
-`nexus-history:` marker naming the complete report it renders; when synchronization reads that
-rendering back it records a mirror of the local report instead of a duplicate conversation entry.
+`nexus-history:` marker naming the complete report it renders, and the acknowledged comment id or
+native review id is recorded with the report when the publication succeeds; when synchronization
+reads that rendering back it checks it against that recorded publication identity and, if the text
+is still the text that was published, records a mirror of the local report instead of a duplicate
+conversation entry. A comment that merely quotes a marker, a rendering that was edited after
+publication, and an unauthenticated rendering whose publication was never recorded all stay
+attributed entries: wording alone never removes a message. A rendering published before the harness
+recorded publication identities is still recognized by the harness's own rendering shape — its run
+result line, the marker naming the same run, and its artifacts and repairs lines — which a comment
+that quotes a marker does not match. The inline findings of a native review published by the App are
+the retained report's own findings, mapped by the review's identity; a reply to one stays a reply.
 
 A complete developer report is saved under `reports/` before the result comment is published, and a
-complete reviewer report before the native review is published. Reports recorded before this
-increment are rebuilt from the run's own `result.json` and from the review records under
-`<workDir>/reviews/`; a report whose file is really gone is marked missing, with the path that was
-looked for, and the workspace stays usable. Nothing in the history is a command, a configuration
-value, or a permission: it is attributed external text for the turn to weigh.
+complete reviewer report before the native review is published; each developer report records the
+commit its delivery verified, so successive rounds to the same pull request each keep their own
+revision. Reports recorded before this increment are rebuilt from the run's own `result.json` and
+from the reviewer's retained verdict beside its review record under `<workDir>/reviews/`; a record
+that cannot be read back as that conversation — invalid JSON, no list of coding turns — is marked
+incomplete and names what is missing, and a report whose file is really gone is marked missing, with
+the path that was looked for; the workspace stays usable either way. Nothing in the history is a
+command, a configuration value, or a permission: it is attributed external text for the turn to
+weigh.
 
 ### The merge signal, and what stays outside
 

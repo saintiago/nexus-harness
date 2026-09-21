@@ -88,14 +88,19 @@ reviewer stop down to a confirmed one. [spec.md](spec.md) §11 defines the behav
 identified snapshot a developer or reviewer turn reads: `contract.ts` declares the entries, the
 brief and the snapshot, `store.ts` writes each snapshot under the hash of its own content and moves
 `current.json` atomically, `reports.ts` keeps the complete developer and reviewer reports before any
-rendering is published (and marks one it knows existed but cannot read), `sync.ts` reads the
-connector boundary, deduplicates by source identity, recognizes a published rendering of a local
-report, and builds the brief, and `prompt.ts` renders the one section both role prompts carry. The
+rendering is published (records the acknowledged comment or native review as each report's
+publication, reads a reviewer's retained verdict back, validates a rebuilt legacy record, and marks
+one it knows existed but cannot read), `sync.ts` reads the connector boundary, deduplicates by source
+identity, authenticates a published rendering against the recorded publication identity, reconciles
+the unresolved review across retained reports and native reviews, tracks feedback against the
+entries the previous snapshot held, and builds the brief, and `prompt.ts` renders the one section
+both role prompts carry. The
 module imports no connector: `src/cli/history.ts` composes its readers from the Jira connector and
 the GitHub App client, and hands the same object to the coding coordinator and the review scan.
 `src/sources/coordinator.ts` records a complete developer report before its Jira comment is
-published; `src/reviews/scan.ts` records a complete reviewer report before its native review is
-published. [spec.md](spec.md) §2, §4, §9 and §11 define the behavior and
+published, notes the acknowledged comment afterwards, and carries each delivery's verified commit
+into the report; `src/reviews/scan.ts` records a complete reviewer report before its native review is
+published and notes the review GitHub acknowledged. [spec.md](spec.md) §2, §4, §9 and §11 define the behavior and
 [WORKFLOW.md](WORKFLOW.md) §9 the local layout.
 
 ## 1. Keep the existing application

@@ -363,9 +363,11 @@ export async function readCurrent(root: string): Promise<CurrentSnapshot | null>
  * entry from a new one. An unreadable store is reported as `null`, never as an
  * empty history.
  */
-export async function readLatestEntries(
-  root: string,
-): Promise<{ readonly id: string; readonly entries: readonly HistoryEntry[] } | null> {
+export async function readLatestEntries(root: string): Promise<{
+  readonly id: string;
+  readonly entries: readonly HistoryEntry[];
+  readonly mirrors: readonly HistoryMirror[];
+} | null> {
   const current = await readCurrent(root);
   if (current === null) {
     return null;
@@ -379,7 +381,8 @@ export async function readLatestEntries(
       }
       entries.push(JSON.parse(line) as HistoryEntry);
     }
-    return { id: current.snapshotId, entries };
+    const index = await readSnapshot(root, current.snapshotId);
+    return { id: current.snapshotId, entries, mirrors: index?.mirrors ?? [] };
   } catch {
     return null;
   }

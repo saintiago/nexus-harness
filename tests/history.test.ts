@@ -22,6 +22,7 @@ import type {
 import { HistoryError } from '../src/history/contract.js';
 import { workspaceHistoryRoot } from '../src/history/paths.js';
 import { renderHistorySection } from '../src/history/prompt.js';
+import { notePublishedReview } from '../src/history/reports.js';
 import { createTicketHistory } from '../src/history/sync.js';
 import type { ReviewEvidence, ReviewView } from '../src/reviews/contract.js';
 import { baselinePrompt } from '../src/reviews/baseline.js';
@@ -378,7 +379,7 @@ describe('the ticket conversation snapshot', () => {
       expect(prompt).toContain('Complete ticket requirements: ');
       expect(prompt).toContain('### Current brief');
       expect(prompt).toContain('### Complete unresolved review findings');
-      expect(prompt).toContain('### New human feedback since the last harness report');
+      expect(prompt).toContain('### New human feedback since this ticket’s previous snapshot');
       expect(prompt).toContain('### How to use the history');
       expect(prompt).toContain('Do not fetch Jira or GitHub yourself for this ticket');
       expect(prompt).not.toContain('truncated by the harness at 600');
@@ -474,22 +475,32 @@ describe('the ticket conversation snapshot', () => {
     expect(await readFile(path.join(first.dir, firstFile), 'utf8')).not.toContain('Second wording');
   });
 
-  it('does not add a second entry for a local report mirrored back through Jira or GitHub', async () => {
+  it('does not add a second entry for a report mirrored back through its recorded publication', async () => {
     const workDir = await createTempDir();
+    const publishedCommentText = [
+      'Harness run run-20260921-0001 for HARN-41 finished: passed.',
+      'Reason: every configured check exited 0',
+      'Checks: 1 of 1 configured checks exited 0',
+      'Repairs used: 0',
+      'Local artifacts on the machine that ran this harness (local paths, not Jira attachments): run directory /runs/run-20260921-0001; report /runs/run-20260921-0001/result.json',
+      'Harness record: nexus-history: developer run-20260921-0001 — the complete developer report is kept beside the workspace.',
+    ].join('\n');
+    const publishedReviewText = [
+      'Nexus Lens review — HARN-41: history',
+      '',
+      'One finding.',
+      '',
+      'See the inline findings on this review.',
+      '',
+      'Reviewed head ' + HEAD + ' of https://github.com/example/repo/pull/27.',
+      '',
+      'Harness record: nexus-history: reviewer review-20260921-0003 — complete report kept locally.',
+    ].join('\n');
     const history = createTicketHistory({
       workDir,
       readers: readers({
         jira: {
-          comments: [
-            jiraComment(
-              '9300',
-              [
-                'Harness run run-20260921-0001 for HARN-41 finished: passed.',
-                'Harness record: nexus-history: developer run-20260921-0001 — the complete developer report is kept beside the workspace.',
-              ].join('\n'),
-              { author: 'Nexus Agent' },
-            ),
-          ],
+          comments: [jiraComment('9300', publishedCommentText, { author: 'Nexus Harness' })],
           truncated: false,
         },
         pull: pullConversation([
@@ -498,7 +509,7 @@ describe('the ticket conversation snapshot', () => {
             author: 'nexus-lens[bot]',
             createdAt: '2026-09-21T08:00:00.000Z',
             updatedAt: null,
-            text: 'Nexus Lens review — HARN-41\n\nHarness record: nexus-history: reviewer review-20260921-0003 — complete report kept locally.',
+            text: publishedReviewText,
             url: 'https://github.com/example/repo/pull/27#review',
             state: 'CHANGES_REQUESTED',
             commit: HEAD,
@@ -534,6 +545,21 @@ describe('the ticket conversation snapshot', () => {
       summary: 'One finding.',
       findings: [{ path: 'src/a.ts', line: 1, body: 'Fix this.' }],
       now: new Date('2026-09-21T07:45:00.000Z'),
+    });
+    // The harness recorded what it published: the acknowledged Jira comment
+    // and the native review GitHub answered with. Those identities — never the
+    // wording alone — are what authenticate the renderings read back.
+    await history.notePublishedDeveloperReport?.({
+      workspaceId: WORKSPACE_ID,
+      runId: 'run-20260921-0001',
+      commentId: '9300',
+      url: `${REF.url}?focusedCommentId=9300`,
+      text: publishedCommentText,
+    });
+    await notePublishedReview(workspaceHistoryRoot(workDir, WORKSPACE_ID), 'review-20260921-0003', {
+      id: 555,
+      url: 'https://github.com/example/repo/pull/27#review',
+      body: publishedReviewText,
     });
     const snapshot = await history.prepare({
       ref: REF,
@@ -802,5 +828,713 @@ describe('the ticket conversation snapshot', () => {
     const rendered = renderHistorySection(snapshot, 'reviewer');
     expect(rendered).toContain('Jira answered HTTP 503');
     expect(rendered).toContain('pull request conversation is unavailable');
+  });
+
+  /** The one prepare request every test in this file uses, for one role. */
+  function prepareRequest(
+    workDir: string,
+    role: 'developer' | 'reviewer' = 'developer',
+  ): Parameters<ReturnType<typeof createTicketHistory>['prepare']>[0] {
+    return {
+      ref: REF,
+      task: TASK,
+      workspace: {
+        workspaceId: WORKSPACE_ID,
+        workspacePath: path.join(workDir, 'workspaces', WORKSPACE_ID),
+        branch: `harness/${WORKSPACE_ID}`,
+        baseCommit: HEAD,
+      },
+      role,
+      round: 1,
+      stop: new AbortController().signal,
+    };
+  }
+
+  it('treats a comment edited after the last report as new feedback for the next turn', async () => {
+    const workDir = await createTempDir();
+    let text = 'Please keep the wording.';
+    let updatedAt: string | null = null;
+    const history = createTicketHistory({
+      workDir,
+      readers: readers({
+        jira: () => ({
+          comments: [
+            jiraComment('9600', text, {
+              createdAt: '2026-09-20T09:00:00.000Z',
+              updatedAt,
+            }),
+          ],
+          truncated: false,
+        }),
+      }),
+      now: () => new Date('2026-09-21T10:00:00.000Z'),
+    });
+    // A report lands after the comment was first written, and only then does a
+    // person edit it: its creation instant is older than every report, which is
+    // exactly the case a creation-time cutoff loses.
+    await history.recordDeveloperReport?.({
+      ref: REF,
+      workspaceId: WORKSPACE_ID,
+      task: TASK,
+      round: 1,
+      runId: 'run-20260921-0009',
+      reportPath: path.join(workDir, 'runs', 'run-20260921-0009', 'result.json'),
+      status: 'passed',
+      reason: 'every configured check exited 0',
+      repairsUsed: 0,
+      attempts: [],
+      pullRequest: null,
+      deliveryFailure: null,
+      now: new Date('2026-09-21T09:15:00.000Z'),
+    });
+    const first = await history.prepare(prepareRequest(workDir));
+    text = 'Please keep the wording, and stop flattening it.';
+    updatedAt = '2026-09-21T09:45:00.000Z';
+    const second = await history.prepare(prepareRequest(workDir));
+
+    expect(first.brief.newHumanFeedback.map((entry) => entry.sourceId)).toContain('9600');
+    expect(second.brief.newHumanFeedback.map((entry) => entry.sourceId)).toContain('9600');
+    const edited = second.brief.newHumanFeedback.find((entry) => entry.sourceId === '9600');
+    expect(edited?.text).toBe('Please keep the wording, and stop flattening it.');
+    expect(edited?.edited).toBe(true);
+  });
+
+  it('treats feedback that arrived while the previous turn ran as new, and does not repeat it', async () => {
+    const workDir = await createTempDir();
+    const comments: ReadComment[] = [];
+    const history = createTicketHistory({
+      workDir,
+      readers: readers({ jira: () => ({ comments, truncated: false }) }),
+      now: () => new Date('2026-09-21T10:00:00.000Z'),
+    });
+    const first = await history.prepare(prepareRequest(workDir));
+    expect(first.brief.newHumanFeedback).toEqual([]);
+
+    // The comment is written while the first turn is running: it was absent
+    // from that turn's snapshot, and it is older than the report the turn
+    // finished with. Time alone cannot tell it apart from history.
+    comments.push(
+      jiraComment('9700', 'One more thing: keep the local paths stable.', {
+        createdAt: '2026-09-21T09:30:00.000Z',
+      }),
+    );
+    await history.recordDeveloperReport?.({
+      ref: REF,
+      workspaceId: WORKSPACE_ID,
+      task: TASK,
+      round: 1,
+      runId: 'run-20260921-0010',
+      reportPath: path.join(workDir, 'runs', 'run-20260921-0010', 'result.json'),
+      status: 'passed',
+      reason: 'every configured check exited 0',
+      repairsUsed: 0,
+      attempts: [],
+      pullRequest: null,
+      deliveryFailure: null,
+      now: new Date('2026-09-21T09:45:00.000Z'),
+    });
+    const second = await history.prepare(prepareRequest(workDir));
+    expect(second.brief.newHumanFeedback.map((entry) => entry.sourceId)).toEqual(['9700']);
+
+    // A restart prepares from the store on disk, and the input the previous
+    // turn already held is not handed over as new again.
+    const restarted = createTicketHistory({
+      workDir,
+      readers: readers({ jira: () => ({ comments, truncated: false }) }),
+      now: () => new Date('2026-09-21T10:05:00.000Z'),
+    });
+    const third = await restarted.prepare(prepareRequest(workDir));
+    expect(third.brief.newHumanFeedback).toEqual([]);
+  });
+
+  it('keeps a comment that quotes a marker, and hands its feedback to the next turn', async () => {
+    const workDir = await createTempDir();
+    const quoted = [
+      'Regarding nexus-history: reviewer review-20260921-0003, please fix B as well.',
+      'The marker above is a quotation of the harness record, not a harness record.',
+    ].join('\n');
+    const history = createTicketHistory({
+      workDir,
+      harnessAuthors: ['nexus-lens[bot]'],
+      readers: readers({
+        jira: {
+          comments: [jiraComment('9800', quoted, { author: 'Jane Reviewer' })],
+          truncated: false,
+        },
+        pull: pullConversation([
+          {
+            sourceId: '556',
+            author: 'Jane Reviewer',
+            createdAt: '2026-09-21T09:00:00.000Z',
+            updatedAt: null,
+            text: 'Quoting nexus-history: reviewer review-20260921-0003 to ask a question.',
+            url: 'https://github.com/example/repo/pull/27#review',
+            state: 'COMMENTED',
+            commit: HEAD,
+          },
+        ]),
+      }),
+      now: () => new Date('2026-09-21T10:00:00.000Z'),
+    });
+    await history.recordReviewerReport?.({
+      ref: REF,
+      workspaceId: WORKSPACE_ID,
+      task: TASK,
+      reviewId: 'review-20260921-0003',
+      round: 1,
+      head: HEAD,
+      decision: 'request_changes',
+      summary: 'One finding.',
+      findings: [{ path: 'src/b.ts', line: 2, body: 'Fix B.' }],
+      now: new Date('2026-09-21T07:45:00.000Z'),
+    });
+    const snapshot = await history.prepare(prepareRequest(workDir));
+
+    // Wording alone never removes another author's message: both the Jira
+    // comment and the human review stay, attributed, and their feedback is
+    // handed to the next turn.
+    expect(snapshot.entries.some((entry) => entry.sourceId === '9800')).toBe(true);
+    expect(snapshot.mirrors).toEqual([]);
+    const kept = snapshot.brief.newHumanFeedback.find((entry) => entry.sourceId === '9800');
+    expect(kept?.role).toBe('human');
+    expect(kept?.text).toBe(quoted);
+    expect(snapshot.entries.some((entry) => entry.sourceId === '556')).toBe(true);
+  });
+
+  it('still recognizes the harness’s own legacy rendering, and preserves an edited one', async () => {
+    const workDir = await createTempDir();
+    const rendering = [
+      'Harness run run-20260921-0011 for HARN-41 finished: passed.',
+      'Reason: every configured check exited 0',
+      'Checks: 1 of 1 configured checks exited 0',
+      'Repairs used: 0',
+      'Local artifacts on the machine that ran this harness (local paths, not Jira attachments): run directory /runs/run-20260921-0011; report /runs/run-20260921-0011/result.json',
+      'Harness record: nexus-history: developer run-20260921-0011 — the complete developer report is kept beside the workspace.',
+    ].join('\n');
+    let text = rendering;
+    const history = createTicketHistory({
+      workDir,
+      readers: readers({
+        jira: () => ({
+          comments: [
+            jiraComment('9900', text, { author: 'Nexus Harness' }),
+            jiraComment(
+              '9901',
+              'Harness record: nexus-history: developer run-20260921-0011 — a partial quote.',
+              {
+                author: 'Jane Reviewer',
+              },
+            ),
+          ],
+          truncated: false,
+        }),
+      }),
+      now: () => new Date('2026-09-21T10:00:00.000Z'),
+    });
+    await history.recordDeveloperReport?.({
+      ref: REF,
+      workspaceId: WORKSPACE_ID,
+      task: TASK,
+      round: 1,
+      runId: 'run-20260921-0011',
+      reportPath: path.join(workDir, 'runs', 'run-20260921-0011', 'result.json'),
+      status: 'passed',
+      reason: 'every configured check exited 0',
+      repairsUsed: 0,
+      attempts: [],
+      pullRequest: null,
+      deliveryFailure: null,
+      now: new Date('2026-09-21T07:30:00.000Z'),
+    });
+    const first = await history.prepare(prepareRequest(workDir));
+    expect(first.mirrors.map((mirror) => mirror.sourceId)).toEqual(['9900']);
+    expect(first.entries.some((entry) => entry.sourceId === '9900')).toBe(false);
+    // The partial quote is not the harness's rendering: it stays a comment.
+    expect(first.entries.some((entry) => entry.sourceId === '9901')).toBe(true);
+
+    // A rendering that was edited after it was first read is preserved as the
+    // distinct message it now is.
+    text = `${rendering}\nPlease also update the operator guide.`;
+    const second = await history.prepare(prepareRequest(workDir));
+    expect(second.mirrors.map((mirror) => mirror.sourceId)).toEqual([]);
+    const kept = second.entries.find((entry) => entry.sourceId === '9900');
+    expect(kept?.text).toBe(text);
+  });
+
+  it('never lets an older local approval hide a newer native review that requests changes', async () => {
+    const workDir = await createTempDir();
+    const history = createTicketHistory({
+      workDir,
+      readers: readers({
+        pull: pullConversation([
+          {
+            sourceId: '800',
+            author: 'Jane Reviewer',
+            createdAt: '2026-09-21T09:30:00.000Z',
+            updatedAt: null,
+            text: 'Nexus Lens review — HARN-41\n\nOne blocking finding.',
+            url: 'https://github.com/example/repo/pull/27#review-800',
+            state: 'CHANGES_REQUESTED',
+            commit: HEAD,
+          },
+          {
+            sourceId: '801',
+            author: 'Jane Reviewer',
+            createdAt: '2026-09-21T09:30:01.000Z',
+            updatedAt: null,
+            text: 'src/a.ts:3 — Fix the retry loop.',
+            body: 'Fix the retry loop.',
+            path: 'src/a.ts',
+            line: 3,
+            reviewId: 800,
+            commit: HEAD,
+            url: 'https://github.com/example/repo/pull/27#discussion_r801',
+          },
+        ]),
+      }),
+      now: () => new Date('2026-09-21T10:00:00.000Z'),
+    });
+    await history.recordReviewerReport?.({
+      ref: REF,
+      workspaceId: WORKSPACE_ID,
+      task: TASK,
+      reviewId: 'review-20260921-0005',
+      round: 1,
+      head: HEAD,
+      decision: 'approve',
+      summary: 'Nothing blocking.',
+      findings: [],
+      now: new Date('2026-09-21T09:00:00.000Z'),
+    });
+    const snapshot = await history.prepare(prepareRequest(workDir));
+
+    const unresolved = snapshot.brief.unresolved;
+    expect(unresolved).not.toBeNull();
+    expect(unresolved?.entryId).toBe('github:pr-review:800');
+    expect(unresolved?.decision).toBe('request_changes');
+    expect(unresolved?.complete).toBe(false);
+    expect(unresolved?.findings.map((finding) => finding.body)).toEqual(['Fix the retry loop.']);
+    expect(snapshot.gaps.join('\n')).toContain('the latest review that requested changes');
+  });
+
+  it('keeps a person’s outstanding change request visible after a later harness report', async () => {
+    const workDir = await createTempDir();
+    const history = createTicketHistory({
+      workDir,
+      readers: readers({
+        pull: pullConversation([
+          {
+            sourceId: '850',
+            author: 'Jane Reviewer',
+            createdAt: '2026-09-21T09:00:00.000Z',
+            updatedAt: null,
+            text: 'I reviewed this by hand and it needs one change.',
+            url: 'https://github.com/example/repo/pull/27#review-850',
+            state: 'CHANGES_REQUESTED',
+            commit: HEAD,
+          },
+          {
+            sourceId: '851',
+            author: 'Jane Reviewer',
+            createdAt: '2026-09-21T09:00:01.000Z',
+            updatedAt: null,
+            text: 'src/b.ts:8 — This drops the second page.',
+            body: 'This drops the second page.',
+            path: 'src/b.ts',
+            line: 8,
+            reviewId: 850,
+            commit: HEAD,
+            url: 'https://github.com/example/repo/pull/27#discussion_r851',
+          },
+        ]),
+      }),
+      now: () => new Date('2026-09-21T10:00:00.000Z'),
+    });
+    // The harness's own report came later, but it never answered the human's
+    // finding, and nothing approved the change since.
+    await history.recordDeveloperReport?.({
+      ref: REF,
+      workspaceId: WORKSPACE_ID,
+      task: TASK,
+      round: 1,
+      runId: 'run-20260921-0012',
+      reportPath: path.join(workDir, 'runs', 'run-20260921-0012', 'result.json'),
+      status: 'passed',
+      reason: 'every configured check exited 0',
+      repairsUsed: 0,
+      attempts: [],
+      pullRequest: null,
+      deliveryFailure: null,
+      now: new Date('2026-09-21T09:30:00.000Z'),
+    });
+    const snapshot = await history.prepare(prepareRequest(workDir));
+
+    expect(snapshot.brief.unresolved?.entryId).toBe('github:pr-review:850');
+    expect(snapshot.brief.unresolved?.findings.map((finding) => finding.body)).toEqual([
+      'This drops the second page.',
+    ]);
+    expect(snapshot.brief.unresolved?.author).toBe('Jane Reviewer');
+  });
+
+  it('clears an older local request for changes when a later review approves the head', async () => {
+    const workDir = await createTempDir();
+    const history = createTicketHistory({
+      workDir,
+      harnessAuthors: ['nexus-lens[bot]'],
+      readers: readers({
+        pull: pullConversation([
+          {
+            sourceId: '860',
+            author: 'nexus-lens[bot]',
+            createdAt: '2026-09-21T09:30:00.000Z',
+            updatedAt: null,
+            text: 'Nexus Lens review — HARN-41\n\nApproved at this head.',
+            url: 'https://github.com/example/repo/pull/27#review-860',
+            state: 'APPROVED',
+            commit: HEAD,
+          },
+        ]),
+      }),
+      now: () => new Date('2026-09-21T10:00:00.000Z'),
+    });
+    await history.recordReviewerReport?.({
+      ref: REF,
+      workspaceId: WORKSPACE_ID,
+      task: TASK,
+      reviewId: 'review-20260921-0006',
+      round: 1,
+      head: HEAD,
+      decision: 'request_changes',
+      summary: 'One finding, since fixed.',
+      findings: [{ path: 'src/a.ts', line: 1, body: 'Fix this.' }],
+      now: new Date('2026-09-21T09:00:00.000Z'),
+    });
+    const snapshot = await history.prepare(prepareRequest(workDir));
+
+    expect(snapshot.brief.unresolved).toBeNull();
+    expect(snapshot.entries.some((entry) => entry.sourceId === '860')).toBe(true);
+  });
+
+  it('recovers the complete reviewer report from the reviewer’s retained verdict', async () => {
+    const workDir = await createTempDir();
+    const reviewDir = path.join(workDir, 'reviews', 'review-legacy-7');
+    await mkdir(reviewDir, { recursive: true });
+    await writeFile(
+      path.join(reviewDir, 'review.json'),
+      JSON.stringify({
+        version: 1,
+        reviewId: 'review-legacy-7',
+        ref: REF,
+        startedAt: '2026-09-20T08:00:00.000Z',
+        endedAt: '2026-09-20T08:10:00.000Z',
+        verdict: 'request_changes',
+        problem: null,
+        pullRequest: { headSha: HEAD, headBranch: `harness/${WORKSPACE_ID}` },
+        review: {
+          id: 900,
+          url: 'https://github.com/example/repo/pull/27#review-900',
+          state: 'CHANGES_REQUESTED',
+        },
+      }),
+      'utf8',
+    );
+    const longBody = `The retry loop drops the second page. ${'detail '.repeat(200)}`.trim();
+    await writeFile(
+      path.join(reviewDir, 'verdict.json'),
+      JSON.stringify({
+        verdict: 'request_changes',
+        summary: 'One blocking finding.',
+        findings: [{ path: 'src/history/sync.ts', line: 12, body: longBody }],
+      }),
+      'utf8',
+    );
+    const history = createTicketHistory({
+      workDir,
+      readers: readers(),
+      now: () => new Date('2026-09-21T10:00:00.000Z'),
+    });
+    const snapshot = await history.prepare(prepareRequest(workDir));
+
+    const entry = snapshot.entries.find((item) => item.sourceId === 'review-legacy-7');
+    expect(entry?.kind).toBe('reviewer-report');
+    expect(entry?.complete).toBe(true);
+    expect(entry?.round).toBe(1);
+    expect(entry?.commit).toBe(HEAD);
+    expect(entry?.text).toContain(longBody);
+    expect(entry?.text).toContain(`Recovered from: ${path.join(reviewDir, 'verdict.json')}`);
+    expect(entry?.text).toContain(
+      'Publication: https://github.com/example/repo/pull/27#review-900',
+    );
+    expect(snapshot.entries.some((item) => item.kind === 'missing-report')).toBe(false);
+    expect(snapshot.brief.unresolved?.decision).toBe('request_changes');
+    expect(snapshot.brief.unresolved?.findings[0]?.body).toBe(longBody);
+    expect(snapshot.brief.unresolved?.complete).toBe(true);
+  });
+
+  it('recovers an inconclusive verdict as the round it really was, with no review invented', async () => {
+    const workDir = await createTempDir();
+    const reviewDir = path.join(workDir, 'reviews', 'review-legacy-8');
+    await mkdir(reviewDir, { recursive: true });
+    await writeFile(
+      path.join(reviewDir, 'review.json'),
+      JSON.stringify({
+        version: 1,
+        reviewId: 'review-legacy-8',
+        ref: REF,
+        startedAt: '2026-09-20T08:00:00.000Z',
+        endedAt: '2026-09-20T08:10:00.000Z',
+        verdict: null,
+        problem: 'review inconclusive: the repository view was missing',
+        pullRequest: { headSha: HEAD, headBranch: `harness/${WORKSPACE_ID}` },
+        review: null,
+      }),
+      'utf8',
+    );
+    await writeFile(
+      path.join(reviewDir, 'verdict.json'),
+      JSON.stringify({
+        verdict: 'inconclusive',
+        summary: 'The repository view was missing, so nothing could be reviewed.',
+        findings: [],
+      }),
+      'utf8',
+    );
+    const history = createTicketHistory({
+      workDir,
+      readers: readers(),
+      now: () => new Date('2026-09-21T10:00:00.000Z'),
+    });
+    const snapshot = await history.prepare(prepareRequest(workDir));
+
+    const entry = snapshot.entries.find((item) => item.sourceId === 'review-legacy-8');
+    expect(entry?.kind).toBe('reviewer-report');
+    expect(entry?.complete).toBe(true);
+    expect(entry?.text).toContain('The repository view was missing');
+    expect(entry?.text).toContain('Publication: this review published no native review');
+    // An inconclusive verdict decides nothing, so no unresolved finding is
+    // fabricated from it, and no native review was published for it.
+    expect(snapshot.brief.unresolved).toBeNull();
+    expect(snapshot.mirrors).toEqual([]);
+  });
+
+  it('marks a retained verdict that cannot be read as missing, naming the file', async () => {
+    const workDir = await createTempDir();
+    const reviewDir = path.join(workDir, 'reviews', 'review-broken-1');
+    await mkdir(reviewDir, { recursive: true });
+    await writeFile(
+      path.join(reviewDir, 'review.json'),
+      JSON.stringify({
+        version: 1,
+        reviewId: 'review-broken-1',
+        ref: REF,
+        startedAt: '2026-09-20T08:00:00.000Z',
+        verdict: 'request_changes',
+        problem: null,
+      }),
+      'utf8',
+    );
+    await writeFile(
+      path.join(reviewDir, 'verdict.json'),
+      JSON.stringify({ verdict: 'request_changes', summary: 'x', findings: 'not a list' }),
+      'utf8',
+    );
+    const history = createTicketHistory({
+      workDir,
+      readers: readers(),
+      now: () => new Date('2026-09-21T10:00:00.000Z'),
+    });
+    const snapshot = await history.prepare(prepareRequest(workDir));
+
+    const entry = snapshot.entries.find((item) => item.sourceId === 'review-broken-1');
+    expect(entry?.kind).toBe('missing-report');
+    expect(entry?.complete).toBe(false);
+    expect(entry?.problem).toContain('findings');
+    expect(snapshot.gaps.join('\n')).toContain(path.join(reviewDir, 'verdict.json'));
+  });
+
+  it('marks a legacy run report it cannot read back as the conversation it claims to be', async () => {
+    const workDir = await createTempDir();
+    const runDir = path.join(workDir, 'runs', 'run-legacy-3');
+    const reportPath = path.join(runDir, 'result.json');
+    await mkdir(runDir, { recursive: true });
+    await writeFile(reportPath, '{ this is not JSON', 'utf8');
+    const state: WorkspaceState = {
+      version: 1,
+      workspaceId: WORKSPACE_ID,
+      sourceRoot: path.join(workDir, 'source'),
+      baseCommit: HEAD,
+      branch: `harness/${WORKSPACE_ID}`,
+      createdAt: '2026-09-20T08:00:00.000Z',
+      sourceItem: { type: REF.type, scope: REF.scope, id: REF.id, key: REF.key },
+      attempts: [
+        {
+          runId: 'run-legacy-3',
+          outcome: 'failed',
+          reason: 'the checks failed',
+          endedAt: '2026-09-20T09:00:00.000Z',
+          reportPath,
+        },
+      ],
+    };
+    await mkdir(path.dirname(workspaceStatePath(workDir, WORKSPACE_ID)), { recursive: true });
+    await writeFile(workspaceStatePath(workDir, WORKSPACE_ID), JSON.stringify(state), 'utf8');
+    const history = createTicketHistory({
+      workDir,
+      readers: readers(),
+      now: () => new Date('2026-09-21T10:00:00.000Z'),
+    });
+    const snapshot = await history.prepare(prepareRequest(workDir));
+
+    const entry = snapshot.entries.find((item) => item.sourceId === 'run-legacy-3');
+    expect(entry?.kind).toBe('developer-report');
+    expect(entry?.complete).toBe(false);
+    expect(entry?.problem).toContain('not valid JSON');
+    expect(entry?.text).toContain('INCOMPLETE');
+    expect(snapshot.gaps.join('\n')).toContain('run-legacy-3');
+    // The run's own status is still recorded; the conversation that is missing
+    // is named rather than invented.
+    expect(entry?.text).toContain('the checks failed');
+  });
+
+  it('marks a legacy run report without its coding turns as incomplete', async () => {
+    const workDir = await createTempDir();
+    const runDir = path.join(workDir, 'runs', 'run-legacy-4');
+    const reportPath = path.join(runDir, 'result.json');
+    await mkdir(runDir, { recursive: true });
+    await writeFile(
+      reportPath,
+      JSON.stringify({
+        runId: 'run-legacy-4',
+        status: 'passed',
+        reason: 'every configured check exited 0',
+        endedAt: '2026-09-20T11:00:00.000Z',
+      }),
+      'utf8',
+    );
+    const state: WorkspaceState = {
+      version: 1,
+      workspaceId: WORKSPACE_ID,
+      sourceRoot: path.join(workDir, 'source'),
+      baseCommit: HEAD,
+      branch: `harness/${WORKSPACE_ID}`,
+      createdAt: '2026-09-20T10:00:00.000Z',
+      sourceItem: { type: REF.type, scope: REF.scope, id: REF.id, key: REF.key },
+      attempts: [
+        {
+          runId: 'run-legacy-4',
+          outcome: 'passed',
+          reason: 'the checks passed',
+          endedAt: '2026-09-20T11:00:00.000Z',
+          reportPath,
+        },
+      ],
+    };
+    await mkdir(path.dirname(workspaceStatePath(workDir, WORKSPACE_ID)), { recursive: true });
+    await writeFile(workspaceStatePath(workDir, WORKSPACE_ID), JSON.stringify(state), 'utf8');
+    const history = createTicketHistory({
+      workDir,
+      readers: readers(),
+      now: () => new Date('2026-09-21T10:00:00.000Z'),
+    });
+    const snapshot = await history.prepare(prepareRequest(workDir));
+
+    const entry = snapshot.entries.find((item) => item.sourceId === 'run-legacy-4');
+    expect(entry?.kind).toBe('developer-report');
+    expect(entry?.complete).toBe(false);
+    expect(entry?.problem).toContain('no list of coding turns');
+    expect(snapshot.gaps.join('\n')).toContain('no list of coding turns');
+    const rendered = renderHistorySection(snapshot, 'developer');
+    expect(rendered).toContain('### Incomplete input (read before starting)');
+    expect(rendered).toContain('no list of coding turns');
+  });
+
+  it('keeps the inline findings of a published review out of the conversation twice', async () => {
+    const workDir = await createTempDir();
+    const body = [
+      'Nexus Lens review — HARN-41: history',
+      '',
+      'Two findings.',
+      '',
+      'See the inline findings on this review.',
+      '',
+      `Harness record: nexus-history: reviewer review-20260921-0004 — the complete reviewer report is kept locally.`,
+    ].join('\n');
+    const history = createTicketHistory({
+      workDir,
+      harnessAuthors: ['nexus-lens[bot]'],
+      readers: readers({
+        pull: pullConversation([
+          {
+            sourceId: '600',
+            author: 'nexus-lens[bot]',
+            createdAt: '2026-09-21T08:00:00.000Z',
+            updatedAt: null,
+            text: body,
+            url: 'https://github.com/example/repo/pull/27#review-600',
+            state: 'CHANGES_REQUESTED',
+            commit: HEAD,
+          },
+          {
+            sourceId: '700',
+            author: 'nexus-lens[bot]',
+            createdAt: '2026-09-21T08:00:01.000Z',
+            updatedAt: null,
+            text: 'src/a.ts:4 — Fix A.',
+            body: 'Fix A.',
+            path: 'src/a.ts',
+            line: 4,
+            reviewId: 600,
+            url: 'https://github.com/example/repo/pull/27#discussion_r700',
+            commit: HEAD,
+          },
+          {
+            sourceId: '701',
+            author: 'Jane Reviewer',
+            createdAt: '2026-09-21T08:10:00.000Z',
+            updatedAt: null,
+            text: 'src/a.ts:4 — Is A really broken?',
+            body: 'Is A really broken?',
+            path: 'src/a.ts',
+            line: 4,
+            reviewId: 600,
+            inReplyToId: 700,
+            url: 'https://github.com/example/repo/pull/27#discussion_r701',
+            commit: HEAD,
+          },
+        ]),
+      }),
+      now: () => new Date('2026-09-21T10:00:00.000Z'),
+    });
+    await history.recordReviewerReport?.({
+      ref: REF,
+      workspaceId: WORKSPACE_ID,
+      task: TASK,
+      reviewId: 'review-20260921-0004',
+      round: 1,
+      head: HEAD,
+      decision: 'request_changes',
+      summary: 'Two findings.',
+      findings: [
+        { path: 'src/a.ts', line: 4, body: 'Fix A.' },
+        { path: 'src/b.ts', line: null, body: 'Fix B.' },
+      ],
+      now: new Date('2026-09-21T07:59:00.000Z'),
+    });
+    await notePublishedReview(workspaceHistoryRoot(workDir, WORKSPACE_ID), 'review-20260921-0004', {
+      id: 600,
+      url: 'https://github.com/example/repo/pull/27#review-600',
+      body,
+    });
+    const snapshot = await history.prepare(prepareRequest(workDir));
+
+    // The published review and the inline finding it posted are the rendering
+    // of the retained report; the reply is a person's own conversation.
+    expect(snapshot.mirrors.map((mirror) => mirror.sourceId).sort()).toEqual(['600', '700']);
+    expect(snapshot.entries.some((entry) => entry.sourceId === '700')).toBe(false);
+    const reply = snapshot.entries.find((entry) => entry.sourceId === '701');
+    expect(reply?.text).toBe('src/a.ts:4 — Is A really broken?');
+    expect(snapshot.brief.unresolved?.complete).toBe(true);
+    expect(snapshot.brief.unresolved?.findings).toHaveLength(2);
+    expect(snapshot.brief.responses.some((entry) => entry.sourceId === '701')).toBe(true);
   });
 });

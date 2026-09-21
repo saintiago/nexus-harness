@@ -103,6 +103,17 @@ export interface PullRequestConversationEntry {
   readonly path: string | null;
   /** The line in the new version of the file, when GitHub reports one. */
   readonly line: number | null;
+  /**
+   * The native review an inline comment belongs to, as GitHub reports its
+   * `pull_request_review_id`. It maps the comment to the review the harness
+   * published, so its finding is not kept twice.
+   */
+  readonly reviewId: number | null;
+  /**
+   * The inline comment this comment replies to, when it is a reply. A reply is
+   * its own conversation and is never a mirrored finding.
+   */
+  readonly inReplyToId: number | null;
 }
 
 /**

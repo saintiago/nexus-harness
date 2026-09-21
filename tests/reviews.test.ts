@@ -26,6 +26,7 @@ import { HARNESS_CONFIG_FILE_NAME, PROJECT_CONFIG_FILE_NAME } from '../src/confi
 import type { TicketHistory } from '../src/history/contract.js';
 import { createTicketHistory } from '../src/history/sync.js';
 import { workspaceHistoryRoot } from '../src/history/paths.js';
+import { textSha256 } from '../src/history/reports.js';
 import type {
   AppCheckRun,
   OpenPullRequest,
@@ -935,13 +936,39 @@ describe('one review scan', () => {
     const reports = await readdir(
       path.join(workspaceHistoryRoot(workDir, WORKSPACE_ID), 'reports'),
     );
-    const digestName = reports.find((name) => name.startsWith('reviewer-') && name.endsWith('.md'));
-    expect(digestName).toBeDefined();
+    const completeName = reports.find(
+      (name) => name.startsWith('reviewer-') && name.endsWith('.md'),
+    );
+    expect(completeName).toBeDefined();
     const complete = await readFile(
-      path.join(workspaceHistoryRoot(workDir, WORKSPACE_ID), 'reports', digestName ?? ''),
+      path.join(workspaceHistoryRoot(workDir, WORKSPACE_ID), 'reports', completeName ?? ''),
       'utf8',
     );
     expect(complete).toContain(findingBody);
+    // The native review that rendered it is recorded as the report's
+    // publication, with the body it published: a later synchronization
+    // authenticates the review by that identity, not by the marker wording.
+    const digestName = reports.find(
+      (name) =>
+        name.startsWith('reviewer-') && name.endsWith('.json') && !name.endsWith('.verdict.json'),
+    );
+    const digest = JSON.parse(
+      await readFile(
+        path.join(workspaceHistoryRoot(workDir, WORKSPACE_ID), 'reports', digestName ?? ''),
+        'utf8',
+      ),
+    ) as {
+      readonly published: {
+        readonly id: number;
+        readonly url: string;
+        readonly bodySha256: string | null;
+      } | null;
+    };
+    expect(digest.published?.id).toBe(5256006204);
+    expect(digest.published?.url).toContain('#review');
+    expect(digest.published?.bodySha256).toBe(
+      textSha256(repository.calls.publishedReviews[0]?.body ?? ''),
+    );
   });
 
   it('reviews a ticket description too large for the prompt when the history carries it whole', async () => {

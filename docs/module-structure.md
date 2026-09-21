@@ -101,12 +101,13 @@ src/
     baseline.ts                   (1189) the pre-delivery reviewer turn, its prompt, and its outcome record
     scan.ts                       (790)  one scan or watch: eligibility, dedup, publishing, evidence
   history/
-    contract.ts                   (330)  the entries, the brief, the snapshot, and the readers boundary
+    contract.ts                   (420)  the entries, the brief, the snapshot, and the readers boundary
     paths.ts                      (30)   where one ticket's history and its reports live
-    store.ts                      (340)  the immutable snapshot store: content hash, files, current.json
-    reports.ts                    (700)  complete developer/reviewer report retention and local reads
-    sync.ts                       (600)  read, deduplicate, mirror, brief, write one snapshot
-    prompt.ts                     (210)  the one history section both role prompts carry
+    marker.ts                     (60)   the `nexus-history:` marker both renderings carry
+    store.ts                      (400)  the immutable snapshot store: content hash, files, current.json
+    reports.ts                    (1280) complete developer/reviewer report retention and local reads
+    sync.ts                       (880)  read, deduplicate, authenticate mirrors, brief, write one snapshot
+    prompt.ts                     (190)  the one history section both role prompts carry
   queue/
     loop.ts                       (488)  the serial control loop: one current ticket, one phase at a time
   agents/
@@ -462,13 +463,17 @@ further would separate one decision from itself: `runs/runner.ts` (the loop), `s
   `store.ts` writes each snapshot under the hash of its own content and moves `current.json`
   atomically, so a refresh never rewrites a snapshot a running turn holds; `reports.ts` keeps the
   complete developer and reviewer reports under `<workspaceId>.history/reports` before anything
-  renders them, reuses a run's own `result.json` and the review records for reports that predate
-  the increment, and marks one it knows existed but can no longer read; `sync.ts` reads the
-  connector boundary, deduplicates by source identity (an edited comment updates its entry),
-  recognizes a published rendering of a local report by its `nexus-history:` marker, and builds
-  the brief — the requirements, the latest delivery, the complete unresolved findings with their
-  responses, and the human feedback since the last report; `prompt.ts` renders the one section both
-  role prompts carry, gaps named first.
+  renders them, records the acknowledged comment or native review as each report's publication,
+  reuses a run's own `result.json` and the reviewer's retained verdict for reports that predate the
+  increment (marking one that cannot be read back as the conversation it claims to be, and one that
+  really existed but can no longer be read); `sync.ts` reads the connector boundary, deduplicates by
+  source identity (an edited comment updates its entry), authenticates a published rendering of a
+  local report against its recorded publication identity — never against wording alone —
+  reconciles the unresolved round across retained reports and native reviews, tracks feedback
+  against the entries the previous snapshot held, and builds the brief — the requirements, the
+  latest delivery, the complete unresolved findings with their responses, and the human feedback new
+  or edited since the previous snapshot; `prompt.ts` renders the one section both role prompts carry,
+  gaps named first.
 - **Does not own:** any connector, credential, or remote write. It imports no Jira or GitHub
   module; `cli/history.ts` composes its readers from the existing connector and App client and
   hands the same object to the source coordinator and the review scan.

@@ -106,7 +106,21 @@ describe('the review GitHub boundary', () => {
             commit_id: HEAD,
             path: 'src/a.ts',
             line: 4,
+            pull_request_review_id: 101,
             html_url: 'https://github.com/owner/repo/pull/1#discussion_r301',
+          },
+          {
+            id: 302,
+            user: { login: 'Jane Reviewer' },
+            body: 'Is that true?',
+            created_at: '2026-09-19T12:40:00Z',
+            updated_at: '2026-09-19T12:40:00Z',
+            commit_id: HEAD,
+            path: 'src/a.ts',
+            line: 4,
+            pull_request_review_id: 101,
+            in_reply_to_id: 301,
+            html_url: 'https://github.com/owner/repo/pull/1#discussion_r302',
           },
         ];
       }
@@ -116,12 +130,19 @@ describe('the review GitHub boundary', () => {
     const conversation = await client.readConversation(1, stop);
 
     expect(conversation.truncated).toBe(false);
-    expect(conversation.entries).toHaveLength(103);
+    expect(conversation.entries).toHaveLength(104);
     expect(conversation.entries[0]?.kind).toBe('review');
-    const last = conversation.entries.at(-1);
-    expect(last?.kind).toBe('review-comment');
-    expect(last?.path).toBe('src/a.ts');
-    expect(last?.line).toBe(4);
+    const finding = conversation.entries.find((entry) => entry.id === 301);
+    expect(finding?.kind).toBe('review-comment');
+    expect(finding?.path).toBe('src/a.ts');
+    expect(finding?.line).toBe(4);
+    // The native review an inline comment belongs to is what maps it to the
+    // report the harness published, and a reply names what it answers.
+    expect(finding?.reviewId).toBe(101);
+    expect(finding?.inReplyToId).toBeNull();
+    const reply = conversation.entries.find((entry) => entry.id === 302);
+    expect(reply?.reviewId).toBe(101);
+    expect(reply?.inReplyToId).toBe(301);
     const issueComment = conversation.entries.find((entry) => entry.id === 201);
     expect(issueComment?.kind).toBe('comment');
     expect(issueComment?.updatedAt).toBe('2026-09-19T12:05:00Z');

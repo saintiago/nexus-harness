@@ -10,6 +10,7 @@
  * never kept — becomes an explicit missing marker carrying the record's own
  * words and the path that was looked for. Nothing here invents a report.
  */
+import { createHash } from 'node:crypto';
 import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { messageOf } from '../shared/errors.js';
@@ -20,6 +21,7 @@ import type {
   HistoryDelivery,
   HistoryFinding,
   HistoryReportSummary,
+  PublishedDeveloperReport,
   RecordedReport,
   ReviewerReportRequest,
 } from './contract.js';
@@ -51,12 +53,28 @@ export interface DeveloperReportDigest {
   readonly pullRequest: HistoryDelivery | null;
   readonly deliveryFailure: string | null;
   readonly createdAt: string;
+  /**
+   * The comment this complete report was published as, once the source
+   * acknowledged it. It is the recorded publication identity synchronization
+   * authenticates a mirrored rendering against; a report saved but never
+   * published carries `null`.
+   */
+  readonly published: DeveloperPublication | null;
   /** The complete rendering, relative to the reports directory. */
   readonly textFile: string;
   /** The verbatim `result.json`, relative to the reports directory; `null` when it could not be copied. */
   readonly recordFile: string | null;
   /** Why the verbatim record is absent, when it is. */
   readonly recordProblem: string | null;
+}
+
+/** The recorded publication of one complete developer report. */
+export interface DeveloperPublication {
+  /** The source's own identity for the comment: a Jira comment id. */
+  readonly commentId: string;
+  readonly url: string | null;
+  /** The SHA-256 of the text that was published, so an edit is visible. */
+  readonly textSha256: string;
 }
 
 /** The digest of one complete reviewer report. */
@@ -77,7 +95,16 @@ export interface ReviewerReportDigest {
   readonly recordFile: string | null;
   readonly recordProblem: string | null;
   /** The native review GitHub published for this report, once it exists. */
-  readonly published: { readonly id: number; readonly url: string } | null;
+  readonly published: {
+    readonly id: number;
+    readonly url: string;
+    /**
+     * The SHA-256 of the review body that was published, when it was recorded.
+     * It is `null` for a publication recorded before the body was kept, which
+     * is a publication identity that still authenticates the review itself.
+     */
+    readonly bodySha256: string | null;
+  } | null;
 }
 
 /** One local report as synchronization reads it. */
@@ -142,6 +169,16 @@ function oneLine(text: string): string {
   return text.replace(/\s+/g, ' ').trim();
 }
 
+/**
+ * The SHA-256 of one published rendering. It is what tells a rendering the
+ * harness published from one that was edited afterwards: the recorded identity
+ * names the comment, and this digest says whether its text is still the text
+ * the harness sent.
+ */
+export function textSha256(text: string): string {
+  return createHash('sha256').update(text, 'utf8').digest('hex');
+}
+
 /** The complete developer report as Markdown: every field the run recorded. */
 function developerReportText(request: DeveloperReportRequest): string {
   const lines = [
@@ -180,14 +217,41 @@ function developerReportText(request: DeveloperReportRequest): string {
   return `${lines.join('\n').trimEnd()}\n`;
 }
 
+/**
+ * The fields one complete reviewer report rendering is made of. A report this
+ * harness recorded carries them directly; one recovered from a reviewer's own
+ * retained verdict carries the same fields plus where it was recovered from.
+ */
+type ReviewerReportFields = Pick<
+  ReviewerReportRequest,
+  'ref' | 'round' | 'reviewId' | 'head' | 'decision' | 'summary' | 'findings'
+> & {
+  /** Where the rendering was recovered from; `null` for a directly recorded report. */
+  readonly recoveredFrom?: string | null;
+  /** The published review URL, when the review record names one. */
+  readonly publishedUrl?: string | null;
+};
+
 /** The complete reviewer report as Markdown: summary and every finding whole. */
-function reviewerReportText(request: ReviewerReportRequest): string {
+function reviewerReportText(request: ReviewerReportFields): string {
   const lines = [
     `# Reviewer report — ${request.ref.key}, round ${String(request.round)}`,
     '',
     `- Review: ${request.reviewId}`,
     `- Reviewed head: ${request.head}`,
     `- Decision: ${request.decision}`,
+  ];
+  if (request.recoveredFrom !== undefined && request.recoveredFrom !== null) {
+    lines.push(
+      `- Recovered from: ${oneLine(request.recoveredFrom)}`,
+      `- Publication: ${
+        request.publishedUrl === undefined || request.publishedUrl === null
+          ? 'this review published no native review'
+          : oneLine(request.publishedUrl)
+      }`,
+    );
+  }
+  lines.push(
     '',
     '## Summary',
     '',
@@ -195,7 +259,7 @@ function reviewerReportText(request: ReviewerReportRequest): string {
     '',
     `## Findings (${String(request.findings.length)})`,
     '',
-  ];
+  );
   if (request.findings.length === 0) {
     lines.push('(no findings)');
   }
@@ -290,6 +354,7 @@ export async function recordDeveloperReport(
     pullRequest: request.pullRequest,
     deliveryFailure: request.deliveryFailure,
     createdAt: request.now.toISOString(),
+    published: null,
     textFile: textName,
     recordFile: copied.file === null ? null : recordName,
     recordProblem: copied.problem,
@@ -405,7 +470,7 @@ export async function recordReviewerReport(
 export async function notePublishedReview(
   root: string,
   reviewId: string,
-  published: { readonly id: number; readonly url: string },
+  published: { readonly id: number; readonly url: string; readonly body: string },
 ): Promise<void> {
   const file = reportFile(root, `reviewer-${reviewId}.json`);
   let digest: ReviewerReportDigest;
@@ -414,6 +479,46 @@ export async function notePublishedReview(
   } catch {
     return;
   }
+  await atomicWrite(
+    file,
+    `${JSON.stringify(
+      {
+        ...digest,
+        published: {
+          id: published.id,
+          url: published.url,
+          bodySha256: textSha256(published.body),
+        },
+      },
+      null,
+      2,
+    )}\n`,
+  );
+}
+
+/**
+ * Attaches the comment a complete developer report was published as to the
+ * report it renders. It is enrichment after publication, exactly like
+ * {@link notePublishedReview}: the report and the comment already exist, this
+ * records the identity a later synchronization authenticates the rendering by,
+ * and a failure here invalidates neither.
+ */
+export async function notePublishedDeveloperReport(
+  root: string,
+  request: PublishedDeveloperReport,
+): Promise<void> {
+  const file = reportFile(root, `developer-${request.runId}.json`);
+  let digest: DeveloperReportDigest;
+  try {
+    digest = JSON.parse(await readFile(file, 'utf8')) as DeveloperReportDigest;
+  } catch {
+    return;
+  }
+  const published: DeveloperPublication = {
+    commentId: request.commentId,
+    url: request.url,
+    textSha256: textSha256(request.text),
+  };
   await atomicWrite(file, `${JSON.stringify({ ...digest, published }, null, 2)}\n`);
 }
 
@@ -435,6 +540,47 @@ function sameTicket(ref: unknown, wanted: SourceRef): boolean {
   return other.type === wanted.type && other.scope === wanted.scope && other.id === wanted.id;
 }
 
+/**
+ * The recorded publication of one developer digest, normalized. A digest
+ * written before publication identities were kept names none, and `null` is
+ * then the honest answer: the rendering is not authenticated by anything this
+ * machine recorded.
+ */
+function developerPublicationOf(value: unknown): DeveloperPublication | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return null;
+  }
+  const record = value as Record<string, unknown>;
+  const commentId = record['commentId'];
+  if (typeof commentId !== 'string' || commentId === '') {
+    return null;
+  }
+  return {
+    commentId,
+    url: typeof record['url'] === 'string' ? record['url'] : null,
+    textSha256: typeof record['textSha256'] === 'string' ? record['textSha256'] : '',
+  };
+}
+
+/** The recorded native review of one reviewer digest, normalized. */
+function reviewerPublicationOf(
+  value: unknown,
+): { readonly id: number; readonly url: string; readonly bodySha256: string | null } | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return null;
+  }
+  const record = value as Record<string, unknown>;
+  const id = record['id'];
+  if (typeof id !== 'number' || !Number.isSafeInteger(id)) {
+    return null;
+  }
+  return {
+    id,
+    url: typeof record['url'] === 'string' ? record['url'] : '',
+    bodySha256: typeof record['bodySha256'] === 'string' ? record['bodySha256'] : null,
+  };
+}
+
 /** The report summaries a set of local reports contributes to the brief. */
 export function reportSummaryOf(report: LocalReport): HistoryReportSummary | null {
   if (report.kind === 'missing-report') {
@@ -454,6 +600,7 @@ export function reportSummaryOf(report: LocalReport): HistoryReportSummary | nul
       status: digest.status,
       reason: digest.reason,
       head: digest.pullRequest?.head ?? null,
+      nativeReviewId: null,
       decision: null,
       summary: null,
       findings: [],
@@ -472,6 +619,7 @@ export function reportSummaryOf(report: LocalReport): HistoryReportSummary | nul
     status: null,
     reason: null,
     head: digest.head,
+    nativeReviewId: digest.published?.id ?? null,
     decision: digest.decision,
     summary: digest.summary,
     findings: digest.findings,
@@ -591,7 +739,10 @@ export async function readLocalReports(parts: {
       }
       reports.push({
         kind: 'developer-report',
-        digest: record as unknown as DeveloperReportDigest,
+        digest: {
+          ...(record as unknown as DeveloperReportDigest),
+          published: developerPublicationOf(record['published']),
+        },
         text: text ?? '',
         complete: text !== null,
         problem,
@@ -604,7 +755,10 @@ export async function readLocalReports(parts: {
       }
       reports.push({
         kind: 'reviewer-report',
-        digest: record as unknown as ReviewerReportDigest,
+        digest: {
+          ...(record as unknown as ReviewerReportDigest),
+          published: reviewerPublicationOf(record['published']),
+        },
         text: text ?? '',
         complete: text !== null,
         problem,
@@ -671,13 +825,13 @@ export async function readLocalReports(parts: {
       });
       continue;
     }
-    const digest = legacyDeveloperDigest(attempt.runId, ref, workspaceId, round, text, attempt);
+    const rebuilt = legacyDeveloperDigest(attempt.runId, ref, workspaceId, round, text, attempt);
     reports.push({
       kind: 'developer-report',
-      digest,
-      text: legacyDeveloperText(digest),
-      complete: true,
-      problem: null,
+      digest: rebuilt.digest,
+      text: legacyDeveloperText(rebuilt.digest),
+      complete: rebuilt.problem === null,
+      problem: rebuilt.problem,
       legacy: true,
     });
   }
@@ -705,9 +859,13 @@ export async function readLocalReports(parts: {
   );
   const records: {
     reviewId: string;
+    dir: string;
     startedAt: string;
+    endedAt: string | null;
     verdict: string | null;
     problem: string | null;
+    published: { readonly id: number; readonly url: string } | null;
+    head: string | null;
     url: string | null;
   }[] = [];
   for (const name of reviewNames) {
@@ -734,18 +892,31 @@ export async function readLocalReports(parts: {
       continue;
     }
     const published = record['review'];
+    const publishedRecord =
+      typeof published === 'object' &&
+      published !== null &&
+      typeof (published as Record<string, unknown>)['id'] === 'number' &&
+      typeof (published as Record<string, unknown>)['url'] === 'string'
+        ? {
+            id: (published as Record<string, unknown>)['id'] as number,
+            url: (published as Record<string, unknown>)['url'] as string,
+          }
+        : null;
+    const reviewedHead =
+      typeof reviewed === 'object' && reviewed !== null
+        ? ((reviewed as Record<string, unknown>)['headSha'] as unknown)
+        : undefined;
     records.push({
       reviewId,
+      dir: path.join(reviewsRoot, name),
       startedAt:
         typeof record['startedAt'] === 'string' ? record['startedAt'] : parts.now.toISOString(),
+      endedAt: typeof record['endedAt'] === 'string' ? record['endedAt'] : null,
       verdict: typeof record['verdict'] === 'string' ? record['verdict'] : null,
       problem: typeof record['problem'] === 'string' ? record['problem'] : null,
-      url:
-        typeof published === 'object' &&
-        published !== null &&
-        typeof (published as Record<string, unknown>)['url'] === 'string'
-          ? ((published as Record<string, unknown>)['url'] as string)
-          : null,
+      published: publishedRecord,
+      head: typeof reviewedHead === 'string' ? reviewedHead : null,
+      url: publishedRecord === null ? null : publishedRecord.url,
     });
   }
   records.sort(
@@ -756,6 +927,21 @@ export async function readLocalReports(parts: {
       continue;
     }
     const round = index + 1;
+    // The reviewer's own verdict is the complete report, and it is retained
+    // beside the review record. It is read back before this attempt is called
+    // missing, so a review this machine ran is never reported as absent while
+    // its findings sit on disk.
+    const recovered = await readRetainedVerdict({
+      dir: record.dir,
+      record,
+      ref,
+      workspaceId,
+      round,
+    });
+    if (recovered.report !== null) {
+      reports.push(recovered.report);
+      continue;
+    }
     const what =
       record.verdict === null
         ? `its reviewer attempt ended without a published verdict`
@@ -772,11 +958,13 @@ export async function readLocalReports(parts: {
         `missing on this machine: the review record says ${what}` +
         (record.url === null ? '' : ` (${record.url})`) +
         (record.problem === null ? '' : `; its recorded problem was: ${oneLine(record.problem)}`) +
+        (recovered.problem === null ? '' : `; ${recovered.problem}`) +
         '. Only the published rendering, if any, is available; it may have been bounded for the ' +
         'destination it was published to.',
       problem:
-        `the complete reviewer report of round ${String(round)} (review ${record.reviewId}) is ` +
-        'missing from this machine',
+        `the complete reviewer report of round ${String(round)} (review ${record.reviewId}) ` +
+        `could not be recovered from this machine` +
+        (recovered.problem === null ? '' : `: ${recovered.problem}`),
       reportPath: null,
     });
   }
@@ -784,24 +972,235 @@ export async function readLocalReports(parts: {
   return { reports, problems };
 }
 
-/** A developer report rebuilt from a run's own `result.json`, without a digest. */
+/** One review record's identity, as the recovery of its verdict reads it. */
+interface ReviewRecordIdentity {
+  readonly reviewId: string;
+  readonly startedAt: string;
+  readonly endedAt: string | null;
+  readonly verdict: string | null;
+  readonly problem: string | null;
+  readonly published: { readonly id: number; readonly url: string } | null;
+  readonly head: string | null;
+}
+
+/** What reading one retained reviewer verdict produced. */
+interface RetainedVerdictRead {
+  readonly report: LocalReport | null;
+  /** Why the retained verdict is not a complete report, when it is not. */
+  readonly problem: string | null;
+}
+
+/**
+ * Reads back the complete reviewer report one review record left: the verdict
+ * the reviewer turn wrote beside its own evidence. The retained verdict is the
+ * reviewer's own wording, whole, and it is validated here before it is
+ * presented as a complete report — a file that is missing, unreadable, or not
+ * a usable verdict becomes an explicit problem instead of an empty report.
+ */
+async function readRetainedVerdict(parts: {
+  readonly dir: string;
+  readonly record: ReviewRecordIdentity;
+  readonly ref: SourceRef;
+  readonly workspaceId: string;
+  readonly round: number;
+}): Promise<RetainedVerdictRead> {
+  const file = path.join(parts.dir, 'verdict.json');
+  let text: string;
+  try {
+    text = await readFile(file, 'utf8');
+  } catch (cause) {
+    return {
+      report: null,
+      problem: `the reviewer's own verdict "${file}" could not be read: ${messageOf(cause)}`,
+    };
+  }
+  let value: unknown;
+  try {
+    value = JSON.parse(text) as unknown;
+  } catch (cause) {
+    return {
+      report: null,
+      problem: `the reviewer's own verdict "${file}" is not valid JSON: ${messageOf(cause)}`,
+    };
+  }
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return {
+      report: null,
+      problem: `the reviewer's own verdict "${file}" is not a JSON object`,
+    };
+  }
+  const record = value as Record<string, unknown>;
+  const decision = record['verdict'];
+  if (decision !== 'approve' && decision !== 'request_changes' && decision !== 'inconclusive') {
+    return {
+      report: null,
+      problem:
+        `the reviewer's own verdict "${file}" names no usable decision, so it was not read as a ` +
+        'complete report',
+    };
+  }
+  const summary = record['summary'];
+  if (typeof summary !== 'string' || summary.trim() === '') {
+    return {
+      report: null,
+      problem: `the reviewer's own verdict "${file}" carries no summary`,
+    };
+  }
+  const rawFindings = record['findings'];
+  if (!Array.isArray(rawFindings)) {
+    return {
+      report: null,
+      problem: `the reviewer's own verdict "${file}" carries no list of findings`,
+    };
+  }
+  const findings: HistoryFinding[] = [];
+  for (const [index, raw] of rawFindings.entries()) {
+    if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+      return {
+        report: null,
+        problem: `finding ${String(index + 1)} of "${file}" is not an object`,
+      };
+    }
+    const finding = raw as Record<string, unknown>;
+    const body = finding['body'];
+    const where = finding['path'];
+    if (
+      typeof body !== 'string' ||
+      body.trim() === '' ||
+      typeof where !== 'string' ||
+      where.trim() === ''
+    ) {
+      return {
+        report: null,
+        problem:
+          `finding ${String(index + 1)} of "${file}" carries no path and body, so the complete ` +
+          'report cannot be read back',
+      };
+    }
+    const line = finding['line'];
+    if (
+      line !== undefined &&
+      line !== null &&
+      (typeof line !== 'number' || !Number.isSafeInteger(line) || line < 1)
+    ) {
+      return {
+        report: null,
+        problem: `finding ${String(index + 1)} of "${file}" carries no usable line number`,
+      };
+    }
+    findings.push({
+      path: where.trim(),
+      line: line === undefined || line === null ? null : line,
+      body,
+    });
+  }
+  const head = parts.record.head ?? '(the review record names no reviewed head)';
+  const digest: ReviewerReportDigest = {
+    version: 1,
+    kind: 'reviewer-report',
+    reviewId: parts.record.reviewId,
+    ref: parts.ref,
+    workspaceId: parts.workspaceId,
+    round: parts.round,
+    task: { id: parts.ref.key, title: parts.ref.key },
+    head,
+    decision,
+    summary: summary.trim(),
+    findings,
+    createdAt: parts.record.endedAt ?? parts.record.startedAt,
+    textFile: '',
+    recordFile: null,
+    recordProblem: `this report was recovered from the reviewer's own retained verdict at "${file}"`,
+    published:
+      parts.record.published === null
+        ? null
+        : { id: parts.record.published.id, url: parts.record.published.url, bodySha256: null },
+  };
+  return {
+    report: {
+      kind: 'reviewer-report',
+      digest,
+      text: reviewerReportText({
+        ref: parts.ref,
+        round: parts.round,
+        reviewId: parts.record.reviewId,
+        head,
+        decision,
+        summary: summary.trim(),
+        findings,
+        recoveredFrom: file,
+        publishedUrl: parts.record.published?.url ?? null,
+      }),
+      complete: true,
+      problem: null,
+      legacy: true,
+    },
+    problem: null,
+  };
+}
+
+/**
+ * Why one legacy `result.json` cannot be read back as the conversation it
+ * records, or `null` when it can. A record this harness wrote always carries
+ * its own outcome and one entry per coding turn; anything else is reported as
+ * incomplete rather than reconstructed into a report claiming completeness.
+ */
+function legacyRecordProblem(parsed: Record<string, unknown> | null): string | null {
+  if (parsed === null) {
+    return "the run's own report is not valid JSON";
+  }
+  if (typeof parsed['status'] !== 'string') {
+    return "the run's own report carries no outcome";
+  }
+  const rawAttempts = parsed['attempts'];
+  if (!Array.isArray(rawAttempts)) {
+    return "the run's own report carries no list of coding turns";
+  }
+  for (const [index, raw] of rawAttempts.entries()) {
+    if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+      return `turn ${String(index + 1)} of the run's own report is not an object`;
+    }
+    const record = raw as Record<string, unknown>;
+    if (typeof record['turn'] !== 'number' || typeof record['kind'] !== 'string') {
+      return `turn ${String(index + 1)} of the run's own report names no turn and kind`;
+    }
+    const summary = record['agentSummary'];
+    if (summary !== undefined && summary !== null && typeof summary !== 'string') {
+      return `turn ${String(index + 1)} of the run's own report carries a summary that is not text`;
+    }
+  }
+  return null;
+}
+
+/**
+ * A developer report rebuilt from a run's own `result.json`, without a digest.
+ * The rebuilt report is complete only when the record really holds the
+ * conversation — the outcome and one usable entry per coding turn; a record
+ * that cannot be read that way keeps what it has and names what is missing.
+ */
 function legacyDeveloperDigest(
   runId: string,
   ref: SourceRef,
   workspaceId: string,
   round: number,
   text: string,
-  attempt: { readonly outcome: string; readonly reason?: string; readonly endedAt: string },
-): DeveloperReportDigest {
+  attempt: {
+    readonly outcome: string;
+    readonly reason?: string;
+    readonly endedAt: string;
+    readonly reportPath: string;
+  },
+): { readonly digest: DeveloperReportDigest; readonly problem: string | null } {
   let parsed: Record<string, unknown> | null = null;
   try {
     const value = JSON.parse(text) as unknown;
-    if (typeof value === 'object' && value !== null) {
+    if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
       parsed = value as Record<string, unknown>;
     }
   } catch {
     parsed = null;
   }
+  const problem = legacyRecordProblem(parsed);
   const status =
     typeof parsed?.['status'] === 'string' ? (parsed['status'] as string) : attempt.outcome;
   const reason =
@@ -817,7 +1216,7 @@ function legacyDeveloperDigest(
   const rawAttempts = parsed?.['attempts'];
   if (Array.isArray(rawAttempts)) {
     for (const [index, raw] of rawAttempts.entries()) {
-      if (typeof raw !== 'object' || raw === null) {
+      if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
         continue;
       }
       const record = raw as Record<string, unknown>;
@@ -835,7 +1234,7 @@ function legacyDeveloperDigest(
       });
     }
   }
-  return {
+  const digest: DeveloperReportDigest = {
     version: 1,
     kind: 'developer-report',
     runId,
@@ -851,12 +1250,18 @@ function legacyDeveloperDigest(
     deliveryFailure: null,
     createdAt:
       typeof parsed?.['endedAt'] === 'string' ? (parsed['endedAt'] as string) : attempt.endedAt,
+    published: null,
     textFile: '',
     recordFile: null,
     recordProblem:
-      'this report was recorded before the harness kept a complete history copy; the text below ' +
-      "was rebuilt from the run's own result.json",
+      problem === null
+        ? 'this report was recorded before the harness kept a complete history copy; the text ' +
+          "below was rebuilt from the run's own result.json"
+        : `INCOMPLETE: the complete conversation of this attempt could not be read back from ` +
+          `"${attempt.reportPath}": ${problem}. Only what the record holds is below; the missing ` +
+          'turns are not reconstructed.',
   };
+  return { digest, problem };
 }
 
 /** The readable rendering of a rebuilt legacy developer report. */

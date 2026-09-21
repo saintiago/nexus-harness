@@ -116,6 +116,9 @@ function readersFor(parts: {
         commit: entry.commitId,
         path: entry.path,
         line: entry.line,
+        body: entry.body,
+        reviewId: entry.reviewId,
+        inReplyToId: entry.inReplyToId,
       }));
       return {
         pullRequest: {

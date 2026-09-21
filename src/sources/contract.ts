@@ -75,6 +75,17 @@ export class SourceFeedbackError extends Error {
   }
 }
 
+/**
+ * One comment a source acknowledged publishing. It carries the source's own
+ * identity for the comment and the exact text it was handed, so the history can
+ * record what was published — which is what later authenticates the rendering
+ * when synchronization reads it back.
+ */
+export interface PublishedComment {
+  readonly commentId: string;
+  readonly text: string;
+}
+
 /** One eligible external item, before its content has been read. */
 export interface SourceCandidate {
   readonly ref: SourceRef;
@@ -225,10 +236,20 @@ export interface TaskSource {
    * ladder will run in the same retained workspace — so the item stays in the
    * running status and this comment is how the item's own thread holds the
    * attempt's outcome (docs/implement-workspace-continuation.md). Throws
-   * {@link SourceFeedbackError} when the comment cannot be published.
+   * {@link SourceFeedbackError} when the comment cannot be published. Returns
+   * the acknowledged comment, so the history can record the publication
+   * identity the comment will be read back by.
    */
-  progress(item: SourceTask, outcome: SourceRunOutcome, stop: AbortSignal): Promise<void>;
-  complete(item: SourceTask, outcome: SourceRunOutcome, stop: AbortSignal): Promise<void>;
+  progress(
+    item: SourceTask,
+    outcome: SourceRunOutcome,
+    stop: AbortSignal,
+  ): Promise<PublishedComment>;
+  complete(
+    item: SourceTask,
+    outcome: SourceRunOutcome,
+    stop: AbortSignal,
+  ): Promise<PublishedComment>;
   /**
    * Records where the item's work lives, as the pointer label naming its
    * workspace. Called once, for the run that creates a workspace, after that

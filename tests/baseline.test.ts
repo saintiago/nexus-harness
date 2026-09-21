@@ -70,7 +70,12 @@ import { recordWorkspaceAttempt, writeWorkspaceState } from '../src/workspace/st
 import type { WorkspaceAttempt } from '../src/workspace/state.js';
 import { createLocalTarget, endFixtureTree, fakeTurns, git } from './fixtures/local-target.js';
 import type { LocalTarget } from './fixtures/local-target.js';
-import { cleanupTempDirectories, createTempDir, writeJsonFile } from './support.js';
+import {
+  cleanupTempDirectories,
+  createTempDir,
+  publishedComment,
+  writeJsonFile,
+} from './support.js';
 import { createHttpClient } from '../src/sources/jira/http.js';
 import { createJiraBaselineRecord } from '../src/sources/jira/baseline.js';
 
@@ -3077,9 +3082,11 @@ async function takeOne(parts: {
     claim: async () => true,
     progress: async (_item, outcome) => {
       calls.progress.push(outcome);
+      return publishedComment();
     },
     complete: async (_item, outcome) => {
       calls.complete.push(outcome);
+      return publishedComment();
     },
     recordWorkspace: async () => undefined,
     refuse: async () => {
@@ -3739,9 +3746,11 @@ function continuedIntake(parts: {
       },
       progress: async (_item, outcome) => {
         published.push(outcome);
+        return publishedComment();
       },
       complete: async (_item, outcome) => {
         published.push(outcome);
+        return publishedComment();
       },
       recordWorkspace: async () => undefined,
       refuse: async () => {
@@ -4878,7 +4887,12 @@ describe('the serial queue after a baseline diagnosis', () => {
         runId: 'run-2',
         reportPath: '/runs/run-2/result.json',
         reason: 'the checks passed',
-        pullRequest: { url: 'https://github.com/o/r/pull/38', created: true },
+        pullRequest: {
+          url: 'https://github.com/o/r/pull/38',
+          number: 38,
+          head: 'd'.repeat(40),
+          created: true,
+        },
       },
       skipped: 0,
       problem: null,

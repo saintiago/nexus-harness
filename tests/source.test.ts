@@ -42,6 +42,8 @@ import type { CliContext, InterruptSignals } from '../src/cli/context.js';
 import type { Delivery, DeliveryRequest } from '../src/delivery/github.js';
 import { DeliveryError } from '../src/delivery/github.js';
 import type { TicketHistory } from '../src/history/contract.js';
+import { createTicketHistory } from '../src/history/sync.js';
+import { workspaceHistoryRoot } from '../src/history/paths.js';
 import { summarizeChanges } from '../src/reporting/changes.js';
 import { ReportError } from '../src/reporting/errors.js';
 import type { RunTaskResult } from '../src/runs/contracts.js';
@@ -102,6 +104,7 @@ import {
   documentedConfig,
   documentedHarnessConfig,
   fakeConsole,
+  publishedComment,
   screenAfter,
   writeJsonFile,
 } from './support.js';
@@ -385,12 +388,14 @@ function createFixture(options: FixtureOptions): Fixture {
       log.push(`progress:${item.ref.key}:${outcome.status}`);
       progresses.push({ key: item.ref.key, outcome });
       await options.progress?.(item, outcome, progressCount);
+      return publishedComment();
     },
     complete: async (item, outcome) => {
       completeCount += 1;
       log.push(`complete:${item.ref.key}:${outcome.status}`);
       completions.push({ key: item.ref.key, outcome });
       await options.complete?.(item, outcome, completeCount);
+      return publishedComment();
     },
     recordWorkspace: async (item, workspaceId) => {
       log.push(`workspace:${item.ref.key}:${workspaceId}`);
@@ -534,6 +539,86 @@ describe('review-to-completion coordination', () => {
 
     expect(summary.passed).toBe(1);
     expect(events).toEqual(['record:run-1', 'publish']);
+  });
+
+  it('records the delivered revision and the published comment of each developer report', async () => {
+    const workDir = await createTempDir();
+    const delivered = 'c'.repeat(40);
+    const history = createTicketHistory({
+      workDir,
+      readers: {
+        jiraThread: async () => ({ comments: [], truncated: false }),
+        pullRequestConversation: async () => null,
+      },
+      now: () => new Date('2026-09-21T10:00:00.000Z'),
+    });
+    const fixture = createFixture({
+      workDir,
+      history,
+      delivery: {
+        deliver: async () => ({
+          url: 'https://github.com/example-owner/example-repo/pull/9',
+          number: 9,
+          head: delivered,
+          created: true,
+        }),
+      },
+      run: async (_task, _call, runDir) =>
+        resultFor(
+          runDir,
+          'passed',
+          'every configured check exited 0',
+          null,
+          preparedWorkspaceFor(runDir),
+        ),
+    });
+
+    const summary = await runSource(fixture.context, null);
+
+    expect(summary.passed).toBe(1);
+    // The run's own report is saved before the comment rendering it, and it
+    // names the commit this attempt delivered — not just the pull request.
+    const root = workspaceHistoryRoot(workDir, 'run-1');
+    const digest = JSON.parse(
+      await readFile(path.join(root, 'reports', 'developer-run-1.json'), 'utf8'),
+    ) as {
+      readonly pullRequest: { readonly number: number | null; readonly head: string | null } | null;
+      readonly published: { readonly commentId: string; readonly textSha256: string } | null;
+    };
+    expect(digest.pullRequest).toEqual({
+      number: 9,
+      url: 'https://github.com/example-owner/example-repo/pull/9',
+      title: null,
+      branch: 'harness/run-1',
+      baseBranch: null,
+      head: delivered,
+      observedAt: expect.any(String) as unknown as string,
+      round: 1,
+      entryId: null,
+    });
+    // The acknowledged comment is recorded as this report's publication, which
+    // is what a later synchronization authenticates its rendering by.
+    expect(digest.published?.commentId).toBe('comment-1');
+    expect(digest.published?.textSha256).toMatch(/^[0-9a-f]{64}$/);
+
+    const candidate = candidateFor('1');
+    const snapshot = await history.prepare({
+      ref: candidate.ref,
+      task: taskFor(candidate),
+      workspace: {
+        workspaceId: 'run-1',
+        workspacePath: path.join(workDir, 'workspaces', 'run-1'),
+        branch: 'harness/run-1',
+        baseCommit: 'base-commit',
+      },
+      role: 'developer',
+      round: 2,
+      stop: new AbortController().signal,
+    });
+    const report = snapshot.entries.find((entry) => entry.kind === 'developer-report');
+    expect(report?.commit).toBe(delivered);
+    expect(snapshot.brief.latestDelivery?.head).toBe(delivered);
+    expect(await readFile(snapshot.indexPath, 'utf8')).toContain(`commit ${delivered}`);
   });
 
   it('runs one completion pass after the batch and reports its counts', async () => {
@@ -848,7 +933,7 @@ describe('a finite source run', () => {
     const originalComplete = fixture.context.source.complete;
     fixture.context.source.complete = async (item, outcome, signal) => {
       feedbackSignals.push(signal);
-      await originalComplete(item, outcome, signal);
+      return await originalComplete(item, outcome, signal);
     };
 
     const summary = await runSource(fixture.context, null);
@@ -1008,7 +1093,12 @@ describe('delivering a passed attempt', () => {
       delivery: {
         deliver: async (request) => {
           requests.push(request);
-          return { url: 'https://github.com/example-owner/example-repo/pull/7', created: true };
+          return {
+            url: 'https://github.com/example-owner/example-repo/pull/7',
+            number: 7,
+            head: 'b'.repeat(40),
+            created: true,
+          };
         },
       },
     });
@@ -1031,6 +1121,8 @@ describe('delivering a passed attempt', () => {
     expect(fixture.completions).toHaveLength(1);
     expect(fixture.completions[0]?.outcome.pullRequest).toEqual({
       url: 'https://github.com/example-owner/example-repo/pull/7',
+      number: 7,
+      head: 'b'.repeat(40),
       created: true,
     });
     expect(fixture.log).toContain('complete:SAM1-1:passed');

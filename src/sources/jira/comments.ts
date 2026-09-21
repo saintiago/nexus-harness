@@ -11,6 +11,7 @@
 import type { JiraSourceConfig, SourceRef } from '../../shared/types.js';
 import { SourceFeedbackError } from '../contract.js';
 import type { SourceComment, SourceRunOutcome, SourceTask } from '../contract.js';
+import type { PublishedComment } from '../contract.js';
 import { parseDescription } from './adf.js';
 import { buildCommentDocument, renderDescription } from './adf-text.js';
 import { diagnosticOf } from './http.js';
@@ -308,14 +309,10 @@ async function resultComment(
   outcome: SourceRunOutcome,
   climbs: boolean,
   stop: AbortSignal,
-): Promise<string> {
-  return await publishComment(
-    http,
-    token,
-    item,
-    commentParagraphs(item.ref, outcome, climbs),
-    stop,
-  );
+): Promise<PublishedComment> {
+  const paragraphs = commentParagraphs(item.ref, outcome, climbs);
+  const commentId = await publishComment(http, token, item, paragraphs, stop);
+  return { commentId, text: paragraphs.join('\n') };
 }
 
 /**
@@ -330,8 +327,8 @@ export async function progressItem(
   item: SourceTask,
   outcome: SourceRunOutcome,
   stop: AbortSignal,
-): Promise<void> {
-  await resultComment(http, token, item, outcome, true, stop);
+): Promise<PublishedComment> {
+  return await resultComment(http, token, item, outcome, true, stop);
 }
 
 /**
@@ -347,8 +344,9 @@ export async function completeItem(
   item: SourceTask,
   outcome: SourceRunOutcome,
   stop: AbortSignal,
-): Promise<void> {
-  const commentId = await resultComment(http, token, item, outcome, false, stop);
+): Promise<PublishedComment> {
+  const published = await resultComment(http, token, item, outcome, false, stop);
+  const commentId = published.commentId;
 
   // The result was published; the status change happens only while the issue is
   // still in the running status, so a later human decision stands.
@@ -364,7 +362,7 @@ export async function completeItem(
     );
   }
   if (current === null || !sameName(current.fields.status, config.runningStatus)) {
-    return;
+    return published;
   }
 
   try {
@@ -382,6 +380,7 @@ export async function completeItem(
       commentId,
     );
   }
+  return published;
 }
 
 /**

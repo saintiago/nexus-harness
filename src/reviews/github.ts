@@ -308,6 +308,8 @@ function parseConversationReview(
     commitId: typeof review['commit_id'] === 'string' ? review['commit_id'] : null,
     path: null,
     line: null,
+    reviewId: null,
+    inReplyToId: null,
   };
 }
 
@@ -320,6 +322,14 @@ function parseConversationComment(
   const comment = recordOf(value, what);
   const user = isRecord(comment['user']) ? comment['user'] : null;
   const line = kind === 'review-comment' ? (comment['line'] ?? comment['original_line']) : null;
+  const parent =
+    kind === 'review-comment' && typeof comment['pull_request_review_id'] === 'number'
+      ? comment['pull_request_review_id']
+      : null;
+  const reply =
+    kind === 'review-comment' && typeof comment['in_reply_to_id'] === 'number'
+      ? comment['in_reply_to_id']
+      : null;
   return {
     id: numberField(comment, 'id', what),
     kind,
@@ -336,6 +346,8 @@ function parseConversationComment(
         : null,
     path: kind === 'review-comment' && typeof comment['path'] === 'string' ? comment['path'] : null,
     line: typeof line === 'number' && Number.isSafeInteger(line) && line >= 1 ? line : null,
+    reviewId: parent,
+    inReplyToId: reply,
   };
 }
 

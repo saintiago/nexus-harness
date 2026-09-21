@@ -41,6 +41,7 @@ import type {
   SourceTakeRun,
   SourceTask,
   QueueTicket,
+  PublishedComment,
 } from './contract.js';
 import { SourceError, SourceFeedbackError } from './contract.js';
 import { baselineFindingGuidanceLines, baselineThreadFinding, resumeStop } from './baseline.js';
@@ -419,7 +420,12 @@ async function reportDeliveryFailure(
   }
   const feedbackStop = stop.aborted ? AbortSignal.timeout(FEEDBACK_DEADLINE_MS) : stop;
   try {
-    await source.complete(item, runOutcome(run, attempt, null, problem), feedbackStop);
+    const published = await source.complete(
+      item,
+      runOutcome(run, attempt, null, problem),
+      feedbackStop,
+    );
+    await noteDeveloperPublication(context, item, run, published);
   } catch (cause) {
     const failure = feedbackFailure(cause);
     await updateReceipt(file, {
@@ -496,12 +502,12 @@ async function saveDeveloperReport(
         pullRequest === null
           ? null
           : {
-              number: null,
+              number: pullRequest.number,
               url: pullRequest.url,
               title: null,
               branch: workspace.branch,
               baseBranch: null,
-              head: null,
+              head: pullRequest.head,
               observedAt: context.now().toISOString(),
               round: workspace.attempt ?? null,
               entryId: null,
@@ -512,6 +518,40 @@ async function saveDeveloperReport(
     return null;
   } catch (cause) {
     return messageOf(cause);
+  }
+}
+
+/**
+ * Records the comment a run's complete developer report was published as, once
+ * the source acknowledged it. It is enrichment after publication — the report
+ * and the comment already exist — so every failure here is swallowed, and the
+ * publication identity it records is what a later synchronization authenticates
+ * the comment against when it reads the thread back.
+ */
+async function noteDeveloperPublication(
+  context: SourceContext,
+  item: SourceTask,
+  run: RunTaskResult,
+  published: PublishedComment | null,
+): Promise<void> {
+  const workspace = run.workspace;
+  if (
+    published === null ||
+    workspace === null ||
+    context.history?.notePublishedDeveloperReport === undefined
+  ) {
+    return;
+  }
+  try {
+    await context.history.notePublishedDeveloperReport({
+      workspaceId: workspace.workspaceId,
+      runId: run.run.runId,
+      commentId: published.commentId,
+      url: `${item.ref.url}?focusedCommentId=${encodeURIComponent(published.commentId)}`,
+      text: published.text,
+    });
+  } catch {
+    // Enrichment only: the complete report and the published comment stand.
   }
 }
 
@@ -1429,6 +1469,7 @@ async function attempt(
           `and intake stops: ${reportProblem}`,
       );
     }
+    let published: PublishedComment;
     try {
       if (climbs) {
         // The attempt's own comment, published while the issue stays in the
@@ -1436,13 +1477,13 @@ async function attempt(
         // and the ladder's end is what publishes the result and moves the issue
         // to review (docs/implement-workspace-continuation.md). The receipt stays
         // `pending`: the issue has not been given this intake's last word yet.
-        await source.progress(item, outcome, feedbackStop);
+        published = await source.progress(item, outcome, feedbackStop);
         io.out(
           `${item.ref.key}: attempt ${String(rungNumber)} of ${String(ladder.length)} (tier ` +
             `${tier.name}) published; the issue stays in the running status`,
         );
       } else {
-        await source.complete(item, outcome, feedbackStop);
+        published = await source.complete(item, outcome, feedbackStop);
         await updateReceipt(file, { feedback: 'sent' });
         io.out(`${item.ref.key}: result published and moved to review`);
       }
@@ -1459,6 +1500,11 @@ async function attempt(
           `stops for inspection: ${failure.problem}`,
       );
     }
+    // Enrichment after the comment exists: the identity of the comment is what
+    // later lets synchronization recognize this report's rendering as a mirror
+    // instead of a second conversational entry. A failure here never
+    // invalidates a published comment.
+    await noteDeveloperPublication(context, item, run, published);
 
     // When nothing may follow — a pass, a terminal failure, or no rung left —
     // the climb is over and the result above was the issue's last word.

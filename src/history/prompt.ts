@@ -161,7 +161,10 @@ export function renderHistorySection(
   }
   sections.push(
     [
-      '### New human feedback since the last harness report',
+      '### New human feedback since this ticket’s previous snapshot',
+      'Every human comment below is new to this snapshot, or was edited since the previous one;',
+      'a comment the previous turn already held is not repeated here, and stays searchable in the',
+      'full history.',
       feedback.length === 0
         ? '(none)'
         : rendered +

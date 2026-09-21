@@ -456,14 +456,20 @@ The index names each entry's role, author, time, round, source id, and the revie
 commit where it has one; each entry file holds its provenance header and the original wording
 below it, unchanged. The prompt a turn receives carries the current brief, the latest delivery, the
 complete unresolved review findings with their latest responses, and the human feedback since the
-last harness report; everything else stays in the snapshot for the turn to search. A complete
-developer report is saved under `reports/` before its Jira comment is published, and a complete
-reviewer report before its GitHub review is — a rendering that comes back through Jira or GitHub is
-recognized and not duplicated. A source the harness could not read, a pagination bound that was
-reached, and a report that is missing (an older workspace whose `result.json` or review record is
-gone) are named as gaps in the snapshot and in the prompt, so a turn is told what is incomplete
-instead of being started as though the history were whole. Snapshots are immutable: a refresh writes
-a new one and leaves the one a running turn holds exactly as it was. See
+previous snapshot (comments that arrived while the last turn ran, and comments edited since it);
+everything else stays in the snapshot for the turn to search. A complete developer report is saved
+under `reports/` before its Jira comment is published, and a complete reviewer report before its
+GitHub review is; the acknowledged comment or review is recorded with the report, and a rendering
+that comes back through Jira or GitHub is recognized by that recorded identity and not duplicated —
+a comment that merely quotes a marker, or a rendering edited after publication, stays an ordinary
+entry. Unresolved findings are the latest review that requested changes, whether it was a retained
+report or a native GitHub review, and each developer report names the commit its delivery verified.
+A reviewer's retained `verdict.json` is read back instead of being reported missing, and a source the
+harness could not read, a pagination bound that was reached, and a report that is missing or cannot
+be read as the conversation it claims to be (an older workspace whose `result.json` or review record
+is unusable) are named as gaps in the snapshot and in the prompt, so a turn is told what is
+incomplete instead of being started as though the history were whole. Snapshots are immutable: a
+refresh writes a new one and leaves the one a running turn holds exactly as it was. See
 [docs/WORKFLOW.md](docs/WORKFLOW.md) §9.
 
 ## `source`: tasks from a Jira queue
@@ -1297,11 +1303,19 @@ Read this before pointing a run at anything you care about.
   budgets and past the reviewer verdict bound staying whole, a long history kept as one file per
   entry while the inline block names what it did not fit, an edited comment updating its identity in
   a new snapshot while the old snapshot is unchanged, pagination of both the Jira thread and the
-  pull request conversation (with a page bound that is reached reported as a gap), a locally saved
-  report mirrored back through Jira or GitHub not becoming a second entry, a restart reusing an
-  identical snapshot, a report the harness knows existed but cannot read marked missing rather than
-  invented — for a teammate's legacy workspace too, where the attempt's own `result.json` still
-  rebuilds it — and a snapshot that cannot be written stopping the turn before it starts. The
+  pull request conversation (with a page bound that is reached reported as a gap), a report
+  mirrored back through its recorded Jira comment or native review not becoming a second entry —
+  and the inline findings of a published review not being kept beside the report while a reply
+  stays its own entry — a comment that quotes a marker, or a rendering edited after publication,
+  staying an attributed entry, feedback that arrived while the previous turn ran (and a comment
+  edited after the last report) reaching the next brief while one the previous snapshot already
+  held is not repeated, a restart reusing an identical snapshot and re-deriving that input from the
+  store on disk, an older local approval not hiding a newer native review that requests changes, a
+  person's change request staying visible after a later harness report, reports the harness knows
+  existed but cannot read marked missing rather than invented — a legacy workspace's attempt rebuilt
+  from its own `result.json`, its retained reviewer `verdict.json` read back, and an unreadable or
+  turn-less record marked incomplete instead of complete — the delivered commit recorded per
+  delivery, and a snapshot that cannot be written stopping the turn before it starts. The
   connector reads themselves are covered against fake HTTP boundaries; no live Jira or GitHub read
   was made for this increment.
 - workspace continuation through the same fakes and real temporary Git repositories: a continued
