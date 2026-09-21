@@ -2083,6 +2083,31 @@ describe('reconciling terminal states across an auto-merge race', () => {
     expect((await fakeCompletionCalls(fixture.gh)).some((call) => call.op === 'merge')).toBe(false);
   });
 
+  it('reports a pull request closed while the merge is awaited as a terminal failure', async () => {
+    const fixture = await createFixture({ pulls: [ONE_PULL_REQUEST], runs: [] });
+
+    const outcome = only(
+      await runPass(fixture, {
+        clockStepMs: 1_000,
+        onSleep: async () => {
+          await writeFile(
+            fixture.gh.pullRequestsFile,
+            `${JSON.stringify({ ...ONE_PULL_REQUEST, state: 'CLOSED' })}\n`,
+            'utf8',
+          );
+        },
+      }),
+    );
+
+    expect(outcome.status, outcome.detail).toBe('attention');
+    expect(outcome.detail).toContain(PR_URL);
+    expect(outcome.detail).toContain(HEAD);
+    expect(outcome.detail).toContain('closed without a merge');
+    expect(fixture.jira.status).toBe('In Review');
+    expect(transitions(fixture)).toHaveLength(0);
+    expect(commentTexts(fixture)).toHaveLength(0);
+  });
+
   it.each([
     ['no review at all', []],
     ['a review approving another head', [{ ...APPROVED_REVIEW, commitId: OTHER_HEAD }]],

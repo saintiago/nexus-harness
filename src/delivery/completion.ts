@@ -624,7 +624,10 @@ export function createGitHubCompletion(
     const current = await readPull(r, p.number, stop);
     identity(r, current, { ...p, headRefOid: head });
     if (current.state === 'CLOSED')
-      throw new DeliveryError('Pull request closed without a verified merge');
+      throw new DeliveryError(
+        `pull request ${current.url} is closed without a merge of the reviewed head ${head}, so ` +
+          'no completion is possible',
+      );
     if (current.state !== 'MERGED' || !current.mergeCommit?.oid)
       return {
         status: 'pending',
