@@ -71,21 +71,21 @@ src/
     progress.ts                   (152)  timeline lines, reasons, and the counts they carry
     feedback.ts                   (30)   the failed commands one repair turn is given
   sources/
-    contract.ts                   (747)  TaskSource, the ordinary source data and errors, pointer labels
+    contract.ts                   (766)  TaskSource, the ordinary source data and errors, pointer labels
     receipts.ts                   (238)  the per-project intake lock and one receipt per attempted item
     eligibility.ts                (81)   what an item is: a first attempt, a continuation, or a refusal
     guidance.ts                   (92)   what an attempt is told, bounded: the finding, the thread, attempts
-    baseline.ts                   (1262) the pre-delivery diagnosis: its evidence, one comment, one move
-    coordinator.ts                (1746) runSource and watchSource: discovery, the ladder, publication
+    baseline.ts                   (1315) the pre-delivery diagnosis: its evidence, one comment, one move
+    coordinator.ts                (1772) runSource and watchSource: discovery, the ladder, publication
     list.ts                       (88)   the read-only `source list` preview
     jira/
-      connector.ts                (41)   createJiraSource: the wiring of the functions below
+      connector.ts                (42)   createJiraSource: the wiring of the functions below
       http.ts                     (230)  the gateway client: auth, timeouts, failure classification
       search.ts                   (109)  the queue JQL and the paged search
       issue.ts                    (131)  issue reads, eligibility, and the source reference
       tasks.ts                    (96)   one issue mapped onto the existing four-field Task
       transitions.ts              (142)  transition discovery, selection by target status, posting
-      comments.ts                 (270)  the thread read, the result comment, the refusal comment
+      comments.ts                 (463)  the thread read, the result, refusal and attention comments
       baseline.ts                 (35)   the thread, one comment, one move, and whether it is still running
       labels.ts                   (32)   the workspace pointer label, added once
       json.ts                     (20)   the narrow readers every Jira answer goes through
@@ -98,7 +98,7 @@ src/
     github.ts                     (726)  the App JWT, the installation token, and the repository calls
     diff.ts                       (134)  the pull request's diff, and where a finding is positioned
     reviewer.ts                   (402)  the reviewer prompt, the one bounded turn, and the verdict file
-    baseline.ts                   (1155) the pre-delivery reviewer turn, its prompt, and its outcome record
+    baseline.ts                   (1193) the pre-delivery reviewer turn, its prompt, and its outcome record
     scan.ts                       (790)  one scan or watch: eligibility, dedup, publishing, evidence
   queue/
     loop.ts                       (488)  the serial control loop: one current ticket, one phase at a time
@@ -290,13 +290,16 @@ further would separate one decision from itself: `runs/runner.ts` (the loop), `s
   and `guidance.ts` renders what an attempt is told from the item's own thread and its earlier
   attempts, bounded: a reviewed baseline finding is carried field by field, ahead of the rest, and
   never dropped for later chatter — but only one the coordinator established, from the whole finding
-  comment that names the evidence the retained record closed as a repair or, when the thread cannot
-  supply it, from that record through `baseline.ts`; a comment is never promoted to that requirement
-  merely because it carries a marker. `coordinator.ts` discovers a finite batch, reserves, claims, climbs the
+  comment that names the evidence the retained record closed as a repair and repeats every field of
+  the finding that record holds or, when the thread cannot supply it, from that record through
+  `baseline.ts`; a comment is never promoted to that requirement merely because it carries a
+  marker, and an edited field is ordinary context. `coordinator.ts` discovers a finite batch, reserves, claims, climbs the
   configured escalation ladder one rung per attempt inside that claim — publishing each attempt's
   own comment while the item stays in the running status, and the final result and review move when
   the climb ends — refuses to start a baseline continuation whose required finding cannot be read
-  back, and `list.ts` is the read-only preview. `baseline.ts` is the pre-delivery
+  back, telling the claimed ticket why on its own thread and taking it out of the running status
+  with its workspace pointer preserved, under the same bounded best-effort deadline an interrupted
+  run's result gets — and `list.ts` is the read-only preview. `baseline.ts` is the pre-delivery
   diagnosis of one completed red baseline: the evidence identity, the marker a restart reads, the
   evidence record it writes before its reviewer turn under the connected project's own namespace —
   so one `workDir` never mixes two projects' evidence — one comment, the one status move the finding
@@ -309,7 +312,8 @@ further would separate one decision from itself: `runs/runner.ts` (the loop), `s
   claimed, which reconciles a record this harness left unfinished after its own status move with the
   finding the item's own thread carries, and the read-back of a finding a continuation is required
   to be told — with the identity it was published for, and with the whole-comment check that decides
-  whether a comment of the thread is that same finding — through the reviewer and record functions it
+  whether a comment of the thread is that same finding, field for field, rather than an edited
+  comment that kept the marker — through the reviewer and record functions it
   is handed — and `resumeStop`, the one
   reading of what a resume outcome means for its caller's intake: a stop, and whether everything the
   diagnosis started was confirmed stopped.
@@ -319,8 +323,9 @@ further would separate one decision from itself: `runs/runner.ts` (the loop), `s
   `SourceSummary`, `SourceTake`, `QueueTicket`, `SourceError`, `SourceFeedbackError`, `workspacePointerLabel`,
   `parseWorkspacePointers` (`sources/contract.ts`); `runSource`, `watchSource`, `SourceWatchOptions`
   (`sources/coordinator.ts`); `takeOneItem`, `SourceTakeRequest` (`sources/coordinator.ts`);
-    `createBaselineDiagnosis`, `baselineEvidenceId`, `baselineCommentFinding`,
-  `baselineFindingGuidanceLines`, `BaselineDiagnosisParts`, `BASELINE_EVIDENCE_FILE`,
+  `createBaselineDiagnosis`, `baselineEvidenceId`, `baselineCommentFinding`,
+  `baselineThreadFinding`, `baselineFindingGuidanceLines`, `BaselineDiagnosisParts`,
+  `BASELINE_EVIDENCE_FILE`,
   `BASELINE_MARKER_PREFIX`, `resumeStop` (`sources/baseline.ts`); `guidanceFrom` (`sources/guidance.ts`);
   `listSource`, `SourceListEntry` (`sources/list.ts`);
   `acquireIntakeLock`, `readReceipt`, `reserveReceipt`, `updateReceipt`, `receiptFilePath`,
@@ -334,7 +339,8 @@ further would separate one decision from itself: `runs/runner.ts` (the loop), `s
   consumes every page; `issue.ts` reads one issue and decides whether it is still eligible; `tasks.ts`
   maps it onto the existing four-field `Task`; `transitions.ts` finds and posts a transition chosen by
   target status, which is also how a claim is made; `comments.ts` reads the issue's thread and posts
-  the result and refusal comments; `labels.ts` adds the workspace pointer label once; `adf.ts` and
+  the result, refusal, and attention comments — the last one tells a claimed issue why no developer
+  was started and takes it out of the running status; `labels.ts` adds the workspace pointer label once; `adf.ts` and
   `adf-text.ts` are the small explicit description convention; `json.ts` holds the narrow wire
   readers they share. `baseline.ts` is the thin record one pre-delivery diagnosis writes through:
   the issue's thread, one comment, one move out of the running status, and whether the item is still
@@ -410,7 +416,9 @@ further would separate one decision from itself: `runs/runner.ts` (the loop), `s
   record it writes before anything is published — the validated finding, or the problem that
   rejected the turn, with the turn's own stop — which a restart reuses instead of the turn's
   finding file, and the strict reader of the `finding.json` that turn has to write in its own
-  writable working directory.
+  writable working directory. A refusal reached before that turn carries the stop the evidence's
+  record already holds — and a record that cannot be read at all fails closed by name — so no
+  refusal can round an unconfirmed stop down to a confirmed one.
 - **Does not own:** the coding loop, the working copy, Jira writes, delivery, or merging. It
   claims nothing, moves nothing, posts no Jira comment, starts no coding turn, and keeps no
   registry: a completed review pinned to a commit is the deduplication record.

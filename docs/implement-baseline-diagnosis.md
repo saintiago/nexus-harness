@@ -40,7 +40,12 @@ stdout/stderr evidence each failing check wrote, and a read-only clone of the re
 pinned at the commit the baseline ran against. That evidence has to be readable before the turn is
 started: a log file that is missing or cannot be read is incomplete evidence — not a check that
 said nothing — and the item stays In Review with the paths named instead of being shown to a
-reviewer as if the evidence were whole. It receives no coding instruction. It cannot change
+reviewer as if the evidence were whole. A refusal reached here, or at any step before the turn,
+still carries the stop the evidence's own record already holds: an earlier invocation whose reviewer
+runtime was not seen to end reaches its caller as that unconfirmed stop — the intake keeps its lock
+for inspection — rather than being rounded down to a confirmed one because this invocation refused
+before it would have re-read the record; a record that cannot be read at all fails closed by name
+the same way. It receives no coding instruction. It cannot change
 the retained workspace: it runs as `exec --sandbox workspace-write` with its own working directory
 (`turn/`) as its only writable root, and that launch states the policy's additional writable roots
 as none and takes the host's temporary roots out of it (the runtime's own
@@ -100,11 +105,16 @@ read the repair as optional context. That finding is not context the attempt may
 source, and when the thread cannot supply it — a read that failed, a comment that no longer says the
 whole finding, or a comment that names some other evidence — the evidence kept beside the workspace
 is. The thread's comment counts as that finding only as its whole self: the marker naming the exact
-evidence the retained record closed as a repair, and all four fields nonblank. Anything else is
-ordinary thread context — never promoted to what the attempt must repair first — and the complete
-recorded finding is handed over instead. A finding that is required this way and that neither source
-can supply stops intake with the ticket's state named, so a developer never starts a baseline
-continuation with the original task alone. Nothing about that attempt is special — the same runner, the same escalation ladder starting
+evidence the retained record closed as a repair, all four fields nonblank, and every one of those
+fields equal to the finding that record holds. The marker names the evidence, never the text —
+anyone who can edit the issue can keep it and change a field — so an edited comment is ordinary
+thread context like a partial quotation one: it is never promoted to what the attempt must repair
+first, and the complete recorded finding is handed over instead. A finding that is required this way
+and that nothing can supply — the retained record cannot be read back, so there is nothing to hold
+the thread's comment against — starts no developer. The claimed ticket is told why on its own
+thread, under the same short best-effort deadline an interrupted run's result gets, and is taken out
+of the running status with its workspace pointer preserved, so it is never left In Progress with
+nothing looking for it and a person decides what happens next. Nothing about that attempt is special — the same runner, the same escalation ladder starting
 again at its first tier, the same checks, and the same delivery refusal for a still-red result. An
 inconclusive, environmental, or unsafe diagnosis posts one
 `nexus-baseline:attention:<evidence>` comment with the evidence and the required action, moves the
@@ -180,6 +190,9 @@ next invocation's own recovery finishes what that one recorded.
   as a check that said nothing.
 - `src/sources/jira/baseline.ts` — the Jira side: the thread, one comment, one move out of the
   running status, and whether the item is still there, over the completion path's existing helpers.
+- `src/sources/jira/comments.ts` — the issue's own thread and the comments the harness posts,
+  including the attention record that tells a claimed ticket why no developer was started and takes
+  it out of the running status while it is still there.
 - `src/sources/contract.ts` — the ordinary data between them; the guidance prefix in
   `src/runs/contracts.ts` marks a finding's lines for the coding prompt, which renders them as the
   requirement to repair the baseline before the original task — `src/sources/coordinator.ts` decides
@@ -213,7 +226,9 @@ code lives and what owns what.
   working copy or the snapshot, a finding from a turn that wrote
   into the retained working copy is refused, a working copy the configured commands changed is
   refused before any turn, a check log that cannot be read is refused before any turn — while a log
-  the command really left empty is read as a check that said nothing — and a finding an interrupted
+  the command really left empty is read as a check that said nothing — and a refusal reached there
+  still carries the unconfirmed stop the evidence's own record holds, while a record that cannot be
+  read at all fails closed by name — and a finding an interrupted
   turn already wrote is reused without a
   second launch — published by the next pass through the phase itself, with the outcome record the
   earlier invocation wrote as its only input. A turn that writes a valid finding and *then* fails,
@@ -233,7 +248,8 @@ code lives and what owns what.
   a resume with two records pending stops at the first unconfirmed shutdown without starting the
   second reviewer turn or claiming anything; the Jira record against a fake HTTP boundary — one
   comment and a move by target status name for an actionable finding, In Review for an inconclusive
-  one, and a
+  one, the attention record that tells a claimed item why no developer started and takes it out of
+  the running status while leaving one a person already moved exactly where it is, and a
   second pass that spends no second turn and writes no second comment; the coordinator's ending
   table — a completed red baseline enters the diagnosis, a setup error, a cancellation, a timeout,
   a continuation that starts red, and a post-agent red round do not, no diagnosis configured keeps
@@ -244,10 +260,13 @@ code lives and what owns what.
   attempt and every field of the reviewed finding — and the requirement, asserted in the developer's
   own prompt, that the baseline is repaired before the original task continues — on a later rung of the same climb as well as on
   the first, and the finding recovered from the retained evidence when the thread cannot be read at
-  all, with a missing finding file stopping the intake for a person instead of starting the
-  developer without it; the whole-comment check that decides whether a comment of the thread is the
+  all; a required finding nothing can supply — the retained record cannot be read back — starting no
+  developer, with the claimed ticket told why and taken out of the running status under the bounded
+  deadline even after a stop, with its pointer preserved, and with the receipt naming the same thing
+  locally; the whole-comment check that decides whether a comment of the thread is the
   reviewed finding — a partial quotation and a complete comment naming other evidence both fall
-  back to the complete recorded finding, and a marker-carrying comment nothing establishes stays
+  back to the complete recorded finding, a comment field edited while its marker stayed is never
+  promoted to the requirement either, and a marker-carrying comment nothing establishes stays
   ordinary context and never becomes what the turn must repair first — with the finding one
   diagnosis comment carries, field by field, accepted only as its whole self; two connected projects
   sharing one `workDir` never resuming, commenting on,

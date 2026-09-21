@@ -294,13 +294,20 @@ read from the checkout `--repo` names, so the repository a run clones describes 
    comment and that one move run under their own bounded best-effort deadline, so the claimed
    ticket is never left In Progress with nothing looking for it. A
    log file the diagnosis cannot read is incomplete evidence, not a check that said nothing: the
-   ticket stays In Review with the paths named, and no reviewer turn is started from it. The diagnosis's
+   ticket stays In Review with the paths named, and no reviewer turn is started from it; a refusal
+   reached there still carries a stop the evidence's own record already holds as unconfirmed — the
+   intake lock is kept for inspection — and a record that cannot be read at all fails closed the
+   same way. The diagnosis's
    own evidence lives under the connected project's namespace, so two projects sharing one output
    directory never act on each other's pending diagnosis, and the claim that follows a repair
    always carries the finding — from the thread, or read back from that evidence. Only a comment
-   that says the whole finding and names the exact evidence the retained record closed as a repair
-   counts as coming from the thread; a partial, rewritten, or differently attributed comment is
-   context, and the recorded finding is handed over in its place.
+   that says the whole finding, names the exact evidence the retained record closed as a repair,
+   and repeats every field of the finding that record holds counts as coming from the thread — a
+   marker names the evidence, never the text, so an edited comment is not it; a partial, edited, or
+   differently attributed comment is context, and the recorded finding is handed over in its place.
+   A required finding nothing can supply starts no developer: the claimed ticket is told why on its
+   own thread and taken out of the running status with its workspace pointer preserved, so it is
+   never left in progress with nothing looking for it.
 5. **Coding turns**: one fresh invocation of the configured launch per top-level turn, started in
    the working copy and never asking for approval. The implementation turn is given the task; each
    repair turn is given the failures the harness observed for itself. Every turn of the run uses the
@@ -897,10 +904,11 @@ What one invocation does:
    claim — repairs the baseline, and then continues the original task. That finding is read from
    the ticket's thread, or, when the thread cannot supply it, from the evidence the diagnosis kept
    under the connected project's own namespace. The thread counts only as its whole comment: the
-   marker naming the evidence the retained record closed as a repair, and all four fields. A
-   partial, rewritten, or differently attributed comment is ordinary context, and the recorded
-   finding is handed over instead; when neither source can supply it, the queue stops with the
-   ticket's state named instead of starting the developer without it.
+   marker naming the evidence the retained record closed as a repair, all four fields, and every
+   one of them equal to the finding that record holds. A partial, edited, or differently attributed
+   comment is ordinary context, and the recorded finding is handed over instead; when nothing can
+   supply it, no developer starts: the ticket is told why on its own thread, taken out of the
+   running status with its pointer preserved, and the queue stops for a person.
 4. **Source readiness.** After a confirmed Done, the operator's checkout must be on the configured
    base branch, carry no uncommitted or untracked work, and have the expected delivery repository
    as a remote; the verified merge commit must be in the fetched base branch and the local `HEAD`
@@ -1417,7 +1425,11 @@ a read.
   retained working copy, and the next claim's guidance through a real retained workspace, field by
   field and on a later rung as well as the first — including the finding read back from the
   retained evidence when the ticket's thread cannot be read, and the intake stopping when a
-  required finding cannot be read back at all, the two connected projects that never act on each
+  required finding cannot be read back at all — with the claimed ticket told why and taken out of
+  the running status under the bounded deadline even after a stop, its pointer preserved — a comment
+  whose field was edited under the same marker never becoming the requirement, a refusal reached
+  before the reviewer turn carrying a recorded unconfirmed stop rather than rounding it down, the
+  two connected projects that never act on each
   other's evidence under one output directory, and a check log that is missing being refused as
   incomplete evidence before any reviewer turn. A turn that writes a valid finding and then fails,
   stops, or times out is refused then and on every restart after it, its own finding file never

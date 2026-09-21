@@ -1007,7 +1007,10 @@ cannot be read now is incomplete evidence, not a check that said nothing: the it
 with the paths named, and no reviewer is launched to reason from a rendering that would pass for a
 silent command. A log the command really wrote and really left empty stays readable evidence — the
 two are kept apart — and this comes before any recorded finding, so evidence that is incomplete now
-is never published from.
+is never published from. A refusal reached here still carries the stop the evidence's own record
+holds: an earlier invocation whose reviewer runtime was not seen to end reaches its caller as the
+unconfirmed stop it is, instead of being rounded down to a confirmed one, and a record that cannot
+be read at all fails closed by name for the same reason.
 
 The turn receives no coding instruction and changes nothing: it runs as `exec --sandbox
 workspace-write` with its own working directory (`turn/`) as the only writable root — the launch
@@ -1064,14 +1067,19 @@ continues, and the coding prompt renders the finding as a requirement of the att
 context it may weigh. The finding reaches that
 claim from the item's own thread, and when the thread cannot supply it — a read that failed, a
 comment that no longer says the whole finding, or a comment that names some other evidence — from
-the evidence this harness kept beside the workspace: a required finding that neither source can
-supply stops intake with the ticket's state named instead of starting a developer with the original
-task alone. The retained evidence is what says a finding is required and which evidence it belongs
-to, and a comment is that finding only as its whole self: the `nexus-baseline:repair:<evidence>`
-marker with that exact identity, and all four fields nonblank. A partial quotation, a rewritten
-comment, a marker without an identity, or a complete comment about other evidence is ordinary
-thread context — it is never promoted to what the attempt has to repair first, and the complete
-recorded finding is handed over instead. An inconclusive,
+the evidence this harness kept beside the workspace. The retained evidence is what says a finding
+is required, which evidence it belongs to, and what it says, and a comment is that finding only as
+its whole self: the `nexus-baseline:repair:<evidence>` marker with that exact identity, all four
+fields nonblank, and every one of those fields equal to the finding that record holds. The marker
+names the evidence, never the text — anyone who can edit the issue can keep the marker and change a
+field — so a partial quotation, an edited comment, a marker without an identity, or a complete
+comment about other evidence is ordinary thread context: it is never promoted to what the attempt
+has to repair first, and the complete recorded finding is handed over instead. A required finding
+that neither source can supply — the retained record cannot be read back, so there is nothing to
+hold the thread's comment against — starts no developer: the claimed ticket is told why on its own
+thread and taken out of the running status with its workspace pointer preserved, under the same
+short best-effort deadline an interrupted run's own result gets, so it is never left in the running
+status with nothing looking for it and a person decides what happens next. An inconclusive,
 environmental, or unsafe finding posts one comment carrying
 `nexus-baseline:attention:<evidence>`, the reason and the required action, moves the issue to
 `reviewStatus`, and stops the queue for a person. Nothing is posted to GitHub, and no coding turn

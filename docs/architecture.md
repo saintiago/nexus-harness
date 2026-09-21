@@ -58,8 +58,11 @@ and finishes whatever a previous invocation left pending before it discovers or 
   stopping that intake there when the resume reports a person is needed — an unconfirmed reviewer
   shutdown included, which keeps the intake lock — and requires the reviewed finding before it starts
   that continuation at all — from the item's own thread, but only as the whole comment that names the
-  exact evidence the retained record closed as a repair, otherwise read back from that retained
-  evidence, otherwise intake stops with the ticket's state named. A stop that lands while the
+  exact evidence the retained record closed as a repair *and* repeats every field of the finding that
+  record holds — a marker names the evidence, never the text, so an edited comment is ordinary
+  context — otherwise read back from that retained evidence, otherwise intake stops with the ticket's
+  state named and, because the item is already claimed, tells it why on its own thread and takes it
+  out of the running status with its workspace pointer preserved. A stop that lands while the
   reviewer turn is running is recorded rather than dropped: the one comment and the one move run
   under their own bounded best-effort deadline, so the claimed ticket is never stranded in the
   running status —
@@ -70,7 +73,9 @@ yet, so nothing is fabricated for one. Its evidence lives under the connected pr
 namespace (`<workDir>/baseline/<project>/<evidence>/`), so two projects sharing one output
 directory never read, finish, or publish each other's pending diagnosis, and its reviewer turn is
 not started from a command log that cannot be read: incomplete evidence stays In Review with the
-paths named. [spec.md](spec.md) §11 defines the behavior,
+paths named, and a refusal reached before that turn carries the stop the evidence's record already
+holds — a record that cannot be read at all fails closed by name — so nothing rounds an unconfirmed
+reviewer stop down to a confirmed one. [spec.md](spec.md) §11 defines the behavior,
 [WORKFLOW.md](WORKFLOW.md) §11 the finding and comment contract, and
 [implement-baseline-diagnosis.md](implement-baseline-diagnosis.md) the assignment.
 

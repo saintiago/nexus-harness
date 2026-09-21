@@ -377,17 +377,22 @@ finding as guidance — each field of the finding whole and on its own line, and
 ladder the returned ticket climbs, not only the first — repairs the baseline first, and only then
 continues the original task. That ordering is stated, not left to inference: the guidance carries
 the requirement that the baseline is repaired before the original task continues, and the coding
-prompt renders those lines as a requirement of this attempt rather than as ordinary context. That finding is not context the attempt may start without: it comes
-from the item's own thread, and when the thread cannot supply it — a read that failed, a comment
-that no longer says the whole finding, or a comment that names some other evidence — from the
-evidence kept beside the workspace; a required finding that neither source can supply stops intake
-with the ticket's state named, so the developer never starts a baseline continuation with the
-original task alone. Only a comment that carries the marker with the exact evidence identity the
-retained record closed as a repair *and* all four nonblank fields is that finding: a partial
-quotation, a rewritten comment, or a marker without an identity is ordinary thread context, never
-promoted to what the attempt has to repair first. That attempt is an ordinary one: the same runner, the same escalation
-ladder (which starts again at its first tier), the same checks, and the same delivery refusal for
-anything that is still red.
+prompt renders those lines as a requirement of this attempt rather than as ordinary context. That
+finding is not context the attempt may start without: it comes from the item's own thread, and when
+the thread cannot supply it — a read that failed, a comment that no longer says the whole finding,
+or a comment that names some other evidence — from the evidence kept beside the workspace. Only a
+comment that carries the marker with the exact evidence identity the retained record closed as a
+repair, all four nonblank fields, and *every one of those fields equal to the finding that record
+holds* is that finding: the marker names the evidence, never the text, so a partial quotation, an
+edited comment, or a marker without an identity is ordinary thread context, never promoted to what
+the attempt has to repair first. A required finding nothing can supply — the retained record cannot
+be read back, so there is nothing to hold the thread's comment against — starts no developer: the
+claimed ticket is told why on its own thread, under the same bounded best-effort
+deadline an interrupted run's result gets, and is taken out of the running status with its workspace
+pointer preserved, so it is never left In Progress with nothing looking for it and a person decides
+what happens next. That attempt is an ordinary one: the same runner, the same escalation ladder
+(which starts again at its first tier), the same checks, and the same delivery refusal for anything
+that is still red.
 
 An inconclusive, environmental, or unsafe diagnosis, a reviewer turn that produced nothing usable, a
 baseline that could not be executed, a command that could not be launched, a cancellation, and an
@@ -414,7 +419,11 @@ the turn — so a restart never reads the turn's own finding file as if a failed
 timed-out turn had completed, and a turn that left no recorded outcome is not diagnosed again
 either. A reviewer turn whose own process tree could not be confirmed stopped is never settled: the
 item stays In Review with the evidence and what a person must do, and the intake keeps its lock for
-inspection. That holds when a restart's own resume step runs the diagnosis too — and when it
+inspection. That holds when a restart's own resume step runs the diagnosis too — including when
+that invocation refuses the evidence before it would re-read the record, such as a check log that
+can no longer be read or a working copy that is no longer the snapshot: the stop the record already
+holds travels with the refusal, and a record that cannot be read at all fails closed by name instead
+of being rounded down to a confirmed one — and when it
 deduplicates a finding already on the issue, where the recorded stop is read back from the evidence
 before anything is moved instead of a stop being assumed — and when it reconciles an item that had
 already left the running status, where that record is read before the item is treated as settled —
