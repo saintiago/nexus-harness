@@ -371,6 +371,20 @@ to arm auto-merge. The serial queue's arm step runs the completion pass's arm op
 immediately after delivery and before the review scan can publish the final required
 check; the completion pass then verifies the recorded PR/head or re-arms it. See spec
 §10 and WORKFLOW §10 for this opt-in exception to the default no-merge/no-Done behavior.
+GitHub's own state is what classifies every completion mutation and every ambiguous
+answer: `delivery/completion.ts` makes the one auto-merge request and reports only what
+GitHub's answer said about it, and `sources/completion.ts` settles that answer — and a
+reading that no longer approves the current head — with a fresh read of the exact pull
+request and head. Every one of those readings goes through the pass's own read retry
+policy, and `DeliveryError.retryable` marks the ones a transient failure left
+indeterminate, so a transient failure repeats a read inside the item deadline and never
+replays a mutation. A read recorded as `timed-out` is indeterminate by that outcome, even when
+the stalled command wrote nothing, and only a read the caller's stop ended is not repeated; the
+guards in front of the resolution comment and the status move read under the deadline the pass
+already holds for the item. A required-check command that wrote no check result is classified
+from that answer rather than from its exit code, `sources/completion.ts` records the PR/head of
+a merge GitHub made before the pass ever requested one before it verifies that merge, and a
+closed, moved, or unapproved merged result is a terminal report rather than an assumption.
 
 The serial queue adds no owner to that list: `queue/loop.ts` is sequencing only, and the
 arm operation, the review scan and the completion pass take an optional one-ticket scope so

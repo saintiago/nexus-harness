@@ -58,6 +58,14 @@ const LINE_LIMIT = 400;
  */
 const MERGE_WAIT_ROUNDS = 2;
 
+/**
+ * How long the one note that reports an expired completion deadline may take to
+ * write. It is the same ten seconds its own stop signal allows, so the reads
+ * that guard that note are bounded by it instead of minting a fresh completion
+ * budget after the item's own deadline has already passed.
+ */
+const DEADLINE_REPORT_BUDGET_MS = 10_000;
+
 /** What one In Review item ended as. */
 export type CompletionStatus =
   /** Merge and post-merge CI verified: comment written, item moved to Done. */
@@ -79,10 +87,11 @@ export interface CompletionOutcome {
   /** The comment this pass posted or found, when there is one. */
   readonly commentId: string | null;
   /**
-   * The merge commit this outcome is about, when the pass concluded a pull
-   * request GitHub had already merged; `null` (or absent) otherwise. The serial
-   * queue loop names the base a next workspace starts from with it
-   * (docs/WORKFLOW.md §11).
+   * The merge commit this outcome is about, when the pass verified that GitHub
+   * merged the reviewed head — whether it concluded there, is still waiting for
+   * the post-merge workflows, or found the merge untied to the approval; `null`
+   * (or absent) otherwise. The serial queue loop names the base a next
+   * workspace starts from with it (docs/WORKFLOW.md §11).
    */
   readonly mergeCommit?: string | null;
 }
@@ -423,9 +432,25 @@ function attentionNote(
 
 /** What one pull request's live evidence says this item should do now. */
 type Step =
-  | { readonly kind: 'pending'; readonly detail: string }
+  | { readonly kind: 'pending'; readonly detail: string; readonly mergeCommit?: string | null }
   | { readonly kind: 'observed'; readonly detail: string }
-  | { readonly kind: 'attention'; readonly detail: string; readonly evidence: readonly string[] }
+  /**
+   * A settled state this path may not act past: the pull request was closed
+   * without a merge, it no longer carries the reviewed head, or GitHub merged a
+   * result the reviewer's approval does not cover. It is never retried, never
+   * read as success, and is reported to a person with its evidence.
+   */
+  | {
+      readonly kind: 'unresolved';
+      readonly detail: string;
+      readonly mergeCommit?: string | null;
+    }
+  | {
+      readonly kind: 'attention';
+      readonly detail: string;
+      readonly evidence: readonly string[];
+      readonly mergeCommit?: string | null;
+    }
   | {
       readonly kind: 'findings';
       readonly pull: PullRequestSnapshot;
@@ -449,10 +474,32 @@ interface PullContext {
   readonly pull: PullRequestSnapshot;
 }
 
+/** What one fresh reading of a pull request settled, against the expected delivery. */
+type FreshReading =
+  /** GitHub merged this exact pull request at the expected reviewed head. */
+  | { readonly kind: 'merged'; readonly pull: PullRequestSnapshot }
+  /** The pull request is still open at the expected head. */
+  | { readonly kind: 'open'; readonly pull: PullRequestSnapshot }
+  /** GitHub closed it without a merge: never a completion. */
+  | { readonly kind: 'closed'; readonly pull: PullRequestSnapshot }
+  /** It is no longer the reviewed delivery: another pull request, base, branch or head. */
+  | { readonly kind: 'changed'; readonly detail: string };
+
 /** What one attempt to arm the current pull request concluded. */
 type Arming =
   | {
       readonly kind: 'armed';
+      readonly head: string;
+      readonly number: number;
+      readonly detail: string;
+    }
+  /**
+   * GitHub merged the reviewed head while the arm request was in flight: there
+   * is no request to verify and no second request to make, and the merge is
+   * what the completion path verifies next.
+   */
+  | {
+      readonly kind: 'merged';
       readonly head: string;
       readonly number: number;
       readonly detail: string;
@@ -494,6 +541,179 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
   };
 
   /**
+   * One GitHub read the completion path repeats while GitHub's own failure is
+   * transient and the item's deadline has not passed: a `5xx`, a rate limit, a
+   * timeout or an answer that never arrived leaves the state indeterminate, so
+   * it is read again with the configured interval as backoff. A refusal GitHub
+   * meant, a malformed answer, or a read the deadline stops is thrown as it
+   * came. Mutation requests are never repeated: only reads are reconciled.
+   */
+  const readEvidence = async <T>(
+    item: ReviewItem,
+    stop: AbortSignal,
+    deadline: number,
+    read: () => Promise<T>,
+  ): Promise<T> => {
+    for (;;) {
+      try {
+        return await read();
+      } catch (cause) {
+        if (
+          !(cause instanceof DeliveryError) ||
+          !cause.retryable ||
+          stop.aborted ||
+          now().getTime() >= deadline
+        )
+          throw cause;
+        io.out(
+          `${item.ref.key}: GitHub's answer was indeterminate (${oneLine(cause.message, 200)}); ` +
+            'reading it again within the deadline',
+        );
+        await sleep(Math.min(intervalMs, Math.max(0, deadline - now().getTime())), stop);
+        if (stop.aborted) throw cause;
+      }
+    }
+  };
+
+  /**
+   * One fresh reading of one pull request, by number, against the identity this
+   * pass works with. It is what settles an ambiguous answer or a request whose
+   * response was lost: GitHub's own merged state at the expected reviewed head
+   * is the only reading that continues the merge path, and a closed, moved or
+   * replaced pull request is a settled state this path may not act past.
+   */
+  const readFresh = async (
+    item: ReviewItem,
+    request: CompletionRequest,
+    expected: { readonly number: number; readonly head: string; readonly url?: string },
+    stop: AbortSignal,
+    deadline: number,
+  ): Promise<FreshReading> => {
+    const fresh = await readEvidence(item, stop, deadline, () =>
+      actions.findMergedPullRequest(request, expected.number, stop),
+    );
+    if (
+      fresh.number !== expected.number ||
+      (expected.url !== undefined && fresh.url !== expected.url)
+    )
+      return {
+        kind: 'changed',
+        detail:
+          `GitHub now reports ${fresh.url} where the pass read pull request ` +
+          `${expected.url ?? String(expected.number)}`,
+      };
+    if (fresh.headRefName !== request.branch || fresh.baseRefName !== request.baseBranch)
+      return {
+        kind: 'changed',
+        detail:
+          `${fresh.url} now carries ${fresh.headRefName} into ${fresh.baseRefName}, not ` +
+          `${request.branch} into ${request.baseBranch}`,
+      };
+    if (fresh.headRefOid !== expected.head)
+      return {
+        kind: 'changed',
+        detail:
+          `${fresh.url} now holds head ${fresh.headRefOid}, not the expected reviewed head ` +
+          `${expected.head}`,
+      };
+    const state = fresh.state.toUpperCase();
+    if (state === 'MERGED') return { kind: 'merged', pull: fresh };
+    if (state === 'CLOSED') return { kind: 'closed', pull: fresh };
+    return { kind: 'open', pull: fresh };
+  };
+
+  /**
+   * The explicit failure one settled state leaves. Nothing here is retried and
+   * nothing is read as success: the item stays In Review, nothing is armed,
+   * written or moved, and the evidence names what a person has to decide on.
+   */
+  const settledFailure = (
+    settled: Extract<FreshReading, { kind: 'closed' | 'changed' }>,
+    expectedHead: string,
+  ): { readonly kind: 'unresolved'; readonly detail: string; readonly mergeCommit: null } => ({
+    kind: 'unresolved',
+    detail:
+      settled.kind === 'closed'
+        ? `pull request ${settled.pull.url} is closed without a verified merge of the reviewed ` +
+          `head ${expectedHead}, so this work cannot be completed; nothing was armed, written or ` +
+          'moved, and this state is not retried'
+        : `${settled.detail}, so it is no longer the reviewed delivery head ${expectedHead}; ` +
+          'nothing was armed, written or moved, and no merge will be tied to it',
+    mergeCommit: null,
+  });
+
+  /**
+   * The explicit failure a merge leaves when the reviewer's approval does not
+   * cover it: GitHub has already merged, so nothing is rolled back, and the
+   * merged result is not this completion path's to mark done.
+   */
+  const mergeNotTied = (
+    pull: PullRequestSnapshot,
+    expectedHead: string,
+    why: string,
+    mergeCommit: string | null,
+  ): {
+    readonly kind: 'unresolved';
+    readonly detail: string;
+    readonly mergeCommit: string | null;
+  } => ({
+    kind: 'unresolved',
+    detail:
+      `pull request ${pull.url} is merged${mergeCommit === null ? '' : ` as ${mergeCommit}`} but ` +
+      `cannot be tied to the reviewed head ${expectedHead}: ${oneLine(why, 200)}. Nothing was ` +
+      'rolled back, written or moved, and Nexus does not assume this merge is the reviewed work',
+    mergeCommit,
+  });
+
+  /**
+   * Records the exact pull request and reviewed head this pass is about to
+   * verify as merged, before anything is written for the item. GitHub can merge
+   * the reviewed head in a window where no auto-merge request was ever made —
+   * while the gate or its evidence is read, or between the eligibility read and
+   * the request — and a merge takes the pull request out of the open list, so
+   * without this record a later pass could neither find the pull request again
+   * nor resume the post-merge verification: a resolution comment whose status
+   * move failed would sit on the thread while the item stayed In Review for
+   * good. The wait start is kept when this exact merge was already recorded, so
+   * a restart never gets a fresh deadline; a refusal to keep the identity stops
+   * the item instead of concluding an outcome no later pass could resume.
+   */
+  const rememberMerge = async (
+    item: ReviewItem,
+    merged: { readonly number: number; readonly head: string; readonly url: string },
+  ): Promise<{ readonly ready: true } | { readonly ready: false; readonly problem: string }> => {
+    const directory = completionLogsDir(parts.workDir, item.ref, parts.repository);
+    const previous = await readArmedHead(directory);
+    const inherited =
+      previous !== null && previous.number === merged.number && previous.head === merged.head
+        ? previous.waitingSince
+        : null;
+    try {
+      await recordArmedHead(
+        directory,
+        {
+          head: merged.head,
+          number: merged.number,
+          // The moment the wait began is kept as it is; a merge this pass is the
+          // first to see starts the wait here rather than resetting it later.
+          waitingSince: inherited === null || inherited === '' ? now().toISOString() : inherited,
+        },
+        now,
+      );
+      return { ready: true };
+    } catch (cause) {
+      return {
+        ready: false,
+        problem:
+          `GitHub merged ${merged.url} at the reviewed head ${merged.head}, but the ` +
+          `pull-request/head record for it could not be written (${messageOf(cause)}); nothing was ` +
+          'written or moved, and the item stays In Review rather than concluding an outcome no ' +
+          'later pass could resume',
+      };
+    }
+  };
+
+  /**
    * Makes sure GitHub holds a native auto-merge request for the open pull
    * request's current head, before the reviewer's check can make the pull
    * request clean. A request already enabled for this exact pull request is
@@ -503,11 +723,17 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
    * restart still verifies the arm or merge from GitHub. The merge-wait start
    * is written only when completion first sees the approved head still awaiting
    * its merge, so a long review does not consume the merge deadline.
+   *
+   * The request itself is asked for at most once, and every reading around it —
+   * the fresh eligibility read before it and the reconciliation read after it —
+   * is an ordinary read: a transient failure is repeated inside the item
+   * deadline, and only the read is repeated, never the request.
    */
   const ensureArmed = async (
     context: PullContext,
     stop: AbortSignal,
     wait: { readonly beginsHere: boolean },
+    deadline: number,
   ): Promise<Arming> => {
     const { item, request, pull } = context;
     const head = pull.headRefOid;
@@ -522,6 +748,56 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
         detail: `native auto-merge is already enabled for ${pull.url} at head ${head}`,
       };
     }
+
+    /**
+     * One fresh reading of this exact pull request and head, with a transient
+     * failure repeated inside the item deadline. Nothing here changes any
+     * state, which is why a reading may be repeated while the one request below
+     * is never re-sent.
+     */
+    const read = async (): Promise<FreshReading> =>
+      await readFresh(item, request, { number: pull.number, head, url: pull.url }, stop, deadline);
+    /** What a merge of the expected head means for the caller. */
+    const mergedArming = (fresh: PullRequestSnapshot): Arming => ({
+      kind: 'merged',
+      head,
+      number: pull.number,
+      detail:
+        `GitHub merged ${fresh.url} at head ${head}; nothing is armed again and the merge itself ` +
+        'is verified from here',
+    });
+    /** What a revoked delivery — closed, moved, or another pull request — means. */
+    const settledArming = (
+      settled: Extract<FreshReading, { kind: 'closed' | 'changed' }>,
+    ): Arming => ({
+      kind: 'attention',
+      detail:
+        `${settledFailure(settled, head).detail}; nothing was armed for it, and the item stays ` +
+        'In Review',
+      evidence: [pull.url],
+    });
+    /** What a request GitHub really holds for this exact head means. */
+    const armedArming = (fresh: PullRequestSnapshot, answer: AutoMergeStatus): Arming => ({
+      kind: 'armed',
+      head,
+      number: pull.number,
+      detail:
+        `native auto-merge ${answer === 'already-enabled' ? 'already enabled' : 'enabled'} for ` +
+        `${fresh.url} at head ${head}; GitHub merges it only when branch protection allows`,
+    });
+    /**
+     * What a reading GitHub could not answer, even after the retries the item
+     * deadline allows, means: the item stays In Review with the admission kept
+     * for the next pass, and no merge is assumed.
+     */
+    const readFailure = (cause: unknown): Arming => ({
+      kind: 'attention',
+      detail:
+        `GitHub could not be read for the auto-merge of ${pull.url} at head ${head}: ` +
+        `${messageOf(cause)}; the admission is retained for verification on restart, and the item ` +
+        'stays In Review and no merge is assumed',
+      evidence: [pull.url],
+    });
 
     try {
       // Persist intent before the remote mutation: GitHub can accept it and
@@ -558,15 +834,41 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
       };
     }
 
-    let status: AutoMergeStatus;
+    // GitHub's own state decides what a request would mean now: a pull request
+    // already merged at the exact reviewed head needs no request, and one that
+    // no longer carries that head is not this path's to arm.
+    let current: FreshReading;
     try {
-      status = await actions.enableAutoMerge(request, pull, head, stop, async () => {
+      current = await read();
+    } catch (cause) {
+      return readFailure(cause);
+    }
+    if (current.kind === 'merged') return mergedArming(current.pull);
+    if (current.kind !== 'open') return settledArming(current);
+    if (current.pull.autoMergeRequest) return armedArming(current.pull, 'already-enabled');
+
+    let answer: AutoMergeStatus;
+    try {
+      answer = await actions.enableAutoMerge(request, current.pull, head, stop, async () => {
         const fresh = await source.readItem({ ref: item.ref, title: item.title }, stop);
         return (
           fresh !== null && fresh.pointers.length === 1 && fresh.pointers[0] === request.workspaceId
         );
       });
     } catch (cause) {
+      // The request is not sent again, whatever its answer looked like. Whether
+      // GitHub refused it, merged the reviewed head while it was in flight, or
+      // never answered is settled by one fresh reading — repeated only while
+      // GitHub's failure is transient and the item's deadline has not passed.
+      let settled: FreshReading;
+      try {
+        settled = await read();
+      } catch (readCause) {
+        return readFailure(readCause);
+      }
+      if (settled.kind === 'merged') return mergedArming(settled.pull);
+      if (settled.kind !== 'open') return settledArming(settled);
+      if (settled.pull.autoMergeRequest) return armedArming(settled.pull, 'already-enabled');
       return {
         kind: 'attention',
         detail:
@@ -577,14 +879,27 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
       };
     }
 
-    return {
-      kind: 'armed',
-      head,
-      number: pull.number,
-      detail:
-        `native auto-merge ${status === 'enabled' ? 'enabled' : 'already enabled'} for ` +
-        `${pull.url} at head ${head}; GitHub merges it only when branch protection allows`,
-    };
+    // An acknowledged request is an arm only once GitHub's own state says so
+    // for this exact head, and that reading is a read like any other: a
+    // transient failure of it is repeated rather than stopping for a person.
+    let verified: FreshReading;
+    try {
+      verified = await read();
+    } catch (cause) {
+      return readFailure(cause);
+    }
+    if (verified.kind === 'merged') return mergedArming(verified.pull);
+    if (verified.kind !== 'open') return settledArming(verified);
+    if (!verified.pull.autoMergeRequest)
+      return {
+        kind: 'attention',
+        detail:
+          `GitHub did not keep auto-merge enabled for ${verified.pull.url} at head ${head}; it ` +
+          'may still be unarmed, the admission is retained for verification on restart, and the ' +
+          'item stays In Review',
+        evidence: [pull.url],
+      };
+    return armedArming(verified.pull, answer);
   };
 
   /** The merge and post-merge reading, repeated until it concludes or the deadline passes. */
@@ -594,7 +909,20 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
     stop: AbortSignal,
     waits: number,
   ): Promise<Step> => {
-    const { item, request, pull } = context;
+    const { item, request } = context;
+    let pull = context.pull;
+    // The identity of the merge this pass is about to verify is recorded before
+    // the item's first reading of it and before any comment or move it may
+    // conclude: GitHub merges the reviewed head in windows where the pass never
+    // armed anything, and this is the evidence a restart resumes from once the
+    // pull request has left the open list.
+    const retained = await rememberMerge(item, {
+      number: pull.number,
+      head: reviewedHead,
+      url: pull.url,
+    });
+    if (!retained.ready)
+      return { kind: 'attention', detail: retained.problem, evidence: [pull.url] };
     // How long this item has been waiting for GitHub is the one thing that has
     // to survive a pass: it is recorded beside the arm, and read back here, so a
     // merge that never finishes reaches the configured deadline even though a
@@ -605,11 +933,15 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
     const deadline = mergeWaitDeadline(waitingSince, config.deadlineSeconds, now().getTime());
     for (let waited = 0; ; waited += 1) {
       if (stop.aborted) return { kind: 'observed', detail: 'Completion was interrupted' };
-      const merge: MergeVerdict = await actions.readMerge(request, pull, reviewedHead, stop);
-      const approved = await actions.readGate(
-        request,
-        merge.status === 'pending' ? pull : { ...pull, state: 'MERGED' },
-        stop,
+      const merge: MergeVerdict = await readEvidence(item, stop, deadline, () =>
+        actions.readMerge(request, pull, reviewedHead, stop),
+      );
+      const approved: GateVerdict = await readEvidence(item, stop, deadline, () =>
+        actions.readGate(
+          request,
+          merge.status === 'pending' ? pull : { ...pull, state: 'MERGED' },
+          stop,
+        ),
       );
       if (merge.status === 'pending' && approved.status === 'failed')
         return {
@@ -619,11 +951,31 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
           findings: approved.findings,
           mergeCommit: null,
         };
-      if (
-        approved.status === 'attention' ||
-        (merge.status !== 'pending' && approved.status !== 'approved')
-      )
+      if (approved.status === 'attention') {
+        // The verdict can be older than a merge: GitHub may have merged the
+        // reviewed head between the merge read and the gate read, and such a
+        // verdict would otherwise read as "not eligible for completion". One
+        // fresh reading settles which of the two it is; only a merge of this
+        // exact reviewed head continues the merge path.
+        if (pull.state.toUpperCase() === 'MERGED')
+          return mergeNotTied(pull, reviewedHead, approved.reason, merge.mergeCommit);
+        const fresh = await readFresh(
+          item,
+          request,
+          { number: pull.number, head: reviewedHead, url: pull.url },
+          stop,
+          deadline,
+        );
+        if (fresh.kind === 'merged') {
+          io.out(`${item.ref.key}: ${fresh.pull.url} merged while its evidence was read`);
+          pull = fresh.pull;
+          continue;
+        }
+        if (fresh.kind !== 'open') return settledFailure(fresh, reviewedHead);
         return { kind: 'observed', detail: approved.reason };
+      }
+      if (merge.status !== 'pending' && approved.status !== 'approved')
+        return mergeNotTied(pull, reviewedHead, approved.reason, merge.mergeCommit);
       if (merge.status === 'complete' && merge.mergeCommit !== null && approved.review !== null) {
         io.out(`${item.ref.key}: ${merge.reason}`);
         return {
@@ -670,6 +1022,7 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
             'the merge or its configured post-merge workflows were still pending when this ' +
             `item's deadline expired (${merge.reason})`,
           evidence: [pull.url],
+          mergeCommit: merge.mergeCommit,
         };
       }
       if (waited >= waits) {
@@ -681,7 +1034,7 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
             );
           },
         );
-        return { kind: 'pending', detail: merge.reason };
+        return { kind: 'pending', detail: merge.reason, mergeCommit: merge.mergeCommit };
       }
       await sleep(Math.min(intervalMs, Math.max(0, deadline - now().getTime())), stop);
     }
@@ -703,12 +1056,19 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
     const armed = await readArmedHead(completionLogsDir(parts.workDir, item.ref, parts.repository));
     const merged = pull.state.toUpperCase() === 'MERGED';
     if (pull.state.toUpperCase() !== 'OPEN' && !merged) {
-      return { kind: 'observed', detail: `pull request ${pull.url} is ${pull.state}, not open` };
+      return {
+        kind: 'unresolved',
+        detail:
+          `pull request ${pull.url} is ${pull.state}, neither open nor merged, so nothing here ` +
+          'can be armed, verified or marked done',
+      };
     }
     if (merged) {
       let approval: string | null;
       try {
-        approval = await actions.readApprovedHead(request, pull, stop);
+        approval = await readEvidence(item, stop, deadline, () =>
+          actions.readApprovedHead(request, pull, stop),
+        );
       } catch (cause) {
         if (cause instanceof DeliveryError) {
           return {
@@ -722,15 +1082,14 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
       if (approval === pull.headRefOid) {
         return await followMerge(context, pull.headRefOid, stop, MERGE_WAIT_ROUNDS);
       }
-      return {
-        kind: 'observed',
-        detail:
-          approval === null
-            ? `pull request ${pull.url} is merged, but GitHub records no review approving ` +
-              `the merged head ${pull.headRefOid}`
-            : `pull request ${pull.url} merged head ${pull.headRefOid}, but the reviewer approved ` +
-              `${approval}, so the merge is not the reviewed work`,
-      };
+      return mergeNotTied(
+        pull,
+        pull.headRefOid,
+        approval === null
+          ? 'GitHub records no review approving the merged head'
+          : `the reviewer approved ${approval}, not the merged head`,
+        pull.mergeCommit?.oid ?? null,
+      );
     }
 
     if (pull.autoMergeRequest && armed?.head === pull.headRefOid && armed.number === pull.number) {
@@ -739,7 +1098,7 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
 
     let gate: GateVerdict;
     try {
-      gate = await actions.readGate(request, pull, stop);
+      gate = await readEvidence(item, stop, deadline, () => actions.readGate(request, pull, stop));
     } catch (cause) {
       if (cause instanceof DeliveryError) {
         return {
@@ -752,6 +1111,30 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
     }
 
     if (gate.status === 'attention') {
+      // The verdict can be older than a merge: GitHub may have merged the
+      // reviewed pull request between the read that produced it and this
+      // answer, which is exactly how the completion path used to stop on a
+      // successful merge. One fresh reading settles which it is.
+      const fresh = await readFresh(
+        item,
+        request,
+        { number: pull.number, head: pull.headRefOid, url: pull.url },
+        stop,
+        deadline,
+      );
+      if (fresh.kind === 'merged') {
+        io.out(
+          `${item.ref.key}: ${fresh.pull.url} was merged while its evidence was read; ` +
+            'verifying that merge',
+        );
+        return await followMerge(
+          { item, request, pull: fresh.pull },
+          pull.headRefOid,
+          stop,
+          MERGE_WAIT_ROUNDS,
+        );
+      }
+      if (fresh.kind !== 'open') return settledFailure(fresh, pull.headRefOid);
       return { kind: 'observed', detail: gate.reason };
     }
     if (gate.status === 'pending') {
@@ -783,7 +1166,7 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
     // the review runs; a completion pass that reads an unarmed approved pull
     // request (a standalone source command, or a restart without the queue's
     // arm step) still tries here, and GitHub's own refusal is reported.
-    const arming = await ensureArmed(context, stop, { beginsHere: true });
+    const arming = await ensureArmed(context, stop, { beginsHere: true }, deadline);
     if (arming.kind === 'attention') {
       return { kind: 'attention', detail: arming.detail, evidence: arming.evidence };
     }
@@ -831,14 +1214,29 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
     step: Step,
     stop: AbortSignal,
     context: PullContext,
+    deadline: number,
   ): Promise<CompletionOutcome> => {
     const { ref } = item;
     if (step.kind === 'observed' || step.kind === 'pending') {
       return {
         ref,
-        status: step.kind === 'pending' ? 'pending' : 'observed',
+        status: step.kind,
         detail: step.detail,
         commentId: null,
+        ...(step.kind === 'pending' && step.mergeCommit !== undefined
+          ? { mergeCommit: step.mergeCommit }
+          : {}),
+      };
+    }
+    if (step.kind === 'unresolved') {
+      // A settled state this path may not act past: reported for a person, with
+      // no comment (nothing about it is a completion) and nothing retried.
+      return {
+        ref,
+        status: 'attention',
+        detail: step.detail,
+        commentId: null,
+        ...(step.mergeCommit === undefined ? {} : { mergeCommit: step.mergeCommit }),
       };
     }
     const body =
@@ -857,6 +1255,12 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
 
     const guard = async (): Promise<boolean> => {
       if (stop.aborted) return false;
+      // The verify-before-write reads are reads like any other: a transient
+      // GitHub failure is retried inside the deadline the pass is already
+      // holding for this item instead of turning into a reason to stop for a
+      // person. Each of the two writes this step may make — the comment, and
+      // then the status move — reads under that one absolute bound: a pass that
+      // has spent its budget does not get a second one here.
       const currentItem = await source.readItem({ ref, title: item.title }, stop);
       if (
         currentItem === null ||
@@ -865,19 +1269,27 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
       )
         return false;
       if (step.kind === 'resolution' || (step.kind === 'findings' && step.mergeCommit !== null)) {
-        const approval = await actions.readApprovedHead(context.request, context.pull, stop);
+        const approval = await readEvidence(item, stop, deadline, () =>
+          actions.readApprovedHead(context.request, context.pull, stop),
+        );
         if (approval !== context.pull.headRefOid) return false;
-        const merge = await actions.readMerge(context.request, context.pull, approval, stop);
+        const merge = await readEvidence(item, stop, deadline, () =>
+          actions.readMerge(context.request, context.pull, approval, stop),
+        );
         if (
           merge.mergeCommit !== step.mergeCommit ||
           merge.status !== (step.kind === 'resolution' ? 'complete' : 'workflows-unsuccessful')
         )
           return false;
       } else if (step.kind === 'findings') {
-        if ((await actions.readGate(context.request, context.pull, stop)).status !== 'failed')
-          return false;
+        const gate = await readEvidence(item, stop, deadline, () =>
+          actions.readGate(context.request, context.pull, stop),
+        );
+        if (gate.status !== 'failed') return false;
       }
-      const live = await actions.findMergedPullRequest(context.request, context.pull.number, stop);
+      const live = await readEvidence(item, stop, deadline, () =>
+        actions.findMergedPullRequest(context.request, context.pull.number, stop),
+      );
       return (
         live.number === context.pull.number &&
         live.headRefOid === context.pull.headRefOid &&
@@ -918,7 +1330,13 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
 
     if (step.kind === 'attention') {
       // The note is the whole outcome: the item stays In Review for a person.
-      return { ref, status: 'attention', detail: step.detail, commentId: written.commentId };
+      return {
+        ref,
+        status: 'attention',
+        detail: step.detail,
+        commentId: written.commentId,
+        ...(step.mergeCommit === undefined ? {} : { mergeCommit: step.mergeCommit }),
+      };
     }
     // The merge commit this outcome is about, when the step concluded one: a
     // resolution always names it, and a findings step names it when the pull
@@ -1011,9 +1429,14 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
       return { ref, status: 'attention', detail: evidence.problem, commentId: null };
     }
 
+    // The one logical deadline this item's reads share: a transient GitHub
+    // failure is retried inside it, and a stable terminal state is reported
+    // from it rather than polled forever.
+    const deadline = now().getTime() + config.deadlineSeconds * 1000;
+
     let context: PullContext | null;
     try {
-      context = await contextFor(item, workspaceId, stop);
+      context = await readEvidence(item, stop, deadline, () => contextFor(item, workspaceId, stop));
     } catch (cause) {
       return {
         ref,
@@ -1025,35 +1448,71 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
     if (context === null) {
       // No open pull request matches the delivered branch. GitHub may have
       // accepted an admitted auto-merge request and merged it even if its
-      // response was lost: that pull request is read by number, and the merge and its
-      // post-merge workflows decide this item from here.
+      // response was lost: that pull request is read by number, and only its
+      // own merged state, tied to the reviewed head and the reviewer's
+      // approval, lets the merge and its post-merge workflows decide this item.
       const armed = await readArmedHead(
         completionLogsDir(parts.workDir, item.ref, parts.repository),
       );
       if (armed?.number !== null && armed?.number !== undefined) {
         const request = requestFor(item, workspaceId);
         try {
-          const merged = await actions.findMergedPullRequest(request, armed.number, stop);
-          if (
-            merged.state.toUpperCase() === 'MERGED' &&
-            merged.headRefOid === armed.head &&
-            merged.headRefName === request.branch &&
-            merged.baseRefName === request.baseBranch &&
-            (await actions.readApprovedHead(request, merged, stop)) === armed.head
-          ) {
-            const follow = await followMerge(
-              { item, request, pull: merged },
-              armed.head,
-              stop,
-              MERGE_WAIT_ROUNDS,
+          const settled = await readFresh(
+            item,
+            request,
+            { number: armed.number, head: armed.head },
+            stop,
+            deadline,
+          );
+          if (settled.kind === 'merged') {
+            const pull = settled.pull;
+            const approval = await readEvidence(item, stop, deadline, () =>
+              actions.readApprovedHead(request, pull, stop),
             );
-            return await recordStep(item, thread, follow, stop, { item, request, pull: merged });
+            if (approval === armed.head) {
+              const follow = await followMerge(
+                { item, request, pull },
+                armed.head,
+                stop,
+                MERGE_WAIT_ROUNDS,
+              );
+              return await recordStep(
+                item,
+                thread,
+                follow,
+                stop,
+                { item, request, pull },
+                deadline,
+              );
+            }
+            const untied = mergeNotTied(
+              pull,
+              armed.head,
+              approval === null
+                ? 'GitHub records no review approving the merged head'
+                : `the reviewer approved ${approval}, not the merged head`,
+              pull.mergeCommit?.oid ?? null,
+            );
+            return {
+              ref,
+              status: 'attention',
+              detail: untied.detail,
+              mergeCommit: untied.mergeCommit,
+              commentId: null,
+            };
           }
+          if (settled.kind !== 'open')
+            return {
+              ref,
+              status: 'attention',
+              detail: settledFailure(settled, armed.head).detail,
+              commentId: null,
+            };
         } catch (cause) {
           return {
             ref,
             status: 'attention',
-            detail: `GitHub could not be read for the merge this pass armed: ${messageOf(cause)}`,
+            detail: `GitHub could not be read for the merge this pass admitted: ${messageOf(cause)}`,
             commentId: null,
           };
         }
@@ -1070,7 +1529,7 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
 
     let step: Step;
     try {
-      step = await decide(context, stop, now().getTime() + config.deadlineSeconds * 1000);
+      step = await decide(context, stop, deadline);
     } catch (cause) {
       if (cause instanceof DeliveryError) {
         return {
@@ -1083,7 +1542,7 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
       throw cause;
     }
     try {
-      return await recordStep(item, thread, step, stop, context);
+      return await recordStep(item, thread, step, stop, context, deadline);
     } catch (cause) {
       return {
         ref,
@@ -1143,9 +1602,15 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
     if (!evidence.ready) {
       return { ref, status: 'attention', detail: evidence.problem };
     }
+    // The arm step's own deadline is the same bounded budget the completion
+    // pass gives one item, so a transient read failure here is repeated inside
+    // it instead of stopping the queue for a person.
+    const deadline = now().getTime() + config.deadlineSeconds * 1000;
     let context: PullContext | null;
     try {
-      context = await contextFor(item, item.pointers[0] ?? '', stop);
+      context = await readEvidence(item, stop, deadline, () =>
+        contextFor(item, item.pointers[0] ?? '', stop),
+      );
     } catch (cause) {
       return {
         ref,
@@ -1162,9 +1627,14 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
           'was armed; the completion path verifies any merge it admitted',
       };
     }
-    const arming = await ensureArmed(context, stop, { beginsHere: false });
+    const arming = await ensureArmed(context, stop, { beginsHere: false }, deadline);
     if (arming.kind === 'attention') {
       return { ref, status: 'attention', detail: arming.detail };
+    }
+    if (arming.kind === 'merged') {
+      // Nothing was armed and nothing needs arming: the reviewed head is
+      // already merged, and the completion path verifies that merge.
+      return { ref, status: 'observed', detail: arming.detail };
     }
     return {
       ref,
@@ -1222,6 +1692,9 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
       },
       stop,
       { item, request, pull },
+      // The item's own budget is already spent: this note reads under the short
+      // feedback budget it is given, never under a fresh completion deadline.
+      now().getTime() + DEADLINE_REPORT_BUDGET_MS,
     );
   };
 
@@ -1255,7 +1728,7 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
         if (deadline.signal.aborted && !stop.aborted) {
           outcome = await reportDeadline(
             candidate,
-            AbortSignal.any([stop, AbortSignal.timeout(10_000)]),
+            AbortSignal.any([stop, AbortSignal.timeout(DEADLINE_REPORT_BUDGET_MS)]),
           ).catch(() => ({
             ref: candidate.ref,
             status: 'attention' as const,
