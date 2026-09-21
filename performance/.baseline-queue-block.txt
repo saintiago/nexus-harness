@@ -1,0 +1,1590 @@
+async function retainedWorkspace(
+  workDir: string,
+  attempts: readonly WorkspaceAttempt[],
+): Promise<{
+  readonly sourceRepo: string;
+  readonly workspaceId: string;
+  readonly workspacePath: string;
+  readonly base: string;
+}> {
+  const sourceRepo = path.join(await createTempDir(), 'source-repo');
+  await mkdir(sourceRepo, { recursive: true });
+  await writeFile(path.join(sourceRepo, 'README.md'), 'the source repository\n', 'utf8');
+  git(sourceRepo, 'init', '--quiet', '--initial-branch=main');
+  git(sourceRepo, 'add', '--all');
+  git(sourceRepo, 'commit', '--quiet', '--message', 'the baseline');
+  const base = git(sourceRepo, 'rev-parse', 'HEAD').trim();
+
+  const workspaceId = ISSUE_KEY;
+  const workspacePath = path.join(workDir, 'workspaces', workspaceId);
+  await mkdir(path.dirname(workspacePath), { recursive: true });
+  git(
+    path.dirname(workspacePath),
+    'clone',
+    '--quiet',
+    '--local',
+    '--no-hardlinks',
+    '--',
+    sourceRepo,
+    workspaceId,
+  );
+  git(workspacePath, 'switch', '--quiet', '-c', `harness/${workspaceId}`);
+  await writeWorkspaceState(workDir, {
+    version: 1,
+    workspaceId,
+    sourceRoot: sourceRepo,
+    baseCommit: base,
+    branch: `harness/${workspaceId}`,
+    createdAt: '2026-09-21T10:00:00.000Z',
+    sourceItem: { type: 'jira', scope: SCOPE, id: ISSUE_ID, key: ISSUE_KEY },
+    attempts,
+  });
+  return { sourceRepo, workspaceId, workspacePath, base };
+}
+
+/** The one failed baseline attempt a retained workspace starts from. */
+function baselineAttempt(): WorkspaceAttempt {
+  return {
+    runId: 'run-1',
+    outcome: 'failed',
+    reason: 'the baseline checks did not pass, so no coding turn was started',
+    endedAt: '2026-09-21T10:04:00.000Z',
+    reportPath: '/work/runs/run-1/result.json',
+  };
+}
+
+/** One diagnosis comment, as the item's own thread renders it back. */
+function findingTextFor(evidenceId = 'abc123'): string {
+  return [
+    `${ISSUE_KEY}: the configured baseline checks failed before any coding turn, and the ` +
+      `diagnosis is actionable (${BASELINE_MARKER_PREFIX}repair:${evidenceId}, written by the ` +
+      'Nexus harness).',
+    'Failing check: ["npm","run","validate"]',
+    'Evidence: the load test timed out on the shared machine',
+    'Likely cause: the fixture waits for a fixed 30 seconds',
+    'Repair guidance: make the fixture wait for the condition instead of the clock',
+    'Returned to "To Do" with its workspace pointer preserved: the next claim continues the same ' +
+      'retained workspace.',
+  ].join('\n');
+}
+
+/** What one continued claim's intake did, for a test to read back. */
+interface ContinuedIntake {
+  readonly context: SourceContext;
+  readonly runs: SourceRunRequest[];
+  readonly since: string[];
+  readonly published: SourceRunOutcome[];
+  /**
+   * What the intake recorded on the ticket when it could not start a
+   * developer: the reason it published, and the pointer labels the item still
+   * carried then.
+   */
+  readonly attentions: { readonly reason: string; readonly pointers: readonly string[] }[];
+  /** The status the source's own record is in: claimed, and then moved or not. */
+  readonly ticket: { status: string };
+  readonly out: string[];
+  readonly err: string[];
+}
+
+/**
+ * The intake one continued claim runs through: the item its pointer names, the
+ * real retained workspace on disk, and the runner recorded rather than run. The
+ * source answers a claim the way the real one does once the diagnosis has
+ * returned the ticket to its ready status.
+ */
+function continuedIntake(parts: {
+  readonly workDir: string;
+  readonly sourceRepo: string;
+  readonly base: string;
+  readonly workspaceId: string;
+  /**
+   * What the item's own thread carries, or a function for a comment that only
+   * exists by the time the claim reads the thread.
+   */
+  readonly findingText: string | (() => string);
+  readonly run: (request: SourceRunRequest) => Promise<RunTaskResult>;
+  readonly tiers?: SourceContext['tiers'];
+  readonly diagnosis?: BaselineDiagnosis;
+  /** When set, the item's own thread cannot be read at all. */
+  readonly commentsProblem?: string;
+  /**
+   * What the thread carries after the one comment this fixture renders for
+   * `findingText`: someone writing on the ticket later — the review feedback a
+   * repair turn has to be told beside the finding it repairs first.
+   */
+  readonly laterComments?: readonly {
+    readonly author: string;
+    readonly createdAt: string;
+    readonly text: string;
+  }[];
+  /**
+   * The intake's own stop request, for the paths a stop has to leave the ticket
+   * findable from. Defaults to a signal that never aborts.
+   */
+  readonly stop?: AbortSignal;
+  /** Runs right after the claim, as a stop that lands on that write would. */
+  readonly onClaim?: () => void;
+}): ContinuedIntake {
+  const ref = refFor();
+  const item: SourceTask = { ref, task: taskFor(ref), pointers: [parts.workspaceId] };
+  const runs: SourceRunRequest[] = [];
+  const since: string[] = [];
+  const published: SourceRunOutcome[] = [];
+  const attentions: ContinuedIntake['attentions'] = [];
+  const ticket = { status: 'To Do' };
+  const out: string[] = [];
+  const err: string[] = [];
+  const context: SourceContext = {
+    source: {
+      listEligible: async () => [{ ref, title: 'Repair the failing baseline' }],
+      prepare: async () => item,
+      claim: async () => {
+        // What the real source does: the claim moves the item into the running
+        // status, which is the status an attention record has to take it out
+        // of.
+        ticket.status = 'In Progress';
+        parts.onClaim?.();
+        return true;
+      },
+      attention: async (_item, reason) => {
+        attentions.push({ reason, pointers: item.pointers ?? [] });
+        ticket.status = 'In Review';
+      },
+      progress: async (_item, outcome) => {
+        published.push(outcome);
+        return publishedComment();
+      },
+      complete: async (_item, outcome) => {
+        published.push(outcome);
+        return publishedComment();
+      },
+      recordWorkspace: async () => undefined,
+      refuse: async () => {
+        throw new Error('nothing in this fixture is refused');
+      },
+      commentsSince: async (_item, moment) => {
+        since.push(moment);
+        if (parts.commentsProblem !== undefined) {
+          throw new Error(parts.commentsProblem);
+        }
+        return [
+          {
+            author: 'Nexus Agent',
+            createdAt: '2026-09-21T10:05:00.000Z',
+            text: typeof parts.findingText === 'function' ? parts.findingText() : parts.findingText,
+          },
+          ...(parts.laterComments ?? []),
+        ];
+      },
+    },
+    workDir: parts.workDir,
+    lockNamespace: 'baseline-guidance-fixture',
+    tiers: parts.tiers ?? [
+      { name: 'default', agent: { runtime: 'codex', command: ['codex'] }, maxRepairs: 1 },
+    ],
+    repoPath: parts.sourceRepo,
+    io: { out: (text) => out.push(text), err: (text) => err.push(text) },
+    stop: parts.stop ?? new AbortController().signal,
+    preflight: async () => ({ sourceRoot: parts.sourceRepo, baseCommit: parts.base }),
+    run: async (request) => {
+      runs.push(request);
+      return await parts.run(request);
+    },
+    now: () => new Date('2026-09-21T10:06:00.000Z'),
+    sleep: async () => undefined,
+    ...(parts.diagnosis === undefined ? {} : { baselineDiagnosis: parts.diagnosis }),
+  };
+  return { context, runs, since, published, attentions, ticket, out, err };
+}
+
+describe('the next claim after a diagnosis', () => {
+  /**
+   * One retained workspace whose red baseline was diagnosed: the diagnosis
+   * posted its one comment, the ticket is back in its ready status, and the
+   * evidence is closed as a repair.
+   *
+   * The reviewer turn is stood in for rather than spent here — what a continuing
+   * claim reads is the state this leaves, and the turn that produces it has its
+   * own coverage — but the finding it would have written is put exactly where
+   * the real turn writes it (`baselineFindingPath`, the path this harness reads
+   * it back from), so the record on disk is the real one.
+   */
+  async function diagnosedWorkspace(
+    workDir: string,
+    /** The finding the diagnosis's reviewer turn stands in for. */
+    finding: BaselineFinding = REPAIR_FINDING,
+  ): Promise<{
+    readonly sourceRepo: string;
+    readonly workspaceId: string;
+    readonly workspacePath: string;
+    readonly base: string;
+    readonly record: FakeRecord;
+    readonly diagnosis: BaselineDiagnosis;
+    /** The one comment the diagnosis posted, marker and evidence identity included. */
+    readonly comment: string;
+  }> {
+    const retained = await retainedWorkspace(workDir, [baselineAttempt()]);
+    const record = fakeRecord();
+    const baseline = await baselineWithLogs();
+    const diagnosis = createBaselineDiagnosis({
+      reviewer: scriptedReviewer(finding).review,
+      record,
+      readyStatus: 'To Do',
+      reviewStatus: 'In Review',
+      reviewerTimeoutMs: 60_000,
+      project: PROJECT,
+      workDir,
+      io: { out: () => undefined, err: () => undefined },
+    });
+
+    const outcome = await diagnosis.diagnose({
+      item: { ref: refFor(), task: taskFor() },
+      workspace: {
+        workspaceId: retained.workspaceId,
+        workspacePath: retained.workspacePath,
+        branch: `harness/${retained.workspaceId}`,
+        baseCommit: retained.base,
+      },
+      baseline,
+      stop: new AbortController().signal,
+    });
+
+    expect(outcome.kind).toBe('repair');
+    expect(record.status).toBe('To Do');
+    // The finding the scripted reviewer stands in for is put exactly where the
+    // real turn writes it, the path this harness reads it back from.
+    await writeReviewerFinding(workDir, finding);
+    return { ...retained, record, diagnosis, comment: record.notes[0]?.text ?? '' };
+  }
+
+  it('hands the developer the reviewed finding in the same retained workspace', async () => {
+    const workDir = await createTempDir();
+    const { sourceRepo, workspaceId, workspacePath, base, diagnosis, comment } =
+      await diagnosedWorkspace(workDir);
+
+    const { context, runs, since, published } = continuedIntake({
+      workDir,
+      sourceRepo,
+      base,
+      workspaceId,
+      findingText: comment,
+      diagnosis,
+      run: async () =>
+        runResultFor({
+          status: 'passed',
+          reason: 'the checks passed',
+          baseline: null,
+          workspace: workspaceFor({ continued: true, attempt: 2, baseCommit: base }),
+          reportPath: '/work/runs/run-2/result.json',
+        }),
+    });
+
+    const take = await takeOneItem(context, {});
+
+    expect(take.outcome).toBe('taken');
+    expect(published[0]?.status).toBe('passed');
+    // The same workspace, continued: same clone, same branch, next attempt.
+    expect(runs[0]?.continuedWorkspace).toEqual({
+      workspaceId,
+      workspacePath,
+      branch: `harness/${workspaceId}`,
+      baseCommit: base,
+      attempt: 2,
+    });
+    // The developer is told the original task *and* the reviewed finding: the
+    // earlier attempt's own record and the comment the diagnosis wrote.
+    expect(since).toEqual(['2026-09-21T10:04:00.000Z']);
+    const guidance = runs[0]?.guidance ?? [];
+    expect(
+      guidance.some(
+        (line) => line.includes('attempt 1') && line.includes('the baseline checks did not pass'),
+      ),
+    ).toBe(true);
+    expect(
+      guidance.some(
+        (line) =>
+          line.includes('reviewed baseline finding — repair guidance:') &&
+          line.includes('make the fixture wait for the condition instead of the clock'),
+      ),
+    ).toBe(true);
+  });
+
+  it('hands the developer a field whole where the comment could only render it concisely', async () => {
+    const workDir = await createTempDir();
+    const { sourceRepo, workspaceId, base, diagnosis, comment } = await diagnosedWorkspace(
+      workDir,
+      WIDE_REPAIR_FINDING,
+    );
+
+    // The one Jira comment stays concise: the guidance field is rendered as one
+    // bounded line, and the instruction that comes after it is not in it.
+    const asComment = comment.split('\n').find((line) => line.startsWith('Repair guidance: '));
+    expect(asComment).toBe(`Repair guidance: ${WIDE_REPAIR_GUIDANCE.slice(0, 600)}…`);
+    expect(comment).not.toContain(WIDE_GUIDANCE_TAIL);
+
+    const { context, runs, published } = continuedIntake({
+      workDir,
+      sourceRepo,
+      base,
+      workspaceId,
+      findingText: comment,
+      diagnosis,
+      run: async () =>
+        runResultFor({
+          status: 'passed',
+          reason: 'the checks passed',
+          baseline: null,
+          workspace: workspaceFor({ continued: true, attempt: 2, baseCommit: base }),
+          reportPath: '/work/runs/run-2/result.json',
+        }),
+    });
+
+    const take = await takeOneItem(context, {});
+
+    // The comment is the thread's rendering of the finding, and the developer is
+    // handed the finding the retained record validated — including the last
+    // words of the repair, which the comment had to cut.
+    expect(take.outcome).toBe('taken');
+    expect(published[0]?.status).toBe('passed');
+    // The comment itself is still accepted as the whole comment — the harness's
+    // own bounded rendering of this finding — and what that route hands over is
+    // the finding, whole.
+    const evidenceId = baselineEvidenceId(refFor(), base, await baselineWithLogs());
+    expect(baselineThreadFinding(comment, evidenceId, WIDE_REPAIR_FINDING)).toEqual(
+      baselineFindingGuidanceLines(WIDE_REPAIR_FINDING),
+    );
+    const guidance = runs[0]?.guidance ?? [];
+    expect(guidance).toContain(
+      `reviewed baseline finding — repair guidance: ${WIDE_REPAIR_GUIDANCE}`,
+    );
+  });
+
+  it('hands over the same whole field when the thread cannot be read either', async () => {
+    const workDir = await createTempDir();
+    const diagnosed = await diagnosedWorkspace(workDir, WIDE_REPAIR_FINDING);
+    const { context, runs, published } = continuedIntake({
+      workDir,
+      sourceRepo: diagnosed.sourceRepo,
+      base: diagnosed.base,
+      workspaceId: diagnosed.workspaceId,
+      findingText: diagnosed.comment,
+      commentsProblem: 'the comment read timed out',
+      diagnosis: diagnosed.diagnosis,
+      run: async () =>
+        runResultFor({
+          status: 'passed',
+          reason: 'the checks passed',
+          baseline: null,
+          workspace: workspaceFor({
+            continued: true,
+            attempt: 2,
+            baseCommit: diagnosed.base,
+          }),
+          reportPath: '/work/runs/run-2/result.json',
+        }),
+    });
+
+    const take = await takeOneItem(context, {});
+
+    // Nothing of the thread is available here: the finding is the one the
+    // retained evidence holds, whole, with the same field the comment cut.
+    expect(take.outcome).toBe('taken');
+    expect(published[0]?.status).toBe('passed');
+    const guidance = runs[0]?.guidance ?? [];
+    expect(guidance).toContain(
+      `reviewed baseline finding — repair guidance: ${WIDE_REPAIR_GUIDANCE}`,
+    );
+  });
+
+  it('recovers the reviewed finding from the evidence when the thread cannot be read', async () => {
+    const workDir = await createTempDir();
+    const diagnosed = await diagnosedWorkspace(workDir);
+    const { context, runs, err, published } = continuedIntake({
+      workDir,
+      sourceRepo: diagnosed.sourceRepo,
+      base: diagnosed.base,
+      workspaceId: diagnosed.workspaceId,
+      findingText: diagnosed.comment,
+      commentsProblem: 'the comment read timed out',
+      diagnosis: diagnosed.diagnosis,
+      run: async () =>
+        runResultFor({
+          status: 'passed',
+          reason: 'the checks passed',
+          baseline: null,
+          workspace: workspaceFor({
+            continued: true,
+            attempt: 2,
+            baseCommit: diagnosed.base,
+          }),
+          reportPath: '/work/runs/run-2/result.json',
+        }),
+    });
+
+    const take = await takeOneItem(context, {});
+
+    // The thread could not be read, and the attempt still ran — but it was told
+    // the reviewed finding, read back from the evidence the diagnosis kept, so
+    // the developer repairs the baseline before continuing the original task.
+    expect(take.outcome).toBe('taken');
+    expect(published[0]?.status).toBe('passed');
+    expect(err.some((line) => line.includes('the comment read timed out'))).toBe(true);
+    const guidance = runs[0]?.guidance ?? [];
+    expect(
+      guidance.some(
+        (line) =>
+          line.includes('reviewed baseline finding — failing check:') &&
+          line.includes('npm","run","validate'),
+      ),
+    ).toBe(true);
+    expect(
+      guidance.some(
+        (line) =>
+          line.includes('reviewed baseline finding — repair guidance:') &&
+          line.includes('make the fixture wait for the condition instead of the clock'),
+      ),
+    ).toBe(true);
+  });
+
+  it('stops for a person instead of starting a repair whose finding cannot be read back', async () => {
+    const workDir = await createTempDir();
+    const diagnosed = await diagnosedWorkspace(workDir);
+    // The evidence says the finding was published for repair, and the outcome
+    // the reviewer turn recorded beside it is gone: the claim may not be told
+    // the finding, so no developer is started with the original task alone.
+    const evidence = await evidenceRecordFor(workDir, PROJECT);
+    await rm(path.join(path.dirname(evidence.file), 'outcome.json'));
+    const { context, runs, published, attentions, ticket } = continuedIntake({
+      workDir,
+      sourceRepo: diagnosed.sourceRepo,
+      base: diagnosed.base,
+      workspaceId: diagnosed.workspaceId,
+      findingText: diagnosed.comment,
+      commentsProblem: 'the comment read timed out',
+      diagnosis: diagnosed.diagnosis,
+      run: async () => runResultFor(),
+    });
+
+    const take = await takeOneItem(context, {});
+
+    expect(take.outcome).toBe('attention');
+    expect(take.problem).toContain('could not be read back');
+    expect(take.problem).toContain('the comment read timed out');
+    expect(runs).toEqual([]);
+    // Nothing about an attempt was published, and the claimed ticket is not
+    // left In Progress with nothing looking for it: the ticket itself is told
+    // why no developer started, and taken out of the running status with its
+    // workspace pointer preserved. Its receipt carries the same thing locally.
+    expect(published).toEqual([]);
+    expect(attentions).toHaveLength(1);
+    expect(attentions[0]?.reason).toContain('could not be read back');
+    expect(attentions[0]?.reason).toContain('the comment read timed out');
+    expect(attentions[0]?.pointers).toEqual([diagnosed.workspaceId]);
+    expect(ticket.status).toBe('In Review');
+    const receipt = await readReceipt(receiptFilePath(workDir, refFor()));
+    expect(receipt?.problem).toContain('cannot be read back');
+    expect(receipt?.feedback).toBe('sent');
+  });
+
+  it('starts no ordinary continuation when a diagnosis directory lost its record', async () => {
+    const workDir = await createTempDir();
+    const diagnosed = await diagnosedWorkspace(workDir);
+    // The diagnosis published its finding and returned the ticket, and then the
+    // record it kept that evidence under is gone from the directory this harness
+    // made for it — the recorded outcome and the thread's own comment are still
+    // there. Neither alone says whether this workspace was returned for a
+    // repair, or what it has to repair: the directory without its record is not
+    // "nothing pending". Passing over it is what used to start an ordinary
+    // continuation — the original task with no baseline guidance at all — so the
+    // intake stops for a person before it claims anything.
+    const evidence = await evidenceRecordFor(workDir, PROJECT);
+    await rm(evidence.file);
+    const { context, runs, published, attentions, ticket } = continuedIntake({
+      workDir,
+      sourceRepo: diagnosed.sourceRepo,
+      base: diagnosed.base,
+      workspaceId: diagnosed.workspaceId,
+      findingText: diagnosed.comment,
+      diagnosis: diagnosed.diagnosis,
+      run: async () => runResultFor(),
+    });
+
+    const take = await takeOneItem(context, {});
+
+    expect(take.outcome).toBe('attention');
+    expect(take.problem).toContain('holds no evidence.json');
+    expect(take.problem).toContain(path.dirname(evidence.file));
+    // Nothing was claimed, so nothing was started, told, or published: the
+    // ticket the diagnosis returned keeps the place and the pointer it had, no
+    // receipt was written for it, and no developer ran the original task.
+    expect(take.ticket).toBeNull();
+    expect(runs).toEqual([]);
+    expect(published).toEqual([]);
+    expect(attentions).toEqual([]);
+    expect(ticket.status).toBe('To Do');
+    const receipt = await readReceipt(receiptFilePath(workDir, refFor()));
+    expect(receipt).toBeNull();
+  });
+
+  it('tells the next claim the newest feedback beside a finding wider than its context budget', async () => {
+    const workDir = await createTempDir();
+    const diagnosed = await diagnosedWorkspace(workDir, WIDE_TOTAL_FINDING);
+    const feedback =
+      'the delivered pull request needs repair: the fixed wait is still in the load test';
+    expect(baselineFindingGuidanceLines(WIDE_TOTAL_FINDING).join('\n').length).toBeGreaterThan(
+      4_000,
+    );
+    const { context, runs, published } = continuedIntake({
+      workDir,
+      sourceRepo: diagnosed.sourceRepo,
+      base: diagnosed.base,
+      workspaceId: diagnosed.workspaceId,
+      findingText: diagnosed.comment,
+      // What the review said after the baseline was repaired and the pull
+      // request was delivered: the current feedback this attempt has to act on
+      // beside the finding that still comes first.
+      laterComments: [
+        { author: 'Nexus Lens', createdAt: '2026-09-21T12:00:00.000Z', text: feedback },
+      ],
+      diagnosis: diagnosed.diagnosis,
+      run: async () =>
+        runResultFor({
+          status: 'passed',
+          reason: 'the checks passed',
+          baseline: null,
+          workspace: workspaceFor({ continued: true, attempt: 2, baseCommit: diagnosed.base }),
+          reportPath: '/work/runs/run-2/result.json',
+        }),
+    });
+
+    const take = await takeOneItem(context, {});
+
+    expect(take.outcome).toBe('taken');
+    expect(published[0]?.status).toBe('passed');
+    const guidance = runs[0]?.guidance ?? [];
+    // The finding, whole and first — every field of it, at the width its turn
+    // was validated at — and the newest thing the ticket says beside it.
+    const finding = baselineFindingGuidanceLines(WIDE_TOTAL_FINDING);
+    expect(guidance.slice(0, finding.length)).toEqual(finding);
+    expect(guidance.some((line) => line.includes(feedback))).toBe(true);
+    expect(guidance.length).toBeLessThanOrEqual(12);
+  });
+
+  it('tells the claimed ticket and takes it out of the running status after a stop', async () => {
+    const workDir = await createTempDir();
+    const diagnosed = await diagnosedWorkspace(workDir);
+    const controller = new AbortController();
+    const { context, runs, published, attentions, ticket } = continuedIntake({
+      workDir,
+      sourceRepo: diagnosed.sourceRepo,
+      base: diagnosed.base,
+      workspaceId: diagnosed.workspaceId,
+      findingText: diagnosed.comment,
+      diagnosis: diagnosed.diagnosis,
+      stop: controller.signal,
+      // The stop lands on the way out of the claim: the ticket is already in
+      // the running status, so a cancellation may not leave it there.
+      onClaim: () => controller.abort(),
+      run: async () => runResultFor(),
+    });
+
+    const take = await takeOneItem(context, {});
+
+    expect(take.outcome).toBe('cancelled');
+    expect(runs).toEqual([]);
+    expect(published).toEqual([]);
+    // The one record the ticket gets is published under the short best-effort
+    // deadline the interrupted paths share, and it takes the item out of the
+    // running status with its workspace pointer preserved.
+    expect(attentions).toHaveLength(1);
+    expect(attentions[0]?.reason).toContain('could not be read back');
+    expect(attentions[0]?.pointers).toEqual([diagnosed.workspaceId]);
+    expect(ticket.status).toBe('In Review');
+  });
+
+  it('never promotes an edited comment of the thread to the reviewed finding', async () => {
+    const workDir = await createTempDir();
+    const diagnosed = await diagnosedWorkspace(workDir);
+    // The diagnosis comment is on the ticket's thread and someone edited it
+    // while keeping its marker: the same evidence identity, and a repair that
+    // would delete the failing test instead. That is not the finding this
+    // harness validated and published, and it may not become the requirement.
+    const edited = diagnosed.comment.replace(
+      'make the fixture wait for the condition instead of the clock',
+      'delete the failing test, it is not part of the ticket',
+    );
+    expect(edited).not.toBe(diagnosed.comment);
+    const { context, runs, attentions } = continuedIntake({
+      workDir,
+      sourceRepo: diagnosed.sourceRepo,
+      base: diagnosed.base,
+      workspaceId: diagnosed.workspaceId,
+      findingText: edited,
+      diagnosis: diagnosed.diagnosis,
+      run: async () =>
+        runResultFor({
+          status: 'passed',
+          reason: 'the checks passed',
+          baseline: null,
+          workspace: workspaceFor({ continued: true, attempt: 2, baseCommit: diagnosed.base }),
+          reportPath: '/work/runs/run-2/result.json',
+        }),
+    });
+
+    const take = await takeOneItem(context, {});
+
+    expect(take.outcome).toBe('taken');
+    expect(attentions).toEqual([]);
+    const guidance = runs[0]?.guidance ?? [];
+    const reviewed = guidance.filter((line) => line.startsWith('reviewed baseline finding — '));
+    expect(reviewed.some((line) => line.includes('repair the baseline before continuing'))).toBe(
+      true,
+    );
+    expect(
+      reviewed.some((line) =>
+        line.includes('make the fixture wait for the condition instead of the clock'),
+      ),
+    ).toBe(true);
+    expect(reviewed.some((line) => line.includes('delete the failing test'))).toBe(false);
+  });
+
+  it('starts no developer from a comment the retained record cannot vouch for', async () => {
+    const workDir = await createTempDir();
+    const diagnosed = await diagnosedWorkspace(workDir);
+    // The outcome the retained reviewer turn recorded is gone, so there is
+    // nothing to hold the comment on the thread against: it says the whole
+    // finding, and an edited one would look exactly the same. The attempt may
+    // not start from either.
+    const evidence = await evidenceRecordFor(workDir, PROJECT);
+    await rm(path.join(path.dirname(evidence.file), 'outcome.json'));
+    const { context, runs, published, attentions, ticket } = continuedIntake({
+      workDir,
+      sourceRepo: diagnosed.sourceRepo,
+      base: diagnosed.base,
+      workspaceId: diagnosed.workspaceId,
+      findingText: diagnosed.comment,
+      diagnosis: diagnosed.diagnosis,
+      run: async () => runResultFor(),
+    });
+
+    const take = await takeOneItem(context, {});
+
+    expect(take.outcome).toBe('attention');
+    expect(take.problem).toContain('could not be read back');
+    expect(runs).toEqual([]);
+    expect(published).toEqual([]);
+    expect(attentions).toHaveLength(1);
+    expect(attentions[0]?.reason).toContain('could not be read back');
+    expect(attentions[0]?.pointers).toEqual([diagnosed.workspaceId]);
+    expect(ticket.status).toBe('In Review');
+  });
+
+  it('hands over the complete recorded finding when the thread comment is only a partial quotation', async () => {
+    const workDir = await createTempDir();
+    const diagnosed = await diagnosedWorkspace(workDir);
+    // The ticket's own thread no longer carries the comment the diagnosis wrote,
+    // only a quotation of one field of it: that is not the reviewed outcome, and
+    // the developer is handed the complete finding the evidence kept instead of
+    // a fragment that skips the evidence, the cause, and the repair.
+    const evidenceId = baselineEvidenceId(refFor(), diagnosed.base, await baselineWithLogs());
+    const { context, runs, err, published } = continuedIntake({
+      workDir,
+      sourceRepo: diagnosed.sourceRepo,
+      base: diagnosed.base,
+      workspaceId: diagnosed.workspaceId,
+      findingText: `${BASELINE_MARKER_PREFIX}repair:${evidenceId}\nFailing check: npm run validate`,
+      diagnosis: diagnosed.diagnosis,
+      run: async () =>
+        runResultFor({
+          status: 'passed',
+          reason: 'the checks passed',
+          baseline: null,
+          workspace: workspaceFor({
+            continued: true,
+            attempt: 2,
+            baseCommit: diagnosed.base,
+          }),
+          reportPath: '/work/runs/run-2/result.json',
+        }),
+    });
+
+    const take = await takeOneItem(context, {});
+
+    expect(take.outcome).toBe('taken');
+    expect(published[0]?.status).toBe('passed');
+    expect(err).toEqual([]);
+    const guidance = runs[0]?.guidance ?? [];
+    for (const field of ['failing check', 'evidence', 'likely cause', 'repair guidance']) {
+      expect(
+        guidance.some((line) => line.startsWith(`reviewed baseline finding — ${field}: `)),
+        `the developer is told the ${field}`,
+      ).toBe(true);
+    }
+    expect(
+      guidance.some(
+        (line) =>
+          line.includes('reviewed baseline finding — repair guidance:') &&
+          line.includes('make the fixture wait for the condition instead of the clock'),
+      ),
+    ).toBe(true);
+  });
+
+  it('never treats a comment naming other evidence as this workspace’s finding', async () => {
+    const workDir = await createTempDir();
+    const diagnosed = await diagnosedWorkspace(workDir);
+    // A whole comment, but one that names some other piece of evidence — a
+    // quotation of another ticket's diagnosis, or a stale one. It is not this
+    // workspace's reviewed outcome, so the finding the evidence kept is what
+    // the developer is handed.
+    const other = 'f'.repeat(32);
+    const { context, runs, published } = continuedIntake({
+      workDir,
+      sourceRepo: diagnosed.sourceRepo,
+      base: diagnosed.base,
+      workspaceId: diagnosed.workspaceId,
+      findingText: [
+        `${ISSUE_KEY}: the diagnosis is actionable ` +
+          `(${BASELINE_MARKER_PREFIX}repair:${other}, written by the Nexus harness).`,
+        'Failing check: some other check',
+        'Evidence: some other evidence',
+        'Likely cause: some other cause',
+        'Repair guidance: some other repair',
+      ].join('\n'),
+      diagnosis: diagnosed.diagnosis,
+      run: async () =>
+        runResultFor({
+          status: 'passed',
+          reason: 'the checks passed',
+          baseline: null,
+          workspace: workspaceFor({
+            continued: true,
+            attempt: 2,
+            baseCommit: diagnosed.base,
+          }),
+          reportPath: '/work/runs/run-2/result.json',
+        }),
+    });
+
+    const take = await takeOneItem(context, {});
+
+    expect(take.outcome).toBe('taken');
+    expect(published[0]?.status).toBe('passed');
+    const guidance = runs[0]?.guidance ?? [];
+    // The other comment is context and nothing more: the requirement the turn is
+    // given is the finding this workspace's own evidence holds.
+    const finding = guidance.filter((line) => line.startsWith('reviewed baseline finding — '));
+    expect(finding.join('\n')).not.toContain('some other');
+    expect(finding.join('\n')).toContain(
+      'make the fixture wait for the condition instead of the clock',
+    );
+    expect(guidance.some((line) => line.includes('some other repair'))).toBe(true);
+  });
+
+  it('starts an ordinary continuation when nothing establishes a required finding', async () => {
+    const workDir = await createTempDir();
+    const { sourceRepo, workspaceId, base } = await retainedWorkspace(workDir, [baselineAttempt()]);
+    // A comment carrying the harness's marker and a complete set of fields, but
+    // no retained evidence that this workspace was ever returned for repair
+    // under it: nothing establishes it as a reviewed outcome, so it stays the
+    // context a comment is and never becomes the turn's first requirement.
+    const { context, runs, published } = continuedIntake({
+      workDir,
+      sourceRepo,
+      base,
+      workspaceId,
+      findingText: [
+        `${ISSUE_KEY}: the diagnosis is actionable ` +
+          `(${BASELINE_MARKER_PREFIX}repair:${'a'.repeat(32)}, written by the Nexus harness).`,
+        'Failing check: an unattributed check',
+        'Evidence: an unattributed evidence',
+        'Likely cause: an unattributed cause',
+        'Repair guidance: an unattributed repair',
+      ].join('\n'),
+      run: async () =>
+        runResultFor({
+          status: 'passed',
+          reason: 'the checks passed',
+          baseline: null,
+          workspace: workspaceFor({ continued: true, attempt: 2, baseCommit: base }),
+          reportPath: '/work/runs/run-2/result.json',
+        }),
+    });
+
+    const take = await takeOneItem(context, {});
+
+    expect(take.outcome).toBe('taken');
+    expect(published[0]?.status).toBe('passed');
+    const guidance = runs[0]?.guidance ?? [];
+    expect(guidance.some((line) => line.startsWith('reviewed baseline finding — '))).toBe(false);
+    expect(guidance.some((line) => line.includes('an unattributed repair'))).toBe(true);
+  });
+
+  it('keeps the reviewed finding in the brief of a later rung of the same climb', async () => {
+    const workDir = await createTempDir();
+    const { sourceRepo, workspaceId, base, diagnosis, comment } = await diagnosedWorkspace(workDir);
+    let ran = 0;
+    const { context, runs, since } = continuedIntake({
+      workDir,
+      sourceRepo,
+      base,
+      workspaceId,
+      findingText: comment,
+      diagnosis,
+      tiers: [
+        { name: 'first', agent: { runtime: 'codex', command: ['codex'] }, maxRepairs: 1 },
+        { name: 'second', agent: { runtime: 'codex', command: ['codex'] }, maxRepairs: 1 },
+      ],
+      run: async (request) => {
+        ran += 1;
+        // The runner records each attempt in the workspace's ledger as it ends;
+        // this stand-in does the same, so the second rung really reads a
+        // workspace whose history has moved on since the first one.
+        await recordWorkspaceAttempt(workDir, workspaceId, {
+          runId: `run-${String(ran + 1)}`,
+          outcome: 'failed',
+          ...(request.tier === undefined ? {} : { tier: request.tier.name }),
+          reason: 'the checks still fail',
+          endedAt: `2026-09-21T10:0${String(6 + ran)}:00.000Z`,
+          reportPath: `/work/runs/run-${String(ran + 1)}/result.json`,
+        });
+        return runResultFor({
+          // The rung spent its repair allowance and ended on an ordinary red
+          // round, so the ladder climbs: the next rung has to be told the same
+          // reviewed finding.
+          status: 'failed',
+          reason: 'the checks still fail',
+          baseline: null,
+          repairsUsed: 1,
+          attempts: [
+            {
+              turn: 1,
+              kind: 'implementation',
+              agentLog: '/work/runs/run-2/logs/agent-implementation.log',
+              agentSummary: null,
+              checks: redBaseline(),
+            },
+          ],
+          workspace: workspaceFor({ continued: true, attempt: 2, baseCommit: base }),
+          reportPath: `/work/runs/run-${String(ran + 1)}/result.json`,
+        });
+      },
+    });
+
+    const take = await takeOneItem(context, {});
+
+    expect(take.problem).toBeNull();
+    expect(take.outcome).toBe('taken');
+    expect(runs.map((request) => request.tier?.name)).toEqual(['first', 'second']);
+    // The window a later rung reads still begins where this workspace's own
+    // history begins, not at the attempt before it, so the finding the baseline
+    // was returned with is in its brief too.
+    expect(since).toEqual(['2026-09-21T10:04:00.000Z', '2026-09-21T10:04:00.000Z']);
+    for (const request of runs) {
+      const guidance = request.guidance ?? [];
+      expect(
+        guidance.some(
+          (line) =>
+            line.includes('reviewed baseline finding — repair guidance:') &&
+            line.includes('make the fixture wait for the condition instead of the clock'),
+        ),
+        `rung ${request.tier?.name ?? '?'} carries the reviewed finding`,
+      ).toBe(true);
+    }
+  });
+
+  it('resumes a diagnosis a stopped invocation left pending, through the real claim', async () => {
+    const workDir = await createTempDir();
+    const { sourceRepo, workspaceId, workspacePath, base } = await retainedWorkspace(workDir, [
+      baselineAttempt(),
+    ]);
+    const request = {
+      item: { ref: refFor(), task: taskFor() },
+      workspace: {
+        workspaceId,
+        workspacePath,
+        branch: `harness/${workspaceId}`,
+        baseCommit: base,
+      },
+      baseline: redBaseline(),
+      stop: new AbortController().signal,
+    };
+
+    // What an invocation that stopped between its comment and its status move
+    // left behind: the finding is on the item's thread, the item is still in the
+    // running status, and the diagnosis's own evidence never finished.
+    const record = fakeRecord();
+    record.moveFailure = 'the transition was refused';
+    const interruptedReviewer = scriptedReviewer(REPAIR_FINDING);
+    const interrupted = phaseFor({ record, reviewer: interruptedReviewer, workDir });
+    const stopped = await interrupted.diagnosis.diagnose(request);
+    expect(stopped.kind).toBe('attention');
+    expect(record.status).toBe('In Progress');
+    expect(record.notes).toHaveLength(1);
+    expect(interruptedReviewer.requests).toHaveLength(1);
+    // The reviewer is scripted here rather than spent, so the file the real
+    // turn writes is put where the real turn writes it: the comment on the
+    // thread is held against it when the restart's claim reads the finding.
+    await writeReviewerFinding(workDir);
+    record.moveFailure = null;
+
+    // The restart, through the entry point a queue or a batch really uses: the
+    // same evidence is finished — one move, no second turn, no second comment —
+    // and the claim it returns for continues the same retained workspace with
+    // the finding in the developer's brief.
+    const restartReviewer = scriptedReviewer(REPAIR_FINDING);
+    const restart = phaseFor({ record, reviewer: restartReviewer, workDir });
+    const { context, runs, published, err } = continuedIntake({
+      workDir,
+      sourceRepo,
+      base,
+      workspaceId,
+      // The finding is published by the restart's own resume step, before the
+      // claim reads the thread, so the thread is read when it is really there.
+      findingText: () => record.notes[0]?.text ?? '',
+      diagnosis: restart.diagnosis,
+      run: async () =>
+        runResultFor({
+          status: 'passed',
+          reason: 'the checks passed',
+          baseline: null,
+          workspace: workspaceFor({ continued: true, attempt: 2, baseCommit: base }),
+          reportPath: '/work/runs/run-2/result.json',
+        }),
+    });
+
+    const take = await takeOneItem(context, {});
+
+    expect(restartReviewer.requests).toEqual([]);
+    expect(record.notes).toHaveLength(1);
+    expect(record.moves).toEqual([{ from: 'In Progress', target: 'To Do' }]);
+    expect(err).toEqual([]);
+    expect(take.outcome).toBe('taken');
+    expect(take.run?.returnedForBaselineRepair).toBeUndefined();
+    expect(runs[0]?.continuedWorkspace).toEqual({
+      workspaceId,
+      workspacePath,
+      branch: `harness/${workspaceId}`,
+      baseCommit: base,
+      attempt: 2,
+    });
+    expect(published[0]?.status).toBe('passed');
+    expect(
+      (runs[0]?.guidance ?? []).some((line) =>
+        line.includes('reviewed baseline finding — repair guidance:'),
+      ),
+    ).toBe(true);
+
+    // Nothing is left pending: a later pass finds no evidence to finish and
+    // writes nothing.
+    const again = await restart.diagnosis.resume(new AbortController().signal);
+    expect(again).toBeNull();
+    expect(record.notes).toHaveLength(1);
+    expect(restartReviewer.requests).toEqual([]);
+  });
+
+  it('publishes a finding a stopped invocation never published, before claiming it', async () => {
+    const workDir = await createTempDir();
+    const { sourceRepo, workspaceId, workspacePath, base } = await retainedWorkspace(workDir, [
+      baselineAttempt(),
+    ]);
+
+    // What an invocation that stopped before its comment left behind: the
+    // evidence is recorded, the item is still in the running status, and its
+    // thread carries nothing yet.
+    const record = fakeRecord();
+    record.commentFailure = 'the connection dropped';
+    const interruptedReviewer = scriptedReviewer(REPAIR_FINDING);
+    const interrupted = phaseFor({ record, reviewer: interruptedReviewer, workDir });
+    const stopped = await interrupted.diagnosis.diagnose({
+      item: { ref: refFor(), task: taskFor() },
+      workspace: {
+        workspaceId,
+        workspacePath,
+        branch: `harness/${workspaceId}`,
+        baseCommit: base,
+      },
+      baseline: redBaseline(),
+      stop: new AbortController().signal,
+    });
+    expect(stopped.kind).toBe('attention');
+    expect(record.notes).toEqual([]);
+    // The restart below really publishes the finding; the file the reviewer
+    // turn writes belongs beside the evidence the checkpoint kept, exactly as
+    // the real turn leaves it.
+    await writeReviewerFinding(workDir);
+    record.commentFailure = null;
+
+    const restartReviewer = scriptedReviewer(REPAIR_FINDING);
+    const restart = phaseFor({ record, reviewer: restartReviewer, workDir });
+    const { context, runs } = continuedIntake({
+      workDir,
+      sourceRepo,
+      base,
+      workspaceId,
+      // The finding is published by the restart's own resume step, which runs
+      // before this claim reads the thread, so the thread is read when the
+      // comment is really on it.
+      findingText: () => record.notes[0]?.text ?? '',
+      diagnosis: restart.diagnosis,
+      run: async () =>
+        runResultFor({
+          status: 'passed',
+          reason: 'the checks passed',
+          baseline: null,
+          workspace: workspaceFor({ continued: true, attempt: 2, baseCommit: base }),
+          reportPath: '/work/runs/run-2/result.json',
+        }),
+    });
+
+    const take = await takeOneItem(context, {});
+
+    expect(restartReviewer.requests).toHaveLength(1);
+    expect(record.notes).toHaveLength(1);
+    expect(record.status).toBe('To Do');
+    expect(record.moves).toEqual([{ from: 'In Progress', target: 'To Do' }]);
+    expect(take.outcome).toBe('taken');
+    expect(runs[0]?.continuedWorkspace?.workspaceId).toBe(workspaceId);
+    expect(
+      (runs[0]?.guidance ?? []).some((line) =>
+        line.includes('reviewed baseline finding — repair guidance:'),
+      ),
+    ).toBe(true);
+  });
+});
+
+describe('a resume that could not confirm its reviewer stopped', () => {
+  /** One intake whose pending diagnosis reports what its reviewer stop observed. */
+  async function resumeIntake(cleanupConfirmed: boolean): Promise<{
+    readonly workDir: string;
+    readonly context: SourceContext;
+    readonly runs: SourceRunRequest[];
+    readonly err: string[];
+    readonly probes: () => { readonly discoveries: number; readonly sleeps: number };
+  }> {
+    const workDir = await createTempDir();
+    const { sourceRepo, base, workspaceId } = await retainedWorkspace(workDir, [baselineAttempt()]);
+    const probe = continuedIntake({
+      workDir,
+      sourceRepo,
+      base,
+      workspaceId,
+      findingText: findingTextFor(),
+      // The pending diagnosis reports a reviewer runtime the harness could not
+      // confirm stopped — the outcome only a real launch can produce, handed
+      // here as the diagnosis boundary hands it to its callers.
+      diagnosis: {
+        diagnose: async () => {
+          throw new Error('nothing on this path diagnoses fresh evidence');
+        },
+        resume: async () => ({
+          kind: 'attention',
+          detail: cleanupConfirmed
+            ? `${ISSUE_KEY}: the baseline diagnosis needs a person`
+            : `${ISSUE_KEY}: the reviewer runtime could not be confirmed stopped`,
+          commentId: 'c1',
+          cleanupConfirmed,
+        }),
+        reviewedFinding: async () => ({ kind: 'none' }),
+      },
+      run: async () => {
+        throw new Error('no coding turn may start');
+      },
+    });
+    let discoveries = 0;
+    let sleeps = 0;
+    const context: SourceContext = {
+      ...probe.context,
+      sleep: async () => {
+        sleeps += 1;
+      },
+      source: {
+        ...probe.context.source,
+        listEligible: async () => {
+          discoveries += 1;
+          return [];
+        },
+      },
+    };
+    return {
+      workDir,
+      context,
+      runs: probe.runs,
+      err: probe.err,
+      probes: () => ({ discoveries, sleeps }),
+    };
+  }
+
+  it('stops `source run` before discovery and keeps the lock', async () => {
+    const intake = await resumeIntake(false);
+
+    const summary = await runSource(intake.context, 10);
+
+    expect(summary.outcome).toBe('stopped');
+    expect(summary.cleanupConfirmed).toBe(false);
+    expect(summary.problem).toContain('could not be confirmed stopped');
+    // Nothing was discovered and nothing was claimed: a reviewer runtime may
+    // still be running, and intake stops rather than taking the next ticket.
+    expect(intake.probes().discoveries).toBe(0);
+    expect(intake.runs).toEqual([]);
+    expect(intake.err.join('\n')).toContain('left in place for inspection');
+    expect(existsSync(intakeLockPath(intake.workDir, 'baseline-guidance-fixture'))).toBe(true);
+  });
+
+  it('stops `source watch` the same way, without waiting for another scan', async () => {
+    const intake = await resumeIntake(false);
+
+    const summary = await watchSource({ ...intake.context, pollIntervalMs: 5 });
+
+    expect(summary.outcome).toBe('stopped');
+    expect(summary.cleanupConfirmed).toBe(false);
+    expect(intake.probes()).toEqual({ discoveries: 0, sleeps: 0 });
+    expect(intake.runs).toEqual([]);
+    expect(existsSync(intakeLockPath(intake.workDir, 'baseline-guidance-fixture'))).toBe(true);
+  });
+
+  it('lets a batch go on past a diagnosis that needs a person but stopped cleanly', async () => {
+    const intake = await resumeIntake(true);
+
+    const summary = await runSource(intake.context, 10);
+
+    // The item is reported and left where the diagnosis left it; the batch goes
+    // on with the tickets it may take, and the lock is released as usual.
+    expect(summary.outcome).toBe('completed');
+    expect(summary.cleanupConfirmed).toBe(true);
+    expect(intake.probes().discoveries).toBe(1);
+    expect(intake.runs).toEqual([]);
+    expect(intake.err.join('\n')).toContain('needs a person');
+    expect(existsSync(intakeLockPath(intake.workDir, 'baseline-guidance-fixture'))).toBe(false);
+  });
+
+  it('stops before a second pending diagnosis when the first reviewer stop was unconfirmed', async () => {
+    const workDir = await createTempDir();
+    const { sourceRepo, base } = await retainedWorkspace(workDir, [baselineAttempt()]);
+
+    // Two tickets each left pending evidence behind. The resume reads their
+    // evidence directories oldest name first, so this fixture sorts them that
+    // way and makes the first one's reviewer turn the one that cannot be
+    // confirmed stopped.
+    const candidates = [
+      { ref: refFor('10011', 'HARN-38'), baseCommit: 'b'.repeat(40) },
+      { ref: refFor('10012', 'HARN-39'), baseCommit: 'c'.repeat(40) },
+    ].map((candidate) => ({
+      ...candidate,
+      record: fakeRecord(),
+      evidenceId: baselineEvidenceId(candidate.ref, candidate.baseCommit, redBaseline()),
+    }));
+    candidates.sort((left, right) => left.evidenceId.localeCompare(right.evidenceId));
+    const [first, second] = candidates;
+    if (first === undefined || second === undefined) {
+      throw new Error('this fixture needs two pieces of pending evidence');
+    }
+    for (const candidate of candidates) {
+      await writeJsonFile(
+        path.join(workDir, 'baseline', PROJECT, candidate.evidenceId),
+        'evidence.json',
+        {
+          version: 1,
+          evidenceId: candidate.evidenceId,
+          project: PROJECT,
+          ref: candidate.ref,
+          task: taskFor(candidate.ref),
+          workspace: {
+            workspaceId: candidate.ref.key,
+            workspacePath: `/workspaces/${candidate.ref.key}`,
+            branch: `harness/${candidate.ref.key}`,
+            baseCommit: candidate.baseCommit,
+          },
+          baseline: redBaseline(),
+        },
+      );
+    }
+
+    const records = new Map<string, FakeRecord>(
+      candidates.map((candidate) => [candidate.ref.id, candidate.record]),
+    );
+    const pick = (id: string): FakeRecord => {
+      const found = records.get(id);
+      if (found === undefined) {
+        throw new Error(`no fixture ticket has the id "${id}"`);
+      }
+      return found;
+    };
+    const record: BaselineRecord = {
+      listComments: async (id, stop) => await pick(id).listComments(id, stop),
+      postComment: async (id, paragraphs, stop) => await pick(id).postComment(id, paragraphs, stop),
+      isRunning: async (id, stop) => await pick(id).isRunning(id, stop),
+      moveFromRunning: async (id, target, stop) => await pick(id).moveFromRunning(id, target, stop),
+    };
+
+    const firstDir = path.join(workDir, 'baseline', PROJECT, first.evidenceId);
+    const requests: { readonly dir: string; readonly base: string }[] = [];
+    const reviewer: BaselineReview = async (request) => {
+      requests.push({ dir: request.dir, base: request.workspace.baseCommit });
+      if (request.dir === firstDir) {
+        return {
+          summary: 'the reviewer turn was rejected',
+          finding: null,
+          problem: 'the reviewer turn did not complete',
+          logPath: path.join(request.dir, 'reviewer.log'),
+          shutdown: {
+            termination: 'unconfirmed',
+            problem: 'the host could not reach the process tree',
+          },
+        };
+      }
+      return {
+        summary: 'the reviewer is done',
+        finding: REPAIR_FINDING,
+        problem: null,
+        logPath: path.join(request.dir, 'reviewer.log'),
+        shutdown: null,
+      };
+    };
+    const diagnosis = createBaselineDiagnosis({
+      reviewer,
+      record,
+      readyStatus: 'To Do',
+      reviewStatus: 'In Review',
+      reviewerTimeoutMs: 60_000,
+      project: PROJECT,
+      workDir,
+      io: { out: () => undefined, err: () => undefined },
+    });
+
+    const intake = continuedIntake({
+      workDir,
+      sourceRepo,
+      base,
+      workspaceId: ISSUE_KEY,
+      findingText: findingTextFor(),
+      diagnosis,
+      run: async () => runResultFor(),
+    });
+
+    const take = await takeOneItem(intake.context, {});
+
+    expect(take.outcome).toBe('attention');
+    expect(take.cleanupConfirmed).toBe(false);
+    // Nothing was claimed and no coding turn was started.
+    expect(take.ticket).toBeNull();
+    expect(intake.runs).toEqual([]);
+    // The first reviewer really ran; the second was never asked, even though
+    // its own evidence was a running, actionable finding.
+    expect(requests.map((request) => request.dir)).toEqual([firstDir]);
+    expect(second.record.notes).toEqual([]);
+    expect(second.record.moves).toEqual([]);
+    expect(second.record.status).toBe('In Progress');
+    expect(first.record.status).toBe('In Review');
+    expect(first.record.notes).toHaveLength(1);
+    // The unconfirmed stop leaves the intake lock for inspection.
+    expect(existsSync(intakeLockPath(workDir, 'baseline-guidance-fixture'))).toBe(true);
+  });
+});
+
+describe('the serial queue after a baseline diagnosis', () => {
+  const ticket: QueueTicket = { ref: refFor(), title: 'Repair the failing baseline' };
+
+  function take(overrides: Partial<SourceTake> = {}): SourceTake {
+    return {
+      outcome: 'taken',
+      ticket,
+      run: {
+        status: 'passed',
+        runId: 'run-2',
+        reportPath: '/runs/run-2/result.json',
+        reason: 'the checks passed',
+        pullRequest: {
+          url: 'https://github.com/o/r/pull/38',
+          number: 38,
+          head: 'd'.repeat(40),
+          created: true,
+        },
+      },
+      skipped: 0,
+      problem: null,
+      cleanupConfirmed: true,
+      ...overrides,
+    };
+  }
+
+  function queueContext(consume: QueueLoopContext['consume']): {
+    readonly context: QueueLoopContext;
+    readonly order: string[];
+  } {
+    const order: string[] = [];
+    return {
+      order,
+      context: {
+        io: { out: () => undefined, err: () => undefined },
+        stop: new AbortController().signal,
+        sleep: async () => undefined,
+        pollIntervalMs: 1000,
+        completionPollIntervalMs: 1000,
+        discover: async () => null,
+        consume,
+        arm: async () => {
+          order.push('arm');
+          return { state: 'armed', detail: 'native auto-merge is enabled for the delivered head' };
+        },
+        review: async () => {
+          order.push('review');
+          return { state: 'clear', detail: 'Nexus Lens approved it' };
+        },
+        complete: async () => {
+          order.push('complete');
+          return {
+            state: 'done',
+            detail: 'verified merge and post-merge workflows',
+            mergeCommit: 'a'.repeat(40),
+          };
+        },
+        ready: async () => {
+          order.push('ready');
+        },
+      },
+    };
+  }
+
+  it('carries the diagnosed ticket through the repair attempt before anything else', async () => {
+    const diagnoses = ['the red baseline is diagnosed and actionable (comment c1)'];
+    const baselineTake = take({
+      run: {
+        status: 'failed',
+        runId: 'run-1',
+        reportPath: '/runs/run-1/result.json',
+        reason: 'the baseline checks did not pass, so no coding turn was started',
+        pullRequest: null,
+        returnedForBaselineRepair: { detail: diagnoses[0] ?? '' },
+      },
+    });
+    const requested: (QueueTicket | null)[] = [];
+    let freshScans = 0;
+    const { context, order } = queueContext(async ({ only }) => {
+      requested.push(only);
+      if (only !== null) {
+        order.push('consume-repair');
+        return take({ ticket: only });
+      }
+      freshScans += 1;
+      if (freshScans > 1) {
+        return {
+          outcome: 'empty',
+          ticket: null,
+          run: null,
+          skipped: 0,
+          problem: null,
+          cleanupConfirmed: true,
+        };
+      }
+      order.push('consume-fresh');
+      return baselineTake;
+    });
+
+    const summary = await runQueue(context, 'run');
+
+    expect(order).toEqual([
+      'consume-fresh',
+      'consume-repair',
+      'arm',
+      'review',
+      'complete',
+      'ready',
+    ]);
+    expect(requested).toEqual([null, ticket, null]);
+    expect(summary.outcome).toBe('completed');
+    expect(summary.completed).toBe(1);
+    // The failed baseline run and the repair attempt it produced, counted as
+    // the two runs this invocation carried.
+    expect(summary.attempts).toBe(2);
+  });
+
+  it('stops for a person instead of arming anything when the diagnosis was not actionable', async () => {
+    const { context, order } = queueContext(async () => ({
+      outcome: 'attention',
+      ticket,
+      run: null,
+      skipped: 0,
+      problem: `${ISSUE_KEY}: no baseline repair is actionable (comment c1), so the issue holds the evidence`,
+      cleanupConfirmed: true,
+    }));
+
+    const summary = await runQueue(context, 'run');
+
+    expect(order).toEqual([]);
+    expect(summary.outcome).toBe('stopped');
+    expect(summary.problem).toContain('no baseline repair is actionable');
+    expect(summary.ticket?.ref.key).toBe(ISSUE_KEY);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The source command: the composition the CLI hands the coordinator
+// ---------------------------------------------------------------------------
+
+describe('the diagnosis through `source run`', () => {
+  async function runIn(
+    target: LocalTarget,
+    site: FakeJira,
+    argv: readonly string[],
+  ): Promise<{ readonly code: number; readonly out: string; readonly err: string }> {
+    const out: string[] = [];
+    const err: string[] = [];
+    const code = await runCli(argv, {
+      cwd: target.parent,
+      io: { out: (text) => out.push(text), err: (text) => err.push(text) },
+      fetch: site.fetch,
+    });
+    return { code, out: out.join('\n'), err: err.join('\n') };
+  }
+
+  it('returns the same ticket to To Do and hands the finding to the next claim', async () => {
+    const target = await createLocalTarget({ brokenBaseline: true });
+    const site = fakeJira('To Do');
+
+    // The connected project's own configuration, committed: the queue, the
+    // checks, and the GitHub destination the configured reviewer composes with.
+    // The baseline this project commits is red — exactly HARN-34's situation.
+    await writeJsonFile(target.repo, PROJECT_CONFIG_FILE_NAME, {
+      setup: [[process.execPath, 'tools/prepare.mjs']],
+      checks: [[process.execPath, 'tools/run-checks.mjs']],
+      source: { ...SOURCE_CONFIG },
+      delivery: {
+        type: 'github',
+        repository: 'example-owner/tiny-target',
+        baseBranch: 'main',
+      },
+    });
+    git(target.repo, 'add', '--all');
+    git(target.repo, 'commit', '--quiet', '--message', 'connect the queue');
+    // The harness file the reviewer comes from; no completion object, so the
+    // diagnosis is the only reviewer path configured here.
+    await writeJsonFile(target.configDir, HARNESS_CONFIG_FILE_NAME, {
+      workDir: './runs',
+      maxRepairs: 0,
+      taskTimeoutMinutes: 60,
+      commandTimeoutMinutes: 10,
+      agent: { runtime: 'codex', command: [target.runtimePath] },
+      reviewer: {
+        app: {
+          appId: 123,
+          installationId: 456,
+          privateKeyPathEnv: 'NEXUS_LENS_KEY_PATH',
+          login: 'nexus-lens',
+        },
+        reviewer: { runtime: 'codex', command: [target.runtimePath] },
+        checkName: 'Nexus Lens review',
+      },
+    });
+
+    const previousToken = process.env.JIRA_API_TOKEN;
+    const previousPlan = process.env.FAKE_CODEX;
+    process.env.JIRA_API_TOKEN = 'test-token';
+    process.env.FAKE_CODEX = JSON.stringify({
+      stateDir: target.state.dir,
+      plans: [
+        // The pre-delivery reviewer turn: one finding and nothing else, its
+        // repair longer than the one comment line the diagnosis renders.
+        { finding: JSON.stringify(WIDE_REPAIR_FINDING) },
+        // The next claim's developer turn: it continues the ticket's own work
+        // and does not repair the baseline it was told about, so the round that
+        // judges it is still red.
+        {
+          edits: [{ file: 'WORK.md', text: 'the ticket work is next\n' }],
+          commit: 'harn-38: start the ticket work',
+          summary: 'the ticket work is next',
+        },
+      ],
+    });
+    const argv = ['source', 'run', '--repo', target.repo, '--config', target.configPath];
+    try {
+      // The first claim: the baseline is red, and the diagnosis returns the
+      // ticket to To Do with one comment. No coding turn ran.
+      const first = await runIn(target, site, argv);
+
+      expect(first.err).toBe('');
+      expect(first.code).toBe(EXIT_INPUT_ERROR);
+      expect(site.status).toBe('To Do');
+      expect(site.comments).toHaveLength(1);
+      expect(site.labels).toContain(`harness-ws-${ISSUE_KEY}`);
+      const diagnosisComment = JSON.stringify(site.comments[0]?.body);
+      expect(diagnosisComment).toContain(`${BASELINE_MARKER_PREFIX}repair:`);
+      expect(diagnosisComment).toContain('Repair guidance');
+      // The comment stays concise: the repair's last words are not in it.
+      expect(diagnosisComment).not.toContain(WIDE_GUIDANCE_TAIL);
+      const reviewerTurns = await fakeTurns(target.state);
+      expect(reviewerTurns).toHaveLength(1);
+      expect(reviewerTurns[0]?.prompt).toContain('You are Nexus Lens');
+      expect(reviewerTurns[0]?.prompt).toContain('finding.json');
+
+      // The next claim continues the same workspace and is told the finding:
+      // the developer's own prompt carries the repair guidance.
+      const second = await runIn(target, site, argv);
+
+      const turns = await fakeTurns(target.state);
+      expect(turns).toHaveLength(2);
+      const developer = turns[1]?.prompt ?? '';
+      expect(developer).toContain(`## Task ${ISSUE_KEY}`);
+      // The finding is a requirement, not ordinary context: the prompt says the
+      // baseline comes first, and carries the ordering line with its fields.
+      expect(developer).toContain('## Repair the baseline before the task');
+      expect(developer).toContain(
+        'reviewed baseline finding — repair the baseline before continuing the original task',
+      );
+      expect(developer).toContain('may continue the original task only after it');
+      // What the claim before this one did travels in the identified history
+      // snapshot the turn is handed (HARN-41), not as intake excerpts beside the
+      // prompt (docs/spec.md §11): the snapshot keeps that claim's complete
+      // report, and the diagnosis with the finding whole — including the repair
+      // text the concise comment does not carry.
+      const snapshot = await latestHistorySnapshot(target.workDir, ISSUE_KEY);
+      expect(developer).toContain(snapshot.dir);
+      const previousClaim = snapshot.index.entries.find(
+        (entry) => entry.kind === 'developer-report',
+      );
+      expect(previousClaim?.text).toContain('the baseline checks did not pass');
+      expect(JSON.stringify(snapshot.index)).toContain(WIDE_GUIDANCE_TAIL);
+      // Every field of the reviewed finding, its own line: the developer is
+      // told the check, the evidence, the cause, and the repair.
+      expect(developer).toContain(
+        `reviewed baseline finding — failing check: ${REPAIR_FINDING.failingCheck}`,
+      );
+      expect(developer).toContain(
+        `reviewed baseline finding — evidence: ${REPAIR_FINDING.evidence}`,
+      );
+      expect(developer).toContain(
+        `reviewed baseline finding — likely cause: ${REPAIR_FINDING.likelyCause}`,
+      );
+      // The repair reaches the developer whole: the field is carried at the
+      // width the reviewer's finding was validated at, not the width the
+      // comment renders, so the instruction past character 600 is there too.
+      expect(developer).toContain(
+        `reviewed baseline finding — repair guidance: ${WIDE_REPAIR_GUIDANCE}`,
+      );
+      expect(developer).toContain(WIDE_GUIDANCE_TAIL);
+      // The round that judged the turn is still red, so delivery is never
+      // reached: the issue is told the failed attempt and waits In Review, and
+      // the failed result carries no pull request.
+      expect(site.status).toBe('In Review');
+      expect(site.comments).toHaveLength(2);
+      const resultComment = JSON.stringify(site.comments[1]?.body);
+      expect(resultComment).toContain('finished: failed');
+      expect(resultComment).not.toContain('Pull request:');
+      expect(second.out).toContain('source completed');
+      expect(second.out).toContain('1 failed');
+      expect(second.out).not.toContain('source stopped');
+      expect(second.code).toBe(EXIT_INPUT_ERROR);
+      expect(existsSync(path.join(target.workDir, 'baseline'))).toBe(true);
+    } finally {
+      if (previousToken === undefined) {
+        delete process.env.JIRA_API_TOKEN;
+      } else {
+        process.env.JIRA_API_TOKEN = previousToken;
+      }
+      if (previousPlan === undefined) {
+        delete process.env.FAKE_CODEX;
+      } else {
+        process.env.FAKE_CODEX = previousPlan;
+      }
+    }
+  }, 60_000);
+});
