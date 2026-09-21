@@ -551,8 +551,10 @@ export function baselinePrompt(request: {
       '}',
       '',
       `- At most ${String(MAX_FINDING_FIELD_CHARS)} characters per field, and every field shown is`,
-      '  required and must not be blank. Write the second shape when you cannot fill all four fields',
-      '  of the first one from the evidence — that is a useful answer, not a failure.',
+      '  required and must not be blank. That bound is enforced, not a width the harness trims to:',
+      '  a field longer than it makes the whole finding unusable, and nothing is published from it.',
+      '  Write the second shape when you cannot fill all four fields of the first one from the',
+      '  evidence — that is a useful answer, not a failure.',
       '- The file is read by a program: valid JSON only, no comments and no text around it.',
       '',
       'End your turn with a short summary of the finding you wrote.',
@@ -562,12 +564,55 @@ export function baselinePrompt(request: {
   return `${sections.join('\n\n')}\n`;
 }
 
-/** One nonblank field of the finding file, bounded, or the empty string. */
-function findingString(value: unknown): string {
-  if (typeof value !== 'string' || value.trim() === '') {
-    return '';
+/**
+ * One field of the finding file: the text it holds, or why it cannot be used.
+ * A field that is absent, not a string, or blank is missing; one longer than
+ * the bound the prompt states is oversized. Cutting an oversized field was how
+ * a finding could be accepted as actionable with the end of its repair — or a
+ * qualification the repair needed — already removed, which neither the Jira
+ * comment nor the developer could recover: the harness keeps no second copy of
+ * what the turn wrote. A field it cannot keep whole is one it does not use.
+ */
+type FindingField =
+  | { readonly kind: 'text'; readonly text: string }
+  | { readonly kind: 'missing' }
+  | { readonly kind: 'oversized' };
+
+/** One named field of the finding file, classified. */
+function findingField(value: unknown): FindingField {
+  if (typeof value !== 'string') {
+    return { kind: 'missing' };
   }
-  return value.trim().slice(0, MAX_FINDING_FIELD_CHARS);
+  const text = value.trim();
+  if (text === '') {
+    return { kind: 'missing' };
+  }
+  return text.length <= MAX_FINDING_FIELD_CHARS ? { kind: 'text', text } : { kind: 'oversized' };
+}
+
+/**
+ * The named fields of one finding shape as text, in the order the shape
+ * declares them. An oversized field refuses the whole finding by name before
+ * anything else: the field limit is a limit, not a width to cut to, and what
+ * follows it can be the change the repair has to make.
+ */
+function findingFields(
+  names: readonly string[],
+  record: Record<string, unknown>,
+  where: string,
+): readonly string[] {
+  const fields = names.map((name) => findingField(record[name]));
+  const oversized = names.filter((_name, index) => fields[index]?.kind === 'oversized');
+  if (oversized.length > 0) {
+    throw new ReviewError(
+      'inconclusive',
+      `the reviewer's ${where} carries ${oversized.map((name) => `"${name}"`).join(' and ')} ` +
+        `longer than the ${String(MAX_FINDING_FIELD_CHARS)} characters one field may have, so ` +
+        'this diagnosis has no finding to publish: the harness cuts no field, and one it cannot ' +
+        'keep whole is not one it publishes or hands to a developer.',
+    );
+  }
+  return fields.map((field) => (field.kind === 'text' ? field.text : ''));
 }
 
 /**
@@ -599,23 +644,22 @@ export function parseBaselineFinding(text: string, where: string): BaselineFindi
     `the reviewer's ${where} carries no usable ${names.map((name) => `"${name}"`).join(' or ')}, ` +
     'so this diagnosis has no finding to publish.';
   if (outcome === 'repair') {
-    const failingCheck = findingString(record['failingCheck']);
-    const evidence = findingString(record['evidence']);
-    const likelyCause = findingString(record['likelyCause']);
-    const repairGuidance = findingString(record['repairGuidance']);
+    const names = ['failingCheck', 'evidence', 'likelyCause', 'repairGuidance'];
+    const [failingCheck = '', evidence = '', likelyCause = '', repairGuidance = ''] = findingFields(
+      names,
+      record,
+      where,
+    );
     if (failingCheck === '' || evidence === '' || likelyCause === '' || repairGuidance === '') {
-      throw new ReviewError(
-        'inconclusive',
-        missing(['failingCheck', 'evidence', 'likelyCause', 'repairGuidance']),
-      );
+      throw new ReviewError('inconclusive', missing(names));
     }
     return { outcome: 'repair', failingCheck, evidence, likelyCause, repairGuidance };
   }
   if (outcome === 'inconclusive') {
-    const reason = findingString(record['reason']);
-    const requiredAction = findingString(record['requiredAction']);
+    const names = ['reason', 'requiredAction'];
+    const [reason = '', requiredAction = ''] = findingFields(names, record, where);
     if (reason === '' || requiredAction === '') {
-      throw new ReviewError('inconclusive', missing(['reason', 'requiredAction']));
+      throw new ReviewError('inconclusive', missing(names));
     }
     return { outcome: 'inconclusive', reason, requiredAction };
   }

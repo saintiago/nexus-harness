@@ -422,6 +422,21 @@ const WIDE_REPAIR_FINDING: BaselineFinding = {
   repairGuidance: WIDE_REPAIR_GUIDANCE,
 };
 
+/**
+ * A valid actionable finding whose own fields run past the whole 4,000
+ * characters the context beside it is bounded to — every field still inside the
+ * 2,000 its turn was validated at. The finding is what the attempt must repair
+ * first; the newest line the ticket carries since is the current repair
+ * feedback, and the two have budgets of their own, so neither may spend the
+ * other's (docs/WORKFLOW.md §11).
+ */
+const WIDE_TOTAL_FINDING: BaselineFinding = {
+  ...REPAIR_FINDING,
+  evidence: 'the load test spawned two hundred workers and timed out. '.repeat(40).slice(0, 1_900),
+  likelyCause: 'the fixture waits for a fixed thirty seconds. '.repeat(40).slice(0, 1_900),
+  repairGuidance: 'wait for the condition instead of the clock. '.repeat(40).slice(0, 1_900),
+};
+
 const INCONCLUSIVE_FINDING: BaselineFinding = {
   outcome: 'inconclusive',
   reason: 'the check fails because the host has no docker daemon',
@@ -805,6 +820,37 @@ describe('the pre-delivery baseline diagnosis', () => {
     );
     expect((recovered as { detail: string }).detail).toContain(
       'the reviewer turn for HARN-38 was stopped before it produced a finding',
+    );
+  });
+
+  it('reads no diagnosis past a directory whose own record is gone', async () => {
+    // The directory is one this harness made for one piece of evidence, and the
+    // record that says whose it is — the item, the workspace, the round, and
+    // whether a finding was published — is then gone from it. The directory
+    // alone cannot say which workspace it belonged to or what that workspace
+    // was returned for, so it is not "nothing pending": intake stops by name and
+    // a person inspects it.
+    const workDir = await createTempDir();
+    const request = requestFor();
+    const evidenceId = baselineEvidenceId(refFor(), BASE, request.baseline);
+    const file = path.join(workDir, 'baseline', PROJECT, evidenceId, 'evidence.json');
+    await writeJsonFile(path.dirname(file), 'outcome.json', {
+      version: 1,
+      state: 'finding',
+      finding: REPAIR_FINDING,
+    });
+    const { diagnosis } = phaseFor({
+      record: fakeRecord(),
+      reviewer: scriptedReviewer(REPAIR_FINDING),
+      workDir,
+    });
+
+    const recovered = await diagnosis.reviewedFinding(refFor().key, new AbortController().signal);
+
+    expect(recovered.kind).toBe('problem');
+    expect((recovered as { detail: string }).detail).toContain(
+      `holds no evidence.json, so what it recorded about its item, its workspace, and its finding ` +
+        'cannot be established',
     );
   });
 
@@ -1328,6 +1374,41 @@ describe('the baseline reviewer turn', () => {
     expect(missing.problem).toContain('wrote no usable finding.json');
   });
 
+  it('refuses a finding whose field runs past the bound the turn was given', async () => {
+    const target = await createLocalTarget({ brokenBaseline: true });
+    const { dir, baseline } = await evidenceFor();
+    const base = git(target.repo, 'rev-parse', 'HEAD').trim();
+    // The turn wrote an actionable finding — every field nonblank, the shape
+    // exactly as documented — whose repair runs past the 2,000 characters one
+    // field may have. The harness cuts no field: cutting would accept a repair
+    // with its last words removed, and those words can be the change itself. The
+    // finding is refused as unusable instead, and the rejection is what the
+    // evidence records, so a restart reuses it rather than publishing the file.
+    const oversized: BaselineFinding = {
+      ...REPAIR_FINDING,
+      repairGuidance: 'make the load test wait for the condition. '.repeat(60),
+    };
+    const repair = oversized.outcome === 'repair' ? oversized.repairGuidance : '';
+    expect(repair.length).toBeGreaterThan(2_000);
+    const reviewer = reviewerFor(target, [{ finding: JSON.stringify(oversized) }]);
+
+    const result = await reviewer({
+      dir,
+      item: { ref: refFor(), task: taskFor() },
+      workspace: { path: target.repo, baseCommit: base },
+      baseline,
+      stop: new AbortController().signal,
+    });
+
+    expect(result.finding).toBeNull();
+    expect(result.problem).toContain('"repairGuidance" longer than the 2000 characters');
+    const recorded = await readBaselineOutcome(dir);
+    expect(recorded?.state).toBe('rejected');
+    if (recorded?.state === 'rejected') {
+      expect(recorded.problem).toContain('"repairGuidance" longer than the 2000 characters');
+    }
+  });
+
   it('refuses a finding from a turn that changed the snapshot it was given', async () => {
     const target = await createLocalTarget({ brokenBaseline: true });
     const { dir, baseline } = await evidenceFor();
@@ -1763,6 +1844,49 @@ describe('the finding file', () => {
       parseBaselineFinding(JSON.stringify({ outcome: 'approve', findings: [] }), 'finding.json'),
     ).toThrow(/instead of "repair" or "inconclusive"/);
   });
+
+  it('refuses an oversized field instead of cutting the finding down to it', () => {
+    // A field at the documented bound is the finding; one past it is not cut to
+    // fit. Cutting used to accept an actionable finding with the end of its
+    // repair already removed — and the end of a repair can be the change or the
+    // qualification the developer has to act on — while the harness keeps no
+    // second copy of what the turn wrote, so neither the comment nor the
+    // continuation could recover it.
+    const atBound = 'x'.repeat(2_000);
+    expect(
+      parseBaselineFinding(
+        JSON.stringify({ ...REPAIR_FINDING, repairGuidance: atBound }),
+        'finding.json',
+      ),
+    ).toEqual({ ...REPAIR_FINDING, repairGuidance: atBound });
+
+    const longRepair = `${'make the load test wait for the condition. '.repeat(60)}`;
+    expect(longRepair.length).toBeGreaterThan(2_000);
+    expect(() =>
+      parseBaselineFinding(
+        JSON.stringify({ ...REPAIR_FINDING, repairGuidance: longRepair }),
+        'finding.json',
+      ),
+    ).toThrow(/"repairGuidance" longer than the 2000 characters/);
+
+    const longAction = 'provide a host with docker '.repeat(120);
+    expect(longAction.length).toBeGreaterThan(2_000);
+    expect(() =>
+      parseBaselineFinding(
+        JSON.stringify({ ...INCONCLUSIVE_FINDING, requiredAction: longAction }),
+        'finding.json',
+      ),
+    ).toThrow(/"requiredAction" longer than the 2000 characters/);
+
+    // Both oversized fields of one finding are refused together, and the
+    // refusal says what a usable finding is: nothing is published from this one.
+    expect(() =>
+      parseBaselineFinding(
+        JSON.stringify({ ...REPAIR_FINDING, evidence: longRepair, repairGuidance: longAction }),
+        'finding.json',
+      ),
+    ).toThrow(/"evidence" and "repairGuidance" longer than the 2000 characters/);
+  });
 });
 
 describe('the reviewed finding one continued attempt is given', () => {
@@ -1916,6 +2040,43 @@ describe('the reviewed finding one continued attempt is given', () => {
     expect(guidance.slice(0, lines.length)).toEqual(lines);
     expect(guidance.length).toBeLessThanOrEqual(12);
     expect(guidance.join('\n')).toContain(WIDE_GUIDANCE_TAIL);
+  });
+
+  it('keeps the newest context beside a finding wider than the whole context budget', () => {
+    // One valid finding can exceed the 4,000 characters the context beside it
+    // is bounded to: up to 2,000 per field, and a repair carries four of them on
+    // lines of their own. The finding is what the attempt must repair first, and
+    // the newest line beside it is what happened since — after the baseline
+    // passed, that is the review feedback a later repair turn has to act on.
+    // Charging the finding against the context budget dropped exactly that line.
+    const nearBound = (text: string): string =>
+      text.repeat(Math.ceil(1_900 / text.length)).slice(0, 1_900);
+    const wide: BaselineFinding = {
+      ...REPAIR_FINDING,
+      evidence: nearBound('the load test spawned two hundred workers and timed out. '),
+      likelyCause: nearBound('the fixture waits for a fixed thirty seconds. '),
+      repairGuidance: nearBound('wait for the condition instead of the clock. '),
+    };
+    const finding = baselineFindingGuidanceLines(wide);
+    expect(finding.join('\n').length).toBeGreaterThan(4_000);
+
+    const review =
+      'the delivered pull request needs repair: the repair turn left the fixed wait in place';
+    const guidance = guidanceFrom(
+      [baselineAttempt()],
+      [
+        { author: 'Nexus Agent', createdAt: '2026-09-21T10:05:00.000Z', text: commentFor() },
+        { author: 'Nexus Lens', createdAt: '2026-09-21T13:00:00.000Z', text: review },
+      ],
+      finding,
+    );
+
+    // The finding is carried whole and first, and the context budget beside it
+    // is spent on the newest line there is — the review feedback, not the
+    // finding's own length.
+    expect(guidance.slice(0, finding.length)).toEqual(finding);
+    expect(guidance.some((line) => line.includes(review))).toBe(true);
+    expect(guidance.length).toBeLessThanOrEqual(12);
   });
 });
 
@@ -2326,6 +2487,26 @@ describe('finishing a diagnosis a stopped invocation left pending', () => {
 
     expect(resumed?.kind).toBe('problem');
     expect(resumed?.detail).toContain('the site refused the read');
+    expect(record.posted).toEqual([]);
+    expect(reviewer.requests).toEqual([]);
+  });
+
+  it('reports a pending diagnosis whose own record is gone instead of passing over it', async () => {
+    const workDir = await createTempDir();
+    const record = await pendingEvidence(workDir);
+    const evidence = await evidenceRecordFor(workDir, PROJECT);
+    // The directory the diagnosis made for this evidence is still there; the
+    // record that says what it was about, and whether its finding was published,
+    // is not. Passing over it would leave the item it claimed in the running
+    // status with nothing looking for it, so intake stops for a person.
+    await rm(evidence.file);
+    const reviewer = scriptedReviewer(REPAIR_FINDING);
+    const { diagnosis } = phaseFor({ record, reviewer, workDir });
+
+    const resumed = await diagnosis.resume(new AbortController().signal);
+
+    expect(resumed?.kind).toBe('problem');
+    expect(resumed?.detail).toContain('holds no evidence.json');
     expect(record.posted).toEqual([]);
     expect(reviewer.requests).toEqual([]);
   });
@@ -3404,6 +3585,16 @@ function continuedIntake(parts: {
   /** When set, the item's own thread cannot be read at all. */
   readonly commentsProblem?: string;
   /**
+   * What the thread carries after the one comment this fixture renders for
+   * `findingText`: someone writing on the ticket later — the review feedback a
+   * repair turn has to be told beside the finding it repairs first.
+   */
+  readonly laterComments?: readonly {
+    readonly author: string;
+    readonly createdAt: string;
+    readonly text: string;
+  }[];
+  /**
    * The intake's own stop request, for the paths a stop has to leave the ticket
    * findable from. Defaults to a signal that never aborts.
    */
@@ -3457,6 +3648,7 @@ function continuedIntake(parts: {
             createdAt: '2026-09-21T10:05:00.000Z',
             text: typeof parts.findingText === 'function' ? parts.findingText() : parts.findingText,
           },
+          ...(parts.laterComments ?? []),
         ];
       },
     },
@@ -3767,6 +3959,90 @@ describe('the next claim after a diagnosis', () => {
     const receipt = await readReceipt(receiptFilePath(workDir, refFor()));
     expect(receipt?.problem).toContain('cannot be read back');
     expect(receipt?.feedback).toBe('sent');
+  });
+
+  it('starts no ordinary continuation when a diagnosis directory lost its record', async () => {
+    const workDir = await createTempDir();
+    const diagnosed = await diagnosedWorkspace(workDir);
+    // The diagnosis published its finding and returned the ticket, and then the
+    // record it kept that evidence under is gone from the directory this harness
+    // made for it — the recorded outcome and the thread's own comment are still
+    // there. Neither alone says whether this workspace was returned for a
+    // repair, or what it has to repair: the directory without its record is not
+    // "nothing pending". Passing over it is what used to start an ordinary
+    // continuation — the original task with no baseline guidance at all — so the
+    // intake stops for a person before it claims anything.
+    const evidence = await evidenceRecordFor(workDir, PROJECT);
+    await rm(evidence.file);
+    const { context, runs, published, attentions, ticket } = continuedIntake({
+      workDir,
+      sourceRepo: diagnosed.sourceRepo,
+      base: diagnosed.base,
+      workspaceId: diagnosed.workspaceId,
+      findingText: diagnosed.comment,
+      diagnosis: diagnosed.diagnosis,
+      run: async () => runResultFor(),
+    });
+
+    const take = await takeOneItem(context, {});
+
+    expect(take.outcome).toBe('attention');
+    expect(take.problem).toContain('holds no evidence.json');
+    expect(take.problem).toContain(path.dirname(evidence.file));
+    // Nothing was claimed, so nothing was started, told, or published: the
+    // ticket the diagnosis returned keeps the place and the pointer it had, no
+    // receipt was written for it, and no developer ran the original task.
+    expect(take.ticket).toBeNull();
+    expect(runs).toEqual([]);
+    expect(published).toEqual([]);
+    expect(attentions).toEqual([]);
+    expect(ticket.status).toBe('To Do');
+    const receipt = await readReceipt(receiptFilePath(workDir, refFor()));
+    expect(receipt).toBeNull();
+  });
+
+  it('tells the next claim the newest feedback beside a finding wider than its context budget', async () => {
+    const workDir = await createTempDir();
+    const diagnosed = await diagnosedWorkspace(workDir, WIDE_TOTAL_FINDING);
+    const feedback =
+      'the delivered pull request needs repair: the fixed wait is still in the load test';
+    expect(baselineFindingGuidanceLines(WIDE_TOTAL_FINDING).join('\n').length).toBeGreaterThan(
+      4_000,
+    );
+    const { context, runs, published } = continuedIntake({
+      workDir,
+      sourceRepo: diagnosed.sourceRepo,
+      base: diagnosed.base,
+      workspaceId: diagnosed.workspaceId,
+      findingText: diagnosed.comment,
+      // What the review said after the baseline was repaired and the pull
+      // request was delivered: the current feedback this attempt has to act on
+      // beside the finding that still comes first.
+      laterComments: [
+        { author: 'Nexus Lens', createdAt: '2026-09-21T12:00:00.000Z', text: feedback },
+      ],
+      diagnosis: diagnosed.diagnosis,
+      run: async () =>
+        runResultFor({
+          status: 'passed',
+          reason: 'the checks passed',
+          baseline: null,
+          workspace: workspaceFor({ continued: true, attempt: 2, baseCommit: diagnosed.base }),
+          reportPath: '/work/runs/run-2/result.json',
+        }),
+    });
+
+    const take = await takeOneItem(context, {});
+
+    expect(take.outcome).toBe('taken');
+    expect(published[0]?.status).toBe('passed');
+    const guidance = runs[0]?.guidance ?? [];
+    // The finding, whole and first — every field of it, at the width its turn
+    // was validated at — and the newest thing the ticket says beside it.
+    const finding = baselineFindingGuidanceLines(WIDE_TOTAL_FINDING);
+    expect(guidance.slice(0, finding.length)).toEqual(finding);
+    expect(guidance.some((line) => line.includes(feedback))).toBe(true);
+    expect(guidance.length).toBeLessThanOrEqual(12);
   });
 
   it('tells the claimed ticket and takes it out of the running status after a stop', async () => {

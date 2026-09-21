@@ -4,6 +4,14 @@
  * oldest of the kept lines, bounded so a long conversation or a long failure
  * cannot grow a prompt without limit.
  *
+ * The finding and the context beside it have budgets of their own. A finding is
+ * bounded where the reviewer's turn was accepted — `finding.json`'s own
+ * per-field bound, and at most five lines of it — and it is the work this
+ * attempt must do first, so it is never charged against the context: a long
+ * finding used to spend the whole budget and drop the newest comment with it,
+ * which is exactly the review feedback a later repair turn has to be told
+ * (docs/WORKFLOW.md §11).
+ *
  * The finding is not read here: it arrives already established, from the
  * item's own whole comment when that comment names the evidence the retained
  * record closed as a repair, or from that record itself. A comment of the
@@ -17,7 +25,7 @@
 import type { WorkspaceAttempt } from '../workspace/state.js';
 import type { SourceComment } from './contract.js';
 
-/** How much context a continued attempt is given, and how much of one line. */
+/** How much context a continued attempt is given beside the finding, and how much of one line. */
 const GUIDANCE_MAX_LINES = 12;
 const GUIDANCE_MAX_CHARS = 4000;
 const GUIDANCE_LINE_CHARS = 600;
@@ -43,8 +51,13 @@ function guidanceLine(text: string): string {
  * What a continued attempt is told about the attempts before it and what was
  * said since: oldest of the kept lines first, bounded so a long conversation or
  * a long failure cannot grow a prompt without limit
- * (docs/implement-workspace-continuation.md). All of it is context for the turn:
- * none of it becomes a command, an argument, a path, or a limit.
+ * (docs/implement-workspace-continuation.md). Those bounds are counted over the
+ * context beside the finding — `GUIDANCE_MAX_LINES` lines in all,
+ * `GUIDANCE_MAX_CHARS` characters of context — so the newest line the thread or
+ * the ledger carries survives beside a finding at its own full width, and a
+ * later repair turn is told the current feedback as well as the one it has to
+ * repair first. All of it is context for the turn: none of it becomes a
+ * command, an argument, a path, or a limit.
  */
 export function guidanceFrom(
   attempts: readonly WorkspaceAttempt[],
@@ -75,9 +88,12 @@ export function guidanceFrom(
   }
 
   // The finding is kept whatever else the thread holds; the rest of the context
-  // is the newest that fits beside it.
+  // is the newest that fits the context's own budget beside it. Only the context
+  // is charged against that budget: the finding's width was bounded once, where
+  // the reviewer's turn was accepted, and spending it here is how the newest
+  // repair feedback used to be dropped entirely.
   const kept: string[] = [];
-  let used = findings.reduce((total, line) => total + line.length, 0);
+  let used = 0;
   for (const line of [...lines].reverse()) {
     if (
       findings.length + kept.length >= GUIDANCE_MAX_LINES ||

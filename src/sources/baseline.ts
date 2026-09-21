@@ -654,6 +654,27 @@ async function evidenceFiles(workDir: string, project: string): Promise<readonly
 }
 
 /**
+ * Why one evidence directory that is there cannot be read as a diagnosis.
+ *
+ * A directory under this project's evidence root is one this harness made for
+ * one piece of evidence, and its record is what says which item and workspace it
+ * belongs to, what was observed, and whether a finding was published. A record
+ * that is gone is therefore not "nothing pending": nothing about that evidence
+ * can be finished, read back, or closed, and treating it as nothing is how its
+ * item would be left in the running status with nothing looking for it, or its
+ * workspace started as an ordinary continuation when a reviewed finding was
+ * required first. So it fails closed by name and a person inspects it, exactly
+ * as a record that cannot be read does (docs/WORKFLOW.md §11).
+ */
+function missingEvidenceRecord(file: string): string {
+  return (
+    `the retained baseline evidence under "${path.dirname(file)}" holds no ` +
+    `${BASELINE_EVIDENCE_FILE}, so what it recorded about its item, its workspace, and its ` +
+    'finding cannot be established'
+  );
+}
+
+/**
  * What one resume outcome means for the intake that asked for it: `null` when
  * the pending diagnosis left nothing in the way — nothing was pending, or the
  * finding is published and the item is back in its ready status — and the stop
@@ -1110,7 +1131,20 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
       } catch (cause) {
         return { kind: 'problem', detail: messageOf(cause) };
       }
-      if (evidence === null || evidence.closed !== undefined) {
+      if (evidence === null) {
+        // The directory is there and its record is not: whether a diagnosis
+        // began here, for which item, and whether its finding was published
+        // cannot be established, so nothing is resumed past it.
+        return {
+          kind: 'problem',
+          detail:
+            `${missingEvidenceRecord(file)}; nothing about it can be resumed, read back, or ` +
+            'closed, so this intake stops for a person — inspect that directory by hand, and ' +
+            'either restore the record it lost or remove the directory if it holds no pending ' +
+            'diagnosis',
+        };
+      }
+      if (evidence.closed !== undefined) {
         continue;
       }
 
@@ -1299,8 +1333,9 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
    * may start from one: a comment carrying the marker with an edited field
    * would look exactly like the finding this harness published.
    * `problem` means the evidence itself cannot be read clearly enough to say
-   * either, and that leaves the caller stopping rather than starting a
-   * developer without the finding.
+   * either — its own record is gone from a directory this harness kept, or the
+   * record it does hold cannot be read — and that leaves the caller stopping
+   * rather than starting a developer without the finding.
    */
   const reviewedFinding = async (
     workspaceId: string,
@@ -1337,7 +1372,20 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
       } catch (cause) {
         return { kind: 'problem', detail: messageOf(cause) };
       }
-      if (evidence === null || evidence.workspace.workspaceId !== workspaceId) {
+      if (evidence === null) {
+        // A diagnosis directory whose own record is gone cannot be read past
+        // either: this might be the very evidence that returned this workspace
+        // for repair, and whether it did — and what it required — cannot then be
+        // established, so no attempt starts as an ordinary continuation.
+        return {
+          kind: 'problem',
+          detail:
+            `${missingEvidenceRecord(file)}; whether workspace "${workspaceId}" was returned for a ` +
+            'repair under a finding its next attempt must be told cannot be read back, so no ' +
+            'developer may be started without it',
+        };
+      }
+      if (evidence.workspace.workspaceId !== workspaceId) {
         continue;
       }
       if (evidence.closed === undefined) {
