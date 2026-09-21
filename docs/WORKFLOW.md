@@ -784,7 +784,11 @@ the human feedback this role's last consumed snapshot did not hold. The two role
 only after a turn returns usable output; preparation and the other role never consume feedback.
 An absent legacy cursor replays feedback, and a restart reads the cursor from disk. Requirements
 are re-read before each turn, including repairs, and every task section uses that reading. Invalid
-or unreadable current requirements stop the turn. The full conversation remains in the
+or unreadable current requirements stop the turn. Developer turns with a prepared snapshot do not
+also receive the ordinary comment and prior-attempt excerpts collected at intake: those can be
+stale after an edit or repeat feedback already consumed. Only the separately validated baseline
+repair requirement is carried forward beside the snapshot, including on every repair. Without a
+prepared history, legacy guidance is unchanged. The full conversation remains in the
 snapshot for the turn to read and search with its ordinary tools (`rg <text> <index or entries
 directory>`), so no Jira or GitHub call of its own is needed or wanted. Findings and human feedback
 are rendered whole: the history section is bounded only by dropping whole entries from the inline

@@ -474,6 +474,10 @@ Edits to an App review remain actionable responses beside its outstanding findin
 provides no edit timestamp. The recorded publication hash detects the change; refreshes, restarts and
 either role consuming the feedback do not hide it.
 The harness re-reads requirements before each turn and refuses the turn if they cannot be obtained.
+Developer turns with a history snapshot use it for conversation guidance, including on repairs;
+old comment excerpts collected at intake are not repeated alongside edited or consumed feedback.
+The accepted baseline-repair requirement still appears on every turn. Runs without a history
+snapshot retain their existing guidance behavior.
 `consumed-developer.json` and `consumed-reviewer.json` track feedback separately after usable turn
 output. A prepared snapshot never advances them; legacy workspaces without cursors replay feedback.
 Developer messages are retained in full through the runtime adapter. Old messages marked with the

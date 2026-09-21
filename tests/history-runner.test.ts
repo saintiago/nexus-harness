@@ -4,6 +4,10 @@ import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createTicketHistory } from '../src/history/sync.js';
+import type { HistoryReaders } from '../src/history/contract.js';
+import { promptFor } from '../src/agents/codex/prompt.js';
+import { guidanceFrom } from '../src/sources/guidance.js';
+import { BASELINE_GUIDANCE_PREFIX } from '../src/runs/contracts.js';
 import { runTask } from '../src/runs/runner.js';
 import type { RunnerDependencies, RunTaskRequest } from '../src/runs/contracts.js';
 import { HistoryError } from '../src/history/contract.js';
@@ -19,12 +23,14 @@ afterEach(async () => {
 });
 
 /** Real history/report files, with all process boundaries replaced by ordinary functions. */
-async function historyRunner() {
+async function historyRunner(
+  jiraThread: HistoryReaders['jiraThread'] = async () => ({ comments: [], truncated: false }),
+) {
   const workDir = await createTempDir();
   const history = createTicketHistory({
     workDir,
     readers: {
-      jiraThread: async () => ({ comments: [], truncated: false }),
+      jiraThread,
       pullRequestConversation: async () => null,
     },
   });
@@ -91,6 +97,87 @@ async function historyRunner() {
 }
 
 describe('developer history turn policy without subprocesses', () => {
+  it('uses refreshed conversation guidance across an edit and multiple repairs, retaining the validated baseline requirement', async () => {
+    const original = 'Use the old pagination rule.';
+    const correction = 'Correction: follow every page and preserve edited comments.';
+    let comment = {
+      sourceId: 'comment-1',
+      author: 'Human reviewer',
+      createdAt: '2026-09-21T09:00:00Z',
+      updatedAt: '2026-09-21T09:00:00Z',
+      text: original,
+      url: 'https://example.test/1?focusedCommentId=comment-1',
+    };
+    const fixture = await historyRunner(async () => ({ comments: [comment], truncated: false }));
+    const baseline = `${BASELINE_GUIDANCE_PREFIX}repair the accepted baseline failure first`;
+    // Like intake, collect legacy excerpts once before any turn starts.
+    const guidance = guidanceFrom([], [comment], [baseline]);
+    fixture.checks
+      .mockResolvedValueOnce({ outcome: 'passed', setup: [], checks: [], problem: null })
+      .mockResolvedValueOnce({ outcome: 'failed', setup: [], checks: [], problem: 'repair one' })
+      .mockResolvedValueOnce({ outcome: 'failed', setup: [], checks: [], problem: 'repair two' });
+    fixture.agent.mockImplementation(async (asked) => {
+      const prompt = promptFor(asked);
+      expect(asked.guidance).toEqual([baseline]);
+      expect(prompt).toContain('## Repair the baseline before the task');
+      expect(prompt).toContain(baseline);
+      expect(prompt).not.toContain('## Guidance for this attempt');
+      expect(asked.history?.brief.unresolved).toBeNull();
+      if (asked.turn === 1) {
+        expect(prompt).toContain(original);
+        comment = { ...comment, text: correction, updatedAt: '2026-09-21T10:01:00Z' };
+      } else {
+        expect(asked.kind).toBe('repair');
+        expect(prompt).not.toContain(original);
+        expect(
+          asked.history?.entries.find((entry) => entry.sourceId === comment.sourceId)?.text,
+        ).toBe(correction);
+        if (asked.turn === 2) {
+          expect(prompt).toContain(correction);
+          expect(asked.history?.brief.newHumanFeedback.map((entry) => entry.text)).toEqual([
+            correction,
+          ]);
+        } else {
+          // The previous repair consumed the correction. No obsolete excerpt
+          // may reappear now that the corrected entry is local history only.
+          expect(asked.history?.brief.newHumanFeedback).toEqual([]);
+          expect(prompt).not.toContain(correction);
+          expect(await readFile(asked.history?.entriesPath ?? '', 'utf8')).toContain(correction);
+        }
+      }
+      return { summary: `Turn ${String(asked.turn)} completed`, shutdown: null };
+    });
+    const result = await runTask(
+      { ...fixture.request, guidance, config: { ...fixture.request.config, maxRepairs: 2 } },
+      fixture.dependencies,
+    );
+    expect(result.status, result.reason).toBe('passed');
+    expect(fixture.agent).toHaveBeenCalledTimes(3);
+    const first = fixture.agent.mock.calls[0]?.[0].history;
+    expect(await readFile(first?.entriesPath ?? '', 'utf8')).toContain(original);
+    expect(await readFile(first?.entriesPath ?? '', 'utf8')).not.toContain(correction);
+  });
+
+  it('keeps legacy conversation guidance when no history snapshot is configured', async () => {
+    const fixture = await historyRunner();
+    const request = { ...fixture.request };
+    delete request.history;
+    const baseline = `${BASELINE_GUIDANCE_PREFIX}repair the accepted baseline failure first`;
+    const guidance = guidanceFrom(
+      [],
+      [{ author: 'Human reviewer', createdAt: '2026-09-21T09:00:00Z', text: 'Legacy feedback' }],
+      [baseline],
+    );
+    const result = await runTask({ ...request, guidance }, fixture.dependencies);
+    expect(result.status).toBe('passed');
+    const asked = fixture.agent.mock.calls[0]?.[0];
+    expect(asked?.guidance).toEqual(guidance);
+    expect(asked?.history).toBeUndefined();
+    if (asked === undefined) throw new Error('No coding turn');
+    expect(promptFor(asked)).toContain('Legacy feedback');
+    expect(promptFor(asked)).toContain(baseline);
+  });
+
   it('prepares readable immutable input before the coding turn and acknowledges that exact input', async () => {
     const fixture = await historyRunner();
     const prepare = vi.spyOn(fixture.history, 'prepare');

@@ -143,9 +143,11 @@ export interface RunTaskRequest {
    */
   readonly onWorkspaceReady?: (workspace: PreparedWorkspace) => Promise<void>;
   /**
-   * Context for a continued attempt, passed to every coding turn of this run and
-   * recorded nowhere else: what a source learned from the issue and from the
-   * harness's own earlier attempts (docs/implement-workspace-continuation.md).
+   * Legacy context for a continued attempt: what a source learned from the issue
+   * and earlier attempts. A turn with a prepared history receives only the
+   * separately validated BASELINE_GUIDANCE_PREFIX lines from this array; ordinary
+   * conversation context comes from its current snapshot instead. Without a
+   * snapshot every turn receives these lines (docs/implement-workspace-continuation.md).
    */
   readonly guidance?: readonly string[];
   /**

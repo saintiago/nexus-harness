@@ -99,6 +99,12 @@ an unreadable or invalid current requirement stops that turn. The prompt's task 
 same refreshed task, never a mixture with stale intake requirements. Replaying an already recorded
 baseline diagnosis starts no turn and requires no new history synchronization.
 
+On history-backed developer turns, ordinary conversation guidance comes only from that snapshot;
+the bounded comment and prior-attempt excerpts collected at intake are not replayed beside it.
+This holds for every repair after an edit and after feedback has been consumed. The separately
+validated requirement to repair an accepted baseline finding is still passed to every turn.
+Runs without a prepared history keep their existing guidance behavior.
+
 Outstanding change requests are tracked independently by reviewer across retained and native
 reviews. A later published approval by that reviewer at the current head clears their request;
 another author's approval, an approval of an old head, a comment-only review or an inconclusive

@@ -62,7 +62,7 @@ import type {
   RunTaskResult,
   RunnerDependencies,
 } from './contracts.js';
-import { RunCancelledError, RunTimeoutError } from './contracts.js';
+import { BASELINE_GUIDANCE_PREFIX, RunCancelledError, RunTimeoutError } from './contracts.js';
 import { failedCommands } from './feedback.js';
 import { createRunFinalizer } from './finalize.js';
 import {
@@ -814,6 +814,13 @@ export async function runTask(
         : `${nameTurn(kind, turn)} started: repair ${String(turn - 1)} of ${String(config.maxRepairs)} allowed`,
     );
     const agentLog = await dependencies.openAgentLog(run.logsDir, turn);
+    // Intake's ordinary excerpts predate this snapshot and may now be edited
+    // or already consumed. Conversation context comes only from the refreshed
+    // history; keep the separately validated baseline repair requirement.
+    const guidance =
+      turnHistory === undefined
+        ? request.guidance
+        : request.guidance?.filter((line) => line.startsWith(BASELINE_GUIDANCE_PREFIX));
     let completed: AgentTurnResult | null = null;
     let turnProblem: string | null = null;
     try {
@@ -826,7 +833,7 @@ export async function runTask(
         baseCommit: workspace.baseCommit,
         agentLog,
         repair,
-        ...(request.guidance === undefined ? {} : { guidance: request.guidance }),
+        ...(guidance === undefined ? {} : { guidance }),
         ...(turnHistory === undefined ? {} : { history: turnHistory }),
         stop: stop.signal,
       });
