@@ -259,7 +259,7 @@ export interface AgentTurnShutdown {
  * not complete has no checks observed after it, and none are invented.
  */
 export interface AgentTurnResult {
-  /** The agent's own short summary of the turn, or `null` when it gave none. */
+  /** The agent's complete final message, or `null` when it gave none. */
   readonly summary: string | null;
   /**
    * How the turn's own stop of the execution it started went, or nothing at all

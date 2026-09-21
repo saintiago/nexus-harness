@@ -29,8 +29,6 @@ import type { CodexRuntime, CodexSandboxPolicy } from './runtime.js';
 /** How much of a runtime's own diagnostic this module repeats in a reason. */
 const MAX_DIAGNOSTIC_CHARS = 400;
 
-/** The longest summary kept from a runtime's final message; its log keeps it all. */
-const MAX_SUMMARY_CHARS = 2000;
 /** A coding turn that could not complete. The runner treats it as a failed run. */
 export class AgentError extends Error {
   constructor(message: string, options?: { cause?: unknown }) {
@@ -434,15 +432,9 @@ function excerpt(text: string, max = MAX_DIAGNOSTIC_CHARS): string {
   return flat.length <= max ? flat : `${flat.slice(0, max)} [truncated]`;
 }
 
-/** The agent's own words, bounded: the turn's log keeps the whole message. */
+/** Keep the runtime's complete message; only external renderings may be bounded. */
 function normalizedSummary(text: string | null): string | null {
-  const trimmed = text?.trim() ?? '';
-  if (trimmed === '') {
-    return null;
-  }
-  return trimmed.length <= MAX_SUMMARY_CHARS
-    ? trimmed
-    : `${trimmed.slice(0, MAX_SUMMARY_CHARS)} [truncated: this turn's log holds the full message]`;
+  return text?.trim() ? text : null;
 }
 
 /**
