@@ -11,6 +11,7 @@
  */
 import { existsSync } from 'node:fs';
 import path from 'node:path';
+import { renderHistorySection } from '../../history/prompt.js';
 import { BASELINE_GUIDANCE_PREFIX } from '../../runs/contracts.js';
 import type { AgentTurnRequest } from '../../runs/contracts.js';
 import type { FailedCommand } from '../../shared/types.js';
@@ -72,6 +73,13 @@ export function promptFor(request: AgentTurnRequest): string {
         'decide whether this turn passed.',
       ].join('\n'),
     );
+  }
+
+  // The ticket's own conversation history, when the caller prepared one: the
+  // same identified snapshot and the same organization a reviewer turn is
+  // given, with the complete entries beside the workspace for local search.
+  if (request.history !== undefined) {
+    sections.push(renderHistorySection(request.history, 'developer'));
   }
 
   sections.push(

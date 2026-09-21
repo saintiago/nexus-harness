@@ -1424,9 +1424,14 @@ async function onlyRunReport(workDir: string): Promise<RunReport> {
   ) as RunReport;
 }
 
-/** The workspace directories one output directory holds, without their ledgers. */
+/**
+ * The workspace directories one output directory holds, without their ledgers
+ * or the conversation history roots that sit beside them (docs/WORKFLOW.md §11).
+ */
 function workspacesOf(workDir: string): string[] {
-  return readdirSync(path.join(workDir, 'workspaces')).filter((name) => !name.endsWith('.json'));
+  return readdirSync(path.join(workDir, 'workspaces')).filter(
+    (name) => !name.endsWith('.json') && !name.endsWith('.history'),
+  );
 }
 
 describe('the name a fresh queue claim would use', () => {

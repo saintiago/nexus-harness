@@ -10,6 +10,7 @@
  * connector.
  */
 import type { DeliveredPullRequest, Delivery } from '../delivery/github.js';
+import type { TicketHistory } from '../history/contract.js';
 import type { AgentTurnShutdown, RunTaskResult } from '../runs/contracts.js';
 import type {
   CheckRoundResult,
@@ -282,6 +283,12 @@ export interface SourceRunRequest {
    * (docs/implement-workspace-continuation.md).
    */
   readonly guidance?: readonly string[];
+  /**
+   * The ticket conversation history this attempt's coding turns prepare their
+   * snapshots from, when the caller configured one
+   * (docs/WORKFLOW.md §9 and §11).
+   */
+  readonly history?: TicketHistory;
   /**
    * A workspace this run continues, resolved and verified by the coordinator, or
    * nothing for a run that creates one.
@@ -648,6 +655,13 @@ export interface SourceContext {
   readonly preflight: (request: PreflightRequest) => Promise<SourcePreflight>;
   /** The existing runner, as one ordinary function. */
   readonly run: (request: SourceRunRequest) => Promise<RunTaskResult>;
+  /**
+   * The ticket conversation history this intake prepares before every coding
+   * turn, when the caller configured one, and records each complete developer
+   * report into before its comment is published. Absent means the existing
+   * behavior: the thread and the ledger remain what a continuation is told.
+   */
+  readonly history?: TicketHistory;
   readonly now: () => Date;
   /** An abortable wait; resolves early when the stop request arrives. */
   readonly sleep: (ms: number, stop: AbortSignal) => Promise<void>;

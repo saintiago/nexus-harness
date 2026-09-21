@@ -10,6 +10,7 @@
  * type-only contracts.
  */
 import type { SourceCandidate, SourceOutcome, SourceTask } from '../sources/contract.js';
+import type { HistorySnapshot, TicketHistory } from '../history/contract.js';
 import type { SourceRef, Task } from '../shared/types.js';
 
 /**
@@ -82,6 +83,37 @@ export interface PullRequestReview {
   /** The commit the review was made against; `null` when GitHub reports none. */
   readonly commitId: string | null;
   readonly url: string;
+}
+
+/** One entry of a pull request's whole conversation, as GitHub reports it. */
+export interface PullRequestConversationEntry {
+  readonly id: number;
+  readonly kind: 'review' | 'comment' | 'review-comment';
+  /** The login the entry is authored under. */
+  readonly login: string;
+  readonly createdAt: string;
+  readonly updatedAt: string | null;
+  readonly body: string;
+  readonly url: string | null;
+  /** A native review's state, or `null` for comments. */
+  readonly state: string | null;
+  /** The commit a review or an inline comment was made against, when GitHub reports one. */
+  readonly commitId: string | null;
+  /** The file an inline comment is positioned in, when it is one. */
+  readonly path: string | null;
+  /** The line in the new version of the file, when GitHub reports one. */
+  readonly line: number | null;
+}
+
+/**
+ * A pull request's whole conversation: its native reviews, its conversation
+ * comments, and its inline review comments, paginated and merged. `truncated`
+ * says a page limit was reached; a partial conversation is never handed back as
+ * if it were complete.
+ */
+export interface PullRequestConversation {
+  readonly entries: readonly PullRequestConversationEntry[];
+  readonly truncated: boolean;
 }
 
 /** The reviewer's decision. The two map to one native review event each. */
@@ -273,6 +305,13 @@ export interface ReviewRepository {
   readPullRequest(number: number, stop: AbortSignal): Promise<OpenPullRequest | null>;
   /** Every review of one pull request, oldest first. */
   listReviews(number: number, stop: AbortSignal): Promise<readonly PullRequestReview[]>;
+  /**
+   * The pull request's whole conversation, for the ticket history a turn reads
+   * locally. It is optional so a caller without a configured App can still run
+   * the other reads; a repository that cannot provide it leaves the history
+   * with an explicit gap rather than an empty conversation.
+   */
+  readConversation?(number: number, stop: AbortSignal): Promise<PullRequestConversation>;
   /** The evidence a reviewer turn is given for one pull request. */
   readEvidence(
     request: {
@@ -294,6 +333,13 @@ export interface ReviewerTurnRequest {
   readonly evidence: ReviewEvidence;
   /** The repository view the turn inspects, prepared and checked by the scan. */
   readonly view: ReviewView;
+  /**
+   * The ticket's conversation snapshot, prepared by the scan before the turn:
+   * the same organization and local paths a developer turn is given, so a
+   * reviewer sees the ticket's own thread, earlier reviews, and the harness's
+   * own reports without any connector call of its own.
+   */
+  readonly history?: HistorySnapshot;
   readonly stop: AbortSignal;
 }
 
@@ -378,6 +424,13 @@ export interface ReviewScanContext {
   readonly queue: ReviewQueue;
   readonly repository: ReviewRepository;
   readonly reviewer: ReviewerTurn;
+  /**
+   * The ticket conversation history this scan prepares before a reviewer turn,
+   * when the caller configured one. A snapshot that cannot be prepared leaves
+   * the ticket for attention instead of starting a turn whose promised local
+   * history does not exist (docs/WORKFLOW.md §9 and §11).
+   */
+  readonly history?: TicketHistory;
   /**
    * How one review's repository view is prepared and checked afterwards: the
    * local snapshot, pinned at the reviewed head, that the reviewer inspects

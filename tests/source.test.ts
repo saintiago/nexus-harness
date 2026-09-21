@@ -3732,7 +3732,7 @@ describe('the source commands through the CLI', { timeout: 20_000 }, () => {
       expect(workspaceId).toBe(jira.issues[0]?.key);
       expect(
         (await readdir(path.join(target.workDir, 'workspaces'))).filter(
-          (name) => !name.endsWith('.json'),
+          (name) => !name.endsWith('.json') && !name.endsWith('.history'),
         ),
       ).toEqual([workspaceId]);
       const ledgerPath = path.join(target.workDir, 'workspaces', `${workspaceId}.json`);
@@ -3794,7 +3794,7 @@ describe('the source commands through the CLI', { timeout: 20_000 }, () => {
       ).toEqual([`harness-ws-${workspaceId}`]);
       expect(
         (await readdir(path.join(target.workDir, 'workspaces'))).filter(
-          (name) => !name.endsWith('.json'),
+          (name) => !name.endsWith('.json') && !name.endsWith('.history'),
         ),
       ).toEqual([workspaceId]);
       const after = JSON.parse(await readFile(ledgerPath, 'utf8')) as { attempts?: unknown[] };
@@ -3951,7 +3951,7 @@ describe('the source commands through the CLI', { timeout: 20_000 }, () => {
       const workspacePath = path.join(target.workDir, 'workspaces', 'SAM1-23');
       expect(
         (await readdir(path.join(target.workDir, 'workspaces'))).filter(
-          (name) => !name.endsWith('.json'),
+          (name) => !name.endsWith('.json') && !name.endsWith('.history'),
         ),
       ).toEqual(['SAM1-23']);
       // The attempt's own evidence keeps its generated run id, beside the
@@ -4058,7 +4058,7 @@ describe('the source commands through the CLI', { timeout: 20_000 }, () => {
       // nothing, and nothing was renamed to it.
       expect(
         (await readdir(path.join(target.workDir, 'workspaces'))).filter(
-          (name) => !name.endsWith('.json'),
+          (name) => !name.endsWith('.json') && !name.endsWith('.history'),
         ),
       ).toEqual(['SAM1-11']);
       expect(existsSync(path.join(target.workDir, 'workspaces', 'SAM1-99'))).toBe(false);
@@ -4147,7 +4147,7 @@ describe('the source commands through the CLI', { timeout: 20_000 }, () => {
       // was created for the ticket key, and nothing was migrated or renamed.
       expect(
         (await readdir(path.join(target.workDir, 'workspaces'))).filter(
-          (name) => !name.endsWith('.json'),
+          (name) => !name.endsWith('.json') && !name.endsWith('.history'),
         ),
       ).toEqual([legacyId]);
       expect(existsSync(path.join(target.workDir, 'workspaces', 'SAM1-11'))).toBe(false);
@@ -4583,7 +4583,7 @@ describe('the source commands through the CLI', { timeout: 20_000 }, () => {
       // continuation adds no directory of its own beside the clone it reopened.
       expect(
         (await readdir(path.join(target.workDir, 'workspaces'))).filter(
-          (name) => !name.endsWith('.json'),
+          (name) => !name.endsWith('.json') && !name.endsWith('.history'),
         ),
       ).toEqual(['SAM1-11']);
       // The pointer label records the workspace the reports name, and every turn

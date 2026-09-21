@@ -408,6 +408,15 @@ async function reportDeliveryFailure(
   const key = item.ref.key;
 
   await updateReceipt(file, { problem: `delivery: ${problem}` });
+  const reportProblem = await saveDeveloperReport(context, item, run, null, problem);
+  if (reportProblem !== null) {
+    return stopWith(
+      state,
+      `${key}: the passed run is kept (report ${run.reportPath}), but its complete developer ` +
+        `report could not be saved before the outcome was published, so nothing was published ` +
+        `and intake stops: ${reportProblem}`,
+    );
+  }
   const feedbackStop = stop.aborted ? AbortSignal.timeout(FEEDBACK_DEADLINE_MS) : stop;
   try {
     await source.complete(item, runOutcome(run, attempt, null, problem), feedbackStop);
@@ -445,6 +454,65 @@ async function reportDeliveryFailure(
       ' Moving the issue back to the ready status is not that retry: it starts a new coding run ' +
       'in the same workspace.',
   );
+}
+
+/**
+ * Saves one finished run's complete developer report beside its workspace,
+ * before any comment renders it. `null` means it was saved, or that the run
+ * left no workspace to keep one beside; a string is a failure the caller stops
+ * intake on — a comment must not be published as though the complete report it
+ * renders did not have to exist locally.
+ */
+async function saveDeveloperReport(
+  context: SourceContext,
+  item: SourceTask,
+  run: RunTaskResult,
+  pullRequest: DeliveredPullRequest | null,
+  deliveryFailure: string | null,
+): Promise<string | null> {
+  const history = context.history;
+  const workspace = run.workspace;
+  if (history?.recordDeveloperReport === undefined || workspace === null) {
+    return null;
+  }
+  try {
+    await history.recordDeveloperReport({
+      ref: item.ref,
+      workspaceId: workspace.workspaceId,
+      task: item.task,
+      round: workspace.attempt ?? 1,
+      runId: run.run.runId,
+      reportPath: run.reportPath,
+      status: run.status,
+      reason: run.reason,
+      repairsUsed: run.repairsUsed,
+      attempts: run.attempts.map((attempt) => ({
+        turn: attempt.turn,
+        kind: attempt.kind,
+        agentSummary: attempt.agentSummary,
+        checks: attempt.checks?.outcome ?? null,
+      })),
+      pullRequest:
+        pullRequest === null
+          ? null
+          : {
+              number: null,
+              url: pullRequest.url,
+              title: null,
+              branch: workspace.branch,
+              baseBranch: null,
+              head: null,
+              observedAt: context.now().toISOString(),
+              round: workspace.attempt ?? null,
+              entryId: null,
+            },
+      deliveryFailure,
+      now: context.now(),
+    });
+    return null;
+  } catch (cause) {
+    return messageOf(cause);
+  }
 }
 
 /**
@@ -1154,6 +1222,7 @@ async function attempt(
         stop,
         tier,
         ...(guidance.length === 0 ? {} : { guidance }),
+        ...(context.history === undefined ? {} : { history: context.history }),
         ...(resume === undefined ? {} : { continuedWorkspace: resume }),
         // A first attempt of a fresh claim creates the workspace, so it is told
         // the name the item's source prefers for it — a Jira ticket key — and a
@@ -1346,6 +1415,20 @@ async function attempt(
     // sequence of its own, so the issue does not sit in the running status.
     const feedbackStop =
       run.status === 'cancelled' ? AbortSignal.timeout(FEEDBACK_DEADLINE_MS) : stop;
+    // The complete developer report is saved before anything renders it: the
+    // Jira result comment is the concise rendering, and the history a later
+    // developer or reviewer turn reads holds the complete report — including
+    // the delivery this attempt published.
+    const reportProblem = await saveDeveloperReport(context, item, run, pullRequest, null);
+    if (reportProblem !== null) {
+      await updateReceipt(file, { problem: `history: ${reportProblem}` });
+      return stopWith(
+        state,
+        `${item.ref.key}: the run is kept (report ${run.reportPath}), but its complete developer ` +
+          `report could not be saved before the result was published, so nothing was published ` +
+          `and intake stops: ${reportProblem}`,
+      );
+    }
     try {
       if (climbs) {
         // The attempt's own comment, published while the issue stays in the

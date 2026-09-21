@@ -22,10 +22,12 @@ import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { runCodexPrompt } from '../agents/codex/adapter.js';
 import { selectedCodexRuntime } from '../agents/codex/runtime.js';
+import { renderHistorySection } from '../history/prompt.js';
 import { openEvidenceLog } from '../reporting/logs.js';
 import type { AgentLog } from '../reporting/logs.js';
 import { messageOf } from '../shared/errors.js';
 import type { AgentActivity, AgentSelection } from '../shared/types.js';
+import type { HistorySnapshot } from '../history/contract.js';
 import type {
   ReviewEvidence,
   ReviewerTurn,
@@ -104,9 +106,16 @@ function describeChecks(evidence: ReviewEvidence): string {
 /**
  * The prompt one reviewer turn receives: who it is, the ticket, the pull
  * request's identity, the repository view it inspects, the CI evidence at the
- * head, and the one thing the turn has to produce — a valid `verdict.json`.
+ * head, the ticket's own conversation history — the same organization and local
+ * paths a developer turn is given — and the one thing the turn has to produce:
+ * a valid `verdict.json`.
  */
-export function reviewPrompt(evidence: ReviewEvidence, view: ReviewView, dir: string): string {
+export function reviewPrompt(
+  evidence: ReviewEvidence,
+  view: ReviewView,
+  dir: string,
+  history?: HistorySnapshot,
+): string {
   const { ref, task, pullRequest } = evidence;
   const location = 'repo';
   const verdictPath = path.join(dir, REVIEW_VERDICT_FILE);
@@ -174,6 +183,10 @@ export function reviewPrompt(evidence: ReviewEvidence, view: ReviewView, dir: st
   );
 
   sections.push(['## CI evidence at the reviewed head', describeChecks(evidence)].join('\n'));
+
+  if (history !== undefined) {
+    sections.push(renderHistorySection(history, 'reviewer'));
+  }
 
   sections.push(
     [
@@ -249,7 +262,12 @@ export function reviewPrompt(evidence: ReviewEvidence, view: ReviewView, dir: st
   return `${sections.join('\n\n')}\n`;
 }
 
-/** One nonblank string of the verdict file, bounded. */
+/**
+ * One nonblank string of the verdict file, bounded by refusing what runs past
+ * the bound rather than cutting it down: what follows the cut can be the whole
+ * finding, and a reviewer report is never silently shortened for a destination
+ * that renders it concisely.
+ */
 function verdictString(value: unknown, field: string, max: number): string {
   if (typeof value !== 'string' || value.trim() === '') {
     throw new ReviewError(
@@ -258,7 +276,17 @@ function verdictString(value: unknown, field: string, max: number): string {
         'publish.',
     );
   }
-  return value.trim().slice(0, max);
+  const text = value.trim();
+  if (text.length > max) {
+    throw new ReviewError(
+      'inconclusive',
+      `the reviewer's ${REVIEW_VERDICT_FILE} has a "${field}" of ${String(text.length)} ` +
+        `characters, past the ${String(max)} this harness accepts. Nothing is cut down: what ` +
+        `follows the bound can be the part that matters. Write the field within the bound, or ` +
+        'split it into several findings, and run the review again.',
+    );
+  }
+  return text;
 }
 
 /** One finding of the verdict file, or a refusal naming what is wrong. */
@@ -406,7 +434,7 @@ async function reviewTurn(
   request: ReviewerTurnRequest,
   parts: ReviewerParts,
 ): Promise<ReviewerTurnResult> {
-  const prompt = reviewPrompt(request.evidence, request.view, request.dir);
+  const prompt = reviewPrompt(request.evidence, request.view, request.dir, request.history);
   const inputPath = path.join(request.dir, REVIEW_INPUT_FILE);
   const logPath = path.join(request.dir, REVIEWER_LOG_FILE);
 

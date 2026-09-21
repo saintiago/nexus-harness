@@ -64,6 +64,7 @@ import { WorkspaceError } from '../workspace/errors.js';
 import { preflightSource } from '../workspace/preflight.js';
 import { refreshSource } from '../workspace/refresh.js';
 import { createActivityDisplay } from './activity.js';
+import { createConfiguredHistory } from './history.js';
 import { EXIT_CANCELLED, EXIT_INPUT_ERROR, EXIT_OK, EXIT_USAGE } from './context.js';
 import type { CliContext, CliIo } from './context.js';
 import { composeDependencies } from './dependencies.js';
@@ -365,6 +366,16 @@ async function queueCommand(options: QueueCommandOptions, context: CliContext): 
       ...(context.fetch === undefined ? {} : { fetch: context.fetch }),
       now: () => new Date(),
     });
+    // One ticket conversation history for the whole serial lifecycle: the
+    // coding turns and the reviewer turn prepare their snapshots through the
+    // same readers and the same local layout.
+    const history = createConfiguredHistory({
+      workDir,
+      jira: { http: jiraHttp, config: sourceConfig, token },
+      openRepository: async () => repository,
+      login: reviewConfig.app.login,
+      now: () => new Date(),
+    });
     const deliveryParts = context.deliveryParts ?? {};
     const delivery = createGitHubDelivery(deliveryConfig, {
       ...deliveryParts,
@@ -479,6 +490,7 @@ async function queueCommand(options: QueueCommandOptions, context: CliContext): 
           io: sourceIo,
           stop: stop.signal,
           preflight: preflightSource,
+          history,
           delivery,
           baselineDiagnosis,
           run: ({
@@ -490,6 +502,7 @@ async function queueCommand(options: QueueCommandOptions, context: CliContext): 
             preferredWorkspaceId,
             onWorkspaceReady,
             guidance,
+            history: runHistory,
           }) => {
             const agent = tier?.agent ?? config.agent;
             const dependencies = composeDependencies(
@@ -511,6 +524,7 @@ async function queueCommand(options: QueueCommandOptions, context: CliContext): 
                 sourceRef,
                 ...(tier === undefined ? {} : { tierName: tier.name }),
                 ...(guidance === undefined ? {} : { guidance }),
+                ...(runHistory === undefined ? {} : { history: runHistory }),
                 ...(continuedWorkspace === undefined ? {} : { continuedWorkspace }),
                 // A first attempt of a fresh claim creates the workspace, so the
                 // name the item's source prefers for it — a Jira ticket key —
@@ -625,6 +639,7 @@ async function queueCommand(options: QueueCommandOptions, context: CliContext): 
                 },
                 repository,
                 reviewer: reviewerTurn,
+                history,
                 views: reviewViews(),
                 workDir,
                 sourceRoot,

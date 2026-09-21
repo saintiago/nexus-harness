@@ -22,6 +22,10 @@
 import { randomBytes } from 'node:crypto';
 import { appendFile, mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { nextReviewRound, notePublishedReview } from '../history/reports.js';
+import { reviewerHistoryMarker } from '../history/marker.js';
+import { workspaceHistoryRoot } from '../history/paths.js';
+import type { HistorySnapshot } from '../history/contract.js';
 import type { SourceCandidate, SourceTask } from '../sources/contract.js';
 import { SourceError } from '../sources/contract.js';
 import { readReceipt, receiptFilePath } from '../sources/receipts.js';
@@ -227,6 +231,8 @@ interface ReviewRecord {
   readonly input: string | null;
   /** The repository view the reviewer inspected, when one was prepared. */
   readonly view: string | null;
+  /** The conversation snapshot the reviewer turn was given, when one was prepared. */
+  readonly history: string | null;
 }
 
 /** The review's body: the ticket link, the summary, and the unpositioned findings. */
@@ -236,6 +242,7 @@ function reviewBody(
   pullRequest: OpenPullRequest,
   verdict: ReviewVerdict,
   unpositioned: readonly ReviewFinding[],
+  reviewId: string,
 ): string {
   const lines = [
     `Nexus Lens review — ${ref.key}: ${oneLine(task.title)}`,
@@ -261,6 +268,9 @@ function reviewBody(
     `Reviewed head ${pullRequest.headSha} of ${pullRequest.url}. This is a review only: Nexus Lens`,
     'does not implement fixes, merge, or change the issue’s status, and CI and the required',
     'checks stay separate merge requirements.',
+    '',
+    `Harness record: ${reviewerHistoryMarker(reviewId)} — the complete reviewer report is kept ` +
+      'beside the ticket’s retained workspace, before this rendering was published.',
   );
   return lines.join('\n');
 }
@@ -332,7 +342,9 @@ async function reviewItem(context: ReviewScanContext, item: SourceTask): Promise
 
   try {
     const unchanged = await reviewIfDecided(context, item, pullRequest);
-    return unchanged ?? (await reviewWithTurn(context, item, pullRequest, workspacePath));
+    return (
+      unchanged ?? (await reviewWithTurn(context, item, pullRequest, workspaceId, workspacePath))
+    );
   } catch (cause) {
     // A recognized source or review failure is this ticket's problem; anything
     // else is a programming error, and the scan stops rather than reporting it
@@ -445,6 +457,7 @@ async function reviewWithTurn(
   context: ReviewScanContext,
   item: SourceTask,
   pullRequest: OpenPullRequest,
+  workspaceId: string,
   workspacePath: string,
 ): Promise<ReviewItemResult> {
   const { ref } = item;
@@ -488,7 +501,11 @@ async function reviewWithTurn(
       head,
     );
   }
-  const evidenceProblem = reviewEvidenceProblem(evidence);
+  // A ticket description too large for the prompt's own ticket section is not
+  // incomplete once the conversation snapshot carries it whole: the reviewer
+  // reads the complete text from the snapshot, so the turn is only refused when
+  // there is no snapshot to carry it.
+  const evidenceProblem = context.history === undefined ? reviewEvidenceProblem(evidence) : null;
   if (evidenceProblem !== null) {
     return attention(
       ref,
@@ -502,6 +519,8 @@ async function reviewWithTurn(
   const startedAt = context.now().toISOString();
   /** Set once the view exists; the record names it only then. */
   let viewPath: string | null = null;
+  /** Set once the conversation snapshot exists; the record names it only then. */
+  let historyPath: string | null = null;
 
   /** Writes the attempt's own `review.json`. A record that cannot be written stops the scan. */
   const writeRecord = async (parts: {
@@ -529,6 +548,7 @@ async function reviewWithTurn(
       reviewerLog: parts.reviewerRun ? path.join(reviewDir.dir, REVIEWER_LOG_FILE) : null,
       input: parts.reviewerRun ? path.join(reviewDir.dir, REVIEW_INPUT_FILE) : null,
       view: viewPath,
+      history: historyPath,
     };
     const file = path.join(reviewDir.dir, REVIEW_RECORD_FILE);
     try {
@@ -587,10 +607,42 @@ async function reviewWithTurn(
   }
   viewPath = view.path;
 
+  // The ticket's own conversation history, prepared before the reviewer turn:
+  // the same identified snapshot organization a developer turn is given. A
+  // snapshot that cannot be prepared stops the turn here, before a paid launch,
+  // and is reported as attention.
+  let history: HistorySnapshot | undefined;
+  if (context.history !== undefined) {
+    try {
+      const historyRoot = workspaceHistoryRoot(context.workDir, workspaceId);
+      history = await context.history.prepare({
+        ref,
+        task: item.task,
+        workspace: {
+          workspaceId,
+          workspacePath,
+          branch: `harness/${workspaceId}`,
+          baseCommit: pullRequest.baseSha,
+        },
+        role: 'reviewer',
+        round: await nextReviewRound({ workDir: context.workDir, root: historyRoot, ref }),
+        stop: reviewerStop,
+      });
+    } catch (cause) {
+      return await attentionResult(
+        `the ticket's local conversation history could not be prepared, so no reviewer turn was ` +
+          `started: ${messageOf(cause)}`,
+        false,
+      );
+    }
+    historyPath = history?.dir ?? null;
+  }
+
   const turn = await context.reviewer({
     dir: reviewDir.dir,
     evidence,
     view,
+    ...(history === undefined ? {} : { history }),
     stop: reviewerStop,
   });
   if (reviewerStop.aborted || turn.problem !== null || turn.verdict === null) {
@@ -681,6 +733,32 @@ async function reviewWithTurn(
   }
 
   const positioned = positionFindings(verdict.findings, evidence.files);
+  // The complete reviewer report is saved before anything renders it: the
+  // native review body and its inline comments are the concise rendering, and
+  // Jira and a later developer turn read the complete report from the local
+  // history instead of that rendering.
+  if (history !== undefined && context.history?.recordReviewerReport !== undefined) {
+    try {
+      await context.history.recordReviewerReport({
+        ref,
+        workspaceId,
+        task: item.task,
+        reviewId: reviewDir.reviewId,
+        round: history.round ?? 1,
+        head,
+        decision: verdict.decision,
+        summary: verdict.summary,
+        findings: verdict.findings,
+        now: context.now(),
+      });
+    } catch (cause) {
+      return await attentionResult(
+        `the complete reviewer report could not be saved before it was published, so nothing was ` +
+          `published: ${messageOf(cause)}`,
+        true,
+      );
+    }
+  }
   let review: PublishedReview;
   try {
     review = await context.repository.publishReview(
@@ -688,7 +766,14 @@ async function reviewWithTurn(
         pullRequest,
         head,
         decision: verdict.decision,
-        body: reviewBody(ref, item.task, pullRequest, verdict, positioned.unpositioned),
+        body: reviewBody(
+          ref,
+          item.task,
+          pullRequest,
+          verdict,
+          positioned.unpositioned,
+          reviewDir.reviewId,
+        ),
         comments: positioned.comments,
       },
       context.stop,
@@ -701,6 +786,18 @@ async function reviewWithTurn(
       `the review for ${ref.key} at ${head} was not published: ${messageOf(cause)}`,
       true,
     );
+  }
+  if (history !== undefined) {
+    // Enrichment only: the complete report already exists, and a failure to
+    // record the native review's own id never invalidates it.
+    await notePublishedReview(
+      workspaceHistoryRoot(context.workDir, workspaceId),
+      reviewDir.reviewId,
+      {
+        id: review.id,
+        url: review.url,
+      },
+    ).catch(() => undefined);
   }
 
   let check: PublishedCheck | null = null;

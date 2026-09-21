@@ -41,6 +41,7 @@
  */
 import { runLogPath } from '../reporting/logs.js';
 import { writeSourceTaskSnapshot } from '../reporting/report.js';
+import type { HistorySnapshot } from '../history/contract.js';
 import { messageOf } from '../shared/errors.js';
 import type {
   AttemptEvidence,
@@ -769,6 +770,43 @@ export async function runTask(
     // observe a working copy nothing else is writing to. The turn is also given
     // the run's own remaining time as a stop request, so work that would run
     // past the deadline is asked to stop rather than left to.
+    const stop = phaseStop(left, callerStop);
+    // The ticket's own conversation history, prepared before every coding turn:
+    // one identified local snapshot of the requirements, the Jira thread, the
+    // pull request conversation, and the harness's own reports. A snapshot that
+    // cannot be prepared stops the turn before it starts — a turn is not handed
+    // a promised local history that does not exist — and the failure names the
+    // ticket and the reason in the run's own report.
+    let turnHistory: HistorySnapshot | undefined;
+    if (request.history !== undefined && request.sourceRef !== undefined) {
+      try {
+        turnHistory = await request.history.prepare({
+          ref: request.sourceRef,
+          task,
+          workspace: {
+            workspaceId: workspace.workspaceId,
+            workspacePath: workspace.workspacePath,
+            branch: workspace.branch,
+            baseCommit: workspace.baseCommit,
+          },
+          role: 'developer',
+          round: workspace.attempt,
+          stop: stop.signal,
+        });
+      } catch (cause) {
+        stop.cancel();
+        return endRun({
+          status: 'failed',
+          reason:
+            `the ticket's local conversation history could not be prepared, so ` +
+            `${describeTurn(kind, turn)} was not started: ${oneLine(messageOf(cause))}`,
+          baseline,
+          attempts,
+          timeout: null,
+          cancellation: null,
+        });
+      }
+    }
     await dependencies.appendRunLog(
       timeline,
       kind === 'implementation'
@@ -776,7 +814,6 @@ export async function runTask(
         : `${nameTurn(kind, turn)} started: repair ${String(turn - 1)} of ${String(config.maxRepairs)} allowed`,
     );
     const agentLog = await dependencies.openAgentLog(run.logsDir, turn);
-    const stop = phaseStop(left, callerStop);
     let completed: AgentTurnResult | null = null;
     let turnProblem: string | null = null;
     try {
@@ -790,6 +827,7 @@ export async function runTask(
         agentLog,
         repair,
         ...(request.guidance === undefined ? {} : { guidance: request.guidance }),
+        ...(turnHistory === undefined ? {} : { history: turnHistory }),
         stop: stop.signal,
       });
     } catch (cause) {
