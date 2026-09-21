@@ -24,7 +24,7 @@ import { existsSync, realpathSync } from 'node:fs';
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { AgentError, runCodexTurn } from '../src/agents/codex/adapter.js';
+import { AgentError, runCodexPrompt, runCodexTurn } from '../src/agents/codex/adapter.js';
 import {
   CODEX_EXECUTABLE,
   CODEX_EXEC_ARGUMENTS,
@@ -917,8 +917,10 @@ describe('the launch every turn is given', () => {
   it('narrows the diagnostic policy to its own working root', () => {
     // The one turn that must not change what it inspects — the pre-delivery
     // baseline diagnosis — names `workspace-write`, and that policy's writable
-    // roots are exactly the turn's own working root: the host's temporary roots
-    // are excluded, so a `workDir` beneath one cannot put the retained working
+    // roots are exactly the turn's own working root: the additional roots the
+    // configuration would otherwise inherit are stated as none, and the host's
+    // temporary roots are excluded, so neither a `workDir` beneath one nor a
+    // root an operator's own configuration grants can put the retained working
     // copy or the snapshot inside a writable root. A coding turn keeps the
     // unsandboxed policy above and carries no such override.
     expect(codexExecArguments('workspace-write')).toEqual([
@@ -927,6 +929,8 @@ describe('the launch every turn is given', () => {
       'exec',
       '--sandbox',
       'workspace-write',
+      '-c',
+      'sandbox_workspace_write.writable_roots=[]',
       '-c',
       'sandbox_workspace_write.exclude_tmpdir_env_var=true',
       '-c',
@@ -937,7 +941,51 @@ describe('the launch every turn is given', () => {
     const coding = codexExecArguments('danger-full-access').join(' ');
     expect(coding).not.toContain('sandbox_workspace_write');
     expect(coding).not.toContain('exclude_tmpdir_env_var');
+    expect(coding).not.toContain('writable_roots');
   });
+
+  it('resets the additional writable roots a configured launch grants', async () => {
+    // An operator's own configuration, or the configured launch prefix, can
+    // grant the `workspace-write` policy additional writable roots. The
+    // diagnostic launch states them as none for itself: a root covering the
+    // harness's output directory would otherwise cover the retained working
+    // copy, the snapshot the reviewer inspects, and the diagnosis's own outcome
+    // record, and no post-turn check can undo a write the sandbox let through.
+    const fixture = await createFixture();
+    // A TOML literal string, because a Windows `.cmd` shim cannot carry a
+    // double quote through the command interpreter; the path itself is the
+    // point, and it really does cover the harness's output directory here.
+    const grant = `sandbox_workspace_write.writable_roots=['${fixture.parent}']`;
+    const prefix = [fixture.executable, '-c', grant];
+    const log = await openAgentLog(fixture.logsDir, 1);
+
+    const result = await runCodexPrompt(
+      {
+        prompt: 'diagnose the baseline',
+        label: 'Nexus Lens baseline diagnosis for TASK-1',
+        workspacePath: fixture.workspace,
+        sandbox: 'workspace-write',
+        skipGitRepoCheck: true,
+        agentLog: log,
+        stop: new AbortController().signal,
+      },
+      standInRuntime(fixture, {}, { command: prefix }),
+    );
+    await log.close();
+
+    // The turn completed through the real adapter; what matters here is the
+    // launch the stand-in recorded.
+    expect(result.summary).toBe('I changed the file.');
+    const argv = (await startRecord(fixture)).argv ?? [];
+    // The prefix's grant is passed on as configured, and the adapter's own
+    // statement comes after it: the value applied last for that key is the one
+    // the launch uses, so the turn really ran with no additional writable root
+    // of its own.
+    expect(argv.slice(0, 3)).toEqual(['-c', grant, '--ask-for-approval']);
+    expect(argv.indexOf('sandbox_workspace_write.writable_roots=[]')).toBeGreaterThan(
+      argv.indexOf(grant),
+    );
+  }, 60_000);
 });
 
 describe('how a turn ends, and what it reports', () => {

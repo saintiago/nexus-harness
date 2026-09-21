@@ -52,8 +52,9 @@ export const CODEX_EXECUTABLE = 'codex';
  * retained working copy, so it needs the unsandboxed policy above. A turn that
  * must not change what it is looking at — the pre-delivery baseline diagnostic —
  * runs under `workspace-write` instead: it reads anywhere, and the runtime's own
- * sandbox refuses every write outside the turn's own working root — the host's
- * temporary roots are excluded from that policy, not granted by it
+ * sandbox refuses every write outside the turn's own working root — that launch
+ * states its additional writable roots as none and excludes the host's
+ * temporary roots from the policy, rather than inheriting or granting either
  * (docs/spec.md §11). The policy is a property of the turn, never of the failure
  * that follows it: nothing widens a launch, and a coding turn is never started
  * from a diagnostic.
@@ -61,20 +62,30 @@ export const CODEX_EXECUTABLE = 'codex';
 export type CodexSandboxPolicy = 'danger-full-access' | 'workspace-write';
 
 /**
- * What one `workspace-write` launch adds to its policy: the host's temporary
- * roots are taken out of the writable set, so the writable roots are exactly the
- * turn's own working directory. The runtime's `workspace-write` policy otherwise
- * also permits writes under the host's temporary directory, and `workDir` is an
- * arbitrary path: with a `workDir` beneath a temporary root, the retained
+ * What one `workspace-write` launch adds to its policy, so that the writable
+ * roots are exactly the turn's own working directory. Two more sources of writable
+ * roots have to be stated away with it. The runtime's `workspace-write` policy
+ * otherwise permits writes under the host's temporary directory, and `workDir`
+ * is an arbitrary path: with a `workDir` beneath a temporary root, the retained
  * working copy and the snapshot a diagnosis inspects would both sit inside a
- * writable root, and starting the turn in `turn/` would not make either of them
- * read-only. The keys are the runtime's own configuration for that policy
- * (`sandbox_workspace_write.exclude_tmpdir_env_var` and
- * `sandbox_workspace_write.exclude_slash_tmp`), passed as `-c` overrides beside
- * the policy they narrow; the subcommand accepts them, and a runtime that
- * refuses one refuses the launch instead of widening it.
+ * writable root. And the policy inherits *additional* writable roots from the
+ * operator's own configuration or from the configured launch prefix: a root
+ * that covers the harness's output directory covers the retained working copy,
+ * the snapshot, and the diagnosis's own outcome record as well, and starting the
+ * turn in `turn/` would not take any of them back out.
+ *
+ * So both are stated for this launch, through the runtime's own keys for that
+ * policy — `sandbox_workspace_write.writable_roots` as the empty list,
+ * `sandbox_workspace_write.exclude_tmpdir_env_var`, and
+ * `sandbox_workspace_write.exclude_slash_tmp` — as `-c` overrides beside the
+ * policy they narrow. They come after the configured prefix, and the value
+ * applied last for a key is the one the launch uses, so a prefix that grants a
+ * root cannot leave it granted here. The subcommand accepts `-c`, and a runtime
+ * that refuses an override refuses the launch instead of widening it.
  */
-const WORKSPACE_WRITE_EXCLUSIONS: readonly string[] = [
+const WORKSPACE_WRITE_NARROWING: readonly string[] = [
+  '-c',
+  'sandbox_workspace_write.writable_roots=[]',
   '-c',
   'sandbox_workspace_write.exclude_tmpdir_env_var=true',
   '-c',
@@ -93,7 +104,7 @@ export function codexExecArguments(policy: CodexSandboxPolicy): readonly string[
     'exec',
     '--sandbox',
     policy,
-    ...(policy === 'workspace-write' ? WORKSPACE_WRITE_EXCLUSIONS : []),
+    ...(policy === 'workspace-write' ? WORKSPACE_WRITE_NARROWING : []),
     '--json',
     '-',
   ];
