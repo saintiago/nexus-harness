@@ -396,6 +396,27 @@ describe('the GitHub delivery step', () => {
     expect(git(fixture.workspace, 'status', '--porcelain').trim()).toBe('');
   });
 
+  it('refuses a missing recorded branch even when HEAD resolves successfully', async () => {
+    const fixture = await createFixture();
+    const head = git(fixture.workspace, 'rev-parse', 'HEAD').trim();
+    const failure = await withFakeGhOnPath(fixture.bin, async () =>
+      refusal(
+        async () =>
+          await fixture.delivery.deliver(
+            { ...requestFor(fixture), branch: 'harness/missing-branch' },
+            new AbortController().signal,
+          ),
+      ),
+    );
+
+    expect(failure).toBeInstanceOf(DeliveryError);
+    expect(failure.message).toContain('git rev-parse');
+    expect(destinationHasBranch(fixture)).toBe(false);
+    expect(await fakeGhCalls(fixture.gh)).toEqual([]);
+    expect(git(fixture.workspace, 'rev-parse', 'HEAD').trim()).toBe(head);
+    expect(git(fixture.workspace, 'status', '--porcelain').trim()).toBe('');
+  });
+
   it('delivers when the checkout is on another branch at the same revision', async () => {
     const fixture = await createFixture();
     const validated = git(fixture.workspace, 'rev-parse', 'HEAD').trim();

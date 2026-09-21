@@ -384,24 +384,38 @@ export function createGitHubDelivery(
       // Git here rather than assumed to be the same: a checkout left on another
       // branch must not publish the older revision that shares the recorded
       // branch's name (HARN-17).
-      const headRead = await execute(
+      // Both identities can be read by one Git invocation. This avoids a
+      // second process launch (notably expensive on Windows) while still
+      // refusing missing refs and checking both returned commits before push.
+      const revisions = await execute(
         request,
-        'delivery-git-head',
-        'git rev-parse --verify HEAD',
-        ['git', 'rev-parse', '--verify', 'HEAD'],
+        'delivery-git-revisions',
+        'git rev-parse HEAD and recorded branch',
+        [
+          'git',
+          'rev-parse',
+          '--revs-only',
+          '--end-of-options',
+          'HEAD^{commit}',
+          `refs/heads/${request.branch}^{commit}`,
+        ],
         stop,
         gitHint,
       );
-      const branchRead = await execute(
-        request,
-        'delivery-git-branch',
-        `git rev-parse --verify refs/heads/${request.branch}`,
-        ['git', 'rev-parse', '--verify', `refs/heads/${request.branch}`],
-        stop,
-        gitHint,
-      );
-      const validatedCommit = (await stdoutOf(headRead)).trim();
-      const publishedCommit = (await stdoutOf(branchRead)).trim();
+      const commitsRead = (await stdoutOf(revisions)).trim().split(/\r?\n/);
+      const [validatedCommit, publishedCommit] = commitsRead;
+      if (
+        commitsRead.length !== 2 ||
+        validatedCommit === undefined ||
+        publishedCommit === undefined ||
+        !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(validatedCommit) ||
+        !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(publishedCommit)
+      ) {
+        throw new DeliveryError(
+          'git rev-parse did not return both the checked-out and recorded-branch commits; ' +
+            'nothing was pushed and no pull request was created or updated.',
+        );
+      }
       if (validatedCommit !== publishedCommit) {
         throw new DeliveryError(
           `the retained workspace ${request.workspacePath} is checked out at ${validatedCommit}, ` +
