@@ -14,11 +14,10 @@
  * (notes/windows-fixture-flakes.md).
  */
 
-import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { inspectWorkspaceChanges } from '../src/workspace/changes.js';
 import { WorkspaceError } from '../src/workspace/errors.js';
 import { GIT_COMMAND_TIMEOUT_MS, gitProblem, gitStopOf, runGit } from '../src/workspace/git.js';
@@ -27,23 +26,12 @@ import { prepareWorkspace } from '../src/workspace/prepare.js';
 import type { PreparedWorkspace } from '../src/workspace/prepare.js';
 import { preflightSource } from '../src/workspace/preflight.js';
 import { allocateRunDirectory } from '../src/workspace/run-directory.js';
-import { endFixtureTree, installFakeGit } from './fixtures/local-target.js';
+import { installFakeGit } from './fixtures/local-target.js';
 import type { FakeGitState, FixtureProcessRecord } from './fixtures/local-target.js';
-import { cleanupTempDirectories, createTempDir } from './support.js';
+import { ownFixtureProcess, runProcess, useFixtureLifecycle } from './fixtures/lifecycle.js';
+import { createTempDir } from './support.js';
 
-/**
- * The fixture processes this file started, as each recorded itself: a stop a
- * test means to prove is stopped here too, so a failing assertion cannot leave a
- * hanging fixture behind for the rest of the suite.
- */
-const fixtureProcesses: FixtureProcessRecord[] = [];
-
-afterEach(async () => {
-  for (const record of fixtureProcesses.splice(0)) {
-    await endFixtureTree(record);
-  }
-  await cleanupTempDirectories();
-});
+useFixtureLifecycle();
 
 function pause(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -90,38 +78,6 @@ beforeEach(async () => {
     GIT_OPTIONAL_LOCKS: '0',
   };
 });
-
-interface ProcessResult {
-  readonly code: number | null;
-  readonly stdout: string;
-  readonly stderr: string;
-}
-
-function runProcess(
-  command: string,
-  args: readonly string[],
-  options: { cwd: string; env?: NodeJS.ProcessEnv },
-): Promise<ProcessResult> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, [...args], {
-      cwd: options.cwd,
-      env: options.env ?? process.env,
-      windowsHide: true,
-    });
-    let stdout = '';
-    let stderr = '';
-    child.stdout.setEncoding('utf8');
-    child.stderr.setEncoding('utf8');
-    child.stdout.on('data', (chunk: string) => {
-      stdout += chunk;
-    });
-    child.stderr.on('data', (chunk: string) => {
-      stderr += chunk;
-    });
-    child.on('error', reject);
-    child.on('close', (code) => resolve({ code, stdout, stderr }));
-  });
-}
 
 /** Runs the host's real `git`, which the stand-in is never confused with. */
 async function gitOrFail(args: readonly string[], cwd: string): Promise<string> {
@@ -259,18 +215,7 @@ async function readFakeGitRecord(state: FakeGitState, id: string): Promise<FakeG
  * miss it when the parent dies first.
  */
 function registerFixture(record: FakeGitRecord): void {
-  fixtureProcesses.push({
-    pid: record.pid,
-    token: record.token,
-    beaconDirectory: record.beaconDirectory,
-  });
-  if (record.child !== null && record.childToken !== null) {
-    fixtureProcesses.push({
-      pid: record.child,
-      token: record.childToken,
-      beaconDirectory: record.beaconDirectory,
-    });
-  }
+  ownFixtureProcess(record);
 }
 
 /** The error a call that was expected to fail rejected with. */

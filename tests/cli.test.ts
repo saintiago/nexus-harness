@@ -28,7 +28,7 @@ import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { colorAllowed, runCli } from '../src/cli.js';
 import { EXIT_CANCELLED, EXIT_INPUT_ERROR, EXIT_OK, EXIT_USAGE } from '../src/cli/context.js';
 import type { CliContext, CliTerminal, InterruptSignals } from '../src/cli/context.js';
@@ -38,7 +38,6 @@ import type { AgentActivity, RunReport } from '../src/shared/types.js';
 import { WorkspaceError } from '../src/workspace/errors.js';
 import { preflightSource } from '../src/workspace/preflight.js';
 import {
-  cleanupTempDirectories,
   createTempDir,
   documentedConfig,
   documentedHarnessConfig,
@@ -53,8 +52,9 @@ import {
   type JsonObject,
 } from './support.js';
 import { HARNESS_CONFIG_FILE_NAME, PROJECT_CONFIG_FILE_NAME } from '../src/config/paths.js';
+import { useFixtureLifecycle } from './fixtures/lifecycle.js';
 
-afterEach(cleanupTempDirectories);
+useFixtureLifecycle();
 
 // ---------------------------------------------------------------------------
 // Running the CLI

@@ -13,15 +13,16 @@
 
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { createGitHubDelivery, DeliveryError } from '../src/delivery/github.js';
 import type { Delivery, DeliveryRequest } from '../src/delivery/github.js';
 import type { GitHubDeliveryConfig } from '../src/shared/types.js';
 import { fakeGhCalls, fakePullRequests, git, installFakeGh } from './fixtures/local-target.js';
 import type { FakeGhState } from './fixtures/local-target.js';
-import { cleanupTempDirectories, createTempDir } from './support.js';
+import { useFixtureLifecycle } from './fixtures/lifecycle.js';
+import { createTempDir } from './support.js';
 
-afterEach(cleanupTempDirectories);
+useFixtureLifecycle();
 
 const REPOSITORY = 'example-owner/example-repo';
 const BASE_BRANCH = 'main';

@@ -19,7 +19,6 @@
  * README.md, "Coding runtime", and docs/tasks.md T12/T16.
  */
 
-import { spawn } from 'node:child_process';
 import { existsSync, realpathSync } from 'node:fs';
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -58,7 +57,11 @@ import {
   fixtureProcessGone,
   waitFor,
 } from './fixtures/local-target.js';
-import { cleanupTempDirectories, createTempDir } from './support.js';
+import { disposeFixtures, runProcess, useFixtureLifecycle } from './fixtures/lifecycle.js';
+import type { ProcessResult } from './fixtures/lifecycle.js';
+import { createTempDir } from './support.js';
+
+useFixtureLifecycle();
 
 /**
  * The stand-in runtime processes this file has started, as each of them recorded
@@ -158,7 +161,7 @@ afterEach(async () => {
       await waitUntilGone(one.pid);
     }
   }
-  await cleanupTempDirectories();
+  await disposeFixtures();
 });
 
 /** Waits, bounded, for one stand-in's own beacon to fall silent. */
@@ -197,38 +200,6 @@ beforeEach(async () => {
     GIT_OPTIONAL_LOCKS: '0',
   };
 });
-
-interface ProcessResult {
-  readonly code: number | null;
-  readonly stdout: string;
-  readonly stderr: string;
-}
-
-function runProcess(
-  command: string,
-  args: readonly string[],
-  options: { cwd: string; env?: NodeJS.ProcessEnv },
-): Promise<ProcessResult> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, [...args], {
-      cwd: options.cwd,
-      env: options.env ?? process.env,
-      windowsHide: true,
-    });
-    let stdout = '';
-    let stderr = '';
-    child.stdout.setEncoding('utf8');
-    child.stderr.setEncoding('utf8');
-    child.stdout.on('data', (chunk: string) => {
-      stdout += chunk;
-    });
-    child.stderr.on('data', (chunk: string) => {
-      stderr += chunk;
-    });
-    child.on('error', reject);
-    child.on('close', (code) => resolve({ code, stdout, stderr }));
-  });
-}
 
 /** Runs `git` with literal arguments in the fixture environment. */
 function git(args: readonly string[], cwd: string): Promise<ProcessResult> {
