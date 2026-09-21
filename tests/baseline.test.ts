@@ -272,6 +272,44 @@ function scriptedReviewer(
   };
 }
 
+/**
+ * One reviewer turn a test interrupts while it is really running: it starts,
+ * waits for the turn's own stop, and answers the way the real reviewer answers
+ * a stop that lands mid-turn — a rejected result carrying the turn's own stop.
+ */
+function interruptibleReviewer(shutdown: BaselineReviewResult['shutdown']): {
+  readonly review: BaselineReview;
+  readonly started: Promise<void>;
+} {
+  let started: () => void = () => undefined;
+  const startedTurn = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  return {
+    started: startedTurn,
+    review: async (request) => {
+      started();
+      await new Promise<void>((resolve) => {
+        if (request.stop.aborted) {
+          resolve();
+          return;
+        }
+        request.stop.addEventListener('abort', () => resolve(), { once: true });
+      });
+      return {
+        summary: null,
+        finding: null,
+        problem:
+          `the baseline reviewer turn for ${request.item.ref.key} was stopped before it produced ` +
+          'a finding — its time limit expired, or the intake was interrupted — so nothing is ' +
+          'published',
+        logPath: path.join(request.dir, 'reviewer.log'),
+        shutdown,
+      };
+    },
+  };
+}
+
 function phaseFor(parts: {
   readonly record: FakeRecord;
   /** A scripted answer, or a reviewer function a test drives itself. */
@@ -656,44 +694,6 @@ describe('the pre-delivery baseline diagnosis', () => {
     expect(reviewer.requests).toEqual([]);
     expect(record.posted).toEqual([]);
   });
-
-  /**
-   * One reviewer turn a test interrupts while it is really running: it starts,
-   * waits for the turn's own stop, and answers the way the real reviewer answers
-   * a stop that lands mid-turn — a rejected result carrying the turn's own stop.
-   */
-  function interruptibleReviewer(shutdown: BaselineReviewResult['shutdown']): {
-    readonly review: BaselineReview;
-    readonly started: Promise<void>;
-  } {
-    let started: () => void = () => undefined;
-    const startedTurn = new Promise<void>((resolve) => {
-      started = resolve;
-    });
-    return {
-      started: startedTurn,
-      review: async (request) => {
-        started();
-        await new Promise<void>((resolve) => {
-          if (request.stop.aborted) {
-            resolve();
-            return;
-          }
-          request.stop.addEventListener('abort', () => resolve(), { once: true });
-        });
-        return {
-          summary: null,
-          finding: null,
-          problem:
-            `the baseline reviewer turn for ${ISSUE_KEY} was stopped before it produced a ` +
-            'finding — its time limit expired, or the intake was interrupted — so nothing is ' +
-            'published',
-          logPath: path.join(request.dir, 'reviewer.log'),
-          shutdown,
-        };
-      },
-    };
-  }
 
   it('records an interrupt that lands during the reviewer turn and leaves the item In Review', async () => {
     const workDir = await createTempDir();
@@ -1896,6 +1896,32 @@ describe('finishing a diagnosis a stopped invocation left pending', () => {
     expect(resumed?.detail).toContain('the site refused the read');
     expect(record.posted).toEqual([]);
     expect(reviewer.requests).toEqual([]);
+  });
+
+  it('records an interrupt that lands during a resumed reviewer turn', async () => {
+    const workDir = await createTempDir();
+    const record = await pendingEvidence(workDir);
+    const reviewer = interruptibleReviewer({ termination: 'confirmed', problem: null });
+    const { diagnosis } = phaseFor({ record, reviewer: reviewer.review, workDir });
+    const controller = new AbortController();
+
+    const resuming = diagnosis.resume(controller.signal);
+    await reviewer.started;
+    controller.abort(new Error('the user interrupted intake'));
+    const outcome = await resuming;
+
+    // The ticket is not the price of the interruption: the one comment records
+    // it, the item waits In Review, the evidence is settled instead of being
+    // left pending for the next invocation to publish, and the resume reports
+    // that attention rather than cancelling silently.
+    expect(outcome?.kind).toBe('attention');
+    if (outcome?.kind === 'attention') {
+      expect(outcome.cleanupConfirmed).toBe(true);
+    }
+    expect(record.status).toBe('In Review');
+    expect(record.posted).toHaveLength(1);
+    expect(record.posted[0]?.join('\n')).toContain(`${BASELINE_MARKER_PREFIX}attention:`);
+    expect((await evidenceRecordFor(workDir, PROJECT)).record['closed']).toBe('attention');
   });
 
   it('publishes the finding an interrupted turn already wrote, without a second turn', async () => {
