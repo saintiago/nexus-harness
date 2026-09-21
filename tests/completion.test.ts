@@ -1653,6 +1653,30 @@ describe('arming native auto-merge before the final gate', () => {
     expect(transitions(fixture)).toHaveLength(0);
   });
 
+  it('retries a transient read before arming instead of stopping the queue for a person', async () => {
+    const fixture = await createFixture();
+    // The first read of the delivered pull request is unavailable once: the arm
+    // step reads it again inside its own deadline, arms exactly once, and
+    // reports no person.
+    await writeFile(
+      path.join(fixture.gh.dir, 'fail-once.json'),
+      JSON.stringify({ op: 'list', status: 503, message: 'Server Error' }),
+      'utf8',
+    );
+    const sleepCalls = { count: 0 };
+
+    const armed = onlyArm(
+      await passFor(fixture, { clockStepMs: 1_000, sleepCalls }).arm(AbortSignal.timeout(30_000)),
+    );
+
+    expect(armed.status, armed.detail).toBe('armed');
+    expect(armed.head).toBe(HEAD);
+    expect(sleepCalls.count).toBeGreaterThan(0);
+    expect(
+      (await fakeCompletionCalls(fixture.gh)).filter((call) => call.op === 'merge'),
+    ).toHaveLength(1);
+  });
+
   it('arms while the final required check is pending, then the green gate uses that arm', async () => {
     const fixture = await createFixture({
       pulls: [ONE_PULL_REQUEST],

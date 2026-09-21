@@ -1524,9 +1524,15 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
     if (!evidence.ready) {
       return { ref, status: 'attention', detail: evidence.problem };
     }
+    // The arm step's own deadline is the same bounded budget the completion
+    // pass gives one item, so a transient read failure here is repeated inside
+    // it instead of stopping the queue for a person.
+    const deadline = now().getTime() + config.deadlineSeconds * 1000;
     let context: PullContext | null;
     try {
-      context = await contextFor(item, item.pointers[0] ?? '', stop);
+      context = await readEvidence(item, stop, deadline, () =>
+        contextFor(item, item.pointers[0] ?? '', stop),
+      );
     } catch (cause) {
       return {
         ref,
@@ -1543,15 +1549,7 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
           'was armed; the completion path verifies any merge it admitted',
       };
     }
-    // The arm step's own deadline is the same bounded budget the completion
-    // pass gives one item, so a transient read failure here is retried inside
-    // it instead of stopping the queue for a person.
-    const arming = await ensureArmed(
-      context,
-      stop,
-      { beginsHere: false },
-      now().getTime() + config.deadlineSeconds * 1000,
-    );
+    const arming = await ensureArmed(context, stop, { beginsHere: false }, deadline);
     if (arming.kind === 'attention') {
       return { ref, status: 'attention', detail: arming.detail };
     }
