@@ -2,16 +2,19 @@
  * What a continued attempt is told about the attempts before it and what the
  * item's own thread said since: the reviewed baseline finding first, then the
  * oldest of the kept lines, bounded so a long conversation or a long failure
- * cannot grow a prompt without limit. A finding the thread cannot supply — a
- * thread that could not be read, or one that no longer carries it — is read back
- * from the retained evidence and carried the same way, so a workspace returned
- * for baseline repair is never started without it (docs/WORKFLOW.md §11).
+ * cannot grow a prompt without limit.
+ *
+ * The finding is not read here: it arrives already established, from the
+ * item's own whole comment when that comment names the evidence the retained
+ * record closed as a repair, or from that record itself. A comment of the
+ * thread is otherwise ordinary context — never promoted to the requirement to
+ * repair the baseline because it happens to contain a marker
+ * (docs/WORKFLOW.md §11).
  *
  * All of it is context for a turn: none of it becomes a command, an argument, a
  * path, or a limit.
  */
 import type { WorkspaceAttempt } from '../workspace/state.js';
-import { baselineGuidanceLines } from './baseline.js';
 import type { SourceComment } from './contract.js';
 
 /** How much context a continued attempt is given, and how much of one line. */
@@ -47,14 +50,16 @@ export function guidanceFrom(
   attempts: readonly WorkspaceAttempt[],
   comments: readonly SourceComment[],
   /**
-   * The reviewed baseline finding read back from the retained evidence, when
-   * the item's own thread could not supply it. It is the same finding in the
-   * same form `baselineGuidanceLines` renders from a comment, so it is carried
-   * first and by the same rules either way (docs/WORKFLOW.md §11).
+   * The reviewed baseline finding this attempt has to address, already
+   * established by the caller: the whole finding the item's own thread carries
+   * when it names the evidence the retained record closed as a repair, or the
+   * complete finding read back from that record. It is carried first, as its
+   * own lines, and is never one of the bounded context lines
+   * (docs/WORKFLOW.md §11).
    */
-  recoveredFinding: readonly string[] = [],
+  reviewedFinding: readonly string[] = [],
 ): readonly string[] {
-  const findings: string[] = [...recoveredFinding];
+  const findings: string[] = reviewedFinding.slice(0, GUIDANCE_FINDING_MAX_LINES);
   const lines: string[] = [];
   attempts.forEach((attempt, index) => {
     lines.push(
@@ -64,15 +69,6 @@ export function guidanceFrom(
     );
   });
   for (const comment of comments) {
-    // A reviewed baseline finding is carried as its own fields rather than as
-    // one collapsed paragraph: the developer needs the likely cause and the
-    // repair whole, and collapsing a multi-field comment is what used to cut
-    // them off.
-    const finding = baselineGuidanceLines(comment.text);
-    if (finding.length > 0) {
-      findings.push(...finding.slice(0, Math.max(0, GUIDANCE_FINDING_MAX_LINES - findings.length)));
-      continue;
-    }
     lines.push(
       `comment by ${comment.author} at ${comment.createdAt}: ${guidanceLine(comment.text)}`,
     );

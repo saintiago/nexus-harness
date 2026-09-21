@@ -422,10 +422,23 @@ export type BaselineResumeOutcome =
  * (docs/WORKFLOW.md §11).
  */
 export type BaselineReviewedFinding =
-  /** The workspace was returned for repair and this is the reviewed finding. */
-  | { readonly kind: 'finding'; readonly finding: BaselineFinding }
+  /**
+   * The workspace was returned for repair and this is the reviewed finding,
+   * with the identity of the evidence it was published for: a comment on the
+   * item's own thread is this same reviewed outcome only when it carries that
+   * identity and says the whole finding.
+   */
+  | { readonly kind: 'finding'; readonly finding: BaselineFinding; readonly evidenceId: string }
   /** This workspace has no reviewed finding its next attempt must be told. */
   | { readonly kind: 'none' }
+  /**
+   * The workspace was returned for repair with this evidence, and the finding
+   * the record kept beside it cannot be read back. The item's own thread is
+   * the ordinary source of that finding, so the whole comment it carries for
+   * this identity still supplies it; when there is none either, nothing may
+   * start and `detail` names what a person has to inspect.
+   */
+  | { readonly kind: 'unreadable'; readonly evidenceId: string; readonly detail: string }
   /** A reviewed finding is required and cannot be read back; nothing is started. */
   | { readonly kind: 'problem'; readonly detail: string };
 

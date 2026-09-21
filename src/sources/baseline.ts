@@ -36,7 +36,7 @@ import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promise
 import path from 'node:path';
 import { messageOf } from '../shared/errors.js';
 import { readBaselineFinding, readBaselineReviewerShutdown } from '../reviews/baseline.js';
-import { BASELINE_GUIDANCE_PREFIX } from '../runs/contracts.js';
+import { BASELINE_GUIDANCE_PREFIX, FEEDBACK_DEADLINE_MS } from '../runs/contracts.js';
 import type { AgentTurnShutdown } from '../runs/contracts.js';
 import { unconfirmedShutdownProblem } from '../runs/progress.js';
 import type { CheckRoundResult, CommandResult, SourceRef, Task } from '../shared/types.js';
@@ -188,42 +188,58 @@ const ATTENTION_FIELD_LABELS = ['Why no repair', 'Required action'] as const;
 const REPAIR_FIRST_GUIDANCE = 'repair the baseline before continuing the original task';
 
 /**
- * The reviewed finding one diagnosis comment carries, as separate guidance
- * lines: one line per field, each one exactly as wide as the comment's own
- * bound, so a later attempt is handed every field whole instead of one collapsed
- * paragraph whose tail — the likely cause and the repair — is what got cut.
- * An actionable finding carries the requirement to repair the baseline first
- * ahead of its fields; a non-actionable one carries its own two fields.
+ * The reviewed finding one diagnosis comment carries, or `null` when the text
+ * is not that whole comment.
  *
- * A comment without a diagnosis marker, or without any of the fields, produces
- * nothing: the caller falls back to the ordinary one-line rendering of it. The
- * labels are this harness's own, written by `diagnosisParagraphs` above.
+ * Only a complete comment counts: the repair marker naming the evidence it was
+ * written for, and all four fields nonblank, each one whole as the comment wrote
+ * it — so a partial quotation, a rewritten comment, or one that names some other
+ * evidence is never read as a reviewed outcome and is never handed to a coding
+ * turn as the thing to repair first. Whether that identity is this workspace's
+ * own is the caller's decision: the retained evidence beside the workspace is
+ * what says which finding a continuation was returned with, and the comment is
+ * accepted only when the two agree (docs/WORKFLOW.md §11).
+ *
+ * The labels are this harness's own, written by `diagnosisParagraphs` above.
  */
-export function baselineGuidanceLines(text: string): readonly string[] {
-  if (!text.includes(BASELINE_MARKER_PREFIX)) {
-    return [];
+export function baselineCommentFinding(
+  text: string,
+): { readonly evidenceId: string; readonly lines: readonly string[] } | null {
+  const marker = `${BASELINE_MARKER_PREFIX}repair:`;
+  const at = text.indexOf(marker);
+  if (at < 0) {
+    return null;
   }
-  const repair: string[] = [];
-  const attention: string[] = [];
+  // The identity is the hash `baselineEvidenceId` produced: a full-width
+  // hexadecimal digest, not a bare marker a comment can grow around — and not
+  // the prefix of some longer token, which would let an edited comment borrow
+  // another piece of evidence's identity.
+  const evidenceId = /^[0-9a-f]{32}(?![0-9a-zA-Z])/.exec(text.slice(at + marker.length))?.[0];
+  if (evidenceId === undefined) {
+    return null;
+  }
+  const written = new Map<string, string>();
   for (const raw of text.split('\n')) {
     const line = raw.trim();
     for (const label of REPAIR_FIELD_LABELS) {
       const prefix = `${label}: `;
       if (line.startsWith(prefix)) {
-        repair.push(findingGuidanceLine(label, line.slice(prefix.length)));
-      }
-    }
-    for (const label of ATTENTION_FIELD_LABELS) {
-      const prefix = `${label}: `;
-      if (line.startsWith(prefix)) {
-        attention.push(findingGuidanceLine(label, line.slice(prefix.length)));
+        const value = line.slice(prefix.length).trim();
+        if (value !== '') {
+          written.set(label, value);
+        }
       }
     }
   }
-  // The two shapes are exclusive in a comment this harness wrote. Should a
-  // thread ever carry a mix, the actionable fields win: the ordering
-  // requirement is never dropped from a finding a developer may act on.
-  return repair.length > 0 ? [repairFirstGuidanceLine(), ...repair] : attention;
+  const fields: string[] = [];
+  for (const label of REPAIR_FIELD_LABELS) {
+    const value = written.get(label);
+    if (value === undefined) {
+      return null;
+    }
+    fields.push(findingGuidanceLine(label, oneLine(value)));
+  }
+  return { evidenceId, lines: [repairFirstGuidanceLine(), ...fields] };
 }
 
 /** The one line that says what comes first, in the shape of a finding field. */
@@ -827,16 +843,37 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
     // the reviewer runtime started may still be writing to its evidence.
     const unconfirmed = unconfirmedShutdownProblem(reviewed.shutdown ?? null);
 
+    // A stop the caller itself asked for ends the reviewer turn, but it does not
+    // excuse leaving the ticket it claimed in the running status with nothing
+    // looking for it: the interruption is what this evidence's one comment then
+    // records. The feedback runs under its own short deadline rather than the
+    // aborted stop, exactly as the runner's own stopped result does, so the
+    // ticket ends where a person can find it.
+    const interrupted = stop.aborted;
+    const feedbackStop = interrupted ? AbortSignal.timeout(FEEDBACK_DEADLINE_MS) : stop;
+
     // A turn that failed, was stopped, wrote nothing usable, or left its view
     // changed has no finding: the diagnosis records that instead of guessing
     // at a repair, and the item stays In Review for a person.
     const finding: BaselineFinding = reviewed.finding ?? {
       outcome: 'inconclusive',
-      reason: `the baseline diagnostic produced no usable finding: ${
-        reviewed.problem ?? 'no reason was recorded'
-      }`,
-      requiredAction:
-        unconfirmed === null
+      reason: interrupted
+        ? `the intake was stopped while the one baseline reviewer turn was running, so this red ` +
+          `baseline has no finding: ${reviewed.problem ?? 'no reason was recorded'}`
+        : `the baseline diagnostic produced no usable finding: ${
+            reviewed.problem ?? 'no reason was recorded'
+          }`,
+      requiredAction: interrupted
+        ? 'The interruption is recorded here with the evidence the turn left, no coding turn was ' +
+          'started, and nothing was delivered. ' +
+          (unconfirmed === null
+            ? ''
+            : 'Everything the reviewer runtime started was not seen to end ' +
+              `(${oneLine(unconfirmed)}), so the intake lock is kept for inspection and nothing ` +
+              'the diagnosis wrote is treated as settled. ') +
+          `Inspect the evidence under "${dir}", then move the item back to "${readyStatus}" to ` +
+          'continue the same workspace, or repair the baseline by hand.'
+        : unconfirmed === null
           ? 'Check the configured reviewer launch, its credentials, and the evidence under ' +
             `"${dir}", then move the item back to "${readyStatus}" to continue it, or repair the ` +
             'baseline by hand.'
@@ -859,7 +896,7 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
 
     let commentId: string;
     try {
-      commentId = await record.postComment(item.ref.id, paragraphs, stop);
+      commentId = await record.postComment(item.ref.id, paragraphs, feedbackStop);
     } catch (cause) {
       return unfinished(
         stop,
@@ -871,7 +908,7 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
     }
 
     const target = finding.outcome === 'repair' ? readyStatus : reviewStatus;
-    const moved = await move(item, target, stop);
+    const moved = await move(item, target, feedbackStop);
     if ('problem' in moved) {
       return unfinished(
         stop,
@@ -1117,10 +1154,13 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
    * was published as a repair.
    *
    * `none` means nothing was returned for repair and nothing has to be
-   * recovered. `problem` means either that a required finding cannot be read
-   * back — its file is gone or unusable — or that the evidence cannot be read
-   * clearly enough to say which of the two this is, and both leave the caller
-   * stopping rather than starting a developer without the finding.
+   * recovered. `unreadable` means the workspace was returned for repair and
+   * the finding kept under its evidence cannot supply it — gone, unusable, or
+   * not the actionable finding its own record closed as — so the item's own
+   * thread has to, and the identity says which comment that would be.
+   * `problem` means the evidence itself cannot be read clearly enough to say
+   * either, and that leaves the caller stopping rather than starting a
+   * developer without the finding.
    */
   const reviewedFinding = async (
     workspaceId: string,
@@ -1187,17 +1227,35 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
     if (newest === undefined) {
       return { kind: 'none' };
     }
+    let finding: BaselineFinding;
     try {
-      return { kind: 'finding', finding: await readBaselineFinding(newest.where) };
+      finding = await readBaselineFinding(newest.where);
     } catch (cause) {
       return {
-        kind: 'problem',
+        kind: 'unreadable',
+        evidenceId: newest.evidence.evidenceId,
         detail:
           `the reviewed baseline finding of workspace "${workspaceId}" is required — its evidence ` +
           `under "${newest.where}" says it was returned for repair — and cannot be read back: ` +
           messageOf(cause),
       };
     }
+    if (finding.outcome !== 'repair') {
+      // The record says this workspace was returned for a repair, and the
+      // finding kept beside it says there is none to make: a developer would be
+      // told to repair the baseline with nothing to act on, so nothing is
+      // started and a person reads the two records.
+      return {
+        kind: 'unreadable',
+        evidenceId: newest.evidence.evidenceId,
+        detail:
+          `the reviewed baseline finding of workspace "${workspaceId}" is required — its evidence ` +
+          `under "${newest.where}" says it was returned for repair — but the finding kept beside ` +
+          'it is not an actionable one, so no developer may be started from it; inspect those two ' +
+          'records by hand',
+      };
+    }
+    return { kind: 'finding', finding, evidenceId: newest.evidence.evidenceId };
   };
 
   return { diagnose, resume, reviewedFinding };

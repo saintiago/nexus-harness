@@ -18,7 +18,7 @@ import { rm } from 'node:fs/promises';
 import type { DeliveredPullRequest, Delivery } from '../delivery/github.js';
 import { DeliveryError } from '../delivery/github.js';
 import type { RunTaskResult } from '../runs/contracts.js';
-import { RunCancelledError, RunTimeoutError } from '../runs/contracts.js';
+import { FEEDBACK_DEADLINE_MS, RunCancelledError, RunTimeoutError } from '../runs/contracts.js';
 import { messageOf } from '../shared/errors.js';
 import { workspaceStopOf } from '../workspace/errors.js';
 import type { AttemptEvidence, CheckRoundResult, SourceRef } from '../shared/types.js';
@@ -42,7 +42,7 @@ import type {
   QueueTicket,
 } from './contract.js';
 import { SourceError, SourceFeedbackError } from './contract.js';
-import { baselineFindingGuidanceLines, baselineGuidanceLines, resumeStop } from './baseline.js';
+import { baselineCommentFinding, baselineFindingGuidanceLines, resumeStop } from './baseline.js';
 import { decideAttempt } from './eligibility.js';
 import { guidanceFrom } from './guidance.js';
 import {
@@ -688,9 +688,28 @@ async function resumeBaseline(
   return stopWith(state, `${phase}: ${stopped.detail}`, stopped.cleanupConfirmed);
 }
 
-/** Whether one comment of the item's own thread carries a reviewed baseline finding. */
-function isBaselineFinding(comment: SourceComment): boolean {
-  return baselineGuidanceLines(comment.text).length > 0;
+/**
+ * The finding one item's own thread carries for one piece of evidence, or
+ * `null` when it carries none.
+ *
+ * Only a comment that says the whole finding and names the exact evidence this
+ * workspace's retained record closed as a repair counts: a comment that is
+ * partial, rewritten, or about some other evidence is not this workspace's
+ * reviewed outcome, and the complete finding the evidence kept beside the
+ * workspace is handed over instead. A comment that carries no diagnosis marker
+ * is the ordinary thread context it always was (docs/WORKFLOW.md §11).
+ */
+function threadFinding(
+  comments: readonly SourceComment[],
+  evidenceId: string,
+): readonly string[] | null {
+  for (const comment of comments) {
+    const finding = baselineCommentFinding(comment.text);
+    if (finding !== null && finding.evidenceId === evidenceId) {
+      return finding.lines;
+    }
+  }
+  return null;
 }
 
 /**
@@ -699,8 +718,13 @@ function isBaselineFinding(comment: SourceComment): boolean {
  * thread would have supplied. It is how a claim that continues such a workspace
  * is guaranteed the finding even when the item's own thread cannot supply it:
  * `none` means nothing was returned for repair — an ordinary continuation —
- * while `problem` means a required finding could not be read back, so no
- * developer may start (docs/WORKFLOW.md §11).
+ * while `problem` means the evidence cannot be read clearly enough to say
+ * whether one is required, so no developer may start (docs/WORKFLOW.md §11). A
+ * `finding` and an `unreadable` one both carry the identity of the evidence the
+ * workspace was returned for repair with, so a comment on the item's own thread
+ * can be held against it before that comment is treated as the same reviewed
+ * outcome — and `unreadable` says the finding file itself cannot supply it, so
+ * the thread is the only source left.
  */
 async function reviewedBaselineGuidance(
   context: SourceContext,
@@ -708,7 +732,12 @@ async function reviewedBaselineGuidance(
   stop: AbortSignal,
 ): Promise<
   | { readonly kind: 'none' }
-  | { readonly kind: 'finding'; readonly lines: readonly string[] }
+  | {
+      readonly kind: 'finding';
+      readonly evidenceId: string;
+      readonly lines: readonly string[];
+    }
+  | { readonly kind: 'unreadable'; readonly evidenceId: string; readonly detail: string }
   | { readonly kind: 'problem'; readonly detail: string }
 > {
   const diagnosis = context.baselineDiagnosis;
@@ -724,7 +753,11 @@ async function reviewedBaselineGuidance(
     return { kind: 'problem', detail: messageOf(cause) };
   }
   if (recovered.kind === 'finding') {
-    return { kind: 'finding', lines: baselineFindingGuidanceLines(recovered.finding) };
+    return {
+      kind: 'finding',
+      evidenceId: recovered.evidenceId,
+      lines: baselineFindingGuidanceLines(recovered.finding),
+    };
   }
   return recovered;
 }
@@ -1004,22 +1037,25 @@ async function attempt(
     }
     // The reviewed baseline finding of the workspace this attempt continues is
     // not context this attempt may start without: the next claim after a red
-    // baseline was returned for repair has to be told it. The thread is the
-    // ordinary source of it, and when the thread cannot supply it — a read that
-    // failed, or a thread that no longer carries it — the evidence this harness
-    // kept beside the workspace is: a finding that is required and cannot be
-    // read back stops intake instead of starting a developer without it
+    // baseline was returned for repair has to be told it, and the retained
+    // evidence is what says one is required and which one it is. The item's
+    // own thread is the ordinary source of it, but only as its whole comment:
+    // one that is partial, rewritten, or about some other evidence is not
+    // this workspace's reviewed outcome and is never promoted to the
+    // requirement, so the complete finding the evidence kept is handed over
+    // instead. A finding that is required and that neither source can supply
+    // stops intake rather than starting a developer without it
     // (docs/WORKFLOW.md §11).
     let recoveredFinding: readonly string[] = [];
-    if (workspaceId !== undefined && !comments.some(isBaselineFinding)) {
+    if (workspaceId !== undefined) {
       const recovered = await reviewedBaselineGuidance(context, workspaceId, stop);
       if (recovered.kind === 'problem') {
         if (stop.aborted) {
           return 'cancelled';
         }
         const problem =
-          `${item.ref.key}: the reviewed finding its baseline repair was returned with could not ` +
-          `be read back, so no developer was started` +
+          `${item.ref.key}: the reviewed finding its baseline repair was returned with could ` +
+          `not be read back, so no developer was started` +
           (commentsProblem === null
             ? ''
             : ` (its thread could not be read either: ${commentsProblem})`) +
@@ -1027,8 +1063,29 @@ async function attempt(
         await updateReceipt(file, { problem: `baseline: ${recovered.detail}` });
         return stopWith(state, problem);
       }
-      if (recovered.kind === 'finding') {
-        recoveredFinding = recovered.lines;
+      if (recovered.kind === 'finding' || recovered.kind === 'unreadable') {
+        const fromThread = threadFinding(comments, recovered.evidenceId);
+        if (fromThread !== null) {
+          recoveredFinding = fromThread;
+        } else if (recovered.kind === 'finding') {
+          recoveredFinding = recovered.lines;
+        } else {
+          // The record says a repair is required, its own finding cannot be
+          // read back, and the thread does not carry the whole comment for
+          // that evidence: nothing may start without it.
+          if (stop.aborted) {
+            return 'cancelled';
+          }
+          const problem =
+            `${item.ref.key}: the reviewed finding its baseline repair was returned with could ` +
+            `not be read back, so no developer was started` +
+            (commentsProblem === null
+              ? ''
+              : ` (its thread could not be read either: ${commentsProblem})`) +
+            `: ${recovered.detail}`;
+          await updateReceipt(file, { problem: `baseline: ${recovered.detail}` });
+          return stopWith(state, problem);
+        }
       }
     }
     const guidance = guidanceFrom(earlier, comments, recoveredFinding);
@@ -1309,9 +1366,6 @@ async function attempt(
 
   return result.status === 'cancelled' ? 'cancelled' : 'next';
 }
-
-/** The longest a best-effort feedback sequence may take after an interrupt. */
-export const FEEDBACK_DEADLINE_MS = 10_000;
 
 /**
  * One finite batch: every candidate, in the order the source returned them, one
