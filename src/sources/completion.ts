@@ -667,11 +667,17 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
    * restart still verifies the arm or merge from GitHub. The merge-wait start
    * is written only when completion first sees the approved head still awaiting
    * its merge, so a long review does not consume the merge deadline.
+   *
+   * The request itself is asked for at most once, and every reading around it —
+   * the fresh eligibility read before it and the reconciliation read after it —
+   * is an ordinary read: a transient failure is repeated inside the item
+   * deadline, and only the read is repeated, never the request.
    */
   const ensureArmed = async (
     context: PullContext,
     stop: AbortSignal,
     wait: { readonly beginsHere: boolean },
+    deadline: number,
   ): Promise<Arming> => {
     const { item, request, pull } = context;
     const head = pull.headRefOid;
@@ -686,6 +692,56 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
         detail: `native auto-merge is already enabled for ${pull.url} at head ${head}`,
       };
     }
+
+    /**
+     * One fresh reading of this exact pull request and head, with a transient
+     * failure repeated inside the item deadline. Nothing here changes any
+     * state, which is why a reading may be repeated while the one request below
+     * is never re-sent.
+     */
+    const read = async (): Promise<FreshReading> =>
+      await readFresh(item, request, { number: pull.number, head, url: pull.url }, stop, deadline);
+    /** What a merge of the expected head means for the caller. */
+    const mergedArming = (fresh: PullRequestSnapshot): Arming => ({
+      kind: 'merged',
+      head,
+      number: pull.number,
+      detail:
+        `GitHub merged ${fresh.url} at head ${head}; nothing is armed again and the merge itself ` +
+        'is verified from here',
+    });
+    /** What a revoked delivery — closed, moved, or another pull request — means. */
+    const settledArming = (
+      settled: Extract<FreshReading, { kind: 'closed' | 'changed' }>,
+    ): Arming => ({
+      kind: 'attention',
+      detail:
+        `${settledFailure(settled, head).detail}; nothing was armed for it, and the item stays ` +
+        'In Review',
+      evidence: [pull.url],
+    });
+    /** What a request GitHub really holds for this exact head means. */
+    const armedArming = (fresh: PullRequestSnapshot, answer: AutoMergeStatus): Arming => ({
+      kind: 'armed',
+      head,
+      number: pull.number,
+      detail:
+        `native auto-merge ${answer === 'already-enabled' ? 'already enabled' : 'enabled'} for ` +
+        `${fresh.url} at head ${head}; GitHub merges it only when branch protection allows`,
+    });
+    /**
+     * What a reading GitHub could not answer, even after the retries the item
+     * deadline allows, means: the item stays In Review with the admission kept
+     * for the next pass, and no merge is assumed.
+     */
+    const readFailure = (cause: unknown): Arming => ({
+      kind: 'attention',
+      detail:
+        `GitHub could not be read for the auto-merge of ${pull.url} at head ${head}: ` +
+        `${messageOf(cause)}; the admission is retained for verification on restart, and the item ` +
+        'stays In Review and no merge is assumed',
+      evidence: [pull.url],
+    });
 
     try {
       // Persist intent before the remote mutation: GitHub can accept it and
@@ -722,15 +778,41 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
       };
     }
 
-    let status: AutoMergeStatus;
+    // GitHub's own state decides what a request would mean now: a pull request
+    // already merged at the exact reviewed head needs no request, and one that
+    // no longer carries that head is not this path's to arm.
+    let current: FreshReading;
     try {
-      status = await actions.enableAutoMerge(request, pull, head, stop, async () => {
+      current = await read();
+    } catch (cause) {
+      return readFailure(cause);
+    }
+    if (current.kind === 'merged') return mergedArming(current.pull);
+    if (current.kind !== 'open') return settledArming(current);
+    if (current.pull.autoMergeRequest) return armedArming(current.pull, 'already-enabled');
+
+    let answer: AutoMergeStatus;
+    try {
+      answer = await actions.enableAutoMerge(request, current.pull, head, stop, async () => {
         const fresh = await source.readItem({ ref: item.ref, title: item.title }, stop);
         return (
           fresh !== null && fresh.pointers.length === 1 && fresh.pointers[0] === request.workspaceId
         );
       });
     } catch (cause) {
+      // The request is not sent again, whatever its answer looked like. Whether
+      // GitHub refused it, merged the reviewed head while it was in flight, or
+      // never answered is settled by one fresh reading — repeated only while
+      // GitHub's failure is transient and the item's deadline has not passed.
+      let settled: FreshReading;
+      try {
+        settled = await read();
+      } catch (readCause) {
+        return readFailure(readCause);
+      }
+      if (settled.kind === 'merged') return mergedArming(settled.pull);
+      if (settled.kind !== 'open') return settledArming(settled);
+      if (settled.pull.autoMergeRequest) return armedArming(settled.pull, 'already-enabled');
       return {
         kind: 'attention',
         detail:
@@ -741,23 +823,27 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
       };
     }
 
-    if (status === 'merged')
+    // An acknowledged request is an arm only once GitHub's own state says so
+    // for this exact head, and that reading is a read like any other: a
+    // transient failure of it is repeated rather than stopping for a person.
+    let verified: FreshReading;
+    try {
+      verified = await read();
+    } catch (cause) {
+      return readFailure(cause);
+    }
+    if (verified.kind === 'merged') return mergedArming(verified.pull);
+    if (verified.kind !== 'open') return settledArming(verified);
+    if (!verified.pull.autoMergeRequest)
       return {
-        kind: 'merged',
-        head,
-        number: pull.number,
+        kind: 'attention',
         detail:
-          `GitHub merged ${pull.url} at head ${head} while native auto-merge was being requested; ` +
-          'no request is re-sent and the merge itself is verified from here',
+          `GitHub did not keep auto-merge enabled for ${verified.pull.url} at head ${head}; it ` +
+          'may still be unarmed, the admission is retained for verification on restart, and the ' +
+          'item stays In Review',
+        evidence: [pull.url],
       };
-    return {
-      kind: 'armed',
-      head,
-      number: pull.number,
-      detail:
-        `native auto-merge ${status === 'already-enabled' ? 'already enabled' : 'enabled'} for ` +
-        `${pull.url} at head ${head}; GitHub merges it only when branch protection allows`,
-    };
+    return armedArming(verified.pull, answer);
   };
 
   /** The merge and post-merge reading, repeated until it concludes or the deadline passes. */
@@ -1012,7 +1098,7 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
     // the review runs; a completion pass that reads an unarmed approved pull
     // request (a standalone source command, or a restart without the queue's
     // arm step) still tries here, and GitHub's own refusal is reported.
-    const arming = await ensureArmed(context, stop, { beginsHere: true });
+    const arming = await ensureArmed(context, stop, { beginsHere: true }, deadline);
     if (arming.kind === 'attention') {
       return { kind: 'attention', detail: arming.detail, evidence: arming.evidence };
     }
@@ -1457,7 +1543,15 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
           'was armed; the completion path verifies any merge it admitted',
       };
     }
-    const arming = await ensureArmed(context, stop, { beginsHere: false });
+    // The arm step's own deadline is the same bounded budget the completion
+    // pass gives one item, so a transient read failure here is retried inside
+    // it instead of stopping the queue for a person.
+    const arming = await ensureArmed(
+      context,
+      stop,
+      { beginsHere: false },
+      now().getTime() + config.deadlineSeconds * 1000,
+    );
     if (arming.kind === 'attention') {
       return { ref, status: 'attention', detail: arming.detail };
     }

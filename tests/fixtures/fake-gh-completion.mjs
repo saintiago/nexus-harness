@@ -96,13 +96,17 @@ const reply = (value) => process.stdout.write(`${JSON.stringify(value)}\n`);
  * A transient failure seeded for exactly one invocation. The test writes
  * `<stateDir>/fail-once.json`; the first matching operation consumes it and
  * answers the way a 5xx from GitHub would, so the completion path's retry can
- * be told from its classification of a settled refusal.
+ * be told from its classification of a settled refusal. With
+ * `afterMerge: true`, only a read that follows a recorded auto-merge request
+ * matches — that is the reading a mutation's answer is reconciled with.
  */
 const failOnce = (operation) => {
   const marker = path.join(stateDir, 'fail-once.json');
   if (!existsSync(marker)) return null;
   const spec = JSON.parse(readFileSync(marker, 'utf8'));
   if (spec.op !== undefined && spec.op !== operation) return null;
+  if (spec.afterMerge === true && !jsonLines('calls.jsonl').some((call) => call.op === 'merge'))
+    return null;
   unlinkSync(marker);
   return spec;
 };

@@ -1934,6 +1934,67 @@ describe('reconciling terminal states across an auto-merge race', () => {
     expect(await readFile(fixture.gh.pullRequestsFile, 'utf8')).toContain('"state":"MERGED"');
   });
 
+  it('retries a transient read that reconciles a successful auto-merge response', async () => {
+    const fixture = await createFixture({ pulls: [ONE_PULL_REQUEST], runs: [workflowRun()] });
+    // GitHub accepts the request and merges the reviewed head, but the one
+    // reading that would verify the arm is the first read after the request:
+    // a 5xx there is an answer GitHub could not give, not a lost arm.
+    await writeFile(
+      path.join(fixture.gh.dir, 'fail-once.json'),
+      JSON.stringify({ op: 'view', afterMerge: true, status: 503, message: 'Server Error' }),
+      'utf8',
+    );
+    const sleepCalls = { count: 0 };
+
+    const outcome = only(
+      await runPass(fixture, { clockStepMs: 1_000, sleepCalls, mergeOnArm: MERGE_COMMIT }),
+    );
+
+    expect(outcome.status, outcome.detail).toBe('done');
+    expect(outcome.mergeCommit).toBe(MERGE_COMMIT);
+    expect(fixture.jira.status).toBe('Done');
+    expect(commentTexts(fixture)).toHaveLength(1);
+    expect(commentTexts(fixture)[0]).toContain('nexus-completion:resolution:');
+    expect(commentTexts(fixture)[0]).toContain(MERGE_COMMIT);
+    expect(transitions(fixture)).toHaveLength(1);
+    expect(sleepCalls.count).toBeGreaterThan(0);
+    // The request was made once; the merge it produced is what completed the
+    // item, and neither a person nor a second request was needed.
+    expect(
+      (await fakeCompletionCalls(fixture.gh)).filter((call) => call.op === 'merge'),
+    ).toHaveLength(1);
+  });
+
+  it('retries a transient read that reconciles an unprocessable auto-merge response', async () => {
+    const fixture = await createFixture({ pulls: [ONE_PULL_REQUEST], runs: [workflowRun()] });
+    // The request is refused as unprocessable because GitHub merged the
+    // reviewed head in its window, and the reconciliation read that settles
+    // that is itself unavailable once: it is retried, and the merge is what
+    // decides the item.
+    await writeFile(
+      path.join(fixture.gh.dir, 'fail-once.json'),
+      JSON.stringify({ op: 'view', afterMerge: true, status: 503, message: 'Server Error' }),
+      'utf8',
+    );
+    const sleepCalls = { count: 0 };
+
+    const outcome = only(
+      await runPass(fixture, { clockStepMs: 1_000, sleepCalls, mergeBeforeArm: MERGE_COMMIT }),
+    );
+
+    expect(outcome.status, outcome.detail).toBe('done');
+    expect(outcome.mergeCommit).toBe(MERGE_COMMIT);
+    expect(fixture.jira.status).toBe('Done');
+    expect(commentTexts(fixture)).toHaveLength(1);
+    expect(commentTexts(fixture)[0]).toContain('nexus-completion:resolution:');
+    expect(commentTexts(fixture)[0]).toContain(MERGE_COMMIT);
+    expect(transitions(fixture)).toHaveLength(1);
+    expect(sleepCalls.count).toBeGreaterThan(0);
+    expect(
+      (await fakeCompletionCalls(fixture.gh)).filter((call) => call.op === 'merge'),
+    ).toHaveLength(1);
+  });
+
   it('follows a merge that lands between the merge read and the gate read (HARN-34)', async () => {
     const fixture = await createFixture({ pulls: [ONE_PULL_REQUEST], runs: [workflowRun()] });
     // The queue's arm step ran before the review: GitHub holds the native
@@ -2018,6 +2079,41 @@ describe('reconciling terminal states across an auto-merge race', () => {
     expect(commentTexts(fixture)).toHaveLength(1);
     expect(transitions(fixture)).toHaveLength(1);
     expect(sleepCalls.count).toBeGreaterThan(0);
+  });
+
+  it('retries a transient failure of the required-check read instead of aborting the item', async () => {
+    const fixture = await createFixture({
+      pulls: [ONE_PULL_REQUEST],
+      checks: [{ name: 'validate', state: 'SUCCESS', link: WORKFLOW_URL }, LENS_CHECK_PASSED],
+      runs: [workflowRun()],
+    });
+    // `gh pr checks` reports a failed check through its exit code, so a 5xx
+    // that wrote no check result at all has to be classified from the answer,
+    // not from the exit code: one such answer is read again, not parsed.
+    await writeFile(
+      path.join(fixture.gh.dir, 'fail-once.json'),
+      JSON.stringify({ op: 'checks', status: 503, message: 'Server Error' }),
+      'utf8',
+    );
+    const sleepCalls = { count: 0 };
+
+    const outcome = only(
+      await runPass(fixture, { clockStepMs: 1_000, sleepCalls, mergeOnArm: MERGE_COMMIT }),
+    );
+
+    expect(outcome.status, outcome.detail).toBe('done');
+    expect(fixture.jira.status).toBe('Done');
+    expect(commentTexts(fixture)).toHaveLength(1);
+    expect(transitions(fixture)).toHaveLength(1);
+    expect(sleepCalls.count).toBeGreaterThan(0);
+    // The unreadable answer was retried exactly once and no coding finding,
+    // person, or merge was invented from it.
+    expect(
+      (await fakeCompletionCalls(fixture.gh)).filter((call) => call.op === 'checks'),
+    ).toHaveLength(2);
+    expect(
+      (await fakeCompletionCalls(fixture.gh)).filter((call) => call.op === 'merge'),
+    ).toHaveLength(1);
   });
 
   it('stops a transient GitHub failure at the deadline instead of retrying forever', async () => {

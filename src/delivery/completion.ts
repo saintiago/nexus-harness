@@ -117,11 +117,13 @@ export interface MergeVerdict {
 }
 
 /**
- * What enabling native auto-merge did. `merged` is the race this path has to
- * survive: GitHub merged the reviewed head while the request was in flight, so
- * there is nothing left to arm and the merge itself is what gets verified.
+ * What one request to enable native auto-merge established, as GitHub's own
+ * answer described the *request*. Neither value says what the pull request
+ * looks like now: GitHub can merge the reviewed head while the request is in
+ * flight, so the caller settles the result with a fresh reading of GitHub's
+ * own state. The request itself is never sent twice.
  */
-export type AutoMergeStatus = 'enabled' | 'already-enabled' | 'merged';
+export type AutoMergeStatus = 'enabled' | 'already-enabled';
 
 /** The GitHub boundary the completion path acts through. */
 export interface CompletionActions {
@@ -174,16 +176,19 @@ export interface CompletionActions {
     stop: AbortSignal,
   ): Promise<MergeVerdict>;
   /**
-   * Ask GitHub to enable native auto-merge for this pull request, re-reading the
-   * head immediately before the request and again after it. The caller arms as
-   * soon as the delivered pull request exists, before the final required check
-   * can turn green, because GitHub refuses to arm a pull request whose status is
-   * already clean. An unprocessable or no-longer-eligible answer — GitHub merged
-   * the pull request while the request was in flight — is settled by one fresh
-   * reconciliation read before it is classified: the merged reviewed head is
-   * reported as `merged`, and anything else throws {@link DeliveryError}. A
-   * conflict, branch protection, or a missing permission is an operator
-   * problem, never a coding finding.
+   * Ask GitHub to enable native auto-merge for this pull request, at most once.
+   * `pull` must be the reading the request is made with, and `head` the head it
+   * was read at; a request GitHub already records for it is answered as
+   * `already-enabled` without a mutation. The caller arms as soon as the
+   * delivered pull request exists, before the final required check can turn
+   * green, because GitHub refuses to arm a pull request whose status is already
+   * clean. Every other answer — an unprocessable or no-longer-eligible refusal,
+   * a response that carries no request, a response that never arrived — throws
+   * {@link DeliveryError}, and the request is never replayed: the caller settles
+   * what GitHub did with a fresh reconciliation read of the exact pull request
+   * and head, which is the only part of this operation a transient failure may
+   * repeat. A conflict, branch protection, or a missing permission is an
+   * operator problem, never a coding finding.
    */
   enableAutoMerge(
     request: CompletionRequest,
@@ -375,10 +380,23 @@ export function createGitHubCompletion(
       stop,
       env: environment,
     });
-    if (
-      result.outcome !== 'exited' ||
-      !(result.exitCode === 0 || (checks && (result.exitCode === 1 || result.exitCode === 8)))
-    ) {
+    // `gh pr checks` reports a failed or still-pending required check through
+    // its exit code, and only the JSON answer on stdout tells that apart from a
+    // command or API failure that wrote none at all. A check read is therefore
+    // accepted on the answer it carried, never on the exit code alone.
+    const exitCode = result.outcome === 'exited' ? result.exitCode : null;
+    const exitAllowsAnswer = exitCode === 0 || (checks && (exitCode === 1 || exitCode === 8));
+    let value: unknown = null;
+    let answered = false;
+    if (exitAllowsAnswer) {
+      try {
+        value = JSON.parse(await readFile(result.stdoutPath, 'utf8')) as unknown;
+        answered = true;
+      } catch {
+        answered = false;
+      }
+    }
+    if (!answered) {
       // Command logs retain the diagnostic; never copy credentials or local paths to Jira.
       const diagnostic = await failureDiagnostic(
         result,
@@ -387,13 +405,14 @@ export function createGitHubCompletion(
       );
       throw new DeliveryError(
         `GitHub ${mutation ? 'auto-merge request' : 'evidence read'} failed ` +
-          `(${result.outcome}, ${String(result.exitCode)}): ${diagnostic}; operator attention required`,
+          `(${result.outcome}, ${String(result.exitCode)}): ` +
+          `${exitAllowsAnswer ? `its output carries no readable evidence (${diagnostic})` : diagnostic}; ` +
+          'operator attention required',
         // A mutation is never replayed, whatever the failure looked like; only
         // an evidence read GitHub could not answer this moment may be read again.
         { retryable: !mutation && transientReadFailure(diagnostic) },
       );
     }
-    const value: unknown = JSON.parse(await readFile(result.stdoutPath, 'utf8'));
     if (typeof value === 'object' && value !== null && 'errors' in value)
       throw new DeliveryError('GitHub refused the API request');
     return value;
@@ -736,109 +755,55 @@ export function createGitHubCompletion(
     },
     readMerge,
     async enableAutoMerge(r, p, head, stop, beforeWrite) {
-      const current = await readPull(r, p.number, stop);
-      identity(r, current, { ...p, headRefOid: head });
-      // A pull request GitHub merged between the read and the request needs no
-      // arm: the completion path verifies that merge by its own evidence.
-      if (current.state === 'MERGED') return 'merged';
-      if (current.state !== 'OPEN')
+      if (p.headRefOid !== head)
         throw new DeliveryError(
-          `pull request ${current.url} is ${current.state}, so GitHub was not asked to arm ` +
-            'auto-merge',
+          `pull request ${p.url} was read at head ${p.headRefOid}, not the reviewed head ${head}, ` +
+            'so GitHub was not asked to arm auto-merge for it',
         );
-      if (current.isDraft)
+      if (p.state !== 'OPEN')
+        throw new DeliveryError(
+          `pull request ${p.url} is ${p.state}, so GitHub was not asked to arm auto-merge for it`,
+        );
+      if (p.isDraft)
         throw new DeliveryError(
           'Pull request is a draft, so GitHub was not asked to arm auto-merge',
         );
-      if (current.mergeable === 'CONFLICTING')
+      if (p.mergeable === 'CONFLICTING')
         throw new DeliveryError(
           'Pull request has merge conflicts, so GitHub was not asked to arm auto-merge',
         );
+      if (p.autoMergeRequest) return 'already-enabled';
       if (beforeWrite && !(await beforeWrite()))
         throw new DeliveryError('Ticket left In Review before arming');
-      if (current.autoMergeRequest) return 'already-enabled';
       /**
-       * One fresh reading of the pull request while an answer about the request
-       * is unsettled, and what it settles: only the exact reviewed head counts
-       * — merged is the merge the request was asking for, and still open with a
-       * request recorded is the arm. Anything else leaves the refusal or the
-       * lost answer as it was.
+       * The one mutation this harness performs. GitHub refuses it as
+       * unprocessable when the pull request is no longer armable, which is what
+       * a merge landing in the request's own window looks like, and it can also
+       * merge the pull request before answering at all. Neither is settled
+       * here: the request is never replayed, and the caller reconciles what
+       * GitHub did with a fresh, retried read of the pull request.
        */
-      const readBack = async (): Promise<PullRequestSnapshot | null> =>
-        await readPull(r, p.number, stop).catch(() => null);
-      const settledBy = (fresh: PullRequestSnapshot | null): AutoMergeStatus | null => {
-        if (
-          fresh === null ||
-          fresh.number !== p.number ||
-          fresh.headRefOid !== head ||
-          fresh.headRefName !== r.branch ||
-          fresh.baseRefName !== r.baseBranch
-        )
-          return null;
-        if (fresh.state === 'MERGED') return 'merged';
-        if (fresh.state === 'OPEN' && fresh.autoMergeRequest) return 'already-enabled';
-        return null;
-      };
-      let response: unknown;
-      try {
-        response = await execute(
-          r,
-          [
-            'api',
-            'graphql',
-            '-f',
-            'query=mutation($pull:ID!){enablePullRequestAutoMerge(input:{pullRequestId:$pull,mergeMethod:SQUASH}){pullRequest{autoMergeRequest{enabledAt}}}}',
-            '-f',
-            `pull=${current.nodeId ?? ''}`,
-          ],
-          stop,
-          true,
-        );
-      } catch (cause) {
-        // GitHub refuses the request as unprocessable when the pull request is
-        // no longer armable — the merge it was asking for can land between the
-        // eligibility read and this request. One fresh reconciliation read
-        // settles what the refusal means before it is classified, and only the
-        // exact reviewed head that GitHub really merged counts as the merge.
-        const fresh = await readBack();
-        const settled = settledBy(fresh);
-        if (settled !== null) return settled;
-        if (fresh !== null && fresh.headRefOid !== head)
-          throw new DeliveryError(
-            `pull request ${fresh.url} now holds head ${fresh.headRefOid}, not the reviewed head ` +
-              `${head}, so GitHub was not asked to arm auto-merge for it`,
-          );
-        if (fresh !== null && fresh.state === 'CLOSED')
-          throw new DeliveryError(
-            `pull request ${fresh.url} is closed without a merge, so GitHub was not asked to ` +
-              'arm auto-merge for it',
-          );
-        throw cause;
-      }
+      const response = await execute(
+        r,
+        [
+          'api',
+          'graphql',
+          '-f',
+          'query=mutation($pull:ID!){enablePullRequestAutoMerge(input:{pullRequestId:$pull,mergeMethod:SQUASH}){pullRequest{autoMergeRequest{enabledAt}}}}',
+          '-f',
+          `pull=${p.nodeId ?? ''}`,
+        ],
+        stop,
+        true,
+      );
       const answer = object(response);
       const armed = object(
         object(object(answer['data'])['enablePullRequestAutoMerge'])['pullRequest'],
       )['autoMergeRequest'];
-      if (!armed) {
-        // An answer that does not carry the request is ambiguous too: one fresh
-        // read settles whether the request landed or the pull request merged.
-        const settled = settledBy(await readBack());
-        if (settled !== null) return settled;
+      if (!armed)
         throw new DeliveryError(
-          `GitHub did not acknowledge auto-merge for ${p.url} at head ${head}, and a fresh ` +
-            'read holds no request for that head; it may still be unarmed',
-        );
-      }
-      // Read the pull request back: the request is only recorded for the exact
-      // head GitHub still holds, and a native merge that landed in the window is
-      // a success rather than a lost request.
-      const verified = await readPull(r, p.number, stop);
-      identity(r, verified, { ...p, headRefOid: head });
-      if (verified.state === 'MERGED') return 'merged';
-      if (verified.state !== 'OPEN' || !verified.autoMergeRequest)
-        throw new DeliveryError(
-          `GitHub did not keep auto-merge enabled for ${verified.url} at head ${head}; it may ` +
-            'still be unarmed',
+          `GitHub did not acknowledge auto-merge for ${p.url} at head ${head}, and the request is ` +
+            'not sent again; a fresh read of the pull request settles what it did',
         );
       return 'enabled';
     },
