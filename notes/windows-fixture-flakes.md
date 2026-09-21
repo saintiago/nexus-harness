@@ -287,7 +287,7 @@ race under load, but nothing below has been established yet.
 Each is checkable from the captures above. None is established, and none should be fixed by relaxing
 an assertion: the assertions are the only thing that noticed.
 
-## The 2026-09-21 full-suite timeouts: the host, not the assertions
+## The 2026-09-21 full-suite timeouts: failures under parallel load
 
 While HARN-41's post-agent `npm run validate` was being reproduced by hand, full `vitest run` runs
 failed one to four tests on the default 5 s timeout — `tests/workspace.test.ts` >
@@ -299,7 +299,7 @@ attention once`, and (once each) `tests/queue-cli.test.ts` >
 them passed when its file ran alone, and the same runs' format, lint, typecheck, and build phases
 passed.
 
-The timeouts are the host's, not the change's. Those tests do 3–4.5 s of real Git and stand-in
+Those tests do 3–4.5 s of real Git and stand-in
 process work in isolation (measured: the workspace one 2.9 s, the completion one 4.3 s), so the
 default 5 s leaves little headroom once 34 files run in parallel. A detached worktree at
 `2d57612` — the previous commit, whose own full `npm run validate` was green on this machine at
@@ -310,4 +310,41 @@ touched.
 What was and was not done: no test, timeout, or Vitest configuration was changed for this — the
 assertions and the checks stay exactly as they were, and the harness's own `npm run validate`
 remains the thing that decides. What is recorded here is the reproduction, so a later failure of
-this shape on a loaded host is read as the host's, not as a regression in the change under test.
+this shape on a loaded host has a comparison point; it does not establish that harness overhead
+cannot contribute.
+
+### HARN-41 repair turn 2: reduce executable lookup overhead
+
+The three cases supplied by `run-20260921142726-d839de04` passed together when selected by name,
+but all three timed out again in a full validation. The Windows launcher was constructing an
+exception and stack for every missing PATH/PATHEXT candidate on every invocation. A probe calling
+`planLaunch('git', ['--version'], process.cwd())` 1,000 times took 11,141 ms on this host's
+45-directory PATH. Using `statSync` with `throwIfNoEntry: false` reduced the same probe to 4,174 ms.
+These are observations under changing host load, not a controlled benchmark or proof of the sole
+timeout cause.
+
+The launcher still checks every candidate in order, follows the filesystem on every call, ignores
+directories, and handles other filesystem errors as before. A regression test checks missing
+directories, an executable-shaped directory, PATH precedence, an executable installed between
+lookups, and a command that cannot be found. The three originally failing cases and the native
+Windows launcher group passed together: 9 passed, 214 deselected. No existing test, deadline,
+assertion, build command, or Vitest setting changed.
+
+The first full validation from this repair's tool shell also had five assertion failures caused by
+Node warning on that shell's simultaneous `NO_COLOR` and `FORCE_COLOR` environment variables.
+Subsequent verification removes only the tool shell's `FORCE_COLOR` override; it does not suppress
+warnings or change the commands or their assertions.
+
+Final verification of this repair:
+
+- `npm ci`: passed, 0 reported vulnerabilities.
+- `npm run validate` with the conflicting tool-shell color override removed: format, lint,
+  typecheck and build passed; tests exited 1 with 1,295 passed, 5 timed out, and 2 existing skips
+  (34 files, 176.95 s). The three supplied cases still timed out, along with CLI relative-path
+  resolution and completion reader-credential refresh. The lookup improvement did **not** resolve
+  full-suite timing failures.
+- A subsequent focused `npx vitest run` selecting those five failing cases plus the native Windows
+  launcher group passed all 11 selected tests (285 deselected, 6.10 s).
+
+No live Jira, GitHub, or coding-agent exercise was run. Full-suite timeouts remain an open gap;
+passing isolated cases is not a substitute for the configured gate.

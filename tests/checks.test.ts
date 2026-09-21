@@ -15,6 +15,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { commandSucceeded, runCheckRound } from '../src/checks/round.js';
 import { runCommand } from '../src/process/command.js';
+import { planLaunch } from '../src/process/launch.js';
 import { ReportError } from '../src/reporting/errors.js';
 import { appendRunLog, openCommandLog, runLogPath } from '../src/reporting/logs.js';
 import type { CheckRoundResult, Command, CommandResult } from '../src/shared/types.js';
@@ -1147,6 +1148,38 @@ describe('a command that runs out of time', () => {
  * tests above cover the direct launcher that every platform uses.
  */
 describe.skipIf(process.platform !== 'win32')('the native Windows launcher', () => {
+  it('skips missing PATH candidates and directories, and observes newly available executables', async () => {
+    const directory = await createTempDir();
+    const earlier = path.join(directory, 'earlier');
+    const later = path.join(directory, 'later');
+    await mkdir(path.join(earlier, 'tool.EXE'), { recursive: true });
+    await mkdir(later);
+    const fallback = path.join(later, 'tool.EXE');
+    await writeFile(fallback, 'fixture executable');
+    const originalPath = process.env.PATH;
+    const originalExtensions = process.env.PATHEXT;
+    try {
+      process.env.PATH = [path.join(directory, 'missing'), earlier, later].join(path.delimiter);
+      process.env.PATHEXT = '.EXE;.COM';
+      expect(planLaunch('tool', ['argument'], directory)).toEqual({
+        ok: true,
+        launcher: { file: fallback, args: ['argument'], verbatim: false },
+      });
+      const installed = path.join(earlier, 'tool.COM');
+      await writeFile(installed, 'new fixture executable');
+      expect(planLaunch('tool', [], directory)).toEqual({
+        ok: true,
+        launcher: { file: installed, args: [], verbatim: false },
+      });
+      expect(planLaunch('absent', [], directory).ok).toBe(false);
+    } finally {
+      if (originalPath === undefined) delete process.env.PATH;
+      else process.env.PATH = originalPath;
+      if (originalExtensions === undefined) delete process.env.PATHEXT;
+      else process.env.PATHEXT = originalExtensions;
+    }
+  });
+
   /** A test-owned shim that forwards its arguments to the fixture program. */
   async function writeShim(fixture: Fixture, extension: string): Promise<string> {
     const shim = path.join(fixture.base, `fixture shim${extension}`);

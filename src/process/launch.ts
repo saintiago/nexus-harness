@@ -47,7 +47,10 @@ export type LaunchPlan =
 
 function isFile(target: string): boolean {
   try {
-    return statSync(target).isFile();
+    // Most PATH candidates do not exist. Avoid constructing an exception and
+    // stack for each miss on every Git or runtime invocation; still re-read
+    // the filesystem so newly installed or removed executables are respected.
+    return statSync(target, { throwIfNoEntry: false })?.isFile() ?? false;
   } catch {
     return false;
   }
