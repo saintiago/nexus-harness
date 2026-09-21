@@ -7,9 +7,12 @@
  * `.stdout.log`/`.stderr.log` pair per configured command invocation; and one
  * `agent-*.log` per top-level coding turn. Files are created exclusively and
  * only appended to afterwards, so evidence from an earlier invocation or turn
- * is never truncated or overwritten. `readCommandOutput` is the only reading
- * here: the failure output a repair turn is given. The files decide the run's
- * evidence, and the copy handed to a turn never replaces them.
+ * is never truncated or overwritten. There are two readings here, and no more:
+ * `readCommandOutput`, the failure output a repair turn is given, and
+ * `readCommandOutputEvidence`, the same bounded reading with a log file it
+ * could not read named instead of rendered as an invocation that wrote nothing
+ * (the pre-delivery baseline diagnosis reads through the second one). The files
+ * decide the run's evidence, and the copy handed to a turn never replaces them.
  */
 import { createWriteStream } from 'node:fs';
 import { ReportError } from './errors.js';
@@ -183,17 +186,34 @@ const OUTPUT_EMPTY = '(no output was written)';
  * command wrote and that cannot be read now contributes nothing — the path is
  * still recorded in the command result, so nothing is hidden by that.
  */
-async function readOutputTail(file: string): Promise<string> {
+async function readOutputTailOrFailure(
+  file: string,
+): Promise<{ readonly read: true; readonly text: string } | { readonly read: false }> {
   let text: string;
   try {
     text = await readFile(file, 'utf8');
   } catch {
-    return '';
+    return { read: false };
   }
   if (text.length <= OUTPUT_EXCERPT_LIMIT) {
-    return text.trimEnd();
+    return { read: true, text: text.trimEnd() };
   }
-  return OUTPUT_OMITTED + text.slice(text.length - OUTPUT_EXCERPT_LIMIT).trimEnd();
+  return {
+    read: true,
+    text: OUTPUT_OMITTED + text.slice(text.length - OUTPUT_EXCERPT_LIMIT).trimEnd(),
+  };
+}
+
+/**
+ * The bounded end of one log file, or the empty string when it cannot be read.
+ * Reading a failure this way is for the turn being handed a copy of it: the
+ * path is still recorded in the command result, so nothing is hidden by that.
+ * A caller that has to tell "the command wrote nothing" from "the file cannot
+ * be read" reads through {@link readCommandOutputEvidence} instead.
+ */
+async function readOutputTail(file: string): Promise<string> {
+  const tail = await readOutputTailOrFailure(file);
+  return tail.read ? tail.text : '';
 }
 
 /**
@@ -212,6 +232,49 @@ export async function readCommandOutput(result: CommandResult): Promise<string> 
     `stderr (${result.stderrPath}):`,
     stderr === '' ? OUTPUT_EMPTY : stderr,
   ].join('\n');
+}
+
+/** One command's recorded output, and the log files that could not be read. */
+export interface CommandOutputEvidence {
+  /**
+   * The bounded stdout/stderr rendering, or `null` when at least one log could
+   * not be read: an unreadable file is not a stream that said nothing.
+   */
+  readonly output: string | null;
+  /** The log files that could not be read, in the order they were asked for. */
+  readonly unreadable: readonly string[];
+}
+
+/**
+ * What one command invocation wrote, with a log file that could not be read
+ * named instead of rendered as an invocation that wrote nothing.
+ *
+ * The distinction matters to the pre-delivery baseline diagnosis
+ * (docs/WORKFLOW.md §11): it reasons from recorded evidence a person may have
+ * to reproduce by hand, and a missing or inaccessible log means the evidence it
+ * was handed is incomplete, not that the failing command was silent.
+ */
+export async function readCommandOutputEvidence(
+  result: CommandResult,
+): Promise<CommandOutputEvidence> {
+  const stdout = await readOutputTailOrFailure(result.stdoutPath);
+  const stderr = await readOutputTailOrFailure(result.stderrPath);
+  const unreadable = [
+    ...(stdout.read ? [] : [result.stdoutPath]),
+    ...(stderr.read ? [] : [result.stderrPath]),
+  ];
+  if (unreadable.length > 0) {
+    return { output: null, unreadable };
+  }
+  return {
+    output: [
+      `stdout (${result.stdoutPath}):`,
+      stdout.read && stdout.text !== '' ? stdout.text : OUTPUT_EMPTY,
+      `stderr (${result.stderrPath}):`,
+      stderr.read && stderr.text !== '' ? stderr.text : OUTPUT_EMPTY,
+    ].join('\n'),
+    unreadable: [],
+  };
 }
 
 /** Why a taken agent-log name is refused rather than reused. */

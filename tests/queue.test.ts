@@ -21,6 +21,7 @@ import type { Delivery } from '../src/delivery/github.js';
 import type {
   QueueArmOutcome,
   QueueCompletionOutcome,
+  QueueDiscoveryStop,
   QueueLoopContext,
   QueueReviewOutcome,
   QueueRecovery,
@@ -143,7 +144,7 @@ interface LoopRun {
 }
 
 interface LoopParts {
-  readonly discover?: () => Promise<QueueRecovery | null>;
+  readonly discover?: () => Promise<QueueRecovery | QueueDiscoveryStop | null>;
   readonly mode?: QueueRunMode;
   readonly take: (request: {
     readonly only: QueueTicket | null;
@@ -306,6 +307,56 @@ describe('the serial queue loop', () => {
     });
     expect(run.summary.outcome).toBe('stopped');
     expect(run.summary.problem).toContain('no longer eligible');
+  });
+
+  it.each([true, false])(
+    'stops before intake when recovery reports its own stop as confirmed=%s',
+    async (cleanupConfirmed) => {
+      let claimed = 0;
+      const run = await runLoop({
+        discover: async () => ({
+          problem: 'SAM1-1: the resumed diagnosis needs a person before intake may go on',
+          cleanupConfirmed,
+        }),
+        take: () => {
+          claimed += 1;
+          return nothing;
+        },
+      });
+
+      // Nothing was discovered or claimed after the recovery stopped intake,
+      // and the recovery's own cleanup observation travels to the caller: an
+      // unconfirmed one keeps the intake lock rather than being rounded into a
+      // clean stop.
+      expect(claimed).toBe(0);
+      expect(run.summary).toMatchObject({
+        outcome: 'stopped',
+        attempts: 0,
+        cleanupConfirmed,
+      });
+      expect(run.summary.problem).toContain('needs a person before intake may go on');
+      expect(run.log).toEqual([]);
+    },
+  );
+
+  it('keeps an unconfirmed recovery stop when the same moment cancels the run', async () => {
+    const controller = new AbortController();
+    const run = await runLoop({
+      stop: controller.signal,
+      discover: async () => {
+        controller.abort(new Error('the user interrupted the queue'));
+        return {
+          problem: 'SAM1-1: the resumed diagnosis was stopped, and its reviewer could not be',
+          cleanupConfirmed: false,
+        };
+      },
+      take: () => {
+        throw new Error('must not claim');
+      },
+    });
+
+    expect(run.summary).toMatchObject({ outcome: 'cancelled', cleanupConfirmed: false });
+    expect(run.log).toEqual([]);
   });
 
   it('finishes two tickets in the order the queue offers them', async () => {
@@ -876,6 +927,9 @@ function takeFixture(options: TakeFixtureOptions): {
     },
     refuse: async (item) => {
       calls.push(`refuse:${item.ref.key}`);
+    },
+    attention: async (item) => {
+      calls.push(`attention:${item.ref.key}`);
     },
     commentsSince: async () => [],
   };

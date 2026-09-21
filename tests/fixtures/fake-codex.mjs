@@ -220,6 +220,17 @@ async function run(prompt) {
     writeFileSync(path.join(process.cwd(), 'verdict.json'), verdict, 'utf8');
   }
 
+  if (plan.finding !== undefined) {
+    // The pre-delivery baseline diagnosis: the reviewer turn writes one finding
+    // file into its own evidence directory, exactly as the verdict above is
+    // written for a review.
+    writeFileSync(
+      path.join(process.cwd(), 'finding.json'),
+      typeof plan.finding === 'string' ? plan.finding : JSON.stringify(plan.finding, null, 2),
+      'utf8',
+    );
+  }
+
   const mode = plan.mode ?? 'ok';
   const summary = plan.summary ?? 'the turn is done';
 

@@ -216,7 +216,9 @@ without an operator between them:
 - A run that ended before any coding turn spends no rung: a red baseline on a fresh workspace, and a
   setup, launch, authentication, or protocol failure, all end the cycle where they happened rather
   than climbing, and the next cycle — the one that follows the operator's repair — starts at the
-  first tier again.
+  first tier again. The pre-delivery baseline diagnosis introduced later is not a rung either: it
+  happens outside the ladder, records its finding in Jira, and hands the same ticket back to the
+  ordinary first rung ([implement-baseline-diagnosis.md](implement-baseline-diagnosis.md)).
 - Only an exhausted ordinary red check round climbs. A coding turn that could not finish (a launch,
   authentication, or protocol error), a round that could not be executed (a setup failure, a check
   that could not be launched), an expired limit, a cancellation, and a stop that was not confirmed
@@ -232,14 +234,25 @@ without an operator between them:
 
 An attempt's task text is the issue's current description — the task — plus the item's own thread:
 every attempt reads it, because that is where a restarted ticket's history, another agent's
-reasoning, and the harness's own result comments live. A continuation reads what was added since the
-previous attempt ended; a first attempt reads the whole thread. Every rung of one climb reads it for
-itself, so a later rung is not handed the previous rung's stale view of the thread — the harness's
-own comment for the attempt before it included. A continuation is also told what its workspace
+reasoning, and the harness's own result comments live. A continuation reads what was added since its
+workspace's own history began — the first attempt that workspace's ledger records — and a first
+attempt reads the whole thread. That window is what keeps a reviewed baseline finding in every
+rung's brief: the diagnosis writes it to the thread between two attempts of the same workspace, so a
+window that began at the previous attempt would drop exactly the guidance a later rung still has to
+act on — and the same finding is read back from the retained evidence when the thread cannot supply
+it whole. The evidence is also what says which comment is that finding: only one carrying the marker
+with that exact evidence identity, and all four fields nonblank, counts — anything else is ordinary
+thread context ([WORKFLOW.md](WORKFLOW.md) §11). Every rung of one climb reads the thread for itself, so a later rung is not handed the
+previous rung's stale view of it — the harness's own comment for the attempt before it included. A
+continuation is also told what its workspace
 ledger records of the attempts before it: tier, outcome, and the reason each run ended with. All of
 it is rendered, attributed, bounded (twelve lines, four thousand characters, six hundred per line),
-and context for the turn. None of it becomes a command, an argument, a path, or a limit, and none of
-it changes the acceptance criteria or the checks that decide the run.
+with a reviewed baseline finding carried field by field and kept ahead of the rest, and context for
+the turn. Those bounds are the context's own: a reviewed baseline finding is bounded where its turn
+was accepted — up to 2,000 characters per field, on lines of its own — and is never charged against
+them, so a long finding cannot spend the room the newest thing the ticket or the ledger says is kept
+from ([WORKFLOW.md](WORKFLOW.md) §11). None of it becomes a command, an argument, a path, or a limit,
+and none of it changes the acceptance criteria or the checks that decide the run.
 
 ## What does not change
 
@@ -264,15 +277,18 @@ it changes the acceptance criteria or the checks that decide the run.
    pointer label, the eligibility table, the red-baseline exception, and the report/state fields.
 2. **Escalation tiers** — the `escalation` config, the tier loop inside one intake, per-attempt
    comments, and the attempt budget.
-3. **Continuation guidance** — comments since the previous attempt and the previous attempts'
-   evidence, rendered into the turn's context.
+3. **Continuation guidance** — the item's thread since the workspace's own history began, with any
+   reviewed baseline finding carried field by field, and the previous attempts' evidence, rendered
+   into the turn's context.
 
 **Status.** All three increments are implemented: the split layout, the ledger beside each clone, the
 pointer label written once, the eligibility table with its refusals, reopening with the red-baseline
 exception, the report's workspace fields; the ladder — `escalation` tiers, one attempt per rung
 climbed inside a single claim, each with its own run, comment, launch, and repair allowance; and the
 guidance a continued attempt is told, which is the attempts its ledger records plus the item's own
-comments since the last of them, bounded, and context only.
+comments since that workspace's first attempt ended, bounded, and context only — except for a
+reviewed baseline finding, which the turn's prompt renders as the repair that comes before the
+original task ([spec.md](spec.md) §11).
 
 **Defects fixed since, in HARN-7.** The contract above is the intended behaviour and it now holds in
 the implementation: the ladder launches the tier it reports (for a continued workspace included),

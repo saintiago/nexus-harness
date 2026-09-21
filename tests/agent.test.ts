@@ -24,11 +24,13 @@ import { existsSync, realpathSync } from 'node:fs';
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { AgentError, runCodexTurn } from '../src/agents/codex/adapter.js';
+import { AgentError, runCodexPrompt, runCodexTurn } from '../src/agents/codex/adapter.js';
 import {
   CODEX_EXECUTABLE,
   CODEX_EXEC_ARGUMENTS,
+  codexExecArguments,
   codexRuntime,
+  diagnosticLaunchProblem,
 } from '../src/agents/codex/runtime.js';
 import type { CodexRuntime } from '../src/agents/codex/runtime.js';
 import { runCheckRound } from '../src/checks/round.js';
@@ -912,6 +914,182 @@ describe('the launch every turn is given', () => {
     expect(CODEX_EXEC_ARGUMENTS.indexOf('exec')).toBeGreaterThan(approval);
     expect(CODEX_EXEC_ARGUMENTS.slice(-2)).toEqual(['--json', '-']);
   });
+
+  it('narrows the diagnostic policy to its own working root', () => {
+    // The one turn that must not change what it inspects — the pre-delivery
+    // baseline diagnosis — names `workspace-write`, and that policy's writable
+    // roots are exactly the turn's own working root: the additional roots the
+    // configuration would otherwise inherit are stated as none, and the host's
+    // temporary roots are excluded, so neither a `workDir` beneath one nor a
+    // root an operator's own configuration grants can put the retained working
+    // copy or the snapshot inside a writable root. A coding turn keeps the
+    // unsandboxed policy above and carries no such override.
+    expect(codexExecArguments('workspace-write')).toEqual([
+      '--ask-for-approval',
+      'never',
+      'exec',
+      '--sandbox',
+      'workspace-write',
+      '-c',
+      'sandbox_workspace_write.writable_roots=[]',
+      '-c',
+      'sandbox_workspace_write.exclude_tmpdir_env_var=true',
+      '-c',
+      'sandbox_workspace_write.exclude_slash_tmp=true',
+      '--json',
+      '-',
+    ]);
+    const coding = codexExecArguments('danger-full-access').join(' ');
+    expect(coding).not.toContain('sandbox_workspace_write');
+    expect(coding).not.toContain('exclude_tmpdir_env_var');
+    expect(coding).not.toContain('writable_roots');
+  });
+
+  it('resets the additional writable roots a configured launch grants', async () => {
+    // An operator's own configuration, or the configured launch prefix, can
+    // grant the `workspace-write` policy additional writable roots. The
+    // diagnostic launch states them as none for itself: a root covering the
+    // harness's output directory would otherwise cover the retained working
+    // copy, the snapshot the reviewer inspects, and the diagnosis's own outcome
+    // record, and no post-turn check can undo a write the sandbox let through.
+    const fixture = await createFixture();
+    // A TOML literal string, because a Windows `.cmd` shim cannot carry a
+    // double quote through the command interpreter; the path itself is the
+    // point, and it really does cover the harness's output directory here.
+    const grant = `sandbox_workspace_write.writable_roots=['${fixture.parent}']`;
+    const prefix = [fixture.executable, '-c', grant];
+    const log = await openAgentLog(fixture.logsDir, 1);
+
+    const result = await runCodexPrompt(
+      {
+        prompt: 'diagnose the baseline',
+        label: 'Nexus Lens baseline diagnosis for TASK-1',
+        workspacePath: fixture.workspace,
+        sandbox: 'workspace-write',
+        skipGitRepoCheck: true,
+        agentLog: log,
+        stop: new AbortController().signal,
+      },
+      standInRuntime(fixture, {}, { command: prefix }),
+    );
+    await log.close();
+
+    // The turn completed through the real adapter; what matters here is the
+    // launch the stand-in recorded.
+    expect(result.summary).toBe('I changed the file.');
+    const argv = (await startRecord(fixture)).argv ?? [];
+    // The prefix's grant is passed on as configured, and the adapter's own
+    // statement comes after it: the value applied last for that key is the one
+    // the launch uses, so the turn really ran with no additional writable root
+    // of its own.
+    expect(argv.slice(0, 3)).toEqual(['-c', grant, '--ask-for-approval']);
+    expect(argv.indexOf('sandbox_workspace_write.writable_roots=[]')).toBeGreaterThan(
+      argv.indexOf(grant),
+    );
+  }, 60_000);
+
+  it('refuses the prefix switches a diagnostic launch cannot take back', async () => {
+    // The launch's own overrides only state the `workspace-write` policy's
+    // configuration keys. A configured prefix can also name a writable root, a
+    // working root, or a policy of its own, and those are applied beside the
+    // policy rather than through a key a later `-c` value could take back —
+    // probed against the installed CLI (0.154.0) with `codex debug
+    // prompt-input`: `--add-dir` keeps its write entry even beside
+    // `sandbox_workspace_write.writable_roots=[]` and the temporary-root
+    // exclusions, and `-C` makes the directory it names the working root and the
+    // policy's only write entry. Each spelling is refused by name, in every form
+    // the CLI accepts it.
+    const refused: readonly { readonly prefix: readonly string[]; readonly named: string }[] = [
+      { prefix: ['--add-dir', 'C:\\evidence'], named: '--add-dir' },
+      { prefix: ['--add-dir=C:\\evidence'], named: '--add-dir' },
+      { prefix: ['--cd', 'C:\\evidence'], named: '--cd' },
+      { prefix: ['--cd=C:\\evidence'], named: '--cd' },
+      { prefix: ['-C', 'C:\\evidence'], named: '-C' },
+      { prefix: ['-CC:\\evidence'], named: '-C' },
+      { prefix: ['--worktree'], named: '--worktree' },
+      { prefix: ['--sandbox', 'danger-full-access'], named: '--sandbox' },
+      { prefix: ['--sandbox=workspace-write'], named: '--sandbox' },
+      { prefix: ['-s', 'workspace-write'], named: '-s' },
+      { prefix: ['-sworkspace-write'], named: '-s' },
+      {
+        prefix: ['--dangerously-bypass-approvals-and-sandbox'],
+        named: '--dangerously-bypass-approvals-and-sandbox',
+      },
+    ];
+    for (const { prefix, named } of refused) {
+      const problem = diagnosticLaunchProblem(prefix);
+      expect(problem).toContain(`"${named}"`);
+      // The reason is what the ticket carries: the diagnostic was not started.
+      expect(problem).toContain('was not started');
+    }
+
+    // What a diagnostic prefix may still carry: the model and profile an
+    // operator selects, a grant stated through the policy's own configuration
+    // key (the launch's later value takes it back), and every other literal
+    // argument.
+    expect(
+      diagnosticLaunchProblem([
+        '--profile',
+        'nexus-astra',
+        '--model',
+        'gpt-6-astra',
+        '-c',
+        "sandbox_workspace_write.writable_roots=['C:\\evidence']",
+      ]),
+    ).toBeNull();
+  });
+
+  it('starts nothing for a refused diagnostic launch, and only for that launch', async () => {
+    const fixture = await createFixture();
+    // The grant names the fixture's own parent: with it writable, the diagnostic
+    // could write the snapshot it inspects and the harness's own outcome record,
+    // and the checks that run after the turn could not undo it.
+    const prefix = [fixture.executable, '--add-dir', fixture.parent];
+    const diagnosticLog = await openAgentLog(fixture.logsDir, 1);
+
+    await expect(
+      runCodexPrompt(
+        {
+          prompt: 'diagnose the baseline',
+          label: 'Nexus Lens baseline diagnosis for TASK-1',
+          workspacePath: fixture.workspace,
+          sandbox: 'workspace-write',
+          skipGitRepoCheck: true,
+          agentLog: diagnosticLog,
+          stop: new AbortController().signal,
+        },
+        standInRuntime(fixture, {}, { command: prefix }),
+      ),
+    ).rejects.toThrow(/--add-dir/);
+    await diagnosticLog.close();
+
+    // No runtime was started at all: nothing received the grant, so there is no
+    // write outside the turn's own working root to undo.
+    expect(await recordsOf(fixture)).toEqual([]);
+    // The refusal is the turn's own evidence, on the ticket's path.
+    expect(await readFile(diagnosticLog.path, 'utf8')).toContain(
+      'the diagnostic launch was refused',
+    );
+
+    // The same prefix is still configuration for a coding turn: that policy is
+    // unsandboxed by design, and only the diagnostic refuses what it cannot
+    // promise to keep out.
+    const codingLog = await openAgentLog(fixture.logsDir, 2);
+    const coding = await runCodexPrompt(
+      {
+        prompt: 'do the work',
+        label: 'implementation turn 1',
+        workspacePath: fixture.workspace,
+        agentLog: codingLog,
+        stop: new AbortController().signal,
+      },
+      standInRuntime(fixture, {}, { command: prefix }),
+    );
+    await codingLog.close();
+
+    expect(coding.summary).toBe('I changed the file.');
+    expect((await startRecord(fixture)).argv ?? []).toContain('--add-dir');
+  }, 60_000);
 });
 
 describe('how a turn ends, and what it reports', () => {

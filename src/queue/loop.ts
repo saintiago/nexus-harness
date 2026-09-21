@@ -92,6 +92,26 @@ export interface QueueRecovery {
 }
 
 /**
+ * A discovery that stopped intake before anything was claimed, with what it
+ * found: a pending diagnosis that could not be finished — or one whose own
+ * reviewer stop could not be confirmed. `cleanupConfirmed` is carried so the
+ * caller keeps its intake lock when something the discovery started may still
+ * be writing, exactly as it does for a run whose own stop was unconfirmed
+ * (docs/spec.md §3, §11).
+ */
+export interface QueueDiscoveryStop {
+  readonly problem: string;
+  readonly cleanupConfirmed: boolean;
+}
+
+/** Whether one discovery result is the stop, rather than a recovery to resume. */
+function isDiscoveryStop(
+  discovered: QueueRecovery | QueueDiscoveryStop,
+): discovered is QueueDiscoveryStop {
+  return 'problem' in discovered;
+}
+
+/**
  * Everything one queue invocation needs, as ordinary functions and values.
  *
  * `consume` is the existing source intake, narrowed to at most one ticket;
@@ -109,8 +129,13 @@ export interface QueueLoopContext {
   readonly pollIntervalMs: number;
   /** How long the loop waits between two readings of a pending completion. */
   readonly completionPollIntervalMs: number;
-  /** Discover unfinished Jira work before any unrelated ready claim. */
-  readonly discover: () => Promise<QueueRecovery | null>;
+  /**
+   * Discover unfinished Jira work before any unrelated ready claim, or stop
+   * with what a pending recovery found. A stop is reported as itself — never as
+   * an ordinary recovery failure — so an unconfirmed reviewer shutdown keeps
+   * this invocation's intake lock instead of being rounded into a clean stop.
+   */
+  readonly discover: () => Promise<QueueRecovery | QueueDiscoveryStop | null>;
   /**
    * Take at most one ticket and carry it through the coding attempt and its
    * delivery. `only` names the ticket a repair must continue; `null` asks for a
@@ -200,6 +225,14 @@ export async function runQueue(
   let attempts = 0;
   let active: QueueTicket | null = null;
   let cleanupConfirmed = true;
+  /**
+   * Which ticket the current lifecycle is repairing, and why: set when this
+   * invocation's own take returned a ticket to its ready status before any
+   * coding turn, and when the completion path returns one for repair. The next
+   * pass of the current ticket's lifecycle consumes that same ticket by
+   * identity before anything else.
+   */
+  let baselineRepair: string | null = null;
 
   const cancelled = (): QueueSummary => ({
     outcome: 'cancelled',
@@ -223,14 +256,25 @@ export async function runQueue(
       return cancelled();
     }
 
-    let recovery: QueueRecovery | null;
+    let discovered: QueueRecovery | QueueDiscoveryStop | null;
     try {
-      recovery = await context.discover();
+      discovered = await context.discover();
     } catch (cause) {
       if (stop.aborted) return cancelled();
       return stopped(`Queue recovery failed: ${messageOf(cause)}`);
     }
+    if (discovered !== null && isDiscoveryStop(discovered)) {
+      // The flag is folded in before anything is returned: a stop the user
+      // asked for at the same moment still carries what the discovery observed,
+      // and an unconfirmed one keeps the lock for inspection either way.
+      cleanupConfirmed = cleanupConfirmed && discovered.cleanupConfirmed;
+      if (stop.aborted) {
+        return cancelled();
+      }
+      return stopped(discovered.problem);
+    }
     if (stop.aborted) return cancelled();
+    const recovery: QueueRecovery | null = discovered;
     active = recovery?.ticket ?? null;
     if (recovery?.phase !== 'review') {
       // A fresh eligibility scan, in the source's own order. At most one ticket
@@ -294,9 +338,14 @@ export async function runQueue(
         }
         return stopped(describeRun(ticket, run.status, run));
       }
-      if (run.status !== 'passed') {
+      if (run.status !== 'passed' && run.returnedForBaselineRepair === undefined) {
         return stopped(describeRun(ticket, run.status, run));
       }
+      // A completed red baseline that the pre-delivery diagnosis returned to
+      // this ticket's ready status carries a finding the next claim works from:
+      // the same ticket goes back through the bounded runner and its ladder, in
+      // its preserved workspace, before any unrelated ready work is considered.
+      baselineRepair = run.returnedForBaselineRepair?.detail ?? null;
     } else {
       io.out(`${active?.ref.key}: resuming the existing review and completion lifecycle`);
     }
@@ -307,6 +356,50 @@ export async function runQueue(
     // conclusive finding returns to this same ticket before any fresh scan.
     for (;;) {
       if (stop.aborted) return cancelled();
+      if (baselineRepair !== null) {
+        const detail = baselineRepair;
+        baselineRepair = null;
+        io.out(`${ticket.ref.key}: back for repair: ${detail}`);
+        const repair = await context.consume({ only: ticket });
+        cleanupConfirmed = cleanupConfirmed && repair.cleanupConfirmed;
+        if (stop.aborted || repair.outcome === 'cancelled') {
+          return cancelled();
+        }
+        if (repair.outcome === 'attention') {
+          return stopped(describeTake(repair));
+        }
+        if (repair.outcome === 'empty') {
+          return stopped(
+            `${ticket.ref.key}: its baseline was returned for repair, but it is no longer eligible ` +
+              `in the ready status, so the queue will not claim another ticket: ` +
+              `${describeTake(repair)}`,
+          );
+        }
+        const repaired = repair.run;
+        if (repaired === null) {
+          return stopped(
+            `${ticket.ref.key}: the baseline repair produced no run of its own, so nothing about ` +
+              'it can be reported',
+          );
+        }
+        attempts += 1;
+        io.out(
+          `${ticket.ref.key}: baseline repair run ${repaired.runId} ended ${repaired.status} ` +
+            `(${repaired.reason})` +
+            (repaired.pullRequest === null ? '' : `; delivered as ${repaired.pullRequest.url}`),
+        );
+        if (repaired.status === 'cancelled') {
+          if (stop.aborted) {
+            return cancelled();
+          }
+          return stopped(describeRun(ticket, repaired.status, repaired));
+        }
+        if (repaired.status !== 'passed') {
+          return stopped(describeRun(ticket, repaired.status, repaired));
+        }
+        // The baseline repair delivered a new head: review that one, and so on
+        // until the ticket is confirmed Done or something needs a person.
+      }
       const arm = await context.arm({ ticket });
       if (stop.aborted || arm.state === 'cancelled') {
         return cancelled();
@@ -384,45 +477,7 @@ export async function runQueue(
       // To Do: this same ticket goes back through the bounded runner and the
       // escalation ladder in its preserved workspace, before any unrelated
       // ready work is considered.
-      io.out(`${ticket.ref.key}: back for repair: ${completion.detail}`);
-      const repair = await context.consume({ only: ticket });
-      cleanupConfirmed = cleanupConfirmed && repair.cleanupConfirmed;
-      if (stop.aborted || repair.outcome === 'cancelled') {
-        return cancelled();
-      }
-      if (repair.outcome === 'attention') {
-        return stopped(describeTake(repair));
-      }
-      if (repair.outcome === 'empty') {
-        return stopped(
-          `${ticket.ref.key}: it was returned for repair, but it is no longer eligible in the ready ` +
-            `status, so the queue will not claim another ticket: ${describeTake(repair)}`,
-        );
-      }
-      const repaired = repair.run;
-      if (repaired === null) {
-        return stopped(
-          `${ticket.ref.key}: the repair attempt produced no run of its own, so nothing about it ` +
-            'can be reported',
-        );
-      }
-      attempts += 1;
-      io.out(
-        `${ticket.ref.key}: repair run ${repaired.runId} ended ${repaired.status} ` +
-          `(${repaired.reason})` +
-          (repaired.pullRequest === null ? '' : `; delivered as ${repaired.pullRequest.url}`),
-      );
-      if (repaired.status === 'cancelled') {
-        if (stop.aborted) {
-          return cancelled();
-        }
-        return stopped(describeRun(ticket, repaired.status, repaired));
-      }
-      if (repaired.status !== 'passed') {
-        return stopped(describeRun(ticket, repaired.status, repaired));
-      }
-      // The repair delivered a new head: review that one, and so on until the
-      // ticket is confirmed Done or something needs a person.
+      baselineRepair = completion.detail;
     }
   }
 }

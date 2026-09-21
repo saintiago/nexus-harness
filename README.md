@@ -272,6 +272,52 @@ read from the checkout `--repo` names, so the repository a run clones describes 
    configuration lists them. A red baseline stops a fresh run before any coding turn — the task is
    not attempted on a project that is already failing. A continuation may start red, because its
    workspace may already carry failed work, and only its post-turn round decides.
+   For a ticket from a configured source, that red baseline is not the end of the road: when every
+   setup command succeeded and the check round completed nonzero, the configured reviewer diagnoses
+   it in one bounded local turn over the snapshot and the command evidence, and an actionable
+   finding returns the same ticket to its ready status — with its workspace pointer — as guidance
+   for the next claim, which repairs the baseline and then continues the original task. Nothing is
+   sent to GitHub, and nothing is delivered until a post-agent round passes.
+   The diagnosis establishes the snapshot before it spends anything: a working copy whose recorded
+   base commit has moved, or whose tracked files a configured command changed, is refused as
+   incomplete evidence and left In Review instead. The reviewer turn itself runs under the narrower
+   `workspace-write` policy, with only its own working directory writable — the launch states that
+   policy's additional writable roots as none and takes the host's temporary roots out of it, so
+   neither tree is writable even when `workDir` sits beneath one or the operator's own configuration
+   grants a root over it — so it cannot change the snapshot it reads or the retained working copy. A
+   configured reviewer launch that carries a switch of its own — `--add-dir`, `--cd`/`-C`,
+   `--worktree`, `-s`/`--sandbox`, `--dangerously-bypass-approvals-and-sandbox` — is refused before
+   any turn starts, because those grants are applied beside that policy rather than through a key
+   the launch's own arguments could take back; the ticket stays In Review with the reason and the
+   required human action.
+   A finding that is actionable carries the order it belongs in: the next claim is told, in its
+   prompt, to repair the baseline before continuing the original task. A diagnosis a stopped invocation left
+   pending is finished before anything else is discovered: the missing status move, or the
+   validated outcome the reviewer turn's invocation recorded — never a second turn or a second
+   comment for the same evidence, and never the finding file a turn that then failed left behind. A
+   stop that lands while the reviewer turn is running is recorded rather than dropped: that one
+   comment and that one move run under their own bounded best-effort deadline, so the claimed
+   ticket is never left In Progress with nothing looking for it; a stop that reaches the diagnosis
+   before it published anything is no different — the claimed ticket is told and taken out of the
+   running status under that same deadline. A
+   log file the diagnosis cannot read is incomplete evidence, not a check that said nothing: the
+   ticket stays In Review with the paths named, and no reviewer turn is started from it; a refusal
+   reached there still carries a stop the evidence's own record already holds as unconfirmed — the
+   intake lock is kept for inspection — and a record that cannot be read at all fails closed the
+   same way. The diagnosis's
+   own evidence lives under the connected project's namespace, so two projects sharing one output
+   directory never act on each other's pending diagnosis, and the claim that follows a repair
+   always carries the finding — from the thread, or read back from that evidence. Only a comment
+   that says the whole finding, names the exact evidence the retained record closed as a repair,
+   and repeats every field of the finding that record holds counts as coming from the thread — a
+   marker names the evidence, never the text, so an edited comment is not it; a partial, edited, or
+   differently attributed comment is context, and the recorded finding is handed over in its place.
+   That record is the accepted outcome the reviewer turn produced, never the turn's own finding
+   file, so a ticket returns to To Do only while the outcome really holds the actionable finding a
+   marker names — an edited marker on a rejected turn never returns it for repair.
+   A required finding nothing can supply starts no developer: the claimed ticket is told why on its
+   own thread and taken out of the running status with its workspace pointer preserved, so it is
+   never left in progress with nothing looking for it.
 5. **Coding turns**: one fresh invocation of the configured launch per top-level turn, started in
    the working copy and never asking for approval. The implementation turn is given the task; each
    repair turn is given the failures the harness observed for itself. Every turn of the run uses the
@@ -861,6 +907,20 @@ What one invocation does:
    or an unsuccessful post-merge workflow return the ticket to To Do with its pointer intact. The
    queue then continues **that** ticket in **that** retained workspace — same clone, same base,
    same ladder — before considering unrelated ready work.
+   A completed red baseline is the same idea one step earlier: the configured reviewer diagnoses
+   that exact snapshot in one bounded local turn, does not touch GitHub, and an actionable finding
+   is one Jira comment plus the same return to To Do with the pointer intact. The next claim
+   continues the workspace with the finding as guidance — every field of it whole, on every rung of
+   that claim, at the width the reviewer's finding was validated at rather than the bounded width
+   the comment on the ticket renders it as — repairs the baseline, and then continues the original
+   task. That finding is read from
+   the ticket's thread, or, when the thread cannot supply it, from the evidence the diagnosis kept
+   under the connected project's own namespace. The thread counts only as its whole comment: the
+   marker naming the evidence the retained record closed as a repair, all four fields, and every
+   one of them equal to the finding that record holds. A partial, edited, or differently attributed
+   comment is ordinary context, and the recorded finding is handed over instead; when nothing can
+   supply it, no developer starts: the ticket is told why on its own thread, taken out of the
+   running status with its pointer preserved, and the queue stops for a person.
 4. **Source readiness.** After a confirmed Done, the operator's checkout must be on the configured
    base branch, carry no uncommitted or untracked work, and have the expected delivery repository
    as a remote; the verified merge commit must be in the fetched base branch and the local `HEAD`
@@ -1081,8 +1141,13 @@ Read this before pointing a run at anything you care about.
   deliberate, documented choice, not a fallback — the narrower `workspace-write` policy this CLI
   offers on Windows leaves the working copy's `.git` read-only, so a turn cannot stage or commit its
   work (`git add` fails on `.git/index.lock`; HARN-2). An unattended run still never waits for a
-  prompt. Treat a target project's configuration the way you would treat a script you are about to
-  run.
+  prompt. The one turn that is not a coding turn is the pre-delivery baseline diagnosis (§11): it
+  stages nothing and must not change what it inspects, so it runs as `--sandbox workspace-write`
+  with its own working directory as the only writable root — that launch states the policy's
+  additional writable roots as none and excludes the host's temporary roots — and the snapshot and
+  the retained working copy are read-only to it however `workDir` is placed and whatever the
+  operator's own configuration grants. Treat a target project's configuration the way you would
+  treat a script you are about to run.
 - **A clone is not a sandbox.** The working copy is a separate directory and a separate branch, so
   your source checkout is not where the work happens — but the code in it runs as you, and it can
   write anywhere your user can.
@@ -1156,8 +1221,10 @@ Read this before pointing a run at anything you care about.
   identified open pull request, publish a native GitHub review and an app-owned check run as the
   configured App installation. The App's private key path lives in the environment the harness is
   started in, never in JSON, a task, or a log; the reviewer turn runs with the same unsandboxed
-  reach a coding turn has, is told not to change anything, and is never merged or asked to fix what
-  it finds. Point the App at a repository whose rules you are prepared to gate with its check.
+  reach a coding turn has — the pre-delivery baseline diagnostic is the narrower
+  `--sandbox workspace-write` exception, because it must not change what it reads — is told not to
+  change anything, and is never merged or asked to fix what it finds. Point the App at a repository
+  whose rules you are prepared to gate with its check.
 - **Not implemented, and not planned here:** automatic merging outside the configured completion
   path, automatic workflow reruns, a provider registry, workflow engines, background services,
   webhooks, parallel consumers of one project's queue, and a second coding runtime. Without
@@ -1362,6 +1429,35 @@ a read.
   or `queue run` has claimed a ticket under `"ordering": "rank"` yet: the claims made so far were
   Priority-ordered, and the first Rank-ordered claim waits on the queue being restarted so it
   reloads this project configuration;
+- **any live red-baseline diagnosis.** The path is verified offline end to end — the reviewer turn
+  over a disposable repository whose committed baseline really fails, the one comment and the move
+  by target status name against a fake Jira site, a restart that finishes a pending diagnosis
+  through the real entry point without spending a second reviewer turn or writing a second comment,
+  the refusal of a snapshot the configured commands changed, a reviewer turn that wrote into the
+  retained working copy, and the next claim's guidance through a real retained workspace, field by
+  field and on a later rung as well as the first — including the finding read back from the
+  retained evidence when the ticket's thread cannot be read, and the intake stopping when a
+  required finding cannot be read back at all — with the claimed ticket told why and taken out of
+  the running status under the bounded deadline even after a stop, its pointer preserved — a comment
+  whose field was edited under the same marker never becoming the requirement, a refusal reached
+  before the reviewer turn carrying a recorded unconfirmed stop rather than rounding it down, the
+  two connected projects that never act on each
+  other's evidence under one output directory, and a check log that is missing being refused as
+  incomplete evidence before any reviewer turn. A turn that writes a valid finding and then fails,
+  stops, or times out is refused then and on every restart after it, its own finding file never
+  published as if the turn had completed; a reviewer stop the harness could not confirm is reported
+  and keeps the intake lock — from a first diagnosis and from a resume that runs one, in a finite
+  batch, a watch scan, and the queue, each of which stops there instead of discovering or claiming
+  anything else; and a publication this harness already made before its local record
+  was finished still reaches the workspace's next claim. A resume that finds the finding already on
+  the issue reads the recorded reviewer stop back instead of assuming one, so a reviewer runtime the
+  harness could not confirm stopped keeps the intake lock there too. The narrower launch the
+  diagnostic asks for is still the runtime's to enforce: the offline fixtures record the policy the
+  harness composes — additional writable roots stated as none, temporary roots excluded — and the
+  enforcement behind that policy was probed separately on this host, not inside a live run. HARN-34's
+  load-sensitive baseline has not been replayed against a real Jira ticket with a real reviewer
+  launch, no live queue has returned a diagnosed ticket to To Do, and the finding quality of a live
+  reviewer is not established by the offline fixtures;
 - **any live GitHub delivery.** The delivery step is verified offline against disposable Git
   repositories and a stand-in `gh` on `PATH`; no branch has been pushed to github.com and no pull
   request has been created by the harness here. The commands follow `gh`'s documented interface,
@@ -1419,8 +1515,32 @@ single non-interactive turn on this platform and needs no extra client library i
   read-only on this Windows installation, where `git add` fails on `.git/index.lock` (reproduced by
   hand with the installed CLI; HARN-2, HARN-10). Model-generated commands therefore run the way your
   `setup` and `checks` run: as you, with no sandbox and no network carve-out. The suffix is the same
-  for every turn; there is no `--dangerously-bypass-approvals-and-sandbox`, no retry with a wider
-  policy, and no automatic approval service.
+  for every coding turn; there is no `--dangerously-bypass-approvals-and-sandbox`, no retry with a
+  wider policy, and no automatic approval service. The pre-delivery baseline diagnosis is the one
+  launch that names the narrower policy instead — `exec --sandbox workspace-write`, started in its
+  own working directory, with its own `sandbox_workspace_write.writable_roots` stated as the empty
+  list and `.exclude_tmpdir_env_var` and `.exclude_slash_tmp` set to `true`, so its working directory
+  is the only writable root it has even when the operator's own configuration states another one
+  through that policy's own keys. Probed on this host, `codex debug prompt-input`
+  under that policy renders the permission profile with the working directory as its only write
+  entry — the `:tmpdir` and `:slash_tmp` entries the plain `workspace-write` policy carries are gone,
+  and so is a root a configured prefix states through `sandbox_workspace_write.writable_roots` in
+  front of the adapter's own value — and the host's restricted-token
+  sandbox refuses a write outside the writable roots with `EPERM`. Two grants do not go through a
+  configuration key at all, which is why the diagnostic refuses the switches that carry them rather
+  than trusting the overrides: probed the same way, `-s workspace-write --add-dir <dir>` keeps
+  `<dir>` as a write entry even beside the empty writable-root list and the two exclusions, and
+  `-C <dir>` makes `<dir>` the working root and the policy's only write entry. A diagnostic
+  therefore starts no runtime at all for a prefix that carries `--add-dir`, `--cd`/`-C`,
+  `--worktree`, `-s`/`--sandbox`, or `--dangerously-bypass-approvals-and-sandbox`: the refusal is
+  the turn's own failure, and the diagnosis records it on the ticket In Review like any other turn
+  that produced nothing usable. The harness checks the snapshot and the retained working copy after
+  a turn that did run as well.
+  That turn's process also carries git's `safe.directory` declaration for the snapshot
+  (`GIT_CONFIG_*` in its environment), because a restricted sandbox on Windows runs its commands
+  under an identity that does not own the files, and git refuses a repository it does not own as
+  "dubious ownership" — without it the reviewer could not read the snapshot with ordinary git
+  commands at all. The harness's own Git calls are unaffected.
 - **Non-interactive by construction.** `--ask-for-approval never` is the adapter's own argument, so a
   run never waits for a human: a turn that would ask for an approval is refused instead of pausing,
   and the failure stops the run. On the installed CLI the approval option is accepted **before** the

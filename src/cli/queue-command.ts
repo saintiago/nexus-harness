@@ -45,7 +45,9 @@ import { createCompletionPass } from '../sources/completion.js';
 import type { ArmOutcome, CompletionOutcome } from '../sources/completion.js';
 import type { SourceContext, SourceTake } from '../sources/contract.js';
 import { SourceError } from '../sources/contract.js';
+import { createBaselineDiagnosis, resumeStop } from '../sources/baseline.js';
 import { takeOneItem } from '../sources/coordinator.js';
+import { createJiraBaselineRecord } from '../sources/jira/baseline.js';
 import { discoverQueueWork } from '../sources/jira/queue.js';
 import { createJiraCompletionSource, readReviewItem } from '../sources/jira/completion.js';
 import { createJiraSource } from '../sources/jira/connector.js';
@@ -53,6 +55,7 @@ import { createHttpClient, resolveJiraToken } from '../sources/jira/http.js';
 import { acquireIntakeLock } from '../sources/receipts.js';
 import type { ReviewScanContext, ReviewSummary } from '../reviews/contract.js';
 import { ReviewError } from '../reviews/contract.js';
+import { createBaselineReviewer } from '../reviews/baseline.js';
 import { createGitHubReviewClient, resolveAppPrivateKey } from '../reviews/github.js';
 import { createReviewerTurn } from '../reviews/reviewer.js';
 import { scanReviews } from '../reviews/scan.js';
@@ -440,6 +443,33 @@ async function queueCommand(options: QueueCommandOptions, context: CliContext): 
       // (docs/spec.md §6).
       let cleanupConfirmed = true;
       try {
+        // The pre-delivery baseline diagnosis: one reviewer turn over the
+        // snapshot a red baseline ran against, recorded in Jira only. The queue
+        // carries the ticket it returns for repair through the same runner and
+        // ladder as any other repair (docs/WORKFLOW.md §11).
+        const baselineDiagnosis = createBaselineDiagnosis({
+          reviewer: createBaselineReviewer({
+            selection: reviewConfig.reviewer,
+            environment: reviewerEnvironment,
+            onActivity: (activity) => {
+              pane.activity(activity);
+            },
+            onTurnStart: (ticket) => {
+              pane.beginInvocation({ role: 'reviewer', ticket, phase: 'baseline diagnosis' });
+            },
+            onTurnEnd: () => {
+              pane.endInvocation();
+            },
+          }),
+          record: createJiraBaselineRecord(sourceConfig, jiraHttp),
+          readyStatus: sourceConfig.readyStatus,
+          reviewStatus: sourceConfig.reviewStatus,
+          reviewerTimeoutMs: config.taskTimeoutMinutes * 60_000,
+          project: lockNamespace,
+          workDir,
+          io: sourceIo,
+        });
+
         const intake: SourceContext = {
           source: connector,
           workDir,
@@ -450,6 +480,7 @@ async function queueCommand(options: QueueCommandOptions, context: CliContext): 
           stop: stop.signal,
           preflight: preflightSource,
           delivery,
+          baselineDiagnosis,
           run: ({
             task,
             sourceRef,
@@ -518,7 +549,29 @@ async function queueCommand(options: QueueCommandOptions, context: CliContext): 
             sleep: abortableSleep,
             pollIntervalMs: sourceConfig.pollIntervalSeconds * 1000,
             completionPollIntervalMs: completionConfig.pollIntervalSeconds * 1000,
-            discover: () => discoverQueueWork(sourceConfig, jiraHttp, stop.signal),
+            discover: async () => {
+              // A previous invocation can stop after a red baseline was diagnosed
+              // and before its finding was recorded on the ticket. That item is
+              // still in the running status, where a fresh scan never looks and
+              // where the queue's own recovery refuses to guess: finishing the
+              // diagnosis here is what returns it to its ready status, so the
+              // ordinary repair claim continues the same retained workspace
+              // (docs/WORKFLOW.md §11).
+              const resumed = await baselineDiagnosis.resume(stop.signal);
+              const stopped = resumeStop(resumed);
+              if (stopped !== null) {
+                // Nothing else is discovered or claimed: the item needs a
+                // person, or the intake is being stopped. `cleanupConfirmed`
+                // travels with the stop, so a reviewer runtime that could not
+                // be confirmed ended keeps this invocation's intake lock
+                // instead of being rounded into an ordinary clean stop.
+                return { problem: stopped.detail, cleanupConfirmed: stopped.cleanupConfirmed };
+              }
+              if (resumed !== null) {
+                sourceIo.out(resumed.detail);
+              }
+              return await discoverQueueWork(sourceConfig, jiraHttp, stop.signal);
+            },
             consume: async ({ only }): Promise<SourceTake> => {
               try {
                 return await takeOneItem(intake, {

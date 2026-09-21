@@ -18,14 +18,18 @@ import { rm } from 'node:fs/promises';
 import type { DeliveredPullRequest, Delivery } from '../delivery/github.js';
 import { DeliveryError } from '../delivery/github.js';
 import type { RunTaskResult } from '../runs/contracts.js';
-import { RunCancelledError, RunTimeoutError } from '../runs/contracts.js';
+import { FEEDBACK_DEADLINE_MS, RunCancelledError, RunTimeoutError } from '../runs/contracts.js';
 import { messageOf } from '../shared/errors.js';
 import { workspaceStopOf } from '../workspace/errors.js';
-import type { AttemptEvidence, SourceRef } from '../shared/types.js';
+import type { AttemptEvidence, CheckRoundResult, SourceRef } from '../shared/types.js';
 import type { ContinuedWorkspace } from '../workspace/reopen.js';
 import { reopenWorkspace } from '../workspace/reopen.js';
 import { readWorkspaceState, sourceItemFor } from '../workspace/state.js';
 import type {
+  BaselineFinding,
+  BaselineDiagnosisOutcome,
+  BaselineReviewedFinding,
+  BaselineResumeOutcome,
   CompletionRunSummary,
   SourceCandidate,
   SourceComment,
@@ -39,6 +43,7 @@ import type {
   QueueTicket,
 } from './contract.js';
 import { SourceError, SourceFeedbackError } from './contract.js';
+import { baselineFindingGuidanceLines, baselineThreadFinding, resumeStop } from './baseline.js';
 import { decideAttempt } from './eligibility.js';
 import { guidanceFrom } from './guidance.js';
 import {
@@ -472,6 +477,327 @@ function exhaustedRedRound(run: RunTaskResult, allowance: number): boolean {
 }
 
 /**
+ * Whether a run ended on a completed red baseline of a fresh workspace, before
+ * any coding turn: every setup command succeeded, the check round completed with
+ * a nonzero result, and nothing else stopped the run. That is the one ending the
+ * pre-delivery diagnosis applies to.
+ *
+ * Every other ending is left exactly as it was: a baseline that could not be
+ * executed (a setup failure, a command that could not be launched, a missing
+ * host tool), a cancellation, an expired limit, an incomplete round, a
+ * continuation that started red — which may proceed to its coding turn, by
+ * contract — and a workspace whose own attempt record could not be written all
+ * keep their existing outcomes. No reason string is read, so rewording a run's
+ * sentence can never change whether this diagnosis runs.
+ */
+function completedRedBaseline(
+  run: RunTaskResult,
+): run is RunTaskResult & { readonly baseline: CheckRoundResult } {
+  return (
+    run.status === 'failed' &&
+    run.timeout === null &&
+    run.cancellation === null &&
+    run.workspace !== null &&
+    run.workspace.continued !== true &&
+    run.attempts.length === 0 &&
+    run.baseline !== null &&
+    run.baseline.outcome === 'failed'
+  );
+}
+
+/**
+ * The pre-delivery diagnosis of one completed red baseline, when the
+ * configuration provides one.
+ *
+ * `null` means the run is not one the diagnosis applies to — or none is
+ * configured — and the caller goes on to publish the run's ordinary result.
+ * `'handled'` means the item was diagnosed and this climb ends here: an
+ * actionable finding returned it to its ready status with the finding, so the
+ * next claim continues the same retained workspace and repairs the baseline
+ * before the original task; a diagnosis that is not actionable left it In
+ * Review with the evidence and what a person must do. The two other steps stop
+ * intake with the ticket's state named, exactly as every other attention result
+ * does.
+ */
+async function diagnoseBaseline(
+  context: SourceContext,
+  file: string,
+  item: SourceTask,
+  run: RunTaskResult,
+  state: BatchState,
+): Promise<Step | 'handled' | null> {
+  const diagnosis = context.baselineDiagnosis;
+  if (diagnosis === undefined || !completedRedBaseline(run)) {
+    return null;
+  }
+  const { ref } = item;
+  const key = ref.key;
+  const workspace = run.workspace;
+  if (workspace === null) {
+    // Unreachable: a baseline round only runs once a working copy exists.
+    return null;
+  }
+
+  let outcome: BaselineDiagnosisOutcome;
+  try {
+    outcome = await diagnosis.diagnose({
+      item,
+      workspace: {
+        workspaceId: workspace.workspaceId,
+        workspacePath: workspace.workspacePath,
+        branch: workspace.branch,
+        baseCommit: workspace.baseCommit,
+      },
+      baseline: run.baseline,
+      stop: context.stop,
+    });
+  } catch (cause) {
+    const problem = messageOf(cause);
+    await updateReceipt(file, { problem: `baseline: ${problem}` });
+    return stopWith(
+      state,
+      `${key}: the pre-delivery baseline diagnosis failed before it could record anything, so the ` +
+        `red baseline still needs a person: ${problem} Its report is kept (${run.reportPath}).`,
+    );
+  }
+
+  // The attempt's own run is what the item is told about, either way: the
+  // diagnosis is recorded beside it, never in place of it.
+  state.takenRun = {
+    status: run.status,
+    runId: run.run.runId,
+    reportPath: run.reportPath,
+    reason: run.reason,
+    pullRequest: null,
+    ...(outcome.kind === 'repair' ? { returnedForBaselineRepair: { detail: outcome.detail } } : {}),
+  };
+
+  if (outcome.kind === 'cancelled') {
+    await updateReceipt(file, {
+      problem: `baseline: ${outcome.detail}`,
+    });
+    // A reviewer turn whose own stop could not be confirmed may still be
+    // writing to the diagnosis's evidence: the lock is kept rather than
+    // released, exactly as a run's own unconfirmed stop does (docs/spec.md §3).
+    state.cleanupConfirmed = state.cleanupConfirmed && outcome.cleanupConfirmed;
+    if (!context.stop.aborted) {
+      return stopWith(
+        state,
+        `${key}: the baseline diagnosis was stopped before it could finish, so the red baseline ` +
+          `still needs a person: ${outcome.detail}`,
+      );
+    }
+    if (outcome.commentId !== null) {
+      // The diagnosis published this evidence's one comment; the step it did
+      // not make is the status move, and a later invocation's own recovery
+      // makes it from the retained evidence and that comment instead of a
+      // second comment being written here.
+      return 'cancelled';
+    }
+    // The stop reached the pre-delivery diagnosis before it published anything:
+    // the ticket this attempt claimed would otherwise be left in the running
+    // status with nothing looking for it. It is told, and taken out of the
+    // running status, under the same short best-effort deadline an interrupted
+    // run's own result gets — a fresh deadline rather than the aborted stop.
+    const problem =
+      `${item.ref.key}: the intake was stopped before its red baseline could be diagnosed, so no ` +
+      `coding turn was started and nothing was delivered; the workspace pointer is preserved and ` +
+      `a person decides what happens next: ${outcome.detail}`;
+    try {
+      await context.source.attention(item, problem, AbortSignal.timeout(FEEDBACK_DEADLINE_MS));
+    } catch (cause) {
+      await updateReceipt(file, {
+        problem: `baseline: ${outcome.detail}; attention: ${messageOf(cause)}`,
+      });
+      return stopWith(
+        state,
+        `${item.ref.key}: the baseline diagnosis was stopped before it could finish and telling ` +
+          `the issue also failed, so the claimed ticket is still in the running status and intake ` +
+          `stops for inspection: ${messageOf(cause)}`,
+      );
+    }
+    await updateReceipt(file, { feedback: 'sent' });
+    context.io.err(problem);
+    return 'cancelled';
+  }
+
+  const comment = outcome.commentId === null ? '' : ` (comment ${outcome.commentId})`;
+  if (outcome.kind === 'repair') {
+    await updateReceipt(file, {
+      feedback: 'sent',
+      ...(outcome.commentId === null ? {} : { commentId: outcome.commentId }),
+    });
+    context.io.out(
+      `${key}: the red baseline is diagnosed and actionable${comment}; the issue holds the ` +
+        'finding and is back in its ready status, so its next claim continues the same workspace',
+    );
+    return 'handled';
+  }
+
+  // Not actionable: the item is In Review with the evidence and the required
+  // action, and no coding turn is started from it.
+  await updateReceipt(file, {
+    feedback: 'sent',
+    problem: `baseline: ${outcome.detail}`,
+    ...(outcome.commentId === null ? {} : { commentId: outcome.commentId }),
+  });
+  return stopWith(
+    state,
+    `${key}: no baseline repair is actionable${comment}, so the issue holds the evidence and ` +
+      `what a person must do and stays In Review: ${outcome.detail} Its report is kept ` +
+      `(${run.reportPath}).`,
+    outcome.cleanupConfirmed,
+  );
+}
+
+/**
+ * Finishing a baseline diagnosis a previous invocation left pending, before
+ * anything is discovered or claimed.
+ *
+ * An invocation can stop after the diagnosis's record was written and before the
+ * item was told, leaving the ticket in the running status where a fresh scan
+ * would never look and `queue`'s own recovery refuses to guess. This is the step
+ * that closes that window: the item's thread decides whether the finding is
+ * already published (then only the status move is missing) and the retained
+ * evidence decides whether one is still to publish, so nothing is diagnosed
+ * twice and no coding turn is ever started from a diagnosis.
+ *
+ * `onAttention` is how a batch and a serial step differ. A batch reports an item
+ * that a diagnosis left In Review and goes on with the tickets it may take; a
+ * serial step stops there instead, because it never takes another ticket while
+ * one needs a person.
+ */
+async function resumeBaseline(
+  context: SourceContext,
+  state: BatchState,
+  phase: string,
+  onAttention: 'stop' | 'continue',
+): Promise<Step | 'none'> {
+  const diagnosis = context.baselineDiagnosis;
+  if (diagnosis === undefined || context.stop.aborted) {
+    return 'none';
+  }
+
+  let outcome: BaselineResumeOutcome | null;
+  try {
+    outcome = await diagnosis.resume(context.stop);
+  } catch (cause) {
+    return stopWith(
+      state,
+      `${phase}: a pending baseline diagnosis could not be resumed, so intake stops for a person: ` +
+        messageOf(cause),
+    );
+  }
+  if (outcome === null) {
+    return 'none';
+  }
+  if (outcome.kind === 'repair') {
+    context.io.out(outcome.detail);
+    return 'none';
+  }
+  // Nothing actionable was resumed: the item carries the evidence and what a
+  // person must do, and intake stops here rather than discovering or claiming
+  // anything else. That holds for a reviewer runtime the recovery could not
+  // confirm stopped as much as for one that ended: an unconfirmed stop keeps
+  // the lock, exactly as it does for a run's own unconfirmed stop
+  // (docs/spec.md §3), and nothing starts while it may still be writing.
+  const stopped = resumeStop(outcome);
+  if (stopped === null) {
+    return 'none';
+  }
+  if (!stopped.cleanupConfirmed) {
+    state.cleanupConfirmed = false;
+  }
+  if (outcome.kind === 'cancelled' && context.stop.aborted) {
+    return 'cancelled';
+  }
+  if (outcome.kind === 'attention' && onAttention === 'continue' && stopped.cleanupConfirmed) {
+    // A batch that is not stopped and carries no unconfirmed shutdown reports
+    // the item and goes on with the tickets it may take; the item itself is
+    // left exactly as the diagnosis left it.
+    context.io.err(outcome.detail);
+    return 'none';
+  }
+  return stopWith(state, `${phase}: ${stopped.detail}`, stopped.cleanupConfirmed);
+}
+
+/**
+ * The finding one item's own thread carries for one piece of evidence, or
+ * `null` when it carries none.
+ *
+ * Only a comment that says the whole finding, names the exact evidence this
+ * workspace's retained record closed as a repair, and carries every field of
+ * the finding that record holds counts: a comment that is partial, edited after
+ * the diagnosis wrote it, or about some other evidence is not this workspace's
+ * reviewed outcome, and the complete finding the evidence kept beside the
+ * workspace is handed over instead. A comment that carries no diagnosis marker
+ * is the ordinary thread context it always was (docs/WORKFLOW.md §11).
+ */
+function threadFinding(
+  comments: readonly SourceComment[],
+  evidenceId: string,
+  finding: BaselineFinding,
+): readonly string[] | null {
+  for (const comment of comments) {
+    const lines = baselineThreadFinding(comment.text, evidenceId, finding);
+    if (lines !== null) {
+      return lines;
+    }
+  }
+  return null;
+}
+
+/**
+ * The reviewed finding one retained workspace was returned for repair with,
+ * read back from the evidence beside it. It is how a claim that continues such
+ * a workspace is guaranteed the finding even when the item's own thread cannot
+ * supply it: `none` means nothing was returned for repair — an ordinary
+ * continuation —
+ * while `problem` means the evidence cannot be read clearly enough to say
+ * whether one is required, so no developer may start (docs/WORKFLOW.md §11). A
+ * `finding` carries the identity of the evidence the workspace was returned for
+ * repair with and the validated finding itself, so a comment on the item's own
+ * thread is held against both before it is treated as the same reviewed
+ * outcome; `unreadable` says the retained record cannot supply that finding at
+ * all, so no comment can be held against it and nothing may start.
+ */
+async function reviewedBaselineGuidance(
+  context: SourceContext,
+  workspaceId: string,
+  stop: AbortSignal,
+): Promise<
+  | { readonly kind: 'none' }
+  | {
+      readonly kind: 'finding';
+      readonly evidenceId: string;
+      readonly finding: BaselineFinding;
+    }
+  | { readonly kind: 'unreadable'; readonly detail: string }
+  | { readonly kind: 'problem'; readonly detail: string }
+> {
+  const diagnosis = context.baselineDiagnosis;
+  if (diagnosis === undefined) {
+    // Nothing can have returned this workspace for repair: the phase that
+    // writes such a finding is not configured for this project.
+    return { kind: 'none' };
+  }
+  let recovered: BaselineReviewedFinding;
+  try {
+    recovered = await diagnosis.reviewedFinding(workspaceId, stop);
+  } catch (cause) {
+    return { kind: 'problem', detail: messageOf(cause) };
+  }
+  if (recovered.kind === 'finding') {
+    return {
+      kind: 'finding',
+      evidenceId: recovered.evidenceId,
+      finding: recovered.finding,
+    };
+  }
+  return recovered;
+}
+
+/**
  * One item, through the documented reservation sequence: receipt first, a fresh
  * read of the item and a decision from that read, eligibility and revision
  * rechecked, an unambiguous claim, the unchanged runner, the real local result,
@@ -723,25 +1049,104 @@ async function attempt(
       workspaceId === undefined
         ? []
         : ((await readWorkspaceState(workDir, workspaceId))?.attempts ?? []);
-    // What the item's own thread says since the previous attempt ended: for a
-    // first attempt of a workspace, the whole thread, and for a later rung of the
-    // same climb, the harness's own comment for the attempt before it. A read
-    // that fails is said out loud and does not stop the attempt: it is context,
-    // and the run's own evidence is not.
+    // What the item's own thread says since this workspace's own history began.
+    // A read that fails is said out loud; the attempt goes on, because the
+    // thread is context — except for the one thing this attempt may not be
+    // started without, below.
     let comments: readonly SourceComment[] = [];
+    let commentsProblem: string | null = null;
     try {
       comments = await source.commentsSince(
         item,
-        earlier.at(-1)?.endedAt ?? new Date(0).toISOString(),
+        // The window begins where this workspace's own history begins, not at the
+        // previous attempt: the reviewed finding a red baseline was returned with
+        // is written to the thread between two attempts of the same workspace, and
+        // every rung of the climb has to carry it. A first attempt of a fresh
+        // workspace keeps reading the whole thread, as it always did.
+        earlier[0]?.endedAt ?? new Date(0).toISOString(),
         stop,
       );
     } catch (cause) {
-      io.err(
-        `${item.ref.key}: its comments could not be read, so this attempt runs without them: ` +
-          messageOf(cause),
-      );
+      commentsProblem = messageOf(cause);
+      io.err(`${item.ref.key}: its comments could not be read: ${commentsProblem}`);
     }
-    const guidance = guidanceFrom(earlier, comments);
+    // The reviewed baseline finding of the workspace this attempt continues is
+    // not context this attempt may start without: the next claim after a red
+    // baseline was returned for repair has to be told it, and the retained
+    // evidence is what says one is required and which one it is. The item's
+    // own thread is the ordinary source of it, but only as its whole comment
+    // *and* only when every field of that comment is the one the retained
+    // record holds: a comment that is partial, edited after the diagnosis
+    // wrote it, or about some other evidence is not this workspace's reviewed
+    // outcome and is never promoted to the requirement, so the complete
+    // finding the evidence kept is handed over instead. A required finding
+    // nothing can supply stops intake — on the item's own thread, not only in
+    // a receipt — rather than starting a developer without it
+    // (docs/WORKFLOW.md §11).
+    let reviewedFinding: readonly string[] = [];
+    /**
+     * What a claim does when it cannot be told the reviewed finding its
+     * workspace was returned for: nothing is started, and the claimed ticket
+     * is told why on its own thread and taken out of the running status, so it
+     * is not left In Progress with nothing looking for it. The receipt names
+     * the same thing locally. That record and move run under the short
+     * best-effort deadline even when the caller stopped the intake, exactly as
+     * an interrupted run's own result does: the ticket is already claimed, so
+     * leaving it where a person cannot find it is not what a stop may do.
+     */
+    const withoutFinding = async (detail: string): Promise<Step> => {
+      const problem =
+        `${item.ref.key}: the reviewed finding its baseline repair was returned with could ` +
+        `not be read back, so no developer was started` +
+        (commentsProblem === null
+          ? ''
+          : ` (its thread could not be read either: ${commentsProblem})`) +
+        `: ${detail}`;
+      await updateReceipt(file, { problem: `baseline: ${detail}` });
+      const feedbackStop = stop.aborted ? AbortSignal.timeout(FEEDBACK_DEADLINE_MS) : stop;
+      try {
+        await source.attention(item, problem, feedbackStop);
+      } catch (cause) {
+        await updateReceipt(file, {
+          problem: `baseline: ${detail}; attention: ${messageOf(cause)}`,
+        });
+        return stopWith(
+          state,
+          `${problem}. Telling the issue also failed, so the claimed ticket is still in the ` +
+            `running status and intake stops for inspection: ${messageOf(cause)}`,
+        );
+      }
+      await updateReceipt(file, { feedback: 'sent' });
+      io.err(problem);
+      return stop.aborted
+        ? 'cancelled'
+        : stopWith(
+            state,
+            `${problem} The issue was told and taken out of the running status with its ` +
+              'workspace pointer preserved, so a person decides what happens next.',
+          );
+    };
+    if (workspaceId !== undefined) {
+      const recovered = await reviewedBaselineGuidance(context, workspaceId, stop);
+      if (recovered.kind === 'problem') {
+        return await withoutFinding(recovered.detail);
+      }
+      if (recovered.kind === 'finding') {
+        // A comment of the thread is this finding only while it is the whole
+        // comment and every field of it is the one the retained record holds;
+        // otherwise the complete recorded finding is what the attempt is told.
+        reviewedFinding =
+          threadFinding(comments, recovered.evidenceId, recovered.finding) ??
+          baselineFindingGuidanceLines(recovered.finding);
+      } else if (recovered.kind === 'unreadable') {
+        // The record says a repair is required and cannot supply the finding
+        // this harness validated and published, so there is nothing to hold a
+        // comment of the thread against — an edited one would look exactly
+        // like the real one. Nothing may start from it.
+        return await withoutFinding(recovered.detail);
+      }
+    }
+    const guidance = guidanceFrom(earlier, comments, reviewedFinding);
     try {
       run = await context.run({
         task: item.task,
@@ -850,6 +1255,25 @@ async function attempt(
           '(docs/implement-workspace-continuation.md), then move the issue back to the ready ' +
           'status to continue the same workspace.',
       );
+    }
+
+    // A completed red baseline on a fresh workspace, before any coding turn:
+    // the one ending the harness diagnoses instead of publishing as a plain
+    // failure. The reviewer inspects the exact snapshot and the evidence the
+    // configured commands wrote; an actionable finding returns the same ticket
+    // to its ready status with the finding, where its next claim continues this
+    // workspace and repairs the baseline before the original task. Everything
+    // else — a setup failure, a command that could not be executed, a
+    // cancellation, an expired limit, missing evidence, an environmental or
+    // unsafe diagnosis — keeps the existing behaviour: the run's own result is
+    // published and the item waits In Review for a person (docs/WORKFLOW.md
+    // §11).
+    const diagnosed = await diagnoseBaseline(context, file, item, run, state);
+    if (diagnosed === 'stop' || diagnosed === 'cancelled') {
+      return diagnosed;
+    }
+    if (diagnosed === 'handled') {
+      break;
     }
 
     // What a passed attempt produced is delivered before the issue is told it
@@ -1001,9 +1425,6 @@ async function attempt(
   return result.status === 'cancelled' ? 'cancelled' : 'next';
 }
 
-/** The longest a best-effort feedback sequence may take after an interrupt. */
-export const FEEDBACK_DEADLINE_MS = 10_000;
-
 /**
  * One finite batch: every candidate, in the order the source returned them, one
  * at a time. It stops early only for the conditions the specification names:
@@ -1082,6 +1503,17 @@ export async function runSource(
 
   const lock = await acquireIntakeLock(context.workDir, context.lockNamespace, context.now);
   try {
+    // Before anything is discovered, finish whatever a previous invocation left
+    // pending: an item still in the running status because its red baseline was
+    // diagnosed but never recorded would not be listed as eligible again.
+    const resumed = await resumeBaseline(context, state, 'source intake', 'continue');
+    if (resumed === 'cancelled') {
+      return summarize('cancelled', state);
+    }
+    if (resumed === 'stop') {
+      return summarize('stopped', state);
+    }
+
     let candidates: readonly SourceCandidate[];
     try {
       candidates = await context.source.listEligible(context.stop);
@@ -1187,6 +1619,17 @@ export async function takeOneItem(
       ? null
       : await acquireIntakeLock(context.workDir, context.lockNamespace, context.now);
   try {
+    // A serial step recovers the same way a batch does, and stops instead of
+    // going on when the recovered diagnosis needs a person: a queue never takes
+    // another ticket while one of them is waiting on a human.
+    const resumed = await resumeBaseline(context, state, 'the queue step', 'stop');
+    if (resumed === 'cancelled') {
+      return step('cancelled');
+    }
+    if (resumed === 'stop') {
+      return step('attention');
+    }
+
     let candidates: readonly SourceCandidate[];
     try {
       candidates = await context.source.listEligible(context.stop);
@@ -1282,6 +1725,17 @@ export async function watchSource(options: SourceWatchOptions): Promise<SourceSu
     for (;;) {
       if (stop.aborted) {
         return summarize('cancelled', state);
+      }
+
+      // The same pre-claim recovery a finite batch runs, on every scan: a ticket
+      // whose baseline diagnosis never finished is finished before this scan
+      // looks for eligible work.
+      const resumed = await resumeBaseline(options, state, 'source intake', 'continue');
+      if (resumed === 'cancelled') {
+        return summarize('cancelled', state);
+      }
+      if (resumed === 'stop') {
+        return summarize('stopped', state);
       }
 
       let candidates: readonly SourceCandidate[];

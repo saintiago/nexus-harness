@@ -28,7 +28,7 @@ src/
     run-command.ts                (224)  `run`: load the inputs, install the stop, print the outcome
     source-command.ts             (379)  `source list|run|watch`, the connector selection, abortable sleep
     review-command.ts             (273)  `review scan|watch`: the App client, the reviewer, the scan
-    queue-command.ts              (677)  `queue run|watch`: the three credentials, the lock, the four phases
+    queue-command.ts              (816)  `queue run|watch`: the three credentials, the lock, the four phases
     activity.ts                   (604)  the activity timeline: one bounded, timestamped pane per invocation
     progress.ts                   (136)  what a run's own progress line reads as on an interactive terminal
     dependencies.ts               (168)  the loop's real collaborators and the wrapped set a test gets
@@ -48,7 +48,7 @@ src/
     round.ts                      (295)  one setup/check round; what a command's result means
   reporting/
     errors.ts                     (8)    ReportError
-    logs.ts                       (297)  run.log, per-command logs, per-turn agent logs, repair excerpts
+    logs.ts                       (371)  run.log, per-command logs, per-turn agent logs, bounded readings
     report.ts                     (394)  result.json and source-task.json
     changes.ts                    (80)   the final change summary and its review warnings
   workspace/
@@ -64,27 +64,29 @@ src/
     refresh.ts                    (376)  source readiness between tickets: fetch, verify, fast-forward only
     changes.ts                    (288)  inspectWorkspaceChanges: what the copy differs from its base by
   runs/
-    contracts.ts                  (345)  run and turn requests/results, RunnerDependencies, the two errors
+    contracts.ts                  (430)  run and turn requests/results, the guidance prefix, the feedback deadline, the two errors
     runner.ts                     (668)  runTask: the loop (prepare or continue -> baseline -> turns -> checks)
     finalize.ts                   (462)  how a run ends: stop evidence, change summary, report
     stops.ts                      (113)  the stop request one phase works under, and the stop cause
     progress.ts                   (152)  timeline lines, reasons, and the counts they carry
     feedback.ts                   (30)   the failed commands one repair turn is given
   sources/
-    contract.ts                   (298)  TaskSource, the ordinary source data and errors, pointer labels
+    contract.ts                   (775)  TaskSource, the ordinary source data and errors, pointer labels
     receipts.ts                   (238)  the per-project intake lock and one receipt per attempted item
     eligibility.ts                (81)   what an item is: a first attempt, a continuation, or a refusal
-    guidance.ts                   (60)   what an attempt is told, bounded: the thread and earlier attempts
-    coordinator.ts                (775)  runSource and watchSource: discovery, the ladder, publication
+    guidance.ts                   (104)  what an attempt is told, each bounded: the finding, the thread, attempts
+    baseline.ts                   (1405) the pre-delivery diagnosis: its evidence, one comment, one move
+    coordinator.ts                (1804) runSource and watchSource: discovery, the ladder, publication
     list.ts                       (88)   the read-only `source list` preview
     jira/
-      connector.ts                (41)   createJiraSource: the wiring of the functions below
+      connector.ts                (48)   createJiraSource: the wiring of the functions below
       http.ts                     (230)  the gateway client: auth, timeouts, failure classification
       search.ts                   (109)  the queue JQL and the paged search
       issue.ts                    (131)  issue reads, eligibility, and the source reference
       tasks.ts                    (96)   one issue mapped onto the existing four-field Task
       transitions.ts              (142)  transition discovery, selection by target status, posting
-      comments.ts                 (270)  the thread read, the result comment, the refusal comment
+      comments.ts                 (469)  the thread read, the result, refusal and attention comments
+      baseline.ts                 (35)   the thread, one comment, one move, and whether it is still running
       labels.ts                   (32)   the workspace pointer label, added once
       json.ts                     (20)   the narrow readers every Jira answer goes through
       adf.ts                      (243)  the supported ADF description parser
@@ -96,14 +98,15 @@ src/
     github.ts                     (726)  the App JWT, the installation token, and the repository calls
     diff.ts                       (134)  the pull request's diff, and where a finding is positioned
     reviewer.ts                   (402)  the reviewer prompt, the one bounded turn, and the verdict file
+    baseline.ts                   (1189) the pre-delivery reviewer turn, its prompt, and its outcome record
     scan.ts                       (790)  one scan or watch: eligibility, dedup, publishing, evidence
   queue/
-    loop.ts                       (370)  the serial control loop: one current ticket, one phase at a time
+    loop.ts                       (488)  the serial control loop: one current ticket, one phase at a time
   agents/
     codex/
-      runtime.ts                  (110)  the launch prefix, the environment, the stop contract
-      adapter.ts                  (447)  runCodexTurn/runCodexPrompt: one turn, normalized for the runner
-      prompt.ts                   (137)  what one turn is told, the bounded guidance included
+      runtime.ts                  (177)  the launch prefix, the two sandbox policies and their narrowing, the environment, the stop contract
+      adapter.ts                  (462)  runCodexTurn/runCodexPrompt: one turn, normalized for the runner
+      prompt.ts                   (178)  what one turn is told, the bounded guidance and the reviewed baseline finding included
       events.ts                   (355)  the JSON event stream, and the activity lines read from it
 ```
 
@@ -195,12 +198,15 @@ further would separate one decision from itself: `runs/runner.ts` (the loop), `s
 
 - **Owns:** what a run writes into its own directory. `logs.ts` creates the append-only timeline, one
   output pair per command invocation, one log per coding turn, and reads the bounded excerpt a repair
-  turn is given. `report.ts` validates and writes `result.json` and the `source-task.json` snapshot.
+  turn is given — or, for the pre-delivery baseline diagnosis, the same reading with a log file it
+  could not read named instead of rendered as output nothing wrote. `report.ts` validates and writes
+  `result.json` and the `source-task.json` snapshot.
   `changes.ts` builds the final change summary and its warnings. `errors.ts` is the single
   `ReportError`.
 - **Does not own:** the run's decisions; it writes what it is handed, and a file that already exists is
   refused rather than overwritten.
 - **Entry points:** `runLogPath`, `appendRunLog`, `openCommandLog`, `readCommandOutput`,
+  `readCommandOutputEvidence`, `CommandOutputEvidence`,
   `agentLogPath`, `openAgentLog`, `openEvidenceLog` (`reporting/logs.ts`); `RunReportRequest`,
   `runReportPath`,
   `sourceTaskPath`, `writeSourceTaskSnapshot`, `writeRunReport` (`reporting/report.ts`);
@@ -269,7 +275,7 @@ further would separate one decision from itself: `runs/runner.ts` (the loop), `s
 - **Entry points:** `runTask` (`runs/runner.ts`); `RunTaskRequest`, `RunTaskResult`,
   `RunnerDependencies`, `AgentTurnRequest`, `AgentTurnResult`, `AgentTurnShutdown`,
   `RunCancelledError`, `RunTimeoutError` (`runs/contracts.ts`); `RunFinalizerContext`,
-  `createRunFinalizer` (`runs/finalize.ts`).
+  `createRunFinalizer` (`runs/finalize.ts`); `BASELINE_GUIDANCE_PREFIX` (`runs/contracts.ts`).
 
 ### `sources/`
 
@@ -282,16 +288,52 @@ further would separate one decision from itself: `runs/runner.ts` (the loop), `s
   and one receipt per attempted item, keyed by the item's immutable identity. `eligibility.ts` decides
   what an item is — a first attempt, a continuation of the workspace its pointer names, or a refusal —
   and `guidance.ts` renders what an attempt is told from the item's own thread and its earlier
-  attempts, bounded. `coordinator.ts` discovers a finite batch, reserves, claims, climbs the
+  attempts, each with its own bounds: a reviewed baseline finding is carried field by field, ahead of
+  the rest, and never dropped for later chatter — and the context beside it is never dropped for the
+  finding's width, because the finding's own bound is not charged against it — but only one the
+  coordinator established, from the whole finding
+  comment that names the evidence the retained record closed as a repair and repeats every field of
+  the finding that record holds or, when the thread cannot supply it, from that record through
+  `baseline.ts`; a comment is never promoted to that requirement merely because it carries a
+  marker, and an edited field is ordinary context. `coordinator.ts` discovers a finite batch, reserves, claims, climbs the
   configured escalation ladder one rung per attempt inside that claim — publishing each attempt's
   own comment while the item stays in the running status, and the final result and review move when
-  the climb ends — and `list.ts` is the read-only preview.
+  the climb ends — refuses to start a baseline continuation whose required finding cannot be read
+  back, telling the claimed ticket why on its own thread and taking it out of the running status
+  with its workspace pointer preserved, under the same bounded best-effort deadline an interrupted
+  run's result gets — and `list.ts` is the read-only preview. `baseline.ts` is the pre-delivery
+  diagnosis of one completed red baseline: the evidence identity, the marker a restart reads, the
+  evidence record it writes before its reviewer turn under the connected project's own namespace —
+  so one `workDir` never mixes two projects' evidence — one comment, the one status move the finding
+  asks for — the intake lock kept when the reviewer runtime's own stop could not be confirmed — the
+  interruption a caller's own stop caused published under its own bounded best-effort deadline
+  rather than the aborted signal, so the ticket it claimed is never stranded in the running status —
+  the stop read back from that recorded outcome when a resume finds the comment already on the thread,
+  so a deduplicated finding never releases a lock its own record says to keep — the
+  `resume` step that finishes what an invocation left pending before anything is discovered or
+  claimed, which reconciles a record this harness left unfinished after its own status move with the
+  finding the item's own thread carries — settled only as the outcome record really says, so a
+  rejected turn's finding file closes nothing as a repair — and the read-back of a finding a
+  continuation is required
+  to be told, which is that same recorded outcome rather than the turn's own file — with the
+  identity it was published for, and with the whole-comment check that decides
+  whether a comment of the thread is that same finding, field for field, rather than an edited
+  comment that kept the marker, and with the one rendering that becomes guidance — each field whole,
+  at the width the reviewer's finding was validated at rather than the bounded width one comment
+  line has, whichever of the two routes supplied it — through the reviewer and record functions it
+  is handed — and `resumeStop`, the one
+  reading of what a resume outcome means for its caller's intake: a stop, and whether everything the
+  diagnosis started was confirmed stopped.
 - **Does not own:** Jira. The coordinator imports no connector, no JQL, and no credential. It also
   does not implement the run: it calls the runner it was handed.
 - **Entry points:** `TaskSource`, `SourceComment`, `SourceContext`, `SourceIo`, `SourceRunOutcome`,
   `SourceSummary`, `SourceTake`, `QueueTicket`, `SourceError`, `SourceFeedbackError`, `workspacePointerLabel`,
   `parseWorkspacePointers` (`sources/contract.ts`); `runSource`, `watchSource`, `SourceWatchOptions`
   (`sources/coordinator.ts`); `takeOneItem`, `SourceTakeRequest` (`sources/coordinator.ts`);
+  `createBaselineDiagnosis`, `baselineEvidenceId`, `baselineCommentFinding`,
+  `baselineThreadFinding`, `baselineFindingGuidanceLines`, `BaselineDiagnosisParts`,
+  `BASELINE_EVIDENCE_FILE`,
+  `BASELINE_MARKER_PREFIX`, `resumeStop` (`sources/baseline.ts`); `guidanceFrom` (`sources/guidance.ts`);
   `listSource`, `SourceListEntry` (`sources/list.ts`);
   `acquireIntakeLock`, `readReceipt`, `reserveReceipt`, `updateReceipt`, `receiptFilePath`,
   `receiptIdentity` (`sources/receipts.ts`).
@@ -304,14 +346,18 @@ further would separate one decision from itself: `runs/runner.ts` (the loop), `s
   consumes every page; `issue.ts` reads one issue and decides whether it is still eligible; `tasks.ts`
   maps it onto the existing four-field `Task`; `transitions.ts` finds and posts a transition chosen by
   target status, which is also how a claim is made; `comments.ts` reads the issue's thread and posts
-  the result and refusal comments; `labels.ts` adds the workspace pointer label once; `adf.ts` and
+  the result, refusal, and attention comments — the last one tells a claimed issue why no developer
+  was started and takes it out of the running status; `labels.ts` adds the workspace pointer label once; `adf.ts` and
   `adf-text.ts` are the small explicit description convention; `json.ts` holds the narrow wire
-  readers they share.
+  readers they share. `baseline.ts` is the thin record one pre-delivery diagnosis writes through:
+  the issue's thread, one comment, one move out of the running status, and whether the item is still
+  in it, over `completion.ts`'s comment reader and its general status move and `issue.ts`'s issue
+  read.
 - **Does not own:** the loop, the receipt/lock state, or the decision to run anything. A Jira failure
   is classified for the coordinator (`SourceError`), never repaired.
 - **Entry points:** `createJiraSource` (`sources/jira/connector.ts`); `resolveJiraToken`,
   `jiraApiBaseUrl`, `JIRA_REQUEST_TIMEOUT_MS`, `JiraSourceParts` (`sources/jira/http.ts`);
-  `queueJql` (`sources/jira/search.ts`).
+  `queueJql` (`sources/jira/search.ts`); `createJiraBaselineRecord` (`sources/jira/baseline.ts`).
 
 ### `delivery/`
 
@@ -333,7 +379,11 @@ further would separate one decision from itself: `runs/runner.ts` (the loop), `s
 ### `agents/codex/`
 
 - **Owns:** the only implemented coding runtime. `runtime.ts` is the launch prefix and the host
-  contract (environment, process-tree stop, grace); `adapter.ts` is one top-level turn through the
+  contract (environment, process-tree stop, grace) plus the one filesystem policy a turn names —
+  the coding policy by default, and the narrower one the pre-delivery baseline diagnosis asks for;
+  it is also where that diagnosis refuses a configured prefix that carries a switch of its own — a
+  writable root, a working root, or a policy the launch's own overrides cannot take back;
+  `adapter.ts` is one top-level turn through the
   host's `codex exec`, normalized to the runner's `AgentTurnResult`; `prompt.ts` is what a turn is
   told, the bounded guidance included; `events.ts` reads the runtime's JSON event stream. No Codex
   flag, event, or type leaves these files.
@@ -342,7 +392,8 @@ further would separate one decision from itself: `runs/runner.ts` (the loop), `s
   configuration.
 - **Entry points:** `runCodexTurn`, `runCodexPrompt`, `CodexPromptRequest`, `AgentError`
   (`agents/codex/adapter.ts`); `codexRuntime`,
-  `selectedCodexRuntime`, `CodexRuntime`, `CODEX_EXECUTABLE`, `CODEX_EXEC_ARGUMENTS`
+  `selectedCodexRuntime`, `CodexRuntime`, `CodexSandboxPolicy`, `codexExecArguments`,
+  `diagnosticLaunchProblem`, `CODEX_EXECUTABLE`, `CODEX_EXEC_ARGUMENTS`
   (`agents/codex/runtime.ts`).
 
 ### `reviews/`
@@ -367,7 +418,19 @@ further would separate one decision from itself: `runs/runner.ts` (the loop), `s
   output directory holds one, the pointer-to-branch pull request lookup, the native
   deduplication, the view's preparation and post-turn check, the stale-head and stale-ticket
   rechecks before publishing, the review and check publishing, and the evidence directory and log
-  each attempt keeps.
+  each attempt keeps. `baseline.ts` is the same reviewer over a different subject: the one bounded
+  turn a completed red baseline enters before any coding turn, its prompt over the configured
+  commands and their bounded output, the snapshot clone it inspects, the checks that hold that
+  clone and the retained working copy to the tree the checks really ran against, the outcome
+  record it writes before anything is published — the validated finding, or the problem that
+  rejected the turn, with the turn's own stop — which a restart reuses instead of the turn's
+  finding file and which every reader of what that evidence produced reads back, so a marker on the
+  item's thread and a continuation's required finding are both held to what the turn really
+  recorded, and the strict reader of the `finding.json` that turn has to write in its own
+  writable working directory — a bound the finding's own fields are enforced against by refusing
+  one that runs past it, never by cutting a field to it. A refusal reached before that turn carries the stop the evidence's
+  record already holds — and a record that cannot be read at all fails closed by name — so no
+  refusal can round an unconfirmed stop down to a confirmed one.
 - **Does not own:** the coding loop, the working copy, Jira writes, delivery, or merging. It
   claims nothing, moves nothing, posts no Jira comment, starts no coding turn, and keeps no
   registry: a completed review pinned to a commit is the deduplication record.
@@ -378,7 +441,11 @@ further would separate one decision from itself: `runs/runner.ts` (the loop), `s
   `reviewViewProblem`, `reviewViews`, `REVIEW_VIEW_DIRECTORY` (`reviews/view.ts`);
   `reviewPrompt`, `parseVerdict`, `createReviewerTurn`, `reviewEvidenceProblem`
   (`reviews/reviewer.ts`); `scanReviews`, `watchReviews`, `allocateReviewDirectory`
-  (`reviews/scan.ts`); `diffPosition`, `positionFindings` (`reviews/diff.ts`).
+  (`reviews/scan.ts`); `diffPosition`, `positionFindings` (`reviews/diff.ts`);
+  `createBaselineReviewer`, `baselinePrompt`, `baselineFailures`, `parseBaselineFinding`,
+  `baselineFindingPath`, `readBaselineOutcome`, `readBaselineReviewerShutdown`,
+  `BASELINE_FINDING_FILE`,
+  `BASELINE_TURN_DIRECTORY` (`reviews/baseline.ts`).
 
 ### `queue/`
 
@@ -387,13 +454,17 @@ further would separate one decision from itself: `runs/runner.ts` (the loop), `s
   reviews it, completes it, prepares the checkout between two workspaces, and repairs the same
   ticket when the completion path returns it to its ready status. Every phase is an ordinary
   function handed to it; a `pending` completion is waited out with the configured interval, and an
-  idle watch waits for the next ticket without starting an agent.
+  idle watch waits for the next ticket without starting an agent. Its discovery step reports a
+  pending recovery it could not finish as a stop of its own — never as a failure it goes on
+  past — and carries whether everything that recovery started was confirmed stopped, so the
+  invocation's intake lock is kept when something may still be writing.
 - **Does not own:** any phase's implementation. It imports no connector and no credential, starts no
   agent, merges nothing itself, and keeps no state across invocations. `src/cli/queue-command.ts` is
   what builds the four phases, resolves the three credentials, and holds the connected project's
   intake lock for the whole invocation.
 - **Entry points:** `runQueue`, `QueueLoopContext`, `QueueRunMode`, `QueueSummary`,
-  `QueueTicket`, `QueueReviewOutcome`, `QueueCompletionOutcome`, `QueueIo` (`queue/loop.ts`).
+  `QueueTicket`, `QueueRecovery`, `QueueDiscoveryStop`, `QueueReviewOutcome`,
+  `QueueCompletionOutcome`, `QueueIo` (`queue/loop.ts`).
 
 ## 3. Dependency direction
 
@@ -420,7 +491,8 @@ cli/*  ---- the commands: parse, load, compose, print, exit
   +--> delivery/  -------> process/ (bounded commands), workspace/ (Git hygiene)
   |
   +--> reviews/   -------> agents/codex/, reporting/ (evidence log), workspace/ (pointer ids and
-  |                        the view's bounded Git), sources/contract.ts, shared/
+  |                        the view's bounded Git), sources/contract.ts, shared/ -- and, for the
+  |                        pre-delivery diagnosis, the same review turn over a different subject
   |
   +--> queue/     -------> sources/contract.ts only (the ticket's identity and its take result)
   |
@@ -470,10 +542,11 @@ fixtures: helper modules may not import the CLI, and `src/shared/types.ts` may n
 | Workspace layout and ledger | `WorkspaceState`/`WorkspaceAttempt` (`src/workspace/state.ts`), `ContinuedWorkspace` (`src/workspace/reopen.ts`); the paths in `src/workspace/run-directory.ts` | the runner, as each attempt finishes; the coordinator resolves it, and refuses rather than guesses |
 | Pointer label | `workspacePointerLabel`/`parseWorkspacePointers` (`src/sources/contract.ts`), written through `src/sources/jira/labels.ts` | the run that creates a workspace, once, before any coding turn |
 | Escalation ladder | `EscalationTier` (`src/shared/types.ts`), the `escalation` schema in `src/config/schema.ts`, the climb in `src/sources/coordinator.ts` | the Nexus-wide harness configuration |
-| Attempt guidance | `SourceComment` (`src/sources/contract.ts`), rendering and bounds in `src/sources/guidance.ts`, the prompt section in `src/agents/codex/prompt.ts` | the item's own thread and the workspace ledger, bounded, context only |
+| Attempt guidance | `SourceComment` (`src/sources/contract.ts`), rendering and budgets in `src/sources/guidance.ts`, the prompt section in `src/agents/codex/prompt.ts` | the item's own thread and the workspace ledger, bounded; the reviewed baseline finding the coordinator establishes is carried as its own lines, ahead of the context and with a budget of its own, so neither spends the other's |
 | Delivery | `GitHubDeliveryConfig` (`src/shared/types.ts`), the project `delivery` schema in `src/config/schema.ts`, `Delivery`/`DeliveryRequest`/`DeliveredPullRequest` and `createGitHubDelivery` (`src/delivery/github.ts`), the call in `src/sources/coordinator.ts` | the connected project's configuration; GitHub is the record of whether a pull request exists |
 | Review | `GitHubReviewConfig` (`src/shared/types.ts`), the Nexus-wide `reviewer` schema composed with the project's `source` and `delivery` in `src/config/load.ts`, `ReviewQueue`/`ReviewRepository`/`ReviewVerdict`/`ReviewSummary` (`src/reviews/contract.ts`), `createGitHubReviewClient` (`src/reviews/github.ts`), `createReviewerTurn` (`src/reviews/reviewer.ts`), `scanReviews`/`watchReviews` (`src/reviews/scan.ts`), wired by `src/cli/review-command.ts` | the harness configuration's reviewer integration, the connected project's own repository, and the GitHub App installation; the native review pinned to a commit is the record of what was reviewed |
 | Serial queue | `QueueTicket`/`SourceTake` (`src/sources/contract.ts`), `takeOneItem` (`src/sources/coordinator.ts`), the optional one-ticket scope in `ReviewScanContext` and `CompletionPassParts`, `runQueue` (`src/queue/loop.ts`), `refreshSource` (`src/workspace/refresh.ts`), wired by `src/cli/queue-command.ts` | the operator's configuration; Jira, the pointer label, and GitHub's native state are the authorities a restart reads |
+| Baseline diagnosis | `BaselineFinding`/`BaselineDiagnosis`/`BaselineRecord`/`BaselineReview`/`BaselineReviewedFinding` (`src/sources/contract.ts`), `createBaselineDiagnosis`/`baselineCommentFinding` (`src/sources/baseline.ts`), `createBaselineReviewer` (`src/reviews/baseline.ts`), `createJiraBaselineRecord` (`src/sources/jira/baseline.ts`), wired by `src/cli/source-command.ts` and `src/cli/queue-command.ts` | the configured reviewer, the source's own thread and statuses, and the completed red round; the marker comment in the item's own thread is the remote half of the record a restart reads — and only as its whole comment, naming the exact evidence identity the record closed as a repair — and the evidence file the phase writes under `<workDir>/baseline/<project>/<evidence>/`, the connected project's own namespace, is the local half |
 
 The runner's collaborators are still plain functions (`RunnerDependencies`), so a test substitutes
 one function rather than a framework. `cli/dependencies.ts` is the only place that builds the real

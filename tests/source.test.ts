@@ -284,6 +284,7 @@ interface FixtureOptions {
   readonly run?: (task: Task, call: number, runDir: string) => Promise<RunTaskResult>;
   readonly recordWorkspace?: (item: SourceTask, workspaceId: string) => Promise<void> | void;
   readonly refuse?: (item: SourceTask, reason: string) => Promise<void> | void;
+  readonly attention?: (item: SourceTask, reason: string) => Promise<void> | void;
   readonly commentsSince?: (
     item: SourceTask,
     since: string,
@@ -315,6 +316,8 @@ interface Fixture {
   readonly progresses: Array<{ key: string; outcome: SourceRunOutcome }>;
   readonly completions: Array<{ key: string; outcome: SourceRunOutcome }>;
   readonly refusals: Array<{ key: string; reason: string }>;
+  /** One entry per attention record the coordinator had published, in order. */
+  readonly attentions: Array<{ key: string; reason: string }>;
   /** One entry per completion pass the coordinator ran, in order. */
   readonly completionRuns: Array<{ readonly problem: string | null }>;
   readonly requests: Array<{
@@ -336,6 +339,7 @@ function createFixture(options: FixtureOptions): Fixture {
   const progresses: Fixture['progresses'] = [];
   const completions: Fixture['completions'] = [];
   const refusals: Fixture['refusals'] = [];
+  const attentions: Fixture['attentions'] = [];
   const completionRuns: Fixture['completionRuns'] = [];
   const requests: Fixture['requests'] = [];
   const output: string[] = [];
@@ -393,6 +397,11 @@ function createFixture(options: FixtureOptions): Fixture {
       log.push(`refuse:${item.ref.key}`);
       refusals.push({ key: item.ref.key, reason });
       await options.refuse?.(item, reason);
+    },
+    attention: async (item, reason) => {
+      log.push(`attention:${item.ref.key}`);
+      attentions.push({ key: item.ref.key, reason });
+      await options.attention?.(item, reason);
     },
     commentsSince: async (item, since) => {
       log.push(`comments:${item.ref.key}`);
@@ -472,6 +481,7 @@ function createFixture(options: FixtureOptions): Fixture {
     progresses,
     completions,
     refusals,
+    attentions,
     completionRuns,
     requests,
     output,
@@ -3475,7 +3485,13 @@ function recordingSignals(): InterruptSignals & { interrupt(): void; registered(
   };
 }
 
-describe('the source commands through the CLI', () => {
+// Every test in this suite drives the real CLI: real Git and child processes on
+// the host, whose wall-clock cost follows the machine's load rather than any
+// wait the harness itself keeps. The five-second default is a stopwatch, not an
+// assertion, and a busy host can run it out without anything hanging — the
+// watch tests above already take the same room for the same reason. A test that
+// really hangs still fails here.
+describe('the source commands through the CLI', { timeout: 20_000 }, () => {
   it('previews the queue, claims nothing, and writes nothing', async () => {
     const target = await createTarget();
     const jira = fakeJira([

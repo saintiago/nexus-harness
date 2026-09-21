@@ -63,6 +63,15 @@ one coding cycle. There is no second repair system: the attempt is the same runn
 per-rung launch and repair allowance, and the pointer label is still the only statement of where the
 work lives. The loop never adopts, clears, or migrates a workspace.
 
+The same ticket-by-identity rule covers the increment added after this one: a fresh workspace whose
+baseline is completed red is diagnosed locally before any developer turn, and an actionable finding
+returns it to its ready status with the comment carrying the repair guidance. The loop then carries
+that ticket through its repair attempt before unrelated ready work, exactly as it does a ticket the
+completion path returned ([implement-baseline-diagnosis.md](implement-baseline-diagnosis.md)).
+Its pending half is finished before anything is discovered or claimed, and a resume that cannot
+finish it — or that could not confirm the reviewer runtime it started had ended — stops the queue
+there, before any claim, with the intake lock kept for inspection in the unconfirmed case.
+
 ## Source readiness, and only forward
 
 After a ticket is confirmed Done, the next workspace needs the merged base. The loop hands the

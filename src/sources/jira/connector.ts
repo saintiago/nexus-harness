@@ -7,7 +7,13 @@
  */
 import type { JiraSourceConfig } from '../../shared/types.js';
 import type { TaskSource } from '../contract.js';
-import { commentsSince, completeItem, progressItem, refuseItem } from './comments.js';
+import {
+  attentionItem,
+  commentsSince,
+  completeItem,
+  progressItem,
+  refuseItem,
+} from './comments.js';
 import { createHttpClient } from './http.js';
 import type { HttpClient, JiraSourceParts } from './http.js';
 import { recordWorkspacePointer } from './labels.js';
@@ -36,6 +42,7 @@ export function createJiraSource(
     recordWorkspace: (item, workspaceId, stop) =>
       recordWorkspacePointer(http, item, workspaceId, stop),
     refuse: (item, reason, stop) => refuseItem(config, http, token, item, reason, stop),
+    attention: (item, reason, stop) => attentionItem(config, http, token, item, reason, stop),
     commentsSince: (item, since, stop) => commentsSince(http, token, item, since, stop),
   };
 }

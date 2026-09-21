@@ -60,6 +60,28 @@ export class RunCancelledError extends Error {
   }
 }
 
+/**
+ * The prefix of every guidance line a source renders from a reviewed baseline
+ * finding: the failing check, the evidence, the likely cause, the repair, and
+ * the requirement that the baseline is repaired before the original task
+ * continues. The coding prompt recognizes the prefix and puts those lines in a
+ * section of their own, as what this turn has to do first, instead of the
+ * ordinary context a comment contributes; the string is shared here so the two
+ * layers cannot drift apart (docs/WORKFLOW.md §11).
+ */
+export const BASELINE_GUIDANCE_PREFIX = 'reviewed baseline finding — ';
+
+/**
+ * The longest a best-effort feedback sequence may take after the caller
+ * interrupted intake: one bounded attempt to tell the item where the work it
+ * claimed now stands. A caller's own stop must not strand a ticket in the
+ * running status, so the result of a stopped run, a refusal, and an interrupted
+ * pre-delivery diagnosis all run under this deadline instead of the aborted
+ * signal they were given (docs/spec.md §6 and §11, docs/WORKFLOW.md §11). The bound is
+ * shared here so those paths cannot drift apart.
+ */
+export const FEEDBACK_DEADLINE_MS = 10_000;
+
 /** What one run is asked to do: the loaded inputs, already validated and resolved. */
 export interface RunTaskRequest {
   /** The task as it was loaded from its file, fixed for the whole run. */

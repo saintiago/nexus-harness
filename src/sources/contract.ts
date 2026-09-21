@@ -10,8 +10,14 @@
  * connector.
  */
 import type { DeliveredPullRequest, Delivery } from '../delivery/github.js';
-import type { RunTaskResult } from '../runs/contracts.js';
-import type { EscalationTier, RunStatus, SourceRef, Task } from '../shared/types.js';
+import type { AgentTurnShutdown, RunTaskResult } from '../runs/contracts.js';
+import type {
+  CheckRoundResult,
+  EscalationTier,
+  RunStatus,
+  SourceRef,
+  Task,
+} from '../shared/types.js';
 import type { PreflightRequest, SourcePreflight } from '../workspace/preflight.js';
 import type { ContinuedWorkspace } from '../workspace/reopen.js';
 
@@ -203,6 +209,10 @@ export interface SourceComment {
  * - `complete` publishes a bounded summary and moves the item to review: the
  *   ladder's last word, whether it passed, failed terminally, or ran out of
  *   rungs. It throws {@link SourceFeedbackError} when delivery fails.
+ * - `refuse` and `attention` are the two ways a claimed or unclaimed item is
+ *   taken out of the queue with the reason on its own thread: a refusal before
+ *   anything ran, and the stop a claim reached when it cannot start the
+ *   attempt it was made for.
  */
 export interface TaskSource {
   listEligible(stop: AbortSignal): Promise<readonly SourceCandidate[]>;
@@ -230,6 +240,17 @@ export interface TaskSource {
    * ran. Throws {@link SourceFeedbackError} when delivery fails.
    */
   refuse(item: SourceTask, reason: string, stop: AbortSignal): Promise<void>;
+  /**
+   * Publishes one attention comment and takes the item out of the running
+   * status, while it is still there: the harness claimed the item and then
+   * found, before any coding turn, something that needs a person — so no
+   * developer is started, the reason is recorded on the item's own thread, and
+   * the item is not left claimed with nothing looking for it. The workspace
+   * pointer and the acceptance criteria are untouched, and the comment never
+   * claims an attempt ran. Throws {@link SourceFeedbackError} when delivery
+   * fails.
+   */
+  attention(item: SourceTask, reason: string, stop: AbortSignal): Promise<void>;
   /**
    * The comments added after one instant, oldest first: what the item's own
    * thread says since the attempt being continued. A source that has no such
@@ -277,6 +298,290 @@ export interface SourceRunRequest {
    * the work lives, so the source can record it on the item it came from.
    */
   readonly onWorkspaceReady?: (workspace: { readonly workspaceId: string }) => Promise<void>;
+}
+
+/**
+ * The finding one pre-delivery baseline diagnosis produced, as the reviewer
+ * turn wrote it down: either the concrete repair the next coding turn can make
+ * in the working copy, or why no repair may be made automatically. It is data:
+ * nothing here is a command, a path, or a limit of its own, and none of it
+ * changes the acceptance criteria or the checks that decide the run
+ * (docs/WORKFLOW.md §11).
+ */
+export type BaselineFinding =
+  | {
+      /** The baseline failure has a cause the next coding turn can repair. */
+      readonly outcome: 'repair';
+      /** The check that failed, as the configuration spells it. */
+      readonly failingCheck: string;
+      /** What the check's own output shows: the evidence of the failure. */
+      readonly evidence: string;
+      /** The most likely cause, named concretely. */
+      readonly likelyCause: string;
+      /** What the next coding turn should change to repair the baseline. */
+      readonly repairGuidance: string;
+    }
+  | {
+      /** No repair may be attempted: evidence is missing, the cause is environmental, or a repair is unsafe. */
+      readonly outcome: 'inconclusive';
+      /** Why the baseline failure is not actionable. */
+      readonly reason: string;
+      /** What a person must supply, do, or decide before another attempt. */
+      readonly requiredAction: string;
+    };
+
+/**
+ * The part of one prepared item a pre-delivery diagnosis reads: the immutable
+ * identity it is keyed by, and the task the baseline failed under. Nothing here
+ * is a command, a path, or a limit of its own, and a diagnosis publishes nothing
+ * about the item's pointer labels, so it is handed this and not a whole source
+ * task.
+ */
+export interface BaselineItem {
+  readonly ref: SourceRef;
+  readonly task: Task;
+}
+
+/**
+ * What one pre-delivery baseline diagnosis is handed: the item the workspace
+ * belongs to, the fresh retained workspace the baseline ran in, and the
+ * completed red round itself — the configured commands and bounded output
+ * evidence. The workspace is the immutable source snapshot: no coding turn ran
+ * in it, so it is still at its recorded base.
+ */
+export interface BaselineDiagnosisRequest {
+  readonly item: BaselineItem;
+  readonly workspace: {
+    readonly workspaceId: string;
+    readonly workspacePath: string;
+    readonly branch: string;
+    readonly baseCommit: string;
+  };
+  readonly baseline: CheckRoundResult;
+  readonly stop: AbortSignal;
+}
+
+/**
+ * What one pre-delivery baseline diagnosis did with the item.
+ *
+ * `cleanupConfirmed` is the diagnosis's own answer to what a run's report asks
+ * about its turns: whether everything the diagnosis started was seen to end. It
+ * is `false` only for a reviewer turn whose own stop could not be confirmed,
+ * and the coordinator then keeps the intake lock instead of releasing it —
+ * something may still be writing to the diagnosis's evidence directory
+ * (docs/spec.md §3, §11).
+ */
+export type BaselineDiagnosisOutcome =
+  /**
+   * An actionable finding is on the item's thread (at most once) and the item
+   * is back in the status it was claimed from, ready for the next claim.
+   * Actionable findings are only ever published from a reviewer turn that
+   * produced one and stopped nothing, so nothing unconfirmed is carried here.
+   */
+  | { readonly kind: 'repair'; readonly detail: string; readonly commentId: string | null }
+  /**
+   * Nothing actionable: the item carries what was observed and what a person
+   * must do, and it stays in the review status. No coding turn is started.
+   */
+  | {
+      readonly kind: 'attention';
+      readonly detail: string;
+      readonly commentId: string | null;
+      readonly cleanupConfirmed: boolean;
+    }
+  /** The intake was stopped while the diagnosis ran. */
+  | {
+      readonly kind: 'cancelled';
+      readonly detail: string;
+      /**
+       * The id of the one comment this evidence already has on the item's
+       * thread — published by this invocation or by an earlier one — or `null`
+       * when nothing was published for it. A caller reads it as whether the
+       * claimed ticket still has retained evidence and a thread record looking
+       * for it, or whether only that caller can keep it from being left in the
+       * running status with nothing looking for it.
+       */
+      readonly commentId: string | null;
+      readonly cleanupConfirmed: boolean;
+    };
+
+/**
+ * What finishing a pending pre-delivery diagnosis did, as the coordinator and
+ * the serial queue read it. `problem` is reserved for the diagnosis's own
+ * machinery: the retained evidence could not be read, or the item could not be
+ * asked about at all, so a person looks before anything else is taken
+ * (docs/WORKFLOW.md §11).
+ */
+export type BaselineResumeOutcome =
+  /** An actionable finding is on the thread and the item is back in its ready status. */
+  | { readonly kind: 'repair'; readonly detail: string; readonly commentId: string | null }
+  /**
+   * Nothing actionable: the item carries the evidence and what a person must
+   * do, and it stays in the review status. No coding turn is started from it.
+   */
+  | {
+      readonly kind: 'attention';
+      readonly detail: string;
+      readonly commentId: string | null;
+      readonly cleanupConfirmed: boolean;
+    }
+  /** The pending diagnosis could not be finished, so nothing else is taken. */
+  | { readonly kind: 'problem'; readonly detail: string }
+  /** The caller stopped the intake while the pending diagnosis was finished. */
+  | {
+      readonly kind: 'cancelled';
+      readonly detail: string;
+      readonly cleanupConfirmed: boolean;
+    };
+
+/**
+ * What reading back the reviewed finding of one retained workspace produced.
+ *
+ * A claim that continues a workspace a red baseline was returned for repair has
+ * to be told that finding, and the item's own thread is not the only record of
+ * it: this is the local half, kept beside the workspace. `none` means the
+ * workspace has no reviewed finding the attempt must be told — an ordinary
+ * continuation, with nothing returned for repair. `problem` means a finding is
+ * required and cannot be read back, so the attempt must not start without it
+ * (docs/WORKFLOW.md §11).
+ */
+export type BaselineReviewedFinding =
+  /**
+   * The workspace was returned for repair and this is the reviewed finding,
+   * with the identity of the evidence it was published for: a comment on the
+   * item's own thread is this same reviewed outcome only when it carries that
+   * identity, says the whole finding, and every field of it is the one this
+   * finding records — a comment carrying the marker with an edited field is
+   * ordinary thread context, never the requirement, and this finding is handed
+   * over instead.
+   */
+  | { readonly kind: 'finding'; readonly finding: BaselineFinding; readonly evidenceId: string }
+  /** This workspace has no reviewed finding its next attempt must be told. */
+  | { readonly kind: 'none' }
+  /**
+   * The workspace was returned for repair, and the finding the record kept
+   * beside it cannot be read back. There is then nothing to hold a comment of
+   * the item's own thread against — an edited one would look exactly like the
+   * finding this harness published — so nothing may start and `detail` names
+   * what a person has to inspect.
+   */
+  | { readonly kind: 'unreadable'; readonly detail: string }
+  /** A reviewed finding is required and cannot be read back; nothing is started. */
+  | { readonly kind: 'problem'; readonly detail: string };
+
+/**
+ * The one comment of an item's own thread the pre-delivery diagnosis reads:
+ * what the record below answers, and where a marker is looked for. It carries
+ * no runtime or repository data.
+ */
+export interface SourceNote {
+  readonly id: string;
+  readonly createdAt: string;
+  readonly text: string;
+}
+
+/**
+ * The item's own thread and status, as one pre-delivery diagnosis reads and
+ * writes them. Production is the Jira connector's own small module; a test
+ * hands a fake the same way it fakes the source itself.
+ */
+export interface BaselineRecord {
+  /** Every comment of the item's thread, oldest first. */
+  listComments(id: string, stop: AbortSignal): Promise<readonly SourceNote[]>;
+  /** Posts one comment of plain paragraphs and acknowledges its ID. */
+  postComment(id: string, paragraphs: readonly string[], stop: AbortSignal): Promise<string>;
+  /**
+   * Whether the item is still in the status the harness claims work into. A
+   * pending diagnosis is finished only while the item is still there: one a
+   * person has moved somewhere else is left exactly where that person left it.
+   * `false` also covers an item that is gone.
+   */
+  isRunning(id: string, stop: AbortSignal): Promise<boolean>;
+  /**
+   * Moves the item to `target`, but only while it really is still in its
+   * running status. `left-alone` means somebody moved it first: that is
+   * respected, and no transition is sent.
+   */
+  moveFromRunning(id: string, target: string, stop: AbortSignal): Promise<'moved' | 'left-alone'>;
+}
+
+/** What one pre-delivery reviewer turn is given. */
+export interface BaselineReviewRequest {
+  /** The evidence directory the turn keeps its input, log and finding in. */
+  readonly dir: string;
+  /** The item: its immutable identity and the task the baseline failed under. */
+  readonly item: BaselineItem;
+  /**
+   * The retained workspace the baseline ran in, and the snapshot the turn
+   * inspects: a clone pinned at the recorded base commit.
+   */
+  readonly workspace: { readonly path: string; readonly baseCommit: string };
+  /** The completed red baseline round: the configured commands and their evidence. */
+  readonly baseline: CheckRoundResult;
+  readonly stop: AbortSignal;
+}
+
+/**
+ * What one pre-delivery reviewer turn produced. `finding` is `null` exactly
+ * when `problem` is not: a turn that did not complete, or wrote nothing usable,
+ * has no finding the diagnosis may publish.
+ */
+export interface BaselineReviewResult {
+  /** The reviewer's own final message, or `null` when it gave none. */
+  readonly summary: string | null;
+  readonly finding: BaselineFinding | null;
+  readonly problem: string | null;
+  /** The turn's own log file, kept beside its evidence. */
+  readonly logPath: string;
+  /**
+   * How the turn's own stop of the runtime it started went, or `null` when it
+   * stopped nothing. An `unconfirmed` termination is never rounded down: the
+   * diagnosis carries it to its caller, which keeps the intake lock rather than
+   * declaring an evidence directory safe while a runtime may still be writing
+   * to it (docs/spec.md §3, §11).
+   */
+  readonly shutdown: AgentTurnShutdown | null;
+}
+
+/**
+ * The one bounded reviewer turn a pre-delivery diagnosis runs: a local turn
+ * over a read-only snapshot of the workspace, answering with one finding file.
+ * It receives no coding instruction, starts no coding turn, and changes no
+ * working copy (docs/WORKFLOW.md §11).
+ */
+export type BaselineReview = (request: BaselineReviewRequest) => Promise<BaselineReviewResult>;
+
+/**
+ * The bounded pre-delivery diagnostic a completed red baseline on a fresh
+ * workspace enters before any coding turn: one local reviewer turn over the
+ * exact source snapshot, and one Jira record of what it found. It is composed
+ * by the CLI from the configured reviewer, the source's own thread and
+ * statuses, and the output directory; the coordinator only decides when it
+ * runs (docs/WORKFLOW.md §11).
+ */
+export interface BaselineDiagnosis {
+  diagnose(request: BaselineDiagnosisRequest): Promise<BaselineDiagnosisOutcome>;
+  /**
+   * Finish the diagnosis a previous invocation left pending, from the evidence
+   * it retained and the item's own thread, before anything is discovered or
+   * claimed. `null` means nothing was pending: every piece of retained evidence
+   * already carries its finding or already left the running status, so nothing
+   * was written, moved, or spent. The same snapshot, commands, and results are
+   * never diagnosed twice, and a finding an earlier turn completed locally is
+   * reused when the publication it belonged to was interrupted
+   * (docs/WORKFLOW.md §11).
+   */
+  resume(stop: AbortSignal): Promise<BaselineResumeOutcome | null>;
+  /**
+   * The reviewed finding one retained workspace was returned for repair with,
+   * read back from the evidence this harness kept beside it. A claim that
+   * continues such a workspace is required to be told that finding. The item's
+   * own thread supplies it only when its comment is that whole finding, field
+   * for field; this is the second source, and `problem`, `unreadable` and an
+   * unusable thread are the stops for when a required finding cannot be read
+   * back (docs/WORKFLOW.md §11).
+   */
+  reviewedFinding(workspaceId: string, stop: AbortSignal): Promise<BaselineReviewedFinding>;
 }
 
 /**
@@ -330,6 +635,15 @@ export interface SourceContext {
    * (docs/WORKFLOW.md §9).
    */
   readonly completion?: CompletionRun;
+  /**
+   * The optional pre-delivery baseline diagnosis: what a completed red
+   * baseline on a fresh workspace is handed to before any coding turn, so an
+   * actionable finding returns the same ticket to its ready status with
+   * guidance instead of leaving it In Review with none. Absent means the
+   * existing behaviour — the failed attempt is published and the item waits In
+   * Review for a person (docs/WORKFLOW.md §11).
+   */
+  readonly baselineDiagnosis?: BaselineDiagnosis;
   /** The existing source/output preflight, re-run before each reservation. */
   readonly preflight: (request: PreflightRequest) => Promise<SourcePreflight>;
   /** The existing runner, as one ordinary function. */
@@ -426,6 +740,14 @@ export interface SourceTakeRun {
    * deliver.
    */
   readonly pullRequest: DeliveredPullRequest | null;
+  /**
+   * Set when the attempt ended before any coding turn — a completed red
+   * baseline on a fresh workspace — and the pre-delivery diagnosis published
+   * its finding and returned the item to its ready status. The serial queue
+   * continues this same ticket instead of stopping for a person
+   * (docs/WORKFLOW.md §11).
+   */
+  readonly returnedForBaselineRepair?: { readonly detail: string };
 }
 
 /**

@@ -13,7 +13,7 @@
 
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { runCheckRound } from '../src/checks/round.js';
@@ -23,6 +23,7 @@ import {
   appendRunLog,
   openAgentLog,
   readCommandOutput,
+  readCommandOutputEvidence,
   runLogPath,
 } from '../src/reporting/logs.js';
 import { summarizeChanges } from '../src/reporting/changes.js';
@@ -605,6 +606,23 @@ describe('the failure output a repair turn is given', () => {
 
     expect(output).toContain(`stdout (${result.stdoutPath}):`);
     expect(output).toContain('(no output was written)');
+  }, 60_000);
+
+  it('tells a stream that wrote nothing apart from a log file that cannot be read', async () => {
+    const fixture = await createFixture();
+    const silent = await recordedCommand(fixture, { label: 'silent', stdout: '', stderr: '' });
+    const missing = await recordedCommand(fixture, { label: 'gone', stdout: 'x', stderr: 'y' });
+    await rm(missing.stdoutPath, { force: true });
+
+    // An empty file really was read: the command wrote nothing.
+    const readable = await readCommandOutputEvidence(silent);
+    expect(readable.output).toContain('(no output was written)');
+    expect(readable.unreadable).toEqual([]);
+
+    // A file that is not there is not evidence that the command was silent.
+    const unreadable = await readCommandOutputEvidence(missing);
+    expect(unreadable.output).toBeNull();
+    expect(unreadable.unreadable).toEqual([missing.stdoutPath]);
   }, 60_000);
 });
 

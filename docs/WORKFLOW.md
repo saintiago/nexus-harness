@@ -199,6 +199,8 @@ codex --profile deepseek --model deepseek-flash --ask-for-approval never exec --
 
 The execution part is not configurability: it is the adapter's own fixed suffix. Each turn runs unsandboxed (`--sandbox danger-full-access`) and unattended (`--ask-for-approval never`, so nothing waits for a prompt), because a turn must be able to stage and commit in the retained working copy and the narrower `workspace-write` policy — in its `--sandbox` spelling or its native permission-profile spelling — leaves that copy's Git metadata read-only on Windows, where `git add` fails on `.git/index.lock` (HARN-2, HARN-10). That policy is an explicit, documented choice, not a hidden fallback: the suffix is the same for every turn, and nothing widens after a failure. A turn has the same file and network reach as the harness's own configured `setup` and `checks` commands; README "Safety" states that plainly.
 
+The one turn that is not a coding turn is the pre-delivery baseline diagnosis (§11). It stages nothing and must not change what it inspects, so it runs as `exec --sandbox workspace-write`, started in its own working directory inside the diagnosis's evidence directory, and that launch states the policy's additional writable roots as none and excludes the host's temporary roots from its writable set (the runtime's own `sandbox_workspace_write.writable_roots`, as the empty list, `sandbox_workspace_write.exclude_tmpdir_env_var`, and `.exclude_slash_tmp`): its working directory is the only place the runtime's sandbox lets it write, and the snapshot it inspects and the ticket's retained working copy are outside it however `workDir` is placed and whatever the operator's own configuration would grant instead. That launch's configuration keys do not cover everything a configured launch prefix can carry, so a prefix that names a switch granting a writable root, moving the working root, or naming a policy of its own (`--add-dir`, `--cd`/`-C`, `--worktree`, `-s`/`--sandbox`, `--dangerously-bypass-approvals-and-sandbox`) is refused before the turn starts: no runtime is launched under a grant its own overrides cannot take back, and the refusal reaches the ticket In Review with what a person must do. A diagnostic that tries to write anywhere else is refused by the sandbox rather than trusted, and the harness checks the two trees after the turn as well. No coding turn is ever started from a diagnosis, and nothing widens the diagnostic's policy.
+
 Do not put `exec`, a prompt, redirection, a shell expression, or an end-of-options `--` into the configured prefix. Do not use prefix options/wrappers that redirect the working directory, replace structured output, or override the adapter's execution/permission controls. This is a trusted launcher contract, not a general CLI policy language.
 
 ### Agent launch and path rules
@@ -289,7 +291,7 @@ prepare → setup → baseline checks
 
 A red baseline stops a **fresh attempt** before any coding turn; a **continuation** may start red, because its workspace may already carry committed work the checks reject, and only its post-turn check round decides. A setup/launch/authentication/protocol error, expired timeout, cancellation, or exhausted repair allowance stops the loop and preserves work, fresh or continued. Only ordinary completed red check rounds trigger repair. Checks are rerun by the harness regardless of the agent's claims. The selected agent does not change between turns. Before every coding turn, and before the round that follows it, the checkout is returned to the branch its workspace records: a turn may have committed on a branch of its own, and what the checks judge and a delivery step publishes is the recorded branch's own revision. That return fast-forwards and checks out a clean checkout whose commit descends from the recorded branch, keeping the commit the turn made on the branch it made it on; a detached, divergent, or branchless checkout stops the run before that turn or check, naming both branches and the manual action, and nothing is reset, force-updated, or discarded (HARN-35). A return that would write over a local file the checkout ignores is **refused** with the paths named and the file's bytes kept, and what the checkout and the fast-forward did is read back rather than taken from their exit codes, so a Git configuration that squashed the merge cannot pass for a returned branch. A coding turn is also started only from the workspace's own committed state: a checkout that still holds uncommitted work — on the recorded branch included — stops the run before the agent, naming the branch, the paths, and the manual action, while the round that judges a turn still reads what that turn left, uncommitted work included. See the specification for reporting and safety semantics.
 
-The delivery step is **outside the run**: the run's own report is written first, and only a `passed` attempt is delivered. A delivery failure changes neither the run's status nor its evidence, and it never starts a coding turn (§8).
+The delivery step is **outside the run**: the run's own report is written first, and only a `passed` attempt is delivered. A delivery failure changes neither the run's status nor its evidence, and it never starts a coding turn (§8). A red baseline never reaches it either: for a fresh source attempt the ending is diagnosed locally first (§11, "The pre-delivery baseline diagnosis"), so an attempt is delivered only after a post-agent round passed every configured setup and check and the ticket's own work is on the recorded branch.
 
 Every working copy is given a **repository-local** Git identity (`Nexus Agent <nexus@local>`, commit signing disabled) before any check or coding turn runs, so a turn can make small local commits as it works; a turn is asked to finish with the work it wants built on committed, because the harness starts no further coding turn from a working copy that still holds uncommitted work. Those commits stay in the retained working copy: the harness itself never merges or integrates a target's changes and, without a configured delivery step, never pushes or publishes them either. A commit is not a check result, and anything a turn leaves uncommitted is kept — the round after the turn judges it, and a delivery step refuses to publish it — but it ends the run there rather than going to another agent. A continued workspace keeps the base commit its ledger recorded as the comparison base, so `changes` in the report is the whole diff against that base, committed and uncommitted parts alike. These settings are written with `git config --local`; the harness never writes global or system Git configuration.
 
@@ -455,11 +457,13 @@ For all terminal local outcomes, publish the exact `passed`, `failed`, or `cance
 
 While an `escalation` ladder is climbing, the issue stays in the running status: each attempt publishes its own comment ("attempt 2 of 3, tier pro" — the rung's position in this cycle's own ladder), and only the climb's last attempt — a pass, a terminal failure, or the rung that exhausted the ladder — publishes the final result and moves the issue to review. Escalation is local to one coding cycle: every claim starts at the first tier, including a claim that continues the retained workspace an issue carries after a reviewer's findings, a failed required check, a delivery failure, or a failed post-merge workflow returned it to the ready status, and the workspace's own attempt count never selects a tier. Only an exhausted ordinary red check round climbs: a run that ended before any coding turn, a setup/launch/authentication/protocol error, a cancellation, an expired limit, and a stop that was not confirmed each end the intake at the rung where they happened rather than spending a stronger launch on them. That rung's result is then published and moved to review, with two deliberate exceptions that stop intake instead: a run whose stopped executions could not be confirmed to have ended publishes nothing and leaves the issue where it is, and neither does an attempt whose workspace ledger could not be written (see the local-save paragraph below).
 
+A completed red baseline on a fresh workspace from a configured source is the one ending that is diagnosed before it is published: the ladder still climbs nothing from it, but the issue is not told only that its baseline failed. One local reviewer turn over the exact snapshot and the command evidence produces a finding; an actionable one returns the same issue to its ready status with one comment carrying the failing check, the evidence, the likely cause and the repair, so the next claim repairs the baseline before continuing the original task, and a diagnosis with nothing actionable moves it to the review status with the evidence and the required action and stops intake for a person. Nothing else about the ladder, the comments, or the review move changes (§11, "The pre-delivery baseline diagnosis").
+
 A delivery failure is an operator problem, not a coding one: the run's report and logs are kept as they were written, the receipt records `delivery: <what failed>`, the issue is still told the outcome the run produced with the failure beside it, and intake stops. Fix what the failure names — a leftover path, Git credentials, or `gh auth status` — and retry the publication **by hand** in the retained workspace with ordinary `git` and `gh`, checking GitHub first because a failed push or creation may already have taken effect; §8 has the recipe. Moving the issue back to the ready status is not that retry: it starts a new coding run in the same workspace. No coding turn is started to repair a publishing failure.
 
 A required local save that fails is not rounded into a success either: if an attempt cannot be recorded in its workspace's ledger, the run's own report, logs, and working copy are kept as they were written, the receipt records `workspace ledger: <what failed>` with the failed path, and intake stops instead of starting another attempt — the next attempt's number and its guidance come from that ledger (the tier that ran each attempt before it included), so none is started against one that does not hold the attempt. Repair the ledger by hand (the ledger is validated strictly: version 1, and the identity and attempt fields this harness writes), then move the issue back to the ready status to continue the same workspace.
 
-A local receipt prevents a second attempt from starting by accident across polling and restart. Changing the issue does not clear that receipt: the pointer label, not the receipt, decides what happens next. Returning the issue to the ready status with a valid pointer starts another attempt in the same workspace — it does not create a fresh clone or clear the receipt. **Rework happens in the same workspace**: the run that creates a workspace writes the pointer label `harness-ws-<workspaceId>` on the issue once, before any coding turn, and an issue in the ready status whose pointer resolves on this machine is continued — same clone, same recorded base, a new run directory and report, and a baseline round that may be red. Every attempt reads the issue's own thread as context: a continuation reads what was added since the last attempt ended, a first attempt reads the whole thread, and a continuation is also told what its ledger records of the attempts before it (tier, outcome, reason). Neither the criteria nor the configured checks change. One attempt is run per configured `escalation` tier, in order, inside the same claim; every claim starts that climb at the first tier again, a later tier runs only when the one before it exhausted its own repair allowance on an ordinary red post-agent round, and only when the ladder is spent does the issue end in the review status. An attempted issue with no pointer, a pointer this machine cannot resolve, and an issue carrying two pointers are **refused**: one comment naming the reason, the issue moved to the review status, and nothing claimed and nothing run. So are a pointer that is not a usable workspace id, a fresh ticket whose preferred workspace name is already held, a pointer whose workspace or ledger resolves out of `<workDir>/workspaces` through a junction or symbolic link (the refusal names the link and says to move the workspace's real directory back onto the layout's path), a workspace whose ledger records another item, site, or repository, a workspace whose ledger records no item identity, and a workspace whose ledger is not one this harness wrote (an unsupported version, a partially written identity, or an attempt entry of the wrong shape — an end that is not a timestamp this harness writes included; the refusal names the file and the field): the comment names the reason and, for a legacy ledger, the manual repair — add the ledger's `sourceItem` (`type`, `scope`, `id`, `key`, from the workspace's first attempt report, whose `sourceRef` records them) and scan again; nothing adopts or migrates a workspace by itself. A workspace is looked for at `<workDir>/workspaces/<workspaceId>` and nowhere else: a `workDir` written before this increment is upgraded by hand, and the ledger there, not the path an older report records, says where the clone is. To deliberately start over instead — a first attempt in a new workspace — either create a new task, or stop the watcher, inspect/stop prior processes, retain prior artifacts, remove the pointer label if the issue carries one, remove only the printed receipt file for the issue, and restore the issue to its ready status. Never clear the entire `.intake` directory to fix one task. Inspect a leftover lock and stop its owner before manually removing it; a stale-looking timestamp is insufficient. [docs/implement-workspace-continuation.md](implement-workspace-continuation.md) is the contract, including the upgrade steps and a note on the defects that are still separate tasks.
+A local receipt prevents a second attempt from starting by accident across polling and restart. Changing the issue does not clear that receipt: the pointer label, not the receipt, decides what happens next. Returning the issue to the ready status with a valid pointer starts another attempt in the same workspace — it does not create a fresh clone or clear the receipt. **Rework happens in the same workspace**: the run that creates a workspace writes the pointer label `harness-ws-<workspaceId>` on the issue once, before any coding turn, and an issue in the ready status whose pointer resolves on this machine is continued — same clone, same recorded base, a new run directory and report, and a baseline round that may be red. Every attempt reads the issue's own thread as context: a continuation reads what was added since the first attempt recorded for that workspace ended, a first attempt reads the whole thread, and a continuation is also told what its ledger records of the attempts before it (tier, outcome, reason). Neither the criteria nor the configured checks change. One attempt is run per configured `escalation` tier, in order, inside the same claim; every claim starts that climb at the first tier again, a later tier runs only when the one before it exhausted its own repair allowance on an ordinary red post-agent round, and only when the ladder is spent does the issue end in the review status. An attempted issue with no pointer, a pointer this machine cannot resolve, and an issue carrying two pointers are **refused**: one comment naming the reason, the issue moved to the review status, and nothing claimed and nothing run. So are a pointer that is not a usable workspace id, a fresh ticket whose preferred workspace name is already held, a pointer whose workspace or ledger resolves out of `<workDir>/workspaces` through a junction or symbolic link (the refusal names the link and says to move the workspace's real directory back onto the layout's path), a workspace whose ledger records another item, site, or repository, a workspace whose ledger records no item identity, and a workspace whose ledger is not one this harness wrote (an unsupported version, a partially written identity, or an attempt entry of the wrong shape — an end that is not a timestamp this harness writes included; the refusal names the file and the field): the comment names the reason and, for a legacy ledger, the manual repair — add the ledger's `sourceItem` (`type`, `scope`, `id`, `key`, from the workspace's first attempt report, whose `sourceRef` records them) and scan again; nothing adopts or migrates a workspace by itself. A workspace is looked for at `<workDir>/workspaces/<workspaceId>` and nowhere else: a `workDir` written before this increment is upgraded by hand, and the ledger there, not the path an older report records, says where the clone is. To deliberately start over instead — a first attempt in a new workspace — either create a new task, or stop the watcher, inspect/stop prior processes, retain prior artifacts, remove the pointer label if the issue carries one, remove only the printed receipt file for the issue, and restore the issue to its ready status. Never clear the entire `.intake` directory to fix one task. Inspect a leftover lock and stop its owner before manually removing it; a stale-looking timestamp is insufficient. [docs/implement-workspace-continuation.md](implement-workspace-continuation.md) is the contract, including the upgrade steps and a note on the defects that are still separate tasks.
 
 The workspace a first attempt creates is named for the item it came from: a Jira ticket's canonical key (`HARN-23`) when the key can name a directory, and the run's own generated id otherwise, and the pointer label above names the same string. A name something already holds — another item's workspace, a directory or ledger the harness cannot read as this item's, or this item's own workspace with no pointer label — is **refused** with guidance, never adopted, overwritten, or quietly replaced by a different name; a continued attempt keeps the name its pointer fixed, so a later key change renames nothing and rewrites no label.
 
@@ -973,6 +977,189 @@ Unresolved In Progress ownership or multiple In Review items stop it for attenti
 In Review item resumes its scoped review/completion phases; a merged PR must pass the existing
 admission and native GitHub checks. Retained To Do repairs take precedence over unrelated new
 work. A Done item is never rerun.
+
+### The pre-delivery baseline diagnosis
+
+A fresh workspace whose baseline is red — every `setup` command exited `0`, the check round
+completed, and at least one configured check exited nonzero — is diagnosed before any developer
+turn. The diagnosis exists exactly when the composed configuration provides the reviewer — the
+harness file's `reviewer`, with the project's own `source` and `delivery` — and a project without it
+keeps the older behaviour: the failed attempt is published and the item waits In Review. It runs the
+harness configuration's `reviewer.reviewer` selection (never a coding tier) for one turn in its own
+evidence directory under `<workDir>/baseline/<project>/<evidence>/` — `<project>` is the connected
+project's own namespace, the same one its intake lock is named by, so one `workDir` can serve
+several projects — bounded by the harness configuration's
+`taskTimeoutMinutes` and by the intake's own stop request, with:
+
+- the ticket: its key, link, title, description, and acceptance criteria, as the reviewer's context;
+- the configured commands: every setup command that succeeded, and every check with the result it
+  exited with;
+- the bounded stdout/stderr each failing check wrote (the same bounded reading a repair turn is
+  given), with the log file paths beside it;
+- a read-only clone of the retained workspace (`repo/` in the evidence directory), pinned at the
+  commit the baseline ran against, which the reviewer may inspect with ordinary read tools. The
+  snapshot has to be established before the turn: a working copy whose recorded base commit has
+  moved, or whose tracked files a configured command changed, is refused as incomplete evidence
+  rather than diagnosed through a clone of a tree the failing check never ran against.
+
+The recorded evidence has to be readable before the turn is started. A log file that is missing or
+cannot be read now is incomplete evidence, not a check that said nothing: the item stays In Review
+with the paths named, and no reviewer is launched to reason from a rendering that would pass for a
+silent command. A log the command really wrote and really left empty stays readable evidence — the
+two are kept apart — and this comes before any recorded finding, so evidence that is incomplete now
+is never published from. A refusal reached here still carries the stop the evidence's own record
+holds: an earlier invocation whose reviewer runtime was not seen to end reaches its caller as the
+unconfirmed stop it is, instead of being rounded down to a confirmed one, and a record that cannot
+be read at all fails closed by name for the same reason.
+
+The turn receives no coding instruction and changes nothing: it runs as `exec --sandbox
+workspace-write` with its own working directory (`turn/`) as the only writable root — the launch
+states that policy's additional writable roots as none and takes the host's temporary roots out of
+it, so neither the clone nor the retained working copy is writable there even when `workDir` sits
+beneath one or the operator's own configuration grants a root over it. Those keys are not the only
+place a configured launch prefix can widen a launch, so a prefix that carries a switch of its own is
+refused before the turn starts rather than run under it: `--add-dir` (whose directories are made
+writable beside the primary workspace and are not taken back by stating that the additional
+writable roots are empty), `--cd`/`-C` (which moves the working root, the one directory this launch
+lets the turn write in), and `--worktree`, `-s`/`--sandbox` and
+`--dangerously-bypass-approvals-and-sandbox` (a working root or policy of the prefix's own). No
+reviewer runtime is started for such a prefix — nothing receives the grant — and the refusal is
+recorded like any other turn that produced nothing usable, so the item stays In Review with the
+reason and what a person must do. For a launch that does run, the only file it can write is its
+`finding.json` in `turn/`, and the harness checks after the turn that the clone is still
+the clean snapshot it was given and that the retained working copy is exactly what it was before the
+turn. That turn's own environment also declares the snapshot a repository git may read (git's
+`safe.directory`, through the `GIT_CONFIG_*` variables): the runtime's sandbox runs the reviewer's
+commands under an identity that does not own the files on Windows, and git refuses such a repository
+as "dubious ownership" before reading anything, which would leave the reviewer unable to use the
+read tools this turn is built around. `finding.json` is exactly one of two shapes — a
+repository-local repair, or why none may be made:
+
+```json
+{
+  "outcome": "repair",
+  "failingCheck": "the failing command, exactly as configured",
+  "evidence": "what the recorded output or the snapshot shows",
+  "likelyCause": "the most likely cause, named concretely",
+  "repairGuidance": "what the next coding turn should change in the working copy"
+}
+```
+
+```json
+{
+  "outcome": "inconclusive",
+  "reason": "why no repository-local repair can be named from this evidence",
+  "requiredAction": "what a person must supply, do, or decide before another attempt"
+}
+```
+
+Every field shown is required, nonblank, and bounded, and that bound is enforced rather than trimmed
+to: a field longer than it makes the finding unusable, because what follows the bound can be the
+change the repair has to make, and what the turn wrote is kept nowhere else. Anything else — a
+missing field, an oversized one, invalid
+JSON, no file at all, a turn that failed or was stopped, or a clone the turn changed — is a
+diagnosis with no usable finding, and is handled like an inconclusive one. The finding file alone
+decides nothing: what the turn produced is recorded as `outcome.json` beside the evidence, before
+anything is published — either the validated finding or the problem that rejected the turn — and a
+restart reads that record. A reviewer turn whose own process tree could not be confirmed stopped is
+never settled: its problem and the unconfirmed stop are recorded, the item stays In Review with the
+evidence and what a person must do, and the intake keeps its lock for inspection instead of
+declaring an evidence directory safe while a runtime may still be writing to it.
+
+An actionable finding becomes exactly one concise comment on the issue, naming the marker
+`nexus-baseline:repair:<evidence>`, the failing check, the evidence, the likely cause and the repair
+guidance, and the issue returns to `readyStatus` with its workspace pointer untouched. That comment
+is a rendering of the finding, not the width a finding has: each of its lines is bounded, so the
+record on the ticket stays concise. The queue then continues that same ticket before any unrelated
+ready work: the next claim reopens the same
+workspace, is told the finding as guidance, repairs the baseline, and continues the
+original task. That guidance carries each field of the finding whole on its own line, at the width
+the reviewer's finding was validated at (up to 2,000 characters per field, `finding.json` above) —
+the four things the developer has to act on are never collapsed into one bounded paragraph, and no
+part of a field is cut to the width a comment line happens to have — and it is in the
+brief of every rung of the climb that claim may take, not only its first. The finding has that
+budget of its own and is never charged against the bounds the rest of the guidance is kept to, so a
+long finding cannot spend the room the newest thing the ticket says — the review feedback a later
+repair turn has to act on — is read from. The finding also carries
+the order it belongs in, as a line of its own: the baseline is repaired before the original task
+continues, and the coding prompt renders the finding as a requirement of the attempt rather than as
+context it may weigh. The finding reaches that
+claim from the item's own thread, and when the thread cannot supply it — a read that failed, a
+comment that no longer says the whole finding, or a comment that names some other evidence — from
+the evidence this harness kept beside the workspace. The retained evidence is what says a finding
+is required, which evidence it belongs to, and what it says, and a comment is that finding only as
+its whole self: the `nexus-baseline:repair:<evidence>` marker with that exact identity, all four
+fields nonblank, and every one of those fields equal to the finding that record holds. The marker
+names the evidence, never the text — anyone who can edit the issue can keep the marker and change a
+field — so a partial quotation, an edited comment, a marker without an identity, or a complete
+comment about other evidence is ordinary thread context: it is never promoted to what the attempt
+has to repair first, and the complete recorded finding is handed over instead. A required finding
+that neither source can supply — the retained record cannot be read back, so there is nothing to
+hold the thread's comment against — starts no developer: the claimed ticket is told why on its own
+thread and taken out of the running status with its workspace pointer preserved, under the same
+short best-effort deadline an interrupted run's own result gets, so it is never left in the running
+status with nothing looking for it and a person decides what happens next. An inconclusive,
+environmental, or unsafe finding posts one comment carrying
+`nexus-baseline:attention:<evidence>`, the reason and the required action, moves the issue to
+`reviewStatus`, and stops the queue for a person. Nothing is posted to GitHub, and no coding turn
+is started from a diagnosis. `<evidence>` is a hash of the immutable item, the snapshot commit, and
+the configured commands with the results they produced: a restart that sees the same evidence
+reuses the comment it already wrote — no second reviewer turn, no second comment — and makes only
+the step that had not happened yet. What it resumes from is kept locally as well: `<workDir>/
+baseline/<project>/<evidence>/evidence.json` records the item, the task, the workspace, the round,
+and the connected project that wrote it, before
+the reviewer turn runs, and the outcome the turn produced is recorded beside it as `outcome.json`
+once the turn has ended: the validated finding, or the problem that rejected the turn. That record
+is what an invocation interrupted before the comment resumes from, so a finding a failed or stopped
+turn left in its own file is never published as if the turn had completed, and a turn that left no
+recorded outcome is not diagnosed again either. The marker on the thread names the evidence; that
+record is what the marker is held against, and what the next claim is handed. So the item returns
+to its ready status, and the evidence is closed as a repair, only while the outcome beside it holds
+the actionable finding the marker names — an edited marker on a rejected turn can never return the
+ticket for a repair its own turn never produced — and the finding a continuation is handed is the
+actionable finding recorded there, never the turn's own finding file. An evidence directory this
+harness kept whose own `evidence.json` is gone is not "nothing pending": nothing about it can be
+resumed, read back, or closed, it may be the very record that returned a workspace for repair, and
+so the intake stops for a person, naming the directory, instead of passing over it or claiming on
+it as an ordinary continuation. A resume that finds the
+comment already on the issue reads the recorded reviewer stop back from that outcome before it
+moves anything, instead of
+assuming one: an unconfirmed one keeps the intake lock there exactly as it did when the finding was
+first published, and a record that cannot be read is refused by name rather than rounded down. The
+same read happens when the item has already left the running status and only its retained record is
+being reconciled — there, too, the record settles the closure, so an item a person left In Review
+is not finished as the repair a comment's marker claims — and an unconfirmed stop keeps the intake
+lock there too, while a record that cannot be
+read is refused by name instead of being settled. A resume with more than one record pending stops
+at the first unconfirmed shutdown instead of starting another reviewer turn, and a result that needs
+a person dominates an actionable one beside it. The
+project is part of the path, so two projects sharing one `workDir` never read, finish, or publish
+each other's pending evidence — a record that
+names another project is refused by name — and starting one project's intake never comments on,
+transitions, or closes another project's issue. That recovery runs before anything is discovered or
+claimed, so a ticket left in the running status by an interrupted diagnosis is finished instead of
+being reported as a stuck consumer, and a recovery that reports what a person has to do stops that
+intake there instead of going on to discover or claim anything else: in a finite batch, a watch
+scan, and a serial queue step alike. A reviewer runtime the recovery could not confirm stopped keeps
+the intake lock, in a `source` command and in the queue both, because something the diagnosis
+started may still be writing. A turn interrupted before it wrote a finding is not run again
+for the same evidence, and the item stays In Review with what a person must do. An item a person has
+moved is left exactly where that person left it; a record this harness left unfinished after it
+really made the move is reconciled with the finding the item’s own thread already carries — held
+against the accepted outcome that record keeps, so a rejection beside it is never settled as a
+repair — and that workspace’s next claim is still told the finding when there really is one.
+
+A stop that arrives while the reviewer turn is running is not a window where the claimed ticket is
+abandoned: the turn’s interruption is what this evidence’s one comment records, and the item is
+moved to `reviewStatus` with it. That one comment and one move run under their own short
+best-effort deadline rather than the aborted stop they were given — the same bound an interrupted
+run’s own result gets — so the ticket is never left in the running status with nothing looking for
+it, and an unconfirmed reviewer shutdown keeps the intake lock exactly as it does anywhere else. A
+stop the caller asked for *before* the turn began writes no diagnosis: when the invocation had
+already recorded its evidence, the next invocation’s own recovery finishes it; and when the stop
+reached the diagnosis before anything was published at all, the ticket the attempt claimed is not
+left behind — it is told on its own thread, and taken out of the running status, under the same
+short best-effort deadline, so it is never left in the running status with nothing looking for it.
 
 ### Exits
 

@@ -1370,6 +1370,71 @@ describe('a workspace pointer and a refusal', () => {
     expect(write?.url).toBe(`${GATEWAY}/rest/api/3/issue/10011/transitions`);
     expect(write?.body).toEqual({ transition: { id: '31' } });
   });
+
+  it('records why a claimed item was not started, and takes it out of the running status', async () => {
+    // The item is read where the claim found it, and re-read once the comment
+    // has been posted: the harness claimed it, so it is the running status the
+    // attention record has to take it out of.
+    let claimed = false;
+    const http = fakeHttp((call) => {
+      if (call.url.includes('/comment')) {
+        claimed = true;
+        return json({ id: '50002' }, 201);
+      }
+      if (call.url.includes('/transitions') && call.method === 'GET') {
+        return json(TRANSITIONS_TO_REVIEW);
+      }
+      return json(issue({ status: claimed ? 'In Progress' : 'To Do' }));
+    });
+    const source = createJiraSource(jiraConfig(), TOKEN, { fetch: http.fetch });
+    const prepared = await preparedFor(source, candidateFor());
+
+    await source.attention(
+      prepared,
+      'the reviewed finding its baseline repair was returned with could not be read back',
+      new AbortController().signal,
+    );
+
+    // The comment never claims an attempt ran: the item was claimed and no
+    // coding turn was started, and its workspace pointer is untouched.
+    const comment = http.calls.find((call) => call.url.includes('/comment'));
+    expect(comment?.method).toBe('POST');
+    expect(comment?.url).toBe(`${GATEWAY}/rest/api/3/issue/10011/comment`);
+    const said = JSON.stringify(comment?.body);
+    expect(said).toContain('no coding turn was started');
+    expect(said).toContain('could not be read back');
+    expect(said).toContain('workspace its pointer names');
+    expect(said).not.toContain('Nothing was claimed');
+    const write = http.calls.at(-1);
+    expect(write?.method).toBe('POST');
+    expect(write?.url).toBe(`${GATEWAY}/rest/api/3/issue/10011/transitions`);
+    expect(write?.body).toEqual({ transition: { id: '31' } });
+  });
+
+  it('leaves an issue a person already moved out of the running status where it is', async () => {
+    let moved = false;
+    const http = fakeHttp((call) => {
+      if (call.url.includes('/comment')) {
+        // Whoever moved it decided that while the comment was being written.
+        moved = true;
+        return json({ id: '50003' }, 201);
+      }
+      return json(issue({ status: moved ? 'In Review' : 'To Do' }));
+    });
+    const source = createJiraSource(jiraConfig(), TOKEN, { fetch: http.fetch });
+    const prepared = await preparedFor(source, candidateFor());
+
+    await source.attention(
+      prepared,
+      'the finding could not be read back',
+      new AbortController().signal,
+    );
+
+    // The comment is posted — a person reading the issue sees why nothing ran —
+    // and nothing is transitioned: whoever moved it decided that already.
+    expect(http.calls.some((call) => call.url.includes('/comment'))).toBe(true);
+    expect(http.calls.some((call) => call.url.includes('/transitions'))).toBe(false);
+  });
 });
 
 describe('publishing the result', () => {

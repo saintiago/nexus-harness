@@ -23,8 +23,8 @@ import type { AgentActivity, TerminationOutcome } from '../../shared/types.js';
 import { agentMessage, failureText, itemActivities, parseEvent } from './events.js';
 import type { RuntimeOutcome, RuntimeReport } from './events.js';
 import { promptFor } from './prompt.js';
-import { CODEX_EXEC_ARGUMENTS, codexRuntime } from './runtime.js';
-import type { CodexRuntime } from './runtime.js';
+import { codexExecArguments, codexRuntime, diagnosticLaunchProblem } from './runtime.js';
+import type { CodexRuntime, CodexSandboxPolicy } from './runtime.js';
 
 /** How much of a runtime's own diagnostic this module repeats in a reason. */
 const MAX_DIAGNOSTIC_CHARS = 400;
@@ -55,6 +55,15 @@ export interface CodexPromptRequest {
   readonly workspacePath: string;
   /** Review evidence lives outside Git; coding turns keep the repository check. */
   readonly skipGitRepoCheck?: boolean;
+  /**
+   * The filesystem policy this turn runs under; the coding policy when the
+   * caller names none. A diagnostic turn names the narrower policy, so the
+   * runtime's own sandbox — not the prompt — is what keeps the retained working
+   * copy and the snapshot it inspects read-only; a configured launch prefix that
+   * would grant that launch another writable root or move its working root is
+   * refused before it starts anything.
+   */
+  readonly sandbox?: CodexSandboxPolicy;
   readonly agentLog: AgentLog;
   readonly stop: AbortSignal;
   /** Where the runtime's own activity is reported, when a display is watching. */
@@ -72,10 +81,11 @@ export async function runCodexPrompt(
   runtime: CodexRuntime = codexRuntime(),
 ): Promise<AgentTurnResult> {
   const { agentLog: log, workspacePath, stop, label, prompt } = request;
+  const policy = request.sandbox ?? 'danger-full-access';
   const [executable = '', ...prefix] = runtime.command;
   // The prefix, then the adapter's own arguments: the configured launch and the
   // fixed interface, in that order and never joined into one string.
-  const execArguments = [...prefix, ...CODEX_EXEC_ARGUMENTS];
+  const execArguments = [...prefix, ...codexExecArguments(policy)];
   if (request.skipGitRepoCheck === true) {
     execArguments.splice(execArguments.length - 1, 0, '--skip-git-repo-check');
   }
@@ -89,6 +99,22 @@ export async function runCodexPrompt(
     // runtime is started only to be stopped again.
     log.write('# the run was already stopped: no runtime was started\n');
     return { summary: null, shutdown: { termination: 'confirmed', problem: null } };
+  }
+
+  // The read-only diagnostic launch is the one launch whose policy the
+  // configuration may not widen, and a configured prefix can carry a switch
+  // that grants a writable root, moves the working root, or names a policy of
+  // its own — grants the launch's own arguments cannot take back (`runtime.ts`).
+  // Such a launch is refused before anything is started: no runtime receives
+  // the grant, and the refusal reaches the caller as this turn's failure, which
+  // the diagnosis records on the ticket instead of publishing a finding the
+  // turn could have written outside the one directory it was given.
+  if (policy === 'workspace-write') {
+    const refusal = diagnosticLaunchProblem(prefix);
+    if (refusal !== null) {
+      log.write(`# the diagnostic launch was refused: ${refusal}\n`);
+      throw new AgentError(refusal);
+    }
   }
 
   const plan = planLaunch(executable, execArguments, workspacePath);
