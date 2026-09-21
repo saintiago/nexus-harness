@@ -732,9 +732,9 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
    * configured command list, and set of results; the item's own thread says
    * whether its finding was already published. So this makes only the step that
    * is really missing: the status move for a finding that is already on the
-   * thread, or the record of one that never finished. It never starts a second
-   * reviewer turn for the same evidence, never writes a second comment, and
-   * never touches an item a person has moved somewhere else.
+   * thread, or the publication of one the reviewer turn already wrote. It never
+   * starts a second reviewer turn for the same evidence, never writes a second
+   * comment, and never touches an item a person has moved somewhere else.
    */
   const resume = async (stop: AbortSignal): Promise<BaselineResumeOutcome | null> => {
     if (stop.aborted) {
