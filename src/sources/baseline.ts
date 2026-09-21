@@ -35,8 +35,9 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { messageOf } from '../shared/errors.js';
-import { readBaselineFinding } from '../reviews/baseline.js';
+import { readBaselineFinding, readBaselineReviewerShutdown } from '../reviews/baseline.js';
 import { BASELINE_GUIDANCE_PREFIX } from '../runs/contracts.js';
+import type { AgentTurnShutdown } from '../runs/contracts.js';
 import { unconfirmedShutdownProblem } from '../runs/progress.js';
 import type { CheckRoundResult, CommandResult, SourceRef, Task } from '../shared/types.js';
 import type {
@@ -738,6 +739,28 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
     // comment and the status move resumes by making that one move.
     const existing = markerFor(notes, evidenceId);
     if (existing !== null) {
+      // What the earlier invocation recorded for this evidence's one reviewer
+      // turn still governs the resume, even though its finding is already on
+      // the thread: a rejection whose own process tree was not confirmed
+      // stopped means something the reviewer runtime started may still be
+      // writing, and the invocation that published the comment said so by
+      // keeping its lock. The record is read back here — never the turn run
+      // again — and a record that cannot be read is refused by name rather than
+      // rounded down to a confirmed stop.
+      let shutdown: AgentTurnShutdown | null;
+      try {
+        shutdown = await readBaselineReviewerShutdown(dir);
+      } catch (cause) {
+        return unfinished(
+          stop,
+          `${key}: its baseline finding is already on the issue (comment ` +
+            `${existing.note.id}), but the recorded reviewer outcome under "${dir}" cannot be ` +
+            `read, so nothing is treated as settled: ${messageOf(cause)}`,
+          existing.note.id,
+          false,
+        );
+      }
+      const unconfirmed = unconfirmedShutdownProblem(shutdown);
       const target = existing.kind === 'repair' ? readyStatus : reviewStatus;
       const moved = await move(item, target, stop);
       if ('problem' in moved) {
@@ -746,6 +769,7 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
           `${key}: its baseline finding is already on the issue (comment ` +
             `${existing.note.id}), but moving it to "${target}" failed: ${moved.problem}`,
           existing.note.id,
+          unconfirmed === null,
         );
       }
       const detail =
@@ -754,12 +778,21 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
         `written` +
         (moved.moved
           ? `, and the item was moved to "${target}"`
-          : `, and the item had already left its running status`);
+          : `, and the item had already left its running status`) +
+        (unconfirmed === null
+          ? ''
+          : `; everything the reviewer runtime started was not seen to end ` +
+            `(${oneLine(unconfirmed)}), so the intake lock is kept`);
       await finish(file, recorded, existing.kind);
       io.out(detail);
       return existing.kind === 'repair'
         ? { kind: 'repair', detail, commentId: existing.note.id }
-        : { kind: 'attention', detail, commentId: existing.note.id, cleanupConfirmed: true };
+        : {
+            kind: 'attention',
+            detail,
+            commentId: existing.note.id,
+            cleanupConfirmed: unconfirmed === null,
+          };
     }
 
     io.out(

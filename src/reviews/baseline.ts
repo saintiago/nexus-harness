@@ -73,9 +73,10 @@ export const BASELINE_OUTCOME_FILE = 'outcome.json';
  * The turn's own working root inside its evidence directory: the one place the
  * launch permits it to write. It sits beside the snapshot rather than inside it,
  * so the inspected source and the retained workspace are outside the writable
- * root the runtime's sandbox enforces — and the launch takes the host's
- * temporary roots out of that policy, so `workDir` living under one of them
- * cannot put either tree inside a writable root.
+ * root the runtime's sandbox enforces — and the launch states that policy's
+ * additional writable roots as none and takes the host's temporary roots out of
+ * it, so neither `workDir` living under one of them nor a root the operator's
+ * own configuration grants can put either tree inside a writable root.
  */
 export const BASELINE_TURN_DIRECTORY = 'turn';
 
@@ -228,6 +229,25 @@ async function writeOutcomeRecord(file: string, record: BaselineOutcomeRecord): 
       { cause },
     );
   }
+}
+
+/**
+ * The stop a previous invocation's reviewer turn left recorded for the evidence
+ * under `dir`, read back without starting a second turn: `null` when the record
+ * holds no unconfirmed stop — a completed turn's finding, a rejection whose own
+ * process tree was confirmed stopped, or no record at all — and the stored stop
+ * otherwise.
+ *
+ * A restart that deduplicates a finding already on the issue has to read this:
+ * the record is what the earlier invocation wrote before it published anything,
+ * and an unconfirmed stop there means everything that invocation started was not
+ * seen to end, so the intake keeps its lock even though the comment is already
+ * on the thread. A record this harness did not write, or cannot read, is refused
+ * by name rather than rounded down to a confirmed stop.
+ */
+export async function readBaselineReviewerShutdown(dir: string): Promise<AgentTurnShutdown | null> {
+  const outcome = await readOutcomeRecord(outcomeRecordPath(dir));
+  return outcome !== null && outcome.state === 'rejected' ? outcome.shutdown : null;
 }
 
 /**
@@ -435,9 +455,9 @@ export function baselinePrompt(request: {
       'snapshot reports.',
       '',
       'The launch runs under a filesystem policy that allows writes only in your working directory:',
-      `the host's temporary roots are excluded from it, so the snapshot and the ticket's retained`,
-      'working copy are read-only to you wherever they live — an attempted edit there fails instead',
-      'of being quietly accepted.',
+      `any additional writable root is stated as none for it and the host's temporary roots are`,
+      `excluded from it, so the snapshot and the ticket's retained working copy are read-only to`,
+      'you wherever they live — an attempted edit there fails instead of being quietly accepted.',
       '',
       'Inspect it with your ordinary read tools — for example:',
       '',

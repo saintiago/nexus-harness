@@ -451,6 +451,87 @@ describe('the pre-delivery baseline diagnosis', () => {
     expect(record.moves).toEqual([{ from: 'In Progress', target: 'To Do' }]);
   });
 
+  /**
+   * What an interrupted invocation leaves behind when its reviewer turn was
+   * rejected with an unconfirmed stop: the recorded outcome beside the
+   * evidence, and the attention comment it published before the status move
+   * failed or the coordinator was interrupted.
+   */
+  async function interruptedAttentionEvidence(
+    workDir: string,
+    record: FakeRecord,
+    shutdown: BaselineReviewResult['shutdown'],
+  ): Promise<ReturnType<typeof requestFor>> {
+    const request = requestFor();
+    const evidenceId = baselineEvidenceId(refFor(), BASE, request.baseline);
+    const dir = path.join(workDir, 'baseline', PROJECT, evidenceId);
+    await mkdir(dir, { recursive: true });
+    await writeJsonFile(dir, 'outcome.json', {
+      version: 1,
+      state: 'rejected',
+      problem: 'the reviewer turn was stopped before it produced a finding',
+      shutdown,
+    });
+    record.notes.push({
+      id: 'c7',
+      createdAt: '2026-09-21T10:04:00.000Z',
+      text: `(${BASELINE_MARKER_PREFIX}attention:${evidenceId}, written by the Nexus harness)`,
+    });
+    return request;
+  }
+
+  it('reads the recorded unconfirmed stop back when it resumes an existing comment', async () => {
+    const workDir = await createTempDir();
+    const record = fakeRecord();
+    const request = await interruptedAttentionEvidence(workDir, record, {
+      termination: 'unconfirmed',
+      problem: 'the host could not reach the process tree',
+    });
+    const reviewer = scriptedReviewer(REPAIR_FINDING);
+    const { diagnosis } = phaseFor({ record, reviewer, workDir });
+
+    // The status move this restart retries fails: the resume reports what the
+    // record says instead of releasing the lock while something the reviewer
+    // runtime started may still be writing.
+    record.moveFailure = 'the transition was refused';
+    const refused = await diagnosis.diagnose(request);
+    expect(refused.kind).toBe('attention');
+    expect((refused as { cleanupConfirmed: boolean }).cleanupConfirmed).toBe(false);
+    expect(reviewer.requests).toEqual([]);
+    expect(record.posted).toEqual([]);
+
+    // And when the move succeeds, the same recorded stop travels with the
+    // finding it deduplicates: one move, no second comment, no second turn.
+    record.moveFailure = null;
+    const resumed = await diagnosis.diagnose(request);
+    expect(resumed.kind).toBe('attention');
+    expect((resumed as { cleanupConfirmed: boolean }).cleanupConfirmed).toBe(false);
+    expect((resumed as { detail: string }).detail).toContain('the intake lock is kept');
+    expect(reviewer.requests).toEqual([]);
+    expect(record.posted).toEqual([]);
+    expect(record.moves).toEqual([{ from: 'In Progress', target: 'In Review' }]);
+    expect(record.status).toBe('In Review');
+  });
+
+  it('releases the lock when the recorded rejection confirmed its stop', async () => {
+    const workDir = await createTempDir();
+    const record = fakeRecord();
+    const request = await interruptedAttentionEvidence(workDir, record, {
+      termination: 'confirmed',
+      problem: null,
+    });
+    const reviewer = scriptedReviewer(REPAIR_FINDING);
+    const { diagnosis } = phaseFor({ record, reviewer, workDir });
+
+    const resumed = await diagnosis.diagnose(request);
+
+    expect(resumed.kind).toBe('attention');
+    expect((resumed as { cleanupConfirmed: boolean }).cleanupConfirmed).toBe(true);
+    expect(reviewer.requests).toEqual([]);
+    expect(record.posted).toEqual([]);
+    expect(record.moves).toEqual([{ from: 'In Progress', target: 'In Review' }]);
+  });
+
   it('does not move an item a person already took out of the running status', async () => {
     const workDir = await createTempDir();
     const record = fakeRecord('To Do');
@@ -750,9 +831,12 @@ describe('the baseline reviewer turn', () => {
     expect(sandbox).toBeGreaterThanOrEqual(0);
     expect(argv[sandbox + 1]).toBe('workspace-write');
     expect(argv).not.toContain('danger-full-access');
-    // The policy's writable roots are the turn's own working root: the host's
-    // temporary roots are excluded, so a `workDir` beneath one cannot put the
-    // retained working copy or the snapshot inside a writable root.
+    // The policy's writable roots are the turn's own working root: the
+    // additional roots the launch would otherwise inherit are stated as none,
+    // and the host's temporary roots are excluded, so neither a `workDir`
+    // beneath one nor a root the configured launch grants can put the retained
+    // working copy or the snapshot inside a writable root.
+    expect(argv).toContain('sandbox_workspace_write.writable_roots=[]');
     expect(argv).toContain('sandbox_workspace_write.exclude_tmpdir_env_var=true');
     expect(argv).toContain('sandbox_workspace_write.exclude_slash_tmp=true');
     // This fixture is that supported configuration: its evidence directory —
