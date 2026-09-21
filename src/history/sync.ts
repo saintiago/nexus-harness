@@ -256,6 +256,10 @@ function publicationIndexOf(reports: readonly LocalReport[]): PublicationIndex {
     if (report.kind === 'reviewer-report') {
       const entryId = `harness:reviewer-report:${report.digest.reviewId}`;
       reviewByLocalId.set(report.digest.reviewId, entryId);
+      const jira = report.digest.jiraPublication;
+      if (jira !== undefined) {
+        developerByComment.set(jira.commentId, { entryId, textSha256: jira.textSha256 });
+      }
       if (report.digest.published !== null) {
         reviewById.set(report.digest.published.id, {
           entryId,

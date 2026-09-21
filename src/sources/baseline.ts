@@ -425,6 +425,8 @@ export interface BaselineEvidence {
   /** How this piece of evidence ended; absent while its diagnosis is unfinished. */
   readonly closed?: 'repair' | 'attention' | 'left-alone';
   readonly closedAt?: string;
+  /** Acknowledged Jira rendering, used only to authenticate a history mirror. */
+  readonly publication?: { readonly commentId: string; readonly textSha256: string };
 }
 
 /**
@@ -470,7 +472,10 @@ function evidenceProblem(file: string, problem: string): SourceError {
  * another project under the same output directory is refused rather than
  * finished or published through this project's connection.
  */
-async function readEvidence(file: string, project: string): Promise<BaselineEvidence | null> {
+export async function readBaselineEvidence(
+  file: string,
+  project: string,
+): Promise<BaselineEvidence | null> {
   let text: string;
   try {
     text = await readFile(file, 'utf8');
@@ -525,6 +530,7 @@ async function readEvidence(file: string, project: string): Promise<BaselineEvid
   const baseCommit = textField(workspace, 'baseCommit');
   const closedAt = textField(value, 'closedAt');
   const closed = value['closed'];
+  const publication = value['publication'];
   if (
     refFields.some((field) => field === null) ||
     taskId === null ||
@@ -575,6 +581,16 @@ async function readEvidence(file: string, project: string): Promise<BaselineEvid
     baseline: round,
     ...(closedKind === null ? {} : { closed: closedKind }),
     ...(closedAt === null ? {} : { closedAt }),
+    ...(isRecord(publication) &&
+    typeof publication['commentId'] === 'string' &&
+    typeof publication['textSha256'] === 'string'
+      ? {
+          publication: {
+            commentId: publication['commentId'],
+            textSha256: publication['textSha256'],
+          },
+        }
+      : {}),
   };
 }
 
@@ -606,7 +622,7 @@ async function closeEvidence(
   project: string,
   closed: BaselineEvidence['closed'],
 ): Promise<void> {
-  const current = await readEvidence(file, project);
+  const current = await readBaselineEvidence(file, project);
   if (current === null) {
     return;
   }
@@ -845,7 +861,7 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
     // recomputed from everything the diagnosis acts on — and is reused.
     let recorded: BaselineEvidence | null;
     try {
-      recorded = await readEvidence(file, project);
+      recorded = await readBaselineEvidence(file, project);
     } catch (cause) {
       return unfinished(stop, `${key}: ${messageOf(cause)}`, null);
     }
@@ -1090,6 +1106,33 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
     let commentId: string;
     try {
       commentId = await record.postComment(item.ref.id, paragraphs, feedbackStop());
+      // Save the acknowledged identity, never infer a mirror from a quoted marker.
+      const current = await readBaselineEvidence(file, project);
+      if (current !== null) {
+        const temporary = `${file}.tmp-${randomUUID()}`;
+        try {
+          await writeFile(
+            temporary,
+            JSON.stringify(
+              {
+                ...current,
+                publication: {
+                  commentId,
+                  textSha256: createHash('sha256')
+                    .update(paragraphs.join('\n'), 'utf8')
+                    .digest('hex'),
+                },
+              },
+              null,
+              2,
+            ),
+            'utf8',
+          );
+          await rename(temporary, file);
+        } finally {
+          await rm(temporary, { force: true });
+        }
+      }
     } catch (cause) {
       return unfinished(
         stop,
@@ -1175,7 +1218,7 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
       }
       let evidence: BaselineEvidence | null;
       try {
-        evidence = await readEvidence(file, project);
+        evidence = await readBaselineEvidence(file, project);
       } catch (cause) {
         return { kind: 'problem', detail: messageOf(cause) };
       }
@@ -1416,7 +1459,7 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
       }
       let evidence: BaselineEvidence | null;
       try {
-        evidence = await readEvidence(file, project);
+        evidence = await readBaselineEvidence(file, project);
       } catch (cause) {
         return { kind: 'problem', detail: messageOf(cause) };
       }

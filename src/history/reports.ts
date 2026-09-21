@@ -26,6 +26,7 @@ import type {
   ReviewerReportRequest,
 } from './contract.js';
 import { HistoryError } from './contract.js';
+import { readBaselineReports } from './baseline.js';
 import { historyReportsDir } from './paths.js';
 
 /**
@@ -84,7 +85,7 @@ export interface ReviewerReportDigest {
   readonly reviewId: string;
   readonly ref: SourceRef;
   readonly workspaceId: string;
-  readonly round: number;
+  readonly round: number | null;
   readonly task: { readonly id: string; readonly title: string };
   readonly head: string;
   readonly decision: string;
@@ -95,6 +96,7 @@ export interface ReviewerReportDigest {
   readonly recordFile: string | null;
   readonly recordProblem: string | null;
   /** The native review GitHub published for this report, once it exists. */
+  readonly jiraPublication?: DeveloperPublication;
   readonly published: {
     readonly id: number;
     readonly url: string;
@@ -739,6 +741,8 @@ export async function readLocalReports(parts: {
       }
     }
     if (key.startsWith('developer:')) {
+      const conversationProblem = truncatedDeveloperReport(record['attempts']);
+      problem = conversationProblem ?? problem;
       if (typeof record['runId'] !== 'string') {
         problems.push(`the developer report digest "${reportFile(root, name)}" names no run`);
         continue;
@@ -750,7 +754,7 @@ export async function readLocalReports(parts: {
           published: developerPublicationOf(record['published']),
         },
         text: text ?? '',
-        complete: text !== null,
+        complete: text !== null && conversationProblem === null,
         problem,
         legacy: false,
       });
@@ -975,6 +979,9 @@ export async function readLocalReports(parts: {
     });
   }
 
+  const baseline = await readBaselineReports({ workDir, ref, workspaceId });
+  reports.push(...baseline.reports);
+  problems.push(...baseline.problems);
   return { reports, problems };
 }
 
@@ -1145,6 +1152,22 @@ async function readRetainedVerdict(parts: {
   };
 }
 
+/** Old adapters explicitly marked shortened messages; a Markdown copy cannot restore them. */
+function truncatedDeveloperReport(value: unknown): string | null {
+  if (!Array.isArray(value)) return null;
+  return value.some(
+    (attempt: unknown) =>
+      typeof attempt === 'object' &&
+      attempt !== null &&
+      typeof (attempt as Record<string, unknown>)['agentSummary'] === 'string' &&
+      ((attempt as Record<string, unknown>)['agentSummary'] as string).endsWith(
+        " [truncated: this turn's log holds the full message]",
+      ),
+  )
+    ? 'a legacy developer message was truncated before retention; the full conversation report is unavailable (raw logs are supporting evidence only)'
+    : null;
+}
+
 /**
  * Why one legacy `result.json` cannot be read back as the conversation it
  * records, or `null` when it can. A record this harness wrote always carries
@@ -1175,7 +1198,7 @@ function legacyRecordProblem(parsed: Record<string, unknown> | null): string | n
       return `turn ${String(index + 1)} of the run's own report carries a summary that is not text`;
     }
   }
-  return null;
+  return truncatedDeveloperReport(rawAttempts);
 }
 
 /**

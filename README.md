@@ -473,6 +473,18 @@ comment-only reviews cannot clear them. Each developer report names the commit i
 The harness re-reads requirements before each turn and refuses the turn if they cannot be obtained.
 `consumed-developer.json` and `consumed-reviewer.json` track feedback separately after usable turn
 output. A prepared snapshot never advances them; legacy workspaces without cursors replay feedback.
+Developer messages are retained in full through the runtime adapter. Old messages marked with the
+adapter's truncation suffix are explicitly incomplete; their raw logs remain supporting evidence.
+Responses and new feedback each have a 60,000-character inline budget. When the prompt names
+`brief.responses` or `brief.newHumanFeedback` in its immutable `index.json` as required reading,
+read that whole array before acting, or report the input gap.
+
+Baseline reviewer reports are recovered from the matching `baseline/<project>/<evidenceId>/outcome.json`
+for both roles. Missing or corrupt outcomes are named as gaps; an unaccepted `finding.json` cannot
+replace them. Baseline entries name their evidence ID and reviewed commit, and label the file
+modification time used when the original turn time is unavailable. New baseline comments are
+matched to those reports by acknowledged Jira identity and unchanged text.
+
 Developer summaries are retained before the next repair; reviewer verdicts are kept even if later
 publication checks refuse them.
 A reviewer's retained `verdict.json` is read back instead of being reported missing, and a source the

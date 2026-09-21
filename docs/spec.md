@@ -160,6 +160,10 @@ Missing/skipped checks cannot produce `passed`. Keep agent summaries separate fr
 
 On cancellation/timeout, stop owned commands and agent execution before reporting a clean stop. If termination cannot be confirmed, report the limitation, prevent further checks/repairs, and do not reuse the working copy in that run. Do not claim control over arbitrary detached or unrelated processes. Automatic crash recovery remains out of scope.
 
+A failure to retain the developer report never replaces cancellation or timeout evidence. The
+harness processes the runtime's shutdown result before finalizing that failure; an unconfirmed
+stop still prevents inspecting the workspace as final or releasing it for automatic continuation.
+
 ## 4. Files, not a database
 
 Use one generated run ID, unrelated to task text, for the attempt's own evidence. A source-backed
@@ -189,6 +193,26 @@ The report retains task/run IDs, source path and base commit, workspace path, ti
 Add the effective `agent` selection (`runtime` and non-secret launch prefix) to new reports and record it once in `run.log`. This identifies what the harness launched. A profile name alone is not an observed model identity. Do not inspect runtime credential/config files in production to enrich the report.
 
 Keep lifecycle logging concise and append-only. Command output belongs in its own files; detailed agent output belongs in a separate file per top-level turn. The JSON report references those files instead of embedding full transcripts. Never dump environment variables, API keys, or native authentication data.
+
+The developer's complete final runtime message is retained in each attempt and its local history
+report, including messages returned during shutdown. The adapter does not shorten it; external
+renderings may be concise. Legacy reports bearing the adapter's truncation suffix remain explicitly
+incomplete even when a Markdown copy exists. Raw logs are supporting evidence, not a reconstructed
+conversation report.
+
+Both roles also receive retained baseline reviewer outcomes from
+`baseline/<project>/<evidenceId>/outcome.json`, matched by ticket identity and workspace. The accepted
+outcome is authoritative; a rejected or missing outcome is never replaced by `finding.json`.
+Missing or corrupt legacy outcomes are named as gaps. Baseline entries preserve the evidence ID,
+reviewed commit and original JSON; unavailable round and original turn time are identified as such.
+Their indexed time is explicitly labeled as the retained outcome file's modification time. A new
+baseline publication records its acknowledged Jira identity and text hash for mirror deduplication.
+
+The responses and new-human-feedback sections each inline at most 60,000 characters of whole
+entries, newest first in selection. Overflow remains complete in the immutable `index.json` under
+`brief.responses` or `brief.newHumanFeedback`. Prompts explicitly require reading that array before
+acting, or reporting a gap if it cannot be read; even a long outstanding review cannot expand its
+historical discussion without a bound. Unresolved findings themselves remain whole.
 
 Retain files by default; cleanup is manual. A crash can leave an incomplete directory without a final report. Do not treat that as success, automatically resume it, or delete it on the next run. The user inspects/stops leftovers before reuse. Source intake adds only the local exclusion lock and per-issue receipt described below, not a transactional store, journal, or background reconciliation service.
 

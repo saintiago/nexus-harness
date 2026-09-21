@@ -14,7 +14,7 @@
  */
 import type { HistoryEntry, HistoryFinding, HistorySnapshot } from './contract.js';
 
-/** The longest a rendered new-feedback block may grow in one prompt. */
+/** Each discussion block is bounded; complete entries stay in the immutable index. */
 const MAX_INLINE_CHARS = 60_000;
 
 /** One entry as the prompt renders it: attributed, complete, and local. */
@@ -28,6 +28,33 @@ function describeEntry(entry: HistoryEntry): string {
     (entry.url === null ? '' : ` — ${entry.url}`) +
     '\n' +
     entry.text.trim()
+  );
+}
+
+/** Keep the newest whole entries inline and explicitly require the overflow locally. */
+function renderEntries(snapshot: HistorySnapshot, field: 'responses' | 'newHumanFeedback'): string {
+  const entries = snapshot.brief[field];
+  if (entries.length === 0) return '(none)';
+  let used = 0;
+  let omitted = 0;
+  const kept: string[] = [];
+  for (const entry of [...entries].reverse()) {
+    const text = describeEntry(entry);
+    if (used + text.length + 1 > MAX_INLINE_CHARS) {
+      omitted++;
+    } else {
+      kept.push(text);
+      used += text.length + 1;
+    }
+  }
+  return (
+    kept.reverse().join('\n') +
+    (omitted === 0
+      ? ''
+      : `\n\n${String(omitted)} further entries are not inlined here because this section is bounded by whole entries. ` +
+        `REQUIRED: read the complete entries in brief.${field} in ${snapshot.indexJsonPath} before acting; ` +
+        'report an input gap if you cannot read them. The array retains every entry and its source identity; ' +
+        'the full history index also locates each entry file.')
   );
 }
 
@@ -139,51 +166,17 @@ export function renderHistorySection(
             .join('\n\n'),
       '',
       'Responses to those findings since that review:',
-      brief.responses.length === 0 ? '(none)' : brief.responses.map(describeEntry).join('\n'),
+      renderEntries(snapshot, 'responses'),
     ].join('\n'),
   );
 
-  const feedback = brief.newHumanFeedback;
-  let rendered = feedback.map(describeEntry).join('\n');
-  let omitted: readonly HistoryEntry[] = [];
-  if (rendered.length > MAX_INLINE_CHARS) {
-    // The block is bounded by whole entries only, and what does not fit is
-    // named rather than cut: the full text is in the snapshot either way.
-    let used = 0;
-    const kept: string[] = [];
-    const dropped: HistoryEntry[] = [];
-    for (const entry of feedback) {
-      const text = describeEntry(entry);
-      if (used + text.length > MAX_INLINE_CHARS) {
-        dropped.push(entry);
-        continue;
-      }
-      used += text.length;
-      kept.push(text);
-    }
-    rendered = kept.join('\n');
-    omitted = dropped;
-  }
   sections.push(
     [
       '### New human feedback since this role’s last consumed snapshot',
       'Every human comment below is new to this role, or was edited since its last completed turn;',
       'preparing a snapshot or running the other role does not mark feedback as consumed. Older text stays searchable in the',
       'full history.',
-      feedback.length === 0
-        ? '(none)'
-        : rendered +
-          (omitted.length === 0
-            ? ''
-            : `\n\n${String(omitted.length)} further entr${omitted.length === 1 ? 'y is' : 'ies are'} ` +
-              'not inlined here because this section is bounded by whole entries. REQUIRED: read these ' +
-              'complete entries before acting; report an input gap if you cannot read them: ' +
-              omitted
-                .map(
-                  (entry) =>
-                    `${entry.id} (${snapshot.entries.find((stored) => stored.id === entry.id)?.file ?? snapshot.entriesPath})`,
-                )
-                .join(', ')),
+      renderEntries(snapshot, 'newHumanFeedback'),
     ].join('\n'),
   );
 

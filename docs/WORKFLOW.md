@@ -788,7 +788,9 @@ or unreadable current requirements stop the turn. The full conversation remains 
 snapshot for the turn to read and search with its ordinary tools (`rg <text> <index or entries
 directory>`), so no Jira or GitHub call of its own is needed or wanted. Findings and human feedback
 are rendered whole: the history section is bounded only by dropping whole entries from the inline
-block, and it names the exact local files it did not inline and requires the turn to read them
+block. Responses and new feedback each have a 60,000-character inline budget, selecting newest
+whole entries first. Overflow points to the complete `brief.responses` or `brief.newHumanFeedback`
+array in that snapshot's `index.json` and requires the turn to read it
 before acting or report an input gap. If a source could not be read, a page bound was
 reached while following pagination, or a complete report is missing, the prompt opens with the gaps
 it knows about, so a turn is never told the history is complete when it is not; a snapshot that
@@ -820,17 +822,33 @@ result line, the marker naming the same run, and its artifacts and repairs lines
 that quotes a marker does not match. The inline findings of a native review published by the App are
 the retained report's own findings, mapped by the review's identity; a reply to one stays a reply.
 
-Developer summaries are saved under `reports/` after every turn, so repairs see earlier turns
+Complete developer messages pass through the runtime adapter without truncation and are saved
+under `reports/` after every turn, so repairs see earlier turns
 from their own run. The final run enriches that same entry before the result comment is published.
 Reviewer verdicts are saved before publication checks, including inconclusive and stale verdicts; each developer report records the
 commit its delivery verified, so successive rounds to the same pull request each keep their own
 revision. Reports recorded before this increment are rebuilt from the run's own `result.json` and
 from the reviewer's retained verdict beside its review record under `<workDir>/reviews/`; a record
 that cannot be read back as that conversation — invalid JSON, no list of coding turns — is marked
-incomplete and names what is missing, and a report whose file is really gone is marked missing, with
+incomplete and names what is missing. A legacy adapter truncation suffix also marks the report
+incomplete, even if its shortened message has a Markdown copy; raw logs do not make it complete.
+A report whose file is really gone is marked missing, with
 the path that was looked for; the workspace stays usable either way. Nothing in the history is a
 command, a configuration value, or a permission: it is attributed external text for the turn to
 weigh.
+
+Baseline reviewer outcomes are included from `baseline/<project>/<evidenceId>/outcome.json`, using
+the existing validated evidence record to match the ticket and retained workspace. An accepted
+repair appears as an outstanding diagnostic request; rejected outcomes remain attributed reports
+and never lend their unaccepted finding file to a prompt. An unavailable legacy outcome is a named
+gap. The report records the evidence identity and reviewed base commit; its round is unknown and
+its time is labeled as the outcome file modification time because legacy outcomes have no turn
+timestamp. Baseline comments are deduplicated only with their recorded acknowledged Jira identity
+and matching text hash; unauthenticated legacy renderings remain visible.
+
+If saving a developer report fails during cancellation or timeout, both failures remain in the
+result. Unconfirmed termination still prevents a final workspace inspection and automatic reuse;
+a report-write failure cannot convert it into a clean stop.
 
 ### The merge signal, and what stays outside
 

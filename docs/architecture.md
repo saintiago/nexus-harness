@@ -94,7 +94,10 @@ one it knows existed but cannot read), `sync.ts` reads the connector boundary, d
 identity, authenticates a published rendering against the recorded publication identity, reconciles
 the unresolved review across retained reports and native reviews, tracks feedback against the
 entries the previous snapshot held, and builds the brief, and `prompt.ts` renders the one section
-both role prompts carry. The
+both role prompts carry. `history/baseline.ts` reuses the existing baseline evidence and accepted
+outcome readers to include diagnostic reports in that same history; it never adopts an unaccepted
+finding file. Discussion overflow is referenced through the immutable index, and the adapter keeps
+the complete developer message before report retention. The
 module imports no connector: `src/cli/history.ts` composes its readers from the Jira connector and
 the GitHub App client, and hands the same object to the coding coordinator and the review scan.
 `src/sources/coordinator.ts` records a complete developer report before its Jira comment is

@@ -22,7 +22,9 @@ import type {
 import { HistoryError } from '../src/history/contract.js';
 import { workspaceHistoryRoot } from '../src/history/paths.js';
 import { renderHistorySection } from '../src/history/prompt.js';
-import { notePublishedReview } from '../src/history/reports.js';
+import { baselineEvidenceId, createBaselineDiagnosis } from '../src/sources/baseline.js';
+import type { BaselineEvidence } from '../src/sources/baseline.js';
+import { notePublishedReview, textSha256 } from '../src/history/reports.js';
 import { createTicketHistory } from '../src/history/sync.js';
 import type { ReviewEvidence, ReviewView } from '../src/reviews/contract.js';
 import { baselinePrompt } from '../src/reviews/baseline.js';
@@ -165,6 +167,26 @@ const VIEW: ReviewView = {
   head: HEAD,
   base: 'c'.repeat(40),
 };
+
+/** The one prepare request every test in this file uses, for one role. */
+function prepareRequest(
+  workDir: string,
+  role: 'developer' | 'reviewer' = 'developer',
+): Parameters<ReturnType<typeof createTicketHistory>['prepare']>[0] {
+  return {
+    ref: REF,
+    task: TASK,
+    workspace: {
+      workspaceId: WORKSPACE_ID,
+      workspacePath: path.join(workDir, 'workspaces', WORKSPACE_ID),
+      branch: `harness/${WORKSPACE_ID}`,
+      baseCommit: HEAD,
+    },
+    role,
+    round: 1,
+    stop: new AbortController().signal,
+  };
+}
 
 describe('the ticket conversation snapshot', () => {
   /** One Jira answer per requested page, keyed by the `startAt` asked for. */
@@ -829,26 +851,6 @@ describe('the ticket conversation snapshot', () => {
     expect(rendered).toContain('Jira answered HTTP 503');
     expect(rendered).toContain('pull request conversation is unavailable');
   });
-
-  /** The one prepare request every test in this file uses, for one role. */
-  function prepareRequest(
-    workDir: string,
-    role: 'developer' | 'reviewer' = 'developer',
-  ): Parameters<ReturnType<typeof createTicketHistory>['prepare']>[0] {
-    return {
-      ref: REF,
-      task: TASK,
-      workspace: {
-        workspaceId: WORKSPACE_ID,
-        workspacePath: path.join(workDir, 'workspaces', WORKSPACE_ID),
-        branch: `harness/${WORKSPACE_ID}`,
-        baseCommit: HEAD,
-      },
-      role,
-      round: 1,
-      stop: new AbortController().signal,
-    };
-  }
 
   it('tracks consumption independently for both roles across preparation, edits and restart', async () => {
     const workDir = await createTempDir();
@@ -1718,4 +1720,244 @@ describe('the ticket conversation snapshot', () => {
     expect(snapshot.brief.unresolved?.findings).toHaveLength(2);
     expect(snapshot.brief.responses.some((entry) => entry.sourceId === '701')).toBe(true);
   });
+});
+
+describe('review follow-up retention regressions', () => {
+  it('bounds consumed responses to an outstanding review in both prompts, with whole local overflow', async () => {
+    const workDir = await createTempDir();
+    const comments = Array.from({ length: 400 }, (_, i) =>
+      jiraComment(String(i), `Comment ${String(i)}: ${'discussion '.repeat(900)}END-${String(i)}`),
+    );
+    const history = createTicketHistory({
+      workDir,
+      readers: readers({ jira: { comments, truncated: false } }),
+    });
+    await history.recordReviewerReport?.({
+      ref: REF,
+      workspaceId: WORKSPACE_ID,
+      task: TASK,
+      reviewId: 'long-discussion',
+      round: 1,
+      head: HEAD,
+      decision: 'request_changes',
+      summary: 'Outstanding request',
+      findings: [{ path: 'a.ts', line: 1, body: 'Fix the original defect.' }],
+      now: new Date('2026-09-19T10:00:00Z'),
+    });
+    for (const role of ['developer', 'reviewer'] as const) {
+      await history.consumed?.(await history.prepare(prepareRequest(workDir, role)));
+      const snapshot = await history.prepare(prepareRequest(workDir, role));
+      expect(snapshot.brief.newHumanFeedback).toHaveLength(0);
+      expect(snapshot.brief.responses).toHaveLength(400);
+      const prompt = renderHistorySection(snapshot, role);
+      expect(prompt.length).toBeLessThan(70_000);
+      expect(prompt).toContain('Fix the original defect.');
+      expect(prompt).toContain('REQUIRED: read the complete entries in brief.responses');
+      expect(prompt).toContain(snapshot.indexJsonPath);
+      const index = JSON.parse(await readFile(snapshot.indexJsonPath, 'utf8')) as {
+        brief: { responses: { text: string }[] };
+      };
+      expect(index.brief.responses).toHaveLength(400);
+      expect(index.brief.responses.some((entry) => entry.text === comments[0]?.text)).toBe(true);
+    }
+  });
+
+  it.each(['digest', 'legacy'])(
+    'marks previously truncated developer reports incomplete (%s)',
+    async (kind) => {
+      const workDir = await createTempDir();
+      const history = createTicketHistory({ workDir, readers: readers() });
+      const reportPath = path.join(workDir, 'result.json');
+      const agentSummary = `${'x'.repeat(2000)} [truncated: this turn's log holds the full message]`;
+      const attempts = [{ turn: 1, kind: 'implementation', agentSummary, checks: null }];
+      await writeFile(reportPath, JSON.stringify({ status: 'passed', attempts }), 'utf8');
+      if (kind === 'digest') {
+        await history.recordDeveloperReport?.({
+          ref: REF,
+          workspaceId: WORKSPACE_ID,
+          task: TASK,
+          runId: 'old-truncated',
+          round: 1,
+          reportPath,
+          status: 'passed',
+          reason: 'checks passed',
+          repairsUsed: 0,
+          attempts,
+          pullRequest: null,
+          deliveryFailure: null,
+          now: new Date(),
+        });
+      } else {
+        await mkdir(path.dirname(workspaceStatePath(workDir, WORKSPACE_ID)), { recursive: true });
+        await writeFile(
+          workspaceStatePath(workDir, WORKSPACE_ID),
+          JSON.stringify({
+            version: 1,
+            workspaceId: WORKSPACE_ID,
+            sourceRoot: workDir,
+            baseCommit: HEAD,
+            branch: `harness/${WORKSPACE_ID}`,
+            createdAt: REF.updatedAt,
+            sourceItem: null,
+            attempts: [
+              { runId: 'old-truncated', outcome: 'passed', endedAt: REF.updatedAt, reportPath },
+            ],
+          }),
+        );
+      }
+      const snapshot = await history.prepare(prepareRequest(workDir));
+      expect(snapshot.entries.find((entry) => entry.sourceId === 'old-truncated')?.complete).toBe(
+        false,
+      );
+      expect(snapshot.gaps.join('\n')).toContain('truncated before retention');
+    },
+  );
+
+  it('records the actual baseline publication identity and preserves later edits', async () => {
+    const workDir = await createTempDir();
+    let published = '';
+    const diagnosis = createBaselineDiagnosis({
+      workDir,
+      project: 'project',
+      readyStatus: 'Ready',
+      reviewStatus: 'In Review',
+      reviewerTimeoutMs: 5000,
+      io: { out: () => undefined, err: () => undefined },
+      record: {
+        listComments: async () => [],
+        isRunning: async () => true,
+        moveFromRunning: async () => 'moved',
+        postComment: async (_id, paragraphs) => {
+          published = paragraphs.join('\n');
+          return 'baseline-publication';
+        },
+      },
+      reviewer: async (asked) => {
+        const finding = {
+          outcome: 'repair' as const,
+          failingCheck: 'test',
+          evidence: 'failure',
+          likelyCause: 'bug',
+          repairGuidance: 'fix it',
+        };
+        await writeFile(
+          path.join(asked.dir, 'outcome.json'),
+          JSON.stringify({ version: 1, state: 'finding', finding }),
+        );
+        return {
+          summary: 'Diagnosis retained',
+          finding,
+          problem: null,
+          logPath: 'unused.log',
+          shutdown: null,
+        };
+      },
+    });
+    const result = await diagnosis.diagnose({
+      item: { ref: REF, task: TASK },
+      workspace: prepareRequest(workDir).workspace,
+      baseline: { outcome: 'failed', setup: [], checks: [], problem: null },
+      stop: new AbortController().signal,
+    });
+    expect(result.kind).toBe('repair');
+    const history = createTicketHistory({
+      workDir,
+      readers: readers({
+        jira: () => ({
+          comments: [jiraComment('baseline-publication', published, { author: 'Harness' })],
+          truncated: false,
+        }),
+      }),
+    });
+    const first = await history.prepare(prepareRequest(workDir));
+    expect(first.mirrors).toHaveLength(1);
+    expect(first.entries).toHaveLength(1);
+    published += '\nAdditional operator instructions';
+    const edited = await history.prepare(prepareRequest(workDir, 'reviewer'));
+    expect(edited.mirrors).toHaveLength(0);
+    expect(edited.entries.some((entry) => entry.text === published)).toBe(true);
+    expect(await readFile(first.entriesPath, 'utf8')).not.toContain(
+      'Additional operator instructions',
+    );
+  });
+
+  it.each(['accepted', 'missing', 'malformed', 'rejected'])(
+    'includes baseline reviewer history after restart (%s)',
+    async (state) => {
+      const workDir = await createTempDir();
+      const baseline = { outcome: 'failed' as const, setup: [], checks: [], problem: null };
+      const evidenceId = baselineEvidenceId(REF, HEAD, baseline);
+      const dir = path.join(workDir, 'baseline', 'project', evidenceId);
+      await mkdir(dir, { recursive: true });
+      const mirrorText = 'Concise published baseline diagnosis';
+      const evidence: BaselineEvidence = {
+        version: 1,
+        evidenceId,
+        project: 'project',
+        ref: REF,
+        task: TASK,
+        workspace: {
+          workspaceId: WORKSPACE_ID,
+          workspacePath: '/workspace',
+          branch: `harness/${WORKSPACE_ID}`,
+          baseCommit: HEAD,
+        },
+        baseline,
+        closed: 'repair',
+        closedAt: REF.updatedAt,
+        publication: { commentId: 'baseline-comment', textSha256: textSha256(mirrorText) },
+      };
+      await writeFile(path.join(dir, 'evidence.json'), JSON.stringify(evidence));
+      const finding = {
+        outcome: 'repair',
+        failingCheck: 'npm test',
+        evidence: 'Observed failure',
+        likelyCause: 'A regression',
+        repairGuidance: `${'Full repair details. '.repeat(60)}Required final fix.`,
+      };
+      const outcome =
+        state === 'rejected'
+          ? {
+              version: 1,
+              state: 'rejected',
+              problem: 'shutdown unconfirmed',
+              shutdown: { termination: 'unconfirmed', problem: 'child remains' },
+            }
+          : { version: 1, state: 'finding', finding };
+      if (state !== 'missing')
+        await writeFile(
+          path.join(dir, 'outcome.json'),
+          state === 'malformed' ? '{broken' : JSON.stringify(outcome),
+        );
+      // An unaccepted finding file must never substitute for the retained outcome.
+      await writeFile(path.join(dir, 'finding.json'), JSON.stringify(finding));
+      const remote = readers({
+        jira: {
+          comments: [jiraComment('baseline-comment', mirrorText, { author: 'Harness' })],
+          truncated: false,
+        },
+      });
+      for (const role of ['developer', 'reviewer'] as const) {
+        const history = createTicketHistory({ workDir, readers: remote });
+        const snapshot = await history.prepare(prepareRequest(workDir, role));
+        const entry = snapshot.entries.find(
+          (entry) => entry.sourceId === `baseline-project-${evidenceId}`,
+        );
+        expect(entry?.role).toBe('reviewer');
+        if (state === 'accepted' || state === 'rejected') {
+          expect(entry?.complete).toBe(true);
+          expect(entry?.commit).toBe(HEAD);
+          expect(entry?.text).toContain(JSON.stringify(outcome));
+          expect(snapshot.mirrors).toHaveLength(1);
+          if (state === 'accepted')
+            expect(renderHistorySection(snapshot, role)).toContain(finding.repairGuidance);
+          else expect(renderHistorySection(snapshot, role)).not.toContain(finding.repairGuidance);
+        } else {
+          expect(entry?.kind).toBe('missing-report');
+          expect(snapshot.gaps.join('\n')).toContain('outcome.json');
+          expect(renderHistorySection(snapshot, role)).not.toContain(finding.repairGuidance);
+        }
+      }
+    },
+  );
 });
