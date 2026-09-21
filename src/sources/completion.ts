@@ -38,6 +38,7 @@ import type {
   GateVerdict,
   MergeVerdict,
   PullRequestSnapshot,
+  ReviewSnapshot,
   WorkflowOutcome,
 } from '../delivery/completion.js';
 import { DeliveryError } from '../delivery/github.js';
@@ -46,6 +47,8 @@ import type { CompletionConfig, SourceRef } from '../shared/types.js';
 import type { CompletionRun, SourceCandidate, SourceIo } from './contract.js';
 import type { CompletionSource, IssueNote, ReviewItem } from './jira/completion.js';
 import { noteWithMarker } from './jira/completion.js';
+import { notePublishedReviewCompletion } from '../history/reports.js';
+import { workspaceHistoryRoot } from '../history/paths.js';
 
 /** How wide one completion comment line may grow before it is truncated. */
 const LINE_LIMIT = 400;
@@ -456,6 +459,7 @@ type Step =
       readonly pull: PullRequestSnapshot;
       readonly reviewedHead: string;
       readonly findings: readonly GateFinding[];
+      readonly review: ReviewSnapshot | null;
       readonly mergeCommit: string | null;
     }
   | {
@@ -949,6 +953,7 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
           pull,
           reviewedHead,
           findings: approved.findings,
+          review: approved.review,
           mergeCommit: null,
         };
       if (approved.status === 'attention') {
@@ -993,6 +998,7 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
           kind: 'findings',
           pull,
           reviewedHead,
+          review: null,
           findings: merge.workflows
             .filter((outcome) => outcome.state === 'unsuccessful')
             .map((outcome) => ({
@@ -1157,6 +1163,7 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
         pull,
         reviewedHead: gate.review?.commitId ?? pull.headRefOid,
         findings: gate.findings,
+        review: gate.review,
         mergeCommit: null,
       };
     }
@@ -1326,6 +1333,34 @@ export function createCompletionPass(parts: CompletionPassParts): CompletionPass
     }
     if (!written.existed) {
       io.out(`${ref.key}: comment ${written.commentId ?? 'posted'} published (${step.kind})`);
+      if (step.kind === 'findings' && step.review !== null && written.commentId !== null) {
+        const mirroredLines = step.findings
+          .filter((finding) => finding.link === step.review?.url)
+          .map(findingLine);
+        if (mirroredLines.length > 0) {
+          const paragraphs = noteParagraphs(body);
+          try {
+            await notePublishedReviewCompletion(
+              workspaceHistoryRoot(parts.workDir, context.request.workspaceId),
+              {
+                ref,
+                nativeReviewId: step.review.id,
+                head: step.review.commitId ?? step.reviewedHead,
+                commentId: written.commentId,
+                text: paragraphs.join('\n'),
+                contextText: paragraphs.filter((line) => !mirroredLines.includes(line)).join('\n'),
+              },
+            );
+          } catch (cause) {
+            return {
+              ref,
+              status: 'attention',
+              detail: `the comment was published but its local review provenance could not be saved: ${messageOf(cause)}`,
+              commentId: written.commentId,
+            };
+          }
+        }
+      }
     }
 
     if (step.kind === 'attention') {

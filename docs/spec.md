@@ -103,7 +103,18 @@ Outstanding change requests are tracked independently by reviewer across retaine
 reviews. A later published approval by that reviewer at the current head clears their request;
 another author's approval, an approval of an old head, a comment-only review or an inconclusive
 verdict cannot hide it. Responses include edits to older comments after the outstanding review.
+Chronological ordering and response selection compare parsed instants across Jira timezone offsets
+and UTC timestamps; the original timestamp strings remain provenance. An unavailable or invalid
+timestamp is an explicit gap, and possible responses are retained conservatively.
 This is conversation retention, not per-finding remediation enforcement.
+
+The normal review-to-Jira completion path also records an acknowledged findings comment against
+the exact retained native review and reviewed head. Only the unchanged review excerpt is folded
+into that report; distinct completion context (including check failures and the repair disposition)
+remains an attributed harness entry. The full original rendering and its provenance remain in
+`index.json` under `mirrors[].originalEntry`, and the report digest keeps the acknowledged text.
+An edited rendering remains a complete separate entry. Existing or uncertain publications without
+recorded acknowledgement remain remote entries; a completion marker alone cannot authenticate them.
 
 A source that could not be read, a page bound that was reached, and a report the harness knows
 existed but can no longer read in full are named as gaps in the snapshot and in the prompt: the turn is told what is missing rather than

@@ -27,6 +27,7 @@ import {
   type ReadComment,
 } from './contract.js';
 import { historyMarkerOf } from './marker.js';
+import { compareHistoryTime } from './time.js';
 import { workspaceHistoryRoot } from './paths.js';
 import {
   notePublishedDeveloperReport,
@@ -212,9 +213,9 @@ function requestsChanges(value: string | null | undefined): boolean {
  */
 interface PublicationIndex {
   /** Every retained developer report by the Jira comment it was published as. */
-  readonly developerByComment: ReadonlyMap<
+  readonly jiraByComment: ReadonlyMap<
     string,
-    { readonly entryId: string; readonly textSha256: string | null }
+    { readonly entryId: string; readonly textSha256: string | null; readonly contextText?: string }
   >;
   /** Every retained developer report by the run it reports, for the legacy shape check. */
   readonly developerByRun: ReadonlyMap<string, string>;
@@ -233,7 +234,10 @@ interface PublicationIndex {
 
 /** What one set of local reports recorded about its own publications. */
 function publicationIndexOf(reports: readonly LocalReport[]): PublicationIndex {
-  const developerByComment = new Map<string, { entryId: string; textSha256: string | null }>();
+  const jiraByComment = new Map<
+    string,
+    { entryId: string; textSha256: string | null; contextText?: string }
+  >();
   const developerByRun = new Map<string, string>();
   const reviewById = new Map<
     number,
@@ -245,7 +249,7 @@ function publicationIndexOf(reports: readonly LocalReport[]): PublicationIndex {
       const entryId = `harness:developer-report:${report.digest.runId}`;
       developerByRun.set(report.digest.runId, entryId);
       if (report.digest.published !== null) {
-        developerByComment.set(report.digest.published.commentId, {
+        jiraByComment.set(report.digest.published.commentId, {
           entryId,
           textSha256:
             report.digest.published.textSha256 === '' ? null : report.digest.published.textSha256,
@@ -258,7 +262,11 @@ function publicationIndexOf(reports: readonly LocalReport[]): PublicationIndex {
       reviewByLocalId.set(report.digest.reviewId, entryId);
       const jira = report.digest.jiraPublication;
       if (jira !== undefined) {
-        developerByComment.set(jira.commentId, { entryId, textSha256: jira.textSha256 });
+        jiraByComment.set(jira.commentId, {
+          entryId,
+          textSha256: jira.textSha256,
+          ...(jira.contextText === undefined ? {} : { contextText: jira.contextText }),
+        });
       }
       if (report.digest.published !== null) {
         reviewById.set(report.digest.published.id, {
@@ -269,7 +277,7 @@ function publicationIndexOf(reports: readonly LocalReport[]): PublicationIndex {
       }
     }
   }
-  return { developerByComment, developerByRun, reviewById, reviewByLocalId };
+  return { jiraByComment, developerByRun, reviewById, reviewByLocalId };
 }
 
 /**
@@ -347,7 +355,7 @@ function mirroredEntryId(
   const entry = candidate.entry;
   const comment = candidate.comment;
   if (entry.source === 'jira' && entry.kind === 'jira-comment') {
-    const recorded = parts.index.developerByComment.get(entry.sourceId);
+    const recorded = parts.index.jiraByComment.get(entry.sourceId);
     if (recorded !== undefined) {
       return recorded.textSha256 !== null && textSha256(entry.text) !== recorded.textSha256
         ? null
@@ -550,7 +558,7 @@ function unresolvedRound(
   }
 
   rounds.sort(
-    (a, b) => a.at.localeCompare(b.at) || a.summary.entryId.localeCompare(b.summary.entryId),
+    (a, b) => compareHistoryTime(a.at, b.at) || a.summary.entryId.localeCompare(b.summary.entryId),
   );
   const outstanding = new Map<string, ReviewRoundCandidate>();
   for (const round of rounds) {
@@ -583,7 +591,7 @@ function latestDelivery(
 ): HistoryDelivery | null {
   const delivered = reports
     .filter((report) => report.kind === 'developer-report' && report.pullRequest !== null)
-    .toSorted((a, b) => a.createdAt.localeCompare(b.createdAt))
+    .toSorted((a, b) => compareHistoryTime(a.createdAt, b.createdAt))
     .at(-1);
   if (pullRequest !== null) {
     return {
@@ -781,13 +789,27 @@ export function createTicketHistory(parts: TicketHistoryParts): TicketHistory {
           mirroredBefore,
         });
         if (mirrored !== null) {
+          const contextText =
+            candidate.entry.source === 'jira'
+              ? publications.jiraByComment.get(candidate.entry.sourceId)?.contextText
+              : undefined;
           mirrors.push({
             sourceId: candidate.entry.sourceId,
             source: candidate.entry.source,
             ofEntryId: mirrored,
             textSha256: textSha256(candidate.entry.text),
+            ...(contextText === undefined
+              ? {}
+              : { originalEntry: { ...candidate.entry, role: 'harness' as const } }),
           });
-          byId.delete(candidate.entry.id);
+          if (contextText === undefined) {
+            byId.delete(candidate.entry.id);
+          } else {
+            byId.set(candidate.entry.id, {
+              ...candidate,
+              entry: { ...candidate.entry, text: contextText, role: 'harness' },
+            });
+          }
         }
       }
 
@@ -800,12 +822,14 @@ export function createTicketHistory(parts: TicketHistoryParts): TicketHistory {
             (before !== undefined && before.source !== 'harness' && before.text !== entry.text);
           return { ...entry, edited };
         })
-        .toSorted((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
+        .toSorted(
+          (a, b) => compareHistoryTime(a.createdAt, b.createdAt) || a.id.localeCompare(b.id),
+        );
 
       const reports: HistoryReportSummary[] = local.reports
         .map(reportSummaryOf)
         .filter((report): report is HistoryReportSummary => report !== null)
-        .toSorted((a, b) => a.createdAt.localeCompare(b.createdAt));
+        .toSorted((a, b) => compareHistoryTime(a.createdAt, b.createdAt));
       for (const report of local.reports) {
         if (report.kind === 'missing-report') {
           gaps.push(
@@ -851,14 +875,25 @@ export function createTicketHistory(parts: TicketHistoryParts): TicketHistory {
       }
       const round = unresolved.at(-1)?.summary ?? null;
       const ownEntryIds = new Set(unresolved.flatMap((round) => round.ownEntryIds));
-      const earliest = unresolved.map((round) => round.at).sort()[0];
+      for (const { entry } of reviewCandidates) {
+        if (
+          [entry.createdAt, entry.updatedAt ?? entry.createdAt].some((at) =>
+            Number.isNaN(Date.parse(at)),
+          )
+        ) {
+          gaps.push(
+            `the timestamp of ${entry.id} is unavailable or invalid; its chronological position is unknown and possible responses are retained conservatively`,
+          );
+        }
+      }
+      const earliest = unresolved.map((round) => round.at).sort(compareHistoryTime)[0];
       const responses =
         earliest === undefined
           ? []
           : entries.filter(
               (entry) =>
                 (!ownEntryIds.has(entry.id) || entry.edited) &&
-                (entry.updatedAt ?? entry.createdAt) >= earliest &&
+                compareHistoryTime(entry.updatedAt ?? entry.createdAt, earliest) >= 0 &&
                 (entry.role !== 'harness' || entry.edited),
             );
       // Preparation alone consumes nothing. Compare with this role's last

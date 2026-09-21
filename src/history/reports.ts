@@ -28,6 +28,7 @@ import type {
 import { HistoryError } from './contract.js';
 import { readBaselineReports } from './baseline.js';
 import { historyReportsDir } from './paths.js';
+import { compareHistoryTime } from './time.js';
 
 /**
  * The digest of one complete developer report, as `<root>/reports/developer-<runId>.json`
@@ -95,8 +96,12 @@ export interface ReviewerReportDigest {
   readonly textFile: string;
   readonly recordFile: string | null;
   readonly recordProblem: string | null;
+  /** An acknowledged Jira rendering, including separate completion context. */
+  readonly jiraPublication?: DeveloperPublication & {
+    readonly text?: string;
+    readonly contextText?: string;
+  };
   /** The native review GitHub published for this report, once it exists. */
-  readonly jiraPublication?: DeveloperPublication;
   readonly published: {
     readonly id: number;
     readonly url: string;
@@ -502,6 +507,64 @@ export async function notePublishedReview(
       2,
     )}\n`,
   );
+}
+
+/** Associate only an acknowledged completion write with its exact native review.
+ * The original rendering stays evidence; only its review excerpt is a mirror. */
+export async function notePublishedReviewCompletion(
+  root: string,
+  request: {
+    readonly ref: SourceRef;
+    readonly nativeReviewId: string;
+    readonly head: string;
+    readonly commentId: string;
+    readonly text: string;
+    readonly contextText: string;
+  },
+): Promise<void> {
+  let names: string[];
+  try {
+    names = await readdir(historyReportsDir(root));
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code === 'ENOENT') return;
+    throw cause;
+  }
+  for (const name of names) {
+    if (!/^reviewer-[A-Za-z0-9_-]+\.json$/.test(name)) continue;
+    const file = reportFile(root, name);
+    const value = await readJson(file);
+    if (typeof value !== 'object' || value === null) continue;
+    const digest = value as ReviewerReportDigest;
+    if (
+      digest.kind !== 'reviewer-report' ||
+      !sameTicket(digest.ref, request.ref) ||
+      digest.head !== request.head ||
+      String(digest.published?.id) !== request.nativeReviewId
+    )
+      continue;
+    // Never replace the acknowledged original with a later edit/retry.
+    if (digest.jiraPublication !== undefined) return;
+    await atomicWrite(
+      file,
+      `${JSON.stringify(
+        {
+          ...digest,
+          jiraPublication: {
+            commentId: request.commentId,
+            url: `${request.ref.url}?focusedCommentId=${request.commentId}`,
+            textSha256: textSha256(request.text),
+            text: request.text,
+            contextText: request.contextText,
+          },
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    return;
+  }
+  // Legacy/unretained reports remain ordinary attributed remote evidence. No
+  // marker or excerpt can prove a relationship to an unavailable local report.
 }
 
 /**
@@ -930,7 +993,7 @@ export async function readLocalReports(parts: {
     });
   }
   records.sort(
-    (a, b) => a.startedAt.localeCompare(b.startedAt) || a.reviewId.localeCompare(b.reviewId),
+    (a, b) => compareHistoryTime(a.startedAt, b.startedAt) || a.reviewId.localeCompare(b.reviewId),
   );
   for (const [index, record] of records.entries()) {
     if (knownReviews.has(record.reviewId)) {

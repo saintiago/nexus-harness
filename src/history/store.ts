@@ -154,6 +154,11 @@ function indexMarkdown(index: SnapshotIndex, dir: string, reportsDir: string): s
       lines.push(
         `- ${mirror.source}:${mirror.sourceId} is the published rendering of ${mirror.ofEntryId}`,
       );
+      if (mirror.originalEntry !== undefined) {
+        lines.push(
+          '  Its distinct completion context remains an entry; the full original rendering and provenance are in index.json mirrors[].originalEntry.',
+        );
+      }
     }
   }
   return `${lines.join('\n')}\n`;

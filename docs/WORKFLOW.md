@@ -822,6 +822,21 @@ result line, the marker naming the same run, and its artifacts and repairs lines
 that quotes a marker does not match. The inline findings of a native review published by the App are
 the retained report's own findings, mapped by the review's identity; a reply to one stays a reply.
 
+The normal completion pass records its acknowledged Jira findings comment with the exact local
+reviewer's native review identity and head. Its review excerpt becomes a mirror; its distinct
+completion context stays a harness entry, even when Jira's service account name differs from the
+GitHub App login. The report digest retains the published text and hash. The snapshot's
+`mirrors[].originalEntry` in `index.json` retains the whole rendering and source provenance, and
+`index.md` points to it. Later edits remain complete separate entries. A pre-existing comment or
+an uncertain write found only by a marker does not acquire publication provenance from that marker;
+without a recorded acknowledgement it remains attributed remote evidence. A provenance write
+failure is reported as attention before the status move.
+
+Review order, earliest outstanding review, latest delivery and response selection compare parsed
+timestamp instants, including Jira numeric timezone offsets. Stored timestamps keep their original
+spelling. Invalid or unavailable timestamps are named as gaps, with possible responses included
+conservatively rather than silently dropped after a feedback cursor advances.
+
 Complete developer messages pass through the runtime adapter without truncation and are saved
 under `reports/` after every turn, so repairs see earlier turns
 from their own run. The final run enriches that same entry before the result comment is published.

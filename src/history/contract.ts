@@ -171,6 +171,9 @@ export interface HistoryBrief {
 
 /** One entry whose text is a published rendering of a local complete report. */
 export interface HistoryMirror {
+  /** A completion rendering whose distinct context remains an entry. Kept
+   * whole with source provenance, so splitting off a mirror loses no wording. */
+  readonly originalEntry?: HistoryEntry;
   /** The external entry that was not added again. */
   readonly sourceId: string;
   readonly source: HistorySourceKind;

@@ -479,6 +479,14 @@ Responses and new feedback each have a 60,000-character inline budget. When the 
 `brief.responses` or `brief.newHumanFeedback` in its immutable `index.json` as required reading,
 read that whole array before acting, or report the input gap.
 
+Jira timezone offsets and UTC timestamps are compared as instants, so consuming a snapshot does
+not hide a later response to an outstanding review. Invalid timestamps are named as gaps.
+Normal completion comments are matched to the retained review by acknowledged publication identity:
+the review excerpt is a mirror, while separate completion context stays an attributed harness entry.
+For the whole original completion rendering, read `mirrors[].originalEntry` in the snapshot's
+`index.json`; its report digest also retains the published text and hash. Edits and older comments
+without recorded acknowledgement remain separate entries. A marker alone does not authenticate them.
+
 Baseline reviewer reports are recovered from the matching `baseline/<project>/<evidenceId>/outcome.json`
 for both roles. Missing or corrupt outcomes are named as gaps; an unaccepted `finding.json` cannot
 replace them. Baseline entries name their evidence ID and reviewed commit, and label the file

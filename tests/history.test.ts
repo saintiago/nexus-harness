@@ -23,6 +23,9 @@ import { HistoryError } from '../src/history/contract.js';
 import { workspaceHistoryRoot } from '../src/history/paths.js';
 import { renderHistorySection } from '../src/history/prompt.js';
 import { baselineEvidenceId, createBaselineDiagnosis } from '../src/sources/baseline.js';
+import { createCompletionPass } from '../src/sources/completion.js';
+import type { CompletionActions, PullRequestSnapshot } from '../src/delivery/completion.js';
+import type { CompletionSource, IssueNote } from '../src/sources/jira/completion.js';
 import type { BaselineEvidence } from '../src/sources/baseline.js';
 import { notePublishedReview, textSha256 } from '../src/history/reports.js';
 import { createTicketHistory } from '../src/history/sync.js';
@@ -189,6 +192,275 @@ function prepareRequest(
 }
 
 describe('the ticket conversation snapshot', () => {
+  it('keeps mixed-offset responses after both roles consume them, ordering reviews by instant', async () => {
+    const workDir = await createTempDir();
+    const native = [
+      {
+        ...jiraComment('alice', 'Alice finding', {
+          author: 'Alice',
+          createdAt: '2026-09-21T12:00:00.000Z',
+        }),
+        state: 'CHANGES_REQUESTED',
+        commit: HEAD,
+      },
+      {
+        ...jiraComment('bob', 'Bob earlier finding', {
+          author: 'Bob',
+          createdAt: '2026-09-21T13:00:00.000+0200',
+        }),
+        state: 'CHANGES_REQUESTED',
+        commit: HEAD,
+      },
+      {
+        ...jiraComment('old-approval', 'Alice earlier approval', {
+          author: 'Alice',
+          createdAt: '2026-09-21T13:30:00.000+0200',
+        }),
+        state: 'APPROVED',
+        commit: HEAD,
+      },
+    ];
+    const comments = [
+      jiraComment('latest', 'Latest response to Alice', {
+        createdAt: '2026-09-21T08:30:00.000-0400',
+      }),
+      jiraComment('between', 'Response to Bob before Alice', {
+        createdAt: '2026-09-21T07:15:00.000-0400',
+      }),
+      jiraComment('edited', 'Edited response to Alice', {
+        createdAt: '2026-09-20T12:00:00.000Z',
+        updatedAt: '2026-09-21T14:45:00.000+0200',
+      }),
+      jiraComment('before', 'Not a response', { createdAt: '2026-09-21T14:00:00.000+0400' }),
+    ];
+    const parts = {
+      workDir,
+      readers: readers({ jira: { comments, truncated: false }, pull: pullConversation(native) }),
+    };
+    for (const role of ['developer', 'reviewer'] as const) {
+      const history = createTicketHistory(parts);
+      await history.consumed?.(await history.prepare(prepareRequest(workDir, role)));
+      const snapshot = await createTicketHistory(parts).prepare(prepareRequest(workDir, role));
+      expect(snapshot.brief.newHumanFeedback).toHaveLength(0);
+      expect(snapshot.brief.unresolvedReviews?.map((review) => review.author)).toEqual([
+        'Bob',
+        'Alice',
+      ]);
+      expect(snapshot.brief.responses.map((entry) => entry.sourceId)).toEqual([
+        'edited',
+        'between',
+        'old-approval',
+        'latest',
+      ]);
+      expect(snapshot.entries.map((entry) => entry.sourceId)).toEqual([
+        'edited',
+        'before',
+        'bob',
+        'between',
+        'old-approval',
+        'alice',
+        'latest',
+      ]);
+      expect(snapshot.entries.find((entry) => entry.sourceId === 'latest')?.createdAt).toBe(
+        '2026-09-21T08:30:00.000-0400',
+      );
+      const prompt =
+        role === 'developer'
+          ? promptFor(developerRequest(snapshot))
+          : reviewPrompt(EVIDENCE, VIEW, '/evidence', snapshot);
+      for (const text of [
+        'Latest response to Alice',
+        'Response to Bob before Alice',
+        'Edited response to Alice',
+      ])
+        expect(prompt).toContain(text);
+      expect(prompt).not.toContain('Not a response');
+    }
+  });
+
+  it('retains responses with unknown timestamps conservatively and names the gap', async () => {
+    const workDir = await createTempDir();
+    const history = createTicketHistory({
+      workDir,
+      readers: readers({
+        pull: pullConversation([
+          { ...jiraComment('review', 'Fix it'), state: 'CHANGES_REQUESTED', commit: HEAD },
+        ]),
+        jira: {
+          comments: [jiraComment('unknown', 'Undated response', { createdAt: 'unavailable' })],
+          truncated: false,
+        },
+      }),
+    });
+    const snapshot = await history.prepare(prepareRequest(workDir));
+    expect(snapshot.brief.responses.map((entry) => entry.sourceId)).toContain('unknown');
+    expect(snapshot.gaps.join(' ')).toContain('timestamp of jira:jira-comment:unknown');
+  });
+
+  it('associates normal completion publication with its review, keeping context, restart and edits', async () => {
+    const workDir = await createTempDir();
+    const root = workspaceHistoryRoot(workDir, WORKSPACE_ID);
+    const reviewUrl = `${EVIDENCE.pullRequest.url}#pullrequestreview-555`;
+    const nativeBody = 'Native review excerpt';
+    const notes: IssueNote[] = [];
+    const makeHistory = () =>
+      createTicketHistory({
+        workDir,
+        harnessAuthors: ['nexus-lens[bot]'],
+        readers: readers({
+          jira: () => ({
+            comments: notes.map((note) =>
+              jiraComment(note.id, note.text, {
+                author: 'Jira Service Account',
+                createdAt: note.createdAt,
+              }),
+            ),
+            truncated: false,
+          }),
+          pull: pullConversation([
+            {
+              ...jiraComment('555', nativeBody, { author: 'nexus-lens[bot]' }),
+              state: 'CHANGES_REQUESTED',
+              commit: HEAD,
+            },
+          ]),
+        }),
+      });
+    await makeHistory().recordReviewerReport?.({
+      ref: REF,
+      workspaceId: WORKSPACE_ID,
+      task: TASK,
+      reviewId: 'completion-review',
+      round: 1,
+      head: HEAD,
+      decision: 'request_changes',
+      summary: 'Complete local review',
+      findings: [{ path: 'a.ts', line: 1, body: 'Full finding. '.repeat(600) + 'END-FINDING' }],
+      now: new Date('2026-09-21T12:00:00Z'),
+    });
+    await notePublishedReview(root, 'completion-review', {
+      id: 555,
+      url: reviewUrl,
+      body: nativeBody,
+    });
+    const pull: PullRequestSnapshot = {
+      number: 27,
+      url: EVIDENCE.pullRequest.url,
+      state: 'OPEN',
+      isDraft: false,
+      headRefName: `harness/${WORKSPACE_ID}`,
+      baseRefName: 'main',
+      headRefOid: HEAD,
+      mergeCommit: null,
+    };
+    const unexpected = async (): Promise<never> => {
+      throw new Error('unexpected completion operation');
+    };
+    const actions: CompletionActions = {
+      findPullRequest: async () => pull,
+      findMergedPullRequest: async () => pull,
+      readGate: async () => ({
+        status: 'failed',
+        reason: 'Changes requested',
+        review: {
+          id: '555',
+          author: 'nexus-lens[bot]',
+          state: 'CHANGES_REQUESTED',
+          body: nativeBody,
+          commitId: HEAD,
+          url: reviewUrl,
+        },
+        findings: [
+          { label: 'Nexus Lens review', detail: 'Concise mirrored finding', link: reviewUrl },
+          {
+            label: 'CI',
+            detail: 'Distinct check failure',
+            link: 'https://github.com/example/repo/actions/runs/1',
+          },
+        ],
+      }),
+      readApprovedHead: unexpected,
+      readMerge: unexpected,
+      enableAutoMerge: unexpected,
+    };
+    let moves = 0;
+    const source: CompletionSource = {
+      listReview: async () => [{ ref: REF, title: TASK.title }],
+      readItem: async () => ({
+        ref: REF,
+        title: TASK.title,
+        statusName: 'In Review',
+        pointers: [WORKSPACE_ID],
+      }),
+      listComments: async () => notes,
+      leftReviewSince: async () => false,
+      postComment: async (_id, paragraphs) => {
+        notes.push({
+          id: 'completion-comment',
+          text: paragraphs.join('\n'),
+          createdAt: '2026-09-21T13:00:00Z',
+        });
+        return 'completion-comment';
+      },
+      moveTo: async () => {
+        moves++;
+        return 'moved';
+      },
+    };
+    const parts = {
+      workDir,
+      repository: 'example/repo',
+      baseBranch: 'main',
+      source,
+      actions,
+      config: {
+        lensApp: 'nexus-lens[bot]',
+        lensAppId: 123,
+        lensCheckName: 'Nexus Lens',
+        reviewerTokenEnv: 'UNUSED',
+        postMergeWorkflows: ['ci.yml'],
+        toDoStatus: 'To Do',
+        doneStatus: 'Done',
+        pollIntervalSeconds: 1,
+        deadlineSeconds: 30,
+      },
+      io: { out: () => undefined, err: () => undefined },
+      now: () => new Date('2026-09-21T13:00:00Z'),
+      sleep: unexpected,
+    };
+    expect((await createCompletionPass(parts).run(new AbortController().signal))[0]?.status).toBe(
+      'to-do',
+    );
+    expect(moves).toBe(1);
+    const original = notes[0]?.text ?? '';
+    const first = await makeHistory().prepare(prepareRequest(workDir));
+    expect(first.entries.filter((entry) => entry.kind === 'reviewer-report')).toHaveLength(1);
+    const context = first.entries.find((entry) => entry.sourceId === 'completion-comment');
+    expect(context?.role).toBe('harness');
+    expect(context?.text).toContain('Distinct check failure');
+    expect(context?.text).toContain('Returned to To Do');
+    expect(context?.text).not.toContain('Concise mirrored finding');
+    expect(first.brief.newHumanFeedback).toHaveLength(0);
+    expect(
+      first.mirrors.find((mirror) => mirror.sourceId === 'completion-comment')?.originalEntry?.text,
+    ).toBe(original);
+    expect(renderHistorySection(first, 'developer')).toContain('END-FINDING');
+    const immutable = await readFile(first.indexJsonPath, 'utf8');
+    await createCompletionPass(parts).run(new AbortController().signal);
+    expect(notes).toHaveLength(1);
+    expect((await makeHistory().prepare(prepareRequest(workDir))).id).toBe(first.id);
+    notes[0] = {
+      id: 'completion-comment',
+      createdAt: '2026-09-21T13:00:00Z',
+      text: original + '\nAdditional operator instruction',
+    };
+    await createCompletionPass(parts).run(new AbortController().signal);
+    const edited = await makeHistory().prepare(prepareRequest(workDir));
+    expect(edited.mirrors.map((mirror) => mirror.sourceId)).not.toContain('completion-comment');
+    expect(edited.brief.newHumanFeedback.map((entry) => entry.text)).toContain(notes[0].text);
+    expect(await readFile(first.indexJsonPath, 'utf8')).toBe(immutable);
+  });
+
   /** One Jira answer per requested page, keyed by the `startAt` asked for. */
   function fakeJira(
     pages: Readonly<Record<number, readonly Record<string, unknown>[]>>,
