@@ -69,7 +69,11 @@ Nexus will write without creating it.
    ([WORKFLOW.md](WORKFLOW.md) §11). A diagnosis that is inconclusive, environmental, or unsafe
    leaves the ticket In Review for a person instead. Connecting a project whose committed checks
    already pass is still the smoother start: the diagnosis can repair what lives in the working
-   copy, not the host or the check's own configuration.
+   copy, not the host or the check's own configuration. It insists on the snapshot it was promised:
+   a `setup` or `check` command that rewrites a tracked file, or leaves a commit behind, is refused
+   as incomplete evidence rather than diagnosed through a clone of the older tree, so keep those
+   commands read-only apart from generated, ignored artifacts. A pending diagnosis is finished
+   before the next discovery, so a stopped invocation does not leave the ticket stuck In Progress.
 3. **The Jira queue.** Decide the site URL (`https://<site>.atlassian.net`), the site's cloud ID,
    the project key, the issue type (`Task` by default), the label (`harness-task` by default — keep
    it distinctive), and the ready, running and review statuses (`To Do` → `In Progress` →
@@ -200,11 +204,14 @@ From here Nexus is autonomous, one ticket at a time, and needs no further setup:
 2. The baseline round runs `setup` and every `check`; a red baseline stops a fresh attempt before
    any coding turn, and is then diagnosed in one local reviewer turn over the snapshot and the
    command evidence: an actionable finding is one comment and a return of the same ticket to the
-   ready status, whose next claim repairs the baseline and then continues the original task. A green
-   baseline starts the implementation turn, and a completed red round starts repair turns within the
-   shared ladder instead of giving up. Every turn is asked to finish with the work it wants the next
-   turn to build on committed: a working copy left holding uncommitted work stops the run before the
-   next agent, names the paths, and leaves finishing them by hand to the operator.
+   ready status, whose next claim repairs the baseline and then continues the original task, with
+   every field of the finding in the developer's brief. The reviewer turn runs under a narrower
+   filesystem policy than a coding turn: it writes only its own finding file, and the snapshot it
+   reads and the ticket's workspace stay read-only to it. A green baseline starts the implementation
+   turn, and a completed red round starts repair turns within the shared ladder instead of giving
+   up. Every turn is asked to finish with the work it wants the next turn to build on committed: a
+   working copy left holding uncommitted work stops the run before the next agent, names the paths,
+   and leaves finishing them by hand to the operator.
 3. A passed attempt is delivered: its branch is pushed and its pull request opened or updated with
    the operator's own Git/`gh` credential.
 4. Native auto-merge is armed for that exact head before Nexus Lens reviews it, and the review

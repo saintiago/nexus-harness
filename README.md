@@ -278,6 +278,13 @@ read from the checkout `--repo` names, so the repository a run clones describes 
    finding returns the same ticket to its ready status — with its workspace pointer — as guidance
    for the next claim, which repairs the baseline and then continues the original task. Nothing is
    sent to GitHub, and nothing is delivered until a post-agent round passes.
+   The diagnosis establishes the snapshot before it spends anything: a working copy whose recorded
+   base commit has moved, or whose tracked files a configured command changed, is refused as
+   incomplete evidence and left In Review instead. The reviewer turn itself runs under the narrower
+   `workspace-write` policy, with only its own working directory writable, so it cannot change the
+   snapshot it reads or the retained working copy. A diagnosis a stopped invocation left pending is
+   finished before anything else is discovered: the missing status move, or a finding the reviewer
+   turn already wrote — never a second turn or a second comment for the same evidence.
 5. **Coding turns**: one fresh invocation of the configured launch per top-level turn, started in
    the working copy and never asking for approval. The implementation turn is given the task; each
    repair turn is given the failures the harness observed for itself. Every turn of the run uses the
@@ -870,8 +877,8 @@ What one invocation does:
    A completed red baseline is the same idea one step earlier: the configured reviewer diagnoses
    that exact snapshot in one bounded local turn, does not touch GitHub, and an actionable finding
    is one Jira comment plus the same return to To Do with the pointer intact. The next claim
-   continues the workspace with the finding as guidance, repairs the baseline, and then continues
-   the original task.
+   continues the workspace with the finding as guidance — every field of it, on every rung of that
+   claim — repairs the baseline, and then continues the original task.
 4. **Source readiness.** After a confirmed Done, the operator's checkout must be on the configured
    base branch, carry no uncommitted or untracked work, and have the expected delivery repository
    as a remote; the verified merge commit must be in the fetched base branch and the local `HEAD`
@@ -1092,8 +1099,11 @@ Read this before pointing a run at anything you care about.
   deliberate, documented choice, not a fallback — the narrower `workspace-write` policy this CLI
   offers on Windows leaves the working copy's `.git` read-only, so a turn cannot stage or commit its
   work (`git add` fails on `.git/index.lock`; HARN-2). An unattended run still never waits for a
-  prompt. Treat a target project's configuration the way you would treat a script you are about to
-  run.
+  prompt. The one turn that is not a coding turn is the pre-delivery baseline diagnosis (§11): it
+  stages nothing and must not change what it inspects, so it runs as `--sandbox workspace-write`
+  with its own working directory as the writable root, and the snapshot and the retained working
+  copy are read-only to it. Treat a target project's configuration the way you would treat a script
+  you are about to run.
 - **A clone is not a sandbox.** The working copy is a separate directory and a separate branch, so
   your source checkout is not where the work happens — but the code in it runs as you, and it can
   write anywhere your user can.
@@ -1167,8 +1177,10 @@ Read this before pointing a run at anything you care about.
   identified open pull request, publish a native GitHub review and an app-owned check run as the
   configured App installation. The App's private key path lives in the environment the harness is
   started in, never in JSON, a task, or a log; the reviewer turn runs with the same unsandboxed
-  reach a coding turn has, is told not to change anything, and is never merged or asked to fix what
-  it finds. Point the App at a repository whose rules you are prepared to gate with its check.
+  reach a coding turn has — the pre-delivery baseline diagnostic is the narrower
+  `--sandbox workspace-write` exception, because it must not change what it reads — is told not to
+  change anything, and is never merged or asked to fix what it finds. Point the App at a repository
+  whose rules you are prepared to gate with its check.
 - **Not implemented, and not planned here:** automatic merging outside the configured completion
   path, automatic workflow reruns, a provider registry, workflow engines, background services,
   webhooks, parallel consumers of one project's queue, and a second coding runtime. Without
@@ -1375,11 +1387,16 @@ a read.
   reloads this project configuration;
 - **any live red-baseline diagnosis.** The path is verified offline end to end — the reviewer turn
   over a disposable repository whose committed baseline really fails, the one comment and the move
-  by target status name against a fake Jira site, the restart that spends no second reviewer turn,
-  the next claim's guidance through a real retained workspace, and the queue carrying the same
-  ticket into its repair attempt. HARN-34's load-sensitive baseline has not been replayed against a
-  real Jira ticket with a real reviewer launch, no live queue has returned a diagnosed ticket to
-  To Do, and the finding quality of a live reviewer is not established by the offline fixtures;
+  by target status name against a fake Jira site, a restart that finishes a pending diagnosis
+  through the real entry point without spending a second reviewer turn or writing a second comment,
+  the refusal of a snapshot the configured commands changed, a reviewer turn that wrote into the
+  retained working copy, and the next claim's guidance through a real retained workspace, field by
+  field and on a later rung as well as the first. The narrower launch the diagnostic asks for is
+  still the runtime's to enforce: the offline fixtures record the policy the harness composes, and
+  the enforcement behind it was probed separately on this host, not inside a live run. HARN-34's
+  load-sensitive baseline has not been replayed against a real Jira ticket with a real reviewer
+  launch, no live queue has returned a diagnosed ticket to To Do, and the finding quality of a live
+  reviewer is not established by the offline fixtures;
 - **any live GitHub delivery.** The delivery step is verified offline against disposable Git
   repositories and a stand-in `gh` on `PATH`; no branch has been pushed to github.com and no pull
   request has been created by the harness here. The commands follow `gh`'s documented interface,
@@ -1437,8 +1454,12 @@ single non-interactive turn on this platform and needs no extra client library i
   read-only on this Windows installation, where `git add` fails on `.git/index.lock` (reproduced by
   hand with the installed CLI; HARN-2, HARN-10). Model-generated commands therefore run the way your
   `setup` and `checks` run: as you, with no sandbox and no network carve-out. The suffix is the same
-  for every turn; there is no `--dangerously-bypass-approvals-and-sandbox`, no retry with a wider
-  policy, and no automatic approval service.
+  for every coding turn; there is no `--dangerously-bypass-approvals-and-sandbox`, no retry with a
+  wider policy, and no automatic approval service. The pre-delivery baseline diagnosis is the one
+  launch that names the narrower policy instead — `exec --sandbox workspace-write`, started in its
+  own working directory, which the host's restricted-token sandbox enforces (probed on this host:
+  a write outside that directory and the temporary directory was refused with `EPERM`), and the
+  harness checks the snapshot and the retained working copy after the turn as well.
 - **Non-interactive by construction.** `--ask-for-approval never` is the adapter's own argument, so a
   run never waits for a human: a turn that would ask for an approval is refused instead of pausing,
   and the failure stops the run. On the installed CLI the approval option is accepted **before** the

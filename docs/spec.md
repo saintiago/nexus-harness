@@ -14,7 +14,7 @@
 
 **Revision: 2026-09-20 — a repair turn stays on the recorded branch.** A coding turn can commit on a branch of its own and leave the checkout there. Before every coding turn, and before the round that judges it, the checkout is returned to the branch its workspace ledger records when that can be done without losing anything: a clean checkout whose commit descends from that branch is fast-forwarded to it and checked out, so a continuation and a repair turn work on the branch the workspace owns, and the checks and a delivery step are about one revision. The return never writes over a local file the checkout ignores — Git is asked not to overwrite one, and a return that would is refused with the paths Git named — and what the checkout and the fast-forward did is read back rather than taken from their exit codes, so a Git configuration that squashed the merge cannot pass a staged working copy off as a returned branch. A coding turn is also started only from the workspace's own committed state: a checkout that still holds uncommitted work — on the recorded branch included — stops the run before the agent, with the branch, the paths, and the manual action. A detached, divergent, or branchless checkout stops as well; nothing is reset, force-updated, or discarded, and §7's exact-revision delivery refusal is unchanged. The workspace contract is in [implement-workspace-continuation.md](implement-workspace-continuation.md).
 
-**Revision: 2026-09-21 — a completed red baseline is diagnosed before any developer turn.** The contract in §11 is extended: when a fresh workspace's every setup command succeeded and its configured check round completed with a nonzero result, the configured reviewer — never a coding tier — inspects the exact source snapshot and the bounded command evidence in one local turn and writes one structured finding. An actionable finding is one Jira comment naming the failing check, the evidence, the likely cause and the repair, and the same ticket returns to the status it was claimed from with its workspace pointer preserved; the next claim continues that workspace with the finding as guidance, repairs the baseline first, and then continues the original task. Anything else — missing or unusable evidence, an environmental cause, an unsafe repair, a setup failure, a missing host tool, a launch error, a cancellation, or an incomplete round — leaves the ticket In Review with the evidence and the required human action. Nothing here touches GitHub: no pull request exists yet, so no review, approval, or check is fabricated for one, and delivery stays impossible until a post-agent round passes every configured setup and check. The assignment is [implement-baseline-diagnosis.md](implement-baseline-diagnosis.md).
+**Revision: 2026-09-21 — a completed red baseline is diagnosed before any developer turn.** The contract in §11 is extended: when a fresh workspace's every setup command succeeded and its configured check round completed with a nonzero result, the configured reviewer — never a coding tier — inspects the exact source snapshot and the bounded command evidence in one local turn and writes one structured finding. The turn runs under a narrower filesystem policy than a coding turn, so the snapshot it inspects and the retained working copy are read-only to it, and a working copy the configured commands changed is refused as incomplete evidence rather than diagnosed from the wrong tree. An actionable finding is one Jira comment naming the failing check, the evidence, the likely cause and the repair, and the same ticket returns to the status it was claimed from with its workspace pointer preserved; the next claim continues that workspace with the finding as guidance, repairs the baseline first, and then continues the original task. Anything else — missing or unusable evidence, an environmental cause, an unsafe repair, a setup failure, a missing host tool, a launch error, a cancellation, or an incomplete round — leaves the ticket In Review with the evidence and the required human action. A restart finishes an interrupted diagnosis from the retained evidence and the ticket's own thread — the status move a pass had not made, or a finding the reviewer turn already wrote — without repeating a reviewer turn or a comment for the same evidence. Nothing here touches GitHub: no pull request exists yet, so no review, approval, or check is fabricated for one, and delivery stays impossible until a post-agent round passes every configured setup and check. The assignment is [implement-baseline-diagnosis.md](implement-baseline-diagnosis.md).
 
 **Completion exception:** the no-merge/no-Done defaults below are superseded only by the explicitly configured path in §10. The review commands themselves remain read/review-only.
 
@@ -134,7 +134,7 @@ Keep the command plan outside the task working copy. Instruct the agent not to w
 
 The agent launcher is trusted operator configuration. Secrets are prohibited in its arguments because launch information is reportable. Use the tested platform launcher; unsupported argument/interpreter combinations must fail clearly rather than being silently altered. Do not introduce a shell-string executor or runtime permission bypass.
 
-The harness launches every turn with one explicit policy, as part of the invocation rather than as something the operator has to configure: the runtime runs unsandboxed (`exec --sandbox danger-full-access`, approvals never asked), so the retained working copy — its Git metadata included — can be staged and committed. That is a documented choice, not a hidden fallback: the narrower `workspace-write` policy leaves that copy's Git metadata read-only on Windows and makes a local commit impossible. The harness itself still makes no commit of its own, and the launch is fixed for every turn of a run.
+The harness launches every coding turn with one explicit policy, as part of the invocation rather than as something the operator has to configure: the runtime runs unsandboxed (`exec --sandbox danger-full-access`, approvals never asked), so the retained working copy — its Git metadata included — can be staged and committed. That is a documented choice, not a hidden fallback: the narrower `workspace-write` policy leaves that copy's Git metadata read-only on Windows and makes a local commit impossible. The harness itself still makes no commit of its own, and the launch is fixed for every coding turn of a run. The one turn that is not a coding turn is the pre-delivery baseline diagnosis (§11): a reviewer that must not change what it inspects runs as `exec --sandbox workspace-write`, with its own working directory as the writable root, which leaves the snapshot it inspects and the retained working copy outside it.
 
 The production harness must never edit global Codex defaults, install provider configuration, copy credentials, run setup/restore scripts, or log the user in/out. The setup task may create the specifically requested local profile/catalog, preserving existing files and accounts. Native configuration remains external and can be re-read by the runtime; this version does not freeze it or provide configuration isolation for untrusted repositories.
 
@@ -349,17 +349,27 @@ Nexus-wide selection, never a coding tier — for one bounded local turn before 
 reviewer receives the exact source snapshot (a read-only clone of the retained workspace, pinned at
 the commit the baseline ran against), the configured commands, and the bounded stdout/stderr each of
 them wrote; it receives no coding instruction, may inspect that snapshot with its normal local tools,
-and cannot change the retained workspace it was cloned from. It writes one structured finding:
-either the failing check, the evidence, the likely cause and the repair a later coding turn can make,
-or why no repair may be made automatically.
+and cannot change the retained workspace it was cloned from. The turn runs under a narrower
+filesystem policy than a coding turn — it may write only inside its own working directory and the
+host's temporary directory, where its one `finding.json` goes — so the snapshot and the retained
+working copy are read-only to it, and the harness verifies after the turn that the snapshot is still
+pinned and clean and that the retained working copy is exactly what it was before the turn. The
+snapshot has to be established before the turn: a working copy whose recorded base commit has moved,
+or whose tracked files the configured commands changed, cannot be shown to be the tree the failing
+check really ran against, and is refused as incomplete evidence instead of being diagnosed from a
+clone of the wrong tree. It writes one structured finding: either the failing check, the evidence,
+the likely cause and the repair a later coding turn can make, or why no repair may be made
+automatically.
 
 An actionable finding produces **one** concise Jira comment naming those four things, and the same
 ticket returns to the status it was claimed from with its workspace pointer and its original
 acceptance criteria preserved. The loop then continues that ticket — before unrelated ready work —
 and the next claim reopens the same retained workspace, is told the original task *and* the reviewed
-finding as guidance, repairs the baseline first, and only then continues the original task. That
-attempt is an ordinary one: the same runner, the same escalation ladder (which starts again at its
-first tier), the same checks, and the same delivery refusal for anything that is still red.
+finding as guidance — each field of the finding whole and on its own line, and on every rung of the
+ladder the returned ticket climbs, not only the first — repairs the baseline first, and only then
+continues the original task. That attempt is an ordinary one: the same runner, the same escalation
+ladder (which starts again at its first tier), the same checks, and the same delivery refusal for
+anything that is still red.
 
 An inconclusive, environmental, or unsafe diagnosis, a reviewer turn that produced nothing usable, a
 baseline that could not be executed, a command that could not be launched, a cancellation, and an
@@ -373,7 +383,13 @@ reviewed, approved, or checked on GitHub for it; the harness fabricates no pull-
 Lens approval, and no check run. The marker inside the one comment is the deduplication record: a
 restart that finds the same evidence — the same immutable item, the same snapshot, the same
 configured commands with the same results — starts no second reviewer turn and writes no second
-comment, and completes only the status move the interrupted pass had not made.
+comment, and completes only the step the interrupted pass had not made: the status move for a finding
+that is already on the thread, or the publication of a finding the reviewer turn already wrote under
+the output directory. That recovery runs before anything is discovered or claimed, so a ticket left
+in the running status by an interrupted diagnosis is finished rather than reported back as a stuck
+consumer. A reviewer turn that was interrupted before it wrote a finding is not run again for the
+same evidence: the item stays In Review with the retained evidence and what a person must do. An item
+a person has moved in the meantime is left exactly where that person left it.
 
 ### Source readiness between tickets
 
