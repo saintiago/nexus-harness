@@ -134,7 +134,7 @@ Keep the command plan outside the task working copy. Instruct the agent not to w
 
 The agent launcher is trusted operator configuration. Secrets are prohibited in its arguments because launch information is reportable. Use the tested platform launcher; unsupported argument/interpreter combinations must fail clearly rather than being silently altered. Do not introduce a shell-string executor or runtime permission bypass.
 
-The harness launches every coding turn with one explicit policy, as part of the invocation rather than as something the operator has to configure: the runtime runs unsandboxed (`exec --sandbox danger-full-access`, approvals never asked), so the retained working copy — its Git metadata included — can be staged and committed. That is a documented choice, not a hidden fallback: the narrower `workspace-write` policy leaves that copy's Git metadata read-only on Windows and makes a local commit impossible. The harness itself still makes no commit of its own, and the launch is fixed for every coding turn of a run. The one turn that is not a coding turn is the pre-delivery baseline diagnosis (§11): a reviewer that must not change what it inspects runs as `exec --sandbox workspace-write` with its own working directory as the only writable root — that launch excludes the host's temporary roots from the policy — which leaves the snapshot it inspects and the retained working copy outside it however `workDir` is placed.
+The harness launches every coding turn with one explicit policy, as part of the invocation rather than as something the operator has to configure: the runtime runs unsandboxed (`exec --sandbox danger-full-access`, approvals never asked), so the retained working copy — its Git metadata included — can be staged and committed. That is a documented choice, not a hidden fallback: the narrower `workspace-write` policy leaves that copy's Git metadata read-only on Windows and makes a local commit impossible. The harness itself still makes no commit of its own, and the launch is fixed for every coding turn of a run. The one turn that is not a coding turn is the pre-delivery baseline diagnosis (§11): a reviewer that must not change what it inspects runs as `exec --sandbox workspace-write` with its own working directory as the only writable root — that launch states the policy's additional writable roots as none and excludes the host's temporary roots — which leaves the snapshot it inspects and the retained working copy outside it however `workDir` is placed and whatever the operator's own configuration would otherwise grant.
 
 The production harness must never edit global Codex defaults, install provider configuration, copy credentials, run setup/restore scripts, or log the user in/out. The setup task may create the specifically requested local profile/catalog, preserving existing files and accounts. Native configuration remains external and can be re-read by the runtime; this version does not freeze it or provide configuration isolation for untrusted repositories.
 
@@ -354,10 +354,12 @@ readable before the turn starts: a log file that is missing or cannot be read is
 evidence, not a check that said nothing, and leaves the item In Review with the paths named instead
 of showing a reviewer a rendering that would pass for a silent command. The turn runs under a narrower
 filesystem policy than a coding turn — it may write only inside its own working directory, where its
-one `finding.json` goes, and that launch takes the host's temporary roots out of the policy's
-writable set — so the snapshot and the retained working copy are read-only to it however `workDir`
-is placed, and the harness verifies after the turn that the snapshot is still
-pinned and clean and that the retained working copy is exactly what it was before the turn. The
+one `finding.json` goes, and that launch states the policy's additional writable roots as none and
+takes the host's temporary roots out of its writable set — so the snapshot and the retained working
+copy are read-only to it however `workDir` is placed and whatever the operator's own configuration
+or configured launch prefix would otherwise grant, and the harness verifies after the turn that the
+snapshot is still pinned and clean and that the retained working copy is exactly what it was before
+the turn. The
 snapshot has to be established before the turn: a working copy whose recorded base commit has moved,
 or whose tracked files the configured commands changed, cannot be shown to be the tree the failing
 check really ran against, and is refused as incomplete evidence instead of being diagnosed from a
@@ -403,7 +405,9 @@ the turn — so a restart never reads the turn's own finding file as if a failed
 timed-out turn had completed, and a turn that left no recorded outcome is not diagnosed again
 either. A reviewer turn whose own process tree could not be confirmed stopped is never settled: the
 item stays In Review with the evidence and what a person must do, and the intake keeps its lock for
-inspection. That holds when a restart's own resume step runs the diagnosis too, and a resume that
+inspection. That holds when a restart's own resume step runs the diagnosis too — and when it
+deduplicates a finding already on the issue, where the recorded stop is read back from the evidence
+before anything is moved instead of a stop being assumed — and a resume that
 reports an unconfirmed shutdown stops the intake before it discovers or claims anything, in a finite
 batch, a watch scan, and the serial queue alike, so nothing new starts while a reviewer runtime may
 still be writing. The evidence is kept per connected project — `<workDir>/baseline/<project>/

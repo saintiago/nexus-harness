@@ -42,11 +42,14 @@ started: a log file that is missing or cannot be read is incomplete evidence —
 said nothing — and the item stays In Review with the paths named instead of being shown to a
 reviewer as if the evidence were whole. It receives no coding instruction. It cannot change
 the retained workspace: it runs as `exec --sandbox workspace-write` with its own working directory
-(`turn/`) as its only writable root, and that launch takes the host's temporary roots out of the
-policy (the runtime's own `sandbox_workspace_write.exclude_tmpdir_env_var` and
-`.exclude_slash_tmp`), so a `workDir` beneath a temporary root cannot put the clone or the retained
-working copy inside a writable root either. The clone and the retained working copy are both checked
-after the turn: either one that changed produces no finding. An `EPERM` from the sandbox is the
+(`turn/`) as its only writable root, and that launch states the policy's additional writable roots
+as none and takes the host's temporary roots out of it (the runtime's own
+`sandbox_workspace_write.writable_roots` as the empty list,
+`sandbox_workspace_write.exclude_tmpdir_env_var` and `.exclude_slash_tmp`), so neither a `workDir`
+beneath a temporary root nor a root the operator's own configuration or the configured launch
+prefix grants can put the clone or the retained working copy inside a writable root. The clone and
+the retained working copy are both checked after the turn: either one that changed produces no
+finding. An `EPERM` from the sandbox is the
 boundary working, not a failure of the turn. The turn's own environment also declares the snapshot a repository git
 may read (git's `safe.directory` through the `GIT_CONFIG_*` variables): the sandbox runs its commands
 under an identity that does not own the files on Windows, and git refuses such a repository as
@@ -76,7 +79,10 @@ own: what the turn produced is recorded as `outcome.json` beside the evidence, b
 published — the validated finding, or the problem that rejected the turn, with the turn's own stop —
 and a restart reads that record. A turn whose own process tree could not be confirmed stopped is
 never settled: the item stays In Review with the evidence and what a person must do, and the intake
-keeps its lock for inspection while the runtime may still be writing.
+keeps its lock for inspection while the runtime may still be writing. A restart that finds the
+finding already on the issue reads the recorded stop back from that record before it moves anything,
+instead of assuming the reviewer ended: an unconfirmed stop keeps the lock there too, and a record
+that cannot be read is refused by name rather than rounded down to a confirmed one.
 
 **What happens next.** An actionable finding is recorded as exactly one comment on the issue,
 carrying the marker `nexus-baseline:repair:<evidence>` and the four things above, and the issue
@@ -176,7 +182,8 @@ code lives and what owns what.
   whose failing baseline is real — the prompt carries the commands, the bounded output and the
   snapshot, the finding is validated, a missing file and a changed clone are refused, the turn is
   launched under the narrower policy in its own working directory, with the host's temporary roots
-  excluded from that policy's writable set so a `workDir` beneath one cannot expose the retained
+  excluded from that policy's writable set and its additional writable roots stated as none, so
+  neither a `workDir` beneath one nor a root the configured launch grants can expose the retained
   working copy or the snapshot, a finding from a turn that wrote
   into the retained working copy is refused, a working copy the configured commands changed is
   refused before any turn, a check log that cannot be read is refused before any turn — while a log
@@ -187,9 +194,11 @@ code lives and what owns what.
   stops, or times out is rejected on that invocation and on every restart after it, with its own
   finding file never read as if the turn had completed; a turn that left a finding but no recorded
   outcome is refused rather than diagnosed again; and a reviewer stop the harness could not confirm
-  is reported, recorded, and carried to the coordinator, which keeps its intake lock; a resume that
-  reports one stops a finite batch, a watch scan, and the serial queue before either discovers or
-  claims anything, and the queue's own summary and final lock decision carry the flag — covered
+  is reported, recorded, and carried to the coordinator, which keeps its intake lock, including from
+  a resume that finds the attention comment already on the issue and reads that recorded stop back
+  instead of starting a second reviewer turn; a resume that reports one stops a finite batch, a
+  watch scan, and the serial queue before either discovers or claims anything, and the queue's own
+  summary and final lock decision carry the flag — covered
   through the commands' real compositions, including the queue path that used to spend a coding
   turn's discovery before stopping. A retained
   record this harness left unfinished after it really moved the item is reconciled with the finding

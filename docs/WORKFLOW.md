@@ -199,7 +199,7 @@ codex --profile deepseek --model deepseek-flash --ask-for-approval never exec --
 
 The execution part is not configurability: it is the adapter's own fixed suffix. Each turn runs unsandboxed (`--sandbox danger-full-access`) and unattended (`--ask-for-approval never`, so nothing waits for a prompt), because a turn must be able to stage and commit in the retained working copy and the narrower `workspace-write` policy — in its `--sandbox` spelling or its native permission-profile spelling — leaves that copy's Git metadata read-only on Windows, where `git add` fails on `.git/index.lock` (HARN-2, HARN-10). That policy is an explicit, documented choice, not a hidden fallback: the suffix is the same for every turn, and nothing widens after a failure. A turn has the same file and network reach as the harness's own configured `setup` and `checks` commands; README "Safety" states that plainly.
 
-The one turn that is not a coding turn is the pre-delivery baseline diagnosis (§11). It stages nothing and must not change what it inspects, so it runs as `exec --sandbox workspace-write`, started in its own working directory inside the diagnosis's evidence directory, and that launch excludes the host's temporary roots from the policy's writable set (the runtime's own `sandbox_workspace_write.exclude_tmpdir_env_var` and `.exclude_slash_tmp`): its working directory is the only place the runtime's sandbox lets it write, and the snapshot it inspects and the ticket's retained working copy are outside it however `workDir` is placed. A diagnostic that tries to write anywhere else is refused by the sandbox rather than trusted, and the harness checks the two trees after the turn as well. No coding turn is ever started from a diagnosis, and nothing widens the diagnostic's policy.
+The one turn that is not a coding turn is the pre-delivery baseline diagnosis (§11). It stages nothing and must not change what it inspects, so it runs as `exec --sandbox workspace-write`, started in its own working directory inside the diagnosis's evidence directory, and that launch states the policy's additional writable roots as none and excludes the host's temporary roots from its writable set (the runtime's own `sandbox_workspace_write.writable_roots`, as the empty list, `sandbox_workspace_write.exclude_tmpdir_env_var`, and `.exclude_slash_tmp`): its working directory is the only place the runtime's sandbox lets it write, and the snapshot it inspects and the ticket's retained working copy are outside it however `workDir` is placed and whatever the operator's own configuration or configured launch prefix would grant instead. A diagnostic that tries to write anywhere else is refused by the sandbox rather than trusted, and the harness checks the two trees after the turn as well. No coding turn is ever started from a diagnosis, and nothing widens the diagnostic's policy.
 
 Do not put `exec`, a prompt, redirection, a shell expression, or an end-of-options `--` into the configured prefix. Do not use prefix options/wrappers that redirect the working directory, replace structured output, or override the adapter's execution/permission controls. This is a trusted launcher contract, not a general CLI policy language.
 
@@ -1011,8 +1011,9 @@ is never published from.
 
 The turn receives no coding instruction and changes nothing: it runs as `exec --sandbox
 workspace-write` with its own working directory (`turn/`) as the only writable root — the launch
-takes the host's temporary roots out of that policy's writable set, so neither the clone nor the
-retained working copy is writable there even when `workDir` sits beneath one — so the only file it
+states that policy's additional writable roots as none and takes the host's temporary roots out of
+it, so neither the clone nor the retained working copy is writable there even when `workDir` sits
+beneath one or the operator's own configuration grants a root over it — so the only file it
 can write is its `finding.json` there, and the harness checks after the turn that the clone is still
 the clean snapshot it was given and that the retained working copy is exactly what it was before the
 turn. That turn's own environment also declares the snapshot a repository git may read (git's
@@ -1078,8 +1079,12 @@ the reviewer turn runs, and the outcome the turn produced is recorded beside it 
 once the turn has ended: the validated finding, or the problem that rejected the turn. That record
 is what an invocation interrupted before the comment resumes from, so a finding a failed or stopped
 turn left in its own file is never published as if the turn had completed, and a turn that left no
-recorded outcome is not diagnosed again either. The project is part of the path, so two projects
-sharing one `workDir` never read, finish, or publish each other's pending evidence — a record that
+recorded outcome is not diagnosed again either. A resume that finds the comment already on the
+issue reads the recorded reviewer stop back from that outcome before it moves anything, instead of
+assuming one: an unconfirmed one keeps the intake lock there exactly as it did when the finding was
+first published, and a record that cannot be read is refused by name rather than rounded down. The
+project is part of the path, so two projects sharing one `workDir` never read, finish, or publish
+each other's pending evidence — a record that
 names another project is refused by name — and starting one project's intake never comments on,
 transitions, or closes another project's issue. That recovery runs before anything is discovered or
 claimed, so a ticket left in the running status by an interrupted diagnosis is finished instead of

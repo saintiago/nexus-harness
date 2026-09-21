@@ -281,11 +281,12 @@ read from the checkout `--repo` names, so the repository a run clones describes 
    The diagnosis establishes the snapshot before it spends anything: a working copy whose recorded
    base commit has moved, or whose tracked files a configured command changed, is refused as
    incomplete evidence and left In Review instead. The reviewer turn itself runs under the narrower
-   `workspace-write` policy, with only its own working directory writable — the launch takes the
-   host's temporary roots out of that policy, so neither tree is writable even when `workDir` sits
-   beneath one — so it cannot change the snapshot it reads or the retained working copy. A finding
-   that is actionable carries the order it belongs in: the next claim is told, in its prompt, to
-   repair the baseline before continuing the original task. A diagnosis a stopped invocation left
+   `workspace-write` policy, with only its own working directory writable — the launch states that
+   policy's additional writable roots as none and takes the host's temporary roots out of it, so
+   neither tree is writable even when `workDir` sits beneath one or the operator's own configuration
+   grants a root over it — so it cannot change the snapshot it reads or the retained working copy.
+   A finding that is actionable carries the order it belongs in: the next claim is told, in its
+   prompt, to repair the baseline before continuing the original task. A diagnosis a stopped invocation left
    pending is finished before anything else is discovered: the missing status move, or the
    validated outcome the reviewer turn's invocation recorded — never a second turn or a second
    comment for the same evidence, and never the finding file a turn that then failed left behind. A
@@ -1113,10 +1114,11 @@ Read this before pointing a run at anything you care about.
   work (`git add` fails on `.git/index.lock`; HARN-2). An unattended run still never waits for a
   prompt. The one turn that is not a coding turn is the pre-delivery baseline diagnosis (§11): it
   stages nothing and must not change what it inspects, so it runs as `--sandbox workspace-write`
-  with its own working directory as the only writable root — that launch excludes the host's
-  temporary roots from the policy — and the snapshot and the retained working copy are read-only to
-  it however `workDir` is placed. Treat a target project's configuration the way you would treat a
-  script you are about to run.
+  with its own working directory as the only writable root — that launch states the policy's
+  additional writable roots as none and excludes the host's temporary roots — and the snapshot and
+  the retained working copy are read-only to it however `workDir` is placed and whatever the
+  operator's own configuration grants. Treat a target project's configuration the way you would
+  treat a script you are about to run.
 - **A clone is not a sandbox.** The working copy is a separate directory and a separate branch, so
   your source checkout is not where the work happens — but the code in it runs as you, and it can
   write anywhere your user can.
@@ -1414,10 +1416,12 @@ a read.
   and keeps the intake lock — from a first diagnosis and from a resume that runs one, in a finite
   batch, a watch scan, and the queue, each of which stops there instead of discovering or claiming
   anything else; and a publication this harness already made before its local record
-  was finished still reaches the workspace's next claim. The narrower launch the diagnostic asks for is
-  still the runtime's to enforce: the offline fixtures record the policy the harness composes —
-  temporary roots excluded — and the enforcement behind it was probed separately on this host, not
-  inside a live run. HARN-34's
+  was finished still reaches the workspace's next claim. A resume that finds the finding already on
+  the issue reads the recorded reviewer stop back instead of assuming one, so a reviewer runtime the
+  harness could not confirm stopped keeps the intake lock there too. The narrower launch the
+  diagnostic asks for is still the runtime's to enforce: the offline fixtures record the policy the
+  harness composes — additional writable roots stated as none, temporary roots excluded — and the
+  enforcement behind that policy was probed separately on this host, not inside a live run. HARN-34's
   load-sensitive baseline has not been replayed against a real Jira ticket with a real reviewer
   launch, no live queue has returned a diagnosed ticket to To Do, and the finding quality of a live
   reviewer is not established by the offline fixtures;
@@ -1481,12 +1485,14 @@ single non-interactive turn on this platform and needs no extra client library i
   for every coding turn; there is no `--dangerously-bypass-approvals-and-sandbox`, no retry with a
   wider policy, and no automatic approval service. The pre-delivery baseline diagnosis is the one
   launch that names the narrower policy instead — `exec --sandbox workspace-write`, started in its
-  own working directory, with the host's temporary roots excluded from that policy through its own
-  `sandbox_workspace_write.exclude_tmpdir_env_var` and `.exclude_slash_tmp` set to `true`, so its
-  working directory is the only writable root it has. Probed on this host, `codex debug prompt-input`
+  own working directory, with its own `sandbox_workspace_write.writable_roots` stated as the empty
+  list and `.exclude_tmpdir_env_var` and `.exclude_slash_tmp` set to `true`, so its working directory
+  is the only writable root it has even when the operator's own configuration or the configured
+  launch prefix would grant another one. Probed on this host, `codex debug prompt-input`
   under that policy renders the permission profile with the working directory as its only write
-  entry — the `:tmpdir` and `:slash_tmp` entries the plain `workspace-write` policy carries are gone
-  — and the host's restricted-token sandbox refuses a write outside the writable roots with
+  entry — the `:tmpdir` and `:slash_tmp` entries the plain `workspace-write` policy carries are gone,
+  and so is a root granted in front of the adapter's own overrides — and the host's restricted-token
+  sandbox refuses a write outside the writable roots with
   `EPERM`. The harness checks the snapshot and the retained working copy after the turn as well.
   That turn's process also carries git's `safe.directory` declaration for the snapshot
   (`GIT_CONFIG_*` in its environment), because a restricted sandbox on Windows runs its commands

@@ -75,7 +75,7 @@ src/
     receipts.ts                   (238)  the per-project intake lock and one receipt per attempted item
     eligibility.ts                (81)   what an item is: a first attempt, a continuation, or a refusal
     guidance.ts                   (95)   what an attempt is told, bounded: the finding, the thread, attempts
-    baseline.ts                   (1109) the pre-delivery diagnosis: its evidence, one comment, one move
+    baseline.ts                   (1142) the pre-delivery diagnosis: its evidence, one comment, one move
     coordinator.ts                (1696) runSource and watchSource: discovery, the ladder, publication
     list.ts                       (88)   the read-only `source list` preview
     jira/
@@ -98,13 +98,13 @@ src/
     github.ts                     (726)  the App JWT, the installation token, and the repository calls
     diff.ts                       (134)  the pull request's diff, and where a finding is positioned
     reviewer.ts                   (402)  the reviewer prompt, the one bounded turn, and the verdict file
-    baseline.ts                   (1135) the pre-delivery reviewer turn, its prompt, and its outcome record
+    baseline.ts                   (1155) the pre-delivery reviewer turn, its prompt, and its outcome record
     scan.ts                       (790)  one scan or watch: eligibility, dedup, publishing, evidence
   queue/
     loop.ts                       (488)  the serial control loop: one current ticket, one phase at a time
   agents/
     codex/
-      runtime.ts                  (166)  the launch prefix, the two sandbox policies, the environment, the stop contract
+      runtime.ts                  (177)  the launch prefix, the two sandbox policies and their narrowing, the environment, the stop contract
       adapter.ts                  (462)  runCodexTurn/runCodexPrompt: one turn, normalized for the runner
       prompt.ts                   (178)  what one turn is told, the bounded guidance and the reviewed baseline finding included
       events.ts                   (355)  the JSON event stream, and the activity lines read from it
@@ -299,6 +299,8 @@ further would separate one decision from itself: `runs/runner.ts` (the loop), `s
   evidence record it writes before its reviewer turn under the connected project's own namespace —
   so one `workDir` never mixes two projects' evidence — one comment, the one status move the finding
   asks for — the intake lock kept when the reviewer runtime's own stop could not be confirmed — the
+  stop read back from that recorded outcome when a resume finds the comment already on the thread,
+  so a deduplicated finding never releases a lock its own record says to keep — the
   `resume` step that finishes what an invocation left pending before anything is discovered or
   claimed, which reconciles a record this harness left unfinished after its own status move with the
   finding the item's own thread carries, and the read-back of a finding a continuation is required
@@ -415,7 +417,8 @@ further would separate one decision from itself: `runs/runner.ts` (the loop), `s
   (`reviews/reviewer.ts`); `scanReviews`, `watchReviews`, `allocateReviewDirectory`
   (`reviews/scan.ts`); `diffPosition`, `positionFindings` (`reviews/diff.ts`);
   `createBaselineReviewer`, `baselinePrompt`, `baselineFailures`, `parseBaselineFinding`,
-  `baselineFindingPath`, `readBaselineFinding`, `BASELINE_FINDING_FILE`,
+  `baselineFindingPath`, `readBaselineFinding`, `readBaselineReviewerShutdown`,
+  `BASELINE_FINDING_FILE`,
   `BASELINE_TURN_DIRECTORY` (`reviews/baseline.ts`).
 
 ### `queue/`
