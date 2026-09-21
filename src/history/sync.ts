@@ -47,22 +47,26 @@ export interface TicketHistoryParts {
   readonly now?: () => Date;
 }
 
-/** One entry candidate before it has an identity. */
-interface Candidate {
-  readonly entry: HistoryEntry;
-  /** The local complete report this rendering mirrors, when it is one. */
-  readonly mirrorOf?: string;
-}
-
 /** The run id a legacy harness result comment names, when it names one. */
 function legacyRunIdOf(text: string): string | null {
   const match = /Harness run ([A-Za-z0-9][A-Za-z0-9_-]{0,127}) for /.exec(text);
   return match?.[1] ?? null;
 }
 
+/**
+ * The shapes this harness's own comments have always had. A comment of one of
+ * them is the harness speaking, never a person's feedback, even when it
+ * predates the marker a complete report's rendering now carries.
+ */
+const HARNESS_COMMENT_SHAPES = /(^|\n)Harness (run|refused|held) /;
+
 /** Whether one piece of external text is this harness's own publication. */
 function isHarnessText(text: string, author: string, harnessAuthors: readonly string[]): boolean {
-  if (historyMarkerOf(text) !== null || legacyRunIdOf(text) !== null) {
+  if (
+    historyMarkerOf(text) !== null ||
+    legacyRunIdOf(text) !== null ||
+    HARNESS_COMMENT_SHAPES.test(text)
+  ) {
     return true;
   }
   return harnessAuthors.some((name) => name !== '' && name === author);
@@ -370,19 +374,19 @@ export function createTicketHistory(parts: TicketHistoryParts): TicketHistory {
       });
       gaps.push(...local.problems);
 
-      const candidates: Candidate[] = [];
+      const candidates: HistoryEntry[] = [];
       for (const comment of jiraComments) {
         const role = isHarnessText(comment.text, comment.author, harnessAuthors)
           ? 'harness'
           : 'human';
-        candidates.push({
-          entry: entryOfComment(comment, {
+        candidates.push(
+          entryOfComment(comment, {
             source: 'jira',
             kind: 'jira-comment',
             role,
             commit: null,
           }),
-        });
+        );
       }
       if (pullRequest !== null) {
         for (const comment of pullRequest.comments) {
@@ -395,18 +399,18 @@ export function createTicketHistory(parts: TicketHistoryParts): TicketHistory {
           const role = isHarnessText(comment.text, comment.author, harnessAuthors)
             ? 'harness'
             : 'human';
-          candidates.push({
-            entry: entryOfComment(comment, {
+          candidates.push(
+            entryOfComment(comment, {
               source: 'github',
               kind,
               role,
               commit: comment.commit ?? null,
             }),
-          });
+          );
         }
       }
       for (const report of local.reports) {
-        candidates.push({ entry: entryOfReport(report) });
+        candidates.push(entryOfReport(report));
       }
 
       // Deduplicate by source identity: the newest read of one identity wins,
@@ -414,13 +418,13 @@ export function createTicketHistory(parts: TicketHistoryParts): TicketHistory {
       // duplicated. A complete local report is never replaced by its rendering.
       const byId = new Map<string, HistoryEntry>();
       for (const candidate of candidates) {
-        const existing = byId.get(candidate.entry.id);
+        const existing = byId.get(candidate.id);
         if (existing === undefined) {
-          byId.set(candidate.entry.id, candidate.entry);
-        } else if (existing.source === 'harness' && candidate.entry.source !== 'harness') {
+          byId.set(candidate.id, candidate);
+        } else if (existing.source === 'harness' && candidate.source !== 'harness') {
           continue;
         } else {
-          byId.set(candidate.entry.id, candidate.entry);
+          byId.set(candidate.id, candidate);
         }
       }
 
