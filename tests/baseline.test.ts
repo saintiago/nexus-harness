@@ -408,6 +408,27 @@ const INCONCLUSIVE_FINDING: BaselineFinding = {
   requiredAction: 'provide a host with docker, or move the check to the CI workflow',
 };
 
+/**
+ * The outcome the real reviewer turn records before anything is published:
+ * `outcome.json` beside the evidence, holding the finding that turn validated.
+ * A fixture whose reviewer is scripted has to leave it too — a marker on the
+ * thread may return the item for repair only when this record holds the
+ * actionable finding the marker names, and the finding a continuation is handed
+ * comes from it rather than from the turn's own finding file.
+ */
+async function writeTurnFinding(
+  workDir: string,
+  evidenceId: string,
+  finding: BaselineFinding = REPAIR_FINDING,
+  project: string = PROJECT,
+): Promise<void> {
+  await writeJsonFile(path.join(workDir, 'baseline', project, evidenceId), 'outcome.json', {
+    version: 1,
+    state: 'finding',
+    finding,
+  });
+}
+
 describe('the pre-delivery baseline diagnosis', () => {
   it('publishes one actionable comment and returns the same ticket to its ready status', async () => {
     const workDir = await createTempDir();
@@ -491,6 +512,9 @@ describe('the pre-delivery baseline diagnosis', () => {
     const record = fakeRecord();
     const request = requestFor();
     const evidenceId = baselineEvidenceId(refFor(), BASE, request.baseline);
+    // What the earlier invocation's turn recorded before it published this
+    // evidence's comment: the accepted finding the marker is held against.
+    await writeTurnFinding(workDir, evidenceId);
     record.notes.push({
       id: 'c7',
       createdAt: '2026-09-21T10:04:00.000Z',
@@ -512,6 +536,8 @@ describe('the pre-delivery baseline diagnosis', () => {
     expect(record.posted).toEqual([]);
     // The item had not been moved yet: the resumed pass makes that one move.
     expect(record.moves).toEqual([{ from: 'In Progress', target: 'To Do' }]);
+    // The evidence is closed with the outcome its own record holds.
+    expect((await evidenceRecordFor(workDir, PROJECT)).record['closed']).toBe('repair');
   });
 
   /**
@@ -595,11 +621,116 @@ describe('the pre-delivery baseline diagnosis', () => {
     expect(record.moves).toEqual([{ from: 'In Progress', target: 'In Review' }]);
   });
 
+  it('never returns a rejected turn to the ready status, however its comment is marked', async () => {
+    // The publication retry this rules out: the reviewer turn wrote a valid
+    // finding and then failed, so the record beside its evidence is a rejection;
+    // the attention comment it published is on the thread, and someone edited
+    // that comment's marker into a repair marker. The marker names the evidence,
+    // never the outcome, so the restart makes the move the recorded outcome
+    // asks for — In Review — and no developer is ever started from the rejected
+    // turn's own finding file.
+    const workDir = await createTempDir();
+    const record = fakeRecord();
+    const request = requestFor();
+    const evidenceId = baselineEvidenceId(refFor(), BASE, request.baseline);
+    const dir = path.join(workDir, 'baseline', PROJECT, evidenceId);
+    await writeJsonFile(dir, 'outcome.json', {
+      version: 1,
+      state: 'rejected',
+      problem: 'the reviewer turn for HARN-38 failed after it wrote its finding',
+      shutdown: { termination: 'confirmed', problem: null },
+    });
+    await mkdir(path.dirname(baselineFindingPath(dir)), { recursive: true });
+    await writeFile(baselineFindingPath(dir), `${JSON.stringify(REPAIR_FINDING)}\n`, 'utf8');
+    record.notes.push({
+      id: 'c7',
+      createdAt: '2026-09-21T10:04:00.000Z',
+      text:
+        `HARN-38: the configured baseline checks failed (${BASELINE_MARKER_PREFIX}repair:${evidenceId}, ` +
+        'written by the Nexus harness).',
+    });
+    const reviewer = scriptedReviewer(REPAIR_FINDING);
+    const { diagnosis } = phaseFor({ record, reviewer, workDir });
+
+    const outcome = await diagnosis.diagnose(request);
+
+    expect(outcome.kind).toBe('attention');
+    expect((outcome as { commentId: string | null }).commentId).toBe('c7');
+    expect((outcome as { detail: string }).detail).toContain(
+      'the outcome recorded for that evidence is not the actionable finding it names',
+    );
+    expect(reviewer.requests).toEqual([]);
+    expect(record.posted).toEqual([]);
+    expect(record.moves).toEqual([{ from: 'In Progress', target: 'In Review' }]);
+    expect(record.status).toBe('In Review');
+    // The evidence is closed as what its own record really says, so the
+    // workspace's next claim is never handed the rejected turn's finding file.
+    expect((await evidenceRecordFor(workDir, PROJECT)).record['closed']).toBe('attention');
+    expect(await diagnosis.reviewedFinding(refFor().key, new AbortController().signal)).toEqual({
+      kind: 'none',
+    });
+  });
+
+  it('hands no continuation the finding file of a turn whose own outcome rejected it', async () => {
+    // The end state the marker used to be able to leave behind, planted
+    // directly: the evidence is closed as a repair, the record beside it is a
+    // rejection, and the failed turn's own finding file is still there. What a
+    // developer would be handed used to be that file; it is the recorded
+    // outcome that decides, and this record supplies no actionable finding, so
+    // no developer is started from it.
+    const workDir = await createTempDir();
+    const request = requestFor();
+    const evidenceId = baselineEvidenceId(refFor(), BASE, request.baseline);
+    const dir = path.join(workDir, 'baseline', PROJECT, evidenceId);
+    await writeJsonFile(dir, 'evidence.json', {
+      version: 1,
+      evidenceId,
+      project: PROJECT,
+      ref: refFor(),
+      task: taskFor(),
+      workspace: {
+        workspaceId: refFor().key,
+        workspacePath: `/workspaces/${refFor().key}`,
+        branch: `harness/${refFor().key}`,
+        baseCommit: BASE,
+      },
+      baseline: request.baseline,
+      closed: 'repair',
+      closedAt: '2026-09-21T10:06:00.000Z',
+    });
+    await writeJsonFile(dir, 'outcome.json', {
+      version: 1,
+      state: 'rejected',
+      problem: 'the reviewer turn for HARN-38 was stopped before it produced a finding',
+      shutdown: { termination: 'confirmed', problem: null },
+    });
+    await mkdir(path.dirname(baselineFindingPath(dir)), { recursive: true });
+    await writeFile(baselineFindingPath(dir), `${JSON.stringify(REPAIR_FINDING)}\n`, 'utf8');
+    const { diagnosis } = phaseFor({
+      record: fakeRecord(),
+      reviewer: scriptedReviewer(REPAIR_FINDING),
+      workDir,
+    });
+
+    const recovered = await diagnosis.reviewedFinding(refFor().key, new AbortController().signal);
+
+    expect(recovered.kind).toBe('unreadable');
+    expect((recovered as { detail: string }).detail).toContain(
+      'the outcome its reviewer turn recorded there cannot be read back: it is a rejection',
+    );
+    expect((recovered as { detail: string }).detail).toContain(
+      'the reviewer turn for HARN-38 was stopped before it produced a finding',
+    );
+  });
+
   it('does not move an item a person already took out of the running status', async () => {
     const workDir = await createTempDir();
     const record = fakeRecord('To Do');
     const request = requestFor();
     const evidenceId = baselineEvidenceId(refFor(), BASE, request.baseline);
+    // The marker is real — the evidence's own record holds the actionable
+    // finding it names — and the item is still exactly where the person put it.
+    await writeTurnFinding(workDir, evidenceId);
     record.notes.push({
       id: 'c9',
       createdAt: '2026-09-21T10:04:00.000Z',
@@ -1865,6 +1996,9 @@ describe('the Jira record of one diagnosis', () => {
     const first = await diagnosis.diagnose(request);
     expect(first.kind).toBe('repair');
     expect(site.comments).toHaveLength(1);
+    // What that turn recorded before the comment was published: the accepted
+    // finding a restart holds the marker against.
+    await writeTurnFinding(workDir, baselineEvidenceId(refFor(), BASE, request.baseline));
 
     // The restart: the same issue, the same snapshot, the same results. The
     // thread holds the finding, so nothing is spent or written twice.
@@ -1965,11 +2099,14 @@ async function evidenceRecordFor(
 }
 
 /**
- * The finding file the real reviewer turn writes, put where it writes it. A
- * fixture whose reviewer is scripted has to leave the same record: a later claim
- * holds a comment of the item's own thread against the finding the retained
- * evidence holds, so evidence with no such file is a diagnosis a person has to
- * look at, not one a developer starts from.
+ * The records the real reviewer turn writes, put where it writes them: the
+ * finding file itself, and the outcome beside the evidence that says the turn
+ * completed with that finding. A fixture whose reviewer is scripted has to leave
+ * both: a marker on the item's own thread returns the item for repair only while
+ * that outcome holds the actionable finding the marker names, and a later claim
+ * holds a comment of the thread against the finding the retained evidence holds —
+ * so evidence with neither record is a diagnosis a person has to look at, not
+ * one a developer starts from.
  */
 async function writeReviewerFinding(
   workDir: string,
@@ -1977,9 +2114,11 @@ async function writeReviewerFinding(
   project: string = PROJECT,
 ): Promise<void> {
   const evidence = await evidenceRecordFor(workDir, project);
-  const file = baselineFindingPath(path.dirname(evidence.file));
+  const dir = path.dirname(evidence.file);
+  const file = baselineFindingPath(dir);
   await mkdir(path.dirname(file), { recursive: true });
   await writeFile(file, `${JSON.stringify(finding)}\n`, 'utf8');
+  await writeJsonFile(dir, 'outcome.json', { version: 1, state: 'finding', finding });
 }
 
 describe('finishing a diagnosis a stopped invocation left pending', () => {
@@ -2246,7 +2385,11 @@ describe('finishing a diagnosis a stopped invocation left pending', () => {
     // runtime was not seen to end. Reopening the record is what an invocation
     // that stopped before finishing it left, and the restart has to read that
     // stop before it settles anything: the item still is not moved, and the
-    // unconfirmed stop keeps the intake lock instead of being skipped.
+    // unconfirmed stop keeps the intake lock instead of being skipped. A
+    // recorded rejection is not the actionable finding the comment's marker
+    // names, so that marker may not close the evidence as the repair it claims
+    // either: the record is settled as a diagnosis that leaves a person the
+    // next step, and no developer is started from the comment.
     const reopen = async (): Promise<void> => {
       const current = await evidenceRecordFor(workDir, PROJECT);
       const open = { ...current.record };
@@ -2276,7 +2419,7 @@ describe('finishing a diagnosis a stopped invocation left pending', () => {
     expect(record.moves).toEqual([{ from: 'In Progress', target: 'To Do' }]);
     expect(await fakeTurns(target.state)).toHaveLength(1);
     const settled = await evidenceRecordFor(workDir, PROJECT);
-    expect(settled.record['closed']).toBe('repair');
+    expect(settled.record['closed']).toBe('attention');
 
     // A record that cannot be read is refused the same way, and stays pending
     // for the person who has to inspect it before anything is settled.
@@ -3138,11 +3281,11 @@ describe('the next claim after a diagnosis', () => {
   it('stops for a person instead of starting a repair whose finding cannot be read back', async () => {
     const workDir = await createTempDir();
     const diagnosed = await diagnosedWorkspace(workDir);
-    // The evidence says the finding was published for repair, and the file the
-    // reviewer wrote it in is gone: the claim may not be told it, so no
-    // developer is started with the original task alone.
+    // The evidence says the finding was published for repair, and the outcome
+    // the reviewer turn recorded beside it is gone: the claim may not be told
+    // the finding, so no developer is started with the original task alone.
     const evidence = await evidenceRecordFor(workDir, PROJECT);
-    await rm(path.join(path.dirname(evidence.file), 'turn', 'finding.json'));
+    await rm(path.join(path.dirname(evidence.file), 'outcome.json'));
     const { context, runs, published, attentions, ticket } = continuedIntake({
       workDir,
       sourceRepo: diagnosed.sourceRepo,
@@ -3256,11 +3399,12 @@ describe('the next claim after a diagnosis', () => {
   it('starts no developer from a comment the retained record cannot vouch for', async () => {
     const workDir = await createTempDir();
     const diagnosed = await diagnosedWorkspace(workDir);
-    // The retained finding is gone, so there is nothing to hold the comment on
-    // the thread against: it says the whole finding, and an edited one would
-    // look exactly the same. The attempt may not start from either.
+    // The outcome the retained reviewer turn recorded is gone, so there is
+    // nothing to hold the comment on the thread against: it says the whole
+    // finding, and an edited one would look exactly the same. The attempt may
+    // not start from either.
     const evidence = await evidenceRecordFor(workDir, PROJECT);
-    await rm(path.join(path.dirname(evidence.file), 'turn', 'finding.json'));
+    await rm(path.join(path.dirname(evidence.file), 'outcome.json'));
     const { context, runs, published, attentions, ticket } = continuedIntake({
       workDir,
       sourceRepo: diagnosed.sourceRepo,

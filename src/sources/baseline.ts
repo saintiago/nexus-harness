@@ -35,10 +35,10 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { messageOf } from '../shared/errors.js';
-import { readBaselineFinding, readBaselineReviewerShutdown } from '../reviews/baseline.js';
+import { readBaselineOutcome } from '../reviews/baseline.js';
 import { BASELINE_GUIDANCE_PREFIX, FEEDBACK_DEADLINE_MS } from '../runs/contracts.js';
-import type { AgentTurnShutdown } from '../runs/contracts.js';
 import { unconfirmedShutdownProblem } from '../runs/progress.js';
+import type { BaselineOutcome } from '../reviews/baseline.js';
 import type { CheckRoundResult, CommandResult, SourceRef, Task } from '../shared/types.js';
 import type {
   BaselineDiagnosis,
@@ -127,6 +127,31 @@ function markerFor(
     }
   }
   return null;
+}
+
+/**
+ * What one marker on the item's thread is allowed to mean, held against the
+ * outcome the evidence's own reviewer turn recorded.
+ *
+ * The marker is a string, and anyone who can edit the issue can change it: it
+ * names the evidence a comment is about, never what that evidence's one turn
+ * produced. So a comment may return the item for repair, and the evidence may be
+ * closed as a repair, only while the recorded outcome beside it holds the
+ * actionable finding the marker names. A rejection, a record that is not there,
+ * and a record that cannot be read — which the caller refuses before this runs —
+ * all leave the item for a person instead, and nothing is promoted into a repair
+ * by a comment that does not even claim one.
+ */
+function corroboratedKind(
+  marker: 'repair' | 'attention',
+  recorded: BaselineOutcome | null,
+): 'repair' | 'attention' {
+  if (marker !== 'repair') {
+    return 'attention';
+  }
+  return recorded !== null && recorded.state === 'finding' && recorded.finding.outcome === 'repair'
+    ? 'repair'
+    : 'attention';
 }
 
 /**
@@ -808,12 +833,16 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
       // the thread: a rejection whose own process tree was not confirmed
       // stopped means something the reviewer runtime started may still be
       // writing, and the invocation that published the comment said so by
-      // keeping its lock. The record is read back here — never the turn run
-      // again — and a record that cannot be read is refused by name rather than
-      // rounded down to a confirmed stop.
-      let shutdown: AgentTurnShutdown | null;
+      // keeping its lock. That record decides the move as well: the marker is
+      // what anyone who can edit the issue can change, so the item returns for
+      // repair, and the evidence closes as one, only while the recorded outcome
+      // holds the actionable finding the marker names. The record is read back
+      // here — never the turn run again — and a record that cannot be read is
+      // refused by name rather than rounded down to a confirmed stop or to a
+      // repair the rejected turn never produced.
+      let recordedTurn: BaselineOutcome | null;
       try {
-        shutdown = await readBaselineReviewerShutdown(dir);
+        recordedTurn = await readBaselineOutcome(dir);
       } catch (cause) {
         return unfinished(
           stop,
@@ -824,8 +853,11 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
           false,
         );
       }
+      const kind = corroboratedKind(existing.kind, recordedTurn);
+      const shutdown =
+        recordedTurn !== null && recordedTurn.state === 'rejected' ? recordedTurn.shutdown : null;
       const unconfirmed = unconfirmedShutdownProblem(shutdown);
-      const target = existing.kind === 'repair' ? readyStatus : reviewStatus;
+      const target = kind === 'repair' ? readyStatus : reviewStatus;
       const moved = await move(item, target, stop);
       if ('problem' in moved) {
         return unfinished(
@@ -840,6 +872,11 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
         `${key}: this exact baseline evidence was already diagnosed (comment ` +
         `${existing.note.id}); no second reviewer turn was started and no second comment was ` +
         `written` +
+        (kind === existing.kind
+          ? ''
+          : `; the comment's own marker names a repair, but the outcome recorded for that ` +
+            `evidence is not the actionable finding it names, so the item is not returned to ` +
+            `"${readyStatus}" and no developer is started from that comment`) +
         (moved.moved
           ? `, and the item was moved to "${target}"`
           : `, and the item had already left its running status`) +
@@ -847,9 +884,9 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
           ? ''
           : `; everything the reviewer runtime started was not seen to end ` +
             `(${oneLine(unconfirmed)}), so the intake lock is kept`);
-      await finish(file, recorded, existing.kind);
+      await finish(file, recorded, kind);
       io.out(detail);
-      return existing.kind === 'repair'
+      return kind === 'repair'
         ? { kind: 'repair', detail, commentId: existing.note.id }
         : {
             kind: 'attention',
@@ -1088,10 +1125,14 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
         // own process tree was not confirmed stopped may still be writing, and
         // this route used to finish the record and report nothing. Read the
         // record before settling anything, and refuse one that cannot be read
-        // rather than rounding it down to a confirmed stop.
-        let shutdown: AgentTurnShutdown | null;
+        // rather than rounding it down to a confirmed stop. It is also what the
+        // marker is held to here, exactly as it is when the resume completes a
+        // move the earlier invocation did not make: a comment's marker — which
+        // anyone who can edit the issue can change — may not close evidence as
+        // the repair its own rejected turn never produced.
+        let recordedTurn: BaselineOutcome | null;
         try {
-          shutdown = await readBaselineReviewerShutdown(path.dirname(file));
+          recordedTurn = await readBaselineOutcome(path.dirname(file));
         } catch (cause) {
           io.err(
             `${key}: the baseline diagnosis retained under "${where}" is no longer in its ` +
@@ -1108,8 +1149,14 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
             false,
           );
         }
+        const shutdown =
+          recordedTurn !== null && recordedTurn.state === 'rejected' ? recordedTurn.shutdown : null;
         const unconfirmed = unconfirmedShutdownProblem(shutdown);
-        await finish(file, evidence, published?.kind ?? 'left-alone');
+        await finish(
+          file,
+          evidence,
+          published === null ? 'left-alone' : corroboratedKind(published.kind, recordedTurn),
+        );
         if (unconfirmed !== null) {
           io.err(
             `${key}: the baseline diagnosis retained under "${where}" is no longer in its ` +
@@ -1200,9 +1247,13 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
    * Reading back the finding one retained workspace was returned for repair
    * with. A claim that continues that workspace has to be told it, and the
    * item's own thread — the ordinary source of it — may not be readable or may
-   * not carry it, so this is the evidence's own record: the newest piece of
-   * this project's evidence whose workspace is that workspace and whose finding
-   * was published as a repair.
+   * not carry it, so this is the evidence's own record: the newest piece of this
+   * project's evidence whose workspace is that workspace and whose finding was
+   * published as a repair. What is handed over is the outcome the reviewer turn
+   * itself recorded there — never the turn's own finding file, which a rejected,
+   * stopped, or timed-out turn leaves looking exactly like a completed one — and
+   * a workspace whose record does not hold that accepted, actionable finding
+   * starts no developer.
    *
    * `none` means nothing was returned for repair and nothing has to be
    * recovered. `unreadable` means the workspace was returned for repair and
@@ -1280,18 +1331,37 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
     if (newest === undefined) {
       return { kind: 'none' };
     }
-    let finding: BaselineFinding;
+    let recorded: BaselineOutcome | null;
     try {
-      finding = await readBaselineFinding(newest.where);
+      recorded = await readBaselineOutcome(newest.where);
     } catch (cause) {
       return {
         kind: 'unreadable',
         detail:
           `the reviewed baseline finding of workspace "${workspaceId}" is required — its evidence ` +
-          `under "${newest.where}" says it was returned for repair — and cannot be read back: ` +
-          messageOf(cause),
+          `under "${newest.where}" says it was returned for repair — and the outcome its reviewer ` +
+          `turn recorded there cannot be read back: ${messageOf(cause)}`,
       };
     }
+    if (recorded === null || recorded.state !== 'finding') {
+      // The record says this workspace was returned for a repair, and what the
+      // reviewer turn itself recorded says no actionable finding was ever
+      // accepted for it — a rejection, or nothing recorded at all: a developer
+      // would be started from a finding file the turn's own ending rejected, so
+      // nothing is started and a person reads the two records.
+      return {
+        kind: 'unreadable',
+        detail:
+          `the reviewed baseline finding of workspace "${workspaceId}" is required — its evidence ` +
+          `under "${newest.where}" says it was returned for repair — and the outcome its reviewer ` +
+          `turn recorded there cannot be read back: it is ` +
+          (recorded === null
+            ? 'not there at all'
+            : `a rejection (${oneLine(recorded.problem)}), not an actionable finding`) +
+          ', so no developer may be started from it; inspect those two records by hand',
+      };
+    }
+    const finding = recorded.finding;
     if (finding.outcome !== 'repair') {
       // The record says this workspace was returned for a repair, and the
       // finding kept beside it says there is none to make: a developer would be
@@ -1301,9 +1371,9 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
         kind: 'unreadable',
         detail:
           `the reviewed baseline finding of workspace "${workspaceId}" is required — its evidence ` +
-          `under "${newest.where}" says it was returned for repair — but the finding kept beside ` +
-          'it is not an actionable one, so no developer may be started from it; inspect those two ' +
-          'records by hand',
+          `under "${newest.where}" says it was returned for repair — but the finding its reviewer ` +
+          'turn recorded is not an actionable one, so no developer may be started from it; inspect ' +
+          'those two records by hand',
       };
     }
     return { kind: 'finding', finding, evidenceId: newest.evidence.evidenceId };

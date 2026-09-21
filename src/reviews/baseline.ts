@@ -242,36 +242,49 @@ async function writeOutcomeRecord(file: string, record: BaselineOutcomeRecord): 
  * the record is what the earlier invocation wrote before it published anything,
  * and an unconfirmed stop there means everything that invocation started was not
  * seen to end, so the intake keeps its lock even though the comment is already
- * on the thread. A record this harness did not write, or cannot read, is refused
- * by name rather than rounded down to a confirmed stop.
+ * on the thread. So does a reader that has to decide what a marker on the item's
+ * thread may mean, which is {@link readBaselineOutcome}'s whole job: the marker
+ * is a string anyone who can edit the issue can change, and what the turn really
+ * produced is this record. A record this harness did not write, or cannot read,
+ * is refused by name rather than rounded down to a confirmed stop.
  */
 export async function readBaselineReviewerShutdown(dir: string): Promise<AgentTurnShutdown | null> {
-  const outcome = await readOutcomeRecord(outcomeRecordPath(dir));
+  const outcome = await readBaselineOutcome(dir);
   return outcome !== null && outcome.state === 'rejected' ? outcome.shutdown : null;
 }
 
 /**
- * The finding one completed reviewer turn left in the diagnosis's evidence
- * directory, read back and validated. It is the local half of what the ticket
- * was told, for a later claim whose own thread cannot supply it; a missing,
- * unreadable, or unusable file is refused by name rather than treated as no
- * finding at all, because the caller is deciding whether a developer may start
- * (docs/WORKFLOW.md §11).
+ * What one evidence's one reviewer turn produced, as a reader decides by it: the
+ * finding that turn completed with, or the problem that rejected it and the stop
+ * it left, or `null` when no turn recorded anything here.
+ *
+ * This is the record and not the turn's own `finding.json`: that file is exactly
+ * the same whether the turn wrote it and completed or wrote it and then failed,
+ * was stopped, or timed out, so reading it as a finding would upgrade a rejected
+ * turn into an actionable repair. A reader that has to decide what a marker on
+ * the item's thread may mean, or whether a workspace may be handed a finding a
+ * developer is required to repair, reads this instead — the marker names the
+ * evidence, never the outcome — and a record this harness did not write, or
+ * cannot read, is refused by name rather than treated as none (docs/WORKFLOW.md
+ * §11).
  */
-export async function readBaselineFinding(dir: string): Promise<BaselineFinding> {
-  const file = baselineFindingPath(dir);
-  let text: string;
-  try {
-    text = await readFile(file, 'utf8');
-  } catch (cause) {
-    throw new ReviewError(
-      'inconclusive',
-      `the baseline diagnostic's ${BASELINE_FINDING_FILE} at "${file}" could not be read: ` +
-        messageOf(cause),
-      { cause },
-    );
+export type BaselineOutcome =
+  | { readonly state: 'finding'; readonly finding: BaselineFinding }
+  | {
+      readonly state: 'rejected';
+      readonly problem: string;
+      readonly shutdown: AgentTurnShutdown | null;
+    };
+
+/** {@link BaselineOutcome}, read back from the evidence under `dir`. */
+export async function readBaselineOutcome(dir: string): Promise<BaselineOutcome | null> {
+  const outcome = await readOutcomeRecord(outcomeRecordPath(dir));
+  if (outcome === null) {
+    return null;
   }
-  return parseBaselineFinding(text, BASELINE_FINDING_FILE);
+  return outcome.state === 'finding'
+    ? { state: 'finding', finding: outcome.finding }
+    : { state: 'rejected', problem: outcome.problem, shutdown: outcome.shutdown };
 }
 
 /** How much of one ticket, one finding field, and one command's output is kept. */
