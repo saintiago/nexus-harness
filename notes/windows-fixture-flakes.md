@@ -348,3 +348,37 @@ Final verification of this repair:
 
 No live Jira, GitHub, or coding-agent exercise was run. Full-suite timeouts remain an open gap;
 passing isolated cases is not a substitute for the configured gate.
+
+### HARN-41 repair turn 3: the full-suite failures remain unresolved
+
+The retained checkout was clean at `711d191`. No production behavior, fixture, assertion,
+timeout, test selection in the configured gate, or build configuration was changed in this turn.
+Inspection of the Git launcher, workspace branch checks, delivery/completion commands, and
+fixture setup did not establish a safe correction for the supplied timeouts. In particular,
+isolated success does not establish that the host alone caused them.
+
+Verification on 2026-09-21:
+
+- `npm ci`: passed, 0 reported vulnerabilities.
+- `npx vitest run tests/delivery.test.ts tests/workspace.test.ts tests/completion.test.ts -t
+"finds the pull request it created|is returned to the recorded branch by fast-forwarding|bounds
+a merge that never finishes"`: all 3 selected tests passed, 185 deselected, 4.56 s.
+- `npm run validate`: format, lint, typecheck and build passed; tests exited 1 with 1,296 passed,
+  4 timed out and 2 existing skips (34 files, 177.58 s). The failures were the completion wait
+  across passes, workspace branch fast-forward, workspace fast-forward with configured squash,
+  and queue watch continuation without renaming. The delivery case supplied to this turn passed
+  in this full run. The timed-out workspace branch case also reported `EBUSY` while removing
+  its temporary workspace during cleanup.
+- `npx vitest run tests/history.test.ts tests/review-github.test.ts`: all 47 tests passed,
+  1.09 s.
+- `npx vitest run tests/delivery.test.ts tests/workspace.test.ts tests/completion.test.ts
+tests/queue-cli.test.ts -t "finds the pull request it created|is returned to the recorded
+branch by fast-forwarding|bounds a merge that never finishes|continues the workspace its
+pointer names under watch|fast-forwards the recorded branch even when Git configuration
+would squash"`: all 5 selected cases passed, 204 deselected, 5.26 s.
+
+As in turn 2, full validation and the subsequent focused runs removed only the tool shell's
+conflicting `FORCE_COLOR` override before invoking the commands. This does not change the
+configured gate. The commands above are wrapped across lines for readability; each was run as
+one command. No live Jira, GitHub, or coding-agent exercise was run. This is a record of an
+unresolved repair, not a claim that the timeouts were fixed or that the task passed.
