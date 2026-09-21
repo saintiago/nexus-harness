@@ -21,6 +21,12 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { runCheckRound } from '../src/checks/round.js';
 import type { CheckRoundRequest } from '../src/checks/round.js';
+import { HistoryError } from '../src/history/contract.js';
+import type {
+  HistoryPrepareRequest,
+  HistorySnapshot,
+  TicketHistory,
+} from '../src/history/contract.js';
 import { agentLogPath, appendRunLog, openAgentLog } from '../src/reporting/logs.js';
 import { writeRunReport } from '../src/reporting/report.js';
 import type { RunReportRequest } from '../src/reporting/report.js';
@@ -3900,6 +3906,100 @@ describe('what a run records about the working copy it left', () => {
     expect(timeline).toContain(`changes: unavailable, ${result.changes.problem}`);
     expect(timeline.join('\n')).not.toContain('the working copy matches the recorded base');
     expect(timeline.at(-1)).toMatch(/^final status: passed, /);
+  }, 60_000);
+});
+
+describe('the ticket conversation history before a coding turn', () => {
+  /** One prepared snapshot, as the runner hands it to a turn. */
+  const SNAPSHOT: HistorySnapshot = {
+    version: 1,
+    id: 'snapshot-1',
+    role: 'developer',
+    round: 1,
+    takenAt: '2026-09-21T10:00:00.000Z',
+    root: '/history',
+    dir: '/history/snapshots/snapshot-1',
+    indexPath: '/history/snapshots/snapshot-1/index.md',
+    indexJsonPath: '/history/snapshots/snapshot-1/index.json',
+    entriesPath: '/history/snapshots/snapshot-1/entries.jsonl',
+    reportsDir: '/history/reports',
+    brief: {
+      ref: SOURCE_REF,
+      task: TASK,
+      latestDelivery: null,
+      unresolved: null,
+      responses: [],
+      newHumanFeedback: [],
+    },
+    entries: [],
+    reports: [],
+    gaps: [],
+    mirrors: [],
+    sources: [],
+  };
+
+  it('prepares one snapshot before the turn and hands the turn its local paths', async () => {
+    const fixture = await createFixture();
+    const agent = fakeAgent(fixture, {
+      file: 'app.txt',
+      text: '\nnew line.',
+      mode: 'append',
+      commit: 'work',
+    });
+    const prepared: HistoryPrepareRequest[] = [];
+    const history: TicketHistory = {
+      prepare: async (asked) => {
+        prepared.push(asked);
+        return SNAPSHOT;
+      },
+    };
+
+    const result = await runTask(
+      { ...request(fixture, configuration(fixture)), sourceRef: SOURCE_REF, history },
+      dependencies(agent.turn),
+    );
+
+    expect(result.status).toBe('passed');
+    expect(prepared).toHaveLength(1);
+    expect(prepared[0]).toMatchObject({
+      role: 'developer',
+      round: 1,
+      ref: { id: SOURCE_REF.id },
+      workspace: { workspaceId: result.workspace?.workspaceId },
+    });
+    expect(agent.requests[0]?.history).toBe(SNAPSHOT);
+  }, 60_000);
+
+  it('starts no coding turn when the snapshot cannot be prepared', async () => {
+    const fixture = await createFixture();
+    const agent = fakeAgent(fixture, {
+      file: 'app.txt',
+      text: 'changed',
+      mode: 'replace',
+      commit: 'work',
+    });
+    const history: TicketHistory = {
+      prepare: async () => {
+        throw new HistoryError(
+          'essential',
+          'the history directory could not be written beside the workspace',
+        );
+      },
+    };
+
+    const result = await runTask(
+      { ...request(fixture, configuration(fixture)), sourceRef: SOURCE_REF, history },
+      dependencies(agent.turn),
+    );
+
+    expect(result.status).toBe('failed');
+    expect(result.reason).toContain('local conversation history could not be prepared');
+    expect(result.reason).toContain('the history directory could not be written');
+    expect(result.attempts).toHaveLength(0);
+    expect(agent.requests).toHaveLength(0);
+    // The run is still kept: its report says why the turn was not started.
+    const report = await readReport(result.reportPath);
+    expect(report.reason).toContain('local conversation history could not be prepared');
   }, 60_000);
 });
 

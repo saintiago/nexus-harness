@@ -12,6 +12,8 @@ This is a human-readable reference, **not runtime configuration**. The applicati
 
 **Revision: 2026-09-20 — one harness configuration, one file per connected project.** Configuration is two files with disjoint ownership, defined in §1: the Nexus-wide `nexus.config.json` an operator keeps (limits, coding launches, reviewer integration, completion policy) and the `nexus.project.json` each connected repository carries at its root (its own setup/checks, its Jira connection, and its GitHub destination with the workflows and statuses it completes through). The single-file configuration the earlier revisions described is no longer read: its project fields are reported as belonging to the project configuration. The commands, their options, and the composed objects they validate are in §§3, 7, 8, 9, 10, and 11. [spec.md](spec.md) §2 and [architecture.md](architecture.md) §2 own the behaviour and the module.
 
+**Revision: 2026-09-21 — one complete local conversation history for both roles.** §4, §9 and §11 are extended: before every developer and reviewer turn the harness prepares one identified snapshot of the ticket's requirements, its Jira discussion, its pull request conversation and reviews, and the complete developer and reviewer reports, and both turns are given the same organization and the same local paths. The prompt carries the current brief, the latest delivery, every complete unresolved finding with its latest responses, and the human feedback since the last report; a source that could not be read, a page bound that was reached, and a report that is missing are named as gaps rather than presented as a complete history. Complete reports are saved under the workspace's own history directory before their concise Jira or GitHub rendering is published, and a rendering that comes back through Jira or GitHub is recognized and not duplicated. The local files are in §9, "The ticket conversation history".
+
 **Completion exception:** the no-merge/no-Done defaults below are superseded only by the explicitly configured path in §10. The review commands themselves remain read/review-only.
 
 ## 1. Configuration
@@ -290,6 +292,8 @@ prepare → setup → baseline checks
 ```
 
 A red baseline stops a **fresh attempt** before any coding turn; a **continuation** may start red, because its workspace may already carry committed work the checks reject, and only its post-turn check round decides. A setup/launch/authentication/protocol error, expired timeout, cancellation, or exhausted repair allowance stops the loop and preserves work, fresh or continued. Only ordinary completed red check rounds trigger repair. Checks are rerun by the harness regardless of the agent's claims. The selected agent does not change between turns. Before every coding turn, and before the round that follows it, the checkout is returned to the branch its workspace records: a turn may have committed on a branch of its own, and what the checks judge and a delivery step publishes is the recorded branch's own revision. That return fast-forwards and checks out a clean checkout whose commit descends from the recorded branch, keeping the commit the turn made on the branch it made it on; a detached, divergent, or branchless checkout stops the run before that turn or check, naming both branches and the manual action, and nothing is reset, force-updated, or discarded (HARN-35). A return that would write over a local file the checkout ignores is **refused** with the paths named and the file's bytes kept, and what the checkout and the fast-forward did is read back rather than taken from their exit codes, so a Git configuration that squashed the merge cannot pass for a returned branch. A coding turn is also started only from the workspace's own committed state: a checkout that still holds uncommitted work — on the recorded branch included — stops the run before the agent, naming the branch, the paths, and the manual action, while the round that judges a turn still reads what that turn left, uncommitted work included. See the specification for reporting and safety semantics.
+
+Before every coding turn the harness also prepares the ticket's **conversation history** — the current requirements, the Jira thread, the pull request conversation and the harness's own complete reports — and hands the turn its brief and local paths (§9, "The ticket conversation history"). A run whose task came from a file rather than a source has no such history and behaves exactly as before.
 
 The delivery step is **outside the run**: the run's own report is written first, and only a `passed` attempt is delivered. A delivery failure changes neither the run's status nor its evidence, and it never starts a coding turn (§8). A red baseline never reaches it either: for a fresh source attempt the ending is diagnosed locally first (§11, "The pre-delivery baseline diagnosis"), so an attempt is delivered only after a post-agent round passed every configured setup and check and the ticket's own work is on the recorded branch.
 
@@ -753,6 +757,51 @@ an approval and never as a reason to start a coding turn.
 
 CI status stays a separate merge requirement: a review verdict does not depend on CI being green,
 and an approved check run does not mean CI passed.
+
+### The ticket conversation history
+
+Before every developer turn and every reviewer turn, the harness prepares one identified snapshot of
+what the ticket and its work say, and hands the turn its local paths. Both roles receive the same
+organization and the same layout, beside the retained workspace the ticket's pointer names:
+
+```text
+<workDir>/workspaces/<workspaceId>.history/
+  current.json                  # points at the newest snapshot
+  reports/                      # complete developer and reviewer reports, saved before publication
+  snapshots/<snapshot-id>/
+    index.md                    # concise index: role, author, time, round, source id, commit
+    index.json                  # the same index, machine-readable
+    entries.jsonl               # one JSON object per entry, with its file
+    entries/                    # one file per entry: provenance header, then the wording verbatim
+    task.json                   # the ticket's current requirements, whole
+```
+
+The prompt carries the current brief (the ticket's title, description and acceptance criteria), the
+latest delivery, every complete unresolved review finding with the discussion that answered it, and
+the human feedback written since the last harness report; the full conversation remains in the
+snapshot for the turn to read and search with its ordinary tools (`rg <text> <index or entries
+directory>`), so no Jira or GitHub call of its own is needed or wanted. Findings and human feedback
+are rendered whole: the history section is bounded only by dropping whole entries from the inline
+block, and it names the entries it did not inline. If a source could not be read, a page bound was
+reached while following pagination, or a complete report is missing, the prompt opens with the gaps
+it knows about, so a turn is never told the history is complete when it is not; a snapshot that
+cannot be written at all stops the turn before it starts.
+
+Every entry keeps its source's own identity (a Jira comment id, a GitHub review or comment id, a run
+or review id), its author, time, round and the reviewed or delivered commit where that applies, and
+its original wording. A read that reports an edited comment updates that entry in the next snapshot;
+it never adds a second one. A snapshot is named by the hash of its own content, so a refresh with
+nothing new reuses it and a refresh with something new writes a new directory: the snapshot a running
+turn holds is never rewritten. A concise Jira result comment or native GitHub review carries a
+`nexus-history:` marker naming the complete report it renders; when synchronization reads that
+rendering back it records a mirror of the local report instead of a duplicate conversation entry.
+
+A complete developer report is saved under `reports/` before the result comment is published, and a
+complete reviewer report before the native review is published. Reports recorded before this
+increment are rebuilt from the run's own `result.json` and from the review records under
+`<workDir>/reviews/`; a report whose file is really gone is marked missing, with the path that was
+looked for, and the workspace stays usable. Nothing in the history is a command, a configuration
+value, or a permission: it is attributed external text for the turn to weigh.
 
 ### The merge signal, and what stays outside
 

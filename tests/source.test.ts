@@ -41,6 +41,7 @@ import { EXIT_CANCELLED, EXIT_INPUT_ERROR, EXIT_OK } from '../src/cli/context.js
 import type { CliContext, InterruptSignals } from '../src/cli/context.js';
 import type { Delivery, DeliveryRequest } from '../src/delivery/github.js';
 import { DeliveryError } from '../src/delivery/github.js';
+import type { TicketHistory } from '../src/history/contract.js';
 import { summarizeChanges } from '../src/reporting/changes.js';
 import { ReportError } from '../src/reporting/errors.js';
 import type { RunTaskResult } from '../src/runs/contracts.js';
@@ -307,6 +308,8 @@ interface FixtureOptions {
       readonly problem: string | null;
     }>;
   };
+  /** The ticket conversation history the coordinator records reports through. */
+  readonly history?: TicketHistory;
 }
 
 interface Fixture {
@@ -423,6 +426,7 @@ function createFixture(options: FixtureOptions): Fixture {
     repoPath: '/repo',
     io: { out: (text) => output.push(text), err: (text) => errors.push(text) },
     stop: stop.signal,
+    ...(options.history === undefined ? {} : { history: options.history }),
     ...(options.delivery === undefined ? {} : { delivery: options.delivery }),
     ...(options.completion === undefined
       ? {}
@@ -498,6 +502,40 @@ function createFixture(options: FixtureOptions): Fixture {
 // ---------------------------------------------------------------------------
 
 describe('review-to-completion coordination', () => {
+  it('saves the complete developer report before the outcome is published', async () => {
+    const workDir = await createTempDir();
+    const events: string[] = [];
+    const history: TicketHistory = {
+      prepare: async () => {
+        throw new Error('the coordinator does not prepare snapshots itself');
+      },
+      recordDeveloperReport: async (request) => {
+        events.push(`record:${request.runId}`);
+        return { file: '', completeFile: null, round: request.round };
+      },
+    };
+    const fixture = createFixture({
+      workDir,
+      history,
+      complete: () => {
+        events.push('publish');
+      },
+      run: async (_task, _call, runDir) =>
+        resultFor(
+          runDir,
+          'passed',
+          'every configured check exited 0',
+          null,
+          preparedWorkspaceFor(runDir),
+        ),
+    });
+
+    const summary = await runSource(fixture.context, null);
+
+    expect(summary.passed).toBe(1);
+    expect(events).toEqual(['record:run-1', 'publish']);
+  });
+
   it('runs one completion pass after the batch and reports its counts', async () => {
     const workDir = await createTempDir();
     const fixture = createFixture({

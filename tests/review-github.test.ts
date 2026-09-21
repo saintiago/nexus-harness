@@ -55,6 +55,103 @@ function clientFixture(
 }
 
 describe('the review GitHub boundary', () => {
+  it('reads a paginated pull request conversation whole, in time order', async () => {
+    const reviews = Array.from({ length: 100 }, (_, index) => ({
+      id: index + 1,
+      user: { login: 'human-reviewer' },
+      state: 'COMMENTED',
+      body: `review ${String(index + 1)}`,
+      submitted_at: `2026-09-19T10:${String(index % 60).padStart(2, '0')}:00Z`,
+      commit_id: HEAD,
+      html_url: `https://github.com/owner/repo/pull/1#review-${String(index + 1)}`,
+    }));
+    const { client } = clientFixture((url) => {
+      if (url.pathname.endsWith('/pulls/1/reviews')) {
+        const page = Number(url.searchParams.get('page'));
+        if (page === 1) {
+          return reviews;
+        }
+        return [
+          {
+            id: 101,
+            user: { login: LOGIN },
+            state: 'CHANGES_REQUESTED',
+            body: 'blocking finding',
+            submitted_at: '2026-09-19T11:00:00Z',
+            commit_id: HEAD,
+            html_url: 'https://github.com/owner/repo/pull/1#review-101',
+          },
+        ];
+      }
+      if (url.pathname.endsWith('/issues/1/comments')) {
+        return [
+          {
+            id: 201,
+            user: { login: 'Jane Reviewer' },
+            body: 'Please keep the wording.',
+            created_at: '2026-09-19T12:00:00Z',
+            updated_at: '2026-09-19T12:05:00Z',
+            html_url: 'https://github.com/owner/repo/pull/1#issuecomment-201',
+          },
+        ];
+      }
+      if (url.pathname.endsWith('/pulls/1/comments')) {
+        return [
+          {
+            id: 301,
+            user: { login: LOGIN },
+            body: 'This line drops the page.',
+            created_at: '2026-09-19T12:30:00Z',
+            updated_at: '2026-09-19T12:30:00Z',
+            commit_id: HEAD,
+            path: 'src/a.ts',
+            line: 4,
+            html_url: 'https://github.com/owner/repo/pull/1#discussion_r301',
+          },
+        ];
+      }
+      return [];
+    });
+
+    const conversation = await client.readConversation(1, stop);
+
+    expect(conversation.truncated).toBe(false);
+    expect(conversation.entries).toHaveLength(103);
+    expect(conversation.entries[0]?.kind).toBe('review');
+    const last = conversation.entries.at(-1);
+    expect(last?.kind).toBe('review-comment');
+    expect(last?.path).toBe('src/a.ts');
+    expect(last?.line).toBe(4);
+    const issueComment = conversation.entries.find((entry) => entry.id === 201);
+    expect(issueComment?.kind).toBe('comment');
+    expect(issueComment?.updatedAt).toBe('2026-09-19T12:05:00Z');
+    const appReview = conversation.entries.find((entry) => entry.id === 101);
+    expect(appReview?.state).toBe('CHANGES_REQUESTED');
+    expect(appReview?.commitId).toBe(HEAD);
+  });
+
+  it('reports a conversation it could not read past the page bound', async () => {
+    const { client } = clientFixture((url) => {
+      if (url.pathname.endsWith('/pulls/1/reviews')) {
+        return Array.from({ length: 100 }, (_, index) => ({
+          id: index + 1,
+          user: { login: 'human-reviewer' },
+          state: 'COMMENTED',
+          body: 'note',
+          submitted_at: '2026-09-19T10:00:00Z',
+          commit_id: HEAD,
+          html_url: 'https://github.com/owner/repo/pull/1#review',
+        }));
+      }
+      return [];
+    });
+
+    const conversation = await client.readConversation(1, stop);
+
+    expect(conversation.truncated).toBe(true);
+    expect(conversation.entries).toHaveLength(2_000);
+  }, 60_000);
+
   it('renews the App token after an hour idle using only the installed Lens permissions', async () => {
     let clock = Date.parse('2026-09-20T12:00:00Z');
     let issued = 0;

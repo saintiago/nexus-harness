@@ -464,6 +464,15 @@ export function createTicketHistory(parts: TicketHistoryParts): TicketHistory {
         .map(reportSummaryOf)
         .filter((report): report is HistoryReportSummary => report !== null)
         .toSorted((a, b) => a.createdAt.localeCompare(b.createdAt));
+      for (const report of local.reports) {
+        if (report.kind === 'missing-report') {
+          gaps.push(
+            `the complete ${report.role} report` +
+              (report.round === null ? '' : ` of round ${String(report.round)}`) +
+              ` (${report.sourceId}) is not available: ${report.problem}`,
+          );
+        }
+      }
       for (const report of reports) {
         if (!report.complete && report.problem !== null) {
           gaps.push(

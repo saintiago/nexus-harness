@@ -400,6 +400,11 @@ completion, and never names a report that does not exist.
   workspaces/<workspaceId>/      the working copy: a clone, on branch harness/<workspaceId>
   workspaces/<workspaceId>.json  the workspace ledger: what it was cloned from, the item it was
                                  created for, and its attempts
+  workspaces/<workspaceId>.history/
+    current.json                 points at the newest conversation snapshot
+    reports/                     the complete developer and reviewer reports
+    snapshots/<snapshot-id>/     one immutable snapshot: index.md, index.json, entries.jsonl,
+                                 entries/ (one file per entry), and task.json
 ```
 
 A run ID is generated (`run-<UTC timestamp>-<8 hex>`) and never comes from task text, so no task can
@@ -434,6 +439,32 @@ git status                             # plus untracked and staged state
 `changes.highlighted` picks out the ones that touch **tests, tooling, or configuration**, because a
 change to those can change what the checks that decided the run actually did. `changes.warnings`
 records, in the report itself, what the run's status does and does not prove.
+
+### The ticket conversation history
+
+A source-backed ticket also keeps one local conversation history beside its workspace, prepared by
+the harness before every developer and reviewer turn and never fetched by an agent itself:
+
+```sh
+cat <workDir>/workspaces/<workspaceId>.history/current.json   # the newest snapshot
+cat <workDir>/workspaces/<workspaceId>.history/snapshots/<id>/index.md
+rg "<text>" <workDir>/workspaces/<workspaceId>.history/snapshots/<id>/entries/
+ls  <workDir>/workspaces/<workspaceId>.history/reports         # complete developer/reviewer reports
+```
+
+The index names each entry's role, author, time, round, source id, and the reviewed or delivered
+commit where it has one; each entry file holds its provenance header and the original wording
+below it, unchanged. The prompt a turn receives carries the current brief, the latest delivery, the
+complete unresolved review findings with their latest responses, and the human feedback since the
+last harness report; everything else stays in the snapshot for the turn to search. A complete
+developer report is saved under `reports/` before its Jira comment is published, and a complete
+reviewer report before its GitHub review is — a rendering that comes back through Jira or GitHub is
+recognized and not duplicated. A source the harness could not read, a pagination bound that was
+reached, and a report that is missing (an older workspace whose `result.json` or review record is
+gone) are named as gaps in the snapshot and in the prompt, so a turn is told what is incomplete
+instead of being started as though the history were whole. Snapshots are immutable: a refresh writes
+a new one and leaves the one a running turn holds exactly as it was. See
+[docs/WORKFLOW.md](docs/WORKFLOW.md) §9.
 
 ## `source`: tasks from a Jira queue
 
@@ -1260,6 +1291,18 @@ Read this before pointing a run at anything you care about.
   result comment, the per-issue receipt and the per-project intake lock, a finite `source run`, a watch
   cycle that picks up a later issue, and the behaviour of a stop, a failed feedback, and a corrupt
   receipt. Nothing in that suite needs a Jira site, a token, or a network.
+- the ticket conversation history, through temporary directories and faked readers: both role
+  prompts carrying the same organization and local paths, a finding past the old per-comment
+  budgets and past the reviewer verdict bound staying whole, a long history kept as one file per
+  entry while the inline block names what it did not fit, an edited comment updating its identity in
+  a new snapshot while the old snapshot is unchanged, pagination of both the Jira thread and the
+  pull request conversation (with a page bound that is reached reported as a gap), a locally saved
+  report mirrored back through Jira or GitHub not becoming a second entry, a restart reusing an
+  identical snapshot, a report the harness knows existed but cannot read marked missing rather than
+  invented — for a teammate's legacy workspace too, where the attempt's own `result.json` still
+  rebuilds it — and a snapshot that cannot be written stopping the turn before it starts. The
+  connector reads themselves are covered against fake HTTP boundaries; no live Jira or GitHub read
+  was made for this increment.
 - workspace continuation through the same fakes and real temporary Git repositories: a continued
   attempt reopening the workspace its pointer label names and keeping its recorded base, the
   per-attempt run directories and ledger, the escalation ladder's tiers — the tier's own launch, each
@@ -1679,21 +1722,22 @@ the same launch: the repair exercise in step 1 is already a later turn in one re
 `src/` is a small hierarchy of responsibility-based modules; [docs/module-structure.md](docs/module-structure.md)
 is the full tree, the placement rules, and the steps for adding a source or a runtime.
 
-| Module                    | Responsibility                                                                                                                |
-| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `src/cli.ts` + `src/cli/` | Arguments, help, exit codes, command dispatch, and top-level wiring. Owns all presentation.                                   |
-| `src/config/`             | The input schemas and their documented defaults, and reading/validating the two JSON inputs.                                  |
-| `src/shared/`             | The data contracts (data only: no imports, no runtime I/O) and the one message helper.                                        |
-| `src/process/`            | Starting one command or Git reading, its limit, and stopping its process tree.                                                |
-| `src/checks/`             | One setup/check round and what a command's result means.                                                                      |
-| `src/workspace/`          | Preflight, run directory allocation, the working copy, the ledger, and the change summary.                                    |
-| `src/runs/`               | The order the work happens in: baseline, turns, checks, repair, deadlines, the report.                                        |
-| `src/reporting/`          | `result.json`, the logs under `<runDir>/logs`, and the change summary.                                                        |
-| `src/sources/`            | The task-source contract, receipts, eligibility, guidance, and the serial coordinator.                                        |
-| `src/sources/jira/`       | The Jira Cloud connector: HTTP, search, reads, transitions, comments, the ADF reader.                                         |
-| `src/delivery/`           | The optional GitHub step: push a passed attempt's branch, create or update its pull request.                                  |
-| `src/reviews/`            | The optional Nexus Lens path: one scan or watch, the App installation, the reviewer turn, and the published review and check. |
-| `src/agents/codex/`       | The coding runtime: one turn through the Codex CLI, normalized for the runner.                                                |
+| Module                    | Responsibility                                                                                                                 |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `src/cli.ts` + `src/cli/` | Arguments, help, exit codes, command dispatch, and top-level wiring. Owns all presentation.                                    |
+| `src/config/`             | The input schemas and their documented defaults, and reading/validating the two JSON inputs.                                   |
+| `src/shared/`             | The data contracts (data only: no imports, no runtime I/O) and the one message helper.                                         |
+| `src/process/`            | Starting one command or Git reading, its limit, and stopping its process tree.                                                 |
+| `src/checks/`             | One setup/check round and what a command's result means.                                                                       |
+| `src/workspace/`          | Preflight, run directory allocation, the working copy, the ledger, and the change summary.                                     |
+| `src/runs/`               | The order the work happens in: baseline, turns, checks, repair, deadlines, the report.                                         |
+| `src/reporting/`          | `result.json`, the logs under `<runDir>/logs`, and the change summary.                                                         |
+| `src/sources/`            | The task-source contract, receipts, eligibility, guidance, and the serial coordinator.                                         |
+| `src/sources/jira/`       | The Jira Cloud connector: HTTP, search, reads, transitions, comments, the ADF reader.                                          |
+| `src/delivery/`           | The optional GitHub step: push a passed attempt's branch, create or update its pull request.                                   |
+| `src/reviews/`            | The optional Nexus Lens path: one scan or watch, the App installation, the reviewer turn, and the published review and check.  |
+| `src/history/`            | The ticket conversation snapshot both roles read, complete developer/reviewer report retention, and the shared prompt section. |
+| `src/agents/codex/`       | The coding runtime: one turn through the Codex CLI, normalized for the runner.                                                 |
 
 `src/cli.ts` (and `src/cli/`) depends on the modules below it; nothing depends on `cli.ts`. Helper
 modules never import the CLI, and `src/shared/types.ts` is data only. Both rules are enforced by

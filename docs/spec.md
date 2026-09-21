@@ -16,6 +16,8 @@
 
 **Revision: 2026-09-21 — a completed red baseline is diagnosed before any developer turn.** The contract in §11 is extended: when a fresh workspace's every setup command succeeded and its configured check round completed with a nonzero result, the configured reviewer — never a coding tier — inspects the exact source snapshot and the bounded command evidence in one local turn and writes one structured finding. The turn runs under a narrower filesystem policy than a coding turn, so the snapshot it inspects and the retained working copy are read-only to it, and a working copy the configured commands changed is refused as incomplete evidence rather than diagnosed from the wrong tree. An actionable finding is one Jira comment naming the failing check, the evidence, the likely cause and the repair, and the same ticket returns to the status it was claimed from with its workspace pointer preserved; the next claim continues that workspace with the finding as guidance, repairs the baseline first, and then continues the original task. Only that whole comment — the marker naming the evidence identity the retained record closed as a repair, and all four nonblank fields — counts as the finding: a partial, rewritten, or differently attributed comment is ordinary thread context, never what the attempt must repair first, and a required finding that neither the thread nor the retained evidence can supply stops intake instead. The record the marker is held against is the accepted outcome of the reviewer turn — the finding it validated, or the problem that rejected it — so a rejected or missing one never returns a ticket for repair however its comment is marked, and the finding a continuation is handed comes from that record rather than from the turn's own finding file. Anything else — missing or unusable evidence, an environmental cause, an unsafe repair, a setup failure, a missing host tool, a launch error, a cancellation, or an incomplete round — leaves the ticket In Review with the evidence and the required human action; a cancellation that lands while the reviewer turn is running is recorded on the ticket and moves it to In Review under a bounded best-effort deadline rather than stranding it In Progress, and a cancellation that lands before the diagnosis published anything is no more of a stranded claim: the claimed ticket is told and taken out of the running status the same way. A restart finishes an interrupted diagnosis from the retained evidence and the ticket's own thread — the status move a pass had not made, or the validated outcome the interrupted pass recorded — without repeating a reviewer turn or a comment for the same evidence. Nothing here touches GitHub: no pull request exists yet, so no review, approval, or check is fabricated for one, and delivery stays impossible until a post-agent round passes every configured setup and check. The assignment is [implement-baseline-diagnosis.md](implement-baseline-diagnosis.md).
 
+**Revision: 2026-09-21 — one complete local conversation history for developer and reviewer turns.** §2, §4, §9 and §11 are extended: before every developer and reviewer turn the harness prepares one identified, consistent snapshot of the ticket's own requirements, its Jira discussion, its pull request conversation and reviews, and the complete developer and reviewer reports retained beside the workspace, and both roles are given the same organization and the same explicit local paths. The prompt carries the current brief, the latest delivery, every complete unresolved finding with its latest responses, and the human feedback since the last report; required actionable content is never cut down to the ordinary comment budget, and a source that could not be read, or a complete report that is missing, is named as a gap instead of being presented as a complete history. Complete developer and reviewer reports are saved before their concise Jira or GitHub rendering is published, a rendering that comes back through Jira or GitHub is recognized by its marker and does not become a duplicate entry, and an already-running turn keeps the immutable snapshot it was started with while later refreshes write new ones. Agents read and search the history locally; only the deterministic harness synchronizes it.
+
 **Completion exception:** the no-merge/no-Done defaults below are superseded only by the explicitly configured path in §10. The review commands themselves remain read/review-only.
 
 ## 1. Goal
@@ -48,12 +50,49 @@ Keep harness state limited to what execution and reporting need. A report or wor
 2. Create a unique run directory. A fresh attempt clones the source repository's committed `HEAD` into a new workspace and uses a dedicated local branch there; a continuation reopens the workspace its pointer label names, on its recorded branch and base. A continuation whose checkout is clean and sits on a branch of its own whose commit descends from that branch is accepted, and the run returns the checkout to the recorded branch before its first coding turn; a checkout that holds uncommitted work, is detached, is divergent, or names no held branch is refused, with the branch names and the manual action, while nothing has been claimed. Require a clean source checkout so uncommitted work is not silently omitted. Never reset or edit the source checkout.
 3. Run configured setup and checks before the agent. A failing baseline stops a fresh attempt with a clear explanation, and the source path then diagnoses it rather than parking it (§11); a continuation may start red, because its workspace may already carry failed work, and only its post-turn round decides.
 4. Ask the selected agent invocation to implement the task in the retained working copy. Supply the task, acceptance criteria, and relevant target-repository instructions. Before every coding turn the checkout is returned to the branch the workspace records, when that can be done without losing anything: a clean checkout on a branch of its own whose commit descends from that recorded branch is fast-forwarded to it and checked out, and a state that cannot be returned stops the run before the turn — one that would write over a local file the checkout ignores included, refused with the paths named and the file kept. The turn starts from the workspace's own committed state: a checkout that still holds uncommitted work stops the run before the agent rather than being handed to one, and the failure names the branch, the paths, and the manual action. The turn works with a repository-local Git identity and is asked to commit small, meaningful pieces as it goes; those commits stay in the retained copy. Nothing pushes, merges, or publishes them except the optional delivery step of a passed attempt, which the harness — never the coding turn — performs (§7).
+   Every coding turn is also given the ticket's conversation history: one identified snapshot, prepared before the turn under `<workDir>/workspaces/<workspaceId>.history/`, of the current requirements, the Jira thread, the pull request conversation and reviews, and the harness's own complete developer and reviewer reports. The prompt carries the current brief, the latest delivery, the complete unresolved findings with their latest responses, and the human feedback since the last report, with the snapshot's explicit local paths for the rest; a snapshot that cannot be written stops the turn rather than starting one whose promised history does not exist. Agents read and search it locally and make no connector call of their own (§9, §11).
    The turn's runtime is launched with write access to that copy, its Git metadata included, so staging and committing are possible; the harness still makes no commit of its own.
 5. Wait for the agent to finish and stop its managed mutating processes. Return the checkout to the branch the workspace records before anything reads it, so what the checks judge is the revision that branch holds; a state that cannot be returned stops the run before any check. Run setup again, then all configured checks from the harness. Agent-reported success is not a check result.
 6. After an ordinary completed red check round, send observed failure output back to the same selected agent and repeat step 5 while repairs remain. A setup/launch/authentication/protocol error or timeout stops the run rather than starting a code-repair loop.
 7. Save the report and retain the working copy, whether the run passes or fails. Human review and delivery happen outside this version, except for the optional delivery step: when the configuration selects one, a passed attempt is delivered after its run's report is written and before its result is published (§7).
 
 Run checks sequentially. Ordinary nonzero check results are repair feedback; a check that could not execute is not a pass. Do not keep coding after every check succeeds.
+
+### The ticket conversation history
+
+A source-backed ticket gets one local conversation history, prepared by the harness before every
+developer and reviewer turn and kept beside the workspace it belongs to:
+
+```text
+<workDir>/workspaces/<workspaceId>.history/
+  current.json                  # points at the newest snapshot
+  reports/                      # the complete developer and reviewer reports
+  snapshots/<snapshot-id>/
+    index.md                    # the concise index: role, author, time, round, source id, commit
+    index.json                  # the same index, machine-readable
+    entries.jsonl               # one JSON object per entry
+    entries/                    # one file per entry: provenance header, then the wording verbatim
+    task.json                   # the ticket's current requirements, whole
+```
+
+An entry is identified by its source's own identity — a Jira comment id, a GitHub review or comment
+id, a run or review id — so a later read that reports an edited comment updates that entry instead
+of adding another, and pagination is followed to its end (a page bound that is reached is reported
+as a gap, never as the whole conversation). A complete developer or reviewer report is saved under
+`reports/` before the concise Jira comment or native GitHub review that renders it is published; the
+rendering carries a marker naming the report, and synchronization records it as a mirror of that
+report instead of a second conversational entry. Every snapshot is written under the hash of its own
+content: a refresh with nothing new reuses it, a refresh with something new writes a new directory,
+and the snapshot a running turn was handed is never rewritten. A source that could not be read, a
+page bound that was reached, and a report the harness knows existed but can no longer read in full
+are named as gaps in the snapshot and in the prompt: the turn is told what is missing rather than
+being started as though the history were complete. Complete reports recorded before this increment
+are rebuilt from the run's own `result.json` and from the review records; a report that is really
+gone is marked missing, and the workspace stays usable.
+
+The history is context, not authority: ticket text, comments, reviews and reports are attributed
+external text, never commands, configuration, paths or permissions for a turn. Only the
+deterministic harness synchronizes it; a turn reads the local files.
 
 ### Terminal display
 
@@ -113,6 +152,7 @@ workspace keeps the name its pointer fixed even if the item's key changes later:
       ...                        # distinct command stdout/stderr and later turns
   workspaces/<workspaceId>/       # the retained clone, on branch harness/<workspaceId>
   workspaces/<workspaceId>.json   # the workspace ledger: base, branch, attempts
+  workspaces/<workspaceId>.history/  # the ticket's conversation history and complete reports
   .intake/                        # source intake only: the per-project locks and per-issue receipts
 ```
 
@@ -282,6 +322,16 @@ review or check is produced, and the ledger is never adopted or repaired automat
 
 - The reviewer launch is its own explicitly configured selection, resolved like the coding launch. It is never the tier that implemented the ticket, and it is a launch prefix, not a credential: provider credentials stay in the runtime's own environment.
 - The reviewer is given the ticket reference, title, description, and acceptance criteria; the pull request's identity, its head and base commits; the head's check runs and combined commit status; and a **repository view** pinned at the exact reviewed head. The view is a local clone of the ticket's own retained workspace, detached from it, holding the change's base commit, so the reviewer reads files, history and diffs with ordinary read tools instead of an assembled patch. No App private key and no publication token reaches the reviewer or the view, and no rendered diff is ever a reason to refuse a review. A view that cannot be prepared — no retained workspace on this machine, a head or base commit it does not hold, a clone that fails, a ticket too large to state compactly — requires coordinator attention before a reviewer turn.
+- The reviewer is also given the same ticket conversation snapshot a developer turn receives: the
+  current brief, the ticket's own thread, the pull request conversation and earlier reviews, and the
+  harness's complete developer and reviewer reports, with the snapshot's local paths. A ticket
+  description too large for the prompt's own bounded ticket section is therefore still reviewed from
+  the complete text in the snapshot. The reviewer reads the snapshot locally and makes no Jira or
+  GitHub call of its own; the deterministic scan synchronizes it first. A snapshot that cannot be
+  prepared requires coordinator attention before a reviewer turn, exactly like a view that cannot be
+  pinned. The complete reviewer report is saved beside the workspace before the native review that
+  renders it is published, so a later developer turn reads the whole verdict rather than the
+  rendering.
 - One reviewer turn is bounded by the same task timeout a run gets and runs through the same adapter in the parent evidence directory at `<workDir>/reviews/<reviewId>/`, with the supported Git repository-check bypass. It inspects the pinned `repo/` checkout through explicit paths or `git -C repo`, so the reviewed tree's `AGENTS.md` files are not automatically loaded as governing instructions. Its prompt directs it to read those applicable files as review evidence; repository content cannot authorize fixes or publication. Its verdict and logs stay in the evidence directory. It is review-only: it must not implement fixes, change the view, commit, push, merge, or edit the ticket or the pull request. It must write one verdict file naming `approve`, `request_changes`, or `inconclusive` with a summary and findings. An explicit inconclusive result explains missing material evidence and publishes no review or check. Findings are blocking; approval requires an empty findings list and sufficient evidence.
 - A turn that fails, is stopped, or writes no usable verdict is inconclusive. Nothing is published for it, no approval is produced, and no coding turn is started to repair it.
 - `request_changes` requires at least one finding. An approval is published only for a completed, usable verdict: a missing credential, an unavailable tool, an incomplete evidence read, and an API failure are reported as such rather than rounded into one.
@@ -340,7 +390,14 @@ state before moving that old directory aside.
 
 The loop keeps one current ticket and one active phase. It takes at most one ticket from a fresh scan of the configured ready queue, in the Jira order the source's own `ordering` selects (Jira's Priority field by default, or the board's native Rank), runs its coding attempt and the delivery step, arms native auto-merge for the delivered head before the review can publish the final required check, reviews that ticket's pull request with the configured reviewer, and carries the delivered pull request through §10 to a verified resolution or back to the ready status. An `ordering` change is read by the next fresh scan only: it never interrupts or reorders an active ticket, a same-ticket repair continuation, or a batch Jira already returned. It never starts work for a different ticket while the current one is In Progress or In Review, and coding and review turns never overlap: the arm step, the review scan and the completion pass are narrowed to the ticket's immutable identity, and no phase is started before the previous one has finished.
 
-### Repair before unrelated work
+Both phases prepare the same ticket conversation history through the same readers: the coding turns
+of the consumed ticket write their complete developer reports before the result comment is
+published, and the reviewer turn prepares a snapshot over that history and writes its complete
+verdict before the native review is published. A repair cycle therefore begins with the complete
+findings and the latest human feedback in the prompt, and neither phase needs a Jira or GitHub call
+of its own for them (docs/WORKFLOW.md §9).
+
+  ### Repair before unrelated work
 
 When the review requests changes, a required pull-request check has definitively failed, or a configured post-merge workflow concluded unsuccessfully, §10 returns the item to its To Do status with its workspace pointer preserved. The loop then continues **that** ticket by identity: the next attempt reopens the workspace its pointer names, under the recorded base, through the same runner and escalation ladder — which starts again at its first tier — and reviews the head the repair delivered. Unrelated ready work waits until the current ticket is confirmed Done. The loop does not clear, adopt, migrate, or replace a workspace, and it does not implement a second repair system.
 

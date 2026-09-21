@@ -719,6 +719,16 @@ export async function readLocalReports(parts: {
     if (!sameTicket(record['ref'], ref)) {
       continue;
     }
+    const reviewed = record['pullRequest'];
+    if (
+      typeof reviewed === 'object' &&
+      reviewed !== null &&
+      typeof (reviewed as Record<string, unknown>)['headBranch'] === 'string' &&
+      (reviewed as Record<string, unknown>)['headBranch'] !== `harness/${workspaceId}`
+    ) {
+      // A review of another workspace's draft is not this workspace's history.
+      continue;
+    }
     const reviewId = typeof record['reviewId'] === 'string' ? record['reviewId'] : null;
     if (reviewId === null) {
       continue;

@@ -354,13 +354,20 @@ function retryAfterMs(header: string | null, now: Date): number | null {
 
 /**
  * The GitHub App client: one installation token, cached until it is close to
- * expiring, and the repository reads and writes the scan needs.
+ * expiring, and the repository reads and writes the scan needs. The conversation
+ * read is part of this client even though the repository boundary keeps it
+ * optional for callers that only fake the parts a scan itself uses.
  */
+export type GitHubReviewClient = ReviewRepository & {
+  installationToken(stop: AbortSignal): Promise<string>;
+  readConversation(number: number, stop: AbortSignal): Promise<PullRequestConversation>;
+};
+
 export function createGitHubReviewClient(
   config: GitHubReviewConfig,
   privateKeyPem: string,
   parts: Partial<GitHubReviewParts> = {},
-): ReviewRepository & { installationToken(stop: AbortSignal): Promise<string> } {
+): GitHubReviewClient {
   const doFetch: typeof fetch =
     parts.fetch ?? ((input, init) => globalThis.fetch(input as string, init));
   const now = parts.now ?? ((): Date => new Date());

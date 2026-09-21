@@ -84,6 +84,20 @@ reviewer stop down to a confirmed one. [spec.md](spec.md) §11 defines the behav
 [WORKFLOW.md](WORKFLOW.md) §11 the finding and comment contract, and
 [implement-baseline-diagnosis.md](implement-baseline-diagnosis.md) the assignment.
 
+**Revision: 2026-09-21 — one complete local conversation history.** `src/history/` owns the one
+identified snapshot a developer or reviewer turn reads: `contract.ts` declares the entries, the
+brief and the snapshot, `store.ts` writes each snapshot under the hash of its own content and moves
+`current.json` atomically, `reports.ts` keeps the complete developer and reviewer reports before any
+rendering is published (and marks one it knows existed but cannot read), `sync.ts` reads the
+connector boundary, deduplicates by source identity, recognizes a published rendering of a local
+report, and builds the brief, and `prompt.ts` renders the one section both role prompts carry. The
+module imports no connector: `src/cli/history.ts` composes its readers from the Jira connector and
+the GitHub App client, and hands the same object to the coding coordinator and the review scan.
+`src/sources/coordinator.ts` records a complete developer report before its Jira comment is
+published; `src/reviews/scan.ts` records a complete reviewer report before its native review is
+published. [spec.md](spec.md) §2, §4, §9 and §11 define the behavior and
+[WORKFLOW.md](WORKFLOW.md) §9 the local layout.
+
 ## 1. Keep the existing application
 
 Retain the modules introduced by the completed tasks:
@@ -102,6 +116,7 @@ src/
   sources/jira/       # the Jira Cloud connector
   delivery/           # the optional GitHub step: push a passed attempt, manage its pull request
   reviews/            # the optional Nexus Lens review path: verdicts, GitHub App reviews and checks
+  history/            # the ticket conversation snapshot both roles read, and complete report retention
   queue/              # the serial control loop over the modules above, one ticket at a time
   agents/codex/       # Codex CLI invocation and normalized turn results
 ```
