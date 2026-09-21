@@ -1093,12 +1093,20 @@ the reviewer turn runs, and the outcome the turn produced is recorded beside it 
 once the turn has ended: the validated finding, or the problem that rejected the turn. That record
 is what an invocation interrupted before the comment resumes from, so a finding a failed or stopped
 turn left in its own file is never published as if the turn had completed, and a turn that left no
-recorded outcome is not diagnosed again either. A resume that finds the comment already on the
-issue reads the recorded reviewer stop back from that outcome before it moves anything, instead of
+recorded outcome is not diagnosed again either. The marker on the thread names the evidence; that
+record is what the marker is held against, and what the next claim is handed. So the item returns
+to its ready status, and the evidence is closed as a repair, only while the outcome beside it holds
+the actionable finding the marker names — an edited marker on a rejected turn can never return the
+ticket for a repair its own turn never produced — and the finding a continuation is handed is the
+actionable finding recorded there, never the turn's own finding file. A resume that finds the
+comment already on the issue reads the recorded reviewer stop back from that outcome before it
+moves anything, instead of
 assuming one: an unconfirmed one keeps the intake lock there exactly as it did when the finding was
 first published, and a record that cannot be read is refused by name rather than rounded down. The
 same read happens when the item has already left the running status and only its retained record is
-being reconciled: an unconfirmed stop keeps the intake lock there too, and a record that cannot be
+being reconciled — there, too, the record settles the closure, so an item a person left In Review
+is not finished as the repair a comment's marker claims — and an unconfirmed stop keeps the intake
+lock there too, while a record that cannot be
 read is refused by name instead of being settled. A resume with more than one record pending stops
 at the first unconfirmed shutdown instead of starting another reviewer turn, and a result that needs
 a person dominates an actionable one beside it. The
@@ -1114,8 +1122,9 @@ the intake lock, in a `source` command and in the queue both, because something 
 started may still be writing. A turn interrupted before it wrote a finding is not run again
 for the same evidence, and the item stays In Review with what a person must do. An item a person has
 moved is left exactly where that person left it; a record this harness left unfinished after it
-really made the move is reconciled with the finding the item’s own thread already carries, so that
-workspace’s next claim is still told it.
+really made the move is reconciled with the finding the item’s own thread already carries — held
+against the accepted outcome that record keeps, so a rejection beside it is never settled as a
+repair — and that workspace’s next claim is still told the finding when there really is one.
 
 A stop that arrives while the reviewer turn is running is not a window where the claimed ticket is
 abandoned: the turn’s interruption is what this evidence’s one comment records, and the item is
@@ -1123,8 +1132,11 @@ moved to `reviewStatus` with it. That one comment and one move run under their o
 best-effort deadline rather than the aborted stop they were given — the same bound an interrupted
 run’s own result gets — so the ticket is never left in the running status with nothing looking for
 it, and an unconfirmed reviewer shutdown keeps the intake lock exactly as it does anywhere else. A
-stop the caller asked for *before* the turn began still writes nothing: the record is not on the
-issue yet, and the next invocation’s own recovery finishes it.
+stop the caller asked for *before* the turn began writes no diagnosis: when the invocation had
+already recorded its evidence, the next invocation’s own recovery finishes it; and when the stop
+reached the diagnosis before anything was published at all, the ticket the attempt claimed is not
+left behind — it is told on its own thread, and taken out of the running status, under the same
+short best-effort deadline, so it is never left in the running status with nothing looking for it.
 
 ### Exits
 

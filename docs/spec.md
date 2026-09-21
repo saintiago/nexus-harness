@@ -14,7 +14,7 @@
 
 **Revision: 2026-09-20 — a repair turn stays on the recorded branch.** A coding turn can commit on a branch of its own and leave the checkout there. Before every coding turn, and before the round that judges it, the checkout is returned to the branch its workspace ledger records when that can be done without losing anything: a clean checkout whose commit descends from that branch is fast-forwarded to it and checked out, so a continuation and a repair turn work on the branch the workspace owns, and the checks and a delivery step are about one revision. The return never writes over a local file the checkout ignores — Git is asked not to overwrite one, and a return that would is refused with the paths Git named — and what the checkout and the fast-forward did is read back rather than taken from their exit codes, so a Git configuration that squashed the merge cannot pass a staged working copy off as a returned branch. A coding turn is also started only from the workspace's own committed state: a checkout that still holds uncommitted work — on the recorded branch included — stops the run before the agent, with the branch, the paths, and the manual action. A detached, divergent, or branchless checkout stops as well; nothing is reset, force-updated, or discarded, and §7's exact-revision delivery refusal is unchanged. The workspace contract is in [implement-workspace-continuation.md](implement-workspace-continuation.md).
 
-**Revision: 2026-09-21 — a completed red baseline is diagnosed before any developer turn.** The contract in §11 is extended: when a fresh workspace's every setup command succeeded and its configured check round completed with a nonzero result, the configured reviewer — never a coding tier — inspects the exact source snapshot and the bounded command evidence in one local turn and writes one structured finding. The turn runs under a narrower filesystem policy than a coding turn, so the snapshot it inspects and the retained working copy are read-only to it, and a working copy the configured commands changed is refused as incomplete evidence rather than diagnosed from the wrong tree. An actionable finding is one Jira comment naming the failing check, the evidence, the likely cause and the repair, and the same ticket returns to the status it was claimed from with its workspace pointer preserved; the next claim continues that workspace with the finding as guidance, repairs the baseline first, and then continues the original task. Only that whole comment — the marker naming the evidence identity the retained record closed as a repair, and all four nonblank fields — counts as the finding: a partial, rewritten, or differently attributed comment is ordinary thread context, never what the attempt must repair first, and a required finding that neither the thread nor the retained evidence can supply stops intake instead. Anything else — missing or unusable evidence, an environmental cause, an unsafe repair, a setup failure, a missing host tool, a launch error, a cancellation, or an incomplete round — leaves the ticket In Review with the evidence and the required human action; a cancellation that lands while the reviewer turn is running is recorded on the ticket and moves it to In Review under a bounded best-effort deadline rather than stranding it In Progress. A restart finishes an interrupted diagnosis from the retained evidence and the ticket's own thread — the status move a pass had not made, or the validated outcome the interrupted pass recorded — without repeating a reviewer turn or a comment for the same evidence. Nothing here touches GitHub: no pull request exists yet, so no review, approval, or check is fabricated for one, and delivery stays impossible until a post-agent round passes every configured setup and check. The assignment is [implement-baseline-diagnosis.md](implement-baseline-diagnosis.md).
+**Revision: 2026-09-21 — a completed red baseline is diagnosed before any developer turn.** The contract in §11 is extended: when a fresh workspace's every setup command succeeded and its configured check round completed with a nonzero result, the configured reviewer — never a coding tier — inspects the exact source snapshot and the bounded command evidence in one local turn and writes one structured finding. The turn runs under a narrower filesystem policy than a coding turn, so the snapshot it inspects and the retained working copy are read-only to it, and a working copy the configured commands changed is refused as incomplete evidence rather than diagnosed from the wrong tree. An actionable finding is one Jira comment naming the failing check, the evidence, the likely cause and the repair, and the same ticket returns to the status it was claimed from with its workspace pointer preserved; the next claim continues that workspace with the finding as guidance, repairs the baseline first, and then continues the original task. Only that whole comment — the marker naming the evidence identity the retained record closed as a repair, and all four nonblank fields — counts as the finding: a partial, rewritten, or differently attributed comment is ordinary thread context, never what the attempt must repair first, and a required finding that neither the thread nor the retained evidence can supply stops intake instead. The record the marker is held against is the accepted outcome of the reviewer turn — the finding it validated, or the problem that rejected it — so a rejected or missing one never returns a ticket for repair however its comment is marked, and the finding a continuation is handed comes from that record rather than from the turn's own finding file. Anything else — missing or unusable evidence, an environmental cause, an unsafe repair, a setup failure, a missing host tool, a launch error, a cancellation, or an incomplete round — leaves the ticket In Review with the evidence and the required human action; a cancellation that lands while the reviewer turn is running is recorded on the ticket and moves it to In Review under a bounded best-effort deadline rather than stranding it In Progress, and a cancellation that lands before the diagnosis published anything is no more of a stranded claim: the claimed ticket is told and taken out of the running status the same way. A restart finishes an interrupted diagnosis from the retained evidence and the ticket's own thread — the status move a pass had not made, or the validated outcome the interrupted pass recorded — without repeating a reviewer turn or a comment for the same evidence. Nothing here touches GitHub: no pull request exists yet, so no review, approval, or check is fabricated for one, and delivery stays impossible until a post-agent round passes every configured setup and check. The assignment is [implement-baseline-diagnosis.md](implement-baseline-diagnosis.md).
 
 **Completion exception:** the no-merge/no-Done defaults below are superseded only by the explicitly configured path in §10. The review commands themselves remain read/review-only.
 
@@ -385,7 +385,10 @@ comment that carries the marker with the exact evidence identity the retained re
 repair, all four nonblank fields, and *every one of those fields equal to the finding that record
 holds* is that finding: the marker names the evidence, never the text, so a partial quotation, an
 edited comment, or a marker without an identity is ordinary thread context, never promoted to what
-the attempt has to repair first. A required finding nothing can supply — the retained record cannot
+the attempt has to repair first — and what that record holds is the accepted outcome of the
+reviewer turn, not the finding file a rejected, stopped, or timed-out turn may have left behind, so
+a workspace is returned for repair and hands a finding on only while the recorded outcome is the
+actionable one the marker names. A required finding nothing can supply — the retained record cannot
 be read back, so there is nothing to hold the thread's comment against — starts no developer: the
 claimed ticket is told why on its own thread, under the same bounded best-effort
 deadline an interrupted run's result gets, and is taken out of the running status with its workspace
@@ -404,7 +407,10 @@ cancellation that lands while the reviewer turn is running is recorded rather th
 ticket the attempt claimed still gets that one comment and that one move to In Review under the
 same bounded best-effort deadline an interrupted run's own result gets, so it is never left In
 Progress with nothing looking for it — and an unconfirmed reviewer shutdown still keeps the intake
-lock there.
+lock there. A cancellation that reaches the diagnosis before it published anything is no more of a
+stranded claim: the ticket the attempt claimed is told on its own thread and taken out of the
+running status under the same bounded best-effort deadline, so no cancellation leaves a claimed
+ticket In Progress with nothing looking for it.
 
 This pre-delivery diagnosis is recorded in Jira only. There is no pull request yet, so nothing is
 reviewed, approved, or checked on GitHub for it; the harness fabricates no pull-request review, no
@@ -413,7 +419,13 @@ restart that finds the same evidence — the same immutable item, the same snaps
 configured commands with the same results — starts no second reviewer turn and writes no second
 comment, and completes only the step the interrupted pass had not made: the status move for a finding
 that is already on the thread, or the publication of the validated outcome the interrupted pass
-recorded under the output directory. That record, one per piece of evidence, is written before
+recorded under the output directory. That step is the one the accepted outcome asks for, not the one
+a marker names: evidence is closed as a repair, and a ticket returned to its ready status, only
+while the documented outcome holds the actionable finding the marker names, so a comment whose
+marker was edited onto a rejected turn can never promote it into a repair — and a workspace whose
+evidence was closed for a repair without that outcome, or with a rejection beside it, hands no
+finding on and starts no developer from the turn's own file. That record, one per piece of
+evidence, is written before
 anything is published and holds either the finding the turn produced or the problem that rejected
 the turn — so a restart never reads the turn's own finding file as if a failed, stopped, or
 timed-out turn had completed, and a turn that left no recorded outcome is not diagnosed again
@@ -441,7 +453,9 @@ consumer. A reviewer turn that was interrupted before it wrote a finding is not 
 same evidence: the item stays In Review with the retained evidence and what a person must do. An item
 a person has moved in the meantime is left exactly where that person left it; a record this harness
 left unfinished after it really made the move is reconciled with the finding the item's own thread
-already carries, so that workspace's next claim is still told it.
+already carries — held against the accepted outcome the record keeps, so a rejection beside it is
+never settled as a repair — so that workspace's next claim is still told it when there really is
+one to hand over.
 
 ### Source readiness between tickets
 

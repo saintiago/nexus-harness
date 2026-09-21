@@ -292,7 +292,9 @@ read from the checkout `--repo` names, so the repository a run clones describes 
    comment for the same evidence, and never the finding file a turn that then failed left behind. A
    stop that lands while the reviewer turn is running is recorded rather than dropped: that one
    comment and that one move run under their own bounded best-effort deadline, so the claimed
-   ticket is never left In Progress with nothing looking for it. A
+   ticket is never left In Progress with nothing looking for it; a stop that reaches the diagnosis
+   before it published anything is no different — the claimed ticket is told and taken out of the
+   running status under that same deadline. A
    log file the diagnosis cannot read is incomplete evidence, not a check that said nothing: the
    ticket stays In Review with the paths named, and no reviewer turn is started from it; a refusal
    reached there still carries a stop the evidence's own record already holds as unconfirmed — the
@@ -305,6 +307,9 @@ read from the checkout `--repo` names, so the repository a run clones describes 
    and repeats every field of the finding that record holds counts as coming from the thread — a
    marker names the evidence, never the text, so an edited comment is not it; a partial, edited, or
    differently attributed comment is context, and the recorded finding is handed over in its place.
+   That record is the accepted outcome the reviewer turn produced, never the turn's own finding
+   file, so a ticket returns to To Do only while the outcome really holds the actionable finding a
+   marker names — an edited marker on a rejected turn never returns it for repair.
    A required finding nothing can supply starts no developer: the claimed ticket is told why on its
    own thread and taken out of the running status with its workspace pointer preserved, so it is
    never left in progress with nothing looking for it.

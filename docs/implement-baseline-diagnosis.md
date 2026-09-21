@@ -89,7 +89,13 @@ never settled: the item stays In Review with the evidence and what a person must
 keeps its lock for inspection while the runtime may still be writing. A restart that finds the
 finding already on the issue reads the recorded stop back from that record before it moves anything,
 instead of assuming the reviewer ended: an unconfirmed stop keeps the lock there too, and a record
-that cannot be read is refused by name rather than rounded down to a confirmed one.
+that cannot be read is refused by name rather than rounded down to a confirmed one. That record
+decides the move as well: the comment's marker names the evidence and never the outcome, so the item
+returns for repair, and the evidence is closed as a repair, only while the recorded outcome holds
+the actionable finding the marker names — an edited marker on a rejected turn cannot promote it into
+one — and the finding a continuation is handed is the recorded outcome, never the turn's own
+finding file, which a turn that failed, was stopped, or timed out leaves looking exactly like a
+completed one.
 
 **What happens next.** An actionable finding is recorded as exactly one comment on the issue,
 carrying the marker `nexus-baseline:repair:<evidence>` and the four things above, and the issue
@@ -151,7 +157,9 @@ a record this harness left unfinished after it really made the move is reconcile
 the item's own thread carries, so that workspace's next claim is still told it. That reconciliation
 reads the recorded reviewer stop back first, exactly as a deduplicated finding does: a record that
 says the runtime was not seen to end — or one that cannot be read — keeps the intake lock instead of
-being settled. A resume with more than one record pending stops at the first unconfirmed shutdown
+being settled; and the same record is what settles the closure, so a marker no accepted actionable
+outcome stands behind is never finished as the repair it claims. A resume with more than one record
+pending stops at the first unconfirmed shutdown
 instead of spending a second reviewer turn, and a result that needs a person dominates any
 actionable one beside it. One `workDir` serves
 several connected projects, and the project is
@@ -165,8 +173,11 @@ the item the attempt claimed is moved to `reviewStatus` with it, under the same 
 deadline an interrupted run's own result gets rather than the aborted stop that ended the turn.
 That one comment and one move are the whole of it — no coding turn, no repair guessed at — and an
 unconfirmed reviewer shutdown keeps the intake lock exactly as it does anywhere else. A stop the
-caller asked for *before* the turn began still writes nothing: nothing is on the issue yet, and the
-next invocation's own recovery finishes what that one recorded.
+caller asked for *before* the turn began writes no diagnosis: when the invocation had already
+recorded its evidence, the next invocation's own recovery finishes it; and when the stop reached the
+diagnosis before anything was published at all, the ticket the attempt claimed is not left behind —
+it is told on its own thread, and taken out of the running status, under the same short best-effort
+deadline, so no cancellation leaves a claimed ticket In Progress with nothing looking for it.
 
 ## Modules
 
@@ -177,7 +188,10 @@ next invocation's own recovery finishes what that one recorded.
   project's own namespace, so one `workDir` can serve several projects — the step that finishes what
   a previous invocation left pending, reconciling a record this harness left unfinished after its
   own move with the finding the item's thread carries, and the read-back of a finding a continuation
-  is required to be told — with the identity that read-back publishes, and with the whole-comment
+  is required to be told: every one of those reads holds a marker against the outcome the evidence's
+  own reviewer turn recorded, so a rejected turn's finding file never returns a ticket for repair,
+  never closes evidence as one, and is never handed to a continuation — with the identity that
+  read-back publishes, and with the whole-comment
   check that decides whether a comment of the thread is that same finding or ordinary context — and
   the one reading of a resume outcome its callers share: what stops an
   intake, and whether everything the diagnosis started was confirmed stopped, so a batch, a watch
@@ -185,6 +199,8 @@ next invocation's own recovery finishes what that one recorded.
 - `src/reviews/baseline.ts` — the one reviewer turn over the snapshot clone, its prompt, and the
   finding file it validates, the outcome record it writes before anything is published and reuses on
   a restart — the validated finding, or the problem that rejected the turn, with the turn's own stop
+  — which a reader — the phase's marker read, its resume reconciliation, and the read-back a
+  continuation is given — reads back as the one answer to what this evidence's turn really produced
   — the snapshot checks that hold the turn to the tree the checks really ran against, and the
   bounded reading of the evidence: a log that cannot be read is refused by name instead of rendered
   as a check that said nothing.
@@ -216,6 +232,10 @@ code lives and what owns what.
   written, an interrupt that really lands while the reviewer turn is running is recorded as the
   attention comment that moves the ticket to In Review — with the lock kept when that turn could not
   confirm its own stop, and with a restart then spending neither a second turn nor a second comment —
+  and a rejected turn whose published comment was re-marked as a repair returning the item to In
+  Review instead, never to its ready status, while the workspace's next claim is handed no finding
+  from that turn's own file and a retained record that claims a repair beside a rejection is refused
+  by name rather than believed —
   a failed comment or move moves nothing, and a thread that cannot be read starts no turn;
   the reviewer turn through the real view and the stand-in runtime, over a disposable repository
   whose failing baseline is real — the prompt carries the commands, the bounded output and the
@@ -255,7 +275,13 @@ code lives and what owns what.
   a continuation that starts red, and a post-agent red round do not, no diagnosis configured keeps
   the old publication, a red result is never delivered, and a diagnosis that reports an unconfirmed
   reviewer stop keeps the intake lock where a confirmed one releases it, as does a discovery that
-  reports the same; the next claim through the real
+  reports the same — and a stop that lands between the completed red run and the diagnosis, before
+  anything was published, leaving no claimed ticket behind either: the ticket is told and taken out
+  of the running status under the bounded deadline, a stop that landed after the diagnosis published
+  its one comment writes no second record and leaves the missing move to the next invocation, a stop
+  that lands as the pre-review thread is read takes the claimed ticket out of the running status the
+  same way, and a ticket that could not be told after the stop stops intake with the claimed state
+  named; the next claim through the real
   `reopenWorkspace` and a real ledger, where the developer's guidance carries both the earlier
   attempt and every field of the reviewed finding — and the requirement, asserted in the developer's
   own prompt, that the baseline is repaired before the original task continues — on a later rung of the same climb as well as on

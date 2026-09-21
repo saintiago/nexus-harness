@@ -71,12 +71,12 @@ src/
     progress.ts                   (152)  timeline lines, reasons, and the counts they carry
     feedback.ts                   (30)   the failed commands one repair turn is given
   sources/
-    contract.ts                   (766)  TaskSource, the ordinary source data and errors, pointer labels
+    contract.ts                   (775)  TaskSource, the ordinary source data and errors, pointer labels
     receipts.ts                   (238)  the per-project intake lock and one receipt per attempted item
     eligibility.ts                (81)   what an item is: a first attempt, a continuation, or a refusal
     guidance.ts                   (92)   what an attempt is told, bounded: the finding, the thread, attempts
-    baseline.ts                   (1313) the pre-delivery diagnosis: its evidence, one comment, one move
-    coordinator.ts                (1772) runSource and watchSource: discovery, the ladder, publication
+    baseline.ts                   (1384) the pre-delivery diagnosis: its evidence, one comment, one move
+    coordinator.ts                (1804) runSource and watchSource: discovery, the ladder, publication
     list.ts                       (88)   the read-only `source list` preview
     jira/
       connector.ts                (48)   createJiraSource: the wiring of the functions below
@@ -98,7 +98,7 @@ src/
     github.ts                     (726)  the App JWT, the installation token, and the repository calls
     diff.ts                       (134)  the pull request's diff, and where a finding is positioned
     reviewer.ts                   (402)  the reviewer prompt, the one bounded turn, and the verdict file
-    baseline.ts                   (1193) the pre-delivery reviewer turn, its prompt, and its outcome record
+    baseline.ts                   (1206) the pre-delivery reviewer turn, its prompt, and its outcome record
     scan.ts                       (790)  one scan or watch: eligibility, dedup, publishing, evidence
   queue/
     loop.ts                       (488)  the serial control loop: one current ticket, one phase at a time
@@ -310,8 +310,11 @@ further would separate one decision from itself: `runs/runner.ts` (the loop), `s
   so a deduplicated finding never releases a lock its own record says to keep — the
   `resume` step that finishes what an invocation left pending before anything is discovered or
   claimed, which reconciles a record this harness left unfinished after its own status move with the
-  finding the item's own thread carries, and the read-back of a finding a continuation is required
-  to be told — with the identity it was published for, and with the whole-comment check that decides
+  finding the item's own thread carries — settled only as the outcome record really says, so a
+  rejected turn's finding file closes nothing as a repair — and the read-back of a finding a
+  continuation is required
+  to be told, which is that same recorded outcome rather than the turn's own file — with the
+  identity it was published for, and with the whole-comment check that decides
   whether a comment of the thread is that same finding, field for field, rather than an edited
   comment that kept the marker — through the reviewer and record functions it
   is handed — and `resumeStop`, the one
@@ -415,7 +418,9 @@ further would separate one decision from itself: `runs/runner.ts` (the loop), `s
   clone and the retained working copy to the tree the checks really ran against, the outcome
   record it writes before anything is published — the validated finding, or the problem that
   rejected the turn, with the turn's own stop — which a restart reuses instead of the turn's
-  finding file, and the strict reader of the `finding.json` that turn has to write in its own
+  finding file and which every reader of what that evidence produced reads back, so a marker on the
+  item's thread and a continuation's required finding are both held to what the turn really
+  recorded, and the strict reader of the `finding.json` that turn has to write in its own
   writable working directory. A refusal reached before that turn carries the stop the evidence's
   record already holds — and a record that cannot be read at all fails closed by name — so no
   refusal can round an unconfirmed stop down to a confirmed one.
@@ -431,7 +436,7 @@ further would separate one decision from itself: `runs/runner.ts` (the loop), `s
   (`reviews/reviewer.ts`); `scanReviews`, `watchReviews`, `allocateReviewDirectory`
   (`reviews/scan.ts`); `diffPosition`, `positionFindings` (`reviews/diff.ts`);
   `createBaselineReviewer`, `baselinePrompt`, `baselineFailures`, `parseBaselineFinding`,
-  `baselineFindingPath`, `readBaselineFinding`, `readBaselineReviewerShutdown`,
+  `baselineFindingPath`, `readBaselineOutcome`, `readBaselineReviewerShutdown`,
   `BASELINE_FINDING_FILE`,
   `BASELINE_TURN_DIRECTORY` (`reviews/baseline.ts`).
 
