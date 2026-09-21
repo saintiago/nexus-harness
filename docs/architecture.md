@@ -378,9 +378,13 @@ reading that no longer approves the current head — with a fresh read of the ex
 request and head. Every one of those readings goes through the pass's own read retry
 policy, and `DeliveryError.retryable` marks the ones a transient failure left
 indeterminate, so a transient failure repeats a read inside the item deadline and never
-replays a mutation. A required-check command that wrote no check result is classified
-from that answer rather than from its exit code, and a closed, moved, or unapproved
-merged result is a terminal report rather than an assumption.
+replays a mutation. A read recorded as `timed-out` is indeterminate by that outcome, even when
+the stalled command wrote nothing, and only a read the caller's stop ended is not repeated; the
+guards in front of the resolution comment and the status move read under the deadline the pass
+already holds for the item. A required-check command that wrote no check result is classified
+from that answer rather than from its exit code, `sources/completion.ts` records the PR/head of
+a merge GitHub made before the pass ever requested one before it verifies that merge, and a
+closed, moved, or unapproved merged result is a terminal report rather than an assumption.
 
 The serial queue adds no owner to that list: `queue/loop.ts` is sequencing only, and the
 arm operation, the review scan and the completion pass take an optional one-ticket scope so

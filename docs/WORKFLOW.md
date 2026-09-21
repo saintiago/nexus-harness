@@ -881,6 +881,19 @@ Every command a pass runs writes its output under `<workDir>/completion-logs/<id
 
 A read GitHub could not answer this moment — a server-side failure, a rate limit, or a timeout — is read again with `pollIntervalSeconds` as backoff, bounded by the item's own `deadlineSeconds`; a refusal GitHub meant, a malformed answer, and the deadline itself are not retried. That includes every reading taken around a mutation: the fresh eligibility read before the request, the read that reconciles whatever the request answered, and the required-check read, whose command reports a red or pending check through its exit code — a `gh pr checks` run that wrote no check result is an unanswerable read and not a failed check. An auto-merge mutation is never replayed, whatever the failure looked like: a lost response is settled by reading the pull request, not by sending the request again.
 
+A read the harness itself stopped at its command limit is one of those unanswerable reads: it is
+recorded as `timed-out`, a stalled command may leave no diagnostic line at all, and its own outcome —
+never the empty log — is what classifies it, so it is repeated inside the item deadline instead of
+stopping the item for a person, while a read the run's own stop ended is not retried. The reads that
+guard the resolution comment and the status move are bounded by the item deadline the pass already
+holds, so neither write mints a fresh budget after that deadline has passed. A merge the pass
+discovers without ever having requested auto-merge — GitHub can merge the reviewed head while the
+gate is read, or between the eligibility read and the request — is recorded as the same PR/head
+admission before the pass verifies it or writes anything for the item, so a resolution comment whose
+status move failed is resumed by the next pass instead of leaving the item unresolvable; a record of
+that exact PR/head already there keeps the wait start it carries, and a merge whose identity cannot be
+recorded is reported for a person rather than concluded.
+
 Completion evidence and auto-merge admissions use a hash of the source type, canonical site,
 immutable item ID, and lowercase GitHub owner/repository. Equal Jira IDs from different sites or
 destinations cannot share logs, temporary files, admissions, or restart deadlines. A legacy
