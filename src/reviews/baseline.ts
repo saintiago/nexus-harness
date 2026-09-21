@@ -16,13 +16,16 @@
  * the turn. What comes back is not agent prose to be interpreted: it is one JSON
  * file the turn writes, validated here. A turn that fails, is stopped, writes
  * nothing usable, or leaves its view changed has no finding, and the diagnosis
- * then records what is missing instead of guessing at a repair.
+ * then records what is missing instead of guessing at a repair. The same holds
+ * before the turn: a log file the diagnosis cannot read now is incomplete
+ * evidence, not a check that said nothing, so no reviewer is shown it as if it
+ * were whole.
  */
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { runCodexPrompt } from '../agents/codex/adapter.js';
 import { selectedCodexRuntime } from '../agents/codex/runtime.js';
-import { openEvidenceLog, readCommandOutput } from '../reporting/logs.js';
+import { openEvidenceLog, readCommandOutputEvidence } from '../reporting/logs.js';
 import type { AgentLog } from '../reporting/logs.js';
 import { messageOf } from '../shared/errors.js';
 import { firstLine, listPaths, runGit } from '../workspace/git.js';
@@ -61,6 +64,30 @@ export const BASELINE_TURN_DIRECTORY = 'turn';
 /** The file one baseline reviewer turn writes its finding to. */
 export function baselineFindingPath(dir: string): string {
   return path.join(dir, BASELINE_TURN_DIRECTORY, BASELINE_FINDING_FILE);
+}
+
+/**
+ * The finding one completed reviewer turn left in the diagnosis's evidence
+ * directory, read back and validated. It is the local half of what the ticket
+ * was told, for a later claim whose own thread cannot supply it; a missing,
+ * unreadable, or unusable file is refused by name rather than treated as no
+ * finding at all, because the caller is deciding whether a developer may start
+ * (docs/WORKFLOW.md §11).
+ */
+export async function readBaselineFinding(dir: string): Promise<BaselineFinding> {
+  const file = baselineFindingPath(dir);
+  let text: string;
+  try {
+    text = await readFile(file, 'utf8');
+  } catch (cause) {
+    throw new ReviewError(
+      'inconclusive',
+      `the baseline diagnostic's ${BASELINE_FINDING_FILE} at "${file}" could not be read: ` +
+        messageOf(cause),
+      { cause },
+    );
+  }
+  return parseBaselineFinding(text, BASELINE_FINDING_FILE);
 }
 
 /** How much of one ticket, one finding field, and one command's output is kept. */
@@ -110,17 +137,36 @@ export interface BaselineFailure {
  * successfully — a setup command that did not succeed would have stopped the
  * round as an execution error — so the failures are the checks that did not exit
  * `0`.
+ *
+ * A log the diagnosis cannot read is not a check that said nothing: the
+ * evidence is incomplete, and the reviewer is not shown it as if it were whole.
+ * The caller is told which files could not be read and publishes no finding for
+ * this evidence.
  */
 export async function baselineFailures(
   round: CheckRoundResult,
-): Promise<readonly BaselineFailure[]> {
+): Promise<
+  | { readonly kind: 'failures'; readonly failures: readonly BaselineFailure[] }
+  | { readonly kind: 'incomplete'; readonly problem: string }
+> {
   const failures: BaselineFailure[] = [];
   for (const result of round.checks) {
     if (!succeeded(result)) {
-      failures.push({ result, output: await readCommandOutput(result) });
+      const evidence = await readCommandOutputEvidence(result);
+      if (evidence.output === null) {
+        return {
+          kind: 'incomplete',
+          problem:
+            `the output the failing check ${describeCommand(result.command)} wrote cannot be read ` +
+            `(${listPaths(evidence.unreadable)}), so this diagnosis has incomplete evidence: the ` +
+            'failing check cannot be shown from what was recorded, and no finding is published ' +
+            'from it',
+        };
+      }
+      failures.push({ result, output: evidence.output });
     }
   }
-  return failures;
+  return { kind: 'failures', failures };
 }
 
 /**
@@ -617,7 +663,15 @@ async function baselineTurn(
   const logPath = path.join(request.dir, BASELINE_REVIEWER_LOG);
   const turnDir = path.join(request.dir, BASELINE_TURN_DIRECTORY);
   const findingPath = baselineFindingPath(request.dir);
-  const failures = await baselineFailures(request.baseline);
+  // The evidence has to be readable before anything else is decided: a log the
+  // diagnosis cannot read is incomplete evidence, and the ticket stays In Review
+  // for a person with the missing paths named instead of being handed a finding
+  // this diagnosis cannot show to be about the failing check.
+  const evidence = await baselineFailures(request.baseline);
+  if (evidence.kind === 'incomplete') {
+    return { summary: null, finding: null, problem: evidence.problem, logPath };
+  }
+  const failures = evidence.failures;
 
   // The diagnosis's own evidence directory is created before the first step
   // that writes into it: the clone below needs its parent to exist, and a

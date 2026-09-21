@@ -465,6 +465,7 @@ async function queueCommand(options: QueueCommandOptions, context: CliContext): 
           readyStatus: sourceConfig.readyStatus,
           reviewStatus: sourceConfig.reviewStatus,
           reviewerTimeoutMs: config.taskTimeoutMinutes * 60_000,
+          project: lockNamespace,
           workDir,
           io: sourceIo,
         });

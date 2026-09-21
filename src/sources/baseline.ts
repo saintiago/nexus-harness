@@ -35,6 +35,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { messageOf } from '../shared/errors.js';
+import { readBaselineFinding } from '../reviews/baseline.js';
 import type { CheckRoundResult, CommandResult, SourceRef, Task } from '../shared/types.js';
 import type {
   BaselineDiagnosis,
@@ -46,6 +47,7 @@ import type {
   BaselineReview,
   BaselineReviewResult,
   BaselineResumeOutcome,
+  BaselineReviewedFinding,
   SourceIo,
   SourceNote,
 } from './contract.js';
@@ -194,11 +196,39 @@ export function baselineGuidanceLines(text: string): readonly string[] {
       if (!line.startsWith(prefix)) {
         continue;
       }
-      const field = `${label.charAt(0).toLowerCase()}${label.slice(1)}`;
-      lines.push(`reviewed baseline finding — ${field}: ${line.slice(prefix.length)}`);
+      lines.push(findingGuidanceLine(label, line.slice(prefix.length)));
     }
   }
   return lines;
+}
+
+/** One labelled field of a reviewed finding, as the line a later attempt reads. */
+function findingGuidanceLine(label: string, value: string): string {
+  const field = `${label.charAt(0).toLowerCase()}${label.slice(1)}`;
+  return `reviewed baseline finding — ${field}: ${value}`;
+}
+
+/**
+ * The same reviewed finding, read back from the evidence instead of from the
+ * comment that carries it, as the same guidance lines: each field bounded
+ * exactly as the comment bounds it, so a developer who cannot be handed the
+ * thread is handed the same finding the thread would have given them
+ * (docs/WORKFLOW.md §11).
+ */
+export function baselineFindingGuidanceLines(finding: BaselineFinding): readonly string[] {
+  const labelled: readonly (readonly [string, string])[] =
+    finding.outcome === 'repair'
+      ? [
+          [REPAIR_FIELD_LABELS[0], finding.failingCheck],
+          [REPAIR_FIELD_LABELS[1], finding.evidence],
+          [REPAIR_FIELD_LABELS[2], finding.likelyCause],
+          [REPAIR_FIELD_LABELS[3], finding.repairGuidance],
+        ]
+      : [
+          [ATTENTION_FIELD_LABELS[0], finding.reason],
+          [ATTENTION_FIELD_LABELS[1], finding.requiredAction],
+        ];
+  return labelled.map(([label, value]) => findingGuidanceLine(label, oneLine(value)));
 }
 
 /** The file one pending diagnosis keeps what a restart resumes from. */
@@ -217,6 +247,14 @@ export interface BaselineEvidence {
   readonly version: 1;
   /** The evidence identity; also the name of the directory this record lives in. */
   readonly evidenceId: string;
+  /**
+   * The connected project the evidence belongs to: the namespace
+   * `src/config/load.ts` derives from the composed connection identity, the same
+   * one the project's intake lock is named by. One `workDir` serves several
+   * connected projects, and neither reads, finishes, nor publishes the other's
+   * evidence (docs/WORKFLOW.md §11).
+   */
+  readonly project: string;
   readonly ref: SourceRef;
   /** The task the baseline failed under, as the item was prepared for it. */
   readonly task: Task;
@@ -233,14 +271,17 @@ export interface BaselineEvidence {
   readonly closedAt?: string;
 }
 
-/** Where one diagnosis keeps its evidence: `<workDir>/baseline/<evidenceId>`. */
-function evidenceDirectory(workDir: string, evidenceId: string): string {
-  return path.join(workDir, 'baseline', evidenceId);
+/**
+ * Where one diagnosis keeps its evidence:
+ * `<workDir>/baseline/<project>/<evidenceId>`.
+ */
+function evidenceDirectory(workDir: string, project: string, evidenceId: string): string {
+  return path.join(workDir, 'baseline', project, evidenceId);
 }
 
 /** The record file of one piece of evidence. */
-function evidenceFile(workDir: string, evidenceId: string): string {
-  return path.join(evidenceDirectory(workDir, evidenceId), BASELINE_EVIDENCE_FILE);
+function evidenceFile(workDir: string, project: string, evidenceId: string): string {
+  return path.join(evidenceDirectory(workDir, project, evidenceId), BASELINE_EVIDENCE_FILE);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -269,9 +310,11 @@ function evidenceProblem(file: string, problem: string): SourceError {
  * hold a record this harness wrote is refused by name. Treating a corrupt record
  * as "nothing pending" is exactly how a diagnosis that never finished would be
  * forgotten, and the item left in the running status with nothing looking for
- * it.
+ * it. The record has to be one this connected project wrote: evidence of
+ * another project under the same output directory is refused rather than
+ * finished or published through this project's connection.
  */
-async function readEvidence(file: string): Promise<BaselineEvidence | null> {
+async function readEvidence(file: string, project: string): Promise<BaselineEvidence | null> {
   let text: string;
   try {
     text = await readFile(file, 'utf8');
@@ -292,18 +335,26 @@ async function readEvidence(file: string): Promise<BaselineEvidence | null> {
     throw evidenceProblem(file, 'is not a record this harness wrote');
   }
   const evidenceId = textField(value, 'evidenceId');
+  const recordProject = textField(value, 'project');
   const ref = value['ref'];
   const task = value['task'];
   const workspace = value['workspace'];
   const baseline = value['baseline'];
   if (
     evidenceId === null ||
+    recordProject === null ||
     !isRecord(ref) ||
     !isRecord(task) ||
     !isRecord(workspace) ||
     !isRecord(baseline)
   ) {
     throw evidenceProblem(file, 'does not hold the item, task, workspace, and round it describes');
+  }
+  if (recordProject !== project) {
+    throw evidenceProblem(
+      file,
+      'was written for another connected project than the one reading it',
+    );
   }
   const refFields = ['type', 'scope', 'id', 'key', 'url', 'updatedAt'].map((name) =>
     textField(ref, name),
@@ -356,6 +407,7 @@ async function readEvidence(file: string): Promise<BaselineEvidence | null> {
   return {
     version: 1,
     evidenceId,
+    project: recordProject,
     ref: sourceRef,
     task: {
       id: taskId,
@@ -393,8 +445,12 @@ async function writeEvidence(file: string, evidence: BaselineEvidence): Promise<
  * on what was published — and one that cannot be read back is reported by the
  * caller rather than overwritten with a record this harness did not write.
  */
-async function closeEvidence(file: string, closed: BaselineEvidence['closed']): Promise<void> {
-  const current = await readEvidence(file);
+async function closeEvidence(
+  file: string,
+  project: string,
+  closed: BaselineEvidence['closed'],
+): Promise<void> {
+  const current = await readEvidence(file, project);
   if (current === null) {
     return;
   }
@@ -413,13 +469,16 @@ async function closeEvidence(file: string, closed: BaselineEvidence['closed']): 
 }
 
 /**
- * Every record one diagnosis has kept under `workDir`, oldest name first. They
- * are read in that fixed order so a resume is deterministic; each one is
- * skipped as soon as it says it finished, so a resolved diagnosis costs one read
- * and no remote call.
+ * Every record the connected `project` has kept under `workDir`, oldest name
+ * first. They are read in that fixed order so a resume is deterministic; each
+ * one is skipped as soon as it says it finished, so a resolved diagnosis costs
+ * one read and no remote call. Only this project's own evidence directory is
+ * read: a `workDir` serves several connected projects, and starting one of them
+ * must never enumerate, finish, or publish another's pending evidence
+ * (docs/WORKFLOW.md §11).
  */
-async function evidenceFiles(workDir: string): Promise<readonly string[]> {
-  const root = path.join(workDir, 'baseline');
+async function evidenceFiles(workDir: string, project: string): Promise<readonly string[]> {
+  const root = path.join(workDir, 'baseline', project);
   let entries;
   try {
     entries = await readdir(root, { withFileTypes: true });
@@ -455,6 +514,15 @@ export interface BaselineDiagnosisParts {
    * that never answers cannot hold the intake open.
    */
   readonly reviewerTimeoutMs: number;
+  /**
+   * The connected project this diagnosis belongs to: the namespace the
+   * composed configuration derives from its own connection identity, the same
+   * one its intake lock is named by (`projectLockNamespace` in
+   * `src/config/load.ts`). It names the evidence directory under `workDir`, so
+   * two connected projects sharing one output directory never read, finish, or
+   * publish each other's pending diagnoses (docs/WORKFLOW.md §11).
+   */
+  readonly project: string;
   /** `<workDir>`: where the diagnosis's own evidence directories are kept. */
   readonly workDir: string;
   readonly io: SourceIo;
@@ -465,7 +533,8 @@ export interface BaselineDiagnosisParts {
  * for every red baseline that command observes.
  */
 export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): BaselineDiagnosis {
-  const { reviewer, record, readyStatus, reviewStatus, reviewerTimeoutMs, workDir, io } = parts;
+  const { reviewer, record, readyStatus, reviewStatus, reviewerTimeoutMs, project, workDir, io } =
+    parts;
 
   /**
    * One outcome for a step that did not finish: a stop the caller asked for is
@@ -505,7 +574,7 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
     closed: BaselineEvidence['closed'],
   ): Promise<void> => {
     try {
-      await closeEvidence(file, closed);
+      await closeEvidence(file, project, closed);
     } catch (cause) {
       io.err(
         `${evidence.ref.key}: the baseline diagnosis is on the issue, but its retained evidence ` +
@@ -541,8 +610,8 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
     const { item, workspace, baseline, stop } = request;
     const key = item.ref.key;
     const evidenceId = baselineEvidenceId(item.ref, workspace.baseCommit, baseline);
-    const dir = evidenceDirectory(workDir, evidenceId);
-    const file = evidenceFile(workDir, evidenceId);
+    const dir = evidenceDirectory(workDir, project, evidenceId);
+    const file = evidenceFile(workDir, project, evidenceId);
 
     if (stop.aborted) {
       return {
@@ -558,7 +627,7 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
     // recomputed from everything the diagnosis acts on — and is reused.
     let recorded: BaselineEvidence | null;
     try {
-      recorded = await readEvidence(file);
+      recorded = await readEvidence(file, project);
     } catch (cause) {
       return unfinished(stop, `${key}: ${messageOf(cause)}`, null);
     }
@@ -566,6 +635,7 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
       const evidence: BaselineEvidence = {
         version: 1,
         evidenceId,
+        project,
         ref: item.ref,
         task: item.task,
         workspace: {
@@ -746,7 +816,7 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
 
     let files: readonly string[];
     try {
-      files = await evidenceFiles(workDir);
+      files = await evidenceFiles(workDir, project);
     } catch (cause) {
       return { kind: 'problem', detail: messageOf(cause) };
     }
@@ -765,7 +835,7 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
       }
       let evidence: BaselineEvidence | null;
       try {
-        evidence = await readEvidence(file);
+        evidence = await readEvidence(file, project);
       } catch (cause) {
         return { kind: 'problem', detail: messageOf(cause) };
       }
@@ -826,5 +896,97 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
     };
   };
 
-  return { diagnose, resume };
+  /**
+   * Reading back the finding one retained workspace was returned for repair
+   * with. A claim that continues that workspace has to be told it, and the
+   * item's own thread — the ordinary source of it — may not be readable or may
+   * not carry it, so this is the evidence's own record: the newest piece of
+   * this project's evidence whose workspace is that workspace and whose finding
+   * was published as a repair.
+   *
+   * `none` means nothing was returned for repair and nothing has to be
+   * recovered. `problem` means either that a required finding cannot be read
+   * back — its file is gone or unusable — or that the evidence cannot be read
+   * clearly enough to say which of the two this is, and both leave the caller
+   * stopping rather than starting a developer without the finding.
+   */
+  const reviewedFinding = async (
+    workspaceId: string,
+    stop: AbortSignal,
+  ): Promise<BaselineReviewedFinding> => {
+    if (stop.aborted) {
+      return {
+        kind: 'problem',
+        detail:
+          `the reviewed baseline finding of workspace "${workspaceId}" was not read back, ` +
+          'because the intake was stopped first',
+      };
+    }
+    let files: readonly string[];
+    try {
+      files = await evidenceFiles(workDir, project);
+    } catch (cause) {
+      return { kind: 'problem', detail: messageOf(cause) };
+    }
+
+    const returned: { readonly evidence: BaselineEvidence; readonly where: string }[] = [];
+    for (const file of files) {
+      if (stop.aborted) {
+        return {
+          kind: 'problem',
+          detail:
+            `the reviewed baseline finding of workspace "${workspaceId}" was not read back, ` +
+            'because the intake was stopped first',
+        };
+      }
+      let evidence: BaselineEvidence | null;
+      try {
+        evidence = await readEvidence(file, project);
+      } catch (cause) {
+        return { kind: 'problem', detail: messageOf(cause) };
+      }
+      if (evidence === null || evidence.workspace.workspaceId !== workspaceId) {
+        continue;
+      }
+      if (evidence.closed === undefined) {
+        // An unfinished diagnosis is finished before anything is claimed, so
+        // this is not a state a claim may read past: whether the finding was
+        // returned for repair is not established, and a person decides.
+        return {
+          kind: 'problem',
+          detail:
+            `the baseline evidence this harness kept under "${path.dirname(file)}" for workspace ` +
+            `"${workspaceId}" was never finished, so whether its finding was returned for repair ` +
+            'cannot be established',
+        };
+      }
+      if (evidence.closed === 'repair') {
+        returned.push({ evidence, where: path.dirname(file) });
+      }
+    }
+
+    // The evidence is kept oldest name first; a workspace carries at most the
+    // one repair it was returned with, and the newest is the one a later claim
+    // is told if it ever carries more than one.
+    returned.sort((left, right) =>
+      (right.evidence.closedAt ?? '').localeCompare(left.evidence.closedAt ?? ''),
+    );
+    const [newest] = returned;
+    if (newest === undefined) {
+      return { kind: 'none' };
+    }
+    try {
+      return { kind: 'finding', finding: await readBaselineFinding(newest.where) };
+    } catch (cause) {
+      return {
+        kind: 'problem',
+        detail:
+          `the reviewed baseline finding of workspace "${workspaceId}" is required — its evidence ` +
+          `under "${newest.where}" says it was returned for repair — and cannot be read back: ` +
+          messageOf(cause),
+      };
+    }
+  };
+
+  return { diagnose, resume, reviewedFinding };
 }

@@ -27,6 +27,7 @@ import { reopenWorkspace } from '../workspace/reopen.js';
 import { readWorkspaceState, sourceItemFor } from '../workspace/state.js';
 import type {
   BaselineDiagnosisOutcome,
+  BaselineReviewedFinding,
   BaselineResumeOutcome,
   CompletionRunSummary,
   SourceCandidate,
@@ -41,6 +42,7 @@ import type {
   QueueTicket,
 } from './contract.js';
 import { SourceError, SourceFeedbackError } from './contract.js';
+import { baselineFindingGuidanceLines, baselineGuidanceLines } from './baseline.js';
 import { decideAttempt } from './eligibility.js';
 import { guidanceFrom } from './guidance.js';
 import {
@@ -667,6 +669,47 @@ async function resumeBaseline(
   return stopWith(state, `${phase}: ${outcome.detail}`);
 }
 
+/** Whether one comment of the item's own thread carries a reviewed baseline finding. */
+function isBaselineFinding(comment: SourceComment): boolean {
+  return baselineGuidanceLines(comment.text).length > 0;
+}
+
+/**
+ * The reviewed finding one retained workspace was returned for repair with,
+ * read back from the evidence beside it and rendered as the very lines the
+ * thread would have supplied. It is how a claim that continues such a workspace
+ * is guaranteed the finding even when the item's own thread cannot supply it:
+ * `none` means nothing was returned for repair — an ordinary continuation —
+ * while `problem` means a required finding could not be read back, so no
+ * developer may start (docs/WORKFLOW.md §11).
+ */
+async function reviewedBaselineGuidance(
+  context: SourceContext,
+  workspaceId: string,
+  stop: AbortSignal,
+): Promise<
+  | { readonly kind: 'none' }
+  | { readonly kind: 'finding'; readonly lines: readonly string[] }
+  | { readonly kind: 'problem'; readonly detail: string }
+> {
+  const diagnosis = context.baselineDiagnosis;
+  if (diagnosis === undefined) {
+    // Nothing can have returned this workspace for repair: the phase that
+    // writes such a finding is not configured for this project.
+    return { kind: 'none' };
+  }
+  let recovered: BaselineReviewedFinding;
+  try {
+    recovered = await diagnosis.reviewedFinding(workspaceId, stop);
+  } catch (cause) {
+    return { kind: 'problem', detail: messageOf(cause) };
+  }
+  if (recovered.kind === 'finding') {
+    return { kind: 'finding', lines: baselineFindingGuidanceLines(recovered.finding) };
+  }
+  return recovered;
+}
+
 /**
  * One item, through the documented reservation sequence: receipt first, a fresh
  * read of the item and a decision from that read, eligibility and revision
@@ -920,9 +963,11 @@ async function attempt(
         ? []
         : ((await readWorkspaceState(workDir, workspaceId))?.attempts ?? []);
     // What the item's own thread says since this workspace's own history began.
-    // A read that fails is said out loud and does not stop the attempt: it is
-    // context, and the run's own evidence is not.
+    // A read that fails is said out loud; the attempt goes on, because the
+    // thread is context — except for the one thing this attempt may not be
+    // started without, below.
     let comments: readonly SourceComment[] = [];
+    let commentsProblem: string | null = null;
     try {
       comments = await source.commentsSince(
         item,
@@ -935,12 +980,39 @@ async function attempt(
         stop,
       );
     } catch (cause) {
-      io.err(
-        `${item.ref.key}: its comments could not be read, so this attempt runs without them: ` +
-          messageOf(cause),
-      );
+      commentsProblem = messageOf(cause);
+      io.err(`${item.ref.key}: its comments could not be read: ${commentsProblem}`);
     }
-    const guidance = guidanceFrom(earlier, comments);
+    // The reviewed baseline finding of the workspace this attempt continues is
+    // not context this attempt may start without: the next claim after a red
+    // baseline was returned for repair has to be told it. The thread is the
+    // ordinary source of it, and when the thread cannot supply it — a read that
+    // failed, or a thread that no longer carries it — the evidence this harness
+    // kept beside the workspace is: a finding that is required and cannot be
+    // read back stops intake instead of starting a developer without it
+    // (docs/WORKFLOW.md §11).
+    let recoveredFinding: readonly string[] = [];
+    if (workspaceId !== undefined && !comments.some(isBaselineFinding)) {
+      const recovered = await reviewedBaselineGuidance(context, workspaceId, stop);
+      if (recovered.kind === 'problem') {
+        if (stop.aborted) {
+          return 'cancelled';
+        }
+        const problem =
+          `${item.ref.key}: the reviewed finding its baseline repair was returned with could not ` +
+          `be read back, so no developer was started` +
+          (commentsProblem === null
+            ? ''
+            : ` (its thread could not be read either: ${commentsProblem})`) +
+          `: ${recovered.detail}`;
+        await updateReceipt(file, { problem: `baseline: ${recovered.detail}` });
+        return stopWith(state, problem);
+      }
+      if (recovered.kind === 'finding') {
+        recoveredFinding = recovered.lines;
+      }
+    }
+    const guidance = guidanceFrom(earlier, comments, recoveredFinding);
     try {
       run = await context.run({
         task: item.task,

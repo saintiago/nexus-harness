@@ -284,7 +284,12 @@ read from the checkout `--repo` names, so the repository a run clones describes 
    `workspace-write` policy, with only its own working directory writable, so it cannot change the
    snapshot it reads or the retained working copy. A diagnosis a stopped invocation left pending is
    finished before anything else is discovered: the missing status move, or a finding the reviewer
-   turn already wrote — never a second turn or a second comment for the same evidence.
+   turn already wrote — never a second turn or a second comment for the same evidence. A log file
+   the diagnosis cannot read is incomplete evidence, not a check that said nothing: the ticket
+   stays In Review with the paths named, and no reviewer turn is started from it. The diagnosis's
+   own evidence lives under the connected project's namespace, so two projects sharing one output
+   directory never act on each other's pending diagnosis, and the claim that follows a repair
+   always carries the finding — from the thread, or read back from that evidence.
 5. **Coding turns**: one fresh invocation of the configured launch per top-level turn, started in
    the working copy and never asking for approval. The implementation turn is given the task; each
    repair turn is given the failures the harness observed for itself. Every turn of the run uses the
@@ -878,7 +883,10 @@ What one invocation does:
    that exact snapshot in one bounded local turn, does not touch GitHub, and an actionable finding
    is one Jira comment plus the same return to To Do with the pointer intact. The next claim
    continues the workspace with the finding as guidance — every field of it, on every rung of that
-   claim — repairs the baseline, and then continues the original task.
+   claim — repairs the baseline, and then continues the original task. That finding is read from
+   the ticket's thread, or, when the thread cannot supply it, from the evidence the diagnosis kept
+   under the connected project's own namespace; when neither can, the queue stops with the
+   ticket's state named instead of starting the developer without it.
 4. **Source readiness.** After a confirmed Done, the operator's checkout must be on the configured
    base branch, carry no uncommitted or untracked work, and have the expected delivery repository
    as a remote; the verified merge commit must be in the fetched base branch and the local `HEAD`
@@ -1391,7 +1399,11 @@ a read.
   through the real entry point without spending a second reviewer turn or writing a second comment,
   the refusal of a snapshot the configured commands changed, a reviewer turn that wrote into the
   retained working copy, and the next claim's guidance through a real retained workspace, field by
-  field and on a later rung as well as the first. The narrower launch the diagnostic asks for is
+  field and on a later rung as well as the first — including the finding read back from the
+  retained evidence when the ticket's thread cannot be read, and the intake stopping when a
+  required finding cannot be read back at all, the two connected projects that never act on each
+  other's evidence under one output directory, and a check log that is missing being refused as
+  incomplete evidence before any reviewer turn. The narrower launch the diagnostic asks for is
   still the runtime's to enforce: the offline fixtures record the policy the harness composes, and
   the enforcement behind it was probed separately on this host, not inside a live run. HARN-34's
   load-sensitive baseline has not been replayed against a real Jira ticket with a real reviewer

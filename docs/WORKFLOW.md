@@ -986,7 +986,9 @@ turn. The diagnosis exists exactly when the composed configuration provides the 
 harness file's `reviewer`, with the project's own `source` and `delivery` — and a project without it
 keeps the older behaviour: the failed attempt is published and the item waits In Review. It runs the
 harness configuration's `reviewer.reviewer` selection (never a coding tier) for one turn in its own
-evidence directory under `<workDir>/baseline/<evidence>/`, bounded by the harness configuration's
+evidence directory under `<workDir>/baseline/<project>/<evidence>/` — `<project>` is the connected
+project's own namespace, the same one its intake lock is named by, so one `workDir` can serve
+several projects — bounded by the harness configuration's
 `taskTimeoutMinutes` and by the intake's own stop request, with:
 
 - the ticket: its key, link, title, description, and acceptance criteria, as the reviewer's context;
@@ -999,6 +1001,13 @@ evidence directory under `<workDir>/baseline/<evidence>/`, bounded by the harnes
   snapshot has to be established before the turn: a working copy whose recorded base commit has
   moved, or whose tracked files a configured command changed, is refused as incomplete evidence
   rather than diagnosed through a clone of a tree the failing check never ran against.
+
+The recorded evidence has to be readable before the turn is started. A log file that is missing or
+cannot be read now is incomplete evidence, not a check that said nothing: the item stays In Review
+with the paths named, and no reviewer is launched to reason from a rendering that would pass for a
+silent command. A log the command really wrote and really left empty stays readable evidence — the
+two are kept apart — and this comes before a finding an interrupted turn already wrote, so evidence
+that is incomplete now is never published from.
 
 The turn receives no coding instruction and changes nothing: it runs as `exec --sandbox
 workspace-write` with its own working directory (`turn/`) as the writable root, so the only file it
@@ -1037,10 +1046,14 @@ An actionable finding becomes exactly one comment on the issue, naming the marke
 `nexus-baseline:repair:<evidence>`, the failing check, the evidence, the likely cause and the repair
 guidance, and the issue returns to `readyStatus` with its workspace pointer untouched. The queue
 then continues that same ticket before any unrelated ready work: the next claim reopens the same
-workspace, reads the finding from the thread as guidance, repairs the baseline, and continues the
+workspace, is told the finding as guidance, repairs the baseline, and continues the
 original task. That guidance carries each field of the finding whole on its own line — the four
 things the developer has to act on are never collapsed into one bounded paragraph — and it is in the
-brief of every rung of the climb that claim may take, not only its first. An inconclusive,
+brief of every rung of the climb that claim may take, not only its first. The finding reaches that
+claim from the item's own thread, and when the thread cannot supply it — a read that failed, or a
+thread that no longer carries it — from the evidence this harness kept beside the workspace: a
+required finding that cannot be read back stops intake with the ticket's state named instead of
+starting a developer with the original task alone. An inconclusive,
 environmental, or unsafe finding posts one comment carrying
 `nexus-baseline:attention:<evidence>`, the reason and the required action, moves the issue to
 `reviewStatus`, and stops the queue for a person. Nothing is posted to GitHub, and no coding turn
@@ -1048,9 +1061,13 @@ is started from a diagnosis. `<evidence>` is a hash of the immutable item, the s
 the configured commands with the results they produced: a restart that sees the same evidence
 reuses the comment it already wrote — no second reviewer turn, no second comment — and makes only
 the step that had not happened yet. What it resumes from is kept locally as well: `<workDir>/
-baseline/<evidence>/evidence.json` records the item, the task, the workspace, and the round before
+baseline/<project>/<evidence>/evidence.json` records the item, the task, the workspace, the round,
+and the connected project that wrote it, before
 the reviewer turn runs, and the finding the turn writes is reused if the invocation that wrote it
-stopped before the comment. That recovery runs before anything is discovered or claimed, so a
+stopped before the comment. The project is part of the path, so two projects sharing one `workDir`
+never read, finish, or publish each other's pending evidence — a record that names another project
+is refused by name — and starting one project's intake never comments on, transitions, or closes
+another project's issue. That recovery runs before anything is discovered or claimed, so a
 ticket left in the running status by an interrupted diagnosis is finished instead of being reported
 as a stuck consumer; a turn interrupted before it wrote a finding is not run again for the same
 evidence, and the item stays In Review with what a person must do. An item a person has moved is

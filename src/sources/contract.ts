@@ -382,6 +382,25 @@ export type BaselineResumeOutcome =
   | { readonly kind: 'cancelled'; readonly detail: string };
 
 /**
+ * What reading back the reviewed finding of one retained workspace produced.
+ *
+ * A claim that continues a workspace a red baseline was returned for repair has
+ * to be told that finding, and the item's own thread is not the only record of
+ * it: this is the local half, kept beside the workspace. `none` means the
+ * workspace has no reviewed finding the attempt must be told — an ordinary
+ * continuation, with nothing returned for repair. `problem` means a finding is
+ * required and cannot be read back, so the attempt must not start without it
+ * (docs/WORKFLOW.md §11).
+ */
+export type BaselineReviewedFinding =
+  /** The workspace was returned for repair and this is the reviewed finding. */
+  | { readonly kind: 'finding'; readonly finding: BaselineFinding }
+  /** This workspace has no reviewed finding its next attempt must be told. */
+  | { readonly kind: 'none' }
+  /** A reviewed finding is required and cannot be read back; nothing is started. */
+  | { readonly kind: 'problem'; readonly detail: string };
+
+/**
  * The one comment of an item's own thread the pre-delivery diagnosis reads:
  * what the record below answers, and where a marker is looked for. It carries
  * no runtime or repository data.
@@ -476,6 +495,15 @@ export interface BaselineDiagnosis {
    * (docs/WORKFLOW.md §11).
    */
   resume(stop: AbortSignal): Promise<BaselineResumeOutcome | null>;
+  /**
+   * The reviewed finding one retained workspace was returned for repair with,
+   * read back from the evidence this harness kept beside it. A claim that
+   * continues such a workspace is required to be told that finding, and the
+   * item's own thread — the ordinary path — may not be readable or may not
+   * carry it; this is the second source, and `problem` is the stop for when a
+   * required finding cannot be read back (docs/WORKFLOW.md §11).
+   */
+  reviewedFinding(workspaceId: string, stop: AbortSignal): Promise<BaselineReviewedFinding>;
 }
 
 /**

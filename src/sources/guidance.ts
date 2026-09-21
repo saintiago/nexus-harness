@@ -2,7 +2,10 @@
  * What a continued attempt is told about the attempts before it and what the
  * item's own thread said since: the reviewed baseline finding first, then the
  * oldest of the kept lines, bounded so a long conversation or a long failure
- * cannot grow a prompt without limit.
+ * cannot grow a prompt without limit. A finding the thread cannot supply — a
+ * thread that could not be read, or one that no longer carries it — is read back
+ * from the retained evidence and carried the same way, so a workspace returned
+ * for baseline repair is never started without it (docs/WORKFLOW.md §11).
  *
  * All of it is context for a turn: none of it becomes a command, an argument, a
  * path, or a limit.
@@ -42,8 +45,15 @@ function guidanceLine(text: string): string {
 export function guidanceFrom(
   attempts: readonly WorkspaceAttempt[],
   comments: readonly SourceComment[],
+  /**
+   * The reviewed baseline finding read back from the retained evidence, when
+   * the item's own thread could not supply it. It is the same finding in the
+   * same form `baselineGuidanceLines` renders from a comment, so it is carried
+   * first and by the same rules either way (docs/WORKFLOW.md §11).
+   */
+  recoveredFinding: readonly string[] = [],
 ): readonly string[] {
-  const findings: string[] = [];
+  const findings: string[] = [...recoveredFinding];
   const lines: string[] = [];
   attempts.forEach((attempt, index) => {
     lines.push(

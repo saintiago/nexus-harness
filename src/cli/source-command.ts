@@ -263,6 +263,10 @@ async function sourceCommand(
   }
 
   const workDir = resolveWorkDir(config, configPath);
+  // The connected project's own namespace, derived once: it names the intake
+  // lock, and the pre-delivery diagnosis's evidence, so two projects sharing
+  // this `workDir` never act on each other's state (docs/WORKFLOW.md §11).
+  const lockNamespace = projectLockNamespace(config);
   const jiraParts = context.fetch === undefined ? {} : { fetch: context.fetch };
   const jiraHttp = createHttpClient(sourceConfig, token, jiraParts);
   const connector = createJiraSource(sourceConfig, token, jiraParts, jiraHttp);
@@ -411,6 +415,7 @@ async function sourceCommand(
             readyStatus: sourceConfig.readyStatus,
             reviewStatus: sourceConfig.reviewStatus,
             reviewerTimeoutMs: config.taskTimeoutMinutes * 60_000,
+            project: lockNamespace,
             workDir,
             io: activeIo,
           });
@@ -418,7 +423,7 @@ async function sourceCommand(
     const intake: SourceContext = {
       source: connector,
       workDir,
-      lockNamespace: projectLockNamespace(config),
+      lockNamespace,
       // The ladder the coordinator climbs: what the configuration declares, or
       // the single ordinary rung built from `agent` and `maxRepairs`.
       tiers: escalationTiers(config),

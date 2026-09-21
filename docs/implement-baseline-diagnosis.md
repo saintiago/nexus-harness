@@ -32,11 +32,15 @@ round, a writable ledger that could not be recorded, and a continuation that sta
 proceed to its coding turn) are not diagnosed.
 
 **What the reviewer receives.** The Nexus-wide `reviewer.reviewer` selection, never a coding tier,
-for one turn in its own evidence directory under `<workDir>/baseline/<evidence>/`, bounded by the
-harness configuration's `taskTimeoutMinutes` and by the intake's own stop request. It is given the
+for one turn in its own evidence directory under
+`<workDir>/baseline/<project>/<evidence>/`, bounded by the harness configuration's
+`taskTimeoutMinutes` and by the intake's own stop request. It is given the
 ticket, the configured commands with the results they exited with, the bounded
 stdout/stderr evidence each failing check wrote, and a read-only clone of the retained workspace
-pinned at the commit the baseline ran against. It receives no coding instruction. It cannot change
+pinned at the commit the baseline ran against. That evidence has to be readable before the turn is
+started: a log file that is missing or cannot be read is incomplete evidence — not a check that
+said nothing — and the item stays In Review with the paths named instead of being shown to a
+reviewer as if the evidence were whole. It receives no coding instruction. It cannot change
 the retained workspace: it runs as `exec --sandbox workspace-write` with its own working directory
 (`turn/`) as the writable root, so the clone and the retained working copy are outside what the
 runtime lets it write, and the clone and the retained working copy are both checked after the turn:
@@ -75,7 +79,11 @@ workspace, receives the finding as guidance, repairs the baseline, and carries o
 carries each field of the finding whole and on its own line rather than as one collapsed comment, and
 it is in the brief of every rung of the climb that claim may take, not only the first: the collapse
 used to cut off exactly the likely cause and the repair, which are the two fields a developer acts
-on. Nothing about that attempt is special — the same runner, the same escalation ladder starting
+on. That finding is not context the attempt may start without: the item's own thread is its ordinary
+source, and when the thread cannot supply it — a read that failed, or a thread that no longer carries
+it — the evidence kept beside the workspace is. A finding that is required this way and cannot be
+read back stops intake with the ticket's state named, so a developer never starts a baseline
+continuation with the original task alone. Nothing about that attempt is special — the same runner, the same escalation ladder starting
 again at its first tier, the same checks, and the same delivery refusal for a still-red result. An
 inconclusive, environmental, or unsafe diagnosis posts one
 `nexus-baseline:attention:<evidence>` comment with the evidence and the required action, moves the
@@ -90,8 +98,9 @@ step still runs only for a passed attempt, so a still-red result can never be de
 immutable item, the snapshot commit, and the configured commands with the results they produced.
 The same evidence is never diagnosed twice — no second reviewer turn, no second comment — and the
 local half of that record is the evidence file the phase writes before its reviewer turn:
-`<workDir>/baseline/<evidence>/evidence.json` holds the item, the task, the retained workspace, and
-the round, so an invocation that stopped after that record was written and before the item was told
+`<workDir>/baseline/<project>/<evidence>/evidence.json` holds the item, the task, the retained
+workspace, the round, and the connected project that wrote it, so an invocation that stopped after
+that record was written and before the item was told
 is finished by the next one instead of leaving the ticket in the running status, where a fresh scan
 never looks. That resume step runs before anything is discovered or claimed, in a finite batch, a
 watch scan, and a serial queue step alike. It makes only the step that is missing: the status move
@@ -100,21 +109,30 @@ reviewer turn already wrote in its own evidence directory. A turn that was inter
 wrote a finding is not run again for the same evidence — one reviewer turn per piece of evidence is
 the bound — and the item stays In Review with the retained evidence and what a person must do. An
 item a person moved in the meantime is left exactly where that person left it, and its evidence is
-closed rather than diagnosed.
+closed rather than diagnosed. One `workDir` serves several connected projects, and the project is
+part of where evidence lives: a resume, a read-back, or a closure reads this project's own directory
+only, and a record that names another project is refused by name, so starting one project can never
+post on, transition, or close another project's issue.
 
 ## Modules
 
 - `src/sources/baseline.ts` — the phase: the evidence identity, the marker, the one comment, and the
-  one status move, the retained evidence record a restart resumes from, and the step that finishes
-  what a previous invocation left pending.
+  one status move, the retained evidence record a restart resumes from — named by the connected
+  project's own namespace, so one `workDir` can serve several projects — the step that finishes what
+  a previous invocation left pending, and the read-back of a finding a continuation is required to
+  be told.
 - `src/reviews/baseline.ts` — the one reviewer turn over the snapshot clone, its prompt, and the
   finding file it validates, the snapshot checks that hold the turn to the tree the checks really
-  ran against, and the reuse of a finding an interrupted turn already wrote.
+  ran against, the reuse of a finding an interrupted turn already wrote, and the bounded reading of
+  the evidence: a log that cannot be read is refused by name instead of rendered as a check that
+  said nothing.
 - `src/sources/jira/baseline.ts` — the Jira side: the thread, one comment, one move out of the
   running status, and whether the item is still there, over the completion path's existing helpers.
 - `src/sources/contract.ts` — the ordinary data between them; `src/sources/coordinator.ts` decides
-  which ending qualifies and runs the resume step before discovery; `src/sources/guidance.ts` carries
-  the reviewed finding into every later attempt of that workspace; `src/queue/loop.ts` carries a
+  which ending qualifies, runs the resume step before discovery, and requires the reviewed finding
+  before it starts a baseline continuation; `src/sources/guidance.ts` carries
+  the reviewed finding into every later attempt of that workspace, from the thread or from the
+  evidence; `src/queue/loop.ts` carries a
   diagnosed ticket into its repair attempt;
   `src/cli/source-command.ts` and `src/cli/queue-command.ts` compose the phase from the configured
   reviewer and the source's own statuses.
@@ -133,7 +151,9 @@ code lives and what owns what.
   snapshot, the finding is validated, a missing file and a changed clone are refused, the turn is
   launched under the narrower policy in its own working directory, a finding from a turn that wrote
   into the retained working copy is refused, a working copy the configured commands changed is
-  refused before any turn, and a finding an interrupted turn already wrote is reused without a
+  refused before any turn, a check log that cannot be read is refused before any turn — while a log
+  the command really left empty is read as a check that said nothing — and a finding an interrupted
+  turn already wrote is reused without a
   second launch — published by the next pass through the phase itself, with the earlier turn's own
   finding file as the only input; the Jira record against a fake HTTP boundary — one comment and a
   move by target status name for an actionable finding, In Review for an inconclusive one, and a
@@ -143,7 +163,11 @@ code lives and what owns what.
   the old publication, and a red result is never delivered; the next claim through the real
   `reopenWorkspace` and a real ledger, where the developer's guidance carries both the earlier
   attempt and every field of the reviewed finding, on a later rung of the same climb as well as on
-  the first; the restart through the entry point a batch or a queue really uses — a diagnosis
+  the first, and the finding recovered from the retained evidence when the thread cannot be read at
+  all, with a missing finding file stopping the intake for a person instead of starting the
+  developer without it; two connected projects sharing one `workDir` never resuming, commenting on,
+  moving, or closing each other's pending evidence, and evidence that names another project being
+  refused by name; the restart through the entry point a batch or a queue really uses — a diagnosis
   interrupted between its comment and its status move, resumed with no second turn and no second
   comment, and one interrupted before its comment, finished before the claim — with the ticket back
   in To Do and the claim that follows continuing the same workspace with the finding; pending

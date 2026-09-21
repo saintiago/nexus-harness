@@ -10,7 +10,7 @@
  * v3. Nothing here contacts Jira, GitHub, or a coding provider.
  */
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { runCli } from '../src/cli.js';
@@ -21,7 +21,11 @@ import type { QueueLoopContext } from '../src/queue/loop.js';
 import { runQueue } from '../src/queue/loop.js';
 import { summarizeChanges } from '../src/reporting/changes.js';
 import type { RunTaskResult } from '../src/runs/contracts.js';
-import { createBaselineReviewer, parseBaselineFinding } from '../src/reviews/baseline.js';
+import {
+  baselineFailures,
+  createBaselineReviewer,
+  parseBaselineFinding,
+} from '../src/reviews/baseline.js';
 import type {
   BaselineDiagnosis,
   BaselineDiagnosisOutcome,
@@ -29,6 +33,7 @@ import type {
   BaselineFinding,
   BaselineRecord,
   BaselineReview,
+  BaselineReviewedFinding,
   QueueTicket,
   SourceContext,
   SourceNote,
@@ -65,6 +70,13 @@ const SCOPE = 'https://example.atlassian.net';
 const ISSUE_ID = '10011';
 const ISSUE_KEY = 'HARN-38';
 const BASE = 'a'.repeat(40);
+/**
+ * The connected project every fixture here diagnoses under. It stands where
+ * production puts the composed connection identity's own namespace
+ * (`projectLockNamespace`), and it is what scopes one project's evidence
+ * directories away from another's under one shared `workDir`.
+ */
+const PROJECT = 'baseline-project';
 
 function refFor(id = ISSUE_ID, key = ISSUE_KEY): SourceRef {
   return {
@@ -124,6 +136,23 @@ function redBaseline(overrides: Partial<CheckRoundResult> = {}): CheckRoundResul
     problem: null,
     ...overrides,
   };
+}
+
+/**
+ * A completed red baseline whose failing check really wrote its output: the
+ * log files exist, so the evidence the diagnosis reads is whole. The plain
+ * `redBaseline()` names log paths nothing wrote, which is the incomplete
+ * evidence the diagnosis refuses rather than hands to a reviewer.
+ */
+async function baselineWithLogs(): Promise<CheckRoundResult> {
+  const dir = await createTempDir();
+  const stdoutPath = path.join(dir, 'baseline-check-1.stdout.log');
+  const stderrPath = path.join(dir, 'baseline-check-1.stderr.log');
+  await writeFile(stdoutPath, 'running test/load.test.mjs\nFAILED test/load.test.mjs\n', 'utf8');
+  await writeFile(stderrPath, 'the load test timed out after 30s\n', 'utf8');
+  return redBaseline({
+    checks: [commandFor({ command: ['npm', 'run', 'validate'], stdoutPath, stderrPath })],
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -218,6 +247,7 @@ function phaseFor(parts: {
   readonly workDir: string;
   readonly readyStatus?: string;
   readonly reviewStatus?: string;
+  readonly project?: string;
 }): { readonly diagnosis: ReturnType<typeof createBaselineDiagnosis>; readonly out: string[] } {
   const out: string[] = [];
   return {
@@ -228,6 +258,7 @@ function phaseFor(parts: {
       readyStatus: parts.readyStatus ?? 'To Do',
       reviewStatus: parts.reviewStatus ?? 'In Review',
       reviewerTimeoutMs: 60_000,
+      project: parts.project ?? PROJECT,
       workDir: parts.workDir,
       io: { out: (text) => out.push(text), err: (text) => out.push(text) },
     }),
@@ -301,7 +332,12 @@ describe('the pre-delivery baseline diagnosis', () => {
     expect(outcome.kind).toBe('repair');
     expect(reviewer.requests).toEqual([
       {
-        dir: path.join(workDir, 'baseline', baselineEvidenceId(refFor(), BASE, request.baseline)),
+        dir: path.join(
+          workDir,
+          'baseline',
+          PROJECT,
+          baselineEvidenceId(refFor(), BASE, request.baseline),
+        ),
         base: BASE,
       },
     ]);
@@ -516,6 +552,7 @@ describe('the pre-delivery baseline diagnosis', () => {
       readyStatus: 'To Do',
       reviewStatus: 'In Review',
       reviewerTimeoutMs: 20,
+      project: PROJECT,
       workDir,
       io: { out: () => undefined, err: () => undefined },
     });
@@ -770,6 +807,65 @@ describe('the baseline reviewer turn', () => {
     expect(result.finding).toBeNull();
     expect(result.problem).toContain('did not leave the retained workspace as it found it');
     expect(git(target.repo, 'status', '--porcelain').trim()).toContain('NOTES.md');
+  });
+});
+
+describe('the evidence a diagnosis reads', () => {
+  it('tells a log it cannot read apart from one the command left empty', async () => {
+    // The plain fixture's log paths name files nothing wrote: the evidence is
+    // incomplete, and the failing check is named by the paths that are missing.
+    const missing = await baselineFailures(redBaseline());
+
+    expect(missing.kind).toBe('incomplete');
+    if (missing.kind === 'incomplete') {
+      expect(missing.problem).toContain('/logs/baseline-check-1.stdout.log');
+      expect(missing.problem).toContain('/logs/baseline-check-1.stderr.log');
+    }
+
+    // A log that really was written and really is empty is different: the
+    // command said nothing, and that is evidence the reviewer may read.
+    const dir = await createTempDir();
+    const stdoutPath = path.join(dir, 'baseline-check-1.stdout.log');
+    const stderrPath = path.join(dir, 'baseline-check-1.stderr.log');
+    await writeFile(stdoutPath, '', 'utf8');
+    await writeFile(stderrPath, '', 'utf8');
+    const empty = await baselineFailures(
+      redBaseline({ checks: [commandFor({ stdoutPath, stderrPath })] }),
+    );
+
+    expect(empty.kind).toBe('failures');
+    if (empty.kind === 'failures') {
+      expect(empty.failures).toHaveLength(1);
+      expect(empty.failures[0]?.output).toContain('(no output was written)');
+      expect(empty.failures[0]?.output).toContain(stdoutPath);
+    }
+  });
+
+  it('leaves the ticket In Review with the missing paths instead of starting a reviewer', async () => {
+    const workDir = await createTempDir();
+    const target = await createLocalTarget({ brokenBaseline: true });
+    const record = fakeRecord();
+    const diagnosis = createBaselineDiagnosis({
+      reviewer: reviewerFor(target, [{ finding: JSON.stringify(REPAIR_FINDING) }]),
+      record,
+      readyStatus: 'To Do',
+      reviewStatus: 'In Review',
+      reviewerTimeoutMs: 60_000,
+      project: PROJECT,
+      workDir,
+      io: { out: () => undefined, err: () => undefined },
+    });
+
+    const outcome = await diagnosis.diagnose(requestFor());
+
+    expect(outcome.kind).toBe('attention');
+    const comment = record.posted[0]?.join('\n') ?? '';
+    expect(comment).toContain(`${BASELINE_MARKER_PREFIX}attention:`);
+    expect(comment).toContain('/logs/baseline-check-1.stdout.log');
+    expect(comment).toContain('Required action:');
+    expect(record.status).toBe('In Review');
+    // The evidence was incomplete, so no reviewer turn was paid for at all.
+    expect(await fakeTurns(target.state)).toEqual([]);
   });
 });
 
@@ -1055,6 +1151,7 @@ describe('the Jira record of one diagnosis', () => {
       readyStatus: 'To Do',
       reviewStatus: 'In Review',
       reviewerTimeoutMs: 60_000,
+      project: PROJECT,
       workDir,
       io: { out: () => undefined, err: () => undefined },
     });
@@ -1185,6 +1282,24 @@ async function pendingEvidence(workDir: string): Promise<FakeRecord> {
   return record;
 }
 
+/** The one evidence record a diagnosis kept for `project` under `workDir`, if any. */
+async function evidenceRecordFor(
+  workDir: string,
+  project: string,
+): Promise<{ readonly file: string; readonly record: Record<string, unknown> }> {
+  const root = path.join(workDir, 'baseline', project);
+  const entries = await readdir(root, { withFileTypes: true });
+  const [entry] = entries.filter((candidate) => candidate.isDirectory());
+  if (entry === undefined) {
+    throw new Error(`no evidence directory was kept under "${root}"`);
+  }
+  const file = path.join(root, entry.name, 'evidence.json');
+  return {
+    file,
+    record: JSON.parse(await readFile(file, 'utf8')) as Record<string, unknown>,
+  };
+}
+
 describe('finishing a diagnosis a stopped invocation left pending', () => {
   it('leaves an item a person moved alone, and never diagnoses it again', async () => {
     const workDir = await createTempDir();
@@ -1229,6 +1344,10 @@ describe('finishing a diagnosis a stopped invocation left pending', () => {
     const { workspaceId, workspacePath, base } = await retainedWorkspace(workDir, [
       baselineAttempt(),
     ]);
+    // The failing check's own output is part of the evidence the reviewer
+    // reads, so this baseline really wrote it: a missing log is incomplete
+    // evidence, not a check that said nothing.
+    const baseline = await baselineWithLogs();
     const request = {
       item: { ref: refFor(), task: taskFor() },
       workspace: {
@@ -1237,7 +1356,7 @@ describe('finishing a diagnosis a stopped invocation left pending', () => {
         branch: `harness/${workspaceId}`,
         baseCommit: base,
       },
-      baseline: redBaseline(),
+      baseline,
       stop: new AbortController().signal,
     };
 
@@ -1251,6 +1370,7 @@ describe('finishing a diagnosis a stopped invocation left pending', () => {
       readyStatus: 'To Do',
       reviewStatus: 'In Review',
       reviewerTimeoutMs: 60_000,
+      project: PROJECT,
       workDir,
       io: { out: () => undefined, err: () => undefined },
     });
@@ -1268,6 +1388,7 @@ describe('finishing a diagnosis a stopped invocation left pending', () => {
       readyStatus: 'To Do',
       reviewStatus: 'In Review',
       reviewerTimeoutMs: 60_000,
+      project: PROJECT,
       workDir,
       io: { out: () => undefined, err: () => undefined },
     });
@@ -1307,6 +1428,107 @@ describe('finishing a diagnosis a stopped invocation left pending', () => {
     expect(take.problem).toContain('the site refused the read');
     expect(runs).toEqual([]);
     expect(record.posted).toEqual([]);
+  });
+});
+
+describe('the connected project a diagnosis belongs to', () => {
+  it("never resumes, comments on, moves, or closes another project's pending evidence", async () => {
+    // Two connected projects share one Nexus-wide `workDir`, exactly as the
+    // intake lock and the queue already allow. Project A leaves a diagnosis
+    // pending: its evidence is recorded, its comment never arrived, and its item
+    // is still in the running status. Nothing about that may be acted on by
+    // project B, whose own issues belong to another connected project.
+    const workDir = await createTempDir();
+    const recordA = await pendingEvidence(workDir);
+    const evidenceA = await evidenceRecordFor(workDir, PROJECT);
+    expect(evidenceA.record['project']).toBe(PROJECT);
+
+    const recordB = fakeRecord();
+    const reads: string[] = [];
+    const isRunningB = recordB.isRunning;
+    recordB.isRunning = async (id, stop) => {
+      reads.push(id);
+      return await isRunningB(id, stop);
+    };
+    const reviewerB = scriptedReviewer(REPAIR_FINDING);
+    const projectB = phaseFor({
+      record: recordB,
+      reviewer: reviewerB,
+      workDir,
+      project: 'another-connected-project',
+    });
+
+    const resumedB = await projectB.diagnosis.resume(new AbortController().signal);
+
+    // B found nothing pending of its own, and asked nothing of its own source:
+    // A's issue id was never sent through B's connection, and A's evidence was
+    // neither published nor closed.
+    expect(resumedB).toBeNull();
+    expect(reads).toEqual([]);
+    expect(recordB.posted).toEqual([]);
+    expect(recordB.moves).toEqual([]);
+    expect(reviewerB.requests).toEqual([]);
+    const afterB = await evidenceRecordFor(workDir, PROJECT);
+    expect(afterB.file).toBe(evidenceA.file);
+    expect(afterB.record['closed']).toBeUndefined();
+
+    // A's own invocation then finishes exactly what it recorded: one comment,
+    // one move back to the ready status, and the evidence closed.
+    const reviewerA = scriptedReviewer(REPAIR_FINDING);
+    const projectA = phaseFor({ record: recordA, reviewer: reviewerA, workDir });
+
+    const resumedA = await projectA.diagnosis.resume(new AbortController().signal);
+
+    expect(resumedA?.kind).toBe('repair');
+    expect(recordA.posted).toHaveLength(1);
+    expect(recordA.status).toBe('To Do');
+    expect((await evidenceRecordFor(workDir, PROJECT)).record['closed']).toBe('repair');
+  });
+
+  it('refuses evidence another project wrote instead of acting on it through this one', async () => {
+    // Evidence copied into the wrong project's directory — or a directory moved
+    // between projects by hand — is not read as this project's own: the record
+    // carries the project it was written for, and a mismatch is refused by name
+    // before any comment, move, or closure.
+    const workDir = await createTempDir();
+    const recordA = await pendingEvidence(workDir);
+    const evidenceA = await evidenceRecordFor(workDir, PROJECT);
+
+    const foreign = 'another-connected-project';
+    const foreignDir = path.join(
+      workDir,
+      'baseline',
+      foreign,
+      path.basename(path.dirname(evidenceA.file)),
+    );
+    await mkdir(foreignDir, { recursive: true });
+    await writeFile(
+      path.join(foreignDir, 'evidence.json'),
+      `${JSON.stringify(evidenceA.record, null, 2)}\n`,
+      'utf8',
+    );
+
+    const recordB = fakeRecord();
+    const projectB = phaseFor({
+      record: recordB,
+      reviewer: scriptedReviewer(REPAIR_FINDING),
+      workDir,
+      project: foreign,
+    });
+
+    const resumed = await projectB.diagnosis.resume(new AbortController().signal);
+
+    expect(resumed?.kind).toBe('problem');
+    expect(resumed?.detail).toContain('another connected project');
+    expect(recordB.posted).toEqual([]);
+    expect(recordB.moves).toEqual([]);
+    expect(recordB.notes).toEqual([]);
+    // The evidence was not closed by the project it does not belong to, and the
+    // item it names was never asked about through that project's connection.
+    const keptA = JSON.parse(await readFile(evidenceA.file, 'utf8')) as Record<string, unknown>;
+    expect(keptA['project']).toBe(PROJECT);
+    expect(keptA['closed']).toBeUndefined();
+    expect(recordA.status).toBe('In Progress');
   });
 });
 
@@ -1433,6 +1655,7 @@ function runResultFor(overrides: Partial<RunTaskResult> = {}): RunTaskResult {
 function diagnosisFor(
   outcome: BaselineDiagnosisOutcome,
   calls: BaselineDiagnosisRequest[],
+  recovered: BaselineReviewedFinding = { kind: 'none' },
 ): BaselineDiagnosis {
   return {
     diagnose: async (request) => {
@@ -1440,6 +1663,7 @@ function diagnosisFor(
       return outcome;
     },
     resume: async () => null,
+    reviewedFinding: async () => recovered,
   };
 }
 
@@ -1739,6 +1963,8 @@ function continuedIntake(parts: {
   readonly run: (request: SourceRunRequest) => Promise<RunTaskResult>;
   readonly tiers?: SourceContext['tiers'];
   readonly diagnosis?: BaselineDiagnosis;
+  /** When set, the item's own thread cannot be read at all. */
+  readonly commentsProblem?: string;
 }): ContinuedIntake {
   const ref = refFor();
   const item: SourceTask = { ref, task: taskFor(ref), pointers: [parts.workspaceId] };
@@ -1764,6 +1990,9 @@ function continuedIntake(parts: {
       },
       commentsSince: async (_item, moment) => {
         since.push(moment);
+        if (parts.commentsProblem !== undefined) {
+          throw new Error(parts.commentsProblem);
+        }
         return [
           {
             author: 'Nexus Agent',
@@ -1794,6 +2023,51 @@ function continuedIntake(parts: {
 }
 
 describe('the next claim after a diagnosis', () => {
+  /**
+   * One retained workspace whose red baseline was really diagnosed: the reviewer
+   * turn wrote a real finding, the diagnosis posted it, and the ticket was
+   * returned to its ready status with the evidence closed as a repair. This is
+   * what the claim that follows reads.
+   */
+  async function diagnosedWorkspace(workDir: string): Promise<{
+    readonly sourceRepo: string;
+    readonly workspaceId: string;
+    readonly workspacePath: string;
+    readonly base: string;
+    readonly record: FakeRecord;
+    readonly diagnosis: BaselineDiagnosis;
+  }> {
+    const target = await createLocalTarget({ brokenBaseline: true });
+    const retained = await retainedWorkspace(workDir, [baselineAttempt()]);
+    const record = fakeRecord();
+    const diagnosis = createBaselineDiagnosis({
+      reviewer: reviewerFor(target, [{ finding: JSON.stringify(REPAIR_FINDING) }]),
+      record,
+      readyStatus: 'To Do',
+      reviewStatus: 'In Review',
+      reviewerTimeoutMs: 60_000,
+      project: PROJECT,
+      workDir,
+      io: { out: () => undefined, err: () => undefined },
+    });
+
+    const outcome = await diagnosis.diagnose({
+      item: { ref: refFor(), task: taskFor() },
+      workspace: {
+        workspaceId: retained.workspaceId,
+        workspacePath: retained.workspacePath,
+        branch: `harness/${retained.workspaceId}`,
+        baseCommit: retained.base,
+      },
+      baseline: await baselineWithLogs(),
+      stop: new AbortController().signal,
+    });
+
+    expect(outcome.kind).toBe('repair');
+    expect(record.status).toBe('To Do');
+    return { ...retained, record, diagnosis };
+  }
+
   it('hands the developer the reviewed finding in the same retained workspace', async () => {
     const workDir = await createTempDir();
     const { sourceRepo, workspaceId, workspacePath, base } = await retainedWorkspace(workDir, [
@@ -1844,6 +2118,88 @@ describe('the next claim after a diagnosis', () => {
           line.includes('make the fixture wait for the condition instead of the clock'),
       ),
     ).toBe(true);
+  });
+
+  it('recovers the reviewed finding from the evidence when the thread cannot be read', async () => {
+    const workDir = await createTempDir();
+    const diagnosed = await diagnosedWorkspace(workDir);
+    const { context, runs, err, published } = continuedIntake({
+      workDir,
+      sourceRepo: diagnosed.sourceRepo,
+      base: diagnosed.base,
+      workspaceId: diagnosed.workspaceId,
+      findingText: findingTextFor(),
+      commentsProblem: 'the comment read timed out',
+      diagnosis: diagnosed.diagnosis,
+      run: async () =>
+        runResultFor({
+          status: 'passed',
+          reason: 'the checks passed',
+          baseline: null,
+          workspace: workspaceFor({
+            continued: true,
+            attempt: 2,
+            baseCommit: diagnosed.base,
+          }),
+          reportPath: '/work/runs/run-2/result.json',
+        }),
+    });
+
+    const take = await takeOneItem(context, {});
+
+    // The thread could not be read, and the attempt still ran — but it was told
+    // the reviewed finding, read back from the evidence the diagnosis kept, so
+    // the developer repairs the baseline before continuing the original task.
+    expect(take.outcome).toBe('taken');
+    expect(published[0]?.status).toBe('passed');
+    expect(err.some((line) => line.includes('the comment read timed out'))).toBe(true);
+    const guidance = runs[0]?.guidance ?? [];
+    expect(
+      guidance.some(
+        (line) =>
+          line.includes('reviewed baseline finding — failing check:') &&
+          line.includes('npm","run","validate'),
+      ),
+    ).toBe(true);
+    expect(
+      guidance.some(
+        (line) =>
+          line.includes('reviewed baseline finding — repair guidance:') &&
+          line.includes('make the fixture wait for the condition instead of the clock'),
+      ),
+    ).toBe(true);
+  });
+
+  it('stops for a person instead of starting a repair whose finding cannot be read back', async () => {
+    const workDir = await createTempDir();
+    const diagnosed = await diagnosedWorkspace(workDir);
+    // The evidence says the finding was published for repair, and the file the
+    // reviewer wrote it in is gone: the claim may not be told it, so no
+    // developer is started with the original task alone.
+    const evidence = await evidenceRecordFor(workDir, PROJECT);
+    await rm(path.join(path.dirname(evidence.file), 'turn', 'finding.json'));
+    const { context, runs, published } = continuedIntake({
+      workDir,
+      sourceRepo: diagnosed.sourceRepo,
+      base: diagnosed.base,
+      workspaceId: diagnosed.workspaceId,
+      findingText: findingTextFor(),
+      commentsProblem: 'the comment read timed out',
+      diagnosis: diagnosed.diagnosis,
+      run: async () => runResultFor(),
+    });
+
+    const take = await takeOneItem(context, {});
+
+    expect(take.outcome).toBe('attention');
+    expect(take.problem).toContain('could not be read back');
+    expect(take.problem).toContain('the comment read timed out');
+    expect(runs).toEqual([]);
+    // Nothing about the attempt was published: the ticket is still claimed, and
+    // its receipt carries what a person has to look at.
+    expect(published).toEqual([]);
+    const receipt = await readReceipt(receiptFilePath(workDir, refFor()));
+    expect(receipt?.problem).toContain('cannot be read back');
   });
 
   it('keeps the reviewed finding in the brief of a later rung of the same climb', async () => {

@@ -349,7 +349,10 @@ Nexus-wide selection, never a coding tier — for one bounded local turn before 
 reviewer receives the exact source snapshot (a read-only clone of the retained workspace, pinned at
 the commit the baseline ran against), the configured commands, and the bounded stdout/stderr each of
 them wrote; it receives no coding instruction, may inspect that snapshot with its normal local tools,
-and cannot change the retained workspace it was cloned from. The turn runs under a narrower
+and cannot change the retained workspace it was cloned from. That recorded evidence has to be
+readable before the turn starts: a log file that is missing or cannot be read is incomplete
+evidence, not a check that said nothing, and leaves the item In Review with the paths named instead
+of showing a reviewer a rendering that would pass for a silent command. The turn runs under a narrower
 filesystem policy than a coding turn — it may write only inside its own working directory and the
 host's temporary directory, where its one `finding.json` goes — so the snapshot and the retained
 working copy are read-only to it, and the harness verifies after the turn that the snapshot is still
@@ -369,7 +372,11 @@ acceptance criteria preserved. The loop then continues that ticket — before un
 and the next claim reopens the same retained workspace, is told the original task *and* the reviewed
 finding as guidance — each field of the finding whole and on its own line, and on every rung of the
 ladder the returned ticket climbs, not only the first — repairs the baseline first, and only then
-continues the original task. That attempt is an ordinary one: the same runner, the same escalation
+continues the original task. That finding is not context the attempt may start without: it comes
+from the item's own thread, and when the thread cannot supply it — a read that failed, or a thread
+that no longer carries it — from the evidence kept beside the workspace; a required finding that
+cannot be read back stops intake with the ticket's state named, so the developer never starts a
+baseline continuation with the original task alone. That attempt is an ordinary one: the same runner, the same escalation
 ladder (which starts again at its first tier), the same checks, and the same delivery refusal for
 anything that is still red.
 
@@ -387,7 +394,10 @@ restart that finds the same evidence — the same immutable item, the same snaps
 configured commands with the same results — starts no second reviewer turn and writes no second
 comment, and completes only the step the interrupted pass had not made: the status move for a finding
 that is already on the thread, or the publication of a finding the reviewer turn already wrote under
-the output directory. That recovery runs before anything is discovered or claimed, so a ticket left
+the output directory. The evidence is kept per connected project — `<workDir>/baseline/<project>/
+<evidence>/` — and a record that names another connected project is refused by name rather than read,
+finished, or published through this one, so two projects sharing one output directory never act on
+each other's pending diagnoses. That recovery runs before anything is discovered or claimed, so a ticket left
 in the running status by an interrupted diagnosis is finished rather than reported back as a stuck
 consumer. A reviewer turn that was interrupted before it wrote a finding is not run again for the
 same evidence: the item stays In Review with the retained evidence and what a person must do. An item
