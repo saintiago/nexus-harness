@@ -145,4 +145,16 @@ describe('the project-onboarding guide', () => {
     // The onboarding order the guide promises: validate, preview, then run.
     expect(seen.slice(0, 3)).toEqual(['check-config', 'source list', 'queue run']);
   });
+
+  it('hands Rank access failures back to the Nexus operator', () => {
+    const row = guide
+      .split('\n')
+      .find((line) => line.startsWith('| Jira refuses the search because Rank is unavailable |'));
+    expect(row, 'the guide has no Rank troubleshooting row').toBeDefined();
+
+    const advice = (row ?? '').toLowerCase();
+    expect(advice).toContain('nexus operator');
+    expect(advice).not.toMatch(/fix (the )?(board|access)/);
+    expect(advice).toContain('"ordering"');
+  });
 });
