@@ -372,11 +372,15 @@ immediately after delivery and before the review scan can publish the final requ
 check; the completion pass then verifies the recorded PR/head or re-arms it. See spec
 §10 and WORKFLOW §10 for this opt-in exception to the default no-merge/no-Done behavior.
 GitHub's own state is what classifies every completion mutation and every ambiguous
-answer: `delivery/completion.ts` re-reads the pull request after an unprocessable arm
-request, `sources/completion.ts` reconciles a reading that no longer approves the
-current head, `DeliveryError.retryable` marks the reads a transient failure left
-indeterminate so only those are repeated inside the item deadline, and a closed, moved,
-or unapproved merged result is a terminal report rather than an assumption.
+answer: `delivery/completion.ts` makes the one auto-merge request and reports only what
+GitHub's answer said about it, and `sources/completion.ts` settles that answer — and a
+reading that no longer approves the current head — with a fresh read of the exact pull
+request and head. Every one of those readings goes through the pass's own read retry
+policy, and `DeliveryError.retryable` marks the ones a transient failure left
+indeterminate, so a transient failure repeats a read inside the item deadline and never
+replays a mutation. A required-check command that wrote no check result is classified
+from that answer rather than from its exit code, and a closed, moved, or unapproved
+merged result is a terminal report rather than an assumption.
 
 The serial queue adds no owner to that list: `queue/loop.ts` is sequencing only, and the
 arm operation, the review scan and the completion pass take an optional one-ticket scope so
