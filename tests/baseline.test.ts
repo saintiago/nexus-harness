@@ -27,6 +27,7 @@ import {
   baselineFindingPath,
   createBaselineReviewer,
   parseBaselineFinding,
+  readBaselineOutcome,
 } from '../src/reviews/baseline.js';
 import type {
   BaselineDiagnosis,
@@ -506,6 +507,71 @@ describe('the pre-delivery baseline diagnosis', () => {
     expect(comment).toContain('Required action:');
     expect(record.status).toBe('In Review');
   });
+
+  it('refuses a reviewer launch that would widen its writable roots, and leaves the ticket In Review', async () => {
+    const workDir = await createTempDir();
+    const record = fakeRecord();
+    const target = await createLocalTarget({ brokenBaseline: true });
+    const retained = await retainedWorkspace(workDir, [baselineAttempt()]);
+    // The configured reviewer prefix grants a root covering the retained
+    // working copy the later attempt continues and the harness's own evidence
+    // directory: a write it let through could not be undone by the checks the
+    // diagnosis makes after the turn, so no turn is started at all.
+    const reviewer = createBaselineReviewer({
+      selection: {
+        runtime: 'codex',
+        command: [target.runtimePath, '--add-dir', retained.workspacePath],
+      },
+      environment: {
+        ...process.env,
+        FAKE_CODEX: JSON.stringify({
+          stateDir: target.state.dir,
+          plans: [{ finding: JSON.stringify(REPAIR_FINDING) }],
+        }),
+      },
+    });
+    const diagnosis = createBaselineDiagnosis({
+      reviewer,
+      record,
+      readyStatus: 'To Do',
+      reviewStatus: 'In Review',
+      reviewerTimeoutMs: 60_000,
+      project: PROJECT,
+      workDir,
+      io: { out: () => undefined, err: () => undefined },
+    });
+    const request = {
+      item: { ref: refFor(), task: taskFor() },
+      workspace: {
+        workspaceId: retained.workspaceId,
+        workspacePath: retained.workspacePath,
+        branch: `harness/${retained.workspaceId}`,
+        baseCommit: retained.base,
+      },
+      baseline: await baselineWithLogs(),
+      stop: new AbortController().signal,
+    };
+
+    const outcome = await diagnosis.diagnose(request);
+
+    expect(outcome.kind).toBe('attention');
+    expect(record.status).toBe('In Review');
+    const comment = record.posted[0]?.join('\n') ?? '';
+    expect(comment).toContain(`${BASELINE_MARKER_PREFIX}attention:`);
+    expect(comment).toContain('--add-dir');
+    expect(comment).toContain('Required action:');
+    // Nothing was started to receive the grant, and the retained workspace is
+    // exactly what it was: a person decides what happens next.
+    expect(await fakeTurns(target.state)).toEqual([]);
+    expect(git(retained.workspacePath, 'status', '--porcelain').trim()).toBe('');
+
+    // A restart resumes from the retained evidence and the ticket's own thread:
+    // no second comment, no reviewer turn, and the item stays In Review.
+    const resumed = await diagnosis.diagnose(request);
+    expect(resumed.kind).toBe('attention');
+    expect(record.posted).toHaveLength(1);
+    expect(await fakeTurns(target.state)).toEqual([]);
+  }, 60_000);
 
   it('does not repeat a comment or a reviewer turn for unchanged evidence', async () => {
     const workDir = await createTempDir();
@@ -1165,6 +1231,57 @@ describe('the baseline reviewer turn', () => {
     expect(prompt).toContain('"repairGuidance"');
     expect(prompt).toContain('"requiredAction"');
     expect(prompt).toContain(path.join(dir, 'turn', 'finding.json'));
+  });
+
+  it('refuses a configured launch that would grant the turn a writable root', async () => {
+    const target = await createLocalTarget({ brokenBaseline: true });
+    const { dir, baseline } = await evidenceFor();
+    const base = git(target.repo, 'rev-parse', 'HEAD').trim();
+    // The grant names the retained working copy's own directory: with that root
+    // writable, the reviewer could change the working copy a later attempt
+    // continues, and no check after the turn could undo it. The switch is
+    // applied beside the policy rather than through one of its configuration
+    // keys, so the launch's own overrides cannot take it back (probed against
+    // the installed CLI with `codex debug prompt-input`).
+    const reviewer = createBaselineReviewer({
+      selection: {
+        runtime: 'codex',
+        command: [target.runtimePath, '--add-dir', path.dirname(target.repo)],
+      },
+      environment: {
+        ...process.env,
+        FAKE_CODEX: JSON.stringify({
+          stateDir: target.state.dir,
+          plans: [{ finding: JSON.stringify(REPAIR_FINDING) }],
+        }),
+      },
+    });
+
+    const result = await reviewer({
+      dir,
+      item: { ref: refFor(), task: taskFor() },
+      workspace: { path: target.repo, baseCommit: base },
+      baseline,
+      stop: new AbortController().signal,
+    });
+
+    // No reviewer turn was started at all: nothing received the grant, and the
+    // finding the scripted plan would have written does not exist.
+    expect(await fakeTurns(target.state)).toEqual([]);
+    expect(existsSync(path.join(dir, 'turn', 'finding.json'))).toBe(false);
+    expect(result.finding).toBeNull();
+    expect(result.problem).toContain('--add-dir');
+    expect(result.problem).toContain('was not started');
+    // The rejection is the recorded outcome a restart reuses, so the same
+    // evidence never spends a second turn and never publishes a finding.
+    const recorded = await readBaselineOutcome(dir);
+    expect(recorded?.state).toBe('rejected');
+    if (recorded?.state === 'rejected') {
+      expect(recorded.problem).toContain('--add-dir');
+    }
+    // Neither tree the turn must not change was touched.
+    expect(git(path.join(dir, 'repo'), 'rev-parse', 'HEAD').trim()).toBe(base);
+    expect(git(target.repo, 'status', '--porcelain').trim()).toBe('');
   });
 
   it('accepts an inconclusive finding and reports a turn that wrote none', async () => {
