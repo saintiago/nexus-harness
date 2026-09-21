@@ -1,143 +1,87 @@
 # Connect a project to Nexus
 
-This is the canonical project-onboarding path. It is written for an integration agent working
-inside an existing project repository while an existing Nexus installation is available. By the
-end, the project is connected, the connection is validated, and Nexus is started through a finite
-queue run — without configuring anything inside Nexus.
+This guide is for an integration agent working in one project repository. It assumes an already
+installed Nexus runtime that is prepared and operated outside the project. The installation
+supplies its own shared configuration, credentials and delivery/review setup; none of that is
+project configuration, and none of it is covered by this guide.
 
-The project adds **exactly one committed file**: `nexus.project.json` at the repository root.
-Everything Nexus needs at runtime it creates for itself. The operator's shared harness
-configuration and the Nexus installation stay as they are.
+By the end, the repository has one committed file, `nexus.project.json`, and the connection has
+been validated and exercised with `check-config`, `source list` and a finite `queue run`.
 
 | Placeholder | Means |
 | --- | --- |
-| `<NEXUS_HOME>` | the existing Nexus installation: the checkout of this repository that holds the CLI (`package.json`) |
-| `<SHARED_CONFIG>` | the operator's Nexus-wide harness configuration file — the one every command is given as `--config`, typically `nexus.config.json` |
+| `<NEXUS_HOME>` | the existing Nexus installation checkout that holds the CLI (`package.json`) |
+| `<NEXUS_CONFIG>` | the Nexus-wide configuration path supplied by that installation; use it, do not edit it |
 | `<PROJECT_ROOT>` | this project repository's root: the directory that gains `nexus.project.json` |
 
-Replace all three before running anything, and keep them absolute. `npm --prefix` runs the script
-with `<NEXUS_HOME>` as its working directory, so a relative path would resolve there instead of
-where you are standing. Quote a path that contains spaces. The commands below use `npm run dev`,
-which runs the CLI from TypeScript sources through the installation's `node_modules` and needs no
-build. The existing installation must already have its dependencies installed. If
-`<NEXUS_HOME>/node_modules` is missing, ask the Nexus operator to finish installation setup before
-continuing; the integration agent does not change the Nexus checkout.
+Use absolute paths, and quote any path that contains spaces. `npm --prefix` runs the CLI through
+the installation's own dependencies, so the installation must already be prepared. If a command
+reports that the installation is incomplete, stop and hand the exact error back to the Nexus
+operator: that is a Nexus environment/setup error, not part of connecting the project.
 
-## What the project owns, and what it does not
+## What the project owns
 
-`nexus.project.json` carries only the fields the project itself can answer. Copy
-[nexus.project.example.json](nexus.project.example.json) and fill it in; this repository's own
+The project adds **exactly one committed file**: `nexus.project.json` at the repository root. Copy
+[nexus.project.example.json](nexus.project.example.json) and fill it in. This repository's own
 [nexus.project.json](../nexus.project.json) is a real connected project's file to compare against.
 
 | Field | The project's own answer | Contract |
 | --- | --- | --- |
 | `setup` | the commands that prepare a fresh clone, for example `[["npm", "ci"]]`; may be empty | [WORKFLOW.md](WORKFLOW.md) §1 |
-| `checks` | the commands that decide a task; at least one, every one required | [WORKFLOW.md](WORKFLOW.md) §1 |
-| `source` | its Jira queue: site, cloud ID, project key, issue type, label, statuses, ordering, credential variable name | [WORKFLOW.md](WORKFLOW.md) §5 |
-| `delivery` | its GitHub destination: `repository` and `baseBranch` | [WORKFLOW.md](WORKFLOW.md) §8 |
-| `delivery.completion` | what a verified completion means here: `postMergeWorkflows`, `toDoStatus`, `doneStatus` | [WORKFLOW.md](WORKFLOW.md) §10 |
+| `checks` | the commands that decide a task; at least one, and every one is required | [WORKFLOW.md](WORKFLOW.md) §1 |
+| `source` | its Jira queue: site, cloud ID, project key, issue type, label, statuses and ordering | [WORKFLOW.md](WORKFLOW.md) §5 |
+| `delivery` | its GitHub destination: repository and base branch | [WORKFLOW.md](WORKFLOW.md) §8 |
+| `delivery.completion` | what a verified completion means here: post-merge workflows, and the statuses a completion or a finding lands in | [WORKFLOW.md](WORKFLOW.md) §10 |
 
-Everything else belongs to the shared harness configuration and is **not** repeated in the project
-file: `workDir`, `maxRepairs`, `taskTimeoutMinutes`, `commandTimeoutMinutes`, `agent`, `escalation`,
-`reviewer`, and `completion`. A field written into the wrong file is refused, with both paths
-named, before anything is claimed or run ([WORKFLOW.md](WORKFLOW.md) §1). The integration agent
-does not edit that file, does not choose `workDir`, and does not manage Nexus runtime storage.
+Everything else belongs to the installed Nexus environment. The project file carries no
+installation policy or credentials, and the integration agent does not edit the Nexus-wide
+configuration, create installation resources, or manage the installation's secrets. A field
+written into the wrong file is refused, with both paths named, before anything is claimed or run
+([WORKFLOW.md](WORKFLOW.md) §1).
 
-**No workspace or runtime folder needs to be created.** Nothing under the shared `workDir` has to
-exist beforehand, and you never create it by hand. On the first run Nexus creates and owns the
-retained workspace (the clone on its own `harness/<workspaceId>` branch, beside a ledger), the run
-evidence (`<workDir>/runs/<runId>` with `result.json` and `logs/`), the intake receipts, the review
-evidence under `<workDir>/reviews/`, and the completion evidence it needs. Do not copy those
-directories between machines, and do not delete a workspace whose pull request is still awaiting
-review. `check-config` prints the resolved `workDir` before anything runs, so you can see where
-Nexus will write without creating it.
+## Prepare the project
 
-## Prerequisites
+These are the project-side choices and checks. Installation-wide setup is already done by the
+Nexus operator.
 
-1. **A clean project checkout on the base branch.** `--repo` names the operator's own checkout of
-   the delivery repository's base branch. It must be a normal Git checkout with at least one commit
-   and no staged, unstaged, or non-ignored untracked work (`git status --porcelain` empty). Commit
-   `nexus.project.json` on that branch and push it: the queue clones each workspace from what this
-   checkout holds and re-reads the project's configuration there.
-2. **Real, noninteractive `setup` and `checks` commands.** Run them once by hand in a clean clone of
-   the committed baseline and make sure they pass there. They must run unattended on this machine:
-   no prompts, no interactive or watch modes, no browser, no credentials of their own. `setup` may
-   be empty; `checks` cannot. A red baseline still stops a fresh attempt before any coding turn, but
-   it no longer parks the ticket: the configured reviewer diagnoses it in one local turn, and an
-   actionable finding is one comment plus a return of the same ticket to the ready status, whose
-   next claim repairs the baseline and then continues the ticket
-   ([WORKFLOW.md](WORKFLOW.md) §11). A diagnosis that is inconclusive, environmental, or unsafe
-   leaves the ticket In Review for a person instead. Connecting a project whose committed checks
-   already pass is still the smoother start: the diagnosis can repair what lives in the working
-   copy, not the host or the check's own configuration. It insists on the snapshot it was promised:
-   a `setup` or `check` command that rewrites a tracked file, or leaves a commit behind, is refused
-   as incomplete evidence rather than diagnosed through a clone of the older tree, so keep those
-   commands read-only apart from generated, ignored artifacts. A pending diagnosis is finished
-   before the next discovery, so a stopped invocation does not leave the ticket stuck In Progress.
-3. **The Jira queue.** Decide the site URL (`https://<site>.atlassian.net`), the site's cloud ID,
-   the project key, the issue type (`Task` by default), the label (`harness-task` by default — keep
-   it distinctive), and the ready, running and review statuses (`To Do` → `In Progress` →
-   `In Review` by default; they must be distinct). Then choose the intake order deliberately:
-   `"ordering": "priority"` puts Jira's Priority field first (the default), while
-   `"ordering": "rank"` follows the board's native Rank, so the manual board order decides. With
-   `rank`, the project's issues must really be ranked on a board and the service account must be
-   allowed to read Rank; there is no fallback to Priority. The label in the ready status is the
-   authorization to spend agent capacity, so only label tickets this project is meant to work. The
-   service account needs project access plus the classic scopes `read:jira-work` and
-   `write:jira-work` ([WORKFLOW.md](WORKFLOW.md) §5).
+1. **A committed `nexus.project.json` on the delivery base branch.** `--repo` names the operator's
+   checkout of the delivery repository's base branch. It must be a normal Git checkout with at
+   least one commit and no staged, unstaged or non-ignored untracked work
+   (`git status --porcelain` empty). Commit the file on that branch and push it: queue workspaces
+   clone from what that checkout holds and read the project's configuration there.
+
+2. **Real, noninteractive `setup` and `checks` commands.** Run them once in a clean clone of the
+   committed baseline and make sure they pass there. They must run unattended: no prompts, no
+   interactive or watch modes, and no browser. `setup` may be empty; `checks` must contain at
+   least one command. A `setup` or check command that rewrites a tracked file, or leaves a commit
+   behind, is refused as incomplete evidence rather than treated as a successful baseline.
+
+3. **The Jira queue.** Decide the site URL, the site's cloud ID, the project key, the issue type
+   (`Task` by default), the label (`harness-task` by default, but keep it distinctive), and the
+   ready, running and review statuses (`To Do` → `In Progress` → `In Review` by default; they must
+   be distinct). Then choose the intake order deliberately: `"ordering": "priority"` follows
+   Jira's Priority field (the default), while `"ordering": "rank"` follows the board's native
+   Rank; rank has no fallback to Priority. The label in the ready status is the authorization to
+   spend agent capacity, so only label tickets this project is meant to work.
+
 4. **The first ticket's description.** Write it in the format of [WORKFLOW.md](WORKFLOW.md) §6
-   (`examples/jira-description.md` is a ready template): the `Acceptance criteria` heading decides
-   what the agent is asked to satisfy. An issue that does not fit the format is reported and
-   skipped, never guessed at.
-5. **The GitHub destination.** Decide the repository (`owner/name`) a passed attempt's branch is
-   pushed to and the base branch its pull request targets. It must be the repository whose base
-   branch holds the committed `nexus.project.json`; Nexus Lens reviews the pull request this
-   project delivers, and the completion path merges it there.
-6. **The merge gate and the Nexus Lens App.** The operator's own account must be able to enable
-   auto-merge on the destination, and the destination's branch rule must require the checks that
-   gate the merge — including the App-owned review check, named from that App the way the rule UI
-   shows it. The Nexus Lens App must be installed on that repository with pull-request write,
-   checks write, and read access to contents, commit statuses, and metadata
-   ([WORKFLOW.md](WORKFLOW.md) §9).
-7. **The post-merge workflows, and the statuses they lead to.** Name every workflow that has to
-   succeed after the merge — a workflow file name (`ci.yml` or `.github/workflows/ci.yml`) or a
-   numeric workflow ID — as a `push` run on the delivery repository's base branch. **The current
-   queue path requires a public repository with publicly readable post-merge workflow evidence.**
-   Its completion reader uses the Nexus Lens App installation token with the review permissions
-   above; it requests no Actions access. Private-repository workflow evidence is not supported by
-   this path. Confirm public visibility before launching; if the project is private, stop and
-   ask the Nexus operator about that limitation rather than changing repository visibility or
-   the shared configuration. A workflow name that never matches a run for the merge commit means
-   the ticket never reaches Done. Also name the two statuses a completion outcome lands in:
-   `toDoStatus` for definitive findings, `doneStatus` for a verified completion; neither may equal
-   the other or `source.reviewStatus`
-   ([WORKFLOW.md](WORKFLOW.md) §10).
-8. **Credentials in the environment — names in the files, values only in the environment.** The
-   shell that starts Nexus needs:
-   - the Jira service-account API token in the variable `source.tokenEnv` names (default
-     `JIRA_API_TOKEN`);
-   - the **path** of the Nexus Lens App's private key PEM file in the variable the shared
-     configuration's `reviewer.app.privateKeyPathEnv` names (the example file uses
-     `NEXUS_LENS_PRIVATE_KEY_PATH`): a path the OS user running Nexus can read, never the key's
-     contents;
-   - the operator's own `gh`/Git login, authenticated for the destination repository
-     (`gh auth status`, and `gh auth setup-git` so Git uses it). That credential pushes the branch,
-     opens the pull request, and asks GitHub for auto-merge. Coding turns and checks inherit the
-     operator's Git/`gh` authentication: the retained clone is not a credential sandbox. Connect
-     only repositories and commands trusted to run with that account's privileges. Coding turns
-     are instructed to keep their work local; the deterministic delivery/completion path performs
-     the GitHub writes. Queue reviewer turns strip operator GitHub token variables from their
-     environment, but this does not isolate credentials stored on the host
-     ([WORKFLOW.md](WORKFLOW.md) §8 and §11).
+   ([examples/jira-description.md](../examples/jira-description.md) is a ready template): the
+   `Acceptance criteria` heading decides what the agent is asked to satisfy. An issue that does
+   not fit the format is reported and skipped, never guessed at.
 
-   The shared configuration also names `completion.reviewerTokenEnv` for standalone `source`
-   commands; a queue run does not need a pre-minted value there, because it reads completion
-   evidence with the App's installation token ([WORKFLOW.md](WORKFLOW.md) §11). Never commit a
-   token, a key, a key path, or any other credential value into the project: the repository gains
-   exactly `nexus.project.json`.
-9. **A first queue to work with.** Have one or more Jira items that match the configured project,
-   issue type, label, and ready status. To constrain a first run, use one disposable ticket and a
-   label only it carries; the queue claims what the ready status and label describe, so nobody else
+5. **The GitHub destination and merge gate.** Decide the repository (`owner/name`) a passed
+   attempt's branch is pushed to and the base branch its pull request targets. It must be the
+   repository whose base branch holds the committed `nexus.project.json`. The destination's branch
+   protection must already require the installation's configured review result and permit the
+   configured auto-merge path; name every post-merge workflow that has to succeed on the base
+   branch. The current queue path requires a public repository with publicly readable post-merge
+   workflow evidence. If the destination or its gate is not prepared, stop and report it to the
+   Nexus operator rather than changing repository visibility, the branch rule, or the shared
+   configuration.
+
+6. **A first queue to work with.** Have one or more Jira items that match the configured project,
+   issue type, label and ready status. For a first run, use one disposable ticket with a label
+   only it carries. The queue claims what the ready status and label describe, so nobody else
    should be using them.
 
 ## Connect, validate, start
@@ -148,121 +92,93 @@ Three commands, in order, each with a different reach. Run them from anywhere; e
 ### 1. Validate the composition — static, claims nothing
 
 ```powershell
-npm --prefix <NEXUS_HOME> run dev -- check-config --config <SHARED_CONFIG> --project <PROJECT_ROOT>
+npm --prefix <NEXUS_HOME> run dev -- check-config --config <NEXUS_CONFIG> --project <PROJECT_ROOT>
 ```
 
-`check-config` composes the shared file and the project file and prints what it read: the resolved
-`workDir`, the limits, the reviewer and completion policy, then the project's `setup` and `checks`
-counts, its Jira queue, the configured ordering and delivery destination, and the review lines they
-compose. It creates nothing, runs no configured command, contacts no provider, and resolves no
-credential. Exit `0` means the two files are valid and compose; exit `1` names the file, the field,
-and — for a cross-file problem — both paths. It proves nothing about Git state, runtime
-availability, or authentication.
+`check-config` composes the installation's Nexus-wide configuration with the project file and
+prints what it read. It creates nothing, runs no configured command, contacts no provider, and
+resolves no credential. Exit `0` means the two files are valid and compose; exit `1` names the
+file, the field and — for a cross-file problem — both paths.
 
-Read the printed `workDir` line. It must be outside `<PROJECT_ROOT>`; if it is inside the project,
-stop and ask the operator to fix the shared file rather than editing it here.
+If the refusal names a project field, correct `nexus.project.json`. If it names a missing or
+invalid installation prerequisite, stop and report the exact message to the Nexus operator; do
+not edit the shared configuration or create installation resources here.
 
 ### 2. Preview the queue — read-only, claims nothing
 
 ```powershell
-npm --prefix <NEXUS_HOME> run dev -- source list --config <SHARED_CONFIG> --project <PROJECT_ROOT>
+npm --prefix <NEXUS_HOME> run dev -- source list --config <NEXUS_CONFIG> --project <PROJECT_ROOT>
 ```
 
-This command contacts Jira with the credential `source.tokenEnv` names and prints every eligible
-issue with its disposition (`valid`, `continuable`, `refused`, `invalid`, or `stale`), key, title,
-URL, and a detail line, in the configured order. It claims nothing, starts no run and no coding
-turn, and creates no directory. Exit `0` with `source list: 0 eligible issue(s)` is a valid answer:
-the connection works and the queue is empty. A `refused` or `invalid` disposition names what to fix
-before a run would take the ticket ([WORKFLOW.md](WORKFLOW.md) §7).
+This command contacts Jira through the installed environment's configured access and prints every
+eligible issue with its disposition (`valid`, `continuable`, `refused`, `invalid` or `stale`), key,
+title, URL and a detail line, in the configured order. It claims nothing, starts no run and no
+coding turn, and creates no directory. Exit `0` with `source list: 0 eligible issue(s)` is a valid
+answer: the connection works and the queue is empty. A `refused` or `invalid` disposition names
+what to fix before a run would take the ticket ([WORKFLOW.md](WORKFLOW.md) §7).
+
+If Jira refuses the connection because the installed environment is missing access or setup, stop
+and report the exact error to the Nexus operator. That is a Nexus environment/setup error; do not
+create or edit credentials to work around it.
 
 ### 3. Start a finite queue run — claims and executes eligible work
 
 ```powershell
-npm --prefix <NEXUS_HOME> run dev -- queue run --repo <PROJECT_ROOT> --config <SHARED_CONFIG>
+npm --prefix <NEXUS_HOME> run dev -- queue run --repo <PROJECT_ROOT> --config <NEXUS_CONFIG>
 ```
 
-This is the command that works: it can claim eligible Jira items, start coding turns, push
-branches, open pull requests, publish Nexus Lens reviews, arm auto-merge, merge, and move Jira
-items. `queue run` is finite — it exits `0` when a fresh scan finds no eligible ticket — and exits
-`1` when it needs a person, keeping the evidence it gathered ([WORKFLOW.md](WORKFLOW.md) §11). Leave
-it in the foreground: Ctrl+C (Ctrl+Break on Windows) stops it after the active phase, starts no
-next ticket, and keeps everything it wrote.
+This is the command that works: it can claim eligible Jira items and run them through the
+installation's configured coding, check, delivery, review and completion path. `queue run` is
+finite — it exits `0` when a fresh scan finds no eligible ticket — and exits `1` when it needs a
+person, keeping the evidence it gathered ([WORKFLOW.md](WORKFLOW.md) §11). Leave it in the
+foreground: Ctrl+C (Ctrl+Break on Windows) stops it after the active phase, starts no next ticket
+and keeps everything it wrote.
 
-If you want to watch one ticket through the coding loop and delivery before handing the queue a
-whole set, `source run --repo <PROJECT_ROOT> --config <SHARED_CONFIG> --limit 1` claims at most one
-ticket and also runs the configured completion pass, so it needs the value of
-`completion.reviewerTokenEnv` as well; it does not run the Nexus Lens review. The queue is the path
-that does the whole lifecycle.
+If the run does not start because the installation is incomplete, report the exact launch error to
+the Nexus operator. Do not create the missing credentials, runtime folders or shared
+configuration, and do not try to supply them from the project.
 
 ## What happens after Nexus starts
 
-From here Nexus is autonomous, one ticket at a time, and needs no further setup:
+Nexus works the queue one ticket at a time and needs no further project-side setup:
 
-1. A fresh scan takes at most one eligible ticket and creates the retained workspace itself — the
-   clone, its `harness/<workspaceId>` branch, the repository-local Git identity, the receipt before
-   the claim, and the `harness-ws-<workspaceId>` pointer label on the issue.
-2. The baseline round runs `setup` and every `check`; a red baseline stops a fresh attempt before
-   any coding turn, and is then diagnosed in one local reviewer turn over the snapshot and the
-   command evidence: an actionable finding is one comment and a return of the same ticket to the
-    ready status, whose next claim repairs the baseline and then continues the original task, with
-    every field of the finding in the developer's brief — from the ticket's thread, or, when that
-    thread cannot be read, read back from the evidence the diagnosis kept for this connected
-    project. Only the whole comment counts as coming from the thread: the marker naming the exact
-    evidence the retained record closed as a repair, and all four fields; anything less is context,
-    and the recorded finding is handed over instead. The reviewer turn runs under a narrower
-   filesystem policy than a coding turn: it writes only its own finding file, and the snapshot it
-   reads and the ticket's workspace stay read-only to it; a reviewer launch that carries a switch of
-   its own — `--add-dir`, `--cd`/`-C`, `--worktree`, `-s`/`--sandbox`,
-   `--dangerously-bypass-approvals-and-sandbox` — is refused before any turn starts, and the ticket
-   stays In Review with the reason and the required human action instead. A green baseline starts the implementation
-   turn, and a completed red round starts repair turns within the shared ladder instead of giving
-   up. Every turn is asked to finish with the work it wants the next turn to build on committed: a
-   working copy left holding uncommitted work stops the run before the next agent, names the paths,
-   and leaves finishing them by hand to the operator.
-3. A passed attempt is delivered: its branch is pushed and its pull request opened or updated with
-   the operator's own Git/`gh` credential.
-4. Native auto-merge is armed for that exact head before Nexus Lens reviews it, and the review
-   publishes the native verdict plus the App-owned check.
-5. Completion verifies the recorded arm, waits for GitHub's own merge, requires every configured
-   post-merge workflow to succeed on the merge commit, and comments on the ticket before moving it
-   to `doneStatus`. Findings move it back to `toDoStatus` and the queue repairs it in the same
-   retained workspace before touching unrelated work.
-6. Source readiness fetches the base branch, proves the checkout is clean and on the right remote,
-   and fast-forwards it to the verified merge commit. Then the next fresh scan runs.
+1. A fresh scan takes at most one eligible ticket and runs the project's `setup` and every check.
+   A green baseline starts the coding turn; a red one is diagnosed by the installed runtime
+   before the ticket is handed on.
+2. The installed runtime carries the ticket through coding, delivery, review and completion,
+   including the configured post-merge workflow check.
+3. The next scan takes the next eligible ticket, and the loop continues until none remains.
 
 `queue run` stops when no eligible ticket remains. `queue watch` is the same loop as one visible
 foreground process that waits for the next ticket; it starts no agent while it is idle.
 
-**Concurrency.** One consumer may run for this project, while other connected projects use their
-own `nexus.project.json` and their own Jira scope under the same shared configuration and
-`workDir`. The intake lock is per connected project, not per output directory: a second
-`queue run`/`queue watch` for the same project and `workDir` is refused with the lock owner's
-diagnostic, and a queue for a different connected project starts normally. Do not work around that
-refusal by deleting a lock; resolve the other consumer first ([WORKFLOW.md](WORKFLOW.md) §1,
-[spec.md](spec.md) §6).
+## If setup is incomplete
 
-## Troubleshooting
+Any missing installation prerequisite discovered by these commands is a **Nexus environment/setup
+error**. Stop, keep the exact command and error text, and hand it back to the Nexus operator. Do
+not create credentials, runtime folders or shared configuration, and do not change the project's
+committed file to work around an installation problem.
 
-| Symptom | Cause, and what to do |
+| Symptom | What to do |
 | --- | --- |
-| Exit `1`: `the environment variable <name> is missing or blank. Put the Jira service-account API token in it…` | The variable `source.tokenEnv` names is not set in the shell that runs Nexus. Set it there (never in the project, never in a config file). `check-config` does not catch this: it resolves no credentials. |
-| Exit `1`: `the environment variable <name> is missing or blank. Put the path of the GitHub App's private key PEM file in it…` | The shared configuration's `reviewer.app.privateKeyPathEnv` is not set (or is blank). Set the **path** in the shell that runs Nexus, and make sure the file is readable by that user. The key's contents never belong in any file this repository commits. |
-| `source list: 0 eligible issue(s)`, or `queue run: no eligible ticket` | Nothing matches the configured queue: project key, issue type, label, and ready status. Check the spelling of each, that the ticket is in the right project and status, and — for `invalid` entries — that its description has the `Acceptance criteria` section. `queue run` exiting `0` here is a drained queue, not a failure. |
-| Jira refuses the search because Rank is unavailable | `"ordering": "rank"` requires the project's issues to be ranked on a board and the service account to be allowed to read Rank. Fix the board or the access, or switch to `"ordering": "priority"`; the harness never falls back to Priority by itself. |
-| Delivery or review refused (`gh auth status`, no commit to publish, a dirty or wrongly checked-out workspace, no open pull request) | Delivery needs the operator's authenticated `gh`/Git account with write access to the destination repository and base branch, and a retained workspace that is clean, on its recorded branch, and holds a commit beyond its base. Review needs the Nexus Lens App installed on that repository, the key path readable, and exactly one open pull request for the ticket's branch. Uncommitted work is refused, never committed for you. |
-| Completion keeps waiting, or reports an unsuccessful post-merge workflow | The names in `delivery.completion.postMergeWorkflows` must match workflows that really run for `push` on `delivery.baseBranch` on this repository — the exact file name or numeric ID. Check the repository's Actions tab for a run on the merge commit. A definitive failure returns the ticket to `toDoStatus`; a run that never appears leaves it In Review. |
-| Completion cannot read post-merge workflow evidence | The current queue path requires publicly readable workflow evidence from a public repository: its Lens installation token requests no Actions permission. Operator GitHub access and a successful `source list` do not prove that this reader can access workflows. Inaccessible evidence stops the queue for attention and leaves the ticket In Review; it does not prove CI failed or authorize repair. Ask the Nexus operator to resolve the unsupported connection; do not change repository visibility, substitute operator credentials, or edit the shared configuration to bypass it ([WORKFLOW.md](WORKFLOW.md) §11). |
-| `queue run` refuses before it starts: the shared file has no `reviewer` object, or the project's `delivery` has no `completion` | The queue needs the whole path — the project's `source` and `delivery.completion`, and the shared configuration's `reviewer`. `check-config` alone does not require them, so it can be green while a queue command is refused. Ask the operator for the missing installation-level objects, and add only `delivery.completion` in the project file; never copy the reviewer into it. |
-| `check-config` refuses a field and names the other file | Field ownership: `workDir`, the limits, `agent`/`escalation`, `reviewer`, and `completion` belong to the shared configuration; `setup`, `checks`, `source`, and `delivery` belong to `nexus.project.json`. Correct the project file only; ask the Nexus operator to make any required shared-file correction. Do not duplicate the field or work around the refusal. |
+| `check-config` refuses a field and names the other file | Correct only the project-owned field in `nexus.project.json`; ask the Nexus operator to correct the shared file. |
+| `source list` cannot authenticate or reach Jira | Report the exact error. The Jira access is installation setup; do not create or edit credentials. |
+| `source list: 0 eligible issue(s)` or `queue run: no eligible ticket` | Nothing matches the configured project, issue type, label and ready status. Correct the project's `source` object, or confirm the ticket is in the right status and its description has the required section. |
+| Jira refuses the search because Rank is unavailable | With `"ordering": "rank"`, the project's issues must be ranked on a board and the configured access must be allowed to read Rank. Fix the board or access, or switch the project to `"ordering": "priority"`. |
+| `queue run` refuses before it starts because an installation-side object is missing | Report the exact refusal to the Nexus operator. Add only fields the project owns; never copy installation policy into `nexus.project.json`. |
+| Delivery, review or completion cannot start | The destination, gate or installed review/delivery path is not fully prepared. Report the exact error; do not change branch protection, repository visibility or the shared configuration to bypass it. |
+| Completion cannot read post-merge workflow evidence | The current path requires a public repository with publicly readable workflow evidence. Report the unsupported destination to the Nexus operator instead of changing visibility. |
 
 ## Where the details live
 
-- The field-by-field contract, ownership, and precedence: [WORKFLOW.md](WORKFLOW.md) §1, with the
-  Jira fields in §5, delivery in §8, completion in §10, and the queue commands in §11.
-- Behaviour and limits: [spec.md](spec.md) §6 (intake), §7 (delivery), §10 (completion), and §11
+- Field ownership and precedence: [WORKFLOW.md](WORKFLOW.md) §1, with the Jira fields in §5,
+  delivery in §8, completion in §10 and the queue commands in §11.
+- Behaviour and limits: [spec.md](spec.md) §6 (intake), §7 (delivery), §10 (completion) and §11
   (the serial queue).
-- Ready-to-copy inputs: [nexus.config.example.json](nexus.config.example.json) for the operator's
-  shared file, [nexus.project.example.json](nexus.project.example.json) for this project's file,
-  and [examples/jira-description.md](../examples/jira-description.md) for the issue format.
-- The operating document for the person running the installation:
-  [README.md](../README.md).
+- Ready-to-copy inputs: [nexus.project.example.json](nexus.project.example.json) for the
+  project-owned file and [examples/jira-description.md](../examples/jira-description.md) for the
+  issue format. This repository's own [nexus.project.json](../nexus.project.json) is a worked
+  example.
+- Installation and operator setup: [README.md](../README.md). That document is maintainer
+  material for the person running the installation, including the installation-wide contract;
+  its setup sections are not project connection steps.

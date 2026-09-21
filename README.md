@@ -127,10 +127,10 @@ this README does not restate it.
 takes an integration agent from an existing repository through the one committed file —
 repository-root `nexus.project.json`, copied from
 [docs/nexus.project.example.json](docs/nexus.project.example.json) — to `check-config --project`,
-the read-only `source list --project`, and a finite `queue run --repo`, with the project's
-prerequisites and the credentials that stay in the environment. This section does not restate the
-steps; the file's fields stay defined in [docs/WORKFLOW.md](docs/WORKFLOW.md) §1, §5, §8 and §10,
-and the commands in §11.
+the read-only `source list --project`, and a finite `queue run --repo`, after the project-side
+choices and checks are ready. Installation-wide setup belongs to the operator and is not part of
+that sequence. This section does not restate the steps; the file's fields stay defined in
+[docs/WORKFLOW.md](docs/WORKFLOW.md) §1, §5, §8 and §10, and the commands in §11.
 
 ### Migrating an installation onto this split
 
@@ -1758,8 +1758,8 @@ operator's own `gh` credentials, once the check is green —
 - [docs/module-structure.md](docs/module-structure.md) — the `src/` layout as it stands, and the
   rules for placing new code in it.
 - [docs/connect-a-project.md](docs/connect-a-project.md) — the canonical project-onboarding path:
-  the one file a connected repository commits and what it owns, the prerequisites, the
-  `check-config`, `source list` and `queue run` sequence, and what Nexus creates for itself.
+  the one file a connected repository commits and what it owns, the project-side preparation, and
+  the `check-config`, `source list` and `queue run` sequence against a prepared installation.
 - [docs/nexus.config.example.json](docs/nexus.config.example.json) — a credential-free Nexus-wide
   harness configuration to copy: the limits, the launches, and the Nexus Lens reviewer.
 - [docs/nexus.project.example.json](docs/nexus.project.example.json) — a credential-free project
