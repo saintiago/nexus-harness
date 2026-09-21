@@ -48,18 +48,28 @@ export const CODEX_EXECUTABLE = 'codex';
  * `never`, so nothing waits for an approval nobody is there to give.
  */
 /**
- * The complete suffix the adapter appends to the configured launch prefix, in
- * the order the CLI receives it; why each part is there is the comment above.
+ * The filesystem policy one turn runs under. A coding turn stages commits in the
+ * retained working copy, so it needs the unsandboxed policy above. A turn that
+ * must not change what it is looking at — the pre-delivery baseline diagnostic —
+ * runs under `workspace-write` instead: it reads anywhere, and the runtime's own
+ * sandbox refuses every write outside the turn's working root and the host's
+ * temporary directory (docs/spec.md §11). The policy is a property of the turn,
+ * never of the failure that follows it: nothing widens a launch, and a coding
+ * turn is never started from a diagnostic.
  */
-export const CODEX_EXEC_ARGUMENTS: readonly string[] = [
-  '--ask-for-approval',
-  'never',
-  'exec',
-  '--sandbox',
-  'danger-full-access',
-  '--json',
-  '-',
-];
+export type CodexSandboxPolicy = 'danger-full-access' | 'workspace-write';
+
+/**
+ * The complete suffix the adapter appends to the configured launch prefix for
+ * one filesystem policy, in the order the CLI receives it; why each part is
+ * there is the comment above.
+ */
+export function codexExecArguments(policy: CodexSandboxPolicy): readonly string[] {
+  return ['--ask-for-approval', 'never', 'exec', '--sandbox', policy, '--json', '-'];
+}
+
+/** The suffix every coding turn of a run uses: the unsandboxed policy. */
+export const CODEX_EXEC_ARGUMENTS: readonly string[] = codexExecArguments('danger-full-access');
 /** The launch prefix an ordinary run uses: the installed CLI, no extra arguments. */
 export const DEFAULT_CODEX_COMMAND: readonly string[] = [CODEX_EXECUTABLE];
 /**

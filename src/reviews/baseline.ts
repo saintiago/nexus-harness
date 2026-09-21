@@ -18,13 +18,14 @@
  * nothing usable, or leaves its view changed has no finding, and the diagnosis
  * then records what is missing instead of guessing at a repair.
  */
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { runCodexPrompt } from '../agents/codex/adapter.js';
 import { selectedCodexRuntime } from '../agents/codex/runtime.js';
 import { openEvidenceLog, readCommandOutput } from '../reporting/logs.js';
 import type { AgentLog } from '../reporting/logs.js';
 import { messageOf } from '../shared/errors.js';
+import { firstLine, listPaths, runGit } from '../workspace/git.js';
 import type {
   AgentActivity,
   AgentSelection,
@@ -33,12 +34,13 @@ import type {
 } from '../shared/types.js';
 import type {
   BaselineFinding,
+  BaselineItem,
   BaselineReview,
   BaselineReviewRequest,
   BaselineReviewResult,
-  SourceTask,
 } from '../sources/contract.js';
 import { prepareReviewView, reviewViewProblem } from './view.js';
+import { REVIEW_VIEW_DIRECTORY } from './view.js';
 import type { ReviewView } from './contract.js';
 import { ReviewError } from './contract.js';
 
@@ -48,6 +50,18 @@ export const BASELINE_INPUT_FILE = 'input.md';
 export const BASELINE_FINDING_FILE = 'finding.json';
 /** The baseline reviewer turn's own log file. */
 export const BASELINE_REVIEWER_LOG = 'reviewer.log';
+/**
+ * The turn's own working root inside its evidence directory: the one place the
+ * launch permits it to write. It sits beside the snapshot rather than inside it,
+ * so the inspected source and the retained workspace are outside the writable
+ * root the runtime's sandbox enforces.
+ */
+export const BASELINE_TURN_DIRECTORY = 'turn';
+
+/** The file one baseline reviewer turn writes its finding to. */
+export function baselineFindingPath(dir: string): string {
+  return path.join(dir, BASELINE_TURN_DIRECTORY, BASELINE_FINDING_FILE);
+}
 
 /** How much of one ticket, one finding field, and one command's output is kept. */
 const MAX_TASK_DESCRIPTION_CHARS = 8_000;
@@ -116,7 +130,7 @@ export async function baselineFailures(
  * `finding.json`. It carries no coding instruction, and it says so.
  */
 export function baselinePrompt(request: {
-  readonly item: SourceTask;
+  readonly item: BaselineItem;
   readonly baseline: CheckRoundResult;
   readonly failures: readonly BaselineFailure[];
   readonly view: ReviewView;
@@ -124,7 +138,8 @@ export function baselinePrompt(request: {
 }): string {
   const { item, baseline, failures, view, dir } = request;
   const { ref, task } = item;
-  const findingPath = path.join(dir, BASELINE_FINDING_FILE);
+  const turnDir = path.join(dir, BASELINE_TURN_DIRECTORY);
+  const findingPath = baselineFindingPath(dir);
   const sections: string[] = [];
 
   sections.push(
@@ -203,17 +218,22 @@ export function baselinePrompt(request: {
   sections.push(
     [
       '## The source snapshot you may inspect',
-      `Your working directory is the evidence directory \`${dir}\`, outside the inspected tree.`,
-      `The snapshot is in \`repo/\` (\`${view.path}\`): a clone of the ticket's retained working`,
-      `copy, detached at the exact commit the baseline ran against (${view.head}). Nothing has`,
-      'been changed since: no coding turn ran, and the checks themselves changed no tracked file',
-      'the snapshot reports.',
+      `Your working directory is \`${turnDir}\`: the only place this turn may write. The snapshot`,
+      `is in \`${view.path}\`, beside it — a clone of the ticket's retained working copy,`,
+      `detached at the exact commit the baseline ran against (${view.head}). Nothing has been`,
+      'changed since: no coding turn ran, and the checks themselves changed no tracked file the',
+      'snapshot reports.',
+      '',
+      'The launch runs under a filesystem policy that allows writes only in your working directory',
+      `and the host's temporary directory, so the snapshot and the ticket's retained working copy`,
+      'are read-only to you: an attempted edit there fails instead of being quietly accepted.',
       '',
       'Inspect it with your ordinary read tools — for example:',
       '',
-      `- \`git -C repo log --oneline -5\` and \`git -C repo status\` for where it stands;`,
-      `- \`git -C repo show ${view.head}:<path>\` and ordinary file reads under \`repo/\` for the`,
-      '  code, tests, and project configuration the failing check exercises;',
+      `- \`git -C "${view.path}" log --oneline -5\` and \`git -C "${view.path}" status\` for where it`,
+      '  stands;',
+      `- \`git -C "${view.path}" show ${view.head}:<path>\` and ordinary file reads under`,
+      `  \`${view.path}\` for the code, tests, and project configuration the failing check exercises;`,
       '- running a read-only command you need in that checkout is allowed, but it must not change',
       '  it: no edits, no `git add`, commit, checkout, switch, stash, clean, gc, fetch, or push,',
       '  and no process left running when your turn ends.',
@@ -230,10 +250,11 @@ export function baselinePrompt(request: {
       '## What this turn must not do',
       '- Diagnose only: do not implement or suggest editing anything outside the working copy,',
       '  do not change the ticket or its status, and do not change the configured commands.',
-      `- Do not change the snapshot: no edits under \`repo/\`, no commit, and nothing else written`,
-      `  there. The only file you write is \`${findingPath}\`, outside the snapshot. The harness`,
-      '  checks after your turn that the snapshot is still exactly at the commit above; a changed',
-      '  snapshot produces no finding at all.',
+      `- Do not change the snapshot or the retained working copy: no edits under \`${view.path}\`, no`,
+      `  commit, and nothing else written there. The only file you write is \`${findingPath}\`,`,
+      '  outside the snapshot. The launch makes those trees read-only, and the harness checks after',
+      '  your turn that the snapshot and the retained working copy are still exactly at the commit',
+      '  above; a changed snapshot or working copy produces no finding at all.',
       '- Do not ask for the project’s tests, checks, linting, type checking, or other tooling to be',
       '  weakened, skipped, deleted, or loosened, and never propose a repair that does one of',
       '  those: a baseline that fails must be repaired, not made to pass.',
@@ -361,6 +382,174 @@ export function parseBaselineFinding(text: string, where: string): BaselineFindi
   );
 }
 
+/**
+ * One working copy as the diagnosis reads it: the commit it stands at, and the
+ * porcelain status of its working tree. Generated, ignored artifacts are not
+ * shown — the configured commands may legitimately leave those — while an
+ * untracked file the turn should not have written is.
+ */
+interface WorkingCopy {
+  readonly head: string;
+  readonly lines: readonly string[];
+}
+
+/** One working copy, or why it cannot be read at all. */
+type WorkingCopyRead = { readonly workingCopy: WorkingCopy } | { readonly problem: string };
+
+/** Reads one working copy's commit and status; a failure is named, never thrown. */
+async function readWorkingCopy(workspacePath: string, stop: AbortSignal): Promise<WorkingCopyRead> {
+  try {
+    const head = await runGit(['rev-parse', '--verify', 'HEAD^{commit}'], workspacePath, { stop });
+    if (head.code !== 0) {
+      return { problem: `its commit cannot be read: ${firstLine(head.stderr)}` };
+    }
+    const status = await runGit(
+      ['status', '--porcelain=v1', '--untracked-files=normal', '--no-renames'],
+      workspacePath,
+      { stop },
+    );
+    if (status.code !== 0) {
+      return {
+        problem: `the state of its working tree cannot be read: ${firstLine(status.stderr)}`,
+      };
+    }
+    return {
+      workingCopy: {
+        head: head.stdout.trim(),
+        lines: status.stdout
+          .split('\n')
+          .map((line) => line.replace(/\r$/, ''))
+          .filter((line) => line.trim() !== ''),
+      },
+    };
+  } catch (cause) {
+    return { problem: `it could not be checked: ${messageOf(cause)}` };
+  }
+}
+
+/**
+ * Why one working copy is not the snapshot its baseline ran against, or `null`
+ * when it still is.
+ *
+ * The recorded base commit is what the reviewer's snapshot is pinned at, so the
+ * tree the reviewer can read is the tree the checks ran against only while the
+ * working copy still stands exactly there with nothing tracked changed. The
+ * configured setup and check commands run with write access to that working
+ * copy: a commit or an edit they left behind would otherwise be invisible to the
+ * reviewer while the prompt asserted the snapshot had not changed.
+ */
+function pinnedSnapshotProblem(workingCopy: WorkingCopy, baseCommit: string): string | null {
+  if (workingCopy.head.toLowerCase() !== baseCommit.toLowerCase()) {
+    return `it is at ${workingCopy.head}, not at the snapshot the baseline ran against (${baseCommit})`;
+  }
+  // Untracked paths this harness's own commands generated are not part of the
+  // committed snapshot and are not what the reviewer's clone is missing; a
+  // tracked path that differs is.
+  const tracked = workingCopy.lines.filter((line) => !line.startsWith('??'));
+  if (tracked.length > 0) {
+    return (
+      `it carries ${String(tracked.length)} changed tracked path(s): ` +
+      listPaths(tracked.map((line) => line.slice(3).trim()))
+    );
+  }
+  return null;
+}
+
+/** Why one working copy is no longer what it was before a turn ran, or `null`. */
+function changedWorkingCopyProblem(before: WorkingCopy, after: WorkingCopy): string | null {
+  if (after.head !== before.head) {
+    return `it is now at ${after.head}, not at ${before.head}`;
+  }
+  const wasThere = new Set(before.lines);
+  const isThere = new Set(after.lines);
+  const changed = [
+    ...after.lines.filter((line) => !wasThere.has(line)),
+    ...before.lines.filter((line) => !isThere.has(line)),
+  ];
+  if (changed.length === 0) {
+    return null;
+  }
+  return `it carries ${String(changed.length)} path(s) the turn changed: ${listPaths(
+    changed.map((line) => line.slice(3).trim()),
+  )}`;
+}
+
+/** What one diagnosis's evidence directory already holds about a reviewer turn. */
+type PriorTurn =
+  /** No turn began here: the snapshot copy was never made. */
+  | { readonly kind: 'none' }
+  /** A turn completed: the finding it wrote is published unchanged. */
+  | { readonly kind: 'finding'; readonly text: string }
+  /** A turn began and left no usable finding; no second turn is started. */
+  | { readonly kind: 'unfinished'; readonly problem: string };
+
+/**
+ * What a previous invocation left in this evidence directory, if anything.
+ *
+ * A restart resumes from here rather than spending a second reviewer turn on the
+ * same snapshot, commands, and results: the finding an earlier turn completed is
+ * reused unchanged while the snapshot it inspected is still the clean snapshot
+ * it was pinned at, and a turn that began without producing one is reported as
+ * the incomplete evidence it is. The reviewer turn never starts for an evidence
+ * directory whose earlier turn's outcome is not established first.
+ */
+async function priorTurn(request: BaselineReviewRequest, logPath: string): Promise<PriorTurn> {
+  const findingPath = baselineFindingPath(request.dir);
+  const viewPath = path.join(request.dir, REVIEW_VIEW_DIRECTORY);
+  const began = (await exists(viewPath)) || (await exists(logPath)) || (await exists(findingPath));
+  if (!began) {
+    return { kind: 'none' };
+  }
+
+  let text: string;
+  try {
+    text = await readFile(findingPath, 'utf8');
+  } catch (cause) {
+    return {
+      kind: 'unfinished',
+      problem:
+        `an earlier reviewer turn for ${request.item.ref.key} already began over this exact ` +
+        `snapshot, commands, and results and wrote no finding this diagnosis may publish ` +
+        `(${messageOf(cause)}), so no second reviewer turn is started for the same evidence. ` +
+        `The turn's own log and any snapshot copy it made are kept under "${request.dir}", and a ` +
+        'person decides what happens next',
+    };
+  }
+
+  const problem = await reviewViewProblem(
+    { path: viewPath, head: request.workspace.baseCommit, base: request.workspace.baseCommit },
+    request.stop,
+  );
+  if (problem !== null) {
+    return {
+      kind: 'unfinished',
+      problem:
+        `an earlier reviewer turn for ${request.item.ref.key} left a finding, and the snapshot it ` +
+        `inspected is no longer the clean snapshot it was pinned at (${problem}), so the finding ` +
+        `cannot be trusted and is not published. The evidence is kept under "${request.dir}", and ` +
+        'a person decides what happens next',
+    };
+  }
+  return { kind: 'finding', text };
+}
+
+/** Whether one path exists, without following it. */
+async function exists(candidate: string): Promise<boolean> {
+  try {
+    await stat(candidate);
+    return true;
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code === 'ENOENT') {
+      return false;
+    }
+    throw new ReviewError(
+      'inconclusive',
+      `the baseline diagnostic's evidence at "${candidate}" could not be inspected: ` +
+        messageOf(cause),
+    );
+  }
+}
+
 /** What the baseline reviewer turn is launched with. */
 export interface BaselineReviewerParts {
   /** The explicitly configured reviewer launch: never a coding tier. */
@@ -402,6 +591,8 @@ async function baselineTurn(
 ): Promise<BaselineReviewResult> {
   const key = request.item.ref.key;
   const logPath = path.join(request.dir, BASELINE_REVIEWER_LOG);
+  const turnDir = path.join(request.dir, BASELINE_TURN_DIRECTORY);
+  const findingPath = baselineFindingPath(request.dir);
   const failures = await baselineFailures(request.baseline);
 
   // The diagnosis's own evidence directory is created before the first step
@@ -419,6 +610,59 @@ async function baselineTurn(
         messageOf(cause),
       logPath,
     };
+  }
+
+  // The reviewer is handed a snapshot of what the checks really ran against, so
+  // that has to be established first: a configured command that rewrote a
+  // tracked file, or left a commit behind, means the committed snapshot the
+  // clone is pinned at is no longer the tree the failure came from. Nothing is
+  // published from evidence that cannot be attributed to the snapshot, and no
+  // reviewer turn is started for it.
+  const before = await readWorkingCopy(request.workspace.path, request.stop);
+  if ('problem' in before) {
+    return {
+      summary: null,
+      finding: null,
+      problem:
+        `the retained workspace is not the snapshot the baseline ran against ` +
+        `(${request.workspace.baseCommit}), so this diagnosis cannot establish what the failing ` +
+        `check really ran against and nothing is published: ${before.problem}`,
+      logPath,
+    };
+  }
+  const pinned = pinnedSnapshotProblem(before.workingCopy, request.workspace.baseCommit);
+  if (pinned !== null) {
+    return {
+      summary: null,
+      finding: null,
+      problem:
+        `the retained workspace is not the snapshot the baseline ran against ` +
+        `(${request.workspace.baseCommit}), so this diagnosis cannot establish what the failing ` +
+        `check really ran against and nothing is published: ${pinned}. A setup or check command ` +
+        'that changes the working copy it runs in has to be made to leave the repository alone ' +
+        'before this baseline can be diagnosed',
+      logPath,
+    };
+  }
+
+  // What this evidence already holds, when a previous invocation was stopped
+  // after its reviewer turn started: a restart finishes that one, never a second
+  // turn for the same snapshot, the same commands, and the same results.
+  const prior = await priorTurn(request, logPath);
+  if (prior.kind === 'unfinished') {
+    return { summary: null, finding: null, problem: prior.problem, logPath };
+  }
+  if (prior.kind === 'finding') {
+    try {
+      return {
+        summary: null,
+        finding: parseBaselineFinding(prior.text, BASELINE_FINDING_FILE),
+        problem: null,
+        logPath,
+      };
+    } catch (cause) {
+      return { summary: null, finding: null, problem: messageOf(cause), logPath };
+    }
   }
 
   let view: ReviewView;
@@ -453,6 +697,9 @@ async function baselineTurn(
 
   let log: AgentLog;
   try {
+    // The turn's own working root is the only directory the launch lets it
+    // write in; the snapshot and the retained workspace sit outside it.
+    await mkdir(turnDir, { recursive: true });
     await writeFile(path.join(request.dir, BASELINE_INPUT_FILE), prompt, 'utf8');
     log = await openEvidenceLog(logPath, "the baseline reviewer turn's output");
   } catch (cause) {
@@ -473,7 +720,8 @@ async function baselineTurn(
       {
         prompt,
         label: `Nexus Lens baseline diagnosis for ${key}`,
-        workspacePath: request.dir,
+        workspacePath: turnDir,
+        sandbox: 'workspace-write',
         skipGitRepoCheck: true,
         agentLog: log,
         stop: request.stop,
@@ -512,9 +760,28 @@ async function baselineTurn(
     };
   }
 
+  // The launch makes the retained workspace read-only, and this is the check
+  // that holds it to that: a finding from a turn that wrote into the ticket's
+  // own working copy is refused, whatever the clone looks like.
+  const after = await readWorkingCopy(request.workspace.path, request.stop);
+  const changedWorkspace =
+    'problem' in after
+      ? after.problem
+      : changedWorkingCopyProblem(before.workingCopy, after.workingCopy);
+  if (changedWorkspace !== null) {
+    return {
+      summary,
+      finding: null,
+      problem:
+        `the baseline reviewer turn for ${key} did not leave the retained workspace as it found ` +
+        `it: ${changedWorkspace}, so its finding is not trustworthy and nothing is published`,
+      logPath,
+    };
+  }
+
   let text: string;
   try {
-    text = await readFile(path.join(request.dir, BASELINE_FINDING_FILE), 'utf8');
+    text = await readFile(findingPath, 'utf8');
   } catch (cause) {
     return {
       summary,

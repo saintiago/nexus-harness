@@ -27,6 +27,7 @@ import { reopenWorkspace } from '../workspace/reopen.js';
 import { readWorkspaceState, sourceItemFor } from '../workspace/state.js';
 import type {
   BaselineDiagnosisOutcome,
+  BaselineResumeOutcome,
   CompletionRunSummary,
   SourceCandidate,
   SourceComment,
@@ -610,6 +611,63 @@ async function diagnoseBaseline(
 }
 
 /**
+ * Finishing a baseline diagnosis a previous invocation left pending, before
+ * anything is discovered or claimed.
+ *
+ * An invocation can stop after the diagnosis's record was written and before the
+ * item was told, leaving the ticket in the running status where a fresh scan
+ * would never look and `queue`'s own recovery refuses to guess. This is the step
+ * that closes that window: the item's thread decides whether the finding is
+ * already published (then only the status move is missing) and the retained
+ * evidence decides whether one is still to publish, so nothing is diagnosed
+ * twice and no coding turn is ever started from a diagnosis.
+ *
+ * `onAttention` is how a batch and a serial step differ. A batch reports an item
+ * that a diagnosis left In Review and goes on with the tickets it may take; a
+ * serial step stops there instead, because it never takes another ticket while
+ * one needs a person.
+ */
+async function resumeBaseline(
+  context: SourceContext,
+  state: BatchState,
+  phase: string,
+  onAttention: 'stop' | 'continue',
+): Promise<Step | 'none'> {
+  const diagnosis = context.baselineDiagnosis;
+  if (diagnosis === undefined || context.stop.aborted) {
+    return 'none';
+  }
+
+  let outcome: BaselineResumeOutcome | null;
+  try {
+    outcome = await diagnosis.resume(context.stop);
+  } catch (cause) {
+    return stopWith(
+      state,
+      `${phase}: a pending baseline diagnosis could not be resumed, so intake stops for a person: ` +
+        messageOf(cause),
+    );
+  }
+  if (outcome === null) {
+    return 'none';
+  }
+  if (outcome.kind === 'repair') {
+    context.io.out(outcome.detail);
+    return 'none';
+  }
+  if (outcome.kind === 'cancelled') {
+    return context.stop.aborted ? 'cancelled' : stopWith(state, `${phase}: ${outcome.detail}`);
+  }
+  if (outcome.kind === 'attention' && onAttention === 'continue') {
+    // The item stays In Review with the evidence and what a person must do,
+    // exactly as a failed attempt leaves it; nothing about it is claimed here.
+    context.io.err(outcome.detail);
+    return 'none';
+  }
+  return stopWith(state, `${phase}: ${outcome.detail}`);
+}
+
+/**
  * One item, through the documented reservation sequence: receipt first, a fresh
  * read of the item and a decision from that read, eligibility and revision
  * rechecked, an unambiguous claim, the unchanged runner, the real local result,
@@ -861,16 +919,19 @@ async function attempt(
       workspaceId === undefined
         ? []
         : ((await readWorkspaceState(workDir, workspaceId))?.attempts ?? []);
-    // What the item's own thread says since the previous attempt ended: for a
-    // first attempt of a workspace, the whole thread, and for a later rung of the
-    // same climb, the harness's own comment for the attempt before it. A read
-    // that fails is said out loud and does not stop the attempt: it is context,
-    // and the run's own evidence is not.
+    // What the item's own thread says since this workspace's own history began.
+    // A read that fails is said out loud and does not stop the attempt: it is
+    // context, and the run's own evidence is not.
     let comments: readonly SourceComment[] = [];
     try {
       comments = await source.commentsSince(
         item,
-        earlier.at(-1)?.endedAt ?? new Date(0).toISOString(),
+        // The window begins where this workspace's own history begins, not at the
+        // previous attempt: the reviewed finding a red baseline was returned with
+        // is written to the thread between two attempts of the same workspace, and
+        // every rung of the climb has to carry it. A first attempt of a fresh
+        // workspace keeps reading the whole thread, as it always did.
+        earlier[0]?.endedAt ?? new Date(0).toISOString(),
         stop,
       );
     } catch (cause) {
@@ -1239,6 +1300,17 @@ export async function runSource(
 
   const lock = await acquireIntakeLock(context.workDir, context.lockNamespace, context.now);
   try {
+    // Before anything is discovered, finish whatever a previous invocation left
+    // pending: an item still in the running status because its red baseline was
+    // diagnosed but never recorded would not be listed as eligible again.
+    const resumed = await resumeBaseline(context, state, 'source intake', 'continue');
+    if (resumed === 'cancelled') {
+      return summarize('cancelled', state);
+    }
+    if (resumed === 'stop') {
+      return summarize('stopped', state);
+    }
+
     let candidates: readonly SourceCandidate[];
     try {
       candidates = await context.source.listEligible(context.stop);
@@ -1344,6 +1416,17 @@ export async function takeOneItem(
       ? null
       : await acquireIntakeLock(context.workDir, context.lockNamespace, context.now);
   try {
+    // A serial step recovers the same way a batch does, and stops instead of
+    // going on when the recovered diagnosis needs a person: a queue never takes
+    // another ticket while one of them is waiting on a human.
+    const resumed = await resumeBaseline(context, state, 'the queue step', 'stop');
+    if (resumed === 'cancelled') {
+      return step('cancelled');
+    }
+    if (resumed === 'stop') {
+      return step('attention');
+    }
+
     let candidates: readonly SourceCandidate[];
     try {
       candidates = await context.source.listEligible(context.stop);
@@ -1439,6 +1522,17 @@ export async function watchSource(options: SourceWatchOptions): Promise<SourceSu
     for (;;) {
       if (stop.aborted) {
         return summarize('cancelled', state);
+      }
+
+      // The same pre-claim recovery a finite batch runs, on every scan: a ticket
+      // whose baseline diagnosis never finished is finished before this scan
+      // looks for eligible work.
+      const resumed = await resumeBaseline(options, state, 'source intake', 'continue');
+      if (resumed === 'cancelled') {
+        return summarize('cancelled', state);
+      }
+      if (resumed === 'stop') {
+        return summarize('stopped', state);
       }
 
       let candidates: readonly SourceCandidate[];

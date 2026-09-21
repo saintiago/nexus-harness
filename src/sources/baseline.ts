@@ -31,21 +31,26 @@
  * diagnosed twice, no second reviewer turn is paid for, and the run resumes by
  * making the status move it had not yet made.
  */
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { messageOf } from '../shared/errors.js';
-import type { CheckRoundResult, CommandResult, SourceRef } from '../shared/types.js';
+import type { CheckRoundResult, CommandResult, SourceRef, Task } from '../shared/types.js';
 import type {
   BaselineDiagnosis,
   BaselineDiagnosisOutcome,
+  BaselineDiagnosisRequest,
   BaselineFinding,
+  BaselineItem,
   BaselineRecord,
   BaselineReview,
   BaselineReviewResult,
+  BaselineResumeOutcome,
   SourceIo,
   SourceNote,
-  SourceTask,
 } from './contract.js';
+import { SourceError } from './contract.js';
+import { readReceipt, receiptFilePath, updateReceipt } from './receipts.js';
 
 /** The prefix of the marker one diagnosis comment carries, in the Jira thread. */
 export const BASELINE_MARKER_PREFIX = 'nexus-baseline:';
@@ -157,6 +162,285 @@ function diagnosisParagraphs(parts: {
   ];
 }
 
+/** The fields of one actionable finding, in the order its comment writes them. */
+const REPAIR_FIELD_LABELS = [
+  'Failing check',
+  'Evidence',
+  'Likely cause',
+  'Repair guidance',
+] as const;
+/** The fields of one non-actionable finding, in the order its comment writes them. */
+const ATTENTION_FIELD_LABELS = ['Why no repair', 'Required action'] as const;
+
+/**
+ * The reviewed finding one diagnosis comment carries, as separate guidance
+ * lines: one line per field, each one exactly as wide as the comment's own
+ * bound, so a later attempt is handed every field whole instead of one collapsed
+ * paragraph whose tail — the likely cause and the repair — is what got cut.
+ *
+ * A comment without a diagnosis marker, or without any of the fields, produces
+ * nothing: the caller falls back to the ordinary one-line rendering of it. The
+ * labels are this harness's own, written by `diagnosisParagraphs` above.
+ */
+export function baselineGuidanceLines(text: string): readonly string[] {
+  if (!text.includes(BASELINE_MARKER_PREFIX)) {
+    return [];
+  }
+  const lines: string[] = [];
+  for (const raw of text.split('\n')) {
+    const line = raw.trim();
+    for (const label of [...REPAIR_FIELD_LABELS, ...ATTENTION_FIELD_LABELS]) {
+      const prefix = `${label}: `;
+      if (!line.startsWith(prefix)) {
+        continue;
+      }
+      const field = `${label.charAt(0).toLowerCase()}${label.slice(1)}`;
+      lines.push(`reviewed baseline finding — ${field}: ${line.slice(prefix.length)}`);
+    }
+  }
+  return lines;
+}
+
+/** The file one pending diagnosis keeps what a restart resumes from. */
+export const BASELINE_EVIDENCE_FILE = 'evidence.json';
+
+/**
+ * What one pre-delivery diagnosis records before its reviewer turn: the identity
+ * of the evidence, the task the baseline failed under, the retained workspace it
+ * ran in, and the completed red round itself. It is the local half of the
+ * deduplication record — the comment on the item's thread is the remote half —
+ * and it is what an invocation that stopped after this record was written, and
+ * before the finding was published, resumes from instead of leaving the ticket
+ * in the running status.
+ */
+export interface BaselineEvidence {
+  readonly version: 1;
+  /** The evidence identity; also the name of the directory this record lives in. */
+  readonly evidenceId: string;
+  readonly ref: SourceRef;
+  /** The task the baseline failed under, as the item was prepared for it. */
+  readonly task: Task;
+  readonly workspace: {
+    readonly workspaceId: string;
+    readonly workspacePath: string;
+    readonly branch: string;
+    readonly baseCommit: string;
+  };
+  /** The configured commands and the results they produced. */
+  readonly baseline: CheckRoundResult;
+  /** How this piece of evidence ended; absent while its diagnosis is unfinished. */
+  readonly closed?: 'repair' | 'attention' | 'left-alone';
+  readonly closedAt?: string;
+}
+
+/** Where one diagnosis keeps its evidence: `<workDir>/baseline/<evidenceId>`. */
+function evidenceDirectory(workDir: string, evidenceId: string): string {
+  return path.join(workDir, 'baseline', evidenceId);
+}
+
+/** The record file of one piece of evidence. */
+function evidenceFile(workDir: string, evidenceId: string): string {
+  return path.join(evidenceDirectory(workDir, evidenceId), BASELINE_EVIDENCE_FILE);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** One nonblank string field of a record, or `null` when it does not hold one. */
+function textField(record: Record<string, unknown>, name: string): string | null {
+  const value = record[name];
+  return typeof value === 'string' && value.trim() !== '' ? value : null;
+}
+
+/** Why a file under the diagnosis's own evidence directory cannot be read as its record. */
+function evidenceProblem(file: string, problem: string): SourceError {
+  return new SourceError(
+    'fatal',
+    `the baseline evidence "${file}" ${problem}, so the diagnosis it describes cannot be ` +
+      'resumed. Inspect it by hand; do not treat it as nothing pending.',
+  );
+}
+
+/**
+ * Reads one diagnosis's record. `null` means the file is not there — a
+ * diagnosis that never reached its reviewer turn, or one whose record was
+ * written by something else entirely — while a file that is there and does not
+ * hold a record this harness wrote is refused by name. Treating a corrupt record
+ * as "nothing pending" is exactly how a diagnosis that never finished would be
+ * forgotten, and the item left in the running status with nothing looking for
+ * it.
+ */
+async function readEvidence(file: string): Promise<BaselineEvidence | null> {
+  let text: string;
+  try {
+    text = await readFile(file, 'utf8');
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code === 'ENOENT') {
+      return null;
+    }
+    throw evidenceProblem(file, `could not be read (${messageOf(cause)})`);
+  }
+
+  let value: unknown;
+  try {
+    value = JSON.parse(text) as unknown;
+  } catch (cause) {
+    throw evidenceProblem(file, `is not valid JSON (${messageOf(cause)})`);
+  }
+  if (!isRecord(value) || value['version'] !== 1) {
+    throw evidenceProblem(file, 'is not a record this harness wrote');
+  }
+  const evidenceId = textField(value, 'evidenceId');
+  const ref = value['ref'];
+  const task = value['task'];
+  const workspace = value['workspace'];
+  const baseline = value['baseline'];
+  if (
+    evidenceId === null ||
+    !isRecord(ref) ||
+    !isRecord(task) ||
+    !isRecord(workspace) ||
+    !isRecord(baseline)
+  ) {
+    throw evidenceProblem(file, 'does not hold the item, task, workspace, and round it describes');
+  }
+  const refFields = ['type', 'scope', 'id', 'key', 'url', 'updatedAt'].map((name) =>
+    textField(ref, name),
+  );
+  const taskId = textField(task, 'id');
+  const taskTitle = textField(task, 'title');
+  const taskDescription = textField(task, 'description');
+  const acceptanceCriteria = task['acceptanceCriteria'];
+  const workspaceId = textField(workspace, 'workspaceId');
+  const workspacePath = textField(workspace, 'workspacePath');
+  const branch = textField(workspace, 'branch');
+  const baseCommit = textField(workspace, 'baseCommit');
+  if (
+    refFields.some((field) => field === null) ||
+    taskId === null ||
+    taskTitle === null ||
+    taskDescription === null ||
+    !Array.isArray(acceptanceCriteria) ||
+    !acceptanceCriteria.every((criterion) => typeof criterion === 'string') ||
+    workspaceId === null ||
+    workspacePath === null ||
+    branch === null ||
+    baseCommit === null ||
+    !Array.isArray(baseline['setup']) ||
+    !Array.isArray(baseline['checks'])
+  ) {
+    throw evidenceProblem(file, 'does not hold the fields a diagnosis resumes from');
+  }
+
+  const sourceRef: SourceRef = {
+    type: refFields[0] ?? '',
+    scope: refFields[1] ?? '',
+    id: refFields[2] ?? '',
+    key: refFields[3] ?? '',
+    url: refFields[4] ?? '',
+    updatedAt: refFields[5] ?? '',
+  };
+  const round = baseline as unknown as CheckRoundResult;
+  // The identity is recomputed from what the record holds: evidence whose own
+  // record no longer hashes to the name it was kept under is evidence this
+  // harness cannot recognise, and it is refused rather than diagnosed again.
+  if (baselineEvidenceId(sourceRef, baseCommit, round) !== evidenceId) {
+    throw evidenceProblem(file, 'does not hash to the evidence identity it was kept under');
+  }
+
+  return {
+    version: 1,
+    evidenceId,
+    ref: sourceRef,
+    task: {
+      id: taskId,
+      title: taskTitle,
+      description: taskDescription,
+      acceptanceCriteria: [...acceptanceCriteria] as readonly string[],
+    },
+    workspace: { workspaceId, workspacePath, branch, baseCommit },
+    baseline: round,
+    ...(value['closed'] === 'repair' ||
+    value['closed'] === 'attention' ||
+    value['closed'] === 'left-alone'
+      ? { closed: value['closed'] as 'repair' | 'attention' | 'left-alone' }
+      : {}),
+    ...(textField(value, 'closedAt') === null
+      ? {}
+      : { closedAt: textField(value, 'closedAt') ?? '' }),
+  };
+}
+
+/** Writes one diagnosis's record, exclusively, before its reviewer turn runs. */
+async function writeEvidence(file: string, evidence: BaselineEvidence): Promise<void> {
+  await mkdir(path.dirname(file), { recursive: true });
+  try {
+    await writeFile(file, `${JSON.stringify(evidence, null, 2)}\n`, {
+      flag: 'wx',
+      encoding: 'utf8',
+    });
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code === 'EEXIST') {
+      throw evidenceProblem(file, 'is already there, so this diagnosis cannot record its own');
+    }
+    throw evidenceProblem(file, `could not be written (${messageOf(cause)})`);
+  }
+}
+
+/**
+ * Marks one piece of evidence as finished, atomically and through a
+ * same-directory temporary file, so a reader never sees half of one. A record
+ * that is no longer there, or one that no longer parses, is left alone: the
+ * item's own thread is the authority on what was published, and nothing here
+ * rewrites a record it cannot read back.
+ */
+async function closeEvidence(file: string, closed: BaselineEvidence['closed']): Promise<void> {
+  const current = await readEvidence(file);
+  if (current === null) {
+    return;
+  }
+  const temporary = `${file}.tmp-${randomUUID()}`;
+  try {
+    await writeFile(
+      temporary,
+      `${JSON.stringify({ ...current, closed, closedAt: new Date().toISOString() }, null, 2)}\n`,
+      'utf8',
+    );
+    await rename(temporary, file);
+  } catch (cause) {
+    await rm(temporary, { force: true });
+    throw evidenceProblem(file, `could not be marked as finished (${messageOf(cause)})`);
+  }
+}
+
+/**
+ * Every record one diagnosis has kept under `workDir`, oldest name first. They
+ * are read in that fixed order so a resume is deterministic; each one is
+ * skipped as soon as it says it finished, so a resolved diagnosis costs one read
+ * and no remote call.
+ */
+async function evidenceFiles(workDir: string): Promise<readonly string[]> {
+  const root = path.join(workDir, 'baseline');
+  let entries;
+  try {
+    entries = await readdir(root, { withFileTypes: true });
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code === 'ENOENT') {
+      return [];
+    }
+    throw new SourceError(
+      'fatal',
+      `the retained baseline evidence under "${root}" could not be read: ${messageOf(cause)}`,
+    );
+  }
+  return entries
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+    .sort()
+    .map((name) => path.join(root, name, BASELINE_EVIDENCE_FILE));
+}
+
 /** What one pre-delivery diagnosis is built from, all ordinary pieces. */
 export interface BaselineDiagnosisParts {
   /** The one bounded local reviewer turn the diagnosis runs. */
@@ -199,7 +483,7 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
 
   /** One status move, reported as the step it is rather than as a refusal. */
   const move = async (
-    item: SourceTask,
+    item: BaselineItem,
     target: string,
     stop: AbortSignal,
   ): Promise<{ readonly moved: boolean } | { readonly problem: string }> => {
@@ -211,154 +495,338 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
     }
   };
 
-  return {
-    async diagnose(request): Promise<BaselineDiagnosisOutcome> {
-      const { item, workspace, baseline, stop } = request;
-      const key = item.ref.key;
-      const evidenceId = baselineEvidenceId(item.ref, workspace.baseCommit, baseline);
-      const dir = path.join(workDir, 'baseline', evidenceId);
-
-      if (stop.aborted) {
-        return {
-          kind: 'cancelled',
-          detail: `${key}: the intake was stopped before its red baseline could be diagnosed`,
-        };
-      }
-
-      let notes: readonly SourceNote[];
-      try {
-        notes = await record.listComments(item.ref.id, stop);
-      } catch (cause) {
-        return unfinished(
-          stop,
-          `${key}: its thread could not be read, so its red baseline was not diagnosed and the ` +
-            `item was not moved: ${messageOf(cause)}`,
-          null,
-        );
-      }
-
-      // The thread is the deduplication record: evidence that already carries a
-      // finding is never diagnosed again, and a run that stopped between the
-      // comment and the status move resumes by making that one move.
-      const existing = markerFor(notes, evidenceId);
-      if (existing !== null) {
-        const target = existing.kind === 'repair' ? readyStatus : reviewStatus;
-        const moved = await move(item, target, stop);
-        if ('problem' in moved) {
-          return unfinished(
-            stop,
-            `${key}: its baseline finding is already on the issue (comment ` +
-              `${existing.note.id}), but moving it to "${target}" failed: ${moved.problem}`,
-            existing.note.id,
-          );
-        }
-        const detail =
-          `${key}: this exact baseline evidence was already diagnosed (comment ` +
-          `${existing.note.id}); no second reviewer turn was started and no second comment was ` +
-          `written` +
-          (moved.moved
-            ? `, and the item was moved to "${target}"`
-            : `, and the item had already left its running status`);
-        io.out(detail);
-        return {
-          kind: existing.kind === 'repair' ? 'repair' : 'attention',
-          detail,
-          commentId: existing.note.id,
-        };
-      }
-
-      io.out(
-        `${key}: a completed red baseline before any coding turn; one reviewer turn is diagnosing ` +
-          `the snapshot at ${workspace.baseCommit} (evidence under ${dir})`,
+  /**
+   * Marks one piece of retained evidence as finished, and reports a failure to
+   * do so without contradicting what the item's own thread already holds: the
+   * comment is what decides, and an unreadable record is read again — never
+   * diagnosed again — by the next resume.
+   */
+  const finish = async (
+    file: string,
+    evidence: BaselineEvidence,
+    closed: BaselineEvidence['closed'],
+  ): Promise<void> => {
+    try {
+      await closeEvidence(file, closed);
+    } catch (cause) {
+      io.err(
+        `${evidence.ref.key}: the baseline diagnosis is on the issue, but its retained evidence ` +
+          `could not be marked finished: ${messageOf(cause)}`,
       );
-      let reviewed: BaselineReviewResult;
-      try {
-        // The one turn is bounded like every other launch: the run's own stop
-        // request, and a limit of its own so a reviewer that never answers
-        // cannot hold the intake open.
-        const turnStop = AbortSignal.any([
-          stop,
-          AbortSignal.timeout(Math.max(1, reviewerTimeoutMs)),
-        ]);
-        reviewed = await reviewer({
-          dir,
-          item,
-          workspace: { path: workspace.workspacePath, baseCommit: workspace.baseCommit },
-          baseline,
-          stop: turnStop,
-        });
-      } catch (cause) {
-        reviewed = {
-          summary: null,
-          finding: null,
-          problem: messageOf(cause),
-          logPath: path.join(dir, 'reviewer.log'),
-        };
+    }
+  };
+
+  /**
+   * What the local receipt says once a diagnosis the item has been told about
+   * has finished. It is bookkeeping beside the item's own thread, so a receipt
+   * that cannot be read back is reported and nothing else is changed.
+   */
+  const noteFeedback = async (ref: SourceRef, commentId: string | null): Promise<void> => {
+    const file = receiptFilePath(workDir, ref);
+    try {
+      if ((await readReceipt(file)) === null) {
+        return;
       }
-
-      // A turn that failed, was stopped, wrote nothing usable, or left its view
-      // changed has no finding: the diagnosis records that instead of guessing
-      // at a repair, and the item stays In Review for a person.
-      const finding: BaselineFinding = reviewed.finding ?? {
-        outcome: 'inconclusive',
-        reason: `the baseline diagnostic produced no usable finding: ${
-          reviewed.problem ?? 'no reason was recorded'
-        }`,
-        requiredAction:
-          'Check the configured reviewer launch, its credentials, and the evidence under ' +
-          `"${dir}", then move the item back to "${readyStatus}" to continue it, or repair the ` +
-          'baseline by hand.',
-      };
-
-      const marker =
-        finding.outcome === 'repair' ? repairMarker(evidenceId) : attentionMarker(evidenceId);
-      const paragraphs = diagnosisParagraphs({
-        key,
-        finding,
-        marker,
-        readyStatus,
-        reviewStatus,
+      await updateReceipt(file, {
+        feedback: 'sent',
+        ...(commentId === null ? {} : { commentId }),
       });
+    } catch (cause) {
+      io.err(
+        `${ref.key}: the baseline diagnosis is on the issue, but its receipt could not be ` +
+          `updated: ${messageOf(cause)}`,
+      );
+    }
+  };
 
-      let commentId: string;
+  const diagnose = async (request: BaselineDiagnosisRequest): Promise<BaselineDiagnosisOutcome> => {
+    const { item, workspace, baseline, stop } = request;
+    const key = item.ref.key;
+    const evidenceId = baselineEvidenceId(item.ref, workspace.baseCommit, baseline);
+    const dir = evidenceDirectory(workDir, evidenceId);
+    const file = evidenceFile(workDir, evidenceId);
+
+    if (stop.aborted) {
+      return {
+        kind: 'cancelled',
+        detail: `${key}: the intake was stopped before its red baseline could be diagnosed`,
+      };
+    }
+
+    // What a restart reads: the evidence is recorded before the reviewer turn
+    // runs, so an invocation that stops between the two is finished by the
+    // next one instead of leaving the item in the running status. A record
+    // that is already there belongs to this same evidence — the identity is
+    // recomputed from everything the diagnosis acts on — and is reused.
+    let recorded: BaselineEvidence | null;
+    try {
+      recorded = await readEvidence(file);
+    } catch (cause) {
+      return unfinished(stop, `${key}: ${messageOf(cause)}`, null);
+    }
+    if (recorded === null) {
+      const evidence: BaselineEvidence = {
+        version: 1,
+        evidenceId,
+        ref: item.ref,
+        task: item.task,
+        workspace: {
+          workspaceId: workspace.workspaceId,
+          workspacePath: workspace.workspacePath,
+          branch: workspace.branch,
+          baseCommit: workspace.baseCommit,
+        },
+        baseline,
+      };
       try {
-        commentId = await record.postComment(item.ref.id, paragraphs, stop);
+        await writeEvidence(file, evidence);
       } catch (cause) {
         return unfinished(
           stop,
-          `${key}: the diagnosis could not be confirmed on the issue, so nothing was moved and ` +
-            `the red baseline still needs a person: ${messageOf(cause)}`,
+          `${key}: its red baseline was not diagnosed, and nothing was published or moved: ` +
+            messageOf(cause),
           null,
         );
       }
+      recorded = evidence;
+    }
 
-      const target = finding.outcome === 'repair' ? readyStatus : reviewStatus;
+    let notes: readonly SourceNote[];
+    try {
+      notes = await record.listComments(item.ref.id, stop);
+    } catch (cause) {
+      return unfinished(
+        stop,
+        `${key}: its thread could not be read, so its red baseline was not diagnosed and the ` +
+          `item was not moved: ${messageOf(cause)}`,
+        null,
+      );
+    }
+
+    // The thread is the deduplication record: evidence that already carries a
+    // finding is never diagnosed again, and a run that stopped between the
+    // comment and the status move resumes by making that one move.
+    const existing = markerFor(notes, evidenceId);
+    if (existing !== null) {
+      const target = existing.kind === 'repair' ? readyStatus : reviewStatus;
       const moved = await move(item, target, stop);
       if ('problem' in moved) {
         return unfinished(
           stop,
-          `${key}: the diagnosis is on the issue (comment ${commentId}) but moving it to ` +
-            `"${target}" failed: ${moved.problem}`,
-          commentId,
+          `${key}: its baseline finding is already on the issue (comment ` +
+            `${existing.note.id}), but moving it to "${target}" failed: ${moved.problem}`,
+          existing.note.id,
         );
       }
-
-      const where = moved.moved
-        ? `the item was moved to "${target}"`
-        : `the item had already left its running status, so it was left where it is`;
-      if (finding.outcome === 'repair') {
-        const detail =
-          `${key}: the red baseline is diagnosed and actionable (comment ${commentId}); ${where} ` +
-          'with its workspace pointer preserved, ready for the next claim to repair the baseline ' +
-          'and continue the original task';
-        io.out(detail);
-        return { kind: 'repair', detail, commentId };
-      }
       const detail =
-        `${key}: the red baseline is not actionable (comment ${commentId}); ${where} with the ` +
-        'evidence and the required action, so a person decides what happens next';
-      io.err(detail);
-      return { kind: 'attention', detail, commentId };
-    },
+        `${key}: this exact baseline evidence was already diagnosed (comment ` +
+        `${existing.note.id}); no second reviewer turn was started and no second comment was ` +
+        `written` +
+        (moved.moved
+          ? `, and the item was moved to "${target}"`
+          : `, and the item had already left its running status`);
+      await finish(file, recorded, existing.kind);
+      io.out(detail);
+      return {
+        kind: existing.kind === 'repair' ? 'repair' : 'attention',
+        detail,
+        commentId: existing.note.id,
+      };
+    }
+
+    io.out(
+      `${key}: a completed red baseline before any coding turn; one reviewer turn is diagnosing ` +
+        `the snapshot at ${workspace.baseCommit} (evidence under ${dir})`,
+    );
+    let reviewed: BaselineReviewResult;
+    try {
+      // The one turn is bounded like every other launch: the run's own stop
+      // request, and a limit of its own so a reviewer that never answers
+      // cannot hold the intake open.
+      const turnStop = AbortSignal.any([stop, AbortSignal.timeout(Math.max(1, reviewerTimeoutMs))]);
+      reviewed = await reviewer({
+        dir,
+        item,
+        workspace: { path: workspace.workspacePath, baseCommit: workspace.baseCommit },
+        baseline,
+        stop: turnStop,
+      });
+    } catch (cause) {
+      reviewed = {
+        summary: null,
+        finding: null,
+        problem: messageOf(cause),
+        logPath: path.join(dir, 'reviewer.log'),
+      };
+    }
+
+    // A turn that failed, was stopped, wrote nothing usable, or left its view
+    // changed has no finding: the diagnosis records that instead of guessing
+    // at a repair, and the item stays In Review for a person.
+    const finding: BaselineFinding = reviewed.finding ?? {
+      outcome: 'inconclusive',
+      reason: `the baseline diagnostic produced no usable finding: ${
+        reviewed.problem ?? 'no reason was recorded'
+      }`,
+      requiredAction:
+        'Check the configured reviewer launch, its credentials, and the evidence under ' +
+        `"${dir}", then move the item back to "${readyStatus}" to continue it, or repair the ` +
+        'baseline by hand.',
+    };
+
+    const marker =
+      finding.outcome === 'repair' ? repairMarker(evidenceId) : attentionMarker(evidenceId);
+    const paragraphs = diagnosisParagraphs({
+      key,
+      finding,
+      marker,
+      readyStatus,
+      reviewStatus,
+    });
+
+    let commentId: string;
+    try {
+      commentId = await record.postComment(item.ref.id, paragraphs, stop);
+    } catch (cause) {
+      return unfinished(
+        stop,
+        `${key}: the diagnosis could not be confirmed on the issue, so nothing was moved and ` +
+          `the red baseline still needs a person: ${messageOf(cause)}`,
+        null,
+      );
+    }
+
+    const target = finding.outcome === 'repair' ? readyStatus : reviewStatus;
+    const moved = await move(item, target, stop);
+    if ('problem' in moved) {
+      return unfinished(
+        stop,
+        `${key}: the diagnosis is on the issue (comment ${commentId}) but moving it to ` +
+          `"${target}" failed: ${moved.problem}`,
+        commentId,
+      );
+    }
+
+    const where = moved.moved
+      ? `the item was moved to "${target}"`
+      : `the item had already left its running status, so it was left where it is`;
+    await finish(file, recorded, finding.outcome === 'repair' ? 'repair' : 'attention');
+    if (finding.outcome === 'repair') {
+      const detail =
+        `${key}: the red baseline is diagnosed and actionable (comment ${commentId}); ${where} ` +
+        'with its workspace pointer preserved, ready for the next claim to repair the baseline ' +
+        'and continue the original task';
+      io.out(detail);
+      return { kind: 'repair', detail, commentId };
+    }
+    const detail =
+      `${key}: the red baseline is not actionable (comment ${commentId}); ${where} with the ` +
+      'evidence and the required action, so a person decides what happens next';
+    io.err(detail);
+    return { kind: 'attention', detail, commentId };
   };
+
+  /**
+   * Finishing what a previous invocation left pending, before anything is
+   * discovered or claimed.
+   *
+   * The retained evidence says a diagnosis began for one exact snapshot,
+   * configured command list, and set of results; the item's own thread says
+   * whether its finding was already published. So this makes only the step that
+   * is really missing: the status move for a finding that is already on the
+   * thread, or the record of one that never finished. It never starts a second
+   * reviewer turn for the same evidence, never writes a second comment, and
+   * never touches an item a person has moved somewhere else.
+   */
+  const resume = async (stop: AbortSignal): Promise<BaselineResumeOutcome | null> => {
+    if (stop.aborted) {
+      return {
+        kind: 'cancelled',
+        detail: 'the intake was stopped before any pending baseline diagnosis could be resumed',
+      };
+    }
+
+    let files: readonly string[];
+    try {
+      files = await evidenceFiles(workDir);
+    } catch (cause) {
+      return { kind: 'problem', detail: messageOf(cause) };
+    }
+
+    const resumed: {
+      readonly kind: 'repair' | 'attention';
+      readonly detail: string;
+      readonly commentId: string | null;
+    }[] = [];
+    for (const file of files) {
+      if (stop.aborted) {
+        return {
+          kind: 'cancelled',
+          detail: 'the intake was stopped while a pending baseline diagnosis was being resumed',
+        };
+      }
+      let evidence: BaselineEvidence | null;
+      try {
+        evidence = await readEvidence(file);
+      } catch (cause) {
+        return { kind: 'problem', detail: messageOf(cause) };
+      }
+      if (evidence === null || evidence.closed !== undefined) {
+        continue;
+      }
+
+      const key = evidence.ref.key;
+      const where = path.dirname(file);
+      let running: boolean;
+      try {
+        running = await record.isRunning(evidence.ref.id, stop);
+      } catch (cause) {
+        return {
+          kind: 'problem',
+          detail:
+            `${key}: the baseline diagnosis retained under "${where}" could not be resumed, ` +
+            `because the item could not be read: ${messageOf(cause)}`,
+        };
+      }
+      if (!running) {
+        // A person moved the item: what they decided stands, and this diagnosis
+        // is not written into a status they did not choose.
+        await finish(file, evidence, 'left-alone');
+        io.out(
+          `${key}: the baseline diagnosis retained under "${where}" was not resumed: the item has ` +
+            'left the running status, so it is left exactly where it is',
+        );
+        continue;
+      }
+
+      io.out(
+        `${key}: resuming the baseline diagnosis a previous invocation left pending (evidence ` +
+          `under ${where})`,
+      );
+      const outcome = await diagnose({
+        item: { ref: evidence.ref, task: evidence.task },
+        workspace: evidence.workspace,
+        baseline: evidence.baseline,
+        stop,
+      });
+      if (outcome.kind === 'cancelled') {
+        return { kind: 'cancelled', detail: outcome.detail };
+      }
+      await noteFeedback(evidence.ref, outcome.commentId);
+      resumed.push({ kind: outcome.kind, detail: outcome.detail, commentId: outcome.commentId });
+    }
+
+    const [first] = resumed;
+    if (first === undefined) {
+      return null;
+    }
+    const actionable = resumed.find((outcome) => outcome.kind === 'repair');
+    return {
+      kind: actionable === undefined ? 'attention' : 'repair',
+      detail: resumed.map((outcome) => outcome.detail).join(' '),
+      commentId: (actionable ?? first).commentId,
+    };
+  };
+
+  return { diagnose, resume };
 }

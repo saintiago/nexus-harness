@@ -1,18 +1,28 @@
 /**
  * What a continued attempt is told about the attempts before it and what the
- * item's own thread said since: oldest of the kept lines first, bounded so a
- * long conversation or a long failure cannot grow a prompt without limit.
+ * item's own thread said since: the reviewed baseline finding first, then the
+ * oldest of the kept lines, bounded so a long conversation or a long failure
+ * cannot grow a prompt without limit.
  *
  * All of it is context for a turn: none of it becomes a command, an argument, a
  * path, or a limit.
  */
 import type { WorkspaceAttempt } from '../workspace/state.js';
+import { baselineGuidanceLines } from './baseline.js';
 import type { SourceComment } from './contract.js';
 
 /** How much context a continued attempt is given, and how much of one line. */
 const GUIDANCE_MAX_LINES = 12;
 const GUIDANCE_MAX_CHARS = 4000;
 const GUIDANCE_LINE_CHARS = 600;
+/**
+ * How many lines the reviewed baseline findings may take by themselves. The
+ * finding is what the attempt must address before it goes on with the ticket, so
+ * it is never the context this budget drops to make room for later chatter: two
+ * findings' worth of fields fit, and anything older than that is history the
+ * workspace's own ledger still holds.
+ */
+const GUIDANCE_FINDING_MAX_LINES = 8;
 
 /** One line of context, collapsed and bounded: a comment cannot grow a prompt. */
 function guidanceLine(text: string): string {
@@ -33,6 +43,7 @@ export function guidanceFrom(
   attempts: readonly WorkspaceAttempt[],
   comments: readonly SourceComment[],
 ): readonly string[] {
+  const findings: string[] = [];
   const lines: string[] = [];
   attempts.forEach((attempt, index) => {
     lines.push(
@@ -42,19 +53,33 @@ export function guidanceFrom(
     );
   });
   for (const comment of comments) {
+    // A reviewed baseline finding is carried as its own fields rather than as
+    // one collapsed paragraph: the developer needs the likely cause and the
+    // repair whole, and collapsing a multi-field comment is what used to cut
+    // them off.
+    const finding = baselineGuidanceLines(comment.text);
+    if (finding.length > 0) {
+      findings.push(...finding.slice(0, Math.max(0, GUIDANCE_FINDING_MAX_LINES - findings.length)));
+      continue;
+    }
     lines.push(
       `comment by ${comment.author} at ${comment.createdAt}: ${guidanceLine(comment.text)}`,
     );
   }
 
+  // The finding is kept whatever else the thread holds; the rest of the context
+  // is the newest that fits beside it.
   const kept: string[] = [];
-  let used = 0;
+  let used = findings.reduce((total, line) => total + line.length, 0);
   for (const line of [...lines].reverse()) {
-    if (kept.length >= GUIDANCE_MAX_LINES || used + line.length > GUIDANCE_MAX_CHARS) {
+    if (
+      findings.length + kept.length >= GUIDANCE_MAX_LINES ||
+      used + line.length > GUIDANCE_MAX_CHARS
+    ) {
       break;
     }
     kept.push(line);
     used += line.length;
   }
-  return kept.reverse();
+  return [...findings, ...kept.reverse()];
 }

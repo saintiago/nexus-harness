@@ -548,7 +548,27 @@ async function queueCommand(options: QueueCommandOptions, context: CliContext): 
             sleep: abortableSleep,
             pollIntervalMs: sourceConfig.pollIntervalSeconds * 1000,
             completionPollIntervalMs: completionConfig.pollIntervalSeconds * 1000,
-            discover: () => discoverQueueWork(sourceConfig, jiraHttp, stop.signal),
+            discover: async () => {
+              // A previous invocation can stop after a red baseline was diagnosed
+              // and before its finding was recorded on the ticket. That item is
+              // still in the running status, where a fresh scan never looks and
+              // where the queue's own recovery refuses to guess: finishing the
+              // diagnosis here is what returns it to its ready status, so the
+              // ordinary repair claim continues the same retained workspace
+              // (docs/WORKFLOW.md §11).
+              const resumed = await baselineDiagnosis.resume(stop.signal);
+              if (resumed !== null) {
+                if (resumed.kind === 'problem' || resumed.kind === 'attention') {
+                  throw new SourceError('fatal', resumed.detail);
+                }
+                if (resumed.kind === 'repair') {
+                  sourceIo.out(resumed.detail);
+                }
+                // `cancelled` wrote nothing: the loop checks the stop request
+                // before it consumes anything.
+              }
+              return await discoverQueueWork(sourceConfig, jiraHttp, stop.signal);
+            },
             consume: async ({ only }): Promise<SourceTake> => {
               try {
                 return await takeOneItem(intake, {

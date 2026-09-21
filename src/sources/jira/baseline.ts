@@ -11,6 +11,7 @@ import type { JiraSourceConfig } from '../../shared/types.js';
 import type { BaselineRecord } from '../contract.js';
 import { listIssueNotes, moveFromStatus, postIssueComment } from './completion.js';
 import type { HttpClient } from './http.js';
+import { readIssue, sameName } from './issue.js';
 
 /**
  * The Jira operations one pre-delivery diagnosis needs, built once per source
@@ -24,6 +25,10 @@ export function createJiraBaselineRecord(
   return {
     listComments: (id, stop) => listIssueNotes(http, id, stop, http.token),
     postComment: (id, paragraphs, stop) => postIssueComment(http, id, paragraphs, stop),
+    isRunning: async (id, stop) => {
+      const issue = await readIssue(http, id, stop);
+      return issue !== null && sameName(issue.fields.status, config.runningStatus);
+    },
     moveFromRunning: (id, target, stop) =>
       moveFromStatus(http, id, config.runningStatus, target, stop),
   };

@@ -316,6 +316,18 @@ export type BaselineFinding =
     };
 
 /**
+ * The part of one prepared item a pre-delivery diagnosis reads: the immutable
+ * identity it is keyed by, and the task the baseline failed under. Nothing here
+ * is a command, a path, or a limit of its own, and a diagnosis publishes nothing
+ * about the item's pointer labels, so it is handed this and not a whole source
+ * task.
+ */
+export interface BaselineItem {
+  readonly ref: SourceRef;
+  readonly task: Task;
+}
+
+/**
  * What one pre-delivery baseline diagnosis is handed: the item the workspace
  * belongs to, the fresh retained workspace the baseline ran in, and the
  * completed red round itself — the configured commands and bounded output
@@ -323,7 +335,7 @@ export type BaselineFinding =
  * in it, so it is still at its recorded base.
  */
 export interface BaselineDiagnosisRequest {
-  readonly item: SourceTask;
+  readonly item: BaselineItem;
   readonly workspace: {
     readonly workspaceId: string;
     readonly workspacePath: string;
@@ -350,6 +362,26 @@ export type BaselineDiagnosisOutcome =
   | { readonly kind: 'cancelled'; readonly detail: string };
 
 /**
+ * What finishing a pending pre-delivery diagnosis did, as the coordinator and
+ * the serial queue read it. `problem` is reserved for the diagnosis's own
+ * machinery: the retained evidence could not be read, or the item could not be
+ * asked about at all, so a person looks before anything else is taken
+ * (docs/WORKFLOW.md §11).
+ */
+export type BaselineResumeOutcome =
+  /** An actionable finding is on the thread and the item is back in its ready status. */
+  | { readonly kind: 'repair'; readonly detail: string; readonly commentId: string | null }
+  /**
+   * Nothing actionable: the item carries the evidence and what a person must
+   * do, and it stays in the review status. No coding turn is started from it.
+   */
+  | { readonly kind: 'attention'; readonly detail: string; readonly commentId: string | null }
+  /** The pending diagnosis could not be finished, so nothing else is taken. */
+  | { readonly kind: 'problem'; readonly detail: string }
+  /** The caller stopped the intake while the pending diagnosis was finished. */
+  | { readonly kind: 'cancelled'; readonly detail: string };
+
+/**
  * The one comment of an item's own thread the pre-delivery diagnosis reads:
  * what the record below answers, and where a marker is looked for. It carries
  * no runtime or repository data.
@@ -371,6 +403,13 @@ export interface BaselineRecord {
   /** Posts one comment of plain paragraphs and acknowledges its ID. */
   postComment(id: string, paragraphs: readonly string[], stop: AbortSignal): Promise<string>;
   /**
+   * Whether the item is still in the status the harness claims work into. A
+   * pending diagnosis is finished only while the item is still there: one a
+   * person has moved somewhere else is left exactly where that person left it.
+   * `false` also covers an item that is gone.
+   */
+  isRunning(id: string, stop: AbortSignal): Promise<boolean>;
+  /**
    * Moves the item to `target`, but only while it really is still in its
    * running status. `left-alone` means somebody moved it first: that is
    * respected, and no transition is sent.
@@ -383,7 +422,7 @@ export interface BaselineReviewRequest {
   /** The evidence directory the turn keeps its input, log and finding in. */
   readonly dir: string;
   /** The item: its immutable identity and the task the baseline failed under. */
-  readonly item: SourceTask;
+  readonly item: BaselineItem;
   /**
    * The retained workspace the baseline ran in, and the snapshot the turn
    * inspects: a clone pinned at the recorded base commit.
@@ -426,6 +465,17 @@ export type BaselineReview = (request: BaselineReviewRequest) => Promise<Baselin
  */
 export interface BaselineDiagnosis {
   diagnose(request: BaselineDiagnosisRequest): Promise<BaselineDiagnosisOutcome>;
+  /**
+   * Finish the diagnosis a previous invocation left pending, from the evidence
+   * it retained and the item's own thread, before anything is discovered or
+   * claimed. `null` means nothing was pending: every piece of retained evidence
+   * already carries its finding or already left the running status, so nothing
+   * was written, moved, or spent. The same snapshot, commands, and results are
+   * never diagnosed twice, and a finding an earlier turn completed locally is
+   * reused when the publication it belonged to was interrupted
+   * (docs/WORKFLOW.md §11).
+   */
+  resume(stop: AbortSignal): Promise<BaselineResumeOutcome | null>;
 }
 
 /**

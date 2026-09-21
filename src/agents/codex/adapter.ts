@@ -23,8 +23,8 @@ import type { AgentActivity, TerminationOutcome } from '../../shared/types.js';
 import { agentMessage, failureText, itemActivities, parseEvent } from './events.js';
 import type { RuntimeOutcome, RuntimeReport } from './events.js';
 import { promptFor } from './prompt.js';
-import { CODEX_EXEC_ARGUMENTS, codexRuntime } from './runtime.js';
-import type { CodexRuntime } from './runtime.js';
+import { codexExecArguments, codexRuntime } from './runtime.js';
+import type { CodexRuntime, CodexSandboxPolicy } from './runtime.js';
 
 /** How much of a runtime's own diagnostic this module repeats in a reason. */
 const MAX_DIAGNOSTIC_CHARS = 400;
@@ -55,6 +55,13 @@ export interface CodexPromptRequest {
   readonly workspacePath: string;
   /** Review evidence lives outside Git; coding turns keep the repository check. */
   readonly skipGitRepoCheck?: boolean;
+  /**
+   * The filesystem policy this turn runs under; the coding policy when the
+   * caller names none. A diagnostic turn names the narrower policy, so the
+   * runtime's own sandbox — not the prompt — is what keeps the retained working
+   * copy and the snapshot it inspects read-only.
+   */
+  readonly sandbox?: CodexSandboxPolicy;
   readonly agentLog: AgentLog;
   readonly stop: AbortSignal;
   /** Where the runtime's own activity is reported, when a display is watching. */
@@ -75,7 +82,7 @@ export async function runCodexPrompt(
   const [executable = '', ...prefix] = runtime.command;
   // The prefix, then the adapter's own arguments: the configured launch and the
   // fixed interface, in that order and never joined into one string.
-  const execArguments = [...prefix, ...CODEX_EXEC_ARGUMENTS];
+  const execArguments = [...prefix, ...codexExecArguments(request.sandbox ?? 'danger-full-access')];
   if (request.skipGitRepoCheck === true) {
     execArguments.splice(execArguments.length - 1, 0, '--skip-git-repo-check');
   }
