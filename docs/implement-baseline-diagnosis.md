@@ -132,7 +132,12 @@ again for the same evidence — one reviewer turn per piece of evidence is the b
 stays In Review with the retained evidence and what a person must do. An item a person moved in the
 meantime is left exactly where that person left it, and its evidence is closed rather than diagnosed;
 a record this harness left unfinished after it really made the move is reconciled with the finding
-the item's own thread carries, so that workspace's next claim is still told it. One `workDir` serves
+the item's own thread carries, so that workspace's next claim is still told it. That reconciliation
+reads the recorded reviewer stop back first, exactly as a deduplicated finding does: a record that
+says the runtime was not seen to end — or one that cannot be read — keeps the intake lock instead of
+being settled. A resume with more than one record pending stops at the first unconfirmed shutdown
+instead of spending a second reviewer turn, and a result that needs a person dominates any
+actionable one beside it. One `workDir` serves
 several connected projects, and the project is
 part of where evidence lives: a resume, a read-back, or a closure reads this project's own directory
 only, and a record that names another project is refused by name, so starting one project can never
@@ -202,8 +207,12 @@ code lives and what owns what.
   through the commands' real compositions, including the queue path that used to spend a coding
   turn's discovery before stopping. A retained
   record this harness left unfinished after it really moved the item is reconciled with the finding
-  the thread carries, so the next claim is still told it; the Jira record against a fake HTTP boundary — one comment and a
-  move by target status name for an actionable finding, In Review for an inconclusive one, and a
+  the thread carries, so the next claim is still told it, and that reconciliation reads an
+  unconfirmed or unreadable recorded stop back before it settles anything and keeps the intake lock;
+  a resume with two records pending stops at the first unconfirmed shutdown without starting the
+  second reviewer turn or claiming anything; the Jira record against a fake HTTP boundary — one
+  comment and a move by target status name for an actionable finding, In Review for an inconclusive
+  one, and a
   second pass that spends no second turn and writes no second comment; the coordinator's ending
   table — a completed red baseline enters the diagnosis, a setup error, a cancellation, a timeout,
   a continuation that starts red, and a post-agent red round do not, no diagnosis configured keeps

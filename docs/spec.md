@@ -407,13 +407,17 @@ either. A reviewer turn whose own process tree could not be confirmed stopped is
 item stays In Review with the evidence and what a person must do, and the intake keeps its lock for
 inspection. That holds when a restart's own resume step runs the diagnosis too — and when it
 deduplicates a finding already on the issue, where the recorded stop is read back from the evidence
-before anything is moved instead of a stop being assumed — and a resume that
-reports an unconfirmed shutdown stops the intake before it discovers or claims anything, in a finite
-batch, a watch scan, and the serial queue alike, so nothing new starts while a reviewer runtime may
-still be writing. The evidence is kept per connected project — `<workDir>/baseline/<project>/
-<evidence>/` — and a record that names another connected project is refused by name rather than read,
-finished, or published through this one, so two projects sharing one output directory never act on
-each other's pending diagnoses. That recovery runs before anything is discovered or claimed, so a ticket left
+before anything is moved instead of a stop being assumed — and when it reconciles an item that had
+already left the running status, where that record is read before the item is treated as settled —
+and a resume that reports an unconfirmed shutdown stops the intake before it discovers or claims
+anything, in a finite batch, a watch scan, and the serial queue alike, so nothing new starts while a
+reviewer runtime may still be writing. A resume with more than one record pending stops at the first
+unconfirmed shutdown instead of starting another reviewer turn, and a result that needs a person
+dominates any actionable one beside it. The evidence is kept per connected project — `<workDir>/
+baseline/<project>/<evidence>/` — and a record that names another connected project is refused by
+name rather than read, finished, or published through this one, so two projects sharing one output
+directory never act on each other's pending diagnoses. That recovery runs before anything is
+discovered or claimed, so a ticket left
 in the running status by an interrupted diagnosis is finished rather than reported back as a stuck
 consumer. A reviewer turn that was interrupted before it wrote a finding is not run again for the
 same evidence: the item stays In Review with the retained evidence and what a person must do. An item

@@ -75,7 +75,7 @@ src/
     receipts.ts                   (238)  the per-project intake lock and one receipt per attempted item
     eligibility.ts                (81)   what an item is: a first attempt, a continuation, or a refusal
     guidance.ts                   (95)   what an attempt is told, bounded: the finding, the thread, attempts
-    baseline.ts                   (1142) the pre-delivery diagnosis: its evidence, one comment, one move
+    baseline.ts                   (1204) the pre-delivery diagnosis: its evidence, one comment, one move
     coordinator.ts                (1696) runSource and watchSource: discovery, the ladder, publication
     list.ts                       (88)   the read-only `source list` preview
     jira/

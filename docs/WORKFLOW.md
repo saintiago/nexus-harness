@@ -1083,6 +1083,11 @@ recorded outcome is not diagnosed again either. A resume that finds the comment 
 issue reads the recorded reviewer stop back from that outcome before it moves anything, instead of
 assuming one: an unconfirmed one keeps the intake lock there exactly as it did when the finding was
 first published, and a record that cannot be read is refused by name rather than rounded down. The
+same read happens when the item has already left the running status and only its retained record is
+being reconciled: an unconfirmed stop keeps the intake lock there too, and a record that cannot be
+read is refused by name instead of being settled. A resume with more than one record pending stops
+at the first unconfirmed shutdown instead of starting another reviewer turn, and a result that needs
+a person dominates an actionable one beside it. The
 project is part of the path, so two projects sharing one `workDir` never read, finish, or publish
 each other's pending evidence — a record that
 names another project is refused by name — and starting one project's intake never comments on,
