@@ -848,9 +848,12 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
     // looking for it: the interruption is what this evidence's one comment then
     // records. The feedback runs under its own short deadline rather than the
     // aborted stop, exactly as the runner's own stopped result does, so the
-    // ticket ends where a person can find it.
+    // ticket ends where a person can find it. The signal is taken as each step
+    // begins, so a stop that arrives between them gets the same deadline
+    // instead of failing a request the issue still needs.
     const interrupted = stop.aborted;
-    const feedbackStop = interrupted ? AbortSignal.timeout(FEEDBACK_DEADLINE_MS) : stop;
+    const feedbackStop = (): AbortSignal =>
+      stop.aborted ? AbortSignal.timeout(FEEDBACK_DEADLINE_MS) : stop;
 
     // A turn that failed, was stopped, wrote nothing usable, or left its view
     // changed has no finding: the diagnosis records that instead of guessing
@@ -896,7 +899,7 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
 
     let commentId: string;
     try {
-      commentId = await record.postComment(item.ref.id, paragraphs, feedbackStop);
+      commentId = await record.postComment(item.ref.id, paragraphs, feedbackStop());
     } catch (cause) {
       return unfinished(
         stop,
@@ -908,7 +911,7 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
     }
 
     const target = finding.outcome === 'repair' ? readyStatus : reviewStatus;
-    const moved = await move(item, target, feedbackStop);
+    const moved = await move(item, target, feedbackStop());
     if ('problem' in moved) {
       return unfinished(
         stop,

@@ -771,6 +771,34 @@ describe('the pre-delivery baseline diagnosis', () => {
     expect(comment).toContain('the intake lock is kept');
   });
 
+  it('finishes the move when the interruption lands as the finding is published', async () => {
+    const workDir = await createTempDir();
+    const record = fakeRecord();
+    const controller = new AbortController();
+    const reviewer = scriptedReviewer(REPAIR_FINDING);
+    const { diagnosis } = phaseFor({ record, reviewer, workDir });
+    // The caller stops the intake in the moment its own comment is published:
+    // the reviewer turn itself already finished, so the finding is what the
+    // issue is told, and the one move that still has to happen runs under the
+    // same bounded deadline instead of the aborted signal.
+    const posting = record.postComment.bind(record);
+    record.postComment = async (id, paragraphs, stop) => {
+      const commentId = await posting(id, paragraphs, stop);
+      controller.abort(new Error('the user interrupted intake'));
+      return commentId;
+    };
+
+    const outcome = await diagnosis.diagnose({
+      ...requestFor(await baselineWithLogs()),
+      stop: controller.signal,
+    });
+
+    expect(outcome.kind).toBe('repair');
+    expect(record.status).toBe('To Do');
+    expect(record.moves).toEqual([{ from: 'In Progress', target: 'To Do' }]);
+    expect(record.posted).toHaveLength(1);
+  });
+
   it('bounds the one reviewer turn instead of waiting for it forever', async () => {
     const workDir = await createTempDir();
     const record = fakeRecord();
