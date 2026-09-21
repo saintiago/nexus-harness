@@ -492,6 +492,9 @@ Jira timezone offsets and UTC timestamps are compared as instants, so consuming 
 not hide a later response to an outstanding review. Invalid timestamps are named as gaps.
 Normal completion comments are matched to the retained review by acknowledged publication identity:
 the review excerpt is a mirror, while separate completion context stays an attributed harness entry.
+Check failures and repair dispositions after an outstanding review appear in both prompts' responses,
+even after consumption or restart while that review remains outstanding. If the response section
+overflows, its required local reading includes this completion context in full.
 For the whole original completion rendering, read `mirrors[].originalEntry` in the snapshot's
 `index.json`; its report digest also retains the published text and hash. Edits and older comments
 without recorded acknowledgement remain separate entries. A marker alone does not authenticate them.

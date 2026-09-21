@@ -117,7 +117,10 @@ This is conversation retention, not per-finding remediation enforcement.
 The normal review-to-Jira completion path also records an acknowledged findings comment against
 the exact retained native review and reviewed head. Only the unchanged review excerpt is folded
 into that report; distinct completion context (including check failures and the repair disposition)
-remains an attributed harness entry. The full original rendering and its provenance remain in
+remains an attributed harness entry and is included in both roles' actionable responses after an
+outstanding review. Consuming the input or restarting does not hide it while that review remains
+outstanding. The same whole-entry inline budget and required local overflow reading apply to this
+context as to other responses. The full original rendering and its provenance remain in
 `index.json` under `mirrors[].originalEntry`, and the report digest keeps the acknowledged text.
 An edited rendering remains a complete separate entry. Existing or uncertain publications without
 recorded acknowledgement remain remote entries; a completion marker alone cannot authenticate them.

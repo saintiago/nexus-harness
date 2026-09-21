@@ -924,6 +924,16 @@ export function createTicketHistory(parts: TicketHistoryParts): TicketHistory {
         }
       }
       const earliest = unresolved.map((round) => round.at).sort(compareHistoryTime)[0];
+      // Authenticated completion renderings can also carry distinct check
+      // failures and repair dispositions. Their retained context is actionable
+      // discussion, even though it is neither human-authored nor a remote edit.
+      // Keep it with responses while a review is outstanding, independently of
+      // either role's consumption cursor, and use the same whole-entry budget.
+      const completionContextIds = new Set(
+        mirrors.flatMap((mirror) =>
+          mirror.originalEntry === undefined ? [] : [mirror.originalEntry.id],
+        ),
+      );
       const responses =
         earliest === undefined
           ? []
@@ -936,7 +946,7 @@ export function createTicketHistory(parts: TicketHistoryParts): TicketHistory {
                 // treating the original submission time as the time of the edit.
                 ((entry.edited && entry.updatedAt === null) ||
                   compareHistoryTime(entry.updatedAt ?? entry.createdAt, earliest) >= 0) &&
-                (entry.role !== 'harness' || entry.edited),
+                (entry.role !== 'harness' || entry.edited || completionContextIds.has(entry.id)),
             );
       // Preparation alone consumes nothing. Compare with this role's last
       // acknowledged input, including when another role or a failed launch

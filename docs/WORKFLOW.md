@@ -839,7 +839,11 @@ the retained report's own findings, mapped by the review's identity; a reply to 
 The normal completion pass records its acknowledged Jira findings comment with the exact local
 reviewer's native review identity and head. Its review excerpt becomes a mirror; its distinct
 completion context stays a harness entry, even when Jira's service account name differs from the
-GitHub App login. The report digest retains the published text and hash. The snapshot's
+GitHub App login. Both role prompts include that context among responses after an outstanding
+review, including distinct check failures and the repair disposition. It stays actionable after
+consumption and restart while the review is outstanding; whole-entry overflow requires reading
+`brief.responses` locally, just as for other responses. The report digest retains the published
+text and hash. The snapshot's
 `mirrors[].originalEntry` in `index.json` retains the whole rendering and source provenance, and
 `index.md` points to it. Later edits remain complete separate entries. A pre-existing comment or
 an uncertain write found only by a marker does not acquire publication provenance from that marker;

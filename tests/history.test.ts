@@ -27,7 +27,11 @@ import { createCompletionPass } from '../src/sources/completion.js';
 import type { CompletionActions, PullRequestSnapshot } from '../src/delivery/completion.js';
 import type { CompletionSource, IssueNote } from '../src/sources/jira/completion.js';
 import type { BaselineEvidence } from '../src/sources/baseline.js';
-import { notePublishedReview, textSha256 } from '../src/history/reports.js';
+import {
+  notePublishedReview,
+  notePublishedReviewCompletion,
+  textSha256,
+} from '../src/history/reports.js';
 import { createTicketHistory } from '../src/history/sync.js';
 import type { ReviewEvidence, ReviewView } from '../src/reviews/contract.js';
 import { baselinePrompt } from '../src/reviews/baseline.js';
@@ -644,6 +648,25 @@ describe('the ticket conversation snapshot', () => {
     await createCompletionPass(parts).run(new AbortController().signal);
     expect(notes).toHaveLength(1);
     expect((await makeHistory().prepare(prepareRequest(workDir))).id).toBe(first.id);
+    for (const role of ['developer', 'reviewer'] as const) {
+      const history = makeHistory();
+      const input = await history.prepare(prepareRequest(workDir, role));
+      await history.consumed?.(input);
+      const restarted = await makeHistory().prepare(prepareRequest(workDir, role));
+      for (const snapshot of [input, restarted]) {
+        expect(snapshot.brief.responses.map((entry) => entry.sourceId)).toContain(
+          'completion-comment',
+        );
+        const prompt =
+          role === 'developer'
+            ? promptFor(developerRequest(snapshot))
+            : reviewPrompt(EVIDENCE, VIEW, '/evidence/review-1', snapshot);
+        expect(prompt).toContain('Distinct check failure');
+        expect(prompt).toContain('Returned to To Do');
+        expect(prompt).toContain('END-FINDING');
+        expect(prompt).not.toContain('Concise mirrored finding');
+      }
+    }
     notes[0] = {
       id: 'completion-comment',
       createdAt: '2026-09-21T13:00:00Z',
@@ -2302,6 +2325,65 @@ describe('the ticket conversation snapshot', () => {
 });
 
 describe('review follow-up retention regressions', () => {
+  it('requires whole local overflow for long completion feedback after consumption and restart', async () => {
+    const workDir = await createTempDir();
+    const contextText = `CI failure: ${'diagnostic '.repeat(7_000)}END-CHECK-FAILURE`;
+    const text = `Mirrored review excerpt\n${contextText}`;
+    const makeHistory = () =>
+      createTicketHistory({
+        workDir,
+        readers: readers({
+          jira: {
+            comments: [jiraComment('completion-overflow', text)],
+            truncated: false,
+          },
+        }),
+      });
+    await makeHistory().recordReviewerReport?.({
+      ref: REF,
+      workspaceId: WORKSPACE_ID,
+      task: TASK,
+      reviewId: 'completion-overflow',
+      round: 1,
+      head: HEAD,
+      decision: 'request_changes',
+      summary: 'Outstanding request',
+      findings: [{ path: 'a.ts', line: 1, body: 'Fix the defect.' }],
+      now: new Date('2026-09-19T10:00:00Z'),
+    });
+    const root = workspaceHistoryRoot(workDir, WORKSPACE_ID);
+    await notePublishedReview(root, 'completion-overflow', {
+      id: 555,
+      url: `${EVIDENCE.pullRequest.url}#pullrequestreview-555`,
+      body: 'Mirrored review excerpt',
+    });
+    await notePublishedReviewCompletion(root, {
+      ref: REF,
+      nativeReviewId: '555',
+      head: HEAD,
+      commentId: 'completion-overflow',
+      text,
+      contextText,
+    });
+    for (const role of ['developer', 'reviewer'] as const) {
+      const history = makeHistory();
+      await history.consumed?.(await history.prepare(prepareRequest(workDir, role)));
+      const snapshot = await makeHistory().prepare(prepareRequest(workDir, role));
+      expect(snapshot.brief.newHumanFeedback).toEqual([]);
+      const prompt =
+        role === 'developer'
+          ? promptFor(developerRequest(snapshot))
+          : reviewPrompt(EVIDENCE, VIEW, '/evidence/review-1', snapshot);
+      expect(prompt).toContain('REQUIRED: read the complete entries in brief.responses');
+      expect(prompt).toContain(snapshot.indexJsonPath);
+      expect(prompt).not.toContain('CI failure:');
+      const index = JSON.parse(await readFile(snapshot.indexJsonPath, 'utf8')) as HistorySnapshot;
+      expect(index.brief.responses).toEqual([
+        expect.objectContaining({ sourceId: 'completion-overflow', text: contextText }),
+      ]);
+    }
+  });
+
   it('bounds consumed responses to an outstanding review in both prompts, with whole local overflow', async () => {
     const workDir = await createTempDir();
     const comments = Array.from({ length: 400 }, (_, i) =>
