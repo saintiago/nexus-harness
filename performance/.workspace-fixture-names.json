@@ -1,0 +1,1 @@
+["beginFixtureGitEnvironment","git","gitOrFail","Fixture","createRepository","headOf","readTree","RepositorySnapshot","snapshotRepository","expectWorkspaceError","expectRejected","expectNoOutputLocation","accepted","createAlias","tsxLoader","readCheckedOutTree","taskBounds","prepareRun","FIXTURE_SOURCE_ITEM"]
