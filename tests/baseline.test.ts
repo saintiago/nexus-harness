@@ -1195,7 +1195,12 @@ describe('the pre-delivery baseline diagnosis', () => {
   }, 60_000);
 });
 
-describe('the baseline reviewer turn', () => {
+// Every test here drives the real reviewer turn: a stand-in runtime on disk
+// plus a real clone of a disposable repository, so the wall clock follows the
+// machine's load rather than any wait the harness keeps. The five-second
+// default is a stopwatch, not an assertion, and a loaded host ran it out at
+// 5.1s with every assertion holding; a test that really hangs still fails here.
+describe('the baseline reviewer turn', { timeout: 30_000 }, () => {
   /** One evidence directory with the check output the prompt quotes. */
   async function evidenceFor(): Promise<{
     readonly dir: string;

@@ -101,7 +101,12 @@ describe('githubRepositoryOf', () => {
   });
 });
 
-describe('source readiness between two queue tickets', () => {
+// Every test here builds real temporary Git repositories and runs real `git`
+// against them, so the wall clock follows the machine's load rather than any
+// wait the harness keeps: the five-second default is a stopwatch, not an
+// assertion, and a loaded host ran it out at 5.2s with every assertion holding.
+// A test that really hangs still runs out this one and fails.
+describe('source readiness between two queue tickets', { timeout: 30_000 }, () => {
   it('fetches and fast-forwards a clean checkout to the verified merge commit', async () => {
     const parts = await fixture();
     const merged = mergeCommit(parts, 'the completed ticket, as merged');
