@@ -456,14 +456,19 @@ The index names each entry's role, author, time, round, source id, and the revie
 commit where it has one; each entry file holds its provenance header and the original wording
 below it, unchanged. The prompt a turn receives carries the current brief, the latest delivery, the
 complete unresolved review findings with their latest responses, and the human feedback since the
-previous snapshot (comments that arrived while the last turn ran, and comments edited since it);
+same role's last consumed snapshot (including comments arriving or edited during its last turn);
 everything else stays in the snapshot for the turn to search. A complete developer report is saved
 under `reports/` before its Jira comment is published, and a complete reviewer report before its
 GitHub review is; the acknowledged comment or review is recorded with the report, and a rendering
 that comes back through Jira or GitHub is recognized by that recorded identity and not duplicated —
 a comment that merely quotes a marker, or a rendering edited after publication, stays an ordinary
-entry. Unresolved findings are the latest review that requested changes, whether it was a retained
-report or a native GitHub review, and each developer report names the commit its delivery verified.
+entry. Outstanding findings are tracked separately for each reviewer; unrelated approvals and
+comment-only reviews cannot clear them. Each developer report names the commit its delivery verified.
+The harness re-reads requirements before each turn and refuses the turn if they cannot be obtained.
+`consumed-developer.json` and `consumed-reviewer.json` track feedback separately after usable turn
+output. A prepared snapshot never advances them; legacy workspaces without cursors replay feedback.
+Developer summaries are retained before the next repair; reviewer verdicts are kept even if later
+publication checks refuse them.
 A reviewer's retained `verdict.json` is read back instead of being reported missing, and a source the
 harness could not read, a pagination bound that was reached, and a report that is missing or cannot
 be read as the conversation it claims to be (an older workspace whose `result.json` or review record
@@ -1308,14 +1313,17 @@ Read this before pointing a run at anything you care about.
   and the inline findings of a published review not being kept beside the report while a reply
   stays its own entry — a comment that quotes a marker, or a rendering edited after publication,
   staying an attributed entry, feedback that arrived while the previous turn ran (and a comment
-  edited after the last report) reaching the next brief while one the previous snapshot already
-  held is not repeated, a restart reusing an identical snapshot and re-deriving that input from the
+  edited after the last report) reaching the next brief while one this role already consumed
+  is not repeated, a restart reusing an identical snapshot and re-deriving that input from the
   store on disk, an older local approval not hiding a newer native review that requests changes, a
   person's change request staying visible after a later harness report, reports the harness knows
   existed but cannot read marked missing rather than invented — a legacy workspace's attempt rebuilt
   from its own `result.json`, its retained reviewer `verdict.json` read back, and an unreadable or
   turn-less record marked incomplete instead of complete — the delivered commit recorded per
-  delivery, and a snapshot that cannot be written stopping the turn before it starts. The
+  delivery, and a snapshot that cannot be written stopping the turn before it starts.
+  Additional regressions cover per-role cursors across preparation, edits and restart; fresh
+  requirements in both prompts; independent reviewers, comment-only reviews, old-head and
+  unpublished approvals; summaries retained before repair; and inconclusive verdict retention. The
   connector reads themselves are covered against fake HTTP boundaries; no live Jira or GitHub read
   was made for this increment.
 - workspace continuation through the same fakes and real temporary Git repositories: a continued

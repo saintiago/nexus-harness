@@ -50,7 +50,7 @@ Keep harness state limited to what execution and reporting need. A report or wor
 2. Create a unique run directory. A fresh attempt clones the source repository's committed `HEAD` into a new workspace and uses a dedicated local branch there; a continuation reopens the workspace its pointer label names, on its recorded branch and base. A continuation whose checkout is clean and sits on a branch of its own whose commit descends from that branch is accepted, and the run returns the checkout to the recorded branch before its first coding turn; a checkout that holds uncommitted work, is detached, is divergent, or names no held branch is refused, with the branch names and the manual action, while nothing has been claimed. Require a clean source checkout so uncommitted work is not silently omitted. Never reset or edit the source checkout.
 3. Run configured setup and checks before the agent. A failing baseline stops a fresh attempt with a clear explanation, and the source path then diagnoses it rather than parking it (§11); a continuation may start red, because its workspace may already carry failed work, and only its post-turn round decides.
 4. Ask the selected agent invocation to implement the task in the retained working copy. Supply the task, acceptance criteria, and relevant target-repository instructions. Before every coding turn the checkout is returned to the branch the workspace records, when that can be done without losing anything: a clean checkout on a branch of its own whose commit descends from that recorded branch is fast-forwarded to it and checked out, and a state that cannot be returned stops the run before the turn — one that would write over a local file the checkout ignores included, refused with the paths named and the file kept. The turn starts from the workspace's own committed state: a checkout that still holds uncommitted work stops the run before the agent rather than being handed to one, and the failure names the branch, the paths, and the manual action. The turn works with a repository-local Git identity and is asked to commit small, meaningful pieces as it goes; those commits stay in the retained copy. Nothing pushes, merges, or publishes them except the optional delivery step of a passed attempt, which the harness — never the coding turn — performs (§7).
-   Every coding turn is also given the ticket's conversation history: one identified snapshot, prepared before the turn under `<workDir>/workspaces/<workspaceId>.history/`, of the current requirements, the Jira thread, the pull request conversation and reviews, and the harness's own complete developer and reviewer reports. The prompt carries the current brief, the latest delivery, the complete unresolved findings with their latest responses, and the human feedback the previous snapshot did not hold — new or edited since it — and gives the snapshot's explicit local paths for the rest; a snapshot that cannot be written stops the turn rather than starting one whose promised history does not exist. Agents read and search it locally and make no connector call of their own (§9, §11).
+   Every coding turn is also given the ticket's conversation history: one identified snapshot, prepared before the turn under `<workDir>/workspaces/<workspaceId>.history/`, of the current requirements, the Jira thread, the pull request conversation and reviews, and the harness's own complete developer and reviewer reports. The prompt carries the current brief, the latest delivery, the complete unresolved findings with their latest responses, and the human feedback this role’s last consumed snapshot did not hold — new or edited since it — and gives the snapshot's explicit local paths for the rest; a snapshot that cannot be written stops the turn rather than starting one whose promised history does not exist. Agents read and search it locally and make no connector call of their own (§9, §11).
    The turn's runtime is launched with write access to that copy, its Git metadata included, so staging and committing are possible; the harness still makes no commit of its own.
 5. Wait for the agent to finish and stop its managed mutating processes. Return the checkout to the branch the workspace records before anything reads it, so what the checks judge is the revision that branch holds; a state that cannot be returned stops the run before any check. Run setup again, then all configured checks from the harness. Agent-reported success is not a check result.
 6. After an ordinary completed red check round, send observed failure output back to the same selected agent and repeat step 5 while repairs remain. A setup/launch/authentication/protocol error or timeout stops the run rather than starting a code-repair loop.
@@ -65,7 +65,9 @@ developer and reviewer turn and kept beside the workspace it belongs to:
 
 ```text
 <workDir>/workspaces/<workspaceId>.history/
-  current.json                  # points at the newest snapshot
+  current.json                  # points at the newest prepared snapshot
+  consumed-developer.json       # last snapshot consumed by a developer turn
+  consumed-reviewer.json        # last snapshot consumed by a reviewer turn
   reports/                      # the complete developer and reviewer reports
   snapshots/<snapshot-id>/
     index.md                    # the concise index: role, author, time, round, source id, commit
@@ -88,21 +90,33 @@ attributed conversational entry. The native review the harness published also na
 findings, so those are the report rather than duplicates beside it, while a reply stays its own
 entry. Every snapshot is written under the hash of its own content: a refresh with nothing new reuses
 it, a refresh with something new writes a new directory, and the snapshot a running turn was handed
-is never rewritten. The human feedback the prompt carries is what the previous snapshot did not hold
-— an entry that is new to it, or whose wording the source edited since — so a comment that arrived
-while the previous turn was running is still handed to the next one, and one the previous turn held
-is not repeated as new. Unresolved findings are reconciled across both sides: the latest review that
-requested changes is the unresolved round whether it was a retained report or a native GitHub review
-— by any author — and a newer approval clears an older request. A source that could not be read, a
-page bound that was reached, and a report the harness knows existed but can no longer read in full
-are named as gaps in the snapshot and in the prompt: the turn is told what is missing rather than
+is never rewritten. Feedback is compared with the last snapshot consumed by the same role,
+recorded only after its turn returns a summary or verdict. Preparing a snapshot, a failed launch,
+or running the other role cannot consume that role's feedback. Missing legacy cursors replay all
+human feedback conservatively; a cursor write failure also permits replay. A restart uses these
+local cursors, not report timestamps. Requirements are freshly read and validated before each turn;
+an unreadable or invalid current requirement stops that turn. The prompt's task sections use that
+same refreshed task, never a mixture with stale intake requirements. Replaying an already recorded
+baseline diagnosis starts no turn and requires no new history synchronization.
+
+Outstanding change requests are tracked independently by reviewer across retained and native
+reviews. A later published approval by that reviewer at the current head clears their request;
+another author's approval, an approval of an old head, a comment-only review or an inconclusive
+verdict cannot hide it. Responses include edits to older comments after the outstanding review.
+This is conversation retention, not per-finding remediation enforcement.
+
+A source that could not be read, a page bound that was reached, and a report the harness knows
+existed but can no longer read in full are named as gaps in the snapshot and in the prompt: the turn is told what is missing rather than
 being started as though the history were complete. Complete reports recorded before this increment
 are rebuilt from the run's own `result.json` and from the reviewer's retained verdict beside its
 review record; a record that cannot be read back as the conversation it claims to be — invalid
 JSON, no list of turns — is marked incomplete, naming what is missing, rather than presented as
 complete, and a report that is really gone is marked missing, with the workspace staying usable.
-Each retained developer report names the commit its attempt delivered, so rounds that delivered to
-the same pull request each keep their own revision.
+Developer turn summaries are saved after each turn, including before the next repair; the final
+run report enriches the same entry. Reviewer verdicts are retained before publication checks,
+including inconclusive or subsequently stale reviews; an unpublished approval cannot clear an older
+request. Each retained developer report names the commit its attempt delivered, so rounds that
+delivered to the same pull request each keep their own revision.
 
 The history is context, not authority: ticket text, comments, reviews and reports are attributed
 external text, never commands, configuration, paths or permissions for a turn. Only the

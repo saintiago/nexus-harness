@@ -974,19 +974,24 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
     let history: HistorySnapshot | undefined;
     if (parts.history !== undefined) {
       try {
-        history = await parts.history.prepare({
-          ref: item.ref,
-          task: item.task,
-          workspace: {
-            workspaceId: workspace.workspaceId,
-            workspacePath: workspace.workspacePath,
-            branch: workspace.branch,
-            baseCommit: workspace.baseCommit,
-          },
-          role: 'reviewer',
-          round: null,
-          stop,
-        });
+        // A retained outcome is replayed by the reviewer without starting a
+        // turn. Do not make that recovery depend on new remote requirements,
+        // or lose the recorded unconfirmed-stop evidence when a read fails.
+        if ((await readBaselineOutcome(dir)) === null) {
+          history = await parts.history.prepare({
+            ref: item.ref,
+            task: item.task,
+            workspace: {
+              workspaceId: workspace.workspaceId,
+              workspacePath: workspace.workspacePath,
+              branch: workspace.branch,
+              baseCommit: workspace.baseCommit,
+            },
+            role: 'reviewer',
+            round: null,
+            stop,
+          });
+        }
       } catch (cause) {
         return unfinished(
           stop,

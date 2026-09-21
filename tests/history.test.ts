@@ -1159,10 +1159,12 @@ describe('the ticket conversation snapshot', () => {
     let text = rendering;
     const history = createTicketHistory({
       workDir,
+      harnessAuthors: ['Nexus Harness'],
       readers: readers({
         jira: () => ({
           comments: [
             jiraComment('9900', text, { author: 'Nexus Harness' }),
+            jiraComment('9902', `${rendering}\nHuman correction: this is still broken.`),
             jiraComment(
               '9901',
               'Harness record: nexus-history: developer run-20260921-0011 — a partial quote.',
@@ -1196,6 +1198,9 @@ describe('the ticket conversation snapshot', () => {
     expect(first.entries.some((entry) => entry.sourceId === '9900')).toBe(false);
     // The partial quote is not the harness's rendering: it stays a comment.
     expect(first.entries.some((entry) => entry.sourceId === '9901')).toBe(true);
+    expect(first.brief.newHumanFeedback.find((entry) => entry.sourceId === '9902')?.text).toContain(
+      'Human correction: this is still broken.',
+    );
 
     // A rendering that was edited after it was first read is preserved as the
     // distinct message it now is.

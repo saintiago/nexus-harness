@@ -65,23 +65,11 @@ function legacyRunIdOf(text: string): string | null {
 }
 
 /**
- * The shapes this harness's own comments have always had. A comment of one of
- * them is the harness speaking, never a person's feedback, even when it
- * predates the marker a complete report's rendering now carries.
+ * Wording cannot establish authorship: a person may quote a complete harness
+ * rendering and add actionable feedback. Only configured authors identify
+ * harness text; recorded publication identities authenticate mirrors below.
  */
-const HARNESS_COMMENT_SHAPES = /(^|\n)Harness (run|refused|held) /;
-
-/**
- * Whether one comment reads as this harness speaking rather than as a person:
- * it is written by the configured harness author, or it carries one of the
- * result shapes the harness's own comments have always had. A bare marker is
- * deliberately not enough — any author can quote one — so a quoted marker
- * stays human feedback and is never classified away.
- */
-function isHarnessText(text: string, author: string, harnessAuthors: readonly string[]): boolean {
-  if (HARNESS_COMMENT_SHAPES.test(text)) {
-    return true;
-  }
+function isHarnessAuthor(author: string, harnessAuthors: readonly string[]): boolean {
   return harnessAuthors.some((name) => name !== '' && name === author);
 }
 
@@ -367,6 +355,7 @@ function mirroredEntryId(
     if (
       retained !== undefined &&
       runId !== null &&
+      isHarnessAuthor(entry.author, parts.harnessAuthors) &&
       isDeveloperRenderingShape(entry.text, parts.ref, runId)
     ) {
       return editedSinceMirrored(entry, parts.mirroredBefore) ? null : retained;
@@ -714,9 +703,7 @@ export function createTicketHistory(parts: TicketHistoryParts): TicketHistory {
 
       const candidates: Candidate[] = [];
       for (const comment of jiraComments) {
-        const role = isHarnessText(comment.text, comment.author, harnessAuthors)
-          ? 'harness'
-          : 'human';
+        const role = isHarnessAuthor(comment.author, harnessAuthors) ? 'harness' : 'human';
         candidates.push({
           entry: entryOfComment(comment, {
             source: 'jira',
@@ -735,9 +722,7 @@ export function createTicketHistory(parts: TicketHistoryParts): TicketHistory {
               : comment.path !== undefined && comment.path !== null
                 ? 'pr-review-comment'
                 : 'pr-comment';
-          const role = isHarnessText(comment.text, comment.author, harnessAuthors)
-            ? 'harness'
-            : 'human';
+          const role = isHarnessAuthor(comment.author, harnessAuthors) ? 'harness' : 'human';
           candidates.push({
             entry: entryOfComment(comment, {
               source: 'github',
