@@ -252,8 +252,8 @@ const REPAIR_FIRST_GUIDANCE = 'repair the baseline before continuing the origina
  * accepted only when the two agree (docs/WORKFLOW.md §11).
  *
  * `fields` are those four values in the order the comment writes them, one line
- * each and exactly as the comment wrote them: what a caller holds against the
- * finding the retained record validated, because the marker alone names the
+ * each, flattened the way the comment wrote them: what a caller holds against
+ * the finding the retained record validated, because the marker alone names the
  * evidence, never the text (see {@link baselineThreadFinding}). A comment renders
  * a long field concisely, so this parse can only ever say what the comment says:
  * the finding a developer is handed is the validated one the outcome record
