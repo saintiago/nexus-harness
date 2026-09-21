@@ -498,6 +498,10 @@ matched to those reports by acknowledged Jira identity and unchanged text.
 
 Developer summaries are retained before the next repair; reviewer verdicts are kept even if later
 publication checks refuse them.
+If a run finished but its coordinator stopped before saving the final history report, the next
+snapshot recovers its outcome, reason and checks from the ledger and `result.json`. An unavailable
+or unusable final report is an explicit gap naming that path; the saved turn messages remain
+readable. Earlier snapshots and saved digests stay unchanged, and recovery assumes no delivery.
 A reviewer's retained `verdict.json` is read back instead of being reported missing, and a source the
 harness could not read, a pagination bound that was reached, and a report that is missing or cannot
 be read as the conversation it claims to be (an older workspace whose `result.json` or review record

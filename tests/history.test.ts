@@ -1159,6 +1159,118 @@ describe('the ticket conversation snapshot', () => {
     expect(snapshot.entries.some((entry) => entry.kind === 'missing-report')).toBe(false);
   });
 
+  it.each([
+    'failed',
+    'cancelled',
+    'passed',
+    'missing',
+    'malformed',
+    'missing-turns',
+    'lost-summary',
+  ])('reconciles interim developer reports after restart (%s)', async (outcome) => {
+    const workDir = await createTempDir();
+    const runId = 'run-interrupted-publication';
+    const reportPath = path.join(workDir, 'runs', runId, 'result.json');
+    const makeHistory = () => createTicketHistory({ workDir, readers: readers() });
+    const history = makeHistory();
+    const summary = 'Complete retained developer wording.\n' + 'Evidence. '.repeat(1000).trimEnd();
+    await history.recordDeveloperReport?.({
+      ref: REF,
+      workspaceId: WORKSPACE_ID,
+      task: TASK,
+      round: 1,
+      runId,
+      reportPath,
+      status: 'in-progress',
+      reason: 'Coding turns retained; checks have not finished.',
+      repairsUsed: 0,
+      attempts: [{ turn: 1, kind: 'implementation', agentSummary: summary, checks: null }],
+      pullRequest: null,
+      deliveryFailure: null,
+      now: new Date('2026-09-21T09:00:00.000Z'),
+    });
+    const before = await history.prepare(prepareRequest(workDir));
+    expect(before.reports.find((report) => report.sourceId === runId)).toMatchObject({
+      status: 'in-progress',
+      complete: true,
+    });
+    const beforeBytes = await readFile(before.entriesPath, 'utf8');
+    const digestPath = path.join(
+      workspaceHistoryRoot(workDir, WORKSPACE_ID),
+      'reports',
+      `developer-${runId}.json`,
+    );
+    const digestBytes = await readFile(digestPath, 'utf8');
+    const complete = ['failed', 'cancelled', 'passed'].includes(outcome);
+    const status = outcome === 'passed' || outcome === 'cancelled' ? outcome : 'failed';
+    const reason = 'Final checks or runtime stop evidence decided this outcome.';
+    const endedAt = '2026-09-21T10:00:00.000Z';
+    await mkdir(path.dirname(reportPath), { recursive: true });
+    if (outcome !== 'missing') {
+      await writeFile(
+        reportPath,
+        outcome === 'malformed'
+          ? '{broken'
+          : JSON.stringify({
+              runId,
+              status,
+              reason,
+              endedAt,
+              ...(outcome === 'missing-turns'
+                ? {}
+                : {
+                    attempts: [
+                      {
+                        turn: 1,
+                        kind: 'implementation',
+                        agentSummary: outcome === 'lost-summary' ? null : summary,
+                        checks: status === 'cancelled' ? null : { outcome: status },
+                      },
+                    ],
+                  }),
+            }),
+      );
+    }
+    const state: WorkspaceState = {
+      version: 1,
+      workspaceId: WORKSPACE_ID,
+      sourceRoot: path.join(workDir, 'source'),
+      baseCommit: HEAD,
+      branch: `harness/${WORKSPACE_ID}`,
+      createdAt: '2026-09-21T08:00:00.000Z',
+      sourceItem: { type: REF.type, scope: REF.scope, id: REF.id, key: REF.key },
+      attempts: [{ runId, outcome: status, reason, endedAt, reportPath }],
+    };
+    await mkdir(path.dirname(workspaceStatePath(workDir, WORKSPACE_ID)), { recursive: true });
+    await writeFile(workspaceStatePath(workDir, WORKSPACE_ID), JSON.stringify(state));
+
+    for (const role of ['developer', 'reviewer'] as const) {
+      const snapshot = await makeHistory().prepare(prepareRequest(workDir, role));
+      const entries = snapshot.entries.filter((entry) => entry.sourceId === runId);
+      expect(entries).toHaveLength(1);
+      expect(entries[0]?.complete).toBe(complete);
+      expect(entries[0]?.text).toContain(summary);
+      expect(entries[0]?.text).toContain(reason);
+      expect(snapshot.reports.find((report) => report.sourceId === runId)).toMatchObject({
+        status,
+        reason,
+        complete,
+      });
+      if (complete) {
+        expect(entries[0]?.text).toContain(
+          `Checks after the turn: ${status === 'cancelled' ? '(none ran)' : status}`,
+        );
+        expect(entries[0]?.text).toContain(reportPath);
+        expect(snapshot.gaps).toEqual([]);
+      } else {
+        expect(snapshot.gaps.join('\n')).toContain('final evidence');
+        expect(renderHistorySection(snapshot, role)).toContain(reportPath);
+      }
+    }
+    expect(await readFile(before.entriesPath, 'utf8')).toBe(beforeBytes);
+    expect(await readFile(digestPath, 'utf8')).toBe(digestBytes);
+  });
+
   it('refuses to prepare a snapshot that cannot be written beside the workspace', async () => {
     const workDir = await createTempDir();
     await mkdir(path.join(workDir, 'workspaces'), { recursive: true });

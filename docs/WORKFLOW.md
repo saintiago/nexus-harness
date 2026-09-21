@@ -847,6 +847,12 @@ conservatively rather than silently dropped after a feedback cursor advances.
 Complete developer messages pass through the runtime adapter without truncation and are saved
 under `reports/` after every turn, so repairs see earlier turns
 from their own run. The final run enriches that same entry before the result comment is published.
+After a restart or early coordinator return, preparation reconciles any `in-progress` digest with
+the finished attempt in the workspace ledger and its `result.json`. The new snapshot includes the
+final outcome, reason and check results while keeping the original turn wording. If final evidence
+cannot be recovered, the retained report remains readable and is marked incomplete with the path
+and reason. Recovery changes neither prior snapshots nor the saved digest and invents no publication
+or delivered commit; an attempt not yet recorded as finished remains in progress.
 Reviewer verdicts are saved before publication checks, including inconclusive and stale verdicts; each developer report records the
 commit its delivery verified, so successive rounds to the same pull request each keep their own
 revision. Reports recorded before this increment are rebuilt from the run's own `result.json` and

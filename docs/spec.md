@@ -124,7 +124,12 @@ review record; a record that cannot be read back as the conversation it claims t
 JSON, no list of turns — is marked incomplete, naming what is missing, rather than presented as
 complete, and a report that is really gone is marked missing, with the workspace staying usable.
 Developer turn summaries are saved after each turn, including before the next repair; the final
-run report enriches the same entry. Reviewer verdicts are retained before publication checks,
+run report enriches the same entry. If the coordinator stops before that enrichment, a subsequent
+snapshot reconciles an interim digest with the finished workspace attempt and its `result.json`,
+including the final outcome, reason and checks. Missing, malformed or inconsistent final evidence
+leaves the retained turn wording available but explicitly marks the report incomplete. Recovery
+does not rewrite the saved interim digest or earlier immutable snapshots, or infer a delivery.
+Reviewer verdicts are retained before publication checks,
 including inconclusive or subsequently stale reviews; an unpublished approval cannot clear an older
 request. Each retained developer report names the commit its attempt delivered, so rounds that
 delivered to the same pull request each keep their own revision.

@@ -187,7 +187,11 @@ export function textSha256(text: string): string {
 }
 
 /** The complete developer report as Markdown: every field the run recorded. */
-function developerReportText(request: DeveloperReportRequest): string {
+function developerReportText(
+  request: Omit<DeveloperReportRequest, 'task'> & {
+    readonly task: DeveloperReportDigest['task'];
+  },
+): string {
   const lines = [
     `# Developer report — ${request.ref.key}, round ${String(request.round)}`,
     '',
@@ -857,16 +861,17 @@ export async function readLocalReports(parts: {
         `represented in this snapshot: ${messageOf(cause)}`,
     );
   }
-  const knownRuns = new Set(
+  const knownRuns = new Map(
     reports
       .filter(
         (report): report is Extract<LocalReport, { kind: 'developer-report' }> =>
           report.kind === 'developer-report',
       )
-      .map((report) => report.digest.runId),
+      .map((report) => [report.digest.runId, report]),
   );
   for (const [index, attempt] of ledgerAttempts.entries()) {
-    if (knownRuns.has(attempt.runId)) {
+    const retained = knownRuns.get(attempt.runId);
+    if (retained !== undefined && retained.digest.status !== 'in-progress') {
       continue;
     }
     const round = index + 1;
@@ -875,6 +880,56 @@ export async function readLocalReports(parts: {
       text = await readFile(attempt.reportPath, 'utf8');
     } catch {
       text = '';
+    }
+    if (retained !== undefined) {
+      // A crash (or an early coordinator return) can leave the turn digest
+      // behind after the runner finalized. Reconcile in this new snapshot;
+      // neither the saved digest nor an already-running turn's input changes.
+      const rebuilt = legacyDeveloperDigest(attempt.runId, ref, workspaceId, round, text, attempt);
+      let problem = text === '' ? `the final report could not be read` : rebuilt.problem;
+      if (problem === null && rebuilt.digest.status !== attempt.outcome) {
+        problem = 'the final report outcome does not match the finished workspace attempt';
+      }
+      if (
+        problem === null &&
+        retained.digest.attempts.some(
+          (turn) =>
+            !rebuilt.digest.attempts.some(
+              (final) =>
+                final.turn === turn.turn &&
+                final.kind === turn.kind &&
+                final.agentSummary === turn.agentSummary,
+            ),
+        )
+      ) {
+        problem = 'the final report does not preserve every retained coding turn';
+      }
+      const recovery = `Recovered final evidence from "${attempt.reportPath}".`;
+      const gap =
+        problem === null
+          ? null
+          : `final evidence for run ${attempt.runId} at "${attempt.reportPath}" is unavailable: ${problem}`;
+      const digest: DeveloperReportDigest = {
+        ...retained.digest,
+        status: attempt.outcome,
+        reason:
+          problem === null ? rebuilt.digest.reason : (attempt.reason ?? retained.digest.reason),
+        createdAt: attempt.endedAt,
+        attempts: problem === null ? rebuilt.digest.attempts : retained.digest.attempts,
+        repairsUsed: problem === null ? rebuilt.digest.repairsUsed : retained.digest.repairsUsed,
+        recordProblem: gap,
+      };
+      reports[reports.indexOf(retained)] = {
+        ...retained,
+        digest,
+        text:
+          problem === null
+            ? `${developerReportText({ ...digest, reportPath: attempt.reportPath, now: parts.now })}\n${recovery}\n`
+            : `${retained.text}\nINCOMPLETE: ${gap}\nThe workspace ledger records ${attempt.outcome}: ${attempt.reason ?? '(no reason recorded)'}.\n`,
+        complete: problem === null,
+        problem: gap,
+      };
+      continue;
     }
     if (text === '') {
       reports.push({
