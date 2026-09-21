@@ -1053,7 +1053,10 @@ repository-local repair, or why none may be made:
 }
 ```
 
-Every field shown is required, nonblank, and bounded; anything else — a missing field, invalid
+Every field shown is required, nonblank, and bounded, and that bound is enforced rather than trimmed
+to: a field longer than it makes the finding unusable, because what follows the bound can be the
+change the repair has to make, and what the turn wrote is kept nowhere else. Anything else — a
+missing field, an oversized one, invalid
 JSON, no file at all, a turn that failed or was stopped, or a clone the turn changed — is a
 diagnosis with no usable finding, and is handled like an inconclusive one. The finding file alone
 decides nothing: what the turn produced is recorded as `outcome.json` beside the evidence, before
@@ -1074,7 +1077,10 @@ original task. That guidance carries each field of the finding whole on its own 
 the reviewer's finding was validated at (up to 2,000 characters per field, `finding.json` above) —
 the four things the developer has to act on are never collapsed into one bounded paragraph, and no
 part of a field is cut to the width a comment line happens to have — and it is in the
-brief of every rung of the climb that claim may take, not only its first. The finding also carries
+brief of every rung of the climb that claim may take, not only its first. The finding has that
+budget of its own and is never charged against the bounds the rest of the guidance is kept to, so a
+long finding cannot spend the room the newest thing the ticket says — the review feedback a later
+repair turn has to act on — is read from. The finding also carries
 the order it belongs in, as a line of its own: the baseline is repaired before the original task
 continues, and the coding prompt renders the finding as a requirement of the attempt rather than as
 context it may weigh. The finding reaches that
@@ -1111,7 +1117,11 @@ record is what the marker is held against, and what the next claim is handed. So
 to its ready status, and the evidence is closed as a repair, only while the outcome beside it holds
 the actionable finding the marker names — an edited marker on a rejected turn can never return the
 ticket for a repair its own turn never produced — and the finding a continuation is handed is the
-actionable finding recorded there, never the turn's own finding file. A resume that finds the
+actionable finding recorded there, never the turn's own finding file. An evidence directory this
+harness kept whose own `evidence.json` is gone is not "nothing pending": nothing about it can be
+resumed, read back, or closed, it may be the very record that returned a workspace for repair, and
+so the intake stops for a person, naming the directory, instead of passing over it or claiming on
+it as an ordinary continuation. A resume that finds the
 comment already on the issue reads the recorded reviewer stop back from that outcome before it
 moves anything, instead of
 assuming one: an unconfirmed one keeps the intake lock there exactly as it did when the finding was

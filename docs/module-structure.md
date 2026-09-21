@@ -74,8 +74,8 @@ src/
     contract.ts                   (775)  TaskSource, the ordinary source data and errors, pointer labels
     receipts.ts                   (238)  the per-project intake lock and one receipt per attempted item
     eligibility.ts                (81)   what an item is: a first attempt, a continuation, or a refusal
-    guidance.ts                   (92)   what an attempt is told, bounded: the finding, the thread, attempts
-    baseline.ts                   (1419) the pre-delivery diagnosis: its evidence, one comment, one move
+    guidance.ts                   (104)  what an attempt is told, each bounded: the finding, the thread, attempts
+    baseline.ts                   (1405) the pre-delivery diagnosis: its evidence, one comment, one move
     coordinator.ts                (1804) runSource and watchSource: discovery, the ladder, publication
     list.ts                       (88)   the read-only `source list` preview
     jira/
@@ -98,7 +98,7 @@ src/
     github.ts                     (726)  the App JWT, the installation token, and the repository calls
     diff.ts                       (134)  the pull request's diff, and where a finding is positioned
     reviewer.ts                   (402)  the reviewer prompt, the one bounded turn, and the verdict file
-    baseline.ts                   (1206) the pre-delivery reviewer turn, its prompt, and its outcome record
+    baseline.ts                   (1189) the pre-delivery reviewer turn, its prompt, and its outcome record
     scan.ts                       (790)  one scan or watch: eligibility, dedup, publishing, evidence
   queue/
     loop.ts                       (488)  the serial control loop: one current ticket, one phase at a time
@@ -288,8 +288,10 @@ further would separate one decision from itself: `runs/runner.ts` (the loop), `s
   and one receipt per attempted item, keyed by the item's immutable identity. `eligibility.ts` decides
   what an item is — a first attempt, a continuation of the workspace its pointer names, or a refusal —
   and `guidance.ts` renders what an attempt is told from the item's own thread and its earlier
-  attempts, bounded: a reviewed baseline finding is carried field by field, ahead of the rest, and
-  never dropped for later chatter — but only one the coordinator established, from the whole finding
+  attempts, each with its own bounds: a reviewed baseline finding is carried field by field, ahead of
+  the rest, and never dropped for later chatter — and the context beside it is never dropped for the
+  finding's width, because the finding's own bound is not charged against it — but only one the
+  coordinator established, from the whole finding
   comment that names the evidence the retained record closed as a repair and repeats every field of
   the finding that record holds or, when the thread cannot supply it, from that record through
   `baseline.ts`; a comment is never promoted to that requirement merely because it carries a
@@ -425,7 +427,8 @@ further would separate one decision from itself: `runs/runner.ts` (the loop), `s
   finding file and which every reader of what that evidence produced reads back, so a marker on the
   item's thread and a continuation's required finding are both held to what the turn really
   recorded, and the strict reader of the `finding.json` that turn has to write in its own
-  writable working directory. A refusal reached before that turn carries the stop the evidence's
+  writable working directory — a bound the finding's own fields are enforced against by refusing
+  one that runs past it, never by cutting a field to it. A refusal reached before that turn carries the stop the evidence's
   record already holds — and a record that cannot be read at all fails closed by name — so no
   refusal can round an unconfirmed stop down to a confirmed one.
 - **Does not own:** the coding loop, the working copy, Jira writes, delivery, or merging. It
@@ -539,7 +542,7 @@ fixtures: helper modules may not import the CLI, and `src/shared/types.ts` may n
 | Workspace layout and ledger | `WorkspaceState`/`WorkspaceAttempt` (`src/workspace/state.ts`), `ContinuedWorkspace` (`src/workspace/reopen.ts`); the paths in `src/workspace/run-directory.ts` | the runner, as each attempt finishes; the coordinator resolves it, and refuses rather than guesses |
 | Pointer label | `workspacePointerLabel`/`parseWorkspacePointers` (`src/sources/contract.ts`), written through `src/sources/jira/labels.ts` | the run that creates a workspace, once, before any coding turn |
 | Escalation ladder | `EscalationTier` (`src/shared/types.ts`), the `escalation` schema in `src/config/schema.ts`, the climb in `src/sources/coordinator.ts` | the Nexus-wide harness configuration |
-| Attempt guidance | `SourceComment` (`src/sources/contract.ts`), rendering and bounds in `src/sources/guidance.ts`, the prompt section in `src/agents/codex/prompt.ts` | the item's own thread and the workspace ledger, bounded; the reviewed baseline finding the coordinator establishes is carried as its own lines, ahead of the context |
+| Attempt guidance | `SourceComment` (`src/sources/contract.ts`), rendering and budgets in `src/sources/guidance.ts`, the prompt section in `src/agents/codex/prompt.ts` | the item's own thread and the workspace ledger, bounded; the reviewed baseline finding the coordinator establishes is carried as its own lines, ahead of the context and with a budget of its own, so neither spends the other's |
 | Delivery | `GitHubDeliveryConfig` (`src/shared/types.ts`), the project `delivery` schema in `src/config/schema.ts`, `Delivery`/`DeliveryRequest`/`DeliveredPullRequest` and `createGitHubDelivery` (`src/delivery/github.ts`), the call in `src/sources/coordinator.ts` | the connected project's configuration; GitHub is the record of whether a pull request exists |
 | Review | `GitHubReviewConfig` (`src/shared/types.ts`), the Nexus-wide `reviewer` schema composed with the project's `source` and `delivery` in `src/config/load.ts`, `ReviewQueue`/`ReviewRepository`/`ReviewVerdict`/`ReviewSummary` (`src/reviews/contract.ts`), `createGitHubReviewClient` (`src/reviews/github.ts`), `createReviewerTurn` (`src/reviews/reviewer.ts`), `scanReviews`/`watchReviews` (`src/reviews/scan.ts`), wired by `src/cli/review-command.ts` | the harness configuration's reviewer integration, the connected project's own repository, and the GitHub App installation; the native review pinned to a commit is the record of what was reviewed |
 | Serial queue | `QueueTicket`/`SourceTake` (`src/sources/contract.ts`), `takeOneItem` (`src/sources/coordinator.ts`), the optional one-ticket scope in `ReviewScanContext` and `CompletionPassParts`, `runQueue` (`src/queue/loop.ts`), `refreshSource` (`src/workspace/refresh.ts`), wired by `src/cli/queue-command.ts` | the operator's configuration; Jira, the pointer label, and GitHub's native state are the authorities a restart reads |

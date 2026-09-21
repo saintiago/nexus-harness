@@ -89,7 +89,11 @@ that fails, is stopped, writes nothing usable, or leaves a changed clone has no 
 handled exactly like an inconclusive one; when the stop that ended it was the caller's own, the
 interruption is what that inconclusive record names, and it is still published. The finding file
 lives in the turn's own working
-directory, which is the only place the launch lets it write. The finding file decides nothing on its
+directory, which is the only place the launch lets it write. Every field is nonblank and bounded, and
+that bound is enforced by refusing the finding rather than cutting a field down to it: the part after
+the bound can be the change or the qualification the repair needs, and what the turn wrote is kept
+nowhere else, so a field the harness cannot keep whole is one it does not publish or hand on. The
+finding file decides nothing on its
 own: what the turn produced is recorded as `outcome.json` beside the evidence, before anything is
 published — the validated finding, or the problem that rejected the turn, with the turn's own stop —
 and a restart reads that record. A turn whose own process tree could not be confirmed stopped is
@@ -116,7 +120,10 @@ used to cut off exactly the likely cause and the repair, which are the two field
 on. The comment on the ticket is a concise rendering of the finding and the guidance is not: each
 comment line is bounded, while a field is handed on at the width the reviewer's finding was
 validated at (`finding.json`'s own per-field bound), so a repair whose instruction runs past one
-comment line arrives complete. The finding also carries the order it belongs in: the guidance and the coding prompt both say
+comment line arrives complete. The finding has that budget of its own and is never charged against
+the bounds the rest of the guidance is kept to, so a finding wider than those bounds cannot spend the
+room the newest thing the ticket or the ledger says is kept from: the review feedback a later repair
+turn has to act on survives beside it. The finding also carries the order it belongs in: the guidance and the coding prompt both say
 that the baseline is repaired before the original task continues, so an attempt is never left to
 read the repair as optional context. That finding is not context the attempt may start without: the item's own thread is its ordinary
 source, and when the thread cannot supply it — a read that failed, a comment that no longer says the
@@ -155,7 +162,12 @@ watch scan, and a serial queue step alike, and it stops that intake when what it
 person: a pending diagnosis that cannot be finished, and one whose reviewer runtime was not seen to
 end, both stop the batch, the watch scan, or the queue before anything else is discovered or
 claimed, and an unconfirmed stop carries that observation all the way to the intake lock, which is
-then kept instead of released. It makes only the step that is missing: the status move
+then kept instead of released. An evidence directory this harness kept whose own `evidence.json` is
+gone is a third: nothing about it can be resumed, read back, or closed, it may be the record that
+returned a workspace for repair, and the directory alone does not say which workspace that was — so
+the intake stops for a person, naming the directory, instead of passing over it or letting the next
+claim start as an ordinary continuation in a workspace whose finding it cannot establish. It makes
+only the step that is missing: the status move
 for a finding that is already on the thread, or the publication of the outcome the interrupted
 invocation recorded beside its evidence. That outcome — `outcome.json`, written once the reviewer
 turn has ended and before anything is published — holds the validated finding or the problem that
@@ -204,6 +216,9 @@ deadline, so no cancellation leaves a claimed ticket In Progress with nothing lo
   never closes evidence as one, and is never handed to a continuation — with the identity that
   read-back publishes, and with the whole-comment
   check that decides whether a comment of the thread is that same finding or ordinary context — and
+  with an evidence directory this harness kept apart from nothing pending: its own record gone is a
+  stop for a person, before anything is discovered or claimed, rather than a directory a resume or a
+  read-back passes over — and
   the one reading of a resume outcome its callers share: what stops an
   intake, and whether everything the diagnosis started was confirmed stopped, so a batch, a watch
   scan, and the serial queue cannot read the same outcome differently.
@@ -214,7 +229,8 @@ deadline, so no cancellation leaves a claimed ticket In Progress with nothing lo
   continuation is given — reads back as the one answer to what this evidence's turn really produced
   — the snapshot checks that hold the turn to the tree the checks really ran against, and the
   bounded reading of the evidence: a log that cannot be read is refused by name instead of rendered
-  as a check that said nothing.
+  as a check that said nothing — and the bound on each field of a finding, enforced by refusing the
+  finding rather than cutting a field to it.
 - `src/sources/jira/baseline.ts` — the Jira side: the thread, one comment, one move out of the
   running status, and whether the item is still there, over the completion path's existing helpers.
 - `src/sources/jira/comments.ts` — the issue's own thread and the comments the harness posts,
@@ -303,7 +319,12 @@ code lives and what owns what.
   all; a field longer than one comment line, from either route: the comment the diagnosis writes
   stays a bounded rendering of it, the comment the next claim reads is still accepted as the whole
   comment, and the developer's guidance — and the prompt the real `source run` builds from it — carries
-  the field whole, the instruction past character 600 included; a required finding nothing can supply
+  the field whole, the instruction past character 600 included; a finding wider than the whole 4,000
+  characters the context beside it is bounded to, every field inside its own 2,000, with the newest
+  thing the ticket says after it: the finding arrives whole and first, and the newest comment — the
+  review feedback a repair turn has to act on — arrives beside it instead of being crowded out by it,
+  through the coordinator the next claim runs as well as the prompt the real `source run` builds;
+  a required finding nothing can supply
   — the retained record cannot be read back — starting no
   developer, with the claimed ticket told why and taken out of the running status under the bounded
   deadline even after a stop, with its pointer preserved, and with the receipt naming the same thing
@@ -321,7 +342,12 @@ code lives and what owns what.
   in To Do and the claim that follows continuing the same workspace with the finding; pending
   evidence that cannot be finished
   stopping the intake for a person; an item a person moved being left alone and never diagnosed
-  again; and the serial queue ordering a diagnosed ticket into its repair attempt before anything
+  again; an evidence directory whose own record is gone stopping the intake by name — before it
+  discovers or claims anything, so no workspace is started as an ordinary continuation whose
+  finding cannot be established — with a diagnosis whose field runs past the bound its turn was
+  given refused rather than cut, for the repair and the required action both, and the rejection the
+  retained outcome records instead of a finding the turn's own file could not hold whole; and the
+  serial queue ordering a diagnosed ticket into its repair attempt before anything
   else; and a reviewer that never answers bounded by the configured limit instead of holding the
   intake open. `npm run validate` is green.
 - Live: **not run.** HARN-34's load-sensitive baseline is the scenario for it, and the exercise —

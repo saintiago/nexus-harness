@@ -371,7 +371,10 @@ or whose tracked files the configured commands changed, cannot be shown to be th
 check really ran against, and is refused as incomplete evidence instead of being diagnosed from a
 clone of the wrong tree. It writes one structured finding: either the failing check, the evidence,
 the likely cause and the repair a later coding turn can make, or why no repair may be made
-automatically. Its own environment carries git's declaration that the snapshot it was given is a
+automatically. Every field of that finding is nonblank and bounded, and the bound is enforced by
+refusing a finding that runs past it rather than cutting a field down to it: what follows the bound
+can be the change the repair has to make, and nothing keeps a second copy of what the turn wrote.
+Its own environment carries git's declaration that the snapshot it was given is a
 repository git may read, because the sandbox runs the turn's commands under a different identity on
 Windows and git would otherwise refuse that repository outright.
 
@@ -383,7 +386,10 @@ continues that ticket — before unrelated ready work —
 and the next claim reopens the same retained workspace, is told the original task *and* the reviewed
 finding as guidance — each field of the finding whole and on its own line, at the width the
 reviewer's finding was validated at, and on every rung of the
-ladder the returned ticket climbs, not only the first — repairs the baseline first, and only then
+ladder the returned ticket climbs, not only the first — and that finding is never charged against
+the bounds the rest of the guidance is kept to, so it cannot spend the room the newest feedback the
+ticket carries — the review of a repair that was delivered — is read from. The attempt repairs the
+baseline first, and only then
 continues the original task. That ordering is stated, not left to inference: the guidance carries
 the requirement that the baseline is repaired before the original task continues, and the coding
 prompt renders those lines as a requirement of this attempt rather than as ordinary context. That
@@ -402,7 +408,11 @@ be read back, so there is nothing to hold the thread's comment against — start
 claimed ticket is told why on its own thread, under the same bounded best-effort
 deadline an interrupted run's result gets, and is taken out of the running status with its workspace
 pointer preserved, so it is never left In Progress with nothing looking for it and a person decides
-what happens next. That attempt is an ordinary one: the same runner, the same escalation ladder
+what happens next. An evidence directory this harness kept whose own record is gone is not "nothing
+pending" either: nothing about it can be resumed, read back, or closed, and it may be the record
+that returned a workspace for repair, so intake stops for a person — naming the directory — instead
+of being passed over or claimed on as an ordinary continuation. That attempt is an ordinary one: the
+same runner, the same escalation ladder
 (which starts again at its first tier), the same checks, and the same delivery refusal for anything
 that is still red.
 

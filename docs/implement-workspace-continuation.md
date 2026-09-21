@@ -248,8 +248,11 @@ continuation is also told what its workspace
 ledger records of the attempts before it: tier, outcome, and the reason each run ended with. All of
 it is rendered, attributed, bounded (twelve lines, four thousand characters, six hundred per line),
 with a reviewed baseline finding carried field by field and kept ahead of the rest, and context for
-the turn. None of it becomes a command, an argument, a path, or a limit, and none of it changes the
-acceptance criteria or the checks that decide the run.
+the turn. Those bounds are the context's own: a reviewed baseline finding is bounded where its turn
+was accepted — up to 2,000 characters per field, on lines of its own — and is never charged against
+them, so a long finding cannot spend the room the newest thing the ticket or the ledger says is kept
+from ([WORKFLOW.md](WORKFLOW.md) §11). None of it becomes a command, an argument, a path, or a limit,
+and none of it changes the acceptance criteria or the checks that decide the run.
 
 ## What does not change
 
