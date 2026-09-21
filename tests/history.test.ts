@@ -379,7 +379,7 @@ describe('the ticket conversation snapshot', () => {
       expect(prompt).toContain('Complete ticket requirements: ');
       expect(prompt).toContain('### Current brief');
       expect(prompt).toContain('### Complete unresolved review findings');
-      expect(prompt).toContain('### New human feedback since this ticket’s previous snapshot');
+      expect(prompt).toContain('### New human feedback since this role’s last consumed snapshot');
       expect(prompt).toContain('### How to use the history');
       expect(prompt).toContain('Do not fetch Jira or GitHub yourself for this ticket');
       expect(prompt).not.toContain('truncated by the harness at 600');
@@ -850,6 +850,150 @@ describe('the ticket conversation snapshot', () => {
     };
   }
 
+  it('tracks consumption independently for both roles across preparation, edits and restart', async () => {
+    const workDir = await createTempDir();
+    let text = 'Act on this human feedback.';
+    const remote = readers({
+      jira: () => ({ comments: [jiraComment('role-feedback', text)], truncated: false }),
+    });
+    const history = createTicketHistory({ workDir, readers: remote });
+    const abandoned = await history.prepare(prepareRequest(workDir));
+    const developer = await history.prepare(prepareRequest(workDir));
+    expect(developer.brief.newHumanFeedback[0]?.text).toBe(text);
+    expect(developer.id).toBe(abandoned.id);
+    await history.consumed?.(developer);
+    const reviewer = await history.prepare(prepareRequest(workDir, 'reviewer'));
+    expect(reviewer.brief.newHumanFeedback[0]?.text).toBe(text);
+    await history.consumed?.(reviewer);
+    const restarted = createTicketHistory({ workDir, readers: remote });
+    expect((await restarted.prepare(prepareRequest(workDir))).brief.newHumanFeedback).toEqual([]);
+    text = 'Edited feedback without a changed timestamp.';
+    const editedReview = await restarted.prepare(prepareRequest(workDir, 'reviewer'));
+    expect(editedReview.brief.newHumanFeedback[0]?.text).toBe(text);
+    await restarted.consumed?.(editedReview);
+    const editedDeveloper = await restarted.prepare(prepareRequest(workDir));
+    expect(editedDeveloper.brief.newHumanFeedback[0]?.text).toBe(text);
+    expect(await readFile(developer.entriesPath, 'utf8')).not.toContain(text);
+  });
+
+  it('refreshes requirements for both prompts and refuses unreadable required input', async () => {
+    const workDir = await createTempDir();
+    let description = 'Current requirements, edited during the preceding turn.';
+    const history = createTicketHistory({
+      workDir,
+      readers: {
+        ...readers(),
+        currentTask: async () => {
+          if (description === '') throw new Error('requirements are unavailable');
+          return {
+            ref: { ...REF, updatedAt: '2026-09-21T12:00:00.000Z' },
+            task: { ...TASK, description },
+          };
+        },
+      },
+    });
+    const first = await history.prepare(prepareRequest(workDir));
+    for (const prompt of [
+      promptFor(developerRequest(first)),
+      reviewPrompt(EVIDENCE, VIEW, '/review', first),
+    ]) {
+      expect(prompt).toContain(description);
+      expect(prompt).not.toContain(TASK.description);
+    }
+    description = 'Requirements edited again before a repair turn.';
+    const second = await history.prepare(prepareRequest(workDir));
+    expect(second.brief.task.description).toBe(description);
+    expect(await readFile(first.indexJsonPath, 'utf8')).not.toContain(description);
+    description = '';
+    await expect(history.prepare(prepareRequest(workDir))).rejects.toThrow(
+      'current ticket requirements could not be obtained',
+    );
+  });
+
+  it('keeps each reviewer’s findings and responses through unrelated approvals and comment-only reviews', async () => {
+    const workDir = await createTempDir();
+    const comments: ReadComment[] = [
+      {
+        ...jiraComment('1', 'Alice blocking finding'),
+        author: 'Alice',
+        state: 'CHANGES_REQUESTED',
+        commit: HEAD,
+      },
+      {
+        ...jiraComment('2', 'Bob blocking finding'),
+        author: 'Bob',
+        state: 'CHANGES_REQUESTED',
+        commit: HEAD,
+        createdAt: '2026-09-20T11:00:00.000Z',
+      },
+      {
+        ...jiraComment('3', 'A comment, not approval'),
+        author: 'Alice',
+        state: 'COMMENTED',
+        commit: HEAD,
+        createdAt: '2026-09-20T12:00:00.000Z',
+      },
+      {
+        ...jiraComment('4', 'Charlie approves'),
+        author: 'Charlie',
+        state: 'APPROVED',
+        commit: HEAD,
+        createdAt: '2026-09-20T13:00:00.000Z',
+      },
+    ];
+    const response = 'Response to both findings. ' + 'Details\n'.repeat(1_000);
+    const history = createTicketHistory({
+      workDir,
+      readers: readers({
+        pull: () => pullConversation(comments),
+        jira: {
+          comments: [
+            jiraComment('reply', response, {
+              createdAt: '2026-09-19T09:00:00.000Z',
+              updatedAt: '2026-09-21T09:00:00.000Z',
+            }),
+          ],
+          truncated: false,
+        },
+      }),
+    });
+    const snapshot = await history.prepare(prepareRequest(workDir));
+    expect(snapshot.brief.unresolvedReviews?.map((review) => review.author)).toEqual([
+      'Alice',
+      'Bob',
+    ]);
+    for (const role of ['developer', 'reviewer'] as const) {
+      const prompt = renderHistorySection(snapshot, role);
+      expect(prompt).toContain('Alice blocking finding');
+      expect(prompt).toContain('Bob blocking finding');
+      expect(prompt).toContain(response.trim());
+    }
+    comments.push({
+      ...jiraComment('5', 'Alice approves current head'),
+      author: 'Alice',
+      state: 'APPROVED',
+      commit: HEAD,
+      createdAt: '2026-09-20T14:00:00.000Z',
+    });
+    expect(
+      (await history.prepare(prepareRequest(workDir))).brief.unresolvedReviews?.map(
+        (review) => review.author,
+      ),
+    ).toEqual(['Bob']);
+    comments.push({
+      ...jiraComment('6', 'Bob approves an old head'),
+      author: 'Bob',
+      state: 'APPROVED',
+      commit: 'b'.repeat(40),
+      createdAt: '2026-09-20T15:00:00.000Z',
+    });
+    expect(
+      (await history.prepare(prepareRequest(workDir))).brief.unresolvedReviews?.map(
+        (review) => review.author,
+      ),
+    ).toEqual(['Bob']);
+  });
+
   it('treats a comment edited after the last report as new feedback for the next turn', async () => {
     const workDir = await createTempDir();
     let text = 'Please keep the wording.';
@@ -935,6 +1079,7 @@ describe('the ticket conversation snapshot', () => {
     });
     const second = await history.prepare(prepareRequest(workDir));
     expect(second.brief.newHumanFeedback.map((entry) => entry.sourceId)).toEqual(['9700']);
+    await history.consumed?.(second);
 
     // A restart prepares from the store on disk, and the input the previous
     // turn already held is not handed over as new again.
@@ -1213,6 +1358,37 @@ describe('the ticket conversation snapshot', () => {
 
     expect(snapshot.brief.unresolved).toBeNull();
     expect(snapshot.entries.some((entry) => entry.sourceId === '860')).toBe(true);
+  });
+
+  it('keeps findings after an unpublished approval that did not pass publication guards', async () => {
+    const workDir = await createTempDir();
+    const history = createTicketHistory({
+      workDir,
+      readers: readers({ pull: pullConversation() }),
+    });
+    for (const [round, decision] of [
+      [1, 'request_changes'],
+      [2, 'approve'],
+    ] as const) {
+      await history.recordReviewerReport?.({
+        ref: REF,
+        workspaceId: WORKSPACE_ID,
+        task: TASK,
+        reviewId: `review-unpublished-${String(round)}`,
+        round,
+        head: HEAD,
+        decision,
+        summary: decision,
+        findings:
+          decision === 'approve'
+            ? []
+            : [{ path: 'src/a.ts', line: 1, body: 'Retain this unresolved finding.' }],
+        now: new Date(`2026-09-21T0${String(round)}:00:00.000Z`),
+      });
+    }
+    const snapshot = await history.prepare(prepareRequest(workDir));
+    expect(snapshot.brief.unresolved?.findings[0]?.body).toBe('Retain this unresolved finding.');
+    expect(snapshot.entries.filter((entry) => entry.kind === 'reviewer-report')).toHaveLength(2);
   });
 
   it('recovers the complete reviewer report from the reviewer’s retained verdict', async () => {

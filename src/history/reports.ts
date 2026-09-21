@@ -338,7 +338,13 @@ export async function recordDeveloperReport(
   const textName = `developer-${request.runId}.md`;
   const recordName = `developer-${request.runId}.result.json`;
   const text = developerReportText(request);
-  const copied = await copyVerbatim(reportFile(root, recordName), request.reportPath);
+  // During a run the complete turn summaries are already available, while the
+  // final result does not exist yet. The coordinator enriches this same report
+  // after finalization; immutable snapshots retain the earlier version.
+  const copied =
+    request.status === 'in-progress'
+      ? { file: null, problem: null }
+      : await copyVerbatim(reportFile(root, recordName), request.reportPath);
   const digest: DeveloperReportDigest = {
     version: 1,
     kind: 'developer-report',

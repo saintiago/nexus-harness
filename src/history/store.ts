@@ -340,11 +340,41 @@ export async function writeSnapshot(
 
 /** One stored snapshot's metadata, or `null` when there is none. */
 export async function readSnapshot(root: string, id: string): Promise<SnapshotIndex | null> {
+  if (!/^[a-f0-9]{32}$/.test(id)) {
+    return null;
+  }
   try {
     const text = await readFile(pathsOf(root, id).indexJsonPath, 'utf8');
     return JSON.parse(text) as SnapshotIndex;
   } catch {
     return null;
+  }
+}
+
+/** A prepared snapshot is not proof that either role consumed it. */
+export async function readConsumedEntries(
+  root: string,
+  role: HistorySnapshot['role'],
+): Promise<readonly HistoryEntry[] | null> {
+  try {
+    const value = JSON.parse(await readFile(path.join(root, `consumed-${role}.json`), 'utf8')) as {
+      snapshotId: string;
+    };
+    return (await readSnapshot(root, value.snapshotId))?.entries ?? null;
+  } catch {
+    // Legacy or unreadable cursors replay feedback conservatively.
+    return null;
+  }
+}
+
+export async function recordConsumedSnapshot(snapshot: HistorySnapshot): Promise<void> {
+  const file = path.join(snapshot.root, `consumed-${snapshot.role}.json`);
+  const temporary = `${file}.${randomBytes(6).toString('hex')}.tmp`;
+  try {
+    await writeFile(temporary, JSON.stringify({ version: 1, snapshotId: snapshot.id }), 'utf8');
+    await rename(temporary, file);
+  } finally {
+    await rm(temporary, { force: true });
   }
 }
 

@@ -116,7 +116,8 @@ export function reviewPrompt(
   dir: string,
   history?: HistorySnapshot,
 ): string {
-  const { ref, task, pullRequest } = evidence;
+  const { pullRequest } = evidence;
+  const { ref, task } = history?.brief ?? evidence;
   const location = 'repo';
   const verdictPath = path.join(dir, REVIEW_VERDICT_FILE);
   const sections: string[] = [];

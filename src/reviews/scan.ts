@@ -645,10 +645,39 @@ async function reviewWithTurn(
     ...(history === undefined ? {} : { history }),
     stop: reviewerStop,
   });
+  if (turn.verdict !== null && history !== undefined) {
+    await context.history?.consumed?.(history).catch(() => undefined);
+  }
   if (reviewerStop.aborted || turn.problem !== null || turn.verdict === null) {
     return await attentionResult(turn.problem ?? 'the reviewer turn produced no verdict', true);
   }
   const verdict = turn.verdict;
+  // The complete reviewer report is saved before anything renders it: the
+  // native review body and its inline comments are the concise rendering, and
+  // Jira and a later developer turn read the complete report from the local
+  // history instead of that rendering.
+  if (history !== undefined && context.history?.recordReviewerReport !== undefined) {
+    try {
+      await context.history.recordReviewerReport({
+        ref: history.brief.ref,
+        workspaceId,
+        task: history.brief.task,
+        reviewId: reviewDir.reviewId,
+        round: history.round ?? 1,
+        head,
+        decision: verdict.decision,
+        summary: verdict.summary,
+        findings: verdict.findings,
+        now: context.now(),
+      });
+    } catch (cause) {
+      return await attentionResult(
+        `the complete reviewer report could not be saved before it was published, so nothing was ` +
+          `published: ${messageOf(cause)}`,
+        true,
+      );
+    }
+  }
   if (verdict.decision === 'inconclusive') {
     return await attentionResult(`review inconclusive: ${verdict.summary}`, true);
   }
@@ -741,32 +770,6 @@ async function reviewWithTurn(
     positioned.unpositioned,
     reviewDir.reviewId,
   );
-  // The complete reviewer report is saved before anything renders it: the
-  // native review body and its inline comments are the concise rendering, and
-  // Jira and a later developer turn read the complete report from the local
-  // history instead of that rendering.
-  if (history !== undefined && context.history?.recordReviewerReport !== undefined) {
-    try {
-      await context.history.recordReviewerReport({
-        ref,
-        workspaceId,
-        task: item.task,
-        reviewId: reviewDir.reviewId,
-        round: history.round ?? 1,
-        head,
-        decision: verdict.decision,
-        summary: verdict.summary,
-        findings: verdict.findings,
-        now: context.now(),
-      });
-    } catch (cause) {
-      return await attentionResult(
-        `the complete reviewer report could not be saved before it was published, so nothing was ` +
-          `published: ${messageOf(cause)}`,
-        true,
-      );
-    }
-  }
   let review: PublishedReview;
   try {
     review = await context.repository.publishReview(

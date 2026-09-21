@@ -25,7 +25,8 @@ const INSTRUCTION_FILE = 'AGENTS.md';
  * a repair turn is the same turn with what went wrong added.
  */
 export function promptFor(request: AgentTurnRequest): string {
-  const { task, workspacePath, sourceRoot, baseCommit, kind, turn, repair } = request;
+  const { workspacePath, sourceRoot, baseCommit, kind, turn, repair } = request;
+  const task = request.history?.brief.task ?? request.task;
   const sections: string[] = [];
 
   sections.push(

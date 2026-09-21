@@ -1010,6 +1010,9 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
         ...(history === undefined ? {} : { history }),
         stop: turnStop,
       });
+      if (reviewed.summary !== null && history !== undefined) {
+        await parts.history?.consumed?.(history).catch(() => undefined);
+      }
     } catch (cause) {
       reviewed = {
         summary: null,

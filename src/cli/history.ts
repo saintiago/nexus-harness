@@ -10,6 +10,8 @@
  * empty conversation presented as a complete one.
  */
 import { readCommentThread } from '../sources/jira/comments.js';
+import { readIssue, refFor } from '../sources/jira/issue.js';
+import { mapTask } from '../sources/jira/tasks.js';
 import type { HttpClient } from '../sources/jira/http.js';
 import type { GitHubReviewConfig, JiraSourceConfig, SourceRef } from '../shared/types.js';
 import type {
@@ -60,6 +62,13 @@ function readersFor(parts: {
   readonly observedAt: () => string;
 }): HistoryReaders {
   return {
+    currentTask: async (ref, stop) => {
+      const issue = await readIssue(parts.jira.http, ref.id, stop);
+      if (issue === null) {
+        throw new Error(`ticket ${ref.key} no longer exists or cannot be read`);
+      }
+      return { ref: refFor(parts.jira.config, issue), task: mapTask(issue) };
+    },
     jiraThread: async (ref, stop) => {
       const thread = await readCommentThread(
         parts.jira.http,

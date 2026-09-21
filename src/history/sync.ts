@@ -12,6 +12,7 @@
  * rather than duplicated as conversation.
  */
 import type { HistoryReaders, TicketHistory } from './contract.js';
+import { HistoryError } from './contract.js';
 import { messageOf } from '../shared/errors.js';
 import type { SourceRef } from '../shared/types.js';
 import {
@@ -36,7 +37,12 @@ import {
   textSha256,
 } from './reports.js';
 import type { LocalReport } from './reports.js';
-import { readLatestEntries, writeSnapshot } from './store.js';
+import {
+  readConsumedEntries,
+  readLatestEntries,
+  recordConsumedSnapshot,
+  writeSnapshot,
+} from './store.js';
 import type { SnapshotContent } from './store.js';
 
 /** What one ticket history is built from. */
@@ -422,6 +428,7 @@ function mirroredEntryId(
 /** One review round the brief may name as the unresolved one. */
 interface ReviewRoundCandidate {
   readonly at: string;
+  readonly owner: string;
   /** The decision or native state, lower case. */
   readonly decision: string;
   readonly summary: HistoryReportSummary;
@@ -430,21 +437,16 @@ interface ReviewRoundCandidate {
 }
 
 /**
- * The latest review round that requested changes, or `null` when the latest
- * review decided something else. Every round counts: a complete local report,
- * and a native review GitHub reports — by any author — that has no matching
- * retained report. A newer native review is never ignored because an older
- * local report exists, and a local approval never hides a later request for
- * changes.
+ * Reconciles retained and native reviews independently by reviewer. Only an
+ * approval by that reviewer at the current head clears their outstanding
+ * request; comment-only and inconclusive rounds decide nothing.
  */
 function unresolvedRound(
   reports: readonly HistoryReportSummary[],
   candidates: readonly Candidate[],
-): {
-  readonly round: HistoryReportSummary;
-  readonly ownEntryIds: readonly string[];
-  readonly reconstructed: boolean;
-} | null {
+  harnessAuthors: readonly string[],
+  currentHead: string | null,
+): readonly ReviewRoundCandidate[] {
   const rounds: ReviewRoundCandidate[] = [];
   const coveredReviews = new Set<string>();
 
@@ -472,7 +474,17 @@ function unresolvedRound(
     if (report.nativeReviewId !== null) {
       coveredReviews.add(String(report.nativeReviewId));
     }
-    const decision = (report.decision ?? '').toLowerCase();
+    const native = candidates.find(
+      (candidate) =>
+        candidate.entry.kind === 'pr-review' &&
+        candidate.entry.sourceId === String(report.nativeReviewId),
+    );
+    const decision = native?.entry.state?.toLowerCase() ?? (report.decision ?? '').toLowerCase();
+    if (decision === 'approve' && report.nativeReviewId === null) {
+      // Retain the report, but an approval refused by publication guards is
+      // not evidence that earlier change requests were resolved.
+      continue;
+    }
     if (decision.includes('inconclusive')) {
       // A review that concluded nothing published nothing and decides nothing;
       // its own gap is still named in the incomplete-input list.
@@ -485,7 +497,13 @@ function unresolvedRound(
     if (report.nativeReviewId !== null) {
       own.push(`github:pr-review:${String(report.nativeReviewId)}`);
     }
-    rounds.push({ at: report.createdAt, decision, summary: report, ownEntryIds: own });
+    rounds.push({
+      at: native?.entry.createdAt ?? report.createdAt,
+      owner: 'harness',
+      decision,
+      summary: report,
+      ownEntryIds: own,
+    });
   }
 
   for (const candidate of candidates) {
@@ -507,10 +525,10 @@ function unresolvedRound(
         body: comment.body ?? comment.text,
       });
     }
-    const requested =
-      requestsChanges(entry.state) || requestsChanges(entry.text) || requestsChanges(entry.problem);
+    const requested = requestsChanges(entry.state);
     rounds.push({
       at: entry.createdAt,
+      owner: harnessAuthors.includes(entry.author) ? 'harness' : `github:${entry.author}`,
       decision: requested ? 'request_changes' : (entry.state ?? 'commented').toLowerCase(),
       summary: {
         entryId: entry.id,
@@ -541,15 +559,20 @@ function unresolvedRound(
   rounds.sort(
     (a, b) => a.at.localeCompare(b.at) || a.summary.entryId.localeCompare(b.summary.entryId),
   );
-  const latest = rounds.at(-1);
-  if (latest === undefined || !requestsChanges(latest.decision)) {
-    return null;
+  const outstanding = new Map<string, ReviewRoundCandidate>();
+  for (const round of rounds) {
+    if (requestsChanges(round.decision)) {
+      outstanding.set(round.owner, round);
+    } else if (
+      (round.decision === 'approve' || round.decision === 'approved') &&
+      round.summary.head === (currentHead ?? outstanding.get(round.owner)?.summary.head)
+    ) {
+      outstanding.delete(round.owner);
+    }
+    // COMMENTED and inconclusive rounds cannot resolve a change request.
+    // DISMISSED reviews are not added as outstanding in the first place.
   }
-  return {
-    round: latest.summary,
-    ownEntryIds: latest.ownEntryIds,
-    reconstructed: !latest.summary.complete,
-  };
+  return [...outstanding.values()];
 }
 
 /** The latest delivery the snapshot can prove: the pull request now, or the last report's. */
@@ -598,6 +621,26 @@ export function createTicketHistory(parts: TicketHistoryParts): TicketHistory {
     async prepare(request) {
       const root = workspaceHistoryRoot(parts.workDir, request.workspace.workspaceId);
       const previous = await readLatestEntries(root);
+      const consumed = await readConsumedEntries(root, request.role);
+      let current = { ref: request.ref, task: request.task };
+      if (parts.readers.currentTask !== undefined) {
+        try {
+          current = await parts.readers.currentTask(request.ref, request.stop);
+          if (
+            current.ref.id !== request.ref.id ||
+            current.ref.scope !== request.ref.scope ||
+            current.ref.type !== request.ref.type
+          ) {
+            throw new Error('the requirements reader returned a different ticket identity');
+          }
+        } catch (cause) {
+          throw new HistoryError(
+            'essential',
+            `current ticket requirements could not be obtained: ${messageOf(cause)}`,
+            { cause },
+          );
+        }
+      }
       const sources: { source: 'jira' | 'github' | 'harness'; problem: string | null }[] = [];
       const gaps: string[] = [];
 
@@ -736,6 +779,7 @@ export function createTicketHistory(parts: TicketHistoryParts): TicketHistory {
           mirroredBefore.set(`${mirror.source}:${mirror.sourceId}`, mirror.textSha256);
         }
       }
+      const reviewCandidates = [...byId.values()];
       const mirrors: HistoryMirror[] = [];
       for (const candidate of [...byId.values()]) {
         if (candidate.entry.source === 'harness') {
@@ -802,49 +846,53 @@ export function createTicketHistory(parts: TicketHistoryParts): TicketHistory {
         );
       }
 
-      const unresolved = unresolvedRound(reports, [...byId.values()]);
-      const reconstructedGap =
-        unresolved !== null && unresolved.reconstructed
-          ? 'the latest review that requested changes has no complete local report; its findings ' +
-            'are the published text, which may have been bounded for the destination it was ' +
-            'published to'
-          : null;
+      const unresolved = unresolvedRound(
+        reports,
+        reviewCandidates,
+        harnessAuthors,
+        pullRequest?.pullRequest?.headSha ?? null,
+      );
+      const reconstructedGap = unresolved.some((round) => !round.summary.complete)
+        ? 'the latest review that requested changes has no complete local report; its findings ' +
+          'are the published text, which may have been bounded for the destination it was ' +
+          'published to'
+        : null;
       if (reconstructedGap !== null) {
         gaps.push(reconstructedGap);
       }
-      const round = unresolved?.round ?? null;
-      const ownEntryIds = new Set(unresolved?.ownEntryIds ?? []);
+      const round = unresolved.at(-1)?.summary ?? null;
+      const ownEntryIds = new Set(unresolved.flatMap((round) => round.ownEntryIds));
+      const earliest = unresolved.map((round) => round.at).sort()[0];
       const responses =
-        round === null
+        earliest === undefined
           ? []
           : entries.filter(
               (entry) =>
-                !ownEntryIds.has(entry.id) &&
-                entry.createdAt >= round.createdAt &&
-                entry.role !== 'harness',
+                (!ownEntryIds.has(entry.id) || entry.edited) &&
+                (entry.updatedAt ?? entry.createdAt) >= earliest &&
+                (entry.role !== 'harness' || entry.edited),
             );
-      // Feedback is tracked against the input a turn actually consumed: the
-      // previous snapshot's own entries. A comment that is new to this snapshot
-      // — or that the source has edited since — is feedback, whenever it was
-      // written; a comment the previous turn already held is not repeated as
-      // new.
+      // Preparation alone consumes nothing. Compare with this role's last
+      // acknowledged input, including when another role or a failed launch
+      // prepared the newest snapshot since then.
       const newHumanFeedback = entries.filter(
-        (entry) => entry.role === 'human' && unseenInPrevious(entry, previous?.entries ?? null),
+        (entry) => entry.role === 'human' && unseenInPrevious(entry, consumed),
       );
 
       const brief: HistoryBrief = {
-        ref: request.ref,
-        task: request.task,
+        ref: current.ref,
+        task: current.task,
         latestDelivery: latestDelivery(pullRequest?.pullRequest ?? null, reports),
         unresolved: round,
+        unresolvedReviews: unresolved.map((round) => round.summary),
         responses,
         newHumanFeedback,
       };
       const content: SnapshotContent = {
         role: request.role,
         round: request.round,
-        ref: request.ref,
-        task: request.task,
+        ref: current.ref,
+        task: current.task,
         brief,
         sources,
         gaps,
@@ -854,6 +902,8 @@ export function createTicketHistory(parts: TicketHistoryParts): TicketHistory {
       };
       return await writeSnapshot(root, content, now());
     },
+
+    consumed: recordConsumedSnapshot,
 
     async recordDeveloperReport(request: DeveloperReportRequest) {
       const root = workspaceHistoryRoot(parts.workDir, request.workspaceId);

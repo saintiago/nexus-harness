@@ -383,7 +383,7 @@ export function baselinePrompt(request: {
   readonly history?: HistorySnapshot;
 }): string {
   const { item, baseline, failures, view, dir } = request;
-  const { ref, task } = item;
+  const { ref, task } = request.history?.brief ?? item;
   const turnDir = path.join(dir, BASELINE_TURN_DIRECTORY);
   const findingPath = baselineFindingPath(dir);
   const sections: string[] = [];

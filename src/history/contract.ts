@@ -149,7 +149,7 @@ export interface HistoryReportSummary {
 /**
  * The current brief a turn is started with: the ticket's requirements, the
  * latest delivery, the complete unresolved review findings and the discussion
- * that answered them, and the human feedback since the last report.
+ * that answered them, and feedback unseen by this role’s last completed turn.
  */
 export interface HistoryBrief {
   readonly ref: SourceRef;
@@ -157,13 +157,15 @@ export interface HistoryBrief {
   readonly latestDelivery: HistoryDelivery | null;
   /**
    * The latest review round whose findings are still unresolved, with every
-   * finding whole. `null` when the latest review approved or nothing was
-   * reviewed yet.
+   * finding whole. `null` when no outstanding request remains. For all reviewers use
+   * `unresolvedReviews`; this single latest entry supports legacy consumers.
    */
   readonly unresolved: HistoryReportSummary | null;
+  /** All outstanding review rounds, independently tracked by reviewer. */
+  readonly unresolvedReviews?: readonly HistoryReportSummary[];
   /** What the ticket or the pull request said after that unresolved review. */
   readonly responses: readonly HistoryEntry[];
-  /** Human feedback written after the last developer or reviewer report. */
+  /** Human feedback new or edited since this role’s last consumed snapshot. */
   readonly newHumanFeedback: readonly HistoryEntry[];
 }
 
@@ -279,6 +281,11 @@ export interface PullRequestConversationRead {
 
 /** The remote readers one ticket history is built from. */
 export interface HistoryReaders {
+  /** Refresh requirements before each turn; absent only for caller-supplied offline input. */
+  readonly currentTask?: (
+    ref: SourceRef,
+    stop: AbortSignal,
+  ) => Promise<{ readonly ref: SourceRef; readonly task: Task }>;
   /**
    * Every comment of the ticket's own thread, whole, paginated by the reader.
    * Throws when the read cannot be made; the failure becomes a gap, so the turn
@@ -387,6 +394,8 @@ export interface HistoryPrepareRequest {
  */
 export interface TicketHistory {
   prepare(request: HistoryPrepareRequest): Promise<HistorySnapshot>;
+  /** Advance only this role's feedback cursor after a turn returns usable output. */
+  consumed?(snapshot: HistorySnapshot): Promise<void>;
   /**
    * Saves the complete developer report of one finished run under
    * `<root>/reports`, before any comment that renders it is published. Absent

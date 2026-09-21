@@ -40,7 +40,7 @@
  * executable, or a flag.
  */
 import { runLogPath } from '../reporting/logs.js';
-import { writeSourceTaskSnapshot } from '../reporting/report.js';
+import { runReportPath, writeSourceTaskSnapshot } from '../reporting/report.js';
 import type { HistorySnapshot } from '../history/contract.js';
 import { messageOf } from '../shared/errors.js';
 import type {
@@ -820,7 +820,7 @@ export async function runTask(
       completed = await dependencies.runAgentTurn({
         kind,
         turn,
-        task,
+        task: turnHistory?.brief.task ?? task,
         workspacePath,
         sourceRoot: workspace.sourceRoot,
         baseCommit: workspace.baseCommit,
@@ -840,6 +840,53 @@ export async function runTask(
     // The log is closed either way: a turn that failed keeps whatever it wrote
     // before the failure, and a log that cannot be flushed is a reporting failure.
     await agentLog.close();
+    if (request.sourceRef !== undefined && request.history?.recordDeveloperReport !== undefined) {
+      const recordedAttempts = [
+        ...attempts,
+        {
+          turn,
+          kind,
+          agentLog: agentLog.path,
+          agentSummary: completed?.summary ?? null,
+          checks: null,
+        },
+      ];
+      try {
+        await request.history.recordDeveloperReport({
+          ref: turnHistory?.brief.ref ?? request.sourceRef,
+          workspaceId: workspace.workspaceId,
+          task: turnHistory?.brief.task ?? task,
+          round: workspace.attempt,
+          runId: run.runId,
+          reportPath: runReportPath(run.runDir),
+          status: 'in-progress',
+          reason: 'Coding turn reports retained; this run has not finished its checks or delivery.',
+          repairsUsed: turn - 1,
+          attempts: recordedAttempts.map((attempt) => ({
+            turn: attempt.turn,
+            kind: attempt.kind,
+            agentSummary: attempt.agentSummary,
+            checks: attempt.checks?.outcome ?? null,
+          })),
+          pullRequest: null,
+          deliveryFailure: null,
+          now: dependencies.now(),
+        });
+      } catch (cause) {
+        return endRun({
+          status: 'failed',
+          reason: `the complete developer turn report could not be retained: ${messageOf(cause)}`,
+          baseline,
+          attempts: recordedAttempts,
+          timeout: null,
+          cancellation: null,
+        });
+      }
+    }
+    if (completed?.summary != null && turnHistory !== undefined) {
+      // Failure to save a cursor only replays feedback; it must not lose a report.
+      await request.history?.consumed?.(turnHistory).catch(() => undefined);
+    }
     await dependencies.appendRunLog(
       timeline,
       completed === null

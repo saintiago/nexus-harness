@@ -879,6 +879,37 @@ describe('one review scan', () => {
     expect(repository.calls.publishedReviews).toEqual([]);
   });
 
+  it('retains an inconclusive reviewer report even though it publishes no review', async () => {
+    const workDir = await createTempDir();
+    const history = createTicketHistory({
+      workDir,
+      readers: {
+        jiraThread: async () => ({ comments: [], truncated: false }),
+        pullRequestConversation: async () => null,
+      },
+    });
+    const body = 'Unable to assess the change. ' + 'Full evidence\n'.repeat(800);
+    const repository = fakeRepository();
+    const fixture = await scanFixture({
+      repository,
+      workDir,
+      history,
+      reviewer: async (request) => ({
+        summary: body,
+        verdict: { decision: 'inconclusive', summary: body, findings: [] },
+        problem: null,
+        logPath: path.join(request.dir, 'reviewer.log'),
+      }),
+    });
+    await scanReviews(fixture.context);
+    expect(repository.calls.publishedReviews).toHaveLength(0);
+    const root = workspaceHistoryRoot(workDir, WORKSPACE_ID);
+    const files = await readdir(path.join(root, 'reports'));
+    const report = files.find((file) => file.endsWith('.md'));
+    expect(report).toBeDefined();
+    expect(await readFile(path.join(root, 'reports', report ?? ''), 'utf8')).toContain(body.trim());
+  });
+
   it('saves the complete reviewer report before the native review that renders it', async () => {
     const workDir = await createTempDir();
     await writeReviewLedger(workDir);

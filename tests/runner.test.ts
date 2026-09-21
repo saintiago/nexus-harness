@@ -22,6 +22,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { runCheckRound } from '../src/checks/round.js';
 import type { CheckRoundRequest } from '../src/checks/round.js';
 import { HistoryError } from '../src/history/contract.js';
+import { createTicketHistory } from '../src/history/sync.js';
 import type {
   HistoryPrepareRequest,
   HistorySnapshot,
@@ -3910,6 +3911,50 @@ describe('what a run records about the working copy it left', () => {
 });
 
 describe('the ticket conversation history before a coding turn', () => {
+  it('retains the full previous turn report before a repair and advances only consumed input', async () => {
+    const fixture = await createFixture();
+    const config = configuration(fixture, {
+      maxRepairs: 1,
+      checks: [command(fixture, 'check-1', 'need', 'app.txt', 'committed baseline')],
+    });
+    const summary = 'Implementation report\n' + 'Full details\n'.repeat(1_000);
+    const agent = fakeAgent(
+      fixture,
+      { mode: 'replace', text: 'broken', summary, commit: 'implementation', holdMs: 0 },
+      {
+        2: {
+          text: 'committed baseline\nrepaired',
+          summary: 'Repaired the check.',
+          commit: 'repair',
+        },
+      },
+    );
+    const history = createTicketHistory({
+      workDir: fixture.workDir,
+      readers: {
+        jiraThread: async () => ({ comments: [], truncated: false }),
+        pullRequestConversation: async () => null,
+      },
+    });
+    const result = await runTask(
+      { ...request(fixture, config), sourceRef: SOURCE_REF, history },
+      dependencies(agent.turn),
+    );
+    expect(result.status).toBe('passed');
+    expect(agent.requests).toHaveLength(2);
+    const repair = agent.requests[1]?.history;
+    expect(repair?.entries.find((entry) => entry.kind === 'developer-report')?.text).toContain(
+      summary.trim(),
+    );
+    expect(repair?.reports[0]?.status).toBe('in-progress');
+    const consumed = JSON.parse(
+      await readFile(path.join(repair?.root ?? '', 'consumed-developer.json'), 'utf8'),
+    ) as { snapshotId: string };
+    expect(consumed.snapshotId).toBe(repair?.id);
+    expect(existsSync(path.join(repair?.root ?? '', 'consumed-reviewer.json'))).toBe(false);
+    expect(await readFile(repair?.entriesPath ?? '', 'utf8')).not.toContain('Repaired the check.');
+  }, 60_000);
+
   /** One prepared snapshot, as the runner hands it to a turn. */
   const SNAPSHOT: HistorySnapshot = {
     version: 1,
