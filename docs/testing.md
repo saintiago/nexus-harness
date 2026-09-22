@@ -24,6 +24,8 @@ and requests, without live accounts. Keep each fixture limited to the boundary u
 Own every resource started by a fixture. Cancellation must finish owned work before cleanup;
 cleanup must not race background work. Avoid nested test runners, repeated builds, dependency
 installs and full repository clones in individual cases unless that behavior is the subject.
+A boundary case works in a temporary directory that is removed after it, and the processes it
+started are waited for or stopped and confirmed gone first; nothing it touched outlives it.
 
 ## Workflow tests
 
@@ -42,11 +44,15 @@ coverage at the appropriate layer; discard duplication and assertions tied only 
 The rebuilt unit layer lives under `tests/` and runs in normal validation: configuration and input
 validation, queue and run state transitions, repair and escalation decisions, review and completion
 decisions, and conversation-history rules are decided there with explicit inputs and supplied
-observations. Validation has no empty-suite acceptance — a validation run that discovers no test is
-a failure, not a pass — and the archived suites whose decisions that layer now carries were removed
-as their coverage was rebuilt. Coverage that still belongs to another layer — the service adapters,
-the process and repository contracts, and the assembled workflows — stays in `tests_old/` as
-reference material for the layer that will own it.
+observations. The rebuilt boundary layer runs there too: this host's real processes for command
+execution, cancellation and output handling, real temporary Git repositories for the workspace and
+retention contracts, and controlled HTTP services and stand-in programs for the Jira and GitHub
+adapters. Validation has no empty-suite acceptance — a validation run that discovers no test is a
+failure, not a pass — and the archived suites whose coverage those layers now carry were removed as
+their coverage was rebuilt. Coverage that still belongs to another layer — the coding-runtime
+adapter, the configured setup/check round, the Jira connector's queue, claim and publication
+behavior, the review scan's GitHub reads, the completion path, reporting, and the assembled
+workflows — stays in `tests_old/` as reference material for the layer that will own it.
 
 Cache deterministic unit results only when all their inputs are declared. Checks of real process
 or host behavior run fresh. Maintain cache inputs and task selection as suite boundaries change.

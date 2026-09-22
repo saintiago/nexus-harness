@@ -356,6 +356,22 @@ describe('the GitHub delivery step', () => {
     expect(await destinationBranch(fixture.destination, fixture.prepared.branch)).toBeNull();
   }, 120_000);
 
+  it('delivers when the checkout is on another branch at the revision that passed', async () => {
+    const fixture = await deliverableAttempt('create');
+    const validated = (
+      await gitOrFail(['rev-parse', '--verify', 'HEAD^{commit}'], fixture.prepared.workspacePath)
+    ).trim();
+    // A branch of its own at the very revision the recorded branch holds: the
+    // revision is what a delivery compares, not the branch's name.
+    await gitOrFail(['checkout', '--quiet', '-b', 'side'], fixture.prepared.workspacePath);
+
+    const delivered = await deliver(fixture);
+
+    expect(delivered?.head).toBe(validated);
+    expect(delivered?.created).toBe(true);
+    expect(await destinationBranch(fixture.destination, fixture.prepared.branch)).toBe(validated);
+  }, 120_000);
+
   it('delivers nothing when the branch holds no commit beyond its recorded base', async () => {
     const fixture = await deliverableAttempt('create');
     // A passed attempt that committed nothing has nothing to deliver.
