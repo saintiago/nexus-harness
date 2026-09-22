@@ -372,6 +372,14 @@ describe('the entry point, as a process', () => {
 
       // The supplied configuration's own output directory was never written to.
       expect(existsSync(path.join(parent, 'a-project-that-must-not-be-touched'))).toBe(false);
+
+      // A real live invocation retains both exercises for its operator. This
+      // offline invocation must retain them inside its own disposable root,
+      // including targets created in the child rather than returned to this test.
+      const retained = await readdir(result.fixtureRoot);
+      expect(retained.filter((name) => name.startsWith('nexus-live-check-'))).toHaveLength(2);
+      await cleanupTempDirectories();
+      expect(existsSync(result.fixtureRoot)).toBe(false);
     },
     RUN_TIMEOUT_MS * 2,
   );
@@ -666,14 +674,19 @@ async function spawnLiveEntry(
   readonly status: number | null;
   readonly stdout: string;
   readonly stderr: string;
+  readonly fixtureRoot: string;
 }> {
-  return spawnSync(process.execPath, ['--import', 'tsx', LIVE_ENTRY, ...argv], {
+  const fixtureRoot = await createTempDir();
+  const result = spawnSync(process.execPath, ['--import', 'tsx', LIVE_ENTRY, ...argv], {
     cwd: repoRoot,
-    env,
+    // Scope the child's intentionally retained evidence to a directory this
+    // offline suite owns. Do not change the live tool's retention behavior.
+    env: { ...env, TEMP: fixtureRoot, TMP: fixtureRoot, TMPDIR: fixtureRoot },
     encoding: 'utf8',
     timeout: 180_000,
     windowsHide: true,
   });
+  return { ...result, fixtureRoot };
 }
 
 /** Runs one of the disposable project's own tools, in the project. */
