@@ -204,12 +204,13 @@ describe('the identity a working copy commits with', () => {
     // The fixture commits with an identity of its own; what a coding turn does
     // is commit with none, exactly as a machine with no ambient identity would.
     const noIdentity = { identity: false };
-    const before = await fixtureGit(
-      ['commit', '--quiet', '--allow-empty', '--message', 'before'],
-      workspace.workspacePath,
-      noIdentity,
-    );
-    expect(before.code).not.toBe(0);
+    // A fresh clone carries no identity of its own, and the suite's own global
+    // configuration holds none either: without the harness's settings, a commit
+    // would depend on whatever this machine happens to guess.
+    const localBefore = await fixtureGit(['config', '--local', '--list'], workspace.workspacePath);
+    expect(localBefore.code).toBe(0);
+    expect(localBefore.stdout).not.toContain('user.name');
+    expect(await gitOrFail(['config', '--global', '--list'], fixture.repo)).toBe('');
 
     await configureWorkspaceIdentity(workspace.workspacePath);
     await writeFile(path.join(workspace.workspacePath, 'work.txt'), 'work\n', 'utf8');
@@ -224,11 +225,10 @@ describe('the identity a working copy commits with', () => {
       await gitOrFail(['log', '-1', '--pretty=%an <%ae>'], workspace.workspacePath)
     ).trim();
     expect(message).toBe('Nexus Agent <nexus@local>');
-    expect(
-      (
-        await gitOrFail(['config', '--local', '--get', 'commit.gpgsign'], workspace.workspacePath)
-      ).trim(),
-    ).toBe('false');
+    const settings = await fixtureGit(['config', '--local', '--list'], workspace.workspacePath);
+    expect(settings.stdout).toContain('user.name=Nexus Agent');
+    expect(settings.stdout).toContain('user.email=nexus@local');
+    expect(settings.stdout).toContain('commit.gpgsign=false');
     // The settings are that clone's own: the global file the suite runs with is
     // untouched, so nothing on this machine was changed.
     expect(await gitOrFail(['config', '--global', '--list'], fixture.repo)).toBe('');
