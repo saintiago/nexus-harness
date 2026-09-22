@@ -512,10 +512,12 @@ describe('a retained checkout that left its recorded branch', () => {
 
     // The file's own bytes survive, and nothing moved: the checkout is still on
     // the branch the turn made, at its commit, and the recorded branch is still
-    // where the attempt started from.
+    // where the attempt started from. The index and the working tree are the
+    // ones the turn left, with nothing staged by the refused return.
     expect(await readFile(path.join(prepared.workspacePath, 'settings.json'), 'utf8')).toBe(
       'regenerated locally\n',
     );
+    expect((await gitOrFail(['status', '--porcelain'], prepared.workspacePath)).trim()).toBe('');
     expect(await currentBranchOf(prepared.workspacePath)).toBe('side');
     expect(await headOf(prepared.workspacePath)).toBe(revision);
     expect(await tipOf(prepared.workspacePath, prepared.branch)).toBe(prepared.baseCommit);
