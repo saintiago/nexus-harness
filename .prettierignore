@@ -16,3 +16,6 @@ package-lock.json
 # re-pads their tables and is not worth a diff in documents we did not write.
 AGENTS.md
 docs/
+
+# Archived test reference, not active validation.
+tests_old/

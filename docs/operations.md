@@ -57,19 +57,13 @@ CLI from TypeScript sources through `tsx` if you would rather not build.
 | `npm run typecheck`         | Type-check sources and tests without emitting.                    |
 | `npm run lint`              | Check code quality with ESLint.                |
 | `npm test`                  | Run the offline suite once. Needs no credentials.                 |
-| `npm run test:policy`       | Run the fast policy layer alone.                                  |
-| `npm run test:boundary`     | Run the process-heavy boundary layer alone.                       |
-| `npm run test:four-workers` | Run all tests in one pool with four workers. |
 | `npm run test:watch`        | Run the offline suite in watch mode.                              |
 | `npm run format:check`      | Check formatting without writing.                                 |
 | `npm run validate`          | Run the validation gate, reusing eligible unchanged results. |
 | `npm run validate:fresh`    | Clear local caches and execute every validation task. |
 | `npm run cache:clear`       | Clear this checkout's local validation caches. |
-| `npm run test:live`         | The opt-in **live** check: builds, then drives a real Codex CLI.  |
 
-The suite has two projects: `policy` for decisions and data handling, and `boundary` for
-integration and process behavior. `npm test` and `npm run validate` run both. See the
-[development guide](development.md) for verification practice.
+Active suites belong in `tests/`. The suites in `tests_old/` are disabled reference material. Until replacement suites exist, validation runs formatting, lint, type checking and build checks without regression-test coverage.
 
 `npm start -- --help` prints the full usage text, and `npm start -- run` with a missing option
 prints a usage error and exits `2`.
@@ -1172,7 +1166,7 @@ Read this before pointing a run at anything you care about.
 They cover decisions, command and Git boundaries, and representative assembled workflows with
 controlled external services.
 
-Live behavior requires evidence from actual provider execution. `npm run test:live` is an
+Live behavior requires evidence from actual provider execution. A separately authorized live check is an
 explicit, opt-in exercise; it is not part of ordinary validation. Local or mocked checks do not
 establish the result of GitHub CI, a remote mutation or a paid agent run. Report each check for
 what it actually establishes. Individual run results belong in their logs and Git history.

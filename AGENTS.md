@@ -23,5 +23,6 @@ If code contradicts documentation, correct the code.
 
 - [Development guide](docs/development.md): implementation, verification and role boundaries.
 - [Git workflow](docs/GIT-WORKFLOW.md): branches, pull requests and integration.
+- [Testing](docs/testing.md): test pyramid, boundaries and coverage restoration.
 - [Validation caching](docs/validation-caching.md): cache eligibility, invalidation and execution guarantees.
 - [Documentation guide](docs/documentation.md): document ownership and maintenance.

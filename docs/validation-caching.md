@@ -46,6 +46,8 @@ gate. Cache eligibility follows a test's behavior, not its name.
   fresh evidence.
 - Cache cleanup affects only the selected checkout and does not change user or global settings.
 
+The active test task currently executes without result reuse while the pyramid is rebuilt. The archived suites are excluded from all validation tasks.
+
 ## Commands
 
 | Command | Behavior |
@@ -54,9 +56,7 @@ gate. Cache eligibility follows a test's behavior, not its name.
 | `npm run validate:fresh` | Clear local caches and execute every validation task. |
 | `npm run cache:clear` | Clear this checkout's local validation caches. |
 | `npm run validate -- --dry` | Show task selection and cache decisions without executing checks. |
-| `npm test` | Execute both test layers directly, without task-result reuse. |
-| `npm run test:policy` | Execute policy tests directly. |
-| `npm run test:boundary` | Execute boundary tests directly. |
+| `npm test` | Execute active suites directly, without task-result reuse. |
 
 A retained workspace can reuse its own unchanged results. A new checkout starts cold. Reinstalling
 dependencies with an unchanged lockfile need not discard the cache; changing dependencies must

@@ -39,7 +39,14 @@ export default [
     // config. The local validation cache holds no lintable file today, and
     // naming it keeps that from becoming accidental: a cache the linter read
     // would invalidate itself.
-    ignores: ['dist/**', 'coverage/**', '.harness/**', '.turbo/**', 'tests/fixtures/**'],
+    ignores: [
+      'dist/**',
+      'coverage/**',
+      '.harness/**',
+      '.turbo/**',
+      'tests/fixtures/**',
+      'tests_old/**',
+    ],
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,
