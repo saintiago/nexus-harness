@@ -95,15 +95,19 @@ deadline.
 
 `npm run validate` runs those layers as Turborepo tasks (`turbo.json`). Formatting, lint, type
 checking, the build and the five fast policy groups are cache-eligible: each names the files it
-reads, so an unchanged rerun replays them and an edited test file invalidates the group that reads
-it rather than all of them. The process-heavy boundary layer is **never** cached — real Git, real
-command trees, the fixture-lifecycle proof and the built CLI run on every validation, after the
-fast layer — and neither is anything outside this repository's own checks (the live provider
-exercise, agent turns, Jira or GitHub writes, approvals, completion evidence). The caches are local
-and disposable, in the git-ignored `.turbo/`; `npm run validate:fresh` clears them and executes
-every task, `npm run cache:clear` only clears, and `npm run validate -- --dry` shows what would run.
-The task boundaries, the declared inputs, the tooling decision and the measurements are in
-[docs/validation-caching.md](docs/validation-caching.md).
+imports _and_ the files its cases read, so an unchanged rerun replays them and an edited test file
+invalidates the group that reads it rather than all of them. The process-heavy boundary layer is
+**never** cached — real Git, real command trees, the fixture-lifecycle proof and the built CLI run
+on every validation, after the fast layer — and neither is anything outside this repository's own
+checks (the live provider exercise, agent turns, Jira or GitHub writes, approvals, completion
+evidence). A case that starts a real process belongs to that layer whatever it is about: it is the
+only way its result stays a function of what it declares. The caches are local and disposable, in
+the git-ignored `.turbo/`; `npm run validate:fresh` clears them and executes every task,
+`npm run cache:clear` only clears, and `npm run validate -- --dry` shows what would run. The
+declared inputs include the `node` and `npm` that PATH resolves for the tasks — `.nvmrc` and
+`packageManager` say what _should_ run, not what does — so the gate stops rather than reuse a
+result whose runtime it cannot observe. The task boundaries, the declared inputs, the tooling
+decision and the measurements are in [docs/validation-caching.md](docs/validation-caching.md).
 
 For repeatable Windows timing and cleanup evidence, run
 `powershell -NoProfile -File performance/measure-windows.ps1` from this repository.

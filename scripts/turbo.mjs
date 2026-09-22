@@ -21,6 +21,16 @@
  *   changes the gate's result; both would leave the machine for reasons the
  *   operator did not ask for. An operator who already set
  *   `TURBO_TELEMETRY_DISABLED` or `DO_NOT_TRACK` keeps their own value.
+ * - the runtime that will execute the tasks is observed and handed to
+ *   Turborepo as a declared input. Turborepo hashes the files and the declared
+ *   environment values a task has, not the Node or npm that runs it, and
+ *   `.nvmrc` and `packageManager` state what *should* run rather than what
+ *   does. So this file asks PATH — the same resolution a task gets — which
+ *   `node` and `npm` will run, passes `NEXUS_VALIDATE_NODE` and
+ *   `NEXUS_VALIDATE_NPM`, and `turbo.json` declares both in `globalEnv`. A
+ *   different runtime under the same checkout is therefore a different hash,
+ *   and a runtime that cannot be observed fails the gate instead of producing
+ *   results nothing describes.
  *
  * Arguments are handed to `turbo` unchanged, so `npm run validate -- --dry`
  * still asks what would run. A `--` passthrough is refused instead: Turborepo
@@ -30,13 +40,38 @@
  * `npx vitest run --project boundary --reporter=verbose`).
  */
 
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const repoRoot = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 const turboCli = path.join(repoRoot, 'node_modules', 'turbo', 'bin', 'turbo');
+
+/** What PATH resolves for one runtime, as the version it reports. */
+function observedVersion(command) {
+  const result = spawnSync(`${command} --version`, { shell: true, encoding: 'utf8' });
+  const version = (result.stdout ?? '').trim();
+  if (result.error !== undefined || result.status !== 0 || version === '') {
+    const problem =
+      result.error?.message ??
+      `it exited with ${String(result.status)}: ${(result.stderr ?? '').trim()}`;
+    throw new Error(
+      `"${command} --version" could not be read (${problem}). The gate caches results, so ` +
+        'the Node and npm that will execute its tasks have to be observed first: put both ' +
+        'on PATH and run the gate again.',
+    );
+  }
+  return version;
+}
+
+/** The runtime inputs one Turborepo invocation is given. */
+function runtimeInputs() {
+  return {
+    NEXUS_VALIDATE_NODE: observedVersion('node'),
+    NEXUS_VALIDATE_NPM: observedVersion('npm'),
+  };
+}
 
 /** Where this platform's local task cache lives, relative to the checkout. */
 function localCacheDir(platform = process.platform, arch = process.arch) {
@@ -65,8 +100,10 @@ function main(argv) {
   }
 
   let args;
+  let runtime;
   try {
     args = turboArguments(argv);
+    runtime = runtimeInputs();
   } catch (cause) {
     console.error(`validate: ${cause instanceof Error ? cause.message : String(cause)}`);
     return Promise.resolve(1);
@@ -78,6 +115,7 @@ function main(argv) {
       stdio: 'inherit',
       env: {
         ...process.env,
+        ...runtime,
         TURBO_TELEMETRY_DISABLED: process.env.TURBO_TELEMETRY_DISABLED ?? '1',
       },
     });

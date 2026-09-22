@@ -641,35 +641,84 @@ executes on every validation, after the fast layer. `npm run test:policy`, `npm 
 the declared inputs, the tooling decision and the operating commands are in
 [validation-caching.md](../docs/validation-caching.md).
 
-The five groups partition this map's policy list exactly once — `display` (activity, report),
-`config` (configuration, completion configuration and gate, dependency boundaries, connect guide),
-`loop` (run-loop policy, stop, support, completion policy and CLI), `intake` (queue, queue
-recovery, Jira, baseline findings) and `history` (history, history runner/source, reviews). No case
-moved between files, no case was deleted, no deadline changed, and the boundary layer's concurrency
-policy is what it was: the cap and the group order still describe this suite. What is new is that a
-change to one group's files no longer invalidates the other four.
+The five groups partition this map's policy list exactly once — `display` (activity), `config`
+(configuration, completion configuration and gate, dependency boundaries, connect guide), `loop`
+(run-loop policy, stop, support, completion policy), `intake` (queue, queue recovery, Jira,
+baseline findings) and `history` (history, history runner/source, reviews). No case was deleted and
+no deadline changed; the boundary layer's concurrency policy is what it was: the cap and the group
+order still describe this suite. What is new is that a change to one group's files no longer
+invalidates the other four.
+
+### The repair: two files moved to the layer that always runs
+
+The first delivery cached two policy files that made real Git repositories: `report.test.ts` (the
+workspace preparation failure, over a real `git init`/`commit`/`rev-parse`) and
+`completion-cli.test.ts` (its own target repository, over real `git`). No declaration here can
+bound the Git executable, its version or the inherited Git configuration those cases observe, so an
+unchanged rerun could have replayed them while the host changed underneath. They are now files of
+the **boundary** layer: `vitest.config.ts` no longer lists them in `policyFiles`, and the boundary
+project picks them up wholesale, which is why the layer's file count grew by the same two files.
+Both files keep every case they had, with their own bounds; nothing moved between files and nothing
+was skipped. `tests/validation-cache.test.ts` now reads the syntax of every cached group's own
+files and fails if one imports `node:child_process` or calls a process runner, and it checks that
+every test file in the repository belongs to exactly one layer.
+
+Two other input gaps the review found are closed in the same place: `build` declares
+`scripts/build.mjs`, which it executes, and the configuration group declares the files its cases
+read without importing them — `docs/**` (the connect guide and the links it resolves), `examples/**`
+and `nexus.project.json` (the checked-in inputs `config.test.ts` composes), `.gitignore`,
+`.prettierignore`, `scripts/**`, `tsconfig*.json` and `turbo.json` (what the contract test reads
+back). The contract test follows the reads it can see — `path.join(repoRoot, …)` written in
+literals, and read helpers given a literal path — and names the two it cannot by hand.
+
+The build stopped keeping incremental state for its emit. A state that describes a `dist/` the
+task cache restored, an operator removed or a partial deletion damaged lets TypeScript report an
+incomplete output as up to date, exit 0, and the cached outputs carry no state to restore beside
+the JavaScript. `tsconfig.build.json` now compiles without it, `scripts/build.mjs` empties `dist/`
+first and verifies the artefact `npm start` runs, and the check-only program keeps its incremental
+state, which is the one whose second run is worth it. `tests/build-guard.test.ts` compiles real
+throwaway projects through that script: a module removed from a complete `dist/` comes back, a
+module whose source is gone does not survive, a behaviour change and its revision come back in
+turn, and a project that emits nothing is a failed build.
+
+The runtime the tasks execute on is a declared input now: `scripts/turbo.mjs` observes `node` and
+`npm` through the same PATH resolution a task gets, passes `NEXUS_VALIDATE_NODE` and
+`NEXUS_VALIDATE_NPM`, and `turbo.json` declares both in `globalEnv`. `.nvmrc` and `packageManager`
+remain the declared runtime and are hashed as files, but they are not enforced, so on their own
+they let a checkout on another Node reuse this one's results.
 
 ### Counts
 
-| Revision                                   | Files | Tests | Passed | Skipped |
-| ------------------------------------------ | ----- | ----- | ------ | ------- |
-| HARN-48 final (53 files)                   | 53    | 1,358 | 1,356  | 2       |
-| HARN-49 (55 files): policy 21, boundary 34 | 55    | 1,373 | 1,371  | 2       |
+| Revision                                                  | Files | Tests | Passed | Skipped |
+| --------------------------------------------------------- | ----- | ----- | ------ | ------- |
+| HARN-48 final (53 files)                                  | 53    | 1,358 | 1,356  | 2       |
+| HARN-49 first delivery (55 files): policy 21, boundary 34 | 55    | 1,373 | 1,371  | 2       |
+| HARN-49 repair (56 files): policy 19, boundary 37         | 56    | 1,383 | 1,381  | 2       |
 
-The 15 added cases are the cache contract and nothing else:
+The repair moved two files and added ten cases; no case was removed, skipped or given a different
+deadline, which is why the total only grows:
 
-- `tests/validation-cache.test.ts` (policy, 7 cases) reads back the declarations this map now
+- `tests/validation-cache.test.ts` (policy, 9 cases now) reads back the declarations this map
   depends on: the gate's task list, that exactly one of those tasks is ineligible and it is the
-  boundary layer, that every cache-eligible group declares the files its tests reach through
-  relative imports, that the groups cover the policy list exactly once, that the caches live in an
-  ignored directory the checks themselves ignore, that the build is guarded against a missing
-  `dist/`, and that no credential-shaped name is a cache input.
-- `tests/validation-cache-turbo.test.ts` (boundary, 8 cases) runs the installed Turborepo through
-  `scripts/turbo.mjs` against a throwaway single-package fixture: a hit replays without executing
-  the task, a declared input invalidates while an undeclared file does not, a removed output is
-  restored, a failed or interrupted task is never replayed as a success, a damaged cache artefact
-  cannot become one, the summary distinguishes reuse from execution, and a `--` passthrough that
-  Turborepo would append to every task is refused.
+  boundary layer, that every cache-eligible group declares the files its tests import _and_ the
+  ones they read through the filesystem, that a cached group contains no case that starts a real
+  process, that every test file belongs to exactly one layer, that the groups cover the policy list
+  exactly once, that the declared runtime is the executing one, that the caches live in an ignored
+  directory the checks themselves ignore, that the build regenerates its output rather than
+  resuming it, and that no credential-shaped name is a cache input. Two of those cases are new.
+- `tests/validation-cache-turbo.test.ts` (boundary, 11 cases now) runs the installed Turborepo
+  through `scripts/turbo.mjs` against a throwaway single-package fixture: a hit replays without
+  executing the task, a declared input invalidates while an undeclared file does not, a removed
+  output is restored, a failed or interrupted task is never replayed as a success, a damaged cache
+  artefact cannot become one, the summary distinguishes reuse from execution, a `--` passthrough
+  that Turborepo would append to every task is refused, the manifest and the lockfile are inputs,
+  the runtime the wrapper observed is the one the task sees and another runtime cannot reuse the
+  earlier result, and a PATH that resolves no `node` stops the gate instead of producing one. Three
+  of those cases are new.
+- `tests/build-guard.test.ts` (boundary, 5 cases) is the new file: it compiles real throwaway
+  projects through `scripts/build.mjs` and checks the regeneration, the absence of incremental
+  state, the behaviour-change repair cycle, the missing-artefact failure and the failed-compile
+  failure.
 
 The two pre-existing skips are unchanged; they are not hidden regressions.
 

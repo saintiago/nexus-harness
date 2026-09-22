@@ -8,7 +8,7 @@
   "remoteCache": {
     "enabled": false
   },
-  "globalEnv": ["CI", "NODE_ENV", "NODE_OPTIONS"],
+  "globalEnv": ["CI", "NODE_ENV", "NODE_OPTIONS", "NEXUS_VALIDATE_NODE", "NEXUS_VALIDATE_NPM"],
   "globalDependencies": [".gitattributes", ".nvmrc"],
   "tasks": {
     "format:check": {
@@ -27,7 +27,7 @@
       "outputLogs": "new-only"
     },
     "build": {
-      "inputs": ["src/**", "tsconfig*.json"],
+      "inputs": ["src/**", "tsconfig*.json", "scripts/build.mjs"],
       "outputs": ["dist/**"],
       "outputLogs": "new-only"
     },
@@ -36,7 +36,6 @@
       "inputs": [
         "src/**",
         "tests/activity.test.ts",
-        "tests/report.test.ts",
         "tests/support.ts",
         "tests/fixtures/**",
         "vitest.config.ts"
@@ -48,7 +47,14 @@
     "test:policy:config": {
       "env": ["TZ", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "TEMP", "TMP", "VITEST_*"],
       "inputs": [
+        ".gitignore",
+        ".prettierignore",
+        "README.md",
+        "docs/**",
         "eslint.config.js",
+        "examples/**",
+        "nexus.project.json",
+        "scripts/**",
         "src/**",
         "tests/boundaries.test.ts",
         "tests/completion-config.test.ts",
@@ -58,6 +64,8 @@
         "tests/support.ts",
         "tests/validation-cache.test.ts",
         "tests/fixtures/**",
+        "tsconfig*.json",
+        "turbo.json",
         "vitest.config.ts"
       ],
       "outputs": [],
@@ -68,7 +76,6 @@
       "env": ["TZ", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "TEMP", "TMP", "VITEST_*"],
       "inputs": [
         "src/**",
-        "tests/completion-cli.test.ts",
         "tests/completion-policy.test.ts",
         "tests/runner-policy.test.ts",
         "tests/stop.test.ts",
