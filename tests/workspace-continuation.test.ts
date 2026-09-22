@@ -6,14 +6,16 @@
  * nobody else: a pointer label is untrusted text on an issue, so the id, the
  * resolved path, and what the ledger records are all checked before anything is
  * reopened. A checkout a coding turn left on a branch of its own is returned to
- * the recorded branch by fast-forwarding it — losing no commit — and anything
- * else stops with the branch names and the paths instead of being forced.
+ * the recorded branch by fast-forwarding it — losing no commit, writing over no
+ * ignored local file Git configuration would squash, and reading the state it
+ * left back rather than trusting an exit code — and anything else stops with
+ * the branch names and the paths instead of being forced.
  *
  * Every case works in temporary repositories, and the Git environment is the
  * suite's own private one.
  */
-import { readFile, symlink, writeFile } from 'node:fs/promises';
-import { realpathSync } from 'node:fs';
+import { chmod, readFile, symlink, writeFile } from 'node:fs/promises';
+import { existsSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { WorkspaceError } from '../src/workspace/errors.js';
@@ -53,21 +55,56 @@ async function headOf(repository: string): Promise<string> {
   return (await gitOrFail(['rev-parse', '--verify', 'HEAD^{commit}'], repository)).trim();
 }
 
+/** A working copy of `fixture` prepared for {@link ITEM}. */
+async function prepareFrom(fixture: RepositoryFixture): Promise<PreparedWorkspace> {
+  const source = await preflightSource({ repoPath: fixture.repo, workDir: fixture.workDir });
+  const run = await allocateRunDirectory(fixture.workDir);
+  return await prepareWorkspace(
+    run,
+    source,
+    { deadlineMs: Date.now() + 120_000, now: () => new Date() },
+    ITEM,
+  );
+}
+
 /** A working copy prepared for {@link ITEM}, and the fixture it came from. */
 async function preparedWorkspace(): Promise<{
   readonly fixture: RepositoryFixture;
   readonly prepared: PreparedWorkspace;
 }> {
   const fixture = await createRepository();
-  const source = await preflightSource({ repoPath: fixture.repo, workDir: fixture.workDir });
-  const run = await allocateRunDirectory(fixture.workDir);
-  const prepared = await prepareWorkspace(
-    run,
-    source,
-    { deadlineMs: Date.now() + 120_000, now: () => new Date() },
-    ITEM,
-  );
+  const prepared = await prepareFrom(fixture);
   return { fixture, prepared };
+}
+
+/** The commit one branch of a working copy holds. */
+async function tipOf(workspacePath: string, branch: string): Promise<string> {
+  return (await gitOrFail(['rev-parse', '--verify', `refs/heads/${branch}`], workspacePath)).trim();
+}
+
+/** The branch the checkout is on, as Git names it. */
+async function currentBranchOf(workspacePath: string): Promise<string> {
+  return (await gitOrFail(['symbolic-ref', '--quiet', '--short', 'HEAD'], workspacePath)).trim();
+}
+
+/**
+ * Leaves the prepared workspace the way a coding turn can: the checkout is on a
+ * branch of its own with the turn's work committed there, and the recorded
+ * branch still where the attempt started from.
+ */
+async function leaveOnOwnBranch(prepared: PreparedWorkspace, branch: string): Promise<string> {
+  await gitOrFail(['checkout', '--quiet', '-b', branch], prepared.workspacePath);
+  await writeFile(
+    path.join(prepared.workspacePath, 'side.txt'),
+    'work on a branch of its own\n',
+    'utf8',
+  );
+  await gitOrFail(['add', '--all'], prepared.workspacePath);
+  await gitOrFail(
+    ['commit', '--quiet', '--message', 'the turn’s own branch'],
+    prepared.workspacePath,
+  );
+  return await headOf(prepared.workspacePath);
 }
 
 /** What a continuation of the fixture's own item and repository must match. */
@@ -383,6 +420,148 @@ describe('a retained checkout that left its recorded branch', () => {
         )
       ).trim(),
     ).toBe(revision);
+  }, 90_000);
+
+  it('fast-forwards the recorded branch even when Git configuration would squash the merge', async () => {
+    const { prepared } = await preparedWorkspace();
+    const revision = await leaveOnOwnBranch(prepared, 'side');
+
+    // Git reads `branch.<name>.mergeOptions` when merging into that branch, and
+    // `--ff-only` does not cancel a configured `--squash`: a return that did not
+    // pass `--no-squash` would exit successfully after staging the descendant
+    // without moving the recorded branch, and hand a coding turn a staged
+    // working copy instead of the returned branch. The result is read back, so
+    // that state would be refused rather than reported as a reconciliation.
+    await gitOrFail(
+      ['config', `branch.${prepared.branch}.mergeOptions`, '--squash'],
+      prepared.workspacePath,
+    );
+
+    const returned = await returnToRecordedBranch(
+      prepared.workspacePath,
+      prepared.branch,
+      {},
+      { requireClean: true },
+    );
+
+    // The recorded branch really moved to the commit the checkout held, the
+    // checkout is on it, and nothing was left staged for the next turn.
+    expect(returned).toEqual({ changed: true, from: 'side', revision });
+    expect(await currentBranchOf(prepared.workspacePath)).toBe(prepared.branch);
+    expect(await headOf(prepared.workspacePath)).toBe(revision);
+    expect(await tipOf(prepared.workspacePath, prepared.branch)).toBe(revision);
+    expect((await gitOrFail(['status', '--porcelain'], prepared.workspacePath)).trim()).toBe('');
+    expect(
+      await inspectBranchStanding(
+        prepared.workspacePath,
+        prepared.branch,
+        {},
+        { requireClean: true },
+      ),
+    ).toEqual({ kind: 'on-branch' });
+    expect(await tipOf(prepared.workspacePath, 'side')).toBe(revision);
+  }, 90_000);
+
+  it('refuses a return that would write over an ignored local file, keeping its bytes', async () => {
+    const fixture = await createRepository();
+    await writeFile(path.join(fixture.repo, 'settings.json'), 'the committed settings\n', 'utf8');
+    await gitOrFail(['add', 'settings.json'], fixture.repo);
+    await gitOrFail(['commit', '--quiet', '--message', 'track the settings'], fixture.repo);
+    const prepared = await prepareFrom(fixture);
+
+    // A turn of its own stops tracking the settings file, ignores it, and leaves
+    // a locally regenerated copy. The harness's own reading calls that checkout
+    // clean, because an ignored path never makes one dirty; checking the
+    // recorded branch out would write the committed copy over the local one, so
+    // Git is asked not to do that, and the refusal it produces stops the run
+    // with the path named instead of destroying what the turn left.
+    await gitOrFail(['checkout', '--quiet', '-b', 'side'], prepared.workspacePath);
+    await gitOrFail(['rm', '--quiet', '--cached', 'settings.json'], prepared.workspacePath);
+    await writeFile(path.join(prepared.workspacePath, '.gitignore'), 'settings.json\n', 'utf8');
+    await gitOrFail(['add', '.gitignore'], prepared.workspacePath);
+    await gitOrFail(
+      ['commit', '--quiet', '--message', 'stop tracking the settings'],
+      prepared.workspacePath,
+    );
+    await writeFile(
+      path.join(prepared.workspacePath, 'settings.json'),
+      'regenerated locally\n',
+      'utf8',
+    );
+    const revision = await headOf(prepared.workspacePath);
+
+    expect(await inspectBranchStanding(prepared.workspacePath, prepared.branch)).toEqual({
+      kind: 'recoverable',
+      currentBranch: 'side',
+      revision,
+      recorded: prepared.baseCommit,
+    });
+
+    const error = await returnToRecordedBranch(prepared.workspacePath, prepared.branch).then(
+      () => null,
+      (cause: Error) => cause,
+    );
+
+    // The refusal names both branches and the path Git would have written over,
+    // and says the local file was left alone rather than destroyed.
+    expect(error).toBeInstanceOf(WorkspaceError);
+    expect(error?.message).toContain('"side"');
+    expect(error?.message).toContain(`"${prepared.branch}"`);
+    expect(error?.message).toContain('settings.json');
+    expect(error?.message).toMatch(/nothing local was written over/);
+
+    // The file's own bytes survive, and nothing moved: the checkout is still on
+    // the branch the turn made, at its commit, and the recorded branch is still
+    // where the attempt started from.
+    expect(await readFile(path.join(prepared.workspacePath, 'settings.json'), 'utf8')).toBe(
+      'regenerated locally\n',
+    );
+    expect(await currentBranchOf(prepared.workspacePath)).toBe('side');
+    expect(await headOf(prepared.workspacePath)).toBe(revision);
+    expect(await tipOf(prepared.workspacePath, prepared.branch)).toBe(prepared.baseCommit);
+  }, 90_000);
+
+  it('refuses a return that did not really move the recorded branch, reading its own result back', async () => {
+    const { prepared } = await preparedWorkspace();
+    const revision = await leaveOnOwnBranch(prepared, 'side');
+
+    // Git runs hooks after a merge, and a hook can leave the recorded branch
+    // wherever it likes while the command still exits 0. The return reads its
+    // own result back instead of trusting that exit code, so what it reports is
+    // the state that really exists rather than the one it asked for. The hooks
+    // path is pinned in the workspace's own configuration so a developer's
+    // global setting cannot decide whether the fixture's hook runs.
+    await gitOrFail(['config', 'core.hooksPath', '.git/hooks'], prepared.workspacePath);
+    const hookPath = path.join(prepared.workspacePath, '.git', 'hooks', 'post-merge');
+    await writeFile(
+      hookPath,
+      `#!/bin/sh\ngit update-ref refs/heads/${prepared.branch} ${prepared.baseCommit}\n` +
+        'echo ran > .git/hook-ran.txt\n',
+      'utf8',
+    );
+    // Git skips a hook that is not executable on a POSIX host, and runs one
+    // either way on Windows: the bit is set so the fixture takes the same path
+    // wherever the suite runs.
+    await chmod(hookPath, 0o755);
+    const markerPath = path.join(prepared.workspacePath, '.git', 'hook-ran.txt');
+
+    const error = await returnToRecordedBranch(prepared.workspacePath, prepared.branch).then(
+      () => null,
+      (cause: Error) => cause,
+    );
+
+    // The hook really ran, so what follows is about a return that did not end
+    // where it promised rather than about a host that skipped the hook.
+    expect(existsSync(markerPath)).toBe(true);
+    expect(error).toBeInstanceOf(WorkspaceError);
+    expect(error?.message).toContain(`"${prepared.branch}"`);
+    expect(error?.message).toContain(prepared.baseCommit);
+    expect(error?.message).toContain(revision);
+    expect(error?.message).toMatch(/read back rather than assumed/);
+    expect(error?.message).toMatch(/Nothing was reset, force-updated, or discarded/);
+
+    // The commit the turn made is still on the branch it made it on.
+    expect(await tipOf(prepared.workspacePath, 'side')).toBe(revision);
   }, 90_000);
 
   it('is left exactly where it is when it is already on the recorded branch', async () => {
