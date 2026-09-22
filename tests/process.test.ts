@@ -221,6 +221,33 @@ describe('one command in a run', () => {
     expect(await readFile(result.stdoutPath, 'utf8')).toBe('');
     expect(await readFile(result.stderrPath, 'utf8')).toBe('');
   }, 45_000);
+
+  it('refuses to record an invocation outside a directory that exists, and runs nothing', async () => {
+    const workDir = await createTempDir();
+    const marker = path.join(workDir, 'ran.txt');
+
+    const failure = await runCommand({
+      command: [
+        process.execPath,
+        '-e',
+        `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'ran')`,
+      ],
+      cwd: workDir,
+      // The run's own evidence directory is not there, so there is nowhere to
+      // keep this command's output: the run is stopped before the command runs.
+      logsDir: path.join(workDir, 'missing', 'logs'),
+      label: 'check-1',
+      timeoutMs: 30_000,
+    }).then(
+      () => null,
+      (cause: Error) => cause,
+    );
+
+    expect(failure?.message).toContain('could not be created');
+    expect(failure?.message).toContain(path.join(workDir, 'missing', 'logs', 'check-1.stdout.log'));
+    await pause(50);
+    expect(existsSync(marker)).toBe(false);
+  }, 45_000);
 });
 
 describe('ending what an invocation started', () => {
@@ -263,9 +290,19 @@ describe('ending what an invocation started', () => {
       timeoutMs: 60_000,
       stop: controller.signal,
     });
-    const recorded = await readJsonWhenWritten(record);
-    controller.abort();
-    const { result } = await pending;
+    let recorded: Record<string, unknown>;
+    let result: InvocationResult;
+    try {
+      recorded = await readJsonWhenWritten(record);
+      controller.abort();
+      ({ result } = await pending);
+    } catch (cause) {
+      // Whatever happens, the invocation this case started is stopped and
+      // awaited before the case ends.
+      controller.abort();
+      await pending.catch(() => undefined);
+      throw cause;
+    }
 
     expect(result.outcome).toBe('stopped');
     expect(result.termination).toBe('confirmed');

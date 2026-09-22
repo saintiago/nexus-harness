@@ -399,6 +399,20 @@ describe('an allocated run directory', () => {
     expect(existsSync(run.workspacePath)).toBe(false);
     expect(existsSync(run.logsDir)).toBe(true);
   }, 60_000);
+
+  it('refuses an output location that cannot hold a run, and leaves it as it was', async () => {
+    const parent = await createTempDir();
+    const file = path.join(parent, 'not-a-directory');
+    await writeFile(file, 'a file, not an output location\n', 'utf8');
+
+    const error = await failureOf(() => allocateRunDirectory(file));
+
+    expect(error).toBeInstanceOf(WorkspaceError);
+    expect(error.message).toContain('cannot be created');
+    expect(error.message).toContain(file);
+    expect(await readFile(file, 'utf8')).toBe('a file, not an output location\n');
+    expect((await readdir(parent)).sort()).toEqual(['not-a-directory']);
+  }, 60_000);
 });
 
 /** A run's own evidence directory, derived the way the layout defines it. */

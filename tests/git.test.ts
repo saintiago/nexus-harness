@@ -27,6 +27,7 @@ import {
   gitStopOf,
   runGit,
 } from '../src/workspace/git.js';
+import type { GitResult } from '../src/workspace/git.js';
 import { WorkspaceError } from '../src/workspace/errors.js';
 import { allocateRunDirectory } from '../src/workspace/run-directory.js';
 import { prepareWorkspace } from '../src/workspace/prepare.js';
@@ -307,9 +308,19 @@ describe('a Git invocation with a bound', () => {
         stop: controller.signal,
       }),
     );
-    const record = await readStandInRecord(recordFile);
-    controller.abort();
-    const result = await pending;
+    let record: StandInRecord;
+    let result: GitResult;
+    try {
+      record = await readStandInRecord(recordFile);
+      controller.abort();
+      result = await pending;
+    } catch (cause) {
+      // Whatever happens, the invocation this case started is stopped and
+      // awaited before the case ends.
+      controller.abort();
+      await pending.catch(() => undefined);
+      throw cause;
+    }
 
     expect(result.outcome).toBe('stopped');
     expect(result.termination).toBe('confirmed');
