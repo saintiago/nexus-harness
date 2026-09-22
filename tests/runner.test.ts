@@ -8,7 +8,7 @@ import { existsSync, realpathSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { runTask } from '../src/runs/runner.js';
+import { runTask } from './fixtures/runner.js';
 import type { RunnerDependencies } from '../src/runs/contracts.js';
 import { WorkspaceError } from '../src/workspace/errors.js';
 import { prepareWorkspace } from '../src/workspace/prepare.js';

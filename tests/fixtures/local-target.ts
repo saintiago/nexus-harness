@@ -33,6 +33,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createTempDir, removeWithRetry, repoRoot, writeJsonFile } from '../support.js';
 import { HARNESS_CONFIG_FILE_NAME, PROJECT_CONFIG_FILE_NAME } from '../../src/config/paths.js';
+import { ownChildProcess, ownFixtureOperation } from './lifecycle.js';
 
 /**
  * The shared fixture beacon module, as a URL a fixture program written into a
@@ -885,12 +886,17 @@ export function startCli(invocation: CliInvocation): {
       resolve({ code, signal, stdout, stderr });
     });
   });
+  // The CLI is one of the processes the test owns: the fixture lifecycle stops
+  // its tree and waits for this same promise before any directory it wrote into
+  // is removed, so a test that times out, fails or is cancelled cannot leave a
+  // half-run CLI holding its target.
+  void ownChildProcess('the built CLI', child, invocation.cwd ?? invocation.target.parent);
   return { child, done };
 }
 
 /** Runs the built CLI to completion. */
 export async function runCli(invocation: CliInvocation): Promise<CliRunResult> {
-  return await startCli(invocation).done;
+  return await ownFixtureOperation('the built CLI', async () => await startCli(invocation).done);
 }
 
 /** Waits for `check`, or fails the test that asked, naming what it waited for. */

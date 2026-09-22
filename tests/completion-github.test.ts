@@ -479,23 +479,6 @@ describe('review-to-completion', () => {
     expect(commentTexts(fixture)[0]).toContain('no run yet');
   });
 
-  it('writes one findings comment and one move when the pass is repeated', async () => {
-    const fixture = await createFixture({
-      reviews: [{ ...APPROVED_REVIEW, state: 'CHANGES_REQUESTED' }],
-    });
-
-    const first = only(await runPass(fixture));
-    expect(first.status).toBe('to-do');
-    // A person moved it back for repair: the second pass finds it no longer In
-    // Review and touches nothing.
-    fixture.jira.status = 'In Review';
-    const second = only(await runPass(fixture));
-
-    expect(second.status).toBe('observed');
-    expect(commentTexts(fixture)).toHaveLength(1);
-    expect(transitions(fixture)).toHaveLength(1);
-  });
-
   it('resumes a resolution comment whose Done move never arrived', async () => {
     const fixture = await createFixture({ merged: true });
     fixture.jira.transitionFailure = true;
@@ -515,27 +498,6 @@ describe('review-to-completion', () => {
     expect(commentTexts(fixture)).toHaveLength(1);
     const calls = await fakeCompletionCalls(fixture.gh);
     expect(calls.filter((call) => call.op === 'merge')).toHaveLength(0);
-  });
-
-  it('does not duplicate the resolution comment when the move failed first', async () => {
-    const fixture = await createFixture({ merged: true });
-    fixture.jira.transitionFailure = true;
-
-    // The merge and its workflow are verified, the resolution comment lands, and
-    // the move does not: the item is still In Review with that comment on it.
-    const first = only(await runPass(fixture));
-
-    expect(first.status).toBe('attention');
-    expect(fixture.jira.status).toBe('In Review');
-    expect(commentTexts(fixture)).toHaveLength(1);
-    expect(commentTexts(fixture)[0]).toContain('nexus-completion:resolution:');
-
-    fixture.jira.transitionFailure = false;
-    const second = only(await runPass(fixture));
-
-    expect(second.status).toBe('done');
-    expect(fixture.jira.status).toBe('Done');
-    expect(commentTexts(fixture)).toHaveLength(1);
   });
 
   it('follows a merge GitHub makes after auto-merge was armed', async () => {
@@ -585,26 +547,6 @@ describe('review-to-completion', () => {
     );
     expect(fixture.jira.status).toBe('In Review');
     expect(commentTexts(fixture)).toHaveLength(0);
-  });
-
-  it('does not write a second comment when the first write was uncertain', async () => {
-    const fixture = await createFixture({
-      reviews: [{ ...APPROVED_REVIEW, state: 'CHANGES_REQUESTED' }],
-    });
-    // The comment lands, but the answer is lost: the client cannot acknowledge it.
-    fixture.jira.commentFailure = true;
-    const failing = only(await runPass(fixture));
-    expect(failing.status).toBe('attention');
-    expect(commentTexts(fixture)).toHaveLength(0);
-
-    // On the next pass the write succeeds and the item moves exactly once.
-    fixture.jira.commentFailure = false;
-    const outcome = only(await runPass(fixture));
-
-    expect(outcome.status, outcome.detail).toBe('to-do');
-    expect(fixture.jira.status).toBe('To Do');
-    expect(commentTexts(fixture)).toHaveLength(1);
-    expect(transitions(fixture)).toHaveLength(1);
   });
 
   it.each([

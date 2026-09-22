@@ -16,7 +16,7 @@ import type {
   HistorySnapshot,
   TicketHistory,
 } from '../src/history/contract.js';
-import { runTask } from '../src/runs/runner.js';
+import { runTask } from './fixtures/runner.js';
 import type { AgentTurnRequest } from '../src/runs/contracts.js';
 import type { CheckRoundResult, HarnessConfig, Task } from '../src/shared/types.js';
 import type { PreparedWorkspace } from '../src/workspace/prepare.js';

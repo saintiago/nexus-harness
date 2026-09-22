@@ -36,7 +36,7 @@ import { runCheckRound } from '../src/checks/round.js';
 import { requestTreeStop } from '../src/process/stop.js';
 import { appendRunLog, openAgentLog } from '../src/reporting/logs.js';
 import { writeRunReport } from '../src/reporting/report.js';
-import { runTask } from '../src/runs/runner.js';
+import { runTask } from './fixtures/runner.js';
 import type { AgentTurnRequest, RunnerDependencies } from '../src/runs/contracts.js';
 import type {
   AgentActivity,

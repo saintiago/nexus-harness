@@ -35,7 +35,7 @@ import { runCommand } from '../src/process/command.js';
 import { appendRunLog, openAgentLog } from '../src/reporting/logs.js';
 import { writeRunReport } from '../src/reporting/report.js';
 import type { AgentTurnResult, RunnerDependencies } from '../src/runs/contracts.js';
-import { runTask } from '../src/runs/runner.js';
+import { runTask } from './fixtures/runner.js';
 import type { Command, HarnessConfig, RunReport, Task } from '../src/shared/types.js';
 import { configureWorkspaceIdentity } from '../src/workspace/git.js';
 import { returnToRecordedBranch } from '../src/workspace/branch.js';
