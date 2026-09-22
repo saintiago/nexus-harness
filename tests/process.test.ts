@@ -10,8 +10,10 @@
  * in the fast suites (`docs/testing.md`).
  *
  * Every process a case starts is either waited for or stopped and confirmed
- * gone before the case ends, and every path is under a temporary directory the
- * suite removes afterwards.
+ * gone before the case ends: each hanging fixture names the processes it starts
+ * in a pid ledger the moment they exist, and the case's teardown ends and
+ * confirms whatever is left before the temporary directories are removed —
+ * whatever the case itself asserted, or failed to assert.
  */
 import { existsSync } from 'node:fs';
 import { mkdir, readFile } from 'node:fs/promises';
@@ -22,7 +24,12 @@ import { runInvocation } from '../src/process/invocation.js';
 import type { InvocationResult } from '../src/process/invocation.js';
 import { collectHostUtilityWords } from '../src/process/stop.js';
 import { createTempDir } from './support.js';
-import { pause, readJsonWhenWritten, waitUntilGone } from './integration-support.js';
+import {
+  pause,
+  readJsonWhenWritten,
+  useOwnedProcesses,
+  waitUntilGone,
+} from './integration-support.js';
 
 /** Runs one invocation of the host's own Node, capturing what it wrote. */
 async function invokeNode(
@@ -59,18 +66,21 @@ async function invokeNode(
 }
 
 /**
- * A script that records its own PID and the PID of a child it starts, and then
- * keeps running until something kills the tree. The record is written only once
- * the child really exists, so a record that exists names two live processes.
+ * A script that names its own PID and the PID of a child it starts in the case's
+ * pid ledger — each the moment it exists, so the case's teardown owns both — and
+ * then keeps running until something kills the tree. The record is written only
+ * once the child really exists, so a record that exists names two live processes.
  */
-function hangWithChildScript(record: string): string {
+function hangWithChildScript(record: string, ledger: string): string {
   return [
     `const { spawn } = await import('node:child_process');`,
-    `const { writeFileSync } = await import('node:fs');`,
+    `const { appendFileSync, writeFileSync } = await import('node:fs');`,
+    `writeFileSync(${JSON.stringify(ledger)}, String(process.pid) + '\\n');`,
     `const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {`,
     `  stdio: 'ignore',`,
     `  windowsHide: true,`,
     `});`,
+    `appendFileSync(${JSON.stringify(ledger)}, String(child.pid) + '\\n');`,
     `writeFileSync(${JSON.stringify(record)}, JSON.stringify({ pid: process.pid, child: child.pid }));`,
     `setInterval(() => {}, 1000);`,
   ].join('\n');
@@ -251,12 +261,19 @@ describe('one command in a run', () => {
 });
 
 describe('ending what an invocation started', () => {
+  const processes = useOwnedProcesses();
+
   it('stops the invocation and the whole tree it started at its limit', async () => {
     const cwd = await createTempDir();
     const record = path.join(cwd, 'tree.json');
+    const ledger = path.join(cwd, 'tree.pids');
     const started = Date.now();
+    // Ownership starts before the fixture does: the ledger names each process
+    // the moment it exists, so the teardown can end the tree even if this case
+    // fails before it asserts anything about the stop it is testing.
+    processes.watchPidFile(ledger);
 
-    const { result } = await invokeNode(hangWithChildScript(record), {
+    const { result } = await invokeNode(hangWithChildScript(record, ledger), {
       cwd,
       timeoutMs: 3000,
     });
@@ -283,9 +300,11 @@ describe('ending what an invocation started', () => {
   it('stops a running invocation when the caller stops the run, and says which stop it was', async () => {
     const cwd = await createTempDir();
     const record = path.join(cwd, 'tree.json');
+    const ledger = path.join(cwd, 'tree.pids');
     const controller = new AbortController();
+    processes.watchPidFile(ledger);
 
-    const pending = invokeNode(hangWithChildScript(record), {
+    const pending = invokeNode(hangWithChildScript(record, ledger), {
       cwd,
       timeoutMs: 60_000,
       stop: controller.signal,
@@ -298,7 +317,8 @@ describe('ending what an invocation started', () => {
       ({ result } = await pending);
     } catch (cause) {
       // Whatever happens, the invocation this case started is stopped and
-      // awaited before the case ends.
+      // awaited before the case ends; the suite's teardown independently ends
+      // the tree if this stop did not.
       controller.abort();
       await pending.catch(() => undefined);
       throw cause;

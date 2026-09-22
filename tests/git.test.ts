@@ -13,7 +13,10 @@
  *
  * The stand-in is only reached while a case puts it first on `PATH`, so the real
  * Git is never mistaken for it. Every process a case starts is confirmed gone
- * before the case ends.
+ * before the case ends: a hanging stand-in names the processes it starts in a
+ * pid ledger the moment they exist, and the case's teardown ends and confirms
+ * whatever is left before the temporary directories are removed, whatever the
+ * case asserted or failed to assert.
  */
 import { existsSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
@@ -39,26 +42,33 @@ import {
   gitOrFail,
   installStandIn,
   readJsonWhenWritten,
+  useOwnedProcesses,
   useIsolatedGitEnvironment,
   waitUntilGone,
   withPathPrefix,
 } from './integration-support.js';
+import type { OwnedProcesses } from './integration-support.js';
 
 useIsolatedGitEnvironment();
 
 /**
  * A stand-in `git`: it records the arguments, the working directory, its own
  * PID, and the PID of a child it starts, and then keeps running until something
- * ends the tree. The record is written only once the child exists, so a record
+ * ends the tree. Both PIDs are named in the case's pid ledger beside the record
+ * the moment each process exists — the ledger is how the case's teardown owns
+ * the tree — and the record is written only once the child exists, so a record
  * that exists names two live processes.
  */
 const STAND_IN_GIT = [
   `const { spawn } = await import('node:child_process');`,
-  `const { writeFileSync } = await import('node:fs');`,
+  `const { appendFileSync, writeFileSync } = await import('node:fs');`,
+  `const ledger = process.env.NEXUS_GIT_RECORD + '.pids';`,
+  `writeFileSync(ledger, String(process.pid) + '\\n');`,
   `const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {`,
   `  stdio: 'ignore',`,
   `  windowsHide: true,`,
   `});`,
+  `appendFileSync(ledger, String(child.pid) + '\\n');`,
   `writeFileSync(process.env.NEXUS_GIT_RECORD, JSON.stringify({`,
   `  argv: process.argv.slice(2),`,
   `  cwd: process.cwd(),`,
@@ -70,13 +80,20 @@ const STAND_IN_GIT = [
 
 /**
  * Runs `work` with a stand-in `git` first on `PATH`, and tells it where to write
- * its record. Both are put back afterwards, so the host's real Git is what every
- * other case sees.
+ * its record. Ownership of the stand-in's process tree is registered before it
+ * starts, by watching the pid ledger the stand-in writes beside its record.
+ * Both are put back afterwards, so the host's real Git is what every other case
+ * sees.
  */
-async function withStandInGit<T>(record: string, work: () => Promise<T>): Promise<T> {
+async function withStandInGit<T>(
+  record: string,
+  processes: OwnedProcesses,
+  work: () => Promise<T>,
+): Promise<T> {
   const standIn = await installStandIn('git', STAND_IN_GIT);
   const saved = process.env.NEXUS_GIT_RECORD;
   process.env.NEXUS_GIT_RECORD = record;
+  processes.watchPidFile(`${record}.pids`);
   try {
     return await withPathPrefix(standIn.bin, work);
   } finally {
@@ -236,13 +253,15 @@ describe('the identity a working copy commits with', () => {
 });
 
 describe('a Git invocation with a bound', () => {
+  const processes = useOwnedProcesses();
+
   it('stops a stalled invocation and its child at the bound, and says the stop was confirmed', async () => {
     const fixture = await createRepository();
     const recordFile = path.join(fixture.parent, 'stalled.json');
     // A frozen clock keeps the bound the harness hands over exact.
     const clock = new Date();
 
-    const result = await withStandInGit(recordFile, () =>
+    const result = await withStandInGit(recordFile, processes, () =>
       runGit(['status'], fixture.repo, {
         deadlineMs: clock.getTime() + 3000,
         now: () => clock,
@@ -275,12 +294,12 @@ describe('a Git invocation with a bound', () => {
     const clock = new Date();
     const bounds = { deadlineMs: clock.getTime() + 2000, now: (): Date => clock };
 
-    const first = await withStandInGit(path.join(fixture.parent, 'first.json'), () =>
+    const first = await withStandInGit(path.join(fixture.parent, 'first.json'), processes, () =>
       runGit(['status'], fixture.repo, bounds),
     );
     const firstRecord = await readStandInRecord(path.join(fixture.parent, 'first.json'));
     clock.setTime(clock.getTime() + 1500);
-    const second = await withStandInGit(path.join(fixture.parent, 'second.json'), () =>
+    const second = await withStandInGit(path.join(fixture.parent, 'second.json'), processes, () =>
       runGit(['status'], fixture.repo, bounds),
     );
     const secondRecord = await readStandInRecord(path.join(fixture.parent, 'second.json'));
@@ -301,7 +320,7 @@ describe('a Git invocation with a bound', () => {
     const controller = new AbortController();
     const clock = new Date();
 
-    const pending = withStandInGit(recordFile, () =>
+    const pending = withStandInGit(recordFile, processes, () =>
       runGit(['status'], fixture.repo, {
         deadlineMs: clock.getTime() + 60_000,
         now: () => clock,
@@ -316,7 +335,8 @@ describe('a Git invocation with a bound', () => {
       result = await pending;
     } catch (cause) {
       // Whatever happens, the invocation this case started is stopped and
-      // awaited before the case ends.
+      // awaited before the case ends; the suite's teardown independently ends
+      // the tree if this stop did not.
       controller.abort();
       await pending.catch(() => undefined);
       throw cause;
@@ -334,6 +354,8 @@ describe('a Git invocation with a bound', () => {
 });
 
 describe('a workspace step that has to be stopped', () => {
+  const processes = useOwnedProcesses();
+
   it('keeps the run directory and carries the stop on the failure', async () => {
     const fixture = await createRepository();
     const preflight = await preflightSource({
@@ -344,7 +366,7 @@ describe('a workspace step that has to be stopped', () => {
     const recordFile = path.join(fixture.parent, 'prepare.json');
     const clock = new Date();
 
-    const error = await withStandInGit(recordFile, () =>
+    const error = await withStandInGit(recordFile, processes, () =>
       failureOf(() =>
         prepareWorkspace(run, preflight, {
           deadlineMs: clock.getTime() + 3000,

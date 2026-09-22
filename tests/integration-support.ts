@@ -16,7 +16,7 @@ import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises
 import { createServer } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { afterAll, beforeAll } from 'vitest';
+import { afterAll, afterEach, beforeAll } from 'vitest';
 import { createTempDir, removeWithRetry } from './support.js';
 
 /**
@@ -145,6 +145,143 @@ export async function waitUntilGone(pid: number, timeoutMs = 15_000): Promise<bo
     await pause(50);
   }
   return !stillRunning(pid);
+}
+
+/**
+ * The processes one case started, owned by the fixture that started them.
+ *
+ * A fixture names every process it starts in its own pid ledger — one PID per
+ * line, appended the moment the process exists — so ownership is recorded
+ * before the case waits for a readiness signal and before it asserts anything.
+ * The case's teardown ({@link useOwnedProcesses}) ends whatever is left and
+ * confirms each owned PID is gone before the temporary directories are removed,
+ * whether the case passed, failed an assertion, timed out waiting for something,
+ * or timed out itself. Ending a process never goes through the code under test:
+ * the PID is signalled here directly, so a cancellation that leaked work is
+ * cleaned up by the teardown while the case's own assertions still report it.
+ */
+export interface OwnedProcesses {
+  /** Registers one PID this case started; anything that is not a PID is ignored. */
+  own(pid: number | undefined): void;
+  /**
+   * Notes the PIDs a fixture appends to `file`, one per line, until the case's
+   * teardown stops watching. The ledger may not exist yet when watching starts
+   * and may grow while the case runs.
+   */
+  watchPidFile(file: string): void;
+  /**
+   * Ends every owned process that is still running, confirms each one is gone,
+   * and returns the PIDs that could not be confirmed.
+   */
+  stopAll(): Promise<readonly number[]>;
+}
+
+/** How often a fixture's pid ledger is read while a case runs. */
+const PID_LEDGER_POLL_MS = 25;
+
+/**
+ * Asks this host to end one owned process and, where that PID leads one, the
+ * tree it started. Only a PID one of this suite's own fixtures recorded is ever
+ * named. On Windows the tree is stopped by PID, because a shim's children are
+ * reached that way there; elsewhere an invocation leads its own process group,
+ * so the group is signalled first and the PID itself is the fallback for a
+ * process that leads none. A PID nothing holds any more is the outcome this
+ * asked for.
+ */
+async function endProcessTree(pid: number): Promise<void> {
+  if (process.platform === 'win32') {
+    // `/T` reaches the children the invocation started, and `/F` ends them
+    // instead of asking a window that may never answer.
+    await runProgram('taskkill', ['/PID', String(pid), '/T', '/F'], { cwd: os.tmpdir() });
+    return;
+  }
+  for (const target of [-pid, pid]) {
+    try {
+      process.kill(target, 'SIGKILL');
+      return;
+    } catch (cause) {
+      if ((cause as NodeJS.ErrnoException).code !== 'ESRCH') {
+        throw cause;
+      }
+    }
+  }
+}
+
+/** One ownership record, with nothing registered on the suite's hooks. */
+function ownProcesses(): OwnedProcesses {
+  const owned = new Set<number>();
+  const watchers = new Set<() => Promise<void>>();
+  const note = (line: string): void => {
+    const text = line.trim();
+    if (/^\d+$/.test(text)) {
+      owned.add(Number(text));
+    }
+  };
+
+  return {
+    own: (pid) => {
+      if (pid !== undefined && Number.isInteger(pid) && pid > 0) {
+        owned.add(pid);
+      }
+    },
+    watchPidFile: (file) => {
+      let watching = true;
+      const loop = (async () => {
+        while (watching) {
+          await pause(PID_LEDGER_POLL_MS);
+          const ledger = await readFile(file, 'utf8').catch(() => '');
+          for (const line of ledger.split('\n')) {
+            note(line);
+          }
+        }
+      })();
+      watchers.add(() => {
+        watching = false;
+        return loop;
+      });
+    },
+    stopAll: async () => {
+      // Watching stops first, so no PID can be added while the record is read.
+      const stopping = [...watchers];
+      watchers.clear();
+      await Promise.all(stopping.map((stop) => stop()));
+
+      const pids = [...owned];
+      owned.clear();
+      for (const pid of pids) {
+        // A stop this host refused is reported below, as the PID that is still
+        // running, rather than as an error of its own.
+        await endProcessTree(pid).catch(() => undefined);
+      }
+      const running: number[] = [];
+      for (const pid of pids) {
+        if (!(await waitUntilGone(pid))) {
+          running.push(pid);
+        }
+      }
+      return running;
+    },
+  };
+}
+
+/**
+ * Creates the ownership record of the current suite and registers its teardown:
+ * every process the suite's fixtures registered is stopped and confirmed gone
+ * before the hooks that remove the suite's temporary directories run, and a PID
+ * that cannot be confirmed gone fails the case that owned it.
+ */
+export function useOwnedProcesses(): OwnedProcesses {
+  const processes = ownProcesses();
+  afterEach(async () => {
+    const running = await processes.stopAll();
+    if (running.length > 0) {
+      throw new Error(
+        `the case's teardown could not confirm these owned processes are gone: ` +
+          running.map((pid) => String(pid)).join(', '),
+      );
+    }
+  });
+  return processes;
 }
 
 /** Reads one file the moment it holds JSON `want`, or fails saying what it read. */
