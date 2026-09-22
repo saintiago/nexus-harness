@@ -173,10 +173,17 @@ async function startPending(entry: Entry, ending: string): Promise<Promise<void>
   return [settled];
 }
 for (const entry of entries) {
-  it(`times out with ${entry} pending`, async () => {
-    const [settled] = await startPending(entry, 'timeout');
-    await settled;
-  }, 5_000);
+  describe(`timeout with ${entry} pending`, () => {
+    let settled: Promise<void> | undefined;
+    beforeEach(async () => {
+      [settled] = await startPending(entry, 'timeout');
+    });
+    // Setup already observed both processes. The body only needs to hit the
+    // real Vitest deadline; another five seconds adds no cleanup evidence.
+    it('times out with pending production work', async () => {
+      await settled;
+    }, 100);
+  });
   describe(`setup failure with ${entry} pending`, () => {
     beforeEach(async () => {
       await startPending(entry, 'setup');

@@ -404,7 +404,11 @@ proves teardown waits for that enclosing operation too.
 Thirteen top-level cases and eight nested failure cases are added; no existing test,
 assertion, deadline, quarantine or skip is removed. Existing assertion-failure,
 caller-cancellation, repeated directory preservation, credential-isolation and
-POSIX process-group proofs remain active. The new view cancellation assertion
+POSIX process-group proofs remain active. The four new timeout cases start their
+real pending operations in `beforeEach`, then hit a 100 ms body deadline; the
+JSON reporter must identify each exact timeout and each exact setup failure.
+This avoids four unnecessary five-second waits without removing any process,
+beacon, settlement or directory assertion. The new view cancellation assertion
 keeps its actual production diagnostic (failed clone); independent process and
 beacon assertions prove termination instead of inferring it from that text.
 

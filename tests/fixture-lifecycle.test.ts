@@ -219,6 +219,7 @@ describe('the fixture lifecycle', () => {
     const reports = await createTempDir();
     const pids = await createTempDir();
     const report = path.join(reports, 'cases.jsonl');
+    const resultsFile = path.join(reports, 'results.json');
     const vitest = path.join(repoRoot, 'node_modules', 'vitest', 'vitest.mjs');
     const config = path.join(repoRoot, 'vitest.lifecycle.config.ts');
     await mkdir(pids, { recursive: true });
@@ -237,13 +238,38 @@ describe('the fixture lifecycle', () => {
 
     const result = await runProcess(
       process.execPath,
-      [vitest, 'run', '--config', config, '--reporter=dot'],
+      [
+        vitest,
+        'run',
+        '--config',
+        config,
+        '--reporter=dot',
+        '--reporter=json',
+        `--outputFile.json=${resultsFile}`,
+      ],
       { cwd: repoRoot, env, timeoutMs: 120_000 },
     );
 
     // The cases must really have failed: a proof whose cases passed proves
     // nothing about what the lifecycle does with a failure.
     expect(result.code).not.toBe(0);
+    const results = JSON.parse(await readFile(resultsFile, 'utf8')) as {
+      testResults: {
+        assertionResults: { fullName: string; status: string; failureMessages: string[] }[];
+      }[];
+    };
+    const assertions = results.testResults.flatMap((suite) => suite.assertionResults);
+    for (const entry of ['workspace', 'review-view', 'baseline-reviewer', 'baseline-cli']) {
+      for (const ending of ['timeout', 'setup failure']) {
+        const name = `${ending} with ${entry} pending`;
+        const matching = assertions.filter((test) => test.fullName.includes(name));
+        expect(matching, name).toHaveLength(1);
+        expect(matching[0]?.status, name).toBe('failed');
+        expect(matching[0]?.failureMessages.join('\n'), name).toContain(
+          ending === 'timeout' ? 'Test timed out in 100ms' : `setup failed with ${entry} pending`,
+        );
+      }
+    }
     const started = (await readFile(report, 'utf8'))
       .split('\n')
       .filter((line) => line !== '')
