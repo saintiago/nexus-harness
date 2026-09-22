@@ -1,19 +1,17 @@
-﻿Started UTC: 2026-09-22T16:09:03.2088180Z
-Commit: 3477328bd446885aeb7b0634da971a11d9b3ad57
+﻿Started UTC: 2026-09-22T16:23:43.6013421Z
+Commit: 9375c4ed5d8b19b8b24ca29789371b83d141de25
 Node: v24.14.1; npm: 11.11.0
 Vitest: 5.0.0
 OS: Microsoft Windows NT 10.0.26200.0; logical CPUs: 24
 Workers: one pool, 4
-Working changes:  performance/harn-48-fixture-cleanup-1.txt    |    8 +-
- performance/harn-48-fixture-cleanup-2.txt    |    8 +-
- performance/harn-48-validation-1-detail.txt  | 1937 +++++++++++++-------------
+Working changes:  performance/harn-48-validation-1-detail.txt  | 2022 +++++++++++++-------------
  performance/harn-48-validation-1-timings.txt |    2 +-
  performance/harn-48-validation-1.txt         |    8 +-
- performance/harn-48-validation-2-detail.txt  | 1887 ++++++++++++-------------
+ performance/harn-48-validation-2-detail.txt  | 1834 +++++++++++------------
  performance/harn-48-validation-2-timings.txt |    2 +-
- performance/harn-48-validation-2.txt         |   14 +-
- 8 files changed, 1946 insertions(+), 1920 deletions(-)
+ performance/harn-48-validation-2.txt         |   13 +-
+ 6 files changed, 1940 insertions(+), 1941 deletions(-)
 
-Ended UTC: 2026-09-22T16:13:17.5490362Z
+Ended UTC: 2026-09-22T16:27:12.7399001Z
 Exit code: 0
-Total command wall seconds: 253.610
+Total command wall seconds: 208.427
