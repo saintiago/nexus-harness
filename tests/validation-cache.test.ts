@@ -18,7 +18,27 @@ import path from 'node:path';
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 import { repoRoot } from './support.js';
-import { policyFiles } from '../vitest.config.js';
+import config, { BOUNDARY_DEFAULT_TIMEOUT_MS, policyFiles } from '../vitest.config.js';
+
+/** One project entry of this repository's Vitest configuration. */
+type VitestProject = { test: { name?: string; testTimeout?: number } };
+
+/**
+ * Vitest's own default deadline for a case that states none — the five seconds
+ * HARN-48's map calls "the default", and the bound the boundary layer's cases
+ * carried before the HARN-49 repair. Vitest 5 does not export it through
+ * `configDefaults`; it is the documented default and is restated here so the
+ * comparison below says what it means.
+ */
+const VITEST_DEFAULT_TEST_TIMEOUT_MS = 5_000;
+
+/** The named project of `vitest.config.ts`, as the configuration resolves it. */
+function vitestProject(name: string): VitestProject {
+  const projects = (config as { test?: { projects?: VitestProject[] } }).test?.projects ?? [];
+  const found = projects.find((entry) => entry.test.name === name);
+  if (found === undefined) throw new Error(`vitest.config.ts declares no ${name} project`);
+  return found;
+}
 
 /** Every check the gate runs, in the order `npm run validate` names them. */
 const GATE_TASKS = [
@@ -626,5 +646,24 @@ describe('the validation task cache contract', () => {
     for (const marker of ['projectService', 'recommendedTypeChecked', 'project:']) {
       expect(config, `eslint.config.js enables ${marker}`).not.toContain(marker);
     }
+  });
+
+  it('gives the process-heavy layer a bounded deadline of its own', () => {
+    // Vitest's five-second default is sized for in-process unit cases. Every
+    // case in the boundary layer starts real Git, command shells or Node
+    // children, and its wall time is the host's as much as the checkout's: the
+    // runs recorded in notes/windows-fixture-flakes.md show three-to-four
+    // second cases crossing five seconds under the contention this layer is
+    // meant to tolerate, and HARN-49's gate stopped on two of them. The layer
+    // therefore states its own bounded default; a case may still state a bound
+    // of its own, which overrides it.
+    const boundary = vitestProject('boundary');
+    expect(boundary.test.testTimeout).toBe(BOUNDARY_DEFAULT_TIMEOUT_MS);
+    expect(BOUNDARY_DEFAULT_TIMEOUT_MS).toBeGreaterThan(VITEST_DEFAULT_TEST_TIMEOUT_MS);
+
+    // The fast layer stays on Vitest's default: its cases start no process, so
+    // a case there that outlives five seconds is a finding rather than host
+    // load, and nothing may lift that bound for the layer.
+    expect(vitestProject('policy').test.testTimeout).toBeUndefined();
   });
 });

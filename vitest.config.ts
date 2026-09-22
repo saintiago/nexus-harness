@@ -1,6 +1,27 @@
 import { configDefaults, defineConfig } from 'vitest/config';
 
 /**
+ * The deadline the process-heavy layer's cases get when they do not state one
+ * of their own — Vitest's `testTimeout`, set on the `boundary` project below.
+ *
+ * Vitest's five-second default is a unit-test convention, and this layer is
+ * not unit tests: every case here starts real Git, command shells or Node
+ * children, and its wall time is a function of the host as much as of the
+ * checkout. HARN-48's measurements and the runs recorded in
+ * `notes/windows-fixture-flakes.md` show cases with three to four seconds of
+ * quiet work crossing five seconds under the contention this layer is meant to
+ * tolerate — and a case that times out at the default is reported as a failure
+ * of the revision under test, which is what stopped the HARN-49 gate.
+ *
+ * Fifteen seconds is still bounded, so a case that really hangs fails. Every
+ * case that already states its own bound keeps it (10 s for two passes, 15 s
+ * for three calls, the 20–180 s bounds of the heavier files): only the fallback
+ * for cases that state none changes, and `tests/validation-cache.test.ts` fails
+ * if this project stops stating one that is above the unit default.
+ */
+export const BOUNDARY_DEFAULT_TIMEOUT_MS = 15_000;
+
+/**
  * Two layers, two concurrency policies.
  *
  * `policy` is the fast layer: configuration, parsing, the terminal model,
@@ -17,6 +38,9 @@ import { configDefaults, defineConfig } from 'vitest/config';
  * Git and Node processes, so this layer is capped: the audit behind HARN-48
  * recorded a 24-logical-CPU host defaulting to 23 workers and failing under
  * that contention. The cap is a policy, not a deadline: no test asserts on it.
+ * The layer's default deadline is `BOUNDARY_DEFAULT_TIMEOUT_MS`, for the
+ * reason recorded beside it; the cap and the deadline are scheduling and
+ * reporting policy, and no case asserts on either.
  *
  * `npm run validate` runs both. `npm run test:policy` and
  * `npm run test:boundary` run one layer, for the loop an operator uses while
@@ -78,6 +102,7 @@ export default defineConfig({
           ],
           environment: 'node',
           maxWorkers: 4,
+          testTimeout: BOUNDARY_DEFAULT_TIMEOUT_MS,
           sequence: { groupOrder: 2 },
         },
       },
