@@ -250,8 +250,9 @@ not a comparison point.
 node `v24.14.1`, npm `11.11.0`, vitest `5.0.0` — on the final tree. Runs 1 and 2
 are the two sequential complete validations the ticket asks for, with nothing in
 between them; run 3 is the comparable four-worker measurement, run 4 is the same
-test command with the JSON reporter, and run 5 is the final check on the
-committed tree, including this document.
+test command with the JSON reporter, and run 5 is the last validation of the
+same tree, taken after the measurements and before the commits that carry only
+this document and the raw output.
 
 The host also runs the queue that started this turn (one `node dist/cli.js queue
 run` process) and a normal Windows desktop set; that was true of every run here
@@ -264,7 +265,7 @@ below is that host's, not the suite's.
 | 2   | `npm run validate`               |      167.00 s |         178.58 s | pass    | 1,330 / 2        |    49 |
 | 3   | `npm run test:four-workers`      |      164.31 s |         164.90 s | pass    | 1,330 / 2        |    49 |
 | 4   | `npx vitest run --reporter=json` | 212.68 s span |         213.85 s | pass    | 1,330 / 2        |    49 |
-| 5   | `npm run validate` (final)       |      166.70 s |         178.41 s | pass    | 1,330 / 2        |    49 |
+| 5   | `npm run validate` (final)       |      169.35 s |         181.14 s | pass    | 1,330 / 2        |    49 |
 
 Raw output: [validation 1](../performance/harn-48-validation-1.txt),
 [validation 2](../performance/harn-48-validation-2.txt),
@@ -283,7 +284,7 @@ durations are in [the timing detail](../performance/harn-48-after-timings-per-te
 | Run 2, two layers (policy 8, then boundary 4) |   167.00 s | −25.50 s (−13.2 %) |
 | Run 3, four workers, one pool (comparable)    |   164.31 s | −28.19 s (−14.6 %) |
 | Run 4, two layers, JSON reporter              |   212.68 s | +20.18 s (+10.5 %) |
-| Run 5, final check, two layers                |   166.70 s | −25.80 s (−13.4 %) |
+| Run 5, final check, two layers                |   169.35 s | −23.15 s (−12.0 %) |
 
 The comparable four-worker measurement is run 3: the layer policy differs from
 the reference's single pool, so a like-for-like number had to be taken
@@ -335,7 +336,7 @@ detail file.
 Measured on this host, at these worker settings: **test phase ≤ 212 s (the
 192.50 s reference plus 10 %), no single suite over 110 s, `policy` under 15 s,
 and no per-case bound widened except the stated ones below.** The budget is met
-by the three complete validations (200.99 s, 167.00 s, 166.70 s), by the
+by the three complete validations (200.99 s, 169.35 s, 167.00 s), by the
 comparable four-worker run (164.31 s) and by the slowest suite (`completion-github.test.ts`
 at 100.12 s, inside 110 s) and the policy layer (3.64 s, inside 15 s). It is
 _not_ met by the JSON detail run, which took 212.68 s and sits 0.7 s over the
@@ -367,6 +368,7 @@ listed before and after the run and compared.
 | After run 1                |                           453 |                  0 |
 | After run 2                |                           453 |                  0 |
 | After run 3 (four workers) |                           453 |                  0 |
+| After run 5 (final)        |                           453 |                  0 |
 
 Raw output: [fixture cleanup](../performance/harn-48-fixture-cleanup.txt). The
 453 directories are older leftovers from runs of earlier revisions and are not

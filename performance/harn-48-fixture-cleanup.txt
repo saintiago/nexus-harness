@@ -3,3 +3,4 @@ after run 1: dirs=453 procs=0
 after run 2: dirs=453 procs=0
 after the four-worker run: dirs=453 procs=0
 after the final check: dirs=453 procs=0
+after the final check: dirs=453 procs=0
