@@ -20,6 +20,7 @@
     "test": "vitest run",
     "test:policy": "vitest run --project policy",
     "test:boundary": "vitest run --project boundary",
+    "test:four-workers": "vitest run --config vitest.four-workers.config.ts",
     "test:watch": "vitest",
     "test:live": "npm run build && tsx tests/live/codex-live-check.ts",
     "validate": "npm run format:check && npm run lint && npm run typecheck && npm run build && npm run test"

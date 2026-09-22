@@ -58,20 +58,21 @@ CLI from TypeScript sources through `tsx` if you would rather not build.
 
 ## Commands
 
-| Script                  | What it does                                                     |
-| ----------------------- | ---------------------------------------------------------------- |
-| `npm start`             | Run the built CLI (`dist/cli.js`).                               |
-| `npm run dev`           | Run the CLI from TypeScript sources via `tsx`.                   |
-| `npm run build`         | Compile `src/` to `dist/`.                                       |
-| `npm run typecheck`     | Type-check sources and tests without emitting.                   |
-| `npm run lint`          | ESLint, including the dependency boundaries below.               |
-| `npm test`              | Run the offline suite once. Needs no credentials.                |
-| `npm run test:policy`   | Run the fast policy layer alone.                                 |
-| `npm run test:boundary` | Run the process-heavy boundary layer alone.                      |
-| `npm run test:watch`    | Run the offline suite in watch mode.                             |
-| `npm run format:check`  | Check formatting without writing.                                |
-| `npm run validate`      | Format, lint, typecheck, build, test — the gate CI runs.         |
-| `npm run test:live`     | The opt-in **live** check: builds, then drives a real Codex CLI. |
+| Script                      | What it does                                                      |
+| --------------------------- | ----------------------------------------------------------------- |
+| `npm start`                 | Run the built CLI (`dist/cli.js`).                                |
+| `npm run dev`               | Run the CLI from TypeScript sources via `tsx`.                    |
+| `npm run build`             | Compile `src/` to `dist/`.                                        |
+| `npm run typecheck`         | Type-check sources and tests without emitting.                    |
+| `npm run lint`              | ESLint, including the dependency boundaries below.                |
+| `npm test`                  | Run the offline suite once. Needs no credentials.                 |
+| `npm run test:policy`       | Run the fast policy layer alone.                                  |
+| `npm run test:boundary`     | Run the process-heavy boundary layer alone.                       |
+| `npm run test:four-workers` | The comparable measurement: every file in one pool, four workers. |
+| `npm run test:watch`        | Run the offline suite in watch mode.                              |
+| `npm run format:check`      | Check formatting without writing.                                 |
+| `npm run validate`          | Format, lint, typecheck, build, test — the gate CI runs.          |
+| `npm run test:live`         | The opt-in **live** check: builds, then drives a real Codex CLI.  |
 
 The suite is two layers with their own concurrency policy (`vitest.config.ts`): a fast **policy**
 layer of configuration, parsing, terminal, reporting, queue and history tests with no child
@@ -82,6 +83,13 @@ live provider exercise stays `npm run test:live` and is never part of the gate. 
 owns, what moved and how the restored suite compares with the audit baseline is in the
 [test layer and coverage map](notes/test-layers.md); the evidence behind the temporary quarantine
 is in the [test architecture audit](notes/test-architecture-audit.md).
+
+The gate's own time budget is stated in that map: the test phase stays under 212 s on the recorded
+Windows host, the `policy` layer under 15 s, and no single suite over 110 s. `npm run
+test:four-workers` exists only to compare a run with the audit's reference, which put every file in
+one pool with four workers; it runs the same cases as `npm test` and is never part of the gate or of
+CI. A slower result is reported in the map rather than hidden by skipping cases or widening a
+deadline.
 
 `npm start -- --help` prints the full usage text, and `npm start -- run` with a missing option
 prints a usage error and exits `2`.
