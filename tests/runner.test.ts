@@ -11,7 +11,11 @@
 import { describe, expect, it } from 'vitest';
 import type { CheckRoundRequest } from '../src/checks/round.js';
 import { HistoryError } from '../src/history/contract.js';
-import type { DeveloperReportRequest, HistorySnapshot } from '../src/history/contract.js';
+import type {
+  DeveloperReportRequest,
+  HistorySnapshot,
+  TicketHistory,
+} from '../src/history/contract.js';
 import type { AgentTurnResult, RunTaskResult } from '../src/runs/contracts.js';
 import { BASELINE_GUIDANCE_PREFIX } from '../src/runs/contracts.js';
 import type { CheckRoundResult, CommandResult, SourceRef } from '../src/shared/types.js';
@@ -37,6 +41,12 @@ const SOURCE_REF: SourceRef = {
   url: 'https://example.atlassian.net/browse/HARN-11',
   updatedAt: '2026-09-16T11:00:00.000Z',
 };
+
+/** The failure the report-retention step reports in the cases below. */
+const LOST_REPORT = 'the reports directory is not writable';
+
+/** What a turn that could not confirm the stop of its own runtime reports. */
+const UNSETTLED_RUNTIME = 'the runtime child may still be writing';
 
 /** One red round whose only check exited nonzero, with its output written. */
 function redAfter(asked: CheckRoundRequest): Promise<CheckRoundResult> {
@@ -94,6 +104,40 @@ function snapshotFor(ref: SourceRef): HistorySnapshot {
     mirrors: [],
     sources: [],
   };
+}
+
+/**
+ * The history collaboration of a run whose complete turn report cannot be
+ * retained: the write that follows a turn always fails, and every
+ * acknowledgement the run might make is counted.
+ */
+function historyWithLostReport(): {
+  readonly history: TicketHistory;
+  readonly acknowledgements: () => number;
+} {
+  let acknowledged = 0;
+  return {
+    history: {
+      prepare: async () => snapshotFor(SOURCE_REF),
+      recordDeveloperReport: async () => {
+        throw new HistoryError('write', LOST_REPORT);
+      },
+      consumed: async () => {
+        acknowledged += 1;
+      },
+    },
+    acknowledgements: () => acknowledged,
+  };
+}
+
+/** Resolves once the stop request the run handed a turn reaches that turn. */
+function stopReached(signal: AbortSignal): Promise<void> {
+  if (signal.aborted) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    signal.addEventListener('abort', () => resolve(), { once: true });
+  });
 }
 
 describe('the run loop from a green baseline', () => {
@@ -617,5 +661,132 @@ describe('the ticket history a turn is given', () => {
     // Only the baseline ran: a turn whose report was lost is not judged by a
     // check round, and no repair is spent on it.
     expect(run.rounds.requests.map((round) => round.name)).toEqual(['baseline']);
+  });
+});
+
+/**
+ * The precedence docs/spec.md §3 states in one sentence: "A failure to retain
+ * the developer report never replaces cancellation or timeout evidence." The
+ * report write is attempted after a turn returns, and the stop the turn reported
+ * about its own runtime is read after that write has been processed, so these
+ * cases hand the run both failures at once and read which ending — and which
+ * evidence — it kept.
+ */
+describe('a report that could not be retained beside an unconfirmed stop', () => {
+  it('keeps the caller stop and its unconfirmed termination', async () => {
+    const controller = new AbortController();
+    const lost = historyWithLostReport();
+    const run = await memoryRun({
+      sourceRef: SOURCE_REF,
+      stop: controller.signal,
+      history: lost.history,
+      rounds: () => passedRound(),
+      turns: async () => {
+        // The caller stops the run while the turn is running, and the turn
+        // returns what it could not confirm about the runtime it stopped.
+        controller.abort();
+        return {
+          summary: 'the implementation is done',
+          shutdown: { termination: 'unconfirmed', problem: UNSETTLED_RUNTIME },
+        };
+      },
+    });
+
+    const result = await runMemoryTask(run);
+
+    expect(result.status).toBe('cancelled');
+    expect(result.timeout).toBeNull();
+    expect(result.cancellation?.termination).toBe('unconfirmed');
+    expect(result.cancellation?.problem).toBe(UNSETTLED_RUNTIME);
+    // The ending carries both failures: the lost report is stated beside the
+    // stop the run actually observed, and replaces neither part of it.
+    expect(result.reason).toContain(LOST_REPORT);
+    expect(result.reason).toContain(UNSETTLED_RUNTIME);
+    expect(result.reason).toMatch(/stopped by its caller/);
+    // Nothing ran after the turn, and no working copy the runtime may still be
+    // writing to was read as a final record.
+    expect(run.rounds.requests.map((round) => round.name)).toEqual(['baseline']);
+    expect(run.inspected).toEqual([]);
+    expect(result.changes.inspected).toBe(false);
+    expect(result.changes.problem).toMatch(/may still be written to/);
+    expect(result.attempts[0]?.agentSummary).toBe('the implementation is done');
+    expect(run.reports.at(-1)?.cancellation?.termination).toBe('unconfirmed');
+    // The snapshot of a turn whose report was lost is never acknowledged.
+    expect(lost.acknowledgements()).toBe(0);
+  });
+
+  it('keeps the expired task deadline and its unconfirmed termination', async () => {
+    const clock = testClock();
+    const lost = historyWithLostReport();
+    const run = await memoryRun({
+      clock,
+      config: { taskTimeoutMinutes: 1 },
+      sourceRef: SOURCE_REF,
+      history: lost.history,
+      rounds: (asked) => {
+        if (asked.name === 'baseline') {
+          // The baseline spends all but a moment of the run's single minute, so
+          // the deadline is reached while the turn below is awaited.
+          clock.advance(minutes(1) - 50);
+        }
+        return passedRound();
+      },
+      turns: async (asked) => {
+        // The turn runs until the run's own remaining task time reaches it.
+        await stopReached(asked.stop);
+        return {
+          summary: 'the implementation is done',
+          shutdown: { termination: 'unconfirmed', problem: UNSETTLED_RUNTIME },
+        };
+      },
+    });
+
+    const result = await runMemoryTask(run);
+
+    expect(result.status).toBe('failed');
+    expect(result.cancellation).toBeNull();
+    expect(result.timeout?.limit).toBe('task');
+    expect(result.timeout?.phase).toBe('implementation turn');
+    expect(result.timeout?.limitMs).toBe(minutes(1));
+    expect(result.timeout?.termination).toBe('unconfirmed');
+    expect(result.timeout?.problem).toBe(UNSETTLED_RUNTIME);
+    expect(result.reason).toContain(LOST_REPORT);
+    expect(result.reason).toContain(UNSETTLED_RUNTIME);
+    expect(result.reason).toMatch(/remaining task time ran out/);
+    expect(run.rounds.requests.map((round) => round.name)).toEqual(['baseline']);
+    expect(run.inspected).toEqual([]);
+    expect(result.changes.inspected).toBe(false);
+    expect(result.changes.problem).toMatch(/may still be written to/);
+    expect(result.attempts[0]?.agentSummary).toBe('the implementation is done');
+    expect(run.reports.at(-1)?.timeout?.termination).toBe('unconfirmed');
+    expect(lost.acknowledgements()).toBe(0);
+  });
+
+  it('keeps a runtime-only turn that could not confirm its own stop', async () => {
+    const lost = historyWithLostReport();
+    const run = await memoryRun({
+      sourceRef: SOURCE_REF,
+      history: lost.history,
+      rounds: () => passedRound(),
+      turns: () => ({
+        summary: 'the implementation is done',
+        shutdown: { termination: 'unconfirmed', problem: UNSETTLED_RUNTIME },
+      }),
+    });
+
+    const result = await runMemoryTask(run);
+
+    expect(result.status).toBe('failed');
+    expect(result.timeout).toBeNull();
+    expect(result.cancellation).toBeNull();
+    expect(result.reason).toContain(LOST_REPORT);
+    expect(result.reason).toContain(UNSETTLED_RUNTIME);
+    expect(result.reason).toMatch(/could not confirm that it had ended/);
+    expect(run.rounds.requests.map((round) => round.name)).toEqual(['baseline']);
+    expect(run.inspected).toEqual([]);
+    expect(result.changes.inspected).toBe(false);
+    expect(result.changes.problem).toMatch(/may still be written to/);
+    expect(result.attempts[0]?.agentSummary).toBe('the implementation is done');
+    expect(lost.acknowledgements()).toBe(0);
   });
 });
