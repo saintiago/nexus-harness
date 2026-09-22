@@ -5,6 +5,7 @@ If code contradicts documentation, correct the code.
 
 ## Purpose and design
 
+- [Proposed high-level architecture](docs/new/high-level-architecture.md): target composition, component contracts and execution modes.
 - [Long-term vision](docs/LONG_TERM_VISION.md): future purpose and direction; not current behavior.
 - [Architecture](docs/architecture.md): design principles, ownership, testing and tech stack.
 - [Components](docs/components.md): responsibilities and required behavior.
