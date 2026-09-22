@@ -1,5 +1,3 @@
-// Temporarily quarantined by operator request; restore under HARN-48.
-// See notes/test-architecture-audit.md for evidence and the coverage gap.
 /**
  * The optional GitHub delivery step: the push, the pull request lookup, and the
  * create-or-update decision, against a disposable Git repository and a stand-in
@@ -15,15 +13,17 @@
 
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
-import { createGitHubDelivery, DeliveryError } from '../src/delivery/github.js';
+import { describe, expect, it } from 'vitest';
+import { DeliveryError } from '../src/delivery/github.js';
+import { createGitHubDelivery, withFixtureEnvironment } from './fixtures/boundary-operations.js';
 import type { Delivery, DeliveryRequest } from '../src/delivery/github.js';
 import type { GitHubDeliveryConfig } from '../src/shared/types.js';
 import { fakeGhCalls, fakePullRequests, git, installFakeGh } from './fixtures/local-target.js';
 import type { FakeGhState } from './fixtures/local-target.js';
-import { cleanupTempDirectories, createTempDir } from './support.js';
+import { ownFixtureOperation, useFixtureLifecycle } from './fixtures/lifecycle.js';
+import { createTempDir } from './support.js';
 
-afterEach(cleanupTempDirectories);
+useFixtureLifecycle();
 
 const REPOSITORY = 'example-owner/example-repo';
 const BASE_BRANCH = 'main';
@@ -65,6 +65,10 @@ interface SeededPullRequest {
 
 /** One attempt's workspace: a clone-shaped repository on its own branch. */
 async function createFixture(options: FixtureOptions = {}): Promise<Fixture> {
+  return ownFixtureOperation('the delivery fixture setup', () => prepareFixture(options));
+}
+
+async function prepareFixture(options: FixtureOptions): Promise<Fixture> {
   const parent = await createTempDir();
   const remote = path.join(parent, 'origin.git');
   git(parent, 'init', '--quiet', '--bare', remote);
@@ -170,17 +174,7 @@ function fakeGhEnvironment(
  * put it there and take it away again.
  */
 async function withFakeGhOnPath<T>(bin: string, body: () => Promise<T>): Promise<T> {
-  const previous = process.env.PATH;
-  process.env.PATH = `${bin}${path.delimiter}${previous ?? ''}`;
-  try {
-    return await body();
-  } finally {
-    if (previous === undefined) {
-      delete process.env.PATH;
-    } else {
-      process.env.PATH = previous;
-    }
-  }
+  return withFixtureEnvironment({ PATH: `${bin}${path.delimiter}${process.env.PATH ?? ''}` }, body);
 }
 
 /** The attempt's delivery request, as the coordinator builds it. */
@@ -238,7 +232,7 @@ async function refusal(deliver: () => Promise<unknown>): Promise<Error> {
   return cause;
 }
 
-describe.skip('the GitHub delivery step', () => {
+describe('the GitHub delivery step', () => {
   it('pushes the attempt branch and creates one pull request with the issue and the checks', async () => {
     const fixture = await createFixture();
     const request = requestFor(fixture);

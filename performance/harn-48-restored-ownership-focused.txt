@@ -1,0 +1,235 @@
+
+ RUN  v5.0.0 E:/projects/nexus-jira-runs/workspaces/HARN-48
+
+ ✓ |boundary| tests/baseline.test.ts > the pre-delivery baseline diagnosis > prepares one conversation snapshot before the diagnostic reviewer turn 12ms
+ ✓ |boundary| tests/baseline.test.ts > the pre-delivery baseline diagnosis > starts no diagnostic turn when its conversation snapshot cannot be prepared 4ms
+ ✓ |boundary| tests/baseline.test.ts > the pre-delivery baseline diagnosis > publishes one actionable comment and returns the same ticket to its ready status 7ms
+ ✓ |boundary| tests/baseline.test.ts > the pre-delivery baseline diagnosis > leaves an inconclusive ticket In Review with the evidence and what a person must do 7ms
+ ✓ |boundary| tests/baseline.test.ts > the pre-delivery baseline diagnosis > turns a failed reviewer turn into an In Review record, never into a guessed repair 7ms
+ ✓ |boundary| tests/workspace.test.ts > a clean source repository > returns the real repository root and the exact committed HEAD 377ms
+ ✓ |boundary| tests/baseline-queue.integration.test.ts > the next claim after a diagnosis > hands the developer the reviewed finding in the same retained workspace 409ms
+ ✓ |boundary| tests/workspace.test.ts > a clean source repository > resolves the repository root when pointed inside the repository 355ms
+ ✓ |boundary| tests/baseline-queue.integration.test.ts > the next claim after a diagnosis > hands the developer a field whole where the comment could only render it concisely 450ms
+ ✓ |boundary| tests/workspace.test.ts > a clean source repository > accepts a clean detached checkout 441ms
+ ✓ |boundary| tests/baseline.test.ts > the pre-delivery baseline diagnosis > refuses a reviewer launch that would widen its writable roots, and leaves the ticket In Review 1062ms
+ ✓ |boundary| tests/baseline.test.ts > the pre-delivery baseline diagnosis > does not repeat a comment or a reviewer turn for unchanged evidence 7ms
+ ✓ |boundary| tests/baseline.test.ts > the pre-delivery baseline diagnosis > reads the recorded unconfirmed stop back when it resumes an existing comment 7ms
+ ✓ |boundary| tests/baseline.test.ts > the pre-delivery baseline diagnosis > releases the lock when the recorded rejection confirmed its stop 8ms
+ ✓ |boundary| tests/baseline.test.ts > the pre-delivery baseline diagnosis > never returns a rejected turn to the ready status, however its comment is marked 9ms
+ ✓ |boundary| tests/baseline.test.ts > the pre-delivery baseline diagnosis > hands no continuation the finding file of a turn whose own outcome rejected it 6ms
+ ✓ |boundary| tests/baseline.test.ts > the pre-delivery baseline diagnosis > reads no diagnosis past a directory whose own record is gone 3ms
+ ✓ |boundary| tests/baseline.test.ts > the pre-delivery baseline diagnosis > does not move an item a person already took out of the running status 9ms
+ ✓ |boundary| tests/baseline.test.ts > the pre-delivery baseline diagnosis > diagnoses changed evidence again 9ms
+ ✓ |boundary| tests/baseline.test.ts > the pre-delivery baseline diagnosis > moves nothing when the comment cannot be confirmed on the issue 4ms
+ ✓ |boundary| tests/baseline.test.ts > the pre-delivery baseline diagnosis > keeps the comment and stops when the status move fails 11ms
+ ✓ |boundary| tests/baseline.test.ts > the pre-delivery baseline diagnosis > starts no reviewer turn when the thread cannot be read 3ms
+ ✓ |boundary| tests/baseline.test.ts > the pre-delivery baseline diagnosis > reports a stop it was given instead of writing a diagnosis 1ms
+ ✓ |boundary| tests/baseline.test.ts > the pre-delivery baseline diagnosis > records an interrupt that lands during the reviewer turn and leaves the item In Review 12ms
+ ✓ |boundary| tests/baseline.test.ts > the pre-delivery baseline diagnosis > keeps the intake lock when an interrupted reviewer turn could not confirm its stop 7ms
+ ✓ |boundary| tests/baseline.test.ts > the pre-delivery baseline diagnosis > finishes the move when the interruption lands as the finding is published 6ms
+ ✓ |boundary| tests/reviews-cli.integration.test.ts > the review command through the CLI > disposes a pending review and restores its environment before removing its fixture 1173ms
+ ✓ |boundary| tests/baseline.test.ts > the pre-delivery baseline diagnosis > bounds the one reviewer turn instead of waiting for it forever 42ms
+ ✓ |boundary| tests/baseline.test.ts > the pre-delivery baseline diagnosis > carries an unconfirmed reviewer stop to its caller with the evidence kept 7ms
+ ✓ |boundary| tests/baseline-queue.integration.test.ts > the next claim after a diagnosis > hands over the same whole field when the thread cannot be read either 410ms
+ ✓ |boundary| tests/workspace.test.ts > a clean source repository > ignores files excluded by .gitignore 457ms
+ ✓ |boundary| tests/reviews-cli.integration.test.ts > the review command through the CLI > refuses a real retained workspace owned by another item before starting the runtime 477ms
+ ✓ |boundary| tests/baseline-queue.integration.test.ts > the next claim after a diagnosis > recovers the reviewed finding from the evidence when the thread cannot be read 420ms
+ ✓ |boundary| tests/workspace.test.ts > a clean source repository > allocates no run directory 507ms
+ ✓ |boundary| tests/reviews-cli.integration.test.ts > the review command through the CLI > refuses a real retained workspace owned by another repository before starting the runtime 477ms
+ ✓ |boundary| tests/baseline-queue.integration.test.ts > the next claim after a diagnosis > stops for a person instead of starting a repair whose finding cannot be read back 456ms
+ ✓ |boundary| tests/baseline-queue.integration.test.ts > the next claim after a diagnosis > starts no ordinary continuation when a diagnosis directory lost its record 291ms
+ ✓ |boundary| tests/workspace.test.ts > a clean source repository > resolves relative paths from the invocation directory, not this one 582ms
+ ✓ |boundary| tests/workspace.test.ts > a source that cannot be used > rejects a directory that is not a Git repository 33ms
+ ✓ |boundary| tests/workspace.test.ts > a source that cannot be used > rejects a path that does not exist 2ms
+ ✓ |boundary| tests/workspace.test.ts > a source that cannot be used > rejects a bare repository without a working checkout 305ms
+ ✓ |boundary| tests/baseline-queue.integration.test.ts > the next claim after a diagnosis > tells the next claim the newest feedback beside a finding wider than its context budget 371ms
+ ✓ |boundary| tests/workspace.test.ts > a source that cannot be used > rejects a repository with no commits yet 183ms
+ ✓ |boundary| tests/reviews-cli.integration.test.ts > the review command through the CLI > draws the reviewer turn in its own pane, opened by its role and ticket 962ms
+ ✓ |boundary| tests/baseline-queue.integration.test.ts > the next claim after a diagnosis > tells the claimed ticket and takes it out of the running status after a stop 430ms
+ ✓ |boundary| tests/workspace.test.ts > a dirty source repository > rejects staged changes 359ms
+ ✓ |boundary| tests/baseline-queue.integration.test.ts > the next claim after a diagnosis > never promotes an edited comment of the thread to the reviewed finding 378ms
+ ✓ |boundary| tests/workspace.test.ts > a dirty source repository > rejects unstaged changes 316ms
+ ✓ |boundary| tests/baseline.test.ts > the pre-delivery baseline diagnosis > keeps the lock when the bounded reviewer timeout cannot confirm its stop 2652ms
+ ✓ |boundary| tests/reviews-cli.integration.test.ts > the review command through the CLI > accepts a completed but explicitly inconclusive reviewer without publishing a verdict 877ms
+ ✓ |boundary| tests/workspace.test.ts > a dirty source repository > rejects untracked files 397ms
+ ✓ |boundary| tests/baseline-queue.integration.test.ts > the next claim after a diagnosis > starts no developer from a comment the retained record cannot vouch for 459ms
+ ✓ |boundary| tests/workspace.test.ts > a dirty source repository > rejects a staged deletion 390ms
+ ✓ |boundary| tests/baseline-queue.integration.test.ts > the next claim after a diagnosis > hands over the complete recorded finding when the thread comment is only a partial quotation 463ms
+ ✓ |boundary| tests/baseline.test.ts > the baseline reviewer turn > inspects a read-only snapshot of the workspace and validates the finding it wrote 1119ms
+ ✓ |boundary| tests/workspace.test.ts > a dirty source repository > rejects every kind of dirt at once 440ms
+ ✓ |boundary| tests/baseline-queue.integration.test.ts > the next claim after a diagnosis > never treats a comment naming other evidence as this workspace’s finding 390ms
+ ✓ |boundary| tests/workspace.test.ts > a dirty source repository > fails the dirty check before it inspects the output location 436ms
+ ✓ |boundary| tests/reviews-cli.integration.test.ts > the review command through the CLI > reviews from outside the pinned checkout with publication credentials stripped 1341ms
+ ✓ |boundary| tests/baseline-queue.integration.test.ts > the next claim after a diagnosis > starts an ordinary continuation when nothing establishes a required finding 503ms
+ ✓ |boundary| tests/baseline.test.ts > the baseline reviewer turn > refuses a configured launch that would grant the turn a writable root 841ms
+ ✓ |boundary| tests/workspace.test.ts > unsafe output locations > rejects a workDir equal to the repository root 524ms
+ ✓ |boundary| tests/baseline-queue.integration.test.ts > the next claim after a diagnosis > keeps the reviewed finding in the brief of a later rung of the same climb 454ms
+ ✓ |boundary| tests/workspace.test.ts > unsafe output locations > rejects a workDir nested inside the repository 436ms
+ ✓ |boundary| tests/baseline-queue.integration.test.ts > the next claim after a diagnosis > resumes a diagnosis a stopped invocation left pending, through the real claim 473ms
+ ✓ |boundary| tests/reviews-cli.integration.test.ts > the review command through the CLI > handles 101 changed files without approving a truncated list 1188ms
+ ✓ |boundary| tests/workspace.test.ts > unsafe output locations > rejects a workDir that contains the repository 347ms
+ ✓ |boundary| tests/baseline-queue.integration.test.ts > the next claim after a diagnosis > publishes a finding a stopped invocation never published, before claiming it 461ms
+ ✓ |boundary| tests/reviews-cli.integration.test.ts > the review command through the CLI > handles 301 changed files without approving a truncated list 467ms
+ ✓ |boundary| tests/baseline-queue.integration.test.ts > a resume that could not confirm its reviewer stopped > stops `source run` before discovery and keeps the lock 358ms
+ ✓ |boundary| tests/workspace.test.ts > unsafe output locations > is not fooled by a sibling directory whose name shares a prefix 593ms
+ ✓ |boundary| tests/baseline-queue.integration.test.ts > a resume that could not confirm its reviewer stopped > stops `source watch` the same way, without waiting for another scan 291ms
+ ✓ |boundary| tests/baseline.test.ts > the baseline reviewer turn > accepts an inconclusive finding and reports a turn that wrote none 1891ms
+ ✓ |boundary| tests/workspace.test.ts > unsafe output locations > rejects a junction alias of the repository 405ms
+ ✓ |boundary| tests/baseline-queue.integration.test.ts > a resume that could not confirm its reviewer stopped > lets a batch go on past a diagnosis that needs a person but stopped cleanly 345ms
+ ✓ |boundary| tests/workspace.test.ts > unsafe output locations > rejects a not-yet-created workDir beneath a junction alias 434ms
+ ✓ |boundary| tests/reviews-cli.integration.test.ts > the review command through the CLI > reviews an In Review ticket once, as the App, with a real JWT exchange and the configured profile 1128ms
+ ✓ |boundary| tests/baseline-queue.integration.test.ts > a resume that could not confirm its reviewer stopped > stops before a second pending diagnosis when the first reviewer stop was unconfirmed 337ms
+ ✓ |boundary| tests/baseline-queue.integration.test.ts > the serial queue after a baseline diagnosis > carries the diagnosed ticket through the repair attempt before anything else 1ms
+ ✓ |boundary| tests/baseline-queue.integration.test.ts > the serial queue after a baseline diagnosis > stops for a person instead of arming anything when the diagnosis was not actionable 0ms
+ ✓ |boundary| tests/workspace.test.ts > unsafe output locations > resolves the repository when it is reached through a junction 597ms
+ ✓ |boundary| tests/baseline.test.ts > the baseline reviewer turn > refuses a finding whose field runs past the bound the turn was given 1143ms
+ ↓ |boundary| tests/workspace.test.ts > unsafe output locations > rejects a directory symlink alias of the repository 157ms
+ ✓ |boundary| tests/reviews-cli.integration.test.ts > the review command through the CLI > reviews a new head again and cannot approve it with a stale verdict 1128ms
+ ✓ |boundary| tests/workspace.test.ts > read-only preflight > leaves an accepted source unchanged 730ms
+ ✓ |boundary| tests/baseline.test.ts > the baseline reviewer turn > refuses a finding from a turn that changed the snapshot it was given 1015ms
+ ✓ |boundary| tests/workspace.test.ts > read-only preflight > leaves a rejected dirty source unchanged 755ms
+ ✓ |boundary| tests/reviews-cli.integration.test.ts > the review command through the CLI > reviews a change larger than the old rendered-diff guard reached 1150ms
+ ✓ |boundary| tests/baseline.test.ts > the baseline reviewer turn > reuses the finding an interrupted turn already wrote, without a second turn 1218ms
+ ✓ |boundary| tests/workspace.test.ts > read-only preflight > leaves the source unchanged when the output location is unsafe 727ms
+ ✓ |boundary| tests/workspace.test.ts > an allocated run directory > is new for every run and holds a workspace and a logs directory 149ms
+ ✓ |boundary| tests/reviews-cli.integration.test.ts > the review command through the CLI > derives a blocking result through actual runtime Git and file reads 1413ms
+ ✓ |boundary| tests/baseline.test.ts > the baseline reviewer turn > never publishes a finding the turn itself failed to produce, even on a restart 1646ms
+ ✓ |boundary| tests/baseline.test.ts > the baseline reviewer turn > refuses an interrupted turn that left a finding but no recorded outcome 380ms
+ ✓ |boundary| tests/workspace.test.ts > an allocated run directory > leaves a run directory that already exists alone 1965ms
+ ✓ |boundary| tests/baseline.test.ts > the baseline reviewer turn > refuses an interrupted turn that wrote no finding instead of running it again 688ms
+ ✓ |boundary| tests/reviews-cli.integration.test.ts > the review command through the CLI > derives a corrected result through actual runtime Git and file reads 2038ms
+ ✓ |boundary| tests/baseline-queue.integration.test.ts > the diagnosis through `source run` > returns the same ticket to To Do and hands the finding to the next claim 5766ms
+ ✓ |boundary| tests/baseline.test.ts > the baseline reviewer turn > carries a recorded stop through a refusal reached before it re-reads the record 299ms
+ ✓ |boundary| tests/baseline.test.ts > the baseline reviewer turn > refuses to diagnose a working copy the configured commands changed 407ms
+ ✓ |boundary| tests/workspace.test.ts > an allocated run directory > gives up without touching anything when every generated ID is taken 1586ms
+ ✓ |boundary| tests/workspace.test.ts > an allocated run directory > refuses a generated name that is not a run ID, and creates nothing 223ms
+ ✓ |boundary| tests/reviews-cli.integration.test.ts > the review command through the CLI > derives a inaccessible result through actual runtime Git and file reads 1230ms
+ ✓ |boundary| tests/workspace.test.ts > an allocated run directory > names the workspace the way its caller prefers, and not the run 224ms
+ ✓ |boundary| tests/workspace-branch.test.ts > a workspace that outlives its run > is recorded in a ledger beside the clone, and reopens by its id 1038ms
+ ✓ |boundary| tests/workspace.test.ts > an allocated run directory > uses the generated name when the preferred one cannot name a workspace 233ms
+ ✓ |boundary| tests/workspace.test.ts > an allocated run directory > refuses a preferred name a directory already holds, and creates nothing else 196ms
+ ✓ |boundary| tests/baseline.test.ts > the baseline reviewer turn > refuses a finding from a turn that wrote into the retained workspace 1355ms
+ ✓ |boundary| tests/workspace.test.ts > an allocated run directory > refuses a preferred name only a ledger holds 219ms
+ ✓ |boundary| tests/workspace.test.ts > an allocated run directory > refuses a preferred name held by a dangling link at HARN-23 209ms
+ ✓ |boundary| tests/workspace.test.ts > an allocated run directory > refuses a preferred name held by a dangling link at HARN-23.json 270ms
+ ✓ |boundary| tests/reviews-cli.integration.test.ts > the review command through the CLI > derives a missing-file result through actual runtime Git and file reads 1264ms
+ ✓ |boundary| tests/workspace.test.ts > an allocated run directory > creates no workspace directory for a run that continues one 224ms
+ ✓ |boundary| tests/workspace-branch.test.ts > a workspace that outlives its run > reopens a workspace whose earlier attempt committed in it 1412ms
+ ✓ |boundary| tests/baseline.test.ts > the baseline reviewer turn > reports a reviewer stop it could not confirm instead of a clean one 1250ms
+ ✓ |boundary| tests/baseline.test.ts > the evidence a diagnosis reads > tells a log it cannot read apart from one the command left empty 2ms
+ ✓ |boundary| tests/baseline.test.ts > the evidence a diagnosis reads > leaves the ticket In Review with the missing paths instead of starting a reviewer 290ms
+ ✓ |boundary| tests/baseline.test.ts > the evidence a diagnosis reads > carries a recorded reviewer stop through a refusal reached before any turn 236ms
+ ✓ |boundary| tests/baseline.test.ts > the Jira record of one diagnosis > posts one marker comment and returns the issue to its ready status 28ms
+ ✓ |boundary| tests/baseline.test.ts > the Jira record of one diagnosis > does not comment again, or run the reviewer again, when the evidence is unchanged 17ms
+ ✓ |boundary| tests/baseline.test.ts > the Jira record of one diagnosis > leaves a non-actionable diagnosis In Review with the required action 10ms
+ ✓ |boundary| tests/baseline.test.ts > the Jira record of one diagnosis > finishes a pending diagnosis from the retained evidence: one comment, one move 15ms
+ ✓ |boundary| tests/baseline.test.ts > finishing a diagnosis a stopped invocation left pending > leaves an item a person moved alone, and never diagnoses it again 9ms
+ ✓ |boundary| tests/workspace-branch.test.ts > a workspace that outlives its run > refuses a workspace on no branch, naming the branch it records and the manual action 923ms
+ ✓ |boundary| tests/reviews-cli.integration.test.ts > the review command through the CLI > publishes nothing when the reviewer leaves notes.txt in its repository view 1263ms
+ ✓ |boundary| tests/baseline.test.ts > finishing a diagnosis a stopped invocation left pending > reports pending evidence it cannot finish instead of passing over it 7ms
+ ✓ |boundary| tests/baseline.test.ts > finishing a diagnosis a stopped invocation left pending > reports a pending diagnosis whose own record is gone instead of passing over it 6ms
+ ✓ |boundary| tests/baseline.test.ts > finishing a diagnosis a stopped invocation left pending > records an interrupt that lands during a resumed reviewer turn 11ms
+ ✓ |boundary| tests/workspace.test.ts > a prepared working copy > starts from the recorded committed contents on its own branch 1824ms
+ ✓ |boundary| tests/workspace-branch.test.ts > a workspace that outlives its run > refuses a workspace that is not where the layout puts it 1014ms
+ ✓ |boundary| tests/reviews-cli.integration.test.ts > the review command through the CLI > publishes nothing when the reviewer leaves scratch.log in its repository view 1376ms
+ ✓ |boundary| tests/workspace.test.ts > a prepared working copy > leaves ignored local files in the source checkout 1037ms
+ ✓ |boundary| tests/baseline.test.ts > finishing a diagnosis a stopped invocation left pending > publishes the finding an interrupted turn already wrote, without a second turn 1832ms
+ ✓ |boundary| tests/workspace-branch.test.ts > a workspace that outlives its run > refuses a pointer whose workspace directory is a junction out of the workspaces root 990ms
+ ✓ |boundary| tests/reviews-cli.integration.test.ts > the review command through the CLI > publishes nothing when the reviewer leaves cache/output.txt in its repository view 1255ms
+ ✓ |boundary| tests/reviews-cli.integration.test.ts > the review command through the CLI > starts no reviewer turn when the retained workspace is not on this machine 29ms
+ ↓ |boundary| tests/workspace-branch.test.ts > a workspace that outlives its run > refuses a pointer whose ledger is a link out of the workspaces root 873ms
+ ✓ |boundary| tests/baseline.test.ts > finishing a diagnosis a stopped invocation left pending > reuses a failed turn's rejection, not the finding it left, when publication is retried 1396ms
+ ✓ |boundary| tests/reviews-cli.integration.test.ts > the review command through the CLI > starts no reviewer turn when the workspace cannot be pinned at the reviewed head 908ms
+ ✓ |boundary| tests/workspace-branch.test.ts > a workspace that outlives its run > refuses a pointer that is not a generated workspace id, before using it as a path 1106ms
+ ✓ |boundary| tests/reviews-cli.integration.test.ts > the review command through the CLI > reports a missing App key honestly, without contacting the repository 620ms
+ ✓ |boundary| tests/workspace.test.ts > a prepared working copy > keeps edits and local commits inside the clone they were made in 2508ms
+ ✓ |boundary| tests/reviews-cli.integration.test.ts > the review command through the CLI > reports a missing Jira credential before it contacts anything 4ms
+ ✓ |boundary| tests/baseline.test.ts > finishing a diagnosis a stopped invocation left pending > reconciles a published finding before finishing evidence for an item that already moved 1681ms
+ ✓ |boundary| tests/workspace-branch.test.ts > a workspace that outlives its run > refuses a pointer on another item, and says which item the workspace belongs to 964ms
+ ✓ |boundary| tests/reviews-cli.integration.test.ts > the review command through the CLI > reports an unavailable reviewer launch as inconclusive, without approving 1070ms
+ ✓ |boundary| tests/workspace.test.ts > preparation that cannot finish > refuses a destination that already holds work, and keeps it 994ms
+ ✓ |boundary| tests/baseline.test.ts > finishing a diagnosis a stopped invocation left pending > stops a serial step for a person when the pending evidence cannot be finished 406ms
+ ✓ |boundary| tests/baseline.test.ts > the connected project a diagnosis belongs to > never resumes, comments on, moves, or closes another project's pending evidence 13ms
+ ✓ |boundary| tests/baseline.test.ts > the connected project a diagnosis belongs to > refuses evidence another project wrote instead of acting on it through this one 9ms
+ ✓ |boundary| tests/baseline.test.ts > the coordinator around the diagnosis > diagnoses a completed red baseline, publishes nothing else, and reports the repair 9ms
+ ✓ |boundary| tests/baseline.test.ts > the coordinator around the diagnosis > stops for a person when nothing actionable was diagnosed 6ms
+ ✓ |boundary| tests/baseline.test.ts > the coordinator around the diagnosis > keeps its intake lock when the diagnosis reports an unconfirmed reviewer stop 6ms
+ ✓ |boundary| tests/baseline.test.ts > the coordinator around the diagnosis > tells the claimed ticket and takes it out of the running status when the stop lands before the diagnosis 8ms
+ ✓ |boundary| tests/baseline.test.ts > the coordinator around the diagnosis > writes no second record when the diagnosis already published its own comment 7ms
+ ✓ |boundary| tests/baseline.test.ts > the coordinator around the diagnosis > adds nothing of its own when the interrupt landed inside the reviewer turn 6ms
+ ✓ |boundary| tests/baseline.test.ts > the coordinator around the diagnosis > stops for inspection, with the lock kept, when the stopped diagnosis cannot tell the ticket 8ms
+ ✓ |boundary| tests/baseline.test.ts > the coordinator around the diagnosis > takes the ticket out of the running status when the stop lands as the pre-review thread is read 10ms
+ ✓ |boundary| tests/baseline.test.ts > the coordinator around the diagnosis > publishes the run itself when the baseline could not be executed 10ms
+ ✓ |boundary| tests/baseline.test.ts > the coordinator around the diagnosis > publishes the run itself when the run was cancelled or timed out 17ms
+ ✓ |boundary| tests/baseline.test.ts > the coordinator around the diagnosis > does not diagnose a continuation that starts red 9ms
+ ✓ |boundary| tests/baseline.test.ts > the coordinator around the diagnosis > keeps the existing publication when no diagnosis is configured 9ms
+ ✓ |boundary| tests/baseline.test.ts > the coordinator around the diagnosis > never delivers a result that is still red 9ms
+ ✓ |boundary| tests/baseline.test.ts > the coordinator around the diagnosis > delivers a passed attempt as it always did 11ms
+ ✓ |boundary| tests/workspace-branch.test.ts > a workspace that outlives its run > refuses a pointer from another site, even for the same immutable id 863ms
+ ✓ |boundary| tests/workspace.test.ts > preparation that cannot finish > keeps the run directory and names it when the clone cannot reproduce the base 863ms
+ ✓ |boundary| tests/reviews-cli.integration.test.ts > the review command through the CLI > timestamps an HTTP 401 failure after review without a coding rerun 1150ms
+ ✓ |boundary| tests/fixture-lifecycle.test.ts > the fixture lifecycle > stops a command that outlives its own bound, and waits for it to go 884ms
+ ✓ |boundary| tests/workspace-branch.test.ts > a workspace that outlives its run > refuses a workspace cloned from another repository 919ms
+ ✓ |boundary| tests/fixture-lifecycle.test.ts > the fixture lifecycle > cancels a command when the test's own stop aborts, and waits for it to go 212ms
+ ✓ |boundary| tests/workspace.test.ts > preparation that cannot finish > refuses a source that moved after preflight 724ms
+ ✓ |boundary| tests/fixture-lifecycle.test.ts > the fixture lifecycle > stops and awaits a registered fixture process before removing its directory 125ms
+ ✓ |boundary| tests/reviews-cli.integration.test.ts > the review command through the CLI > timestamps an HTTP 422 failure after review without a coding rerun 1268ms
+ ✓ |boundary| tests/workspace-branch.test.ts > a workspace that outlives its run > refuses a ledger with no source item identity, and says how to repair it by hand 990ms
+ ✓ |boundary| tests/workspace.test.ts > preparation that runs out of time > stops at the run deadline and keeps what it had already written 999ms
+ ✓ |boundary| tests/reviews-cli.integration.test.ts > the review command through the CLI > refuses --repo and a bad --limit, the way every command does 4ms
+ ✓ |boundary| tests/reviews-cli.integration.test.ts > the review command through the CLI > refuses a review command when the project has no source 4ms
+ ✓ |boundary| tests/reviews-cli.integration.test.ts > the review command through the CLI > refuses a review command when the project has no delivery 4ms
+ ✓ |boundary| tests/reviews-cli.integration.test.ts > the review command through the CLI > prints the review selection in check-config, without resolving its key 5ms
+ ✓ |boundary| tests/workspace.test.ts > preparation that runs out of time > refuses to start a step with no task time left, and clones nothing 506ms
+ ✓ |boundary| tests/reviews-cli.integration.test.ts > the reviewer’s repository view > pins a clean snapshot at the reviewed head, holding the base commit 1050ms
+ ✓ |boundary| tests/workspace-branch.test.ts > a workspace that outlives its run > refuses a ledger it did not write: unsupported versions, identities, and attempts are never reused 1155ms
+ ✓ |boundary| tests/reviews-cli.integration.test.ts > the reviewer’s repository view > refuses a workspace that is not a Git repository 121ms
+ ✓ |boundary| tests/reviews-cli.integration.test.ts > the reviewer’s repository view > refuses a head or a base the retained workspace does not hold 1008ms
+ ✓ |boundary| tests/reviews-cli.integration.test.ts > the reviewer’s repository view > refuses a pull request that carries no full commit ids 424ms
+ ✓ |boundary| tests/workspace-branch.test.ts > a retained checkout that left its recorded branch > is returned to the recorded branch by fast-forwarding it, losing no commit 2558ms
+ ✓ |boundary| tests/reviews-cli.integration.test.ts > the reviewer’s repository view > reports a view that was edited, one left with a new file, and a moved head 1369ms
+ ✓ |boundary| tests/reviews-cli.integration.test.ts > the review evidence directory > is generated, exclusive, and named by a timestamp 3ms
+ ✓ |boundary| tests/workspace.test.ts > task IDs as labels > cannot decide where a run writes or what its branch is called 4100ms
+ ✓ |boundary| tests/workspace-branch.test.ts > a retained checkout that left its recorded branch > returns a clean branch that is already at the recorded tip without moving either 1656ms
+ ✓ |boundary| tests/workspace.test.ts > what a run left in its working copy > reports every kind of change against the base the run recorded 1228ms
+ ✓ |boundary| tests/workspace.test.ts > what a run left in its working copy > flags test, tooling, and configuration paths and still lists the rest 1047ms
+ ✓ |boundary| tests/workspace-branch.test.ts > a retained checkout that left its recorded branch > fast-forwards the recorded branch even when Git configuration would squash the merge 1891ms
+ ✓ |boundary| tests/workspace.test.ts > what a run left in its working copy > reads the working copy and the source without changing either 1961ms
+ ✓ |boundary| tests/workspace-branch.test.ts > a retained checkout that left its recorded branch > refuses a return that would write over an ignored local file, keeping its bytes 2096ms
+ ✓ |boundary| tests/workspace.test.ts > what a run left in its working copy > refuses to report a comparison it could not make 1204ms
+ ✓ |boundary| tests/workspace-branch.test.ts > a retained checkout that left its recorded branch > refuses a return that did not really move the branch, reading its own result back 1656ms
+ ✓ |boundary| tests/workspace-branch.test.ts > a retained checkout that left its recorded branch > leaves a checkout that is already on the recorded branch exactly as it is 869ms
+ ✓ |boundary| tests/workspace-branch.test.ts > a retained checkout that left its recorded branch > refuses a checkout that holds uncommitted work when a coding turn needs a clean one 1069ms
+ ✓ |boundary| tests/workspace-branch.test.ts > a retained checkout that left its recorded branch > refuses a dirty branch of its own, naming both branches and the manual action 1075ms
+ ✓ |boundary| tests/workspace-branch.test.ts > a retained checkout that left its recorded branch > refuses a commit the recorded branch does not descend from, and names both revisions 1594ms
+ ✓ |boundary| tests/workspace-branch.test.ts > a retained checkout that left its recorded branch > refuses a checkout whose recorded branch the workspace does not hold 1110ms
+ ✓ |boundary| tests/workspace-branch.test.ts > a retained checkout that left its recorded branch > is accepted by a continuation when it can be returned, and left where it is 1352ms
+ ✓ |boundary| tests/workspace-branch.test.ts > a retained checkout that left its recorded branch > is refused by a continuation when it cannot be returned, with the branch names 1104ms
+ ✓ |boundary| tests/workspace-branch.test.ts > a retained checkout that left its recorded branch > is refused by a continuation when its recorded branch holds uncommitted work 974ms
+ × |boundary| tests/fixture-lifecycle.test.ts > the fixture lifecycle > cleans up after the cases that must fail, time out or cancel 91911ms
+   → restored-review-view-timeout-settled: expected 'ReviewError: the ticket\'s retained w…' to contain 'stopped'
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |boundary| tests/fixture-lifecycle.test.ts > the fixture lifecycle > cleans up after the cases that must fail, time out or cancel
+AssertionError: restored-review-view-timeout-settled: expected 'ReviewError: the ticket\'s retained w…' to contain 'stopped'
+
+Expected: "stopped"
+Received: "ReviewError: the ticket's retained workspace "C:\Users\User\AppData\Local\Temp\nexus-harness-3H6HtT\repo" could not be cloned into a repository view: no diagnostic output"
+
+ ❯ tests/fixture-lifecycle.test.ts:327:47
+    325|             expect(entry.result, entry.case).toBe(130);
+    326|           } else {
+    327|             expect(entry.problem, entry.case).toContain('stopped');
+       |                                               ^
+    328|           }
+    329|         }
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed | 5 passed (6)
+      Tests  1 failed | 203 passed | 2 skipped (206)
+   Start at  17:51:00
+   Duration  117.07s (tests 99%, transform 1%)
+

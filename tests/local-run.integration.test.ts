@@ -1,5 +1,3 @@
-// Temporarily quarantined by operator request; restore under HARN-48.
-// See notes/test-architecture-audit.md for evidence and the coverage gap.
 /**
  * The offline local-loop milestone: `runTask` exercised end to end against a real
  * target project, with only the coding agent substituted.
@@ -71,7 +69,7 @@ import type { ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 
 import { runCheckRound } from '../src/checks/round.js';
 import { agentLogPath, appendRunLog, openAgentLog, runLogPath } from '../src/reporting/logs.js';
@@ -83,7 +81,7 @@ import type {
   RunTaskRequest,
   RunTaskResult,
 } from '../src/runs/contracts.js';
-import { runTask } from '../src/runs/runner.js';
+import { runTask } from './fixtures/operations.js';
 import type {
   AttemptEvidence,
   CheckRoundResult,
@@ -93,55 +91,27 @@ import type {
   Task,
 } from '../src/shared/types.js';
 import { configureWorkspaceIdentity } from '../src/workspace/git.js';
-import { returnToRecordedBranch } from '../src/workspace/branch.js';
+import { returnToRecordedBranch } from './fixtures/boundary-operations.js';
 import type { PreparedWorkspace } from '../src/workspace/prepare.js';
-import { prepareWorkspace } from '../src/workspace/prepare.js';
-import { preflightSource } from '../src/workspace/preflight.js';
-import { allocateRunDirectory } from '../src/workspace/run-directory.js';
+import { prepareWorkspace } from './fixtures/boundary-operations.js';
+import { preflightSource } from './fixtures/boundary-operations.js';
+import { allocateRunDirectory } from './fixtures/boundary-operations.js';
 import { recordWorkspaceAttempt } from '../src/workspace/state.js';
 import { beaconModuleUrl, endFixtureTree } from './fixtures/local-target.js';
 import type { FixtureProcessRecord } from './fixtures/local-target.js';
-import { cleanupTempDirectories, createTempDir, writeJsonFile } from './support.js';
+import { ownFixtureProcess, runProcess, useFixtureLifecycle } from './fixtures/lifecycle.js';
+import type { ProcessResult } from './fixtures/lifecycle.js';
+import { createTempDir, writeJsonFile } from './support.js';
+
+useFixtureLifecycle();
 
 /**
- * The fixture processes of these tests, as each fixture recorded itself,
- * registered as soon as it has. A stop a test means to prove is stopped here too,
- * so a test that fails half-way cannot leave a running fixture behind for the
- * rest of the suite.
- */
-const fixtureProcesses: FixtureProcessRecord[] = [];
-
-/**
- * Ends the recorded fixture processes, each named by its PID only while its own
- * beacon answers: a PID this host has already handed to another process is never
- * signalled (notes/windows-fixture-flakes.md).
- */
-async function stopFixtureProcesses(): Promise<void> {
-  for (const record of fixtureProcesses.splice(0)) {
-    await endFixtureTree(record);
-  }
-}
-
-/**
- * Remembers a fixture process, and the child it started, before any assertion, so
- * a failure still cleans up. The child is registered on its own token: the
- * parent's tree stop may miss it when the parent dies first.
+ * Remembers a fixture process, and the child it started: the shared lifecycle
+ * stops what a test still owns after the test ends, however it ends.
  */
 function registerFixture(record: PidRecord): void {
-  fixtureProcesses.push(record);
-  if (record.child !== null && record.childToken !== null) {
-    fixtureProcesses.push({
-      pid: record.child,
-      token: record.childToken,
-      beaconDirectory: record.beaconDirectory,
-    });
-  }
+  ownFixtureProcess(record);
 }
-
-afterEach(async () => {
-  await stopFixtureProcesses();
-  await cleanupTempDirectories();
-});
 
 /** A private Git environment, so the developer's own Git settings cannot decide a test. */
 let fixtureEnvironment: NodeJS.ProcessEnv = {};
@@ -396,41 +366,6 @@ const runtimeSource = (beaconModule: string): string =>
 // ---------------------------------------------------------------------------
 // Processes, files, and time
 // ---------------------------------------------------------------------------
-
-interface ProcessResult {
-  readonly code: number | null;
-  readonly stdout: string;
-  readonly stderr: string;
-}
-
-function runProcess(
-  command: string,
-  args: readonly string[],
-  options: { readonly cwd: string; readonly env?: NodeJS.ProcessEnv },
-): Promise<ProcessResult> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, [...args], {
-      cwd: options.cwd,
-      env: options.env ?? process.env,
-      windowsHide: true,
-      // As in the other lifecycle fixtures: its own process group on POSIX, so
-      // the test can stop the tree it started the way the harness stops one.
-      detached: process.platform !== 'win32',
-    });
-    let stdout = '';
-    let stderr = '';
-    child.stdout?.setEncoding('utf8');
-    child.stdout?.on('data', (chunk: string) => {
-      stdout += chunk;
-    });
-    child.stderr?.setEncoding('utf8');
-    child.stderr?.on('data', (chunk: string) => {
-      stderr += chunk;
-    });
-    child.on('error', reject);
-    child.on('close', (code) => resolve({ code, stdout, stderr }));
-  });
-}
 
 /** Runs `git` with literal arguments, in the fixture environment. */
 function git(args: readonly string[], cwd: string): Promise<ProcessResult> {
@@ -1053,7 +988,22 @@ const HANGING_GREET_ALL_SOURCE = [
   '',
 ].join('\n');
 
-describe.skip('the offline local loop, end to end', () => {
+/**
+ * The offline local loop end to end, kept small on purpose.
+ *
+ * This file composes the whole path — a real clone, the real Codex adapter
+ * against the stand-in runtime, the target's own checks, a real retained
+ * workspace — which is the one thing no other suite does. The repair matrix
+ * that used to be replayed here (the exact allowance, a turn that claims success
+ * over a red check, a red committed baseline, a setup command that fails after a
+ * turn, a check that cannot be launched) is owned by the suites that are about
+ * those decisions: `runner.test.ts`, `runner-repair.test.ts`, the in-memory
+ * `runner-policy.test.ts`, `checks.test.ts` and `baseline.test.ts`. What stays
+ * here is what only a full composition can assert: a pass, one repair through
+ * the real adapter, and the real process trees a deadline and a cancellation
+ * have to stop.
+ */
+describe('the offline local loop, end to end', () => {
   it('passes a task whose implementation turn really implements it', async () => {
     const target = await createTarget();
     const before = await checkoutState(target.repo);
@@ -1247,264 +1197,6 @@ describe.skip('the offline local loop, end to end', () => {
       'post-agent check-round result: passed',
       'final status: passed, every configured check passed after repair turn 2',
     ]);
-  }, 120_000);
-
-  it('spends the exact repair allowance and reports the last round red', async () => {
-    const target = await createTarget();
-    const { deps, turns } = dependencies(target, [
-      {
-        edits: [{ file: 'src/greet-all.mjs', text: WRONG_GREET_ALL_SOURCE }],
-        // Every turn of the allowance is followed by another one, which only
-        // starts from committed state (HARN-35).
-        commit: 'implement greetAll, as it stands',
-        summary: 'implemented greetAll',
-      },
-      {
-        edits: [{ file: 'src/greet-all.mjs', text: WRONG_GREET_ALL_SOURCE.replace('Ada', 'name') }],
-        commit: 'rework the greeting, still wrong',
-        summary: 'reworked the greeting',
-      },
-      // The last repair turn does nothing at all, and still claims success: agent
-      // text is kept, and the checks the harness runs are what decide the run.
-      { summary: 'nothing further to change: every configured check passes' },
-    ]);
-
-    const result = await runTask(request(target, configuration(target)), deps);
-    const report = await readReport(result);
-
-    expect(result.status).toBe('failed');
-    expect(report.repairsUsed).toBe(2);
-    expect(report.attempts.map((attempt) => attempt.kind)).toEqual([
-      'implementation',
-      'repair',
-      'repair',
-    ]);
-    expect(report.attempts.map((attempt) => observed(attempt, 'an attempt').outcome)).toEqual([
-      'failed',
-      'failed',
-      'failed',
-    ]);
-    expect(report.reason).toContain('the repair allowance is exhausted (2 of 2 repair turns used)');
-    expect(report.reason).toContain('1 of 1 check did not pass');
-
-    // Three turns were spent, and no fourth was started.
-    expect(turns).toHaveLength(3);
-    const last = first(report.attempts.slice(2), 'the last repair attempt');
-    expect(last.agentSummary).toBe('nothing further to change: every configured check passes');
-    const lastRound = observed(last, 'the last repair attempt');
-
-    // The last turn wrote nothing, so the failing implementation of the turn before
-    // it is still what the clone holds and still what the checks see.
-    expect(
-      first(turns.slice(2), 'the no-op turn').events.find(
-        (entry) => entry.event === 'edits-written',
-      )?.files,
-    ).toEqual([]);
-    expect(await readText(path.join(prepared(result).workspacePath, 'src', 'greet-all.mjs'))).toBe(
-      WRONG_GREET_ALL_SOURCE.replace('Ada', 'name'),
-    );
-    const lastFailure = await commandOutput(first(lastRound.checks, 'the last check'));
-    expect(lastFailure.stdout).toContain('FAILED greet-all.test.mjs (exit code 1)');
-    expect(lastFailure.stderr).toContain('AssertionError');
-
-    // The run's own log and directory hold three post-agent rounds and no more.
-    const messages = timelineMessages(await readText(report.runLog));
-    expectInOrder(messages, [
-      'repair turn 2 started: repair 1 of 2 allowed',
-      'repair turn 3 started: repair 2 of 2 allowed',
-      'post-agent check-round result: failed, 0 of 1 check passed',
-      'repair allowance exhausted: 2 of 2 repair turns used',
-      'final status: failed,',
-    ]);
-    expect(messages.filter((message) => message.includes('repair turn 4'))).toEqual([]);
-    expect(existsSync(path.join(result.run.logsDir, 'attempt-4-check-1.stdout.log'))).toBe(false);
-    expect(existsSync(agentLogPath(result.run.logsDir, 4))).toBe(false);
-    expect(existsSync(agentLogPath(result.run.logsDir, 3))).toBe(true);
-    expect(existsSync(path.join(result.run.logsDir, 'attempt-3-check-1.stdout.log'))).toBe(true);
-  }, 120_000);
-
-  it('does not let a coding turn that claims success turn a failing check into a pass', async () => {
-    const target = await createTarget();
-    const claim = 'done: every configured check passes now';
-    const { deps, turns } = dependencies(target, [
-      { edits: [{ file: 'src/greet-all.mjs', text: WRONG_GREET_ALL_SOURCE }], summary: claim },
-    ]);
-
-    const result = await runTask(request(target, configuration(target, { maxRepairs: 0 })), deps);
-    const report = await readReport(result);
-
-    // The claim is kept exactly as the turn made it, in the report and in the turn's
-    // own log — and it is not what the run reports.
-    expect(result.status).toBe('failed');
-    expect(report.status).toBe('failed');
-    expect(report.reason).not.toContain(claim);
-    expect(report.reason).toContain('did not pass');
-    const attempt = first(report.attempts, 'the implementation attempt');
-    expect(attempt.agentSummary).toBe(claim);
-    expect(await readText(attempt.agentLog)).toContain(claim);
-
-    // The evidence beside the claim is the failing check the harness ran itself.
-    const round = observed(attempt, 'the implementation attempt');
-    expect(round.outcome).toBe('failed');
-    const failed = first(round.checks, 'the failing check');
-    expect(failed.exitCode).toBe(1);
-    const output = await commandOutput(failed);
-    expect(output.stdout).toContain('FAILED greet-all.test.mjs (exit code 1)');
-    expect(output.stderr).toContain('AssertionError');
-    // The allowance was zero, so the lie bought no repair turn either.
-    expect(turns).toHaveLength(1);
-    expect(report.repairsUsed).toBe(0);
-    expect(report.reason).toContain('(0 of 0 repair turns used)');
-  }, 120_000);
-
-  it('stops before any coding turn when the committed baseline is red', async () => {
-    const target = await createTarget({ brokenBaseline: true });
-    const before = await checkoutState(target.repo);
-    const { deps, turns } = dependencies(target, [
-      { edits: [{ file: 'src/greet-all.mjs', text: GREET_ALL_SOURCE }], summary: 'added greetAll' },
-    ]);
-
-    const result = await runTask(request(target, configuration(target)), deps);
-    const report = await readReport(result);
-
-    expect(result.status).toBe('failed');
-    expect(report.reason).toBe('the baseline checks did not pass, so no coding turn was started');
-    const baseline = report.baseline;
-    if (baseline === null) {
-      throw new Error('the report holds no baseline round, and this run must have one');
-    }
-    expect(baseline.outcome).toBe('failed');
-    const failed = first(baseline.checks, 'the failing baseline check');
-    expect(failed.exitCode).toBe(1);
-    const output = await commandOutput(failed);
-    expect(output.stdout).toContain('FAILED greet.test.mjs (exit code 1)');
-    expect(output.stderr).toContain('AssertionError');
-
-    // No coding turn was started, and none left anything behind.
-    expect(turns).toHaveLength(0);
-    expect(report.attempts).toEqual([]);
-    expect(report.repairsUsed).toBe(0);
-    expect(existsSync(agentLogPath(result.run.logsDir, 1))).toBe(false);
-    expect(existsSync(path.join(result.run.logsDir, 'attempt-1-check-1.stdout.log'))).toBe(false);
-
-    // The clone is exactly as the run found it: nothing of the run's own work, and
-    // the setup step's ignored artifact is not a change of the run.
-    const workspace = prepared(result);
-    expect(workspace.baseCommit).toBe(before.head);
-    const clone = await checkoutState(workspace.workspacePath);
-    expect(clone.head).toBe(before.head);
-    expect(clone.status).toBe('');
-    expect(await readText(path.join(workspace.workspacePath, 'src', 'greet.mjs'))).toBe(
-      BROKEN_GREET_SOURCE,
-    );
-    expect(existsSync(path.join(workspace.workspacePath, 'build', 'prepared.json'))).toBe(true);
-    expect(report.changes.inspected).toBe(true);
-    expect(report.changes.paths).toEqual([]);
-
-    expectInOrder(timelineMessages(await readText(report.runLog)), [
-      'baseline check-round result: failed, 0 of 1 check passed',
-      `final status: failed, ${result.reason}`,
-    ]);
-    expect(await checkoutState(target.repo)).toEqual(before);
-  }, 120_000);
-
-  it('ends the run without a repair when a setup command fails after a turn', async () => {
-    const target = await createTarget();
-    const { deps, turns } = dependencies(target, [
-      {
-        edits: [
-          { file: 'src/greet-all.mjs', text: GREET_ALL_SOURCE },
-          // The turn breaks the project's setup step on its way past it. The check
-          // that would have decided the run is never reached.
-          { file: 'tools/prepare.mjs', text: 'this is not JavaScript at all\n' },
-        ],
-        summary: 'implemented greetAll and tidied the tools up',
-      },
-    ]);
-
-    const result = await runTask(request(target, configuration(target)), deps);
-    const report = await readReport(result);
-
-    expect(result.status).toBe('failed');
-    expect(report.reason).toContain('could not be executed');
-    expect(report.attempts).toHaveLength(1);
-    const round = observed(first(report.attempts, 'the implementation attempt'), 'the turn');
-    expect(round.outcome).toBe('execution-error');
-    const setup = first(round.setup, 'the setup command of the round');
-    expect(setup.outcome).toBe('exited');
-    expect(setup.exitCode).toBe(1);
-    expect(round.problem).toContain('setup command 1');
-    expect(round.problem).toContain('A setup problem is not a failed check to repair');
-    expect((await commandOutput(setup)).stderr).toContain('SyntaxError');
-
-    // The check after the failing setup has no result at all, and never ran.
-    expect(round.checks).toEqual([]);
-    expect(existsSync(path.join(result.run.logsDir, 'attempt-1-check-1.stdout.log'))).toBe(false);
-
-    // A setup failure costs no repair turn: it is not a failed check to code around.
-    expect(turns).toHaveLength(1);
-    expect(report.repairsUsed).toBe(0);
-    expect(existsSync(agentLogPath(result.run.logsDir, 2))).toBe(false);
-    const messages = timelineMessages(await readText(report.runLog));
-    expect(messages.filter((message) => message.includes('repair turn'))).toEqual([]);
-    expectInOrder(messages, [
-      'post-agent check-round result: execution-error, setup command 1',
-      'final status: failed,',
-    ]);
-
-    // What the turn left is still reported: the harness's categories are read from
-    // path names, and a `tools/` directory is not one of the names it flags.
-    expect(report.changes.inspected).toBe(true);
-    expect(report.changes.paths.map((entry) => entry.path)).toEqual([
-      'src/greet-all.mjs',
-      'tools/prepare.mjs',
-    ]);
-    expect(
-      report.changes.paths.find((entry) => entry.path === 'tools/prepare.mjs')?.categories,
-    ).toEqual([]);
-    expect(report.changes.warnings.highlighted).toBeNull();
-  }, 120_000);
-
-  it('ends the baseline with no coding turn when a check cannot be launched', async () => {
-    const target = await createTarget();
-    const missing = path.join(target.parent, 'missing-check-tool.exe');
-    const { deps, turns } = dependencies(target, [
-      { edits: [{ file: 'src/greet-all.mjs', text: GREET_ALL_SOURCE }], summary: 'added greetAll' },
-    ]);
-
-    const result = await runTask(
-      request(target, configuration(target, { checks: [[missing]] })),
-      deps,
-    );
-    const report = await readReport(result);
-
-    expect(result.status).toBe('failed');
-    expect(report.reason).toContain('the baseline could not be executed');
-    const baseline = report.baseline;
-    if (baseline === null) {
-      throw new Error('the report holds no baseline round, and this run must have one');
-    }
-    expect(baseline.outcome).toBe('execution-error');
-    expect(first(baseline.setup, 'the baseline setup').exitCode).toBe(0);
-    const check = first(baseline.checks, 'the check that could not be launched');
-    expect(check.outcome).toBe('failed-to-launch');
-    expect(check.exitCode).toBeNull();
-    expect(check.launchError).toContain('missing-check-tool.exe');
-    expect(baseline.problem).toContain('could not be started');
-
-    // A command that could not be executed is not a red check: no turn was asked
-    // for, and no repair either.
-    expect(turns).toHaveLength(0);
-    expect(report.attempts).toEqual([]);
-    expect(existsSync(agentLogPath(result.run.logsDir, 1))).toBe(false);
-
-    // The run directory, the working copy, and the report are all still there.
-    expect(report.workspace.prepared).toBe(true);
-    expect(report.changes.inspected).toBe(true);
-    expect(report.changes.paths).toEqual([]);
-    expect(report.timeout).toBeNull();
-    expect(report.cancellation).toBeNull();
-    expect(existsSync(result.reportPath)).toBe(true);
   }, 120_000);
 
   it("stops a real hanging check when the run's own deadline expires", async () => {

@@ -1,5 +1,3 @@
-// Temporarily quarantined by operator request; restore under HARN-48.
-// See notes/test-architecture-audit.md for evidence and the coverage gap.
 /**
  * The opt-in live check, verified offline.
  *
@@ -46,7 +44,6 @@ import {
   createLiveTarget,
   runLiveExercise,
   verifyImplementationExercise,
-  verifyRepairExercise,
 } from './live/codex-live-check.js';
 import type { LiveTarget } from './live/codex-live-check.js';
 import {
@@ -138,7 +135,7 @@ async function installStandInRuntime(
   };
 }
 
-describe.skip('the prerequisite gate', () => {
+describe('the prerequisite gate', () => {
   it('refuses when nothing named like a coding runtime can be started', async () => {
     const report = checkPrerequisites({
       command: ['nexus-no-such-runtime-9f3c'],
@@ -216,7 +213,7 @@ describe.skip('the prerequisite gate', () => {
   });
 });
 
-describe.skip('the entry point, as a process', () => {
+describe('the entry point, as a process', () => {
   it(
     'stops with its prerequisite exit code, and starts no exercise, when nothing it needs is there',
     async () => {
@@ -375,6 +372,14 @@ describe.skip('the entry point, as a process', () => {
 
       // The supplied configuration's own output directory was never written to.
       expect(existsSync(path.join(parent, 'a-project-that-must-not-be-touched'))).toBe(false);
+
+      // A real live invocation retains both exercises for its operator. This
+      // offline invocation must retain them inside its own disposable root,
+      // including targets created in the child rather than returned to this test.
+      const retained = await readdir(result.fixtureRoot);
+      expect(retained.filter((name) => name.startsWith('nexus-live-check-'))).toHaveLength(2);
+      await cleanupTempDirectories();
+      expect(existsSync(result.fixtureRoot)).toBe(false);
     },
     RUN_TIMEOUT_MS * 2,
   );
@@ -406,10 +411,15 @@ describe.skip('the entry point, as a process', () => {
         listed.stdout
           .split('\n')
           .filter((line) => line.trim() !== '')
+          // Every line names the layer that discovered it first (`[policy]`,
+          // `[boundary]`); the file name is what this test is about.
+          .map((line) => line.replace(/^\[[a-z]+\] /u, ''))
           .map((line) => line.split(' > ')[0] ?? ''),
       );
       expect(files).toContain('tests/cli.integration.test.ts');
       expect(files).toContain('tests/live-verifier.test.ts');
+      // Both documented layers are discovered by the default command.
+      expect(files).toContain('tests/activity.test.ts');
       expect(files).not.toContain('tests/live/codex-live-check.ts');
       expect(listed.stdout).not.toContain('codex-live-check');
     },
@@ -432,7 +442,7 @@ describe.skip('the entry point, as a process', () => {
   });
 });
 
-describe.skip('the disposable project', () => {
+describe('the disposable project', () => {
   it('is a real repository on a committed, green baseline', async () => {
     const target = await track(createLiveTarget());
     const state = checkoutState(target.repo);
@@ -510,7 +520,7 @@ describe.skip('the disposable project', () => {
   });
 });
 
-describe.skip('the repair fixture’s injected failure', () => {
+describe('the repair fixture’s injected failure', () => {
   it(
     'waits for the arm file it is given, injects once, and never repairs itself',
     async () => {
@@ -578,7 +588,7 @@ describe.skip('the repair fixture’s injected failure', () => {
   );
 });
 
-describe.skip('the exercises, through the stand-in runtime boundary', () => {
+describe('the exercises, through the stand-in runtime boundary', () => {
   beforeAll(() => {
     // The same artifact `npm run test:live` builds and starts; a bare `npm test`
     // on a fresh checkout has to produce it before the entry point can run.
@@ -624,42 +634,6 @@ describe.skip('the exercises, through the stand-in runtime boundary', () => {
   );
 
   it(
-    'passes the repair exercise, and hands the injected failure to the repair turn',
-    async () => {
-      const target = await track(createLiveTarget({ repairFixture: true }));
-      const { state, env } = await installStandInRuntime(target, [
-        {
-          edits: [{ file: 'src/greet-all.mjs', text: GREET_ALL_SOURCE }],
-          // The repair turn after this one only starts from the working copy's
-          // committed state, so this turn commits what it adds (HARN-35).
-          commit: 'add greetAll, before the injected failure',
-          summary: 'added greetAll',
-        },
-        {
-          edits: [{ file: 'src/greet.mjs', text: GREET_SOURCE }],
-          summary: 'restored the committed greeting',
-        },
-      ]);
-
-      const run = await runLiveExercise(target, { env });
-      expect(run.runDir).not.toBeNull();
-
-      // The whole sequence, as the verifier sees it: baseline green, one injected
-      // failure observed after the implementation turn, one repair turn, green.
-      expect(await verifyRepairExercise(target, run)).toEqual([]);
-
-      const turns = await fakeTurns(state);
-      expect(turns).toHaveLength(2);
-      // The repair turn was given the failure the harness observed, which is what
-      // makes this a repair rather than a second attempt at the task.
-      expect(turns[1]?.prompt).toContain(INJECTED_FAILURE_LABEL);
-      expect(turns[1]?.prompt).toContain('FAILED greet.test.mjs');
-      expect(turns[0]?.prompt).not.toContain(INJECTED_FAILURE_LABEL);
-    },
-    RUN_TIMEOUT_MS,
-  );
-
-  it(
     'reports what it found instead of passing a run that did not do the work',
     async () => {
       const target = await track(createLiveTarget({ maxRepairs: 1 }));
@@ -700,14 +674,19 @@ async function spawnLiveEntry(
   readonly status: number | null;
   readonly stdout: string;
   readonly stderr: string;
+  readonly fixtureRoot: string;
 }> {
-  return spawnSync(process.execPath, ['--import', 'tsx', LIVE_ENTRY, ...argv], {
+  const fixtureRoot = await createTempDir();
+  const result = spawnSync(process.execPath, ['--import', 'tsx', LIVE_ENTRY, ...argv], {
     cwd: repoRoot,
-    env,
+    // Scope the child's intentionally retained evidence to a directory this
+    // offline suite owns. Do not change the live tool's retention behavior.
+    env: { ...env, TEMP: fixtureRoot, TMP: fixtureRoot, TMPDIR: fixtureRoot },
     encoding: 'utf8',
     timeout: 180_000,
     windowsHide: true,
   });
+  return { ...result, fixtureRoot };
 }
 
 /** Runs one of the disposable project's own tools, in the project. */

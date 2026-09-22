@@ -1,0 +1,16 @@
+
+ RUN  v5.0.0 E:/projects/nexus-jira-runs/workspaces/HARN-48
+
+ ✓ |boundary| tests/fixture-boundary.test.ts > preserves caller cancellation for standalone git 2ms
+ ✓ |boundary| tests/fixture-boundary.test.ts > preserves caller cancellation for standalone delivery 0ms
+ ✓ |boundary| tests/fixture-boundary.test.ts > preserves caller cancellation for standalone prompt 0ms
+ ✓ |boundary| tests/fixture-boundary.test.ts > preserves caller cancellation for standalone turn 0ms
+ ✓ |boundary| tests/fixture-boundary.test.ts > waits for prompt log closure and environment restoration before removal 5ms
+ ✓ |boundary| tests/fixture-boundary.test.ts > waits for turn log closure and environment restoration before removal 1ms
+ ✓ |boundary| tests/fixture-boundary.test.ts > refuses late boundary calls and environment changes in their original disposed scope 1ms
+
+ Test Files  1 passed (1)
+      Tests  7 passed (7)
+   Start at  17:15:01
+   Duration  305ms (import 50%, transform 44%, tests 5%, worker 1%)
+

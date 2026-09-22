@@ -1,0 +1,51 @@
+
+ RUN  v5.0.0 E:/projects/nexus-jira-runs/workspaces/HARN-48
+
+ ✓ |boundary| tests/fixture-cli.test.ts > waits for an invocation that registers its interrupt after disposal starts 4ms
+ ✓ |boundary| tests/fixture-cli.test.ts > releases signal registrations even when the entry point throws 1ms
+ ✓ |boundary| tests/fixture-cli.test.ts > refuses a late CLI invocation in its original disposed scope while a newer scope is active 0ms
+ ✓ |boundary| tests/fixture-lifecycle.test.ts > the fixture lifecycle > stops a command that outlives its own bound, and waits for it to go 914ms
+ ✓ |boundary| tests/fixture-lifecycle.test.ts > the fixture lifecycle > cancels a command when the test's own stop aborts, and waits for it to go 130ms
+ ✓ |boundary| tests/fixture-lifecycle.test.ts > the fixture lifecycle > stops and awaits a registered fixture process before removing its directory 111ms
+ ✓ |boundary| tests/reviews-cli.integration.test.ts > the review command through the CLI > disposes a pending review and restores its environment before removing its fixture 1006ms
+ ✓ |boundary| tests/reviews-cli.integration.test.ts > the review command through the CLI > refuses a real retained workspace owned by another item before starting the runtime 441ms
+ ✓ |boundary| tests/reviews-cli.integration.test.ts > the review command through the CLI > refuses a real retained workspace owned by another repository before starting the runtime 408ms
+ ✓ |boundary| tests/reviews-cli.integration.test.ts > the review command through the CLI > draws the reviewer turn in its own pane, opened by its role and ticket 832ms
+ ✓ |boundary| tests/reviews-cli.integration.test.ts > the review command through the CLI > accepts a completed but explicitly inconclusive reviewer without publishing a verdict 761ms
+ ✓ |boundary| tests/reviews-cli.integration.test.ts > the review command through the CLI > reviews from outside the pinned checkout with publication credentials stripped 942ms
+ ✓ |boundary| tests/reviews-cli.integration.test.ts > the review command through the CLI > handles 101 changed files without approving a truncated list 801ms
+ ✓ |boundary| tests/reviews-cli.integration.test.ts > the review command through the CLI > handles 301 changed files without approving a truncated list 326ms
+ ✓ |boundary| tests/reviews-cli.integration.test.ts > the review command through the CLI > reviews an In Review ticket once, as the App, with a real JWT exchange and the configured profile 849ms
+ ✓ |boundary| tests/reviews-cli.integration.test.ts > the review command through the CLI > reviews a new head again and cannot approve it with a stale verdict 822ms
+ ✓ |boundary| tests/reviews-cli.integration.test.ts > the review command through the CLI > reviews a change larger than the old rendered-diff guard reached 863ms
+ ✓ |boundary| tests/reviews-cli.integration.test.ts > the review command through the CLI > derives a blocking result through actual runtime Git and file reads 835ms
+ ✓ |boundary| tests/reviews-cli.integration.test.ts > the review command through the CLI > derives a corrected result through actual runtime Git and file reads 934ms
+ ✓ |boundary| tests/reviews-cli.integration.test.ts > the review command through the CLI > derives a inaccessible result through actual runtime Git and file reads 777ms
+ ✓ |boundary| tests/reviews-cli.integration.test.ts > the review command through the CLI > derives a missing-file result through actual runtime Git and file reads 774ms
+ ✓ |boundary| tests/reviews-cli.integration.test.ts > the review command through the CLI > publishes nothing when the reviewer leaves notes.txt in its repository view 828ms
+ ✓ |boundary| tests/reviews-cli.integration.test.ts > the review command through the CLI > publishes nothing when the reviewer leaves scratch.log in its repository view 823ms
+ ✓ |boundary| tests/reviews-cli.integration.test.ts > the review command through the CLI > publishes nothing when the reviewer leaves cache/output.txt in its repository view 844ms
+ ✓ |boundary| tests/reviews-cli.integration.test.ts > the review command through the CLI > starts no reviewer turn when the retained workspace is not on this machine 14ms
+ ✓ |boundary| tests/reviews-cli.integration.test.ts > the review command through the CLI > starts no reviewer turn when the workspace cannot be pinned at the reviewed head 481ms
+ ✓ |boundary| tests/reviews-cli.integration.test.ts > the review command through the CLI > reports a missing App key honestly, without contacting the repository 359ms
+ ✓ |boundary| tests/reviews-cli.integration.test.ts > the review command through the CLI > reports a missing Jira credential before it contacts anything 3ms
+ ✓ |boundary| tests/reviews-cli.integration.test.ts > the review command through the CLI > reports an unavailable reviewer launch as inconclusive, without approving 687ms
+ ✓ |boundary| tests/reviews-cli.integration.test.ts > the review command through the CLI > timestamps an HTTP 401 failure after review without a coding rerun 815ms
+ ✓ |boundary| tests/reviews-cli.integration.test.ts > the review command through the CLI > timestamps an HTTP 422 failure after review without a coding rerun 777ms
+ ✓ |boundary| tests/reviews-cli.integration.test.ts > the review command through the CLI > refuses --repo and a bad --limit, the way every command does 2ms
+ ✓ |boundary| tests/reviews-cli.integration.test.ts > the review command through the CLI > refuses a review command when the project has no source 3ms
+ ✓ |boundary| tests/reviews-cli.integration.test.ts > the review command through the CLI > refuses a review command when the project has no delivery 2ms
+ ✓ |boundary| tests/reviews-cli.integration.test.ts > the review command through the CLI > prints the review selection in check-config, without resolving its key 3ms
+ ✓ |boundary| tests/reviews-cli.integration.test.ts > the reviewer’s repository view > pins a clean snapshot at the reviewed head, holding the base commit 720ms
+ ✓ |boundary| tests/reviews-cli.integration.test.ts > the reviewer’s repository view > refuses a workspace that is not a Git repository 69ms
+ ✓ |boundary| tests/reviews-cli.integration.test.ts > the reviewer’s repository view > refuses a head or a base the retained workspace does not hold 645ms
+ ✓ |boundary| tests/reviews-cli.integration.test.ts > the reviewer’s repository view > refuses a pull request that carries no full commit ids 227ms
+ ✓ |boundary| tests/reviews-cli.integration.test.ts > the reviewer’s repository view > reports a view that was edited, one left with a new file, and a moved head 917ms
+ ✓ |boundary| tests/reviews-cli.integration.test.ts > the review evidence directory > is generated, exclusive, and named by a timestamp 2ms
+ ✓ |boundary| tests/fixture-lifecycle.test.ts > the fixture lifecycle > cleans up after the cases that must fail, time out or cancel 52228ms
+
+ Test Files  3 passed (3)
+      Tests  42 passed (42)
+   Start at  16:38:02
+   Duration  53.62s (tests 99%, transform 1%)
+

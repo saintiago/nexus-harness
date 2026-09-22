@@ -12,58 +12,26 @@
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
-import { commandSucceeded, runCheckRound } from '../src/checks/round.js';
-import { runCommand } from '../src/process/command.js';
+import { describe, expect, it } from 'vitest';
+import { commandSucceeded } from '../src/checks/round.js';
+import { runCommand, runCheckRound } from './fixtures/operations.js';
 import { planLaunch } from '../src/process/launch.js';
 import { ReportError } from '../src/reporting/errors.js';
 import { appendRunLog, openCommandLog, runLogPath } from '../src/reporting/logs.js';
 import type { CheckRoundResult, Command, CommandResult } from '../src/shared/types.js';
-import { beaconModuleUrl, endFixtureTree } from './fixtures/local-target.js';
+import { beaconModuleUrl } from './fixtures/local-target.js';
 import type { FixtureProcessRecord } from './fixtures/local-target.js';
-import { cleanupTempDirectories, createTempDir } from './support.js';
+import { ownFixtureProcess, useFixtureLifecycle } from './fixtures/lifecycle.js';
+import { createTempDir } from './support.js';
+
+useFixtureLifecycle();
 
 /**
- * The fixture processes of the timeout tests, as each fixture recorded itself: a
- * stop that a test means to prove is stopped here too, so a test that fails
- * half-way cannot leave a hanging fixture behind for the rest of the run. See
- * {@link registerFixture}.
- */
-const fixtureProcesses: FixtureProcessRecord[] = [];
-
-/**
- * Ends the recorded fixture processes, each named by its PID only while its own
- * beacon answers: a PID this host has already handed to another process is never
- * signalled (notes/windows-fixture-flakes.md).
- */
-async function stopFixtureProcesses(): Promise<void> {
-  for (const record of fixtureProcesses.splice(0)) {
-    await endFixtureTree(record);
-  }
-}
-
-afterEach(async () => {
-  await stopFixtureProcesses();
-  // Awaited, so the removal really finishes before the next test starts and
-  // nothing is left in the temporary directory at the end of a run.
-  await cleanupTempDirectories();
-});
-
-/**
- * Remembers a fixture process, and the child it started, for the end of the test.
- * Called as soon as the fixture has recorded them, before any assertion, so an
- * assertion that fails still leaves nothing running. The child is registered on
- * its own token: the parent's tree stop may miss it when the parent dies first.
+ * Remembers a fixture process, and the child it started: the shared lifecycle
+ * stops what a test still owns after the test ends, however it ends.
  */
 function registerFixture(parts: HangProcessRecord): void {
-  fixtureProcesses.push(parts);
-  if (parts.child !== null && parts.childToken !== null) {
-    fixtureProcesses.push({
-      pid: parts.child,
-      token: parts.childToken,
-      beaconDirectory: parts.beaconDirectory,
-    });
-  }
+  ownFixtureProcess(parts);
 }
 
 /**

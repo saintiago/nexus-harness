@@ -17,13 +17,12 @@
 import { existsSync } from 'node:fs';
 import { readdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import {
   BUILT_CLI,
   FEATURE_IMPLEMENTED,
   FEATURE_MISSING,
   GREET_ALL_SOURCE,
-  WRONG_GREET_ALL_SOURCE,
   checkoutState,
   createLocalTarget,
   ensureBuiltCli,
@@ -34,15 +33,29 @@ import {
   git,
   interruptCli,
   processGone,
-  removeDirectory,
   runCli,
   waitFor,
 } from './fixtures/local-target.js';
-import type { FakePlan, LocalTarget } from './fixtures/local-target.js';
-import { cleanupTempDirectories, writeJsonFile } from './support.js';
+import type { LocalTarget } from './fixtures/local-target.js';
+import { disposeFixtures, useFixtureLifecycle } from './fixtures/lifecycle.js';
+import { writeJsonFile } from './support.js';
 import type { AttemptEvidence, CommandResult, RunReport } from '../src/shared/types.js';
 
-/** Every fixture created by this file, so that all of them are removed after it. */
+/**
+ * Every fixture process this file's runs recorded is asked, test by test, whether
+ * it is gone — and every fixture's target is removed, through the same bounded
+ * lifecycle every other process suite uses.
+ *
+ * The order is what makes the check possible: `useFixtureLifecycle` registers the
+ * hook that removes the temporary directories and it is registered first, so it
+ * runs *last* (vitest runs `afterEach` hooks in reverse). The hook below runs
+ * first, reads the runtime's own records while the target still holds them, and
+ * disposes the fixtures itself — in a `finally`, so a leftover process is
+ * reported without leaving the CLI that produced it running.
+ */
+useFixtureLifecycle();
+
+/** Every fixture this file created, for the check the hook runs after each test. */
 const targets: LocalTarget[] = [];
 
 /** How long one end-to-end run may take before the test that started it fails. */
@@ -160,14 +173,18 @@ function recordedBeaconToken(value: string | null | undefined): string | null {
   return typeof value === 'string' && value !== '' ? value : null;
 }
 
-afterAll(async () => {
-  // A run stops what it started; a fixture process still alive here is a defect
-  // worth failing for, not something to clean up quietly. Each process is asked
-  // itself, through the beacon it recorded, rather than asked for by PID: a PID
-  // is reused long before a suite this size ends. A record whose beacon never
-  // answered is still checked by PID.
+/**
+ * Asks every runtime process the targets' runs recorded whether it is gone,
+ * while the target still holds the records that name it. A run stops what it
+ * started; a fixture process still alive here is a defect worth failing for, not
+ * something to clean up quietly. Each process is asked itself, through the
+ * beacon it recorded, rather than asked for by PID: a PID is reused long before
+ * a suite this size ends. A record whose beacon never answered is still checked
+ * by PID.
+ */
+async function checkFixtureProcessesGone(recorded: readonly LocalTarget[]): Promise<void> {
   const leftovers: string[] = [];
-  for (const target of targets) {
+  for (const target of recorded) {
     for (const turn of await fakeTurns(target.state)) {
       const recorded: readonly (readonly [number | null, string | null])[] = [
         [turn.pid, recordedBeaconToken(turn.pidToken)],
@@ -188,13 +205,21 @@ afterAll(async () => {
       }
     }
   }
+  expect(leftovers, 'fixture processes still running after the test').toEqual([]);
+}
 
-  for (const target of targets) {
-    await removeDirectory(target.parent);
+afterEach(async () => {
+  const created = targets.splice(0);
+  try {
+    await checkFixtureProcessesGone(created);
+  } finally {
+    // The lifecycle stops the tree of every CLI this test still owned — a CLI
+    // left holding a turn when the test timed out among them — waits for it to
+    // end, and only then removes the target directories. Running it here, in a
+    // `finally`, is what keeps a failure in the check above from leaving the CLI
+    // that produced it behind.
+    await disposeFixtures();
   }
-  await cleanupTempDirectories();
-
-  expect(leftovers, 'fixture processes still running after the suite').toEqual([]);
 });
 
 describe('the built CLI, end to end', () => {
@@ -364,215 +389,6 @@ describe('the built CLI, end to end', () => {
         '-',
       ]);
       expect(turns[0]?.cwd).toBe(workspaceOf(runDir));
-    },
-    RUN_TIMEOUT_MS,
-  );
-
-  it(
-    'repairs a failed round and passes, keeping the failed round and its feedback',
-    async () => {
-      const target = await track(createLocalTarget());
-      const before = checkoutState(target.repo);
-
-      const result = await runCli({
-        target,
-        argv: runArguments(target),
-        plans: [
-          {
-            edits: [{ file: 'src/greet-all.mjs', text: WRONG_GREET_ALL_SOURCE }],
-            // The repair turn after this one only starts from committed state
-            // (HARN-35).
-            commit: 'add greetAll, as it stands',
-            summary: 'added greetAll',
-          },
-          {
-            edits: [{ file: 'src/greet-all.mjs', text: GREET_ALL_SOURCE }],
-            summary: 'joined the last two names with "and"',
-          },
-        ],
-      });
-
-      expect(result.code).toBe(0);
-      expect(result.stdout).toContain(': passed');
-      const runDir = outcomeLine(result.stdout, 'run dir');
-      const report = await readReport(runDir);
-
-      expect(report.status).toBe('passed');
-      expect(report.repairsUsed).toBe(1);
-      expect(report.attempts).toHaveLength(2);
-
-      // The first round really was red, and it is kept as evidence.
-      const first = attemptOf(report, 0);
-      expect(first.kind).toBe('implementation');
-      const red = required(first.checks, 'round after the implementation turn');
-      expect(red.outcome).toBe('failed');
-      const failedCheck = required(red.checks[0], 'failed check');
-      expect(failedCheck.exitCode).toBe(1);
-      expect(await readText(failedCheck.stdoutPath)).toContain('FAILED greet-all.test.mjs');
-
-      // The repair turn was given that invocation and its output.
-      const turns = await fakeTurns(target.state);
-      expect(turns).toHaveLength(2);
-      const repairPrompt = turns[1]?.prompt ?? '';
-      expect(repairPrompt).toContain('## Why this turn exists (repair turn 2)');
-      expect(repairPrompt).toContain('tools/run-checks.mjs');
-      expect(repairPrompt).toContain('FAILED greet-all.test.mjs');
-      expect(repairPrompt).toContain(failedCheck.stdoutPath);
-
-      // The repair really was observed to be green, and the earlier evidence was
-      // not overwritten by it.
-      const repaired = attemptOf(report, 1);
-      expect(repaired.kind).toBe('repair');
-      const green = required(repaired.checks, 'round after the repair turn');
-      expect(green.outcome).toBe('passed');
-      expect(await readText(required(green.checks[0], 'repaired check').stdoutPath)).toContain(
-        FEATURE_IMPLEMENTED,
-      );
-      expect(existsSync(attemptOf(report, 0).agentLog)).toBe(true);
-      expect(existsSync(repaired.agentLog)).toBe(true);
-      expect(attemptOf(report, 0).agentLog).not.toBe(repaired.agentLog);
-      expect(await readText(path.join(workspaceOf(runDir), 'src', 'greet-all.mjs'))).toBe(
-        GREET_ALL_SOURCE,
-      );
-
-      expect(checkoutState(target.repo)).toEqual(before);
-    },
-    RUN_TIMEOUT_MS,
-  );
-
-  it(
-    'stops at a red baseline with a report and no coding turn at all',
-    async () => {
-      const target = await track(createLocalTarget({ brokenBaseline: true }));
-      const before = checkoutState(target.repo);
-
-      const result = await runCli({
-        target,
-        argv: runArguments(target),
-        plans: [{ summary: 'a turn that must never run' }],
-      });
-
-      expect(result.code).not.toBe(0);
-      expect(result.code).toBe(1);
-      expect(result.stdout).toContain(': failed');
-
-      const runDir = await onlyRunDirectory(target);
-      const report = await readReport(runDir);
-      expect(report.status).toBe('failed');
-      expect(report.reason).toContain('baseline');
-      expect(report.attempts).toEqual([]);
-      expect(report.repairsUsed).toBe(0);
-
-      const baseline = required(report.baseline, 'baseline round');
-      expect(baseline.outcome).toBe('failed');
-      expect(required(baseline.checks[0], 'baseline check').exitCode).toBe(1);
-      expect(await readText(required(baseline.checks[0], 'baseline check').stdoutPath)).toContain(
-        'FAILED greet.test.mjs',
-      );
-
-      // No runtime was started: a red baseline is not a coding problem.
-      expect(fakeRuntimeUsed(target.state)).toBe(false);
-      expect(await fakeTurns(target.state)).toEqual([]);
-      expect(checkoutState(target.repo)).toEqual(before);
-    },
-    RUN_TIMEOUT_MS,
-  );
-
-  it(
-    'spends the whole repair allowance and no turn beyond it, then fails',
-    async () => {
-      const target = await track(createLocalTarget({ maxRepairs: 2 }));
-
-      const wrong: FakePlan = {
-        edits: [{ file: 'src/greet-all.mjs', text: WRONG_GREET_ALL_SOURCE }],
-        // Every turn of the allowance is followed by another one, which only
-        // starts from committed state (HARN-35).
-        commit: 'add greetAll again, as it stands',
-        summary: 'added greetAll again',
-      };
-      const result = await runCli({
-        target,
-        argv: runArguments(target),
-        plans: [wrong, wrong, wrong, { summary: 'a fourth turn that must never run' }],
-      });
-
-      expect(result.code).not.toBe(0);
-      const runDir = await onlyRunDirectory(target);
-      const report = await readReport(runDir);
-
-      expect(report.status).toBe('failed');
-      expect(report.repairsUsed).toBe(2);
-      expect(report.reason).toContain('repair allowance is exhausted (2 of 2 repair turns used)');
-      expect(report.attempts.map((attempt) => attempt.kind)).toEqual([
-        'implementation',
-        'repair',
-        'repair',
-      ]);
-      for (const attempt of report.attempts) {
-        expect(required(attempt.checks, `round after turn ${String(attempt.turn)}`).outcome).toBe(
-          'failed',
-        );
-      }
-      expect(await readText(path.join(runDir, 'logs', 'run.log'))).toContain(
-        'repair allowance exhausted',
-      );
-
-      // The allowance is a count of turns the runtime really ran.
-      expect(await fakeTurns(target.state)).toHaveLength(3);
-    },
-    RUN_TIMEOUT_MS,
-  );
-
-  it(
-    'ends a run whose coding turn failed without inventing a check round',
-    async () => {
-      const target = await track(createLocalTarget());
-
-      const result = await runCli({
-        target,
-        argv: runArguments(target),
-        plans: [{ mode: 'failed', summary: 'the runtime gave up on this task' }],
-      });
-
-      expect(result.code).not.toBe(0);
-      const runDir = await onlyRunDirectory(target);
-      const report = await readReport(runDir);
-
-      expect(report.status).toBe('failed');
-      expect(report.reason).toContain('failed, so no check was run after it');
-      expect(report.reason).toContain('the runtime gave up on this task');
-      expect(report.attempts).toHaveLength(1);
-      const attempt = attemptOf(report, 0);
-      expect(attempt.checks).toBeNull();
-      expect(attempt.agentLog).toBeTruthy();
-      expect(existsSync(attempt.agentLog)).toBe(true);
-      expect(report.baseline).not.toBeNull();
-    },
-    RUN_TIMEOUT_MS,
-  );
-
-  it(
-    'ends a run whose runtime never reported a turn at all',
-    async () => {
-      const target = await track(createLocalTarget());
-
-      const result = await runCli({
-        target,
-        argv: runArguments(target),
-        plans: [{ mode: 'crashed' }],
-      });
-
-      expect(result.code).not.toBe(0);
-      const runDir = await onlyRunDirectory(target);
-      const report = await readReport(runDir);
-
-      expect(report.status).toBe('failed');
-      expect(report.attempts).toHaveLength(1);
-      expect(attemptOf(report, 0).checks).toBeNull();
-      // The runtime really was started and really did end without a turn.
-      const turns = await fakeTurns(target.state);
-      expect(turns).toHaveLength(1);
-      expect(await readText(path.join(runDir, 'logs', 'run.log'))).toContain('result: failed');
     },
     RUN_TIMEOUT_MS,
   );

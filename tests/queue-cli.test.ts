@@ -13,7 +13,8 @@ import { existsSync, mkdirSync, readdirSync } from 'node:fs';
 import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { runCli } from '../src/cli.js';
+import { runCli } from './fixtures/operations.js';
+import { disposeFixtures, ownFixtureOperation, useFixtureLifecycle } from './fixtures/lifecycle.js';
 import { EXIT_CANCELLED, EXIT_INPUT_ERROR, EXIT_OK, EXIT_USAGE } from '../src/cli/context.js';
 import type { CliContext, InterruptSignals } from '../src/cli/context.js';
 import { loadConfiguration, projectLockNamespace } from '../src/config/load.js';
@@ -21,9 +22,9 @@ import { baselineEvidenceId } from '../src/sources/baseline.js';
 import { acquireIntakeLock, intakeLockPath } from '../src/sources/receipts.js';
 import { completionLogsDir } from '../src/sources/completion.js';
 import type { CheckRoundResult, RunReport, SourceRef } from '../src/shared/types.js';
-import { prepareWorkspace } from '../src/workspace/prepare.js';
-import { preflightSource } from '../src/workspace/preflight.js';
-import { allocateRunDirectory } from '../src/workspace/run-directory.js';
+import { prepareWorkspace } from './fixtures/boundary-operations.js';
+import { preflightSource } from './fixtures/boundary-operations.js';
+import { allocateRunDirectory } from './fixtures/boundary-operations.js';
 import {
   readWorkspaceState,
   recordWorkspaceAttempt,
@@ -35,16 +36,11 @@ import {
   PROJECT_CONFIG_FILE_NAME,
   projectConfigFile,
 } from '../src/config/paths.js';
-import {
-  cleanupTempDirectories,
-  createTempDir,
-  splitConfig,
-  writeJsonFile,
-  type JsonObject,
-} from './support.js';
+import { createTempDir, splitConfig, writeJsonFile, type JsonObject } from './support.js';
 
+useFixtureLifecycle();
 afterEach(async () => {
-  await cleanupTempDirectories();
+  await disposeFixtures();
   delete process.env['JIRA_API_TOKEN'];
   delete process.env['NEXUS_LENS_TOKEN'];
   delete process.env['NEXUS_LENS_KEY_PATH'];
@@ -159,90 +155,96 @@ async function cliFixture(parts: {
   readonly config?: (workDir: string) => unknown;
   readonly cwd?: string;
 }): Promise<CliFixture> {
-  const root = await createTempDir();
-  const repo = path.join(root, 'target');
-  mkdirSync(repo, { recursive: true });
-  const workDir = path.join(root, 'out');
-  // The connected project's own configuration is committed with the checkout
-  // the queue prepares and clones from; the Nexus-wide file sits beside it.
-  const config = (parts.config ?? queueConfig)(workDir);
-  const { harness, project } = splitConfig(config as JsonObject);
-  await writeJsonFile(repo, PROJECT_CONFIG_FILE_NAME, project);
-  git(repo, 'init', '--quiet', '--initial-branch=main');
-  await writeFile(path.join(repo, 'README.md'), 'the target repository\n', 'utf8');
-  git(repo, 'add', '--all');
-  git(repo, 'commit', '--quiet', '--message', 'baseline');
+  return ownFixtureOperation('cliFixture setup', async () => {
+    const root = await createTempDir();
+    const repo = path.join(root, 'target');
+    mkdirSync(repo, { recursive: true });
+    const workDir = path.join(root, 'out');
+    // The connected project's own configuration is committed with the checkout
+    // the queue prepares and clones from; the Nexus-wide file sits beside it.
+    const config = (parts.config ?? queueConfig)(workDir);
+    const { harness, project } = splitConfig(config as JsonObject);
+    await writeJsonFile(repo, PROJECT_CONFIG_FILE_NAME, project);
+    git(repo, 'init', '--quiet', '--initial-branch=main');
+    await writeFile(path.join(repo, 'README.md'), 'the target repository\n', 'utf8');
+    git(repo, 'add', '--all');
+    git(repo, 'commit', '--quiet', '--message', 'baseline');
 
-  const configPath = await writeJsonFile(root, HARNESS_CONFIG_FILE_NAME, harness);
+    const configPath = await writeJsonFile(root, HARNESS_CONFIG_FILE_NAME, harness);
 
-  // The two tokens and the App key the queue resolves before it runs anything.
-  const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
-  const keyPath = path.join(root, 'lens.pem');
-  await writeFile(keyPath, privateKey.export({ type: 'pkcs8', format: 'pem' }).toString(), 'utf8');
-  process.env['JIRA_API_TOKEN'] = 'test-jira-token';
-  process.env['NEXUS_LENS_TOKEN'] = 'test-lens-token';
-  process.env['NEXUS_LENS_KEY_PATH'] = keyPath;
+    // The two tokens and the App key the queue resolves before it runs anything.
+    const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+    const keyPath = path.join(root, 'lens.pem');
+    await writeFile(
+      keyPath,
+      privateKey.export({ type: 'pkcs8', format: 'pem' }).toString(),
+      'utf8',
+    );
+    process.env['JIRA_API_TOKEN'] = 'test-jira-token';
+    process.env['NEXUS_LENS_TOKEN'] = 'test-lens-token';
+    process.env['NEXUS_LENS_KEY_PATH'] = keyPath;
 
-  const lines: string[] = [];
-  const requests: string[] = [];
-  const queries: string[] = [];
-  let turns = 0;
-  let handler: (() => void) | null = null;
-  let released = false;
+    const lines: string[] = [];
+    const requests: string[] = [];
+    const queries: string[] = [];
+    let turns = 0;
+    let handler: (() => void) | null = null;
+    let released = false;
 
-  const signals: InterruptSignals = {
-    onInterrupt: (next) => {
-      handler = next;
-      return () => {
-        released = true;
-        handler = null;
-      };
-    },
-  };
-
-  const jiraFetch: typeof fetch = async (input, init) => {
-    queries.push((JSON.parse(String(init?.body)) as { jql: string }).jql);
-    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
-    requests.push(url);
-    // Every queue read here is the eligible-issues search: answer it with one
-    // final, empty page, so no ticket is ever claimed.
-    return new Response(JSON.stringify({ issues: [], isLast: true }), {
-      status: 200,
-      headers: { 'content-type': 'application/json' },
-    });
-  };
-
-  const context: CliContext = {
-    cwd: parts.cwd ?? root,
-    io: {
-      out: (text) => {
-        lines.push(text);
+    const signals: InterruptSignals = {
+      onInterrupt: (next) => {
+        handler = next;
+        return () => {
+          released = true;
+          handler = null;
+        };
       },
-      err: (text) => {
-        lines.push(`error: ${text}`);
-      },
-    },
-    signals,
-    fetch: jiraFetch,
-    dependencies: {
-      runAgentTurn: async () => {
-        turns += 1;
-        throw new Error('no coding turn may run in a queue test');
-      },
-    },
-  };
+    };
 
-  return {
-    repo,
-    configPath,
-    lines,
-    requests,
-    queries,
-    interrupt: () => handler?.(),
-    release: () => released,
-    turns: () => turns,
-    context,
-  };
+    const jiraFetch: typeof fetch = async (input, init) => {
+      queries.push((JSON.parse(String(init?.body)) as { jql: string }).jql);
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      requests.push(url);
+      // Every queue read here is the eligible-issues search: answer it with one
+      // final, empty page, so no ticket is ever claimed.
+      return new Response(JSON.stringify({ issues: [], isLast: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    };
+
+    const context: CliContext = {
+      cwd: parts.cwd ?? root,
+      io: {
+        out: (text) => {
+          lines.push(text);
+        },
+        err: (text) => {
+          lines.push(`error: ${text}`);
+        },
+      },
+      signals,
+      fetch: jiraFetch,
+      dependencies: {
+        runAgentTurn: async () => {
+          turns += 1;
+          throw new Error('no coding turn may run in a queue test');
+        },
+      },
+    };
+
+    return {
+      repo,
+      configPath,
+      lines,
+      requests,
+      queries,
+      interrupt: () => handler?.(),
+      release: () => released,
+      turns: () => turns,
+      context,
+    };
+  });
 }
 
 /** Every line the invocation wrote, as one readable block. */
@@ -306,14 +308,16 @@ function secondProjectConfig(): Record<string, unknown> {
  * harness configuration stays the one file the fixture wrote.
  */
 async function secondConnectedRepo(root: string): Promise<string> {
-  const repo = path.join(root, 'target-two');
-  mkdirSync(repo, { recursive: true });
-  await writeJsonFile(repo, PROJECT_CONFIG_FILE_NAME, secondProjectConfig());
-  git(repo, 'init', '--quiet', '--initial-branch=main');
-  await writeFile(path.join(repo, 'README.md'), 'the second target repository\n', 'utf8');
-  git(repo, 'add', '--all');
-  git(repo, 'commit', '--quiet', '--message', 'baseline');
-  return repo;
+  return ownFixtureOperation('secondConnectedRepo setup', async () => {
+    const repo = path.join(root, 'target-two');
+    mkdirSync(repo, { recursive: true });
+    await writeJsonFile(repo, PROJECT_CONFIG_FILE_NAME, secondProjectConfig());
+    git(repo, 'init', '--quiet', '--initial-branch=main');
+    await writeFile(path.join(repo, 'README.md'), 'the second target repository\n', 'utf8');
+    git(repo, 'add', '--all');
+    git(repo, 'commit', '--quiet', '--message', 'baseline');
+    return repo;
+  });
 }
 
 describe('the queue command line', () => {

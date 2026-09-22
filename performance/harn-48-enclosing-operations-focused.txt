@@ -1,0 +1,214 @@
+
+ RUN  v5.0.0 E:/projects/nexus-jira-runs/workspaces/HARN-48
+
+ ✓ |boundary| tests/fixture-workspace.test.ts > awaits pending accepted settlement before removing its directory 4ms
+ ✓ |boundary| tests/fixture-workspace.test.ts > awaits pending rejected settlement before removing its directory 1ms
+ ✓ |boundary| tests/fixture-workspace.test.ts > awaits pending prepareRun settlement before removing its directory 1ms
+ ✓ |boundary| tests/fixture-workspace.test.ts > awaits pending branch settlement before removing its directory 1ms
+ ✓ |boundary| tests/fixture-workspace.test.ts > awaits pending return settlement before removing its directory 1ms
+ ✓ |boundary| tests/fixture-workspace.test.ts > awaits pending reopen settlement before removing its directory 1ms
+ ✓ |boundary| tests/fixture-workspace.test.ts > awaits pending view settlement before removing its directory 1ms
+ ✓ |boundary| tests/fixture-workspace.test.ts > awaits pending verify settlement before removing its directory 1ms
+ ✓ |boundary| tests/fixture-workspace.test.ts > awaits pending reviewer settlement before removing its directory 2ms
+ ✓ |boundary| tests/fixture-workspace.test.ts > does not allocate after a pending preflight returns success during disposal 1ms
+ ✓ |boundary| tests/fixture-workspace.test.ts > awaits a pending prepareRun allocation and refuses preparation after disposal 1ms
+ ✓ |boundary| tests/fixture-workspace.test.ts > refuses each late helper in its disposed scope after the next test has started 2ms
+ ✓ |boundary| tests/fixture-workspace.test.ts > awaits diagnosis publication and persistence after the reviewer has already returned 12ms
+ ✓ |boundary| tests/source.test.ts > review-to-completion coordination > saves the complete developer report before the outcome is published 15ms
+ ✓ |boundary| tests/source.test.ts > review-to-completion coordination > records the delivered revision and the published comment of each developer report 30ms
+ ✓ |boundary| tests/source.test.ts > review-to-completion coordination > runs one completion pass after the batch and reports its counts 9ms
+ ✓ |boundary| tests/source.test.ts > review-to-completion coordination > keeps the intake outcome when the completion pass reports a problem 8ms
+ ✓ |boundary| tests/source.test.ts > review-to-completion coordination > leaves In Review behavior unchanged when completion is disabled 10ms
+ ✓ |boundary| tests/source.test.ts > review-to-completion coordination > runs the completion pass after each watch scan 9ms
+ ✓ |boundary| tests/source.test.ts > a finite source run > discovers the whole batch before it claims anything, and runs in order 17ms
+ ✓ |boundary| tests/source.test.ts > a finite source run > bounds fresh attempts with --limit and leaves the rest for later 19ms
+ ✓ |boundary| tests/source.test.ts > a finite source run > skips an invalid description without a receipt, and keeps going 9ms
+ ✓ |boundary| tests/source.test.ts > a finite source run > skips an issue that is no longer eligible, before any reservation 4ms
+ ✓ |boundary| tests/source.test.ts > a finite source run > releases only its own new receipt when a claim was rejected before any mutation 8ms
+ ✓ |boundary| tests/source.test.ts > a finite source run > continues after an ordinary failed run and reports it as a failure 13ms
+ ✓ |boundary| tests/source.test.ts > a finite source run > keeps the receipt and stops intake when a claim is uncertain 7ms
+ ✓ |boundary| tests/source.test.ts > a finite source run > keeps the reservation when the run produced no local result 7ms
+ ✓ |boundary| tests/source.test.ts > a finite source run > stops after a failed publication, keeping the local result and the receipt 9ms
+ ✓ |boundary| tests/source.test.ts > a finite source run > publishes a stopped run once, with a deadline of its own 11ms
+ ✓ |boundary| tests/source.test.ts > a finite source run > describes the last round that ran, not the baseline, when the final turn was stopped 8ms
+ ✓ |boundary| tests/source.test.ts > a finite source run > posts nothing when a stopped run could not confirm its own termination 6ms
+ ✓ |boundary| tests/source.test.ts > a finite source run > stops intake when a failed run could not confirm its own termination 6ms
+ ✓ |boundary| tests/source.test.ts > a finite source run > stops a fresh attempt when the caller stopped intake 3ms
+ ✓ |boundary| tests/source.test.ts > a finite source run > treats a run cancelled before it started as a stop, not as a failure 6ms
+ ✓ |boundary| tests/baseline.test.ts > the pre-delivery baseline diagnosis > prepares one conversation snapshot before the diagnostic reviewer turn 14ms
+ ✓ |boundary| tests/baseline.test.ts > the pre-delivery baseline diagnosis > starts no diagnostic turn when its conversation snapshot cannot be prepared 5ms
+ ✓ |boundary| tests/baseline.test.ts > the pre-delivery baseline diagnosis > publishes one actionable comment and returns the same ticket to its ready status 8ms
+ ✓ |boundary| tests/baseline.test.ts > the pre-delivery baseline diagnosis > leaves an inconclusive ticket In Review with the evidence and what a person must do 7ms
+ ✓ |boundary| tests/baseline.test.ts > the pre-delivery baseline diagnosis > turns a failed reviewer turn into an In Review record, never into a guessed repair 7ms
+ ✓ |boundary| tests/source.test.ts > delivering a passed attempt > delivers before publishing, and carries the pull request into the result 7ms
+ ✓ |boundary| tests/source.test.ts > delivering a passed attempt > keeps failed and cancelled work local: the delivery step is never asked 10ms
+ ✓ |boundary| tests/source.test.ts > delivering a passed attempt > tells the issue the passed outcome and the delivery failure, then stops intake 11ms
+ ✓ |boundary| tests/source.test.ts > delivering a passed attempt > keeps the local evidence when the delivery failure cannot be told to the issue 11ms
+ ✓ |boundary| tests/source.test.ts > delivering a passed attempt > publishes normally when the configured step finds nothing to deliver 8ms
+ ✓ |boundary| tests/source.test.ts > the local receipt > identifies an issue by type, site, and immutable ID only 0ms
+ ✓ |boundary| tests/source.test.ts > the local receipt > prevents a second run of the same issue, across a restart 11ms
+ ✓ |boundary| tests/source.test.ts > the local receipt > does not make a merely edited or reopened issue runnable again 11ms
+ ✓ |boundary| tests/source.test.ts > the local receipt > fails closed on a receipt it cannot trust 6ms
+ ✓ |boundary| tests/source.test.ts > the intake lock > refuses a legacy lock with active metadata for every project without changing it 4ms
+ ✓ |boundary| tests/source.test.ts > the intake lock > refuses a legacy lock with stale metadata for every project without changing it 4ms
+ ✓ |boundary| tests/source.test.ts > the intake lock > refuses a legacy lock with malformed metadata for every project without changing it 3ms
+ ✓ |boundary| tests/source.test.ts > the intake lock > refuses a legacy lock with missing owner metadata for every project without changing it 2ms
+ ✓ |boundary| tests/source.test.ts > the intake lock > refuses a second consumer of the same output directory 4ms
+ ✓ |boundary| tests/source.test.ts > the intake lock > never removes a lock it does not own 4ms
+ ✓ |boundary| tests/source.test.ts > the intake lock > refuses to release a lock that is no longer its own 4ms
+ ✓ |boundary| tests/source.test.ts > the intake lock > refuses the source before any intake state exists 1ms
+ ✓ |boundary| tests/source.test.ts > Git cleanup at intake boundaries > rejects zero-exit timed-out in identity and inspection callers 2ms
+ ✓ |boundary| tests/baseline-queue.integration.test.ts > the next claim after a diagnosis > hands the developer the reviewed finding in the same retained workspace 662ms
+ ✓ |boundary| tests/source.test.ts > Git cleanup at intake boundaries > rejects zero-exit stopped in identity and inspection callers 1ms
+ ✓ |boundary| tests/source.test.ts > Git cleanup at intake boundaries > run retains unconfirmed cleanup during initial, cancelled=false 6ms
+ ✓ |boundary| tests/source.test.ts > Git cleanup at intake boundaries > run retains unconfirmed cleanup during candidate, cancelled=false 4ms
+ ✓ |boundary| tests/baseline-queue.integration.test.ts > the next claim after a diagnosis > hands the developer a field whole where the comment could only render it concisely 394ms
+ ✓ |boundary| tests/baseline.test.ts > the pre-delivery baseline diagnosis > refuses a reviewer launch that would widen its writable roots, and leaves the ticket In Review 1277ms
+ ✓ |boundary| tests/baseline.test.ts > the pre-delivery baseline diagnosis > does not repeat a comment or a reviewer turn for unchanged evidence 8ms
+ ✓ |boundary| tests/baseline.test.ts > the pre-delivery baseline diagnosis > reads the recorded unconfirmed stop back when it resumes an existing comment 7ms
+ ✓ |boundary| tests/baseline.test.ts > the pre-delivery baseline diagnosis > releases the lock when the recorded rejection confirmed its stop 7ms
+ ✓ |boundary| tests/baseline.test.ts > the pre-delivery baseline diagnosis > never returns a rejected turn to the ready status, however its comment is marked 9ms
+ ✓ |boundary| tests/baseline.test.ts > the pre-delivery baseline diagnosis > hands no continuation the finding file of a turn whose own outcome rejected it 7ms
+ ✓ |boundary| tests/baseline.test.ts > the pre-delivery baseline diagnosis > reads no diagnosis past a directory whose own record is gone 3ms
+ ✓ |boundary| tests/baseline.test.ts > the pre-delivery baseline diagnosis > does not move an item a person already took out of the running status 6ms
+ ✓ |boundary| tests/baseline.test.ts > the pre-delivery baseline diagnosis > diagnoses changed evidence again 7ms
+ ✓ |boundary| tests/baseline.test.ts > the pre-delivery baseline diagnosis > moves nothing when the comment cannot be confirmed on the issue 4ms
+ ✓ |boundary| tests/baseline.test.ts > the pre-delivery baseline diagnosis > keeps the comment and stops when the status move fails 5ms
+ ✓ |boundary| tests/baseline.test.ts > the pre-delivery baseline diagnosis > starts no reviewer turn when the thread cannot be read 3ms
+ ✓ |boundary| tests/baseline.test.ts > the pre-delivery baseline diagnosis > reports a stop it was given instead of writing a diagnosis 1ms
+ ✓ |boundary| tests/baseline.test.ts > the pre-delivery baseline diagnosis > records an interrupt that lands during the reviewer turn and leaves the item In Review 15ms
+ ✓ |boundary| tests/baseline.test.ts > the pre-delivery baseline diagnosis > keeps the intake lock when an interrupted reviewer turn could not confirm its stop 7ms
+ ✓ |boundary| tests/baseline.test.ts > the pre-delivery baseline diagnosis > finishes the move when the interruption lands as the finding is published 6ms
+ ✓ |boundary| tests/source.test.ts > Git cleanup at intake boundaries > run retains unconfirmed cleanup during reopen, cancelled=false 963ms
+ ✓ |boundary| tests/source.test.ts > Git cleanup at intake boundaries > run retains unconfirmed cleanup during runner, cancelled=false 6ms
+ ✓ |boundary| tests/source.test.ts > Git cleanup at intake boundaries > run retains unconfirmed cleanup during initial, cancelled=true 5ms
+ ✓ |boundary| tests/source.test.ts > Git cleanup at intake boundaries > run retains unconfirmed cleanup during candidate, cancelled=true 4ms
+ ✓ |boundary| tests/baseline-queue.integration.test.ts > the next claim after a diagnosis > hands over the same whole field when the thread cannot be read either 532ms
+ ✓ |boundary| tests/baseline.test.ts > the pre-delivery baseline diagnosis > bounds the one reviewer turn instead of waiting for it forever 37ms
+ ✓ |boundary| tests/baseline.test.ts > the pre-delivery baseline diagnosis > carries an unconfirmed reviewer stop to its caller with the evidence kept 7ms
+ ✓ |boundary| tests/baseline-queue.integration.test.ts > the next claim after a diagnosis > recovers the reviewed finding from the evidence when the thread cannot be read 506ms
+ ✓ |boundary| tests/source.test.ts > Git cleanup at intake boundaries > run retains unconfirmed cleanup during reopen, cancelled=true 945ms
+ ✓ |boundary| tests/source.test.ts > Git cleanup at intake boundaries > run retains unconfirmed cleanup during runner, cancelled=true 6ms
+ ✓ |boundary| tests/source.test.ts > Git cleanup at intake boundaries > watch retains unconfirmed cleanup during initial, cancelled=false 4ms
+ ✓ |boundary| tests/source.test.ts > Git cleanup at intake boundaries > watch retains unconfirmed cleanup during candidate, cancelled=false 4ms
+ ✓ |boundary| tests/baseline-queue.integration.test.ts > the next claim after a diagnosis > stops for a person instead of starting a repair whose finding cannot be read back 472ms
+ ✓ |boundary| tests/baseline-queue.integration.test.ts > the next claim after a diagnosis > starts no ordinary continuation when a diagnosis directory lost its record 593ms
+ ✓ |boundary| tests/source.test.ts > Git cleanup at intake boundaries > watch retains unconfirmed cleanup during reopen, cancelled=false 1006ms
+ ✓ |boundary| tests/source.test.ts > Git cleanup at intake boundaries > watch retains unconfirmed cleanup during runner, cancelled=false 5ms
+ ✓ |boundary| tests/source.test.ts > Git cleanup at intake boundaries > watch retains unconfirmed cleanup during initial, cancelled=true 4ms
+ ✓ |boundary| tests/source.test.ts > Git cleanup at intake boundaries > watch retains unconfirmed cleanup during candidate, cancelled=true 3ms
+ ✓ |boundary| tests/baseline-queue.integration.test.ts > the next claim after a diagnosis > tells the next claim the newest feedback beside a finding wider than its context budget 375ms
+ ✓ |boundary| tests/baseline-queue.integration.test.ts > the next claim after a diagnosis > tells the claimed ticket and takes it out of the running status after a stop 379ms
+ ✓ |boundary| tests/source.test.ts > Git cleanup at intake boundaries > watch retains unconfirmed cleanup during reopen, cancelled=true 766ms
+ ✓ |boundary| tests/source.test.ts > Git cleanup at intake boundaries > watch retains unconfirmed cleanup during runner, cancelled=true 8ms
+ ✓ |boundary| tests/source.test.ts > Git cleanup at intake boundaries > finalizer keeps cleanup and first-stop evidence after timed-out with exit 0, prior=passed 14ms
+ ✓ |boundary| tests/source.test.ts > Git cleanup at intake boundaries > finalizer keeps cleanup and first-stop evidence after timed-out with exit 0, prior=timeout 13ms
+ ✓ |boundary| tests/source.test.ts > Git cleanup at intake boundaries > finalizer keeps cleanup and first-stop evidence after timed-out with exit 0, prior=cancelled 17ms
+ ✓ |boundary| tests/source.test.ts > Git cleanup at intake boundaries > finalizer keeps cleanup and first-stop evidence after timed-out with exit 0, prior=confirmed 17ms
+ ✓ |boundary| tests/source.test.ts > Git cleanup at intake boundaries > finalizer keeps cleanup and first-stop evidence after stopped with exit 0, prior=passed 17ms
+ ✓ |boundary| tests/baseline.test.ts > the pre-delivery baseline diagnosis > keeps the lock when the bounded reviewer timeout cannot confirm its stop 2799ms
+ ✓ |boundary| tests/source.test.ts > Git cleanup at intake boundaries > finalizer keeps cleanup and first-stop evidence after stopped with exit 0, prior=timeout 15ms
+ ✓ |boundary| tests/source.test.ts > Git cleanup at intake boundaries > finalizer keeps cleanup and first-stop evidence after stopped with exit 0, prior=cancelled 15ms
+ ✓ |boundary| tests/source.test.ts > Git cleanup at intake boundaries > finalizer keeps cleanup and first-stop evidence after stopped with exit 0, prior=confirmed 16ms
+ ✓ |boundary| tests/source.test.ts > the escalation ladder > climbs to the next tier in the same workspace when an attempt fails 14ms
+ ✓ |boundary| tests/baseline-queue.integration.test.ts > the next claim after a diagnosis > never promotes an edited comment of the thread to the reviewed finding 746ms
+ ✓ |boundary| tests/baseline-queue.integration.test.ts > the next claim after a diagnosis > starts no developer from a comment the retained record cannot vouch for 402ms
+ ✓ |boundary| tests/source.test.ts > the escalation ladder > restarts review-requested rework at the first tier, with the returned guidance 1211ms
+ ✓ |boundary| tests/baseline-queue.integration.test.ts > the next claim after a diagnosis > hands over the complete recorded finding when the thread comment is only a partial quotation 711ms
+ ✓ |boundary| tests/baseline.test.ts > the baseline reviewer turn > inspects a read-only snapshot of the workspace and validates the finding it wrote 1524ms
+ ✓ |boundary| tests/baseline-queue.integration.test.ts > the next claim after a diagnosis > never treats a comment naming other evidence as this workspace’s finding 404ms
+ ✓ |boundary| tests/source.test.ts > the escalation ladder > starts the next cycle at the first tier after a baseline-only failure 994ms
+ ✓ |boundary| tests/source.test.ts > the escalation ladder > does not climb when the run ended before any coding turn 8ms
+ ✓ |boundary| tests/source.test.ts > the escalation ladder > does not climb while the rung's own repair allowance is unspent 9ms
+ ✓ |boundary| tests/source.test.ts > the escalation ladder > does not climb when the first tier passes 8ms
+ ✓ |boundary| tests/source.test.ts > the escalation ladder > does not climb when the attempt ended on a turn that failed 8ms
+ ✓ |boundary| tests/source.test.ts > the escalation ladder > does not climb when the post-agent round could not be executed 7ms
+ ✓ |boundary| tests/source.test.ts > the escalation ladder > does not climb when the caller stopped the attempt 7ms
+ ✓ |boundary| tests/source.test.ts > the escalation ladder > does not climb when the task deadline expired after a red round 6ms
+ ✓ |boundary| tests/source.test.ts > the escalation ladder > stops the climb when the attempt could not be recorded in its workspace ledger 7ms
+ ✓ |boundary| tests/source.test.ts > an issue that points at a workspace > records a fresh workspace on the issue, and the run is told to do it 6ms
+ ✓ |boundary| tests/baseline.test.ts > the baseline reviewer turn > refuses a configured launch that would grant the turn a writable root 851ms
+ ✓ |boundary| tests/baseline-queue.integration.test.ts > the next claim after a diagnosis > starts an ordinary continuation when nothing establishes a required finding 549ms
+ ✓ |boundary| tests/baseline-queue.integration.test.ts > the next claim after a diagnosis > keeps the reviewed finding in the brief of a later rung of the same climb 500ms
+ ✓ |boundary| tests/baseline-queue.integration.test.ts > the next claim after a diagnosis > resumes a diagnosis a stopped invocation left pending, through the real claim 397ms
+ ✓ |boundary| tests/source.test.ts > an issue that points at a workspace > continues that workspace instead of creating one, and never writes a second pointer 1078ms
+ ✓ |boundary| tests/baseline-queue.integration.test.ts > the next claim after a diagnosis > publishes a finding a stopped invocation never published, before claiming it 644ms
+ ✓ |boundary| tests/baseline-queue.integration.test.ts > a resume that could not confirm its reviewer stopped > stops `source run` before discovery and keeps the lock 316ms
+ ✓ |boundary| tests/baseline.test.ts > the baseline reviewer turn > accepts an inconclusive finding and reports a turn that wrote none 2227ms
+ ✓ |boundary| tests/source.test.ts > an issue that points at a workspace > tells a continued attempt what the earlier ones did, and what was said since 1157ms
+ ✓ |boundary| tests/source.test.ts > an issue that points at a workspace > tells a first attempt what the ticket thread says, from the beginning 9ms
+ ✓ |boundary| tests/baseline-queue.integration.test.ts > a resume that could not confirm its reviewer stopped > stops `source watch` the same way, without waiting for another scan 401ms
+ ✓ |boundary| tests/baseline-queue.integration.test.ts > a resume that could not confirm its reviewer stopped > lets a batch go on past a diagnosis that needs a person but stopped cleanly 347ms
+ ✓ |boundary| tests/baseline-queue.integration.test.ts > a resume that could not confirm its reviewer stopped > stops before a second pending diagnosis when the first reviewer stop was unconfirmed 394ms
+ ✓ |boundary| tests/source.test.ts > an issue that points at a workspace > decides from the item as it is now, not from the pointer the search result carried 856ms
+ ✓ |boundary| tests/source.test.ts > an issue that points at a workspace > refuses a pointer label that is not a workspace id, and publishes why 5ms
+ ✓ |boundary| tests/baseline-queue.integration.test.ts > the serial queue after a baseline diagnosis > carries the diagnosed ticket through the repair attempt before anything else 1ms
+ ✓ |boundary| tests/baseline-queue.integration.test.ts > the serial queue after a baseline diagnosis > stops for a person instead of arming anything when the diagnosis was not actionable 0ms
+ ✓ |boundary| tests/baseline.test.ts > the baseline reviewer turn > refuses a finding whose field runs past the bound the turn was given 1253ms
+ ✓ |boundary| tests/source.test.ts > an issue that points at a workspace > refuses a pointer that names another item's workspace, and publishes why 956ms
+ ✓ |boundary| tests/baseline.test.ts > the baseline reviewer turn > refuses a finding from a turn that changed the snapshot it was given 1192ms
+ ✓ |boundary| tests/source.test.ts > an issue that points at a workspace > refuses a pointer whose workspace leaves the workspaces directory, before any claim 1012ms
+ ✓ |boundary| tests/source.test.ts > an issue that points at a workspace > refuses a workspace cloned from another repository, and publishes why 675ms
+ ✓ |boundary| tests/baseline.test.ts > the baseline reviewer turn > reuses the finding an interrupted turn already wrote, without a second turn 1580ms
+ ✓ |boundary| tests/source.test.ts > an issue that points at a workspace > refuses a ledger that records no source item identity, with manual next steps 1003ms
+ ✓ |boundary| tests/baseline.test.ts > the baseline reviewer turn > never publishes a finding the turn itself failed to produce, even on a restart 1190ms
+ ✓ |boundary| tests/source.test.ts > an issue that points at a workspace > refuses a ledger this harness did not write, before any claim 997ms
+ ✓ |boundary| tests/baseline.test.ts > the baseline reviewer turn > refuses an interrupted turn that left a finding but no recorded outcome 277ms
+ ✓ |boundary| tests/baseline.test.ts > the baseline reviewer turn > refuses an interrupted turn that wrote no finding instead of running it again 364ms
+ ✓ |boundary| tests/baseline-queue.integration.test.ts > the diagnosis through `source run` > returns the same ticket to To Do and hands the finding to the next claim 5077ms
+ ✓ |boundary| tests/baseline.test.ts > the baseline reviewer turn > carries a recorded stop through a refusal reached before it re-reads the record 232ms
+ ✓ |boundary| tests/source.test.ts > an issue that points at a workspace > refuses an attempt whose recorded end is not a usable timestamp, and continues it once it is 901ms
+ ✓ |boundary| tests/source.test.ts > a workspace name a fresh claim would use > refuses a dangling link at SAM1-2 before claiming the issue 6ms
+ ✓ |boundary| tests/source.test.ts > a workspace name a fresh claim would use > refuses a dangling link at SAM1-2.json before claiming the issue 6ms
+ ✓ |boundary| tests/source.test.ts > a workspace name a fresh claim would use > refuses a regular file at the workspace path before claiming the issue 7ms
+ ✓ |boundary| tests/source.test.ts > a workspace name a fresh claim would use > refuses a name whose directory is a junction out of the workspaces directory 6ms
+ ✓ |boundary| tests/source.test.ts > a workspace name a fresh claim would use > refuses a name a ledger holds without a directory, and creates nothing 7ms
+ ✓ |boundary| tests/source.test.ts > a workspace name a fresh claim would use > leaves a held name alone and the item refused, without a run 6ms
+ ✓ |boundary| tests/source.test.ts > source list > shows valid, refused, continuable, invalid, and stale issues without changing anything 6ms
+ ✓ |boundary| tests/source.test.ts > source list > creates no output directory when the preview finds none 1ms
+ ✓ |boundary| tests/source.test.ts > source watch > scans, processes a batch, waits the configured interval, and picks up later work 31ms
+ ✓ |boundary| tests/baseline.test.ts > the baseline reviewer turn > refuses to diagnose a working copy the configured commands changed 343ms
+ ✓ |boundary| tests/source.test.ts > source watch > waits out a server-directed delay after a read failure, then keeps going 31ms
+ ✓ |boundary| tests/source.test.ts > source watch > backs off and retries a read failure that happened before any reservation 32ms
+ ✓ |boundary| tests/source.test.ts > source watch > stops on a fatal failure instead of retrying it 3ms
+ ✓ |boundary| tests/source.test.ts > source watch > stops without a second scan when the caller interrupts during the wait 11ms
+ ✓ |boundary| tests/source.test.ts > source watch > reports a repeated invalid description once, not on every scan 48ms
+ ✓ |boundary| tests/baseline.test.ts > the baseline reviewer turn > refuses a finding from a turn that wrote into the retained workspace 1013ms
+ ✓ |boundary| tests/baseline.test.ts > the baseline reviewer turn > reports a reviewer stop it could not confirm instead of a clean one 884ms
+ ✓ |boundary| tests/baseline.test.ts > the evidence a diagnosis reads > tells a log it cannot read apart from one the command left empty 2ms
+ ✓ |boundary| tests/baseline.test.ts > the evidence a diagnosis reads > leaves the ticket In Review with the missing paths instead of starting a reviewer 171ms
+ ✓ |boundary| tests/baseline.test.ts > the evidence a diagnosis reads > carries a recorded reviewer stop through a refusal reached before any turn 175ms
+ ✓ |boundary| tests/baseline.test.ts > the Jira record of one diagnosis > posts one marker comment and returns the issue to its ready status 20ms
+ ✓ |boundary| tests/baseline.test.ts > the Jira record of one diagnosis > does not comment again, or run the reviewer again, when the evidence is unchanged 11ms
+ ✓ |boundary| tests/baseline.test.ts > the Jira record of one diagnosis > leaves a non-actionable diagnosis In Review with the required action 6ms
+ ✓ |boundary| tests/baseline.test.ts > the Jira record of one diagnosis > finishes a pending diagnosis from the retained evidence: one comment, one move 8ms
+ ✓ |boundary| tests/baseline.test.ts > finishing a diagnosis a stopped invocation left pending > leaves an item a person moved alone, and never diagnoses it again 5ms
+ ✓ |boundary| tests/baseline.test.ts > finishing a diagnosis a stopped invocation left pending > reports pending evidence it cannot finish instead of passing over it 4ms
+ ✓ |boundary| tests/baseline.test.ts > finishing a diagnosis a stopped invocation left pending > reports a pending diagnosis whose own record is gone instead of passing over it 4ms
+ ✓ |boundary| tests/baseline.test.ts > finishing a diagnosis a stopped invocation left pending > records an interrupt that lands during a resumed reviewer turn 7ms
+ ✓ |boundary| tests/baseline.test.ts > finishing a diagnosis a stopped invocation left pending > publishes the finding an interrupted turn already wrote, without a second turn 1429ms
+ ✓ |boundary| tests/baseline.test.ts > finishing a diagnosis a stopped invocation left pending > reuses a failed turn's rejection, not the finding it left, when publication is retried 992ms
+ ✓ |boundary| tests/baseline.test.ts > finishing a diagnosis a stopped invocation left pending > reconciles a published finding before finishing evidence for an item that already moved 1452ms
+ ✓ |boundary| tests/baseline.test.ts > finishing a diagnosis a stopped invocation left pending > stops a serial step for a person when the pending evidence cannot be finished 245ms
+ ✓ |boundary| tests/baseline.test.ts > the connected project a diagnosis belongs to > never resumes, comments on, moves, or closes another project's pending evidence 8ms
+ ✓ |boundary| tests/baseline.test.ts > the connected project a diagnosis belongs to > refuses evidence another project wrote instead of acting on it through this one 6ms
+ ✓ |boundary| tests/baseline.test.ts > the coordinator around the diagnosis > diagnoses a completed red baseline, publishes nothing else, and reports the repair 9ms
+ ✓ |boundary| tests/baseline.test.ts > the coordinator around the diagnosis > stops for a person when nothing actionable was diagnosed 7ms
+ ✓ |boundary| tests/baseline.test.ts > the coordinator around the diagnosis > keeps its intake lock when the diagnosis reports an unconfirmed reviewer stop 6ms
+ ✓ |boundary| tests/baseline.test.ts > the coordinator around the diagnosis > tells the claimed ticket and takes it out of the running status when the stop lands before the diagnosis 9ms
+ ✓ |boundary| tests/baseline.test.ts > the coordinator around the diagnosis > writes no second record when the diagnosis already published its own comment 8ms
+ ✓ |boundary| tests/baseline.test.ts > the coordinator around the diagnosis > adds nothing of its own when the interrupt landed inside the reviewer turn 8ms
+ ✓ |boundary| tests/baseline.test.ts > the coordinator around the diagnosis > stops for inspection, with the lock kept, when the stopped diagnosis cannot tell the ticket 9ms
+ ✓ |boundary| tests/baseline.test.ts > the coordinator around the diagnosis > takes the ticket out of the running status when the stop lands as the pre-review thread is read 10ms
+ ✓ |boundary| tests/baseline.test.ts > the coordinator around the diagnosis > publishes the run itself when the baseline could not be executed 7ms
+ ✓ |boundary| tests/baseline.test.ts > the coordinator around the diagnosis > publishes the run itself when the run was cancelled or timed out 12ms
+ ✓ |boundary| tests/baseline.test.ts > the coordinator around the diagnosis > does not diagnose a continuation that starts red 7ms
+ ✓ |boundary| tests/baseline.test.ts > the coordinator around the diagnosis > keeps the existing publication when no diagnosis is configured 7ms
+ ✓ |boundary| tests/baseline.test.ts > the coordinator around the diagnosis > never delivers a result that is still red 7ms
+ ✓ |boundary| tests/baseline.test.ts > the coordinator around the diagnosis > delivers a passed attempt as it always did 7ms
+
+ Test Files  4 passed (4)
+      Tests  205 passed (205)
+   Start at  17:59:29
+   Duration  22.54s (tests 96%, transform 3%, import 2%)
+

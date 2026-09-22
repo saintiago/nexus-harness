@@ -1,0 +1,24 @@
+    PID    PPID                  STARTED COMMAND         COMMAND
+      1       0 Tue Sep 22 18:27:22 2026 systemd         /sbin/init
+      2       1 Tue Sep 22 18:27:22 2026 init-systemd(Ne /init
+     42       1 Tue Sep 22 18:27:23 2026 systemd-journal /usr/lib/systemd/systemd-journald
+     88       1 Tue Sep 22 18:27:23 2026 systemd-udevd   /usr/lib/systemd/systemd-udevd
+    143       1 Tue Sep 22 18:27:23 2026 systemd-resolve /usr/lib/systemd/systemd-resolved
+    146       1 Tue Sep 22 18:27:23 2026 systemd-timesyn /usr/lib/systemd/systemd-timesyncd
+    154       1 Tue Sep 22 18:27:23 2026 cron            /usr/sbin/cron -f -P
+    155       1 Tue Sep 22 18:27:23 2026 dbus-daemon     @dbus-daemon --system --address=systemd: --nofork --nopidfile --systemd-activation --syslog-only
+    163       1 Tue Sep 22 18:27:23 2026 systemd-logind  /usr/lib/systemd/systemd-logind
+    178       1 Tue Sep 22 18:27:23 2026 rsyslogd        /usr/sbin/rsyslogd -n -iNONE
+    188       1 Tue Sep 22 18:27:23 2026 agetty          /sbin/agetty -o -p -- \u --noclear - linux
+    241       1 Tue Sep 22 18:27:23 2026 unattended-upgr /usr/bin/python3 /usr/share/unattended-upgrades/unattended-upgrade-shutdown --wait-for-signal
+    243       1 Tue Sep 22 18:27:23 2026 systemd         /usr/lib/systemd/systemd --user
+    244     243 Tue Sep 22 18:27:23 2026 (sd-pam)        (sd-pam)
+    306       2 Tue Sep 22 18:27:24 2026 SessionLeader   /init
+    307     306 Tue Sep 22 18:27:24 2026 Relay(308)      /init
+    308     307 Tue Sep 22 18:27:24 2026 runuser         runuser -u aiur -- bash -lc cd /mnt/e/projects/nexus-jira-runs/workspaces/HARN-48 && npm ci --cache .harness/npm-cache && bash performance/validate-linux.sh
+    309       2 Tue Sep 22 18:27:24 2026 login           /bin/login -f
+    350       1 Tue Sep 22 18:27:24 2026 systemd         /usr/lib/systemd/systemd --user
+    351     350 Tue Sep 22 18:27:24 2026 (sd-pam)        (sd-pam)
+    375     309 Tue Sep 22 18:27:24 2026 bash            -bash
+    406     308 Tue Sep 22 18:27:24 2026 bash            bash performance/validate-linux.sh
+  25434     406 Tue Sep 22 18:29:59 2026 ps              ps -eo pid,ppid,lstart,comm,args

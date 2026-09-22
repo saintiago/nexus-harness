@@ -19,12 +19,12 @@
  * README.md, "Coding runtime", and docs/tasks.md T12/T16.
  */
 
-import { spawn } from 'node:child_process';
 import { existsSync, realpathSync } from 'node:fs';
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { AgentError, runCodexPrompt, runCodexTurn } from '../src/agents/codex/adapter.js';
+import { AgentError } from '../src/agents/codex/adapter.js';
+import { runCodexPrompt, runCodexTurn } from './fixtures/boundary-operations.js';
 import {
   CODEX_EXECUTABLE,
   CODEX_EXEC_ARGUMENTS,
@@ -37,7 +37,7 @@ import { runCheckRound } from '../src/checks/round.js';
 import { requestTreeStop } from '../src/process/stop.js';
 import { appendRunLog, openAgentLog } from '../src/reporting/logs.js';
 import { writeRunReport } from '../src/reporting/report.js';
-import { runTask } from '../src/runs/runner.js';
+import { runTask } from './fixtures/runner.js';
 import type { AgentTurnRequest, RunnerDependencies } from '../src/runs/contracts.js';
 import type {
   AgentActivity,
@@ -47,10 +47,10 @@ import type {
   Task,
 } from '../src/shared/types.js';
 import { configureWorkspaceIdentity } from '../src/workspace/git.js';
-import { returnToRecordedBranch } from '../src/workspace/branch.js';
-import { prepareWorkspace } from '../src/workspace/prepare.js';
-import { preflightSource } from '../src/workspace/preflight.js';
-import { allocateRunDirectory } from '../src/workspace/run-directory.js';
+import { returnToRecordedBranch } from './fixtures/boundary-operations.js';
+import { prepareWorkspace } from './fixtures/boundary-operations.js';
+import { preflightSource } from './fixtures/boundary-operations.js';
+import { allocateRunDirectory } from './fixtures/boundary-operations.js';
 import { recordWorkspaceAttempt } from '../src/workspace/state.js';
 import {
   beaconModuleUrl,
@@ -58,7 +58,16 @@ import {
   fixtureProcessGone,
   waitFor,
 } from './fixtures/local-target.js';
-import { cleanupTempDirectories, createTempDir } from './support.js';
+import {
+  disposeFixtures,
+  ownFixtureOperation,
+  runProcess,
+  useFixtureLifecycle,
+} from './fixtures/lifecycle.js';
+import type { ProcessResult } from './fixtures/lifecycle.js';
+import { createTempDir } from './support.js';
+
+useFixtureLifecycle();
 
 /**
  * The stand-in runtime processes this file has started, as each of them recorded
@@ -158,7 +167,7 @@ afterEach(async () => {
       await waitUntilGone(one.pid);
     }
   }
-  await cleanupTempDirectories();
+  await disposeFixtures();
 });
 
 /** Waits, bounded, for one stand-in's own beacon to fall silent. */
@@ -197,38 +206,6 @@ beforeEach(async () => {
     GIT_OPTIONAL_LOCKS: '0',
   };
 });
-
-interface ProcessResult {
-  readonly code: number | null;
-  readonly stdout: string;
-  readonly stderr: string;
-}
-
-function runProcess(
-  command: string,
-  args: readonly string[],
-  options: { cwd: string; env?: NodeJS.ProcessEnv },
-): Promise<ProcessResult> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, [...args], {
-      cwd: options.cwd,
-      env: options.env ?? process.env,
-      windowsHide: true,
-    });
-    let stdout = '';
-    let stderr = '';
-    child.stdout.setEncoding('utf8');
-    child.stderr.setEncoding('utf8');
-    child.stdout.on('data', (chunk: string) => {
-      stdout += chunk;
-    });
-    child.stderr.on('data', (chunk: string) => {
-      stderr += chunk;
-    });
-    child.on('error', reject);
-    child.on('close', (code) => resolve({ code, stdout, stderr }));
-  });
-}
 
 /** Runs `git` with literal arguments in the fixture environment. */
 function git(args: readonly string[], cwd: string): Promise<ProcessResult> {
@@ -510,6 +487,10 @@ async function writeStandInRuntime(directory: string): Promise<string> {
 
 /** A temporary target repository, a stand-in runtime, and a place to work in. */
 async function createFixture(parts: { readonly instructionFile?: boolean } = {}): Promise<Fixture> {
+  return ownFixtureOperation('the adapter fixture setup', () => prepareFixture(parts));
+}
+
+async function prepareFixture(parts: { readonly instructionFile?: boolean }): Promise<Fixture> {
   const parent = await createTempDir();
   const repo = path.join(parent, 'repo');
   const workspace = path.join(parent, 'workspace');
@@ -665,6 +646,10 @@ async function openTurn(
   fixture: Fixture,
   parts: Partial<AgentTurnRequest> = {},
 ): Promise<OpenTurn> {
+  return ownFixtureOperation('the adapter turn setup', () => prepareTurn(fixture, parts));
+}
+
+async function prepareTurn(fixture: Fixture, parts: Partial<AgentTurnRequest>): Promise<OpenTurn> {
   const log = await openAgentLog(fixture.logsDir, parts.turn ?? 1);
   return {
     request: {

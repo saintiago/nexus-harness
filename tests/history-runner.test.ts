@@ -8,7 +8,7 @@ import type { HistoryReaders } from '../src/history/contract.js';
 import { promptFor } from '../src/agents/codex/prompt.js';
 import { guidanceFrom } from '../src/sources/guidance.js';
 import { BASELINE_GUIDANCE_PREFIX } from '../src/runs/contracts.js';
-import { runTask } from '../src/runs/runner.js';
+import { runTask } from './fixtures/runner.js';
 import type { RunnerDependencies, RunTaskRequest } from '../src/runs/contracts.js';
 import { HistoryError } from '../src/history/contract.js';
 import { writeRunReport } from '../src/reporting/report.js';

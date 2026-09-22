@@ -33,6 +33,9 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createTempDir, removeWithRetry, repoRoot, writeJsonFile } from '../support.js';
 import { HARNESS_CONFIG_FILE_NAME, PROJECT_CONFIG_FILE_NAME } from '../../src/config/paths.js';
+import { ownChildProcess, ownFixtureOperation } from './lifecycle.js';
+import { assertFixtureActive, fixtureContexts } from './scope.js';
+import { requestTreeStop, STOP_GRACE_MS, within } from '../../src/process/stop.js';
 
 /**
  * The shared fixture beacon module, as a URL a fixture program written into a
@@ -562,6 +565,13 @@ export interface LocalTargetOptions {
  * repository: the CLI's own Git code clones it and inspects the clone.
  */
 export async function createLocalTarget(options: LocalTargetOptions = {}): Promise<LocalTarget> {
+  return await ownFixtureOperation(
+    'local target setup',
+    async () => await prepareLocalTarget(options),
+  );
+}
+
+async function prepareLocalTarget(options: LocalTargetOptions): Promise<LocalTarget> {
   const parent = await createTempDir();
   const repo = path.join(parent, options.repoName ?? 'tiny-target');
   await mkdir(repo, { recursive: true });
@@ -861,11 +871,19 @@ export function startCli(invocation: CliInvocation): {
   readonly child: ChildProcess;
   readonly done: Promise<CliRunResult>;
 } {
+  const scope = fixtureContexts.getStore();
+  if (scope !== undefined) assertFixtureActive(scope, 'the built CLI');
   const child = spawn(process.execPath, [BUILT_CLI, ...invocation.argv], {
     cwd: invocation.cwd ?? invocation.target.parent,
     env: cliEnvironment(invocation),
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
+    // A group of its own on POSIX, exactly as `runProcess` starts a command: the
+    // stop the lifecycle asks for is the production tree stop, which addresses a
+    // POSIX tree by its negated group leader's PID. A CLI left in this worker's
+    // own group would have no group of its own to stop, and the request would
+    // reach nothing while the CLI kept running.
+    detached: process.platform !== 'win32',
   });
 
   let stdout = '';
@@ -885,12 +903,40 @@ export function startCli(invocation: CliInvocation): {
       resolve({ code, signal, stdout, stderr });
     });
   });
+  // The CLI is one of the processes the test owns: the fixture lifecycle stops
+  // its tree and waits for this same promise before any directory it wrote into
+  // is removed, so a test that times out, fails or is cancelled cannot leave a
+  // half-run CLI holding its target.
+  void ownChildProcess(
+    'the built CLI',
+    child,
+    invocation.cwd ?? invocation.target.parent,
+    async () => {
+      if (process.platform !== 'win32') {
+        // The CLI's runtime/checks lead separate process groups. Give its real
+        // interrupt handler the bounded chance to stop and await those owners
+        // before falling back to killing the CLI's own group.
+        child.kill('SIGTERM');
+        if (
+          await within(
+            done.then(
+              () => undefined,
+              () => undefined,
+            ),
+            STOP_GRACE_MS,
+          )
+        )
+          return null;
+      }
+      return child.pid === undefined ? null : await requestTreeStop(child.pid);
+    },
+  );
   return { child, done };
 }
 
 /** Runs the built CLI to completion. */
 export async function runCli(invocation: CliInvocation): Promise<CliRunResult> {
-  return await startCli(invocation).done;
+  return await ownFixtureOperation('the built CLI', async () => await startCli(invocation).done);
 }
 
 /** Waits for `check`, or fails the test that asked, naming what it waited for. */
@@ -1201,6 +1247,11 @@ async function interruptWithConsoleEvent(
     ],
     { cwd: repoRoot, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true },
   );
+  // The helper is a process this test started, and the CLI it creates through
+  // `CreateProcess` is its child: registering it gives the lifecycle the one
+  // handle this side has on a run that is still being interrupted when the test
+  // ends, because a console control event cannot be reached by PID from here.
+  void ownChildProcess('the console-interrupt helper', helper, repoRoot);
 
   let output = '';
   let errors = '';

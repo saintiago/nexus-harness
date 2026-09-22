@@ -1,0 +1,27 @@
+
+ RUN  v5.0.0 E:/projects/nexus-jira-runs/workspaces/HARN-48
+
+ ✓ |boundary| tests/live-verifier.test.ts > the prerequisite gate > refuses when nothing named like a coding runtime can be started 15ms
+ ✓ |boundary| tests/live-verifier.test.ts > the prerequisite gate > accepts a launcher this host can start, with no credential source at all 26ms
+ ✓ |boundary| tests/live-verifier.test.ts > the prerequisite gate > probes the selected launch prefix, not an executable on its own 61ms
+ ✓ |boundary| tests/live-verifier.test.ts > the prerequisite gate > accepts any credential source a runtime may use, and reads none of them 23ms
+ ✓ |boundary| tests/live-verifier.test.ts > the prerequisite gate > reports every missing prerequisite, not just the first 11ms
+ ✓ |boundary| tests/live-verifier.test.ts > the entry point, as a process > stops with its prerequisite exit code, and starts no exercise, when nothing it needs is there 229ms
+ ✓ |boundary| tests/live-verifier.test.ts > the entry point, as a process > refuses on the launcher alone, even when a runtime name and a key are both present 226ms
+ ✓ |boundary| tests/live-verifier.test.ts > the entry point, as a process > refuses a configuration that cannot be used, before any paid work 461ms
+ ✓ |boundary| tests/live-verifier.test.ts > the entry point, as a process > refuses a configuration that allows no repair turn, before any paid work 230ms
+ ✓ |boundary| tests/live-verifier.test.ts > the entry point, as a process > runs both exercises through the configured selection, against the fixture 9215ms
+ ✓ |boundary| tests/live-verifier.test.ts > the entry point, as a process > is not named like a test, so default discovery cannot pick it up 0ms
+ ✓ |boundary| tests/live-verifier.test.ts > the entry point, as a process > is absent from default test discovery 939ms
+ ✓ |boundary| tests/live-verifier.test.ts > the entry point, as a process > is not part of the validation gate or of CI 4ms
+ ✓ |boundary| tests/live-verifier.test.ts > the disposable project > is a real repository on a committed, green baseline 407ms
+ ✓ |boundary| tests/live-verifier.test.ts > the disposable project > describes itself with the harness’s own configuration and task contracts 176ms
+ ✓ |boundary| tests/live-verifier.test.ts > the disposable project > carries the injected failure only in the repair fixture 386ms
+ ✓ |boundary| tests/live-verifier.test.ts > the repair fixture’s injected failure > waits for the arm file it is given, injects once, and never repairs itself 5780ms
+ ✓ |boundary| tests/live-verifier.test.ts > the exercises, through the stand-in runtime boundary > passes the implementation exercise when the turn does the work 1563ms
+ ✓ |boundary| tests/live-verifier.test.ts > the exercises, through the stand-in runtime boundary > reports what it found instead of passing a run that did not do the work 1652ms
+
+ Test Files  1 passed (1)
+      Tests  19 passed (19)
+   Start at  15:23:09
+   Duration  21.80s (tests 99%, import 1%, transform 1%)

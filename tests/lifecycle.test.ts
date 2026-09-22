@@ -25,67 +25,35 @@
  * (notes/windows-fixture-flakes.md). See docs/tasks.md T09.
  */
 
-import { spawn } from 'node:child_process';
 import { existsSync, statSync } from 'node:fs';
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { runCheckRound } from '../src/checks/round.js';
-import { runCommand } from '../src/process/command.js';
+import { beforeEach, describe, expect, it } from 'vitest';
+import { runCheckRound, runCommand } from './fixtures/operations.js';
 import { appendRunLog, openAgentLog } from '../src/reporting/logs.js';
 import { writeRunReport } from '../src/reporting/report.js';
 import type { AgentTurnResult, RunnerDependencies } from '../src/runs/contracts.js';
-import { runTask } from '../src/runs/runner.js';
+import { runTask } from './fixtures/runner.js';
 import type { Command, HarnessConfig, RunReport, Task } from '../src/shared/types.js';
 import { configureWorkspaceIdentity } from '../src/workspace/git.js';
-import { returnToRecordedBranch } from '../src/workspace/branch.js';
-import { prepareWorkspace } from '../src/workspace/prepare.js';
-import { preflightSource } from '../src/workspace/preflight.js';
-import { allocateRunDirectory } from '../src/workspace/run-directory.js';
+import { returnToRecordedBranch } from './fixtures/boundary-operations.js';
+import { prepareWorkspace } from './fixtures/boundary-operations.js';
+import { preflightSource } from './fixtures/boundary-operations.js';
+import { allocateRunDirectory } from './fixtures/boundary-operations.js';
 import { recordWorkspaceAttempt } from '../src/workspace/state.js';
 import { beaconModuleUrl, endFixtureTree } from './fixtures/local-target.js';
 import type { FixtureProcessRecord } from './fixtures/local-target.js';
-import { cleanupTempDirectories, createTempDir } from './support.js';
+import { ownFixtureProcess, runProcess, useFixtureLifecycle } from './fixtures/lifecycle.js';
+import { createTempDir } from './support.js';
+
+useFixtureLifecycle();
 
 /**
- * The fixture processes of these tests, as each fixture recorded itself: a stop a
- * test means to prove is stopped here too, so a test that fails half-way cannot
- * leave a hanging fixture behind for the rest of the run. See
- * {@link registerFixture}.
- */
-const fixtureProcesses: FixtureProcessRecord[] = [];
-
-/**
- * Ends the recorded fixture processes, each named by its PID only while its own
- * beacon answers: a PID this host has already handed to another process is never
- * signalled (notes/windows-fixture-flakes.md).
- */
-async function stopFixtureProcesses(): Promise<void> {
-  for (const record of fixtureProcesses.splice(0)) {
-    await endFixtureTree(record);
-  }
-}
-
-afterEach(async () => {
-  await stopFixtureProcesses();
-  await cleanupTempDirectories();
-});
-
-/**
- * Remembers a fixture process, and the child it started, for the end of the test.
- * Called as soon as a fixture has recorded them, before any assertion, so an
- * assertion that fails still leaves nothing running. The child is registered on
- * its own token: the parent's tree stop may miss it when the parent dies first.
+ * Remembers a fixture process, and the child it started: the shared lifecycle
+ * stops what a test still owns after the test ends, however it ends.
  */
 function registerFixture(parts: PidRecord): void {
-  fixtureProcesses.push(parts);
-  if (parts.child !== null && parts.childToken !== null) {
-    fixtureProcesses.push({
-      pid: parts.child,
-      token: parts.childToken,
-      beaconDirectory: parts.beaconDirectory,
-    });
-  }
+  ownFixtureProcess(parts);
 }
 
 /** A private Git environment, so the developer's own Git settings cannot decide a test. */
@@ -107,32 +75,6 @@ beforeEach(async () => {
     GIT_OPTIONAL_LOCKS: '0',
   };
 });
-
-function runProcess(
-  command: string,
-  args: readonly string[],
-  options: { readonly cwd: string; readonly env?: NodeJS.ProcessEnv },
-): Promise<{ readonly code: number | null; readonly stdout: string }> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, [...args], {
-      cwd: options.cwd,
-      env: options.env ?? process.env,
-      windowsHide: true,
-      // Each fixture process leads its own process group on POSIX, exactly as
-      // the harness's own commands do, so a test can stop the whole tree by
-      // addressing the negated PID. Without this the group does not exist and
-      // the stop in these tests would silently reach nothing.
-      detached: process.platform !== 'win32',
-    });
-    let stdout = '';
-    child.stdout?.setEncoding('utf8');
-    child.stdout?.on('data', (chunk: string) => {
-      stdout += chunk;
-    });
-    child.on('error', reject);
-    child.on('close', (code) => resolve({ code, stdout }));
-  });
-}
 
 /** Runs `git` with literal arguments, in the fixture environment. */
 function git(

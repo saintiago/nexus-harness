@@ -3,13 +3,16 @@
  * the repository nor the real environment is touched.
  */
 
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import stringWidth from 'string-width';
+import { assertFixtureActive, fixtureContexts, ownWork } from './fixtures/scope.js';
+import type { FixtureScope } from './fixtures/scope.js';
 import type { CliIo } from '../src/cli/context.js';
 import { HARNESS_CONFIG_FILE_NAME, PROJECT_CONFIG_FILE_NAME } from '../src/config/paths.js';
+import { historyCurrentPath, workspaceHistoryRoot } from '../src/history/paths.js';
 import type { PublishedComment } from '../src/sources/contract.js';
 
 /**
@@ -194,16 +197,25 @@ export const documentedTask = {
 /** A JSON document as tests build it before writing it to disk. */
 export type JsonObject = Record<string, unknown>;
 
-const temporaryDirectories: string[] = [];
+const temporaryDirectories = new Map<string, FixtureScope | undefined>();
 
 /**
  * Creates a temporary directory and registers it for removal by
  * {@link cleanupTempDirectories}.
  */
 export async function createTempDir(): Promise<string> {
-  const directory = await mkdtemp(path.join(os.tmpdir(), 'nexus-harness-'));
-  temporaryDirectories.push(directory);
-  return directory;
+  // Capture before allocation starts: it may finish after disposal's bounded
+  // wait, or while a different test's cleanup is running.
+  const scope = fixtureContexts.getStore();
+  const allocate = async (): Promise<string> => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), 'nexus-harness-'));
+    temporaryDirectories.set(directory, scope);
+    // Register even a late result, but never hand it to a closed setup. Its
+    // original scope's pending work keeps it held across subsequent cleanups.
+    if (scope !== undefined) assertFixtureActive(scope, 'temporary directory allocation');
+    return directory;
+  };
+  return await (scope === undefined ? allocate() : ownWork(scope, 'temporary directory', allocate));
 }
 
 /** Writes `value` as JSON to `directory/name` and returns the file path. */
@@ -232,6 +244,48 @@ export const HARNESS_CONFIG_FIELDS: readonly string[] = [
 
 /** The fields a connected project's configuration owns (docs/WORKFLOW.md §1). */
 export const PROJECT_CONFIG_FIELDS: readonly string[] = ['setup', 'checks', 'source', 'delivery'];
+
+/**
+ * The snapshot the last history-backed turn of one workspace was handed
+ * (HARN-41): `current.json` names it, and `index.json` is what the prompt points
+ * the turn at. The complete entries, the retained report summaries and the gaps
+ * a source read left are all in `index`, so a test can tell what the turn could
+ * read without starting one.
+ */
+export interface HistorySnapshotFiles {
+  /** The snapshot's own directory, which the prompt names. */
+  readonly dir: string;
+  /** `index.json`, parsed. */
+  readonly index: {
+    readonly id: string;
+    readonly role: string;
+    readonly gaps: readonly string[];
+    readonly entries: readonly {
+      readonly id: string;
+      readonly kind: string;
+      readonly author: string;
+      readonly text: string;
+    }[];
+    readonly reports: readonly { readonly entryId: string }[];
+    readonly mirrors: readonly { readonly sourceId: string; readonly ofEntryId: string }[];
+  };
+}
+
+/** Reads the snapshot `current.json` beside one workspace points at. */
+export async function latestHistorySnapshot(
+  workDir: string,
+  workspaceId: string,
+): Promise<HistorySnapshotFiles> {
+  const current = JSON.parse(
+    await readFile(historyCurrentPath(workspaceHistoryRoot(workDir, workspaceId)), 'utf8'),
+  ) as { readonly dir: string; readonly indexJsonPath: string };
+  return {
+    dir: current.dir,
+    index: JSON.parse(
+      await readFile(current.indexJsonPath, 'utf8'),
+    ) as HistorySnapshotFiles['index'],
+  };
+}
 
 /**
  * Routes one field map into the file that owns each field, so a fixture can
@@ -269,17 +323,44 @@ export async function writeConfigPair(
   };
 }
 
+/** Every temporary directory this file's tests created and have not removed. */
+export function tempDirectories(): readonly string[] {
+  return [...temporaryDirectories.keys()];
+}
+
 /**
  * Removes every directory created by {@link createTempDir}, through
- * {@link removeWithRetry}.
+ * {@link removeWithRetry}, and returns the ones it kept.
+ *
+ * A caller that owns a process it could not confirm ended names that process's
+ * directory through `preserve`: removing a tree something may still be writing
+ * to destroys the evidence of the leak and can fail the hook with the platform's
+ * `EBUSY` instead of reporting the stop that did not land. Kept directories are
+ * left registered, so a later disposal can still remove them. The allocator also
+ * retains each directory's originating scope: pending work in that scope holds
+ * even a directory allocated after its disposal returned, across every later
+ * cleanup, until the work settles.
  */
-export async function cleanupTempDirectories(): Promise<void> {
-  const directories = temporaryDirectories.splice(0);
+export async function cleanupTempDirectories(
+  options: { readonly preserve?: (directory: string) => boolean } = {},
+): Promise<readonly string[]> {
+  const kept: string[] = [];
+  const removing: string[] = [];
+  for (const [directory, scope] of temporaryDirectories) {
+    const preserve = options.preserve?.(directory) === true;
+    if (preserve || (scope !== undefined && scope.work.size > 0)) {
+      kept.push(directory);
+    } else {
+      temporaryDirectories.delete(directory);
+      removing.push(directory);
+    }
+  }
   await Promise.all(
-    directories.map(async (directory) =>
+    removing.map(async (directory) =>
       removeWithRetry(async () => rm(directory, { recursive: true, force: true })),
     ),
   );
+  return kept;
 }
 
 /**
