@@ -1,0 +1,78 @@
+HARN-49, second round: the cache contract's own inputs
+=====================================================
+
+Recorded 2026-09-22 on the Windows host used for this whole task (24 logical CPUs, Node v24.14.1,
+npm 11.11.0, Turborepo 2.11.2, Vitest 5.0.0), on the repaired revision with a clean working tree.
+`npm run validate --silent -- --dry=json` prints the ten gate tasks' hashes without executing
+anything; each probe below was applied, hashed, then reverted and the tree checked clean before the
+next one.
+
+1. The ten gate tasks' hashes before any probe
+---------------------------------------------
+
+   build                fc91bcbce540297a
+   format:check         c907f1a13c74c007
+   lint                 5d319263803f2c5a
+   test:boundary        05652f68fa3c785b
+   test:policy:config   660f3b304baaa71d
+   test:policy:display  3716295f958fed09
+   test:policy:history  7dcbdf7cbb15733a
+   test:policy:intake   35eb7c159269b662
+   test:policy:loop     509907fd030ea1cc
+   typecheck            d8d2f8fd6f23633e
+
+2. One comment added to tests/queue.test.ts (the intake group's file)
+-------------------------------------------------------------------
+
+   build                same
+   format:check         CHANGED
+   lint                 CHANGED
+   test:boundary        CHANGED
+   test:policy:config   CHANGED   <- the contract runs in this task, and it parses that file
+   test:policy:display  same
+   test:policy:history  same
+   test:policy:intake   CHANGED
+   test:policy:loop     same
+   typecheck            CHANGED
+
+The review of the previous round found this hash unchanged, which is the finding this round
+repairs: a real child-process call added to that file could execute and cache the intake group
+while the configuration task replayed the contract result the edit invalidates. It is no longer
+possible for that edit to leave `test:policy:config` alone.
+
+3. The same file with a real child-process call: the contract fails when it runs
+------------------------------------------------------------------------------
+
+`import { spawn } from 'node:child_process';` and `void spawn;` were appended to
+tests/queue.test.ts, and the configuration group was run directly:
+
+   $ npm run test:policy:config
+    ❯ |policy| tests/validation-cache.test.ts (11 tests | 1 failed) 261ms
+      × keeps a case that starts a real process out of every cached group 19ms
+   AssertionError: test:policy:intake caches tests/queue.test.ts, which starts a real process
+     (node:child_process): expected 'node:child_process' to be undefined
+    Test Files  1 failed | 5 passed (6)
+         Tests  1 failed | 143 passed (144)
+
+The probe was reverted immediately; the same group then passed 6 files and 144 cases.
+
+4. The other declared inputs, one probe at a time
+-------------------------------------------------
+
+   probe                                  tasks whose hash changed
+   -------------------------------------  ---------------------------------------------------------
+   comment in src/cli/options.ts          all ten
+   comment in docs/connect-a-project.md    format:check, test:policy:config, test:boundary
+   TZ set to Europe/Madrid                 the five test:policy:* tasks and test:boundary
+
+   (test:boundary changes with any of its dependencies: Turborepo hashes the dependency graph's
+   results into the task's hash, and that task is never cached anyway.)
+
+5. What the contract now checks about itself
+--------------------------------------------
+
+`tests/validation-cache.test.ts` gained one case — "declares every file the contract task itself
+inspects" — which walks the same set the contract parses (every test file on disk, every file
+reachable from a policy group's files by relative import, every literal path those files read, and
+the hand-named reads the walk cannot follow) and fails when `test:policy:config` does not declare
+one of them. The configuration group is 144 cases now; the policy layer is 581.
