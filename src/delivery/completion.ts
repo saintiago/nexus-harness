@@ -201,8 +201,16 @@ export interface CompletionActions {
 
 /** The pieces a caller may stand in for; production supplies none of them. */
 export interface GitHubCompletionParts {
-  /** The GitHub CLI to run. Defaults to `gh` from `PATH`. */
-  readonly command?: string;
+  /**
+   * The GitHub CLI to run. Defaults to `gh` from `PATH`.
+   *
+   * A caller may name fixed arguments after the program as well as the program
+   * itself — how a test runs a stand-in through the interpreter it is written
+   * in, without a shell script the platform would have to launch through
+   * `cmd.exe` first. Every real invocation is the program, those arguments, and
+   * then the `gh` arguments, in that order.
+   */
+  readonly command?: string | readonly string[];
   /** What the operator's own commands inherit. Defaults to this process's. */
   readonly env?: NodeJS.ProcessEnv;
   /**
@@ -330,6 +338,13 @@ export function createGitHubCompletion(
     throw new DeliveryError('Reviewer and operator credentials must be different');
   let sequence = 0;
   const tag = randomBytes(4).toString('hex');
+  /** The program every `gh` invocation starts with: what the caller named. */
+  const launcher: readonly string[] =
+    parts.command === undefined
+      ? ['gh']
+      : typeof parts.command === 'string'
+        ? [parts.command]
+        : parts.command;
   /**
    * What a failed command said, as one bounded line. The command log is the
    * evidence an operator reads; the message that reaches the item keeps the
@@ -386,7 +401,7 @@ export function createGitHubCompletion(
       commandToken = token;
     }
     const result = await runCommand({
-      command: [parts.command ?? 'gh', ...args],
+      command: [...launcher, ...args],
       cwd: request.workspacePath,
       logsDir: request.logsDir,
       label: `completion-${tag}-${String(++sequence)}`,

@@ -382,3 +382,95 @@ conflicting `FORCE_COLOR` override before invoking the commands. This does not c
 configured gate. The commands above are wrapped across lines for readability; each was run as
 one command. No live Jira, GitHub, or coding-agent exercise was run. This is a record of an
 unresolved repair, not a claim that the timeouts were fixed or that the task passed.
+
+## The 2026-09-22 HARN-49 gate failure: two cases at the five-second default
+
+The harness ran `npm run validate` after HARN-49's repair delivery (`f6b1766`), and the boundary
+layer failed two cases on Vitest's five-second default while the other 800 of its 802 cases passed
+(the two platform skips unchanged):
+
+- `tests/completion-arm.test.ts > reconciling terminal states across an auto-merge race > finishes
+an already-merged admission without arming or asking for a person` — `Error: Test timed out in
+5000ms`, 5,203 ms.
+- `tests/completion-github.test.ts > review-to-completion > creates the per-issue evidence directory
+before its first GitHub command` — the same, 5,246 ms.
+
+Both are real-command cases: each drives a completion pass against a stand-in `gh` on disk, so each
+is a sequence of `cmd.exe`/Node child processes, and the two make two complete passes and one
+complete pass respectively. The harness's run had other work on the host. The same two cases pass in
+the recorded full runs — HARN-48's four-worker timings have them at 3,929 ms (and 3,662 / 3,628 ms
+in the two final runs) and 2,824 ms (2,587 / 2,533 ms) — and this host measured the first at
+5,188 ms in isolation, then saw the whole boundary layer green with the same two cases at 4,280 ms
+and 2,079 ms a few minutes later, in a quieter window.
+
+### The first repair, and why it was withdrawn
+
+The first repair turn answered this by giving the boundary project a bound of its own
+(`testTimeout: BOUNDARY_DEFAULT_TIMEOUT_MS`, 15 s) and by adding a contract case that required it.
+That moved the actual deadline of every case in the layer that states none — the two that failed,
+and every case beside them — and HARN-49's ticket says the restored suite's deadlines are preserved.
+A layer-wide bound does not make a shared host deterministic either; it only decides how much host
+load a revision is allowed to be blamed for. The repair was withdrawn: `vitest.config.ts` states no
+deadline for either layer, and `tests/validation-cache.test.ts` now fails if a shared `testTimeout`
+appears in the configuration, in either project. The withdrawn round stays on the record in
+`performance/harn-49-boundary-timeout-repair.txt`; what it measured — 5,203 ms and 5,246 ms in the
+harness's loaded run, 4,280 ms and 2,079 ms in a quieter one, 3,000 ms and 2,485 ms in isolation on
+this host — is the evidence the repair below answers.
+
+### The repair: the cases start fewer processes
+
+Both cases drive the completion pass against a stand-in `gh` that the fixture installed as a `.cmd`
+shim on Windows (a `#!/bin/sh` script on Linux). Every `gh` invocation therefore paid for a shell —
+`cmd.exe /d /s /c …` — in front of the Node process that answers it, and these cases make about
+forty and twenty of those invocations. A real `gh` is one native executable, so the fixture now
+hands the completion step the executable form: this suite's own Node, with the stand-in script as
+its fixed first argument (`FakeCompletionState.launch`, `tests/fixtures/local-target.ts`). The same
+change is used by the two `queue-cli.test.ts` cases that drive the pass, for the same reason. No
+assertion, case, bound or command argument changed; the shell in front of the stand-in is what is
+gone. Cases that need the shim form — a stand-in named on `PATH`, or by a configuration file — still
+install and use it, so nothing about the shim path stopped being covered.
+
+**Evidence** (Windows host, Node `v24.14.1`, Vitest `5.0.0`, one case selected per run, the same
+commands before and after):
+
+| Case (one selected, four workers)                                        | Shim (before) | One process (after) |
+| ------------------------------------------------------------------------ | ------------- | ------------------- |
+| `completion-arm.test.ts > finishes an already-merged admission …`        | 3,000 ms      | 2,144 / 2,238 ms    |
+| `completion-github.test.ts > creates the per-issue evidence directory …` | 2,485 ms      | 1,578 / 1,669 ms    |
+
+The proof that the same work still happens is the suite itself: the files that own those cases pass
+in full (87 cases), and the whole boundary layer passes 802 cases with 2 platform skips — in the
+fully uncached gate recorded in `performance/harn-49-deadline-repair-validate-fresh.txt`.
+
+**Honest limits.** This shrinks the work; it does not make a shared host deterministic. The two
+cases now do about 2.1 s and 1.6 s of their own work in isolation, against the five-second bound
+they keep, where before they did 3.0 s and 2.5 s. A host running the earlier gate's own ~1.7–2x
+slower than quiet would have put them at about 3.6 s and 3.3 s; the same host at 2.4x would still
+break them, and no bound-preserving change here can promise otherwise. What is promised is the
+direction: a case that is close to its deadline is repaired by starting less, never by moving the
+bound, and the next occurrence of a real leftover process is read as what it is (see the
+2026-09-19 entry above for the one flake class this file still has open: a liveness assertion that
+reads a bare PID, which a recycled PID on this host can make read as running).
+
+### The same evening: that open class fired once, on the repaired revision
+
+The first `npm run validate` after the repair (kept as
+`performance/harn-49-deadline-repair-validate-flake.txt`; the same code's next cached run, in
+`...-validate.txt`, replays seven of ten and passes) replayed nine of its ten tasks and failed the
+fresh boundary layer on one case:
+
+```
+tests/fixture-lifecycle.test.ts > the fixture lifecycle > cleans up after the cases that must
+fail, time out or cancel
+AssertionError: cli-timeout: built CLI: expected false to be true
+```
+
+That is the bare-PID reading the 2026-09-19 entry records as still open: `gone(entry.cliPid)` polls
+`process.kill(pid, 0)`, and on this host a PID is handed on quickly enough that another process can
+answer for it. What the run left behind was checked directly: a process listing immediately after
+the failure held no `dist/cli.js` process at all, and the same file passed 4/4 on its own right
+afterwards (78.56 s). The case is `cli-timeout`, which starts the built CLI and a stand-in runtime
+and has nothing to do with the completion stand-in this repair re-launched; its own beacons did not
+report a surviving process. It stays open here rather than being papered over: the repair for it is
+a liveness reading that cannot be answered by a PID the host has handed on, which is a change to
+that proof and its own task, not this one.

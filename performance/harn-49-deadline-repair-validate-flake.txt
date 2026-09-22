@@ -1,0 +1,65 @@
+
+> nexus-harness@0.1.0 validate
+> node scripts/turbo.mjs run format:check lint typecheck build test:policy:display test:policy:config test:policy:loop test:policy:intake test:policy:history test:boundary
+
+• turbo 2.11.2
+
+   • Running format:check, lint, typecheck, build, test:policy:display, test:policy:config, test:policy:loop, test:policy:intake, test:policy:history, test:boundary
+   • Remote caching disabled
+
+build: cache hit, suppressing logs fc91bcbce540297a
+format:check: cache hit, suppressing logs feb082fc84af796b
+lint: cache hit, suppressing logs 5d319263803f2c5a
+typecheck: cache hit, suppressing logs d8d2f8fd6f23633e
+test:policy:history: cache hit, suppressing logs 7dcbdf7cbb15733a
+test:policy:display: cache hit, suppressing logs 3716295f958fed09
+test:policy:intake: cache hit, suppressing logs 35eb7c159269b662
+test:policy:config: cache hit, suppressing logs b8630a06178b1d9d
+test:policy:loop: cache hit, suppressing logs 509907fd030ea1cc
+test:boundary: cache bypass, force executing df5646daf965bbb6
+test:boundary: 
+test:boundary: > nexus-harness@0.1.0 test:boundary
+test:boundary: > vitest run --project boundary
+test:boundary: 
+test:boundary: 
+test:boundary:  RUN  v5.0.0 E:/projects/nexus-jira-runs/workspaces/HARN-49
+test:boundary: 
+test:boundary:  ❯ |boundary| tests/fixture-lifecycle.test.ts (4 tests | 1 failed) 94084ms
+test:boundary:    ❯ the fixture lifecycle (4)
+test:boundary:      × cleans up after the cases that must fail, time out or cancel 92729ms
+test:boundary: 
+test:boundary: ⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+test:boundary: 
+test:boundary:  FAIL  |boundary| tests/fixture-lifecycle.test.ts > the fixture lifecycle > cleans up after the cases that must fail, time out or cancel
+test:boundary: AssertionError: cli-timeout: built CLI: expected false to be true // Object.is equality
+test:boundary: 
+test:boundary: - Expected
+test:boundary: + Received
+test:boundary: 
+test:boundary: - true
+test:boundary: + false
+test:boundary: 
+test:boundary:  ❯ tests/fixture-lifecycle.test.ts:428:70
+test:boundary:     426|       expect(await gone(entry.grandchild), `${entry.case}: grandchild`…
+test:boundary:     427|       if (entry.cliPid !== undefined) {
+test:boundary:     428|         expect(await gone(entry.cliPid), `${entry.case}: built CLI`).t…
+test:boundary:        |                                                                      ^
+test:boundary:     429|         expect(entry.pid, `${entry.case}: runtime was reached`).not.to…
+test:boundary:     430|         expect(entry.token, `${entry.case}: runtime beacon was recorde…
+test:boundary: 
+test:boundary: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+test:boundary: 
+test:boundary: 
+test:boundary:  Test Files  1 failed | 36 passed (37)
+test:boundary:       Tests  1 failed | 801 passed | 2 skipped (804)
+test:boundary:    Start at  23:18:44
+test:boundary:    Duration  241.17s (tests 99%, import 1%)
+test:boundary: 
+test:boundary:  ERROR  command (E:\projects\nexus-jira-runs\workspaces\HARN-49\) C:\Program Files\nodejs\node.exe C:\Program Files\nodejs\node_modules\npm\bin\npm-cli.js run test:boundary exited (1)
+
+ Tasks:    9 successful, 10 total
+Cached:    9 cached, 10 total
+  Time:    4m1.708s 
+Failed:    //#test:boundary
+
+ ERROR  run failed: command  exited (1)

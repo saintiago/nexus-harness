@@ -35,8 +35,11 @@ export const dataModuleImportPatterns = [
 
 export default [
   {
-    // Fixtures are intentionally failing samples; tests lint them with their own config.
-    ignores: ['dist/**', 'coverage/**', '.harness/**', 'tests/fixtures/**'],
+    // Fixtures are intentionally failing samples; tests lint them with their own
+    // config. The local validation cache holds no lintable file today, and
+    // naming it keeps that from becoming accidental: a cache the linter read
+    // would invalidate itself.
+    ignores: ['dist/**', 'coverage/**', '.harness/**', '.turbo/**', 'tests/fixtures/**'],
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,

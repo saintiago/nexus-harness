@@ -1,0 +1,161 @@
+2026-09-22T19:35:42+00:00
+212aee1560ac7c9bffc60ec09d01fbc98d41d39d
+Linux Raul 6.18.33.2-microsoft-standard-WSL2 #1 SMP PREEMPT_DYNAMIC Thu Jun 18 21:54:43 UTC 2026 x86_64 x86_64 x86_64 GNU/Linux
+v24.14.1
+11.11.0
+git version 2.43.0
+
+> nexus-harness@0.1.0 validate:fresh
+> npm run cache:clear && npm run validate
+
+
+> nexus-harness@0.1.0 cache:clear
+> node scripts/cache-clear.mjs
+
+cleared .turbo: task results, the ESLint cache and the incremental metadata are gone
+
+> nexus-harness@0.1.0 validate
+> node scripts/turbo.mjs run format:check lint typecheck build test:policy:display test:policy:config test:policy:loop test:policy:intake test:policy:history test:boundary
+
+• turbo 2.11.2
+
+   • Running format:check, lint, typecheck, build, test:policy:display, test:policy:config, test:policy:loop, test:policy:intake, test:policy:history, test:boundary
+   • Remote caching disabled
+
+typecheck: cache miss, executing 13000a7741b08611
+typecheck: 
+typecheck: > nexus-harness@0.1.0 typecheck
+typecheck: > tsc --project tsconfig.json --noEmit
+typecheck: 
+build: cache miss, executing 36bdee892efdd27d
+build: 
+build: > nexus-harness@0.1.0 build
+build: > node scripts/build.mjs
+build: 
+format:check: cache miss, executing 9055be137b5287c1
+format:check: 
+format:check: > nexus-harness@0.1.0 format:check
+format:check: > prettier --check .
+format:check: 
+format:check: Checking formatting...
+format:check: All matched files use Prettier code style!
+lint: cache miss, executing cd2885445676453b
+lint: 
+lint: > nexus-harness@0.1.0 lint
+lint: > eslint . --cache --cache-location .turbo/eslint/.eslintcache --cache-strategy content
+lint: 
+test:policy:history: cache miss, executing 6c62d61bf414533d
+test:policy:history: 
+test:policy:history: > nexus-harness@0.1.0 test:policy:history
+test:policy:history: > vitest run --project policy tests/history-runner.test.ts tests/history-source.test.ts tests/history.test.ts tests/reviews.test.ts
+test:policy:history: 
+test:policy:history: 
+test:policy:history: [1m[30m[46m RUN [49m[39m[22m [36mv5.0.0 [39m[90m/mnt/e/projects/nexus-jira-runs/workspaces/HARN-49[39m
+test:policy:history: 
+test:policy:history:  [32m✓[39m [30m[45m policy [49m[39m tests/history-source.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 33[2mms[22m[39m
+test:policy:history:  [32m✓[39m [30m[45m policy [49m[39m tests/reviews.test.ts [2m([22m[2m68 tests[22m[2m)[22m[32m 293[2mms[22m[39m
+test:policy:history:  [32m✓[39m [30m[45m policy [49m[39m tests/history-runner.test.ts [2m([22m[2m8 tests[22m[2m)[22m[32m 82[2mms[22m[39m
+test:policy:history:  [32m✓[39m [30m[45m policy [49m[39m tests/history.test.ts [2m([22m[2m53 tests[22m[2m)[22m[33m 1672[2mms[22m[39m
+test:policy:history:    [32m✓[39m review follow-up retention regressions [2m(9)[22m
+test:policy:history:      [33m[2m✓[22m[39m bounds consumed responses to an outstanding review in both prompts, with whole local overflow[33m 939[2mms[22m[39m
+test:policy:history: 
+test:policy:history: [2m Test Files [22m [1m[32m4 passed[39m[22m[90m (4)[39m
+test:policy:history: [2m      Tests [22m [1m[32m131 passed[39m[22m[90m (131)[39m
+test:policy:history: [2m   Start at [22m 21:36:07
+test:policy:history: [2m   Duration [22m 3.76s[2m (transform 44%, import 31%, tests 25%, worker 1%)[22m
+test:policy:history: 
+test:policy:display: cache miss, executing 8b1031e9e1fc72ba
+test:policy:display: 
+test:policy:display: > nexus-harness@0.1.0 test:policy:display
+test:policy:display: > vitest run --project policy tests/activity.test.ts
+test:policy:display: 
+test:policy:display: 
+test:policy:display: [1m[30m[46m RUN [49m[39m[22m [36mv5.0.0 [39m[90m/mnt/e/projects/nexus-jira-runs/workspaces/HARN-49[39m
+test:policy:display: 
+test:policy:display:  [32m✓[39m [30m[45m policy [49m[39m tests/activity.test.ts [2m([22m[2m122 tests[22m[2m)[22m[33m 2437[2mms[22m[39m
+test:policy:display:    [32m✓[39m the invocation timeline [2m(24)[22m
+test:policy:display:      [33m[2m✓[22m[39m preserves complete identities across wrapping at 20 columns[33m 588[2mms[22m[39m
+test:policy:display:      [33m[2m✓[22m[39m preserves complete identities across wrapping at 24 columns[33m 603[2mms[22m[39m
+test:policy:display:      [33m[2m✓[22m[39m preserves complete identities across wrapping at 80 columns[33m 569[2mms[22m[39m
+test:policy:display: 
+test:policy:display: [2m Test Files [22m [1m[32m1 passed[39m[22m[90m (1)[39m
+test:policy:display: [2m      Tests [22m [1m[32m122 passed[39m[22m[90m (122)[39m
+test:policy:display: [2m   Start at [22m 21:36:11
+test:policy:display: [2m   Duration [22m 3.19s[2m (tests 87%, transform 8%, import 4%, worker 1%)[22m
+test:policy:display: 
+test:policy:loop: cache miss, executing 6dbb441554076e73
+test:policy:loop: 
+test:policy:loop: > nexus-harness@0.1.0 test:policy:loop
+test:policy:loop: > vitest run --project policy tests/completion-policy.test.ts tests/runner-policy.test.ts tests/stop.test.ts tests/support.test.ts
+test:policy:loop: 
+test:policy:loop: 
+test:policy:loop: [1m[30m[46m RUN [49m[39m[22m [36mv5.0.0 [39m[90m/mnt/e/projects/nexus-jira-runs/workspaces/HARN-49[39m
+test:policy:loop: 
+test:policy:loop:  [32m✓[39m [30m[45m policy [49m[39m tests/stop.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 3[2mms[22m[39m
+test:policy:loop:  [32m✓[39m [30m[45m policy [49m[39m tests/support.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 10[2mms[22m[39m
+test:policy:loop:  [32m✓[39m [30m[45m policy [49m[39m tests/completion-policy.test.ts [2m([22m[2m12 tests[22m[2m)[22m[32m 54[2mms[22m[39m
+test:policy:loop:  [32m✓[39m [30m[45m policy [49m[39m tests/runner-policy.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 78[2mms[22m[39m
+test:policy:loop: 
+test:policy:loop: [2m Test Files [22m [1m[32m4 passed[39m[22m[90m (4)[39m
+test:policy:loop: [2m      Tests [22m [1m[32m24 passed[39m[22m[90m (24)[39m
+test:policy:loop: [2m   Start at [22m 21:36:16
+test:policy:loop: [2m   Duration [22m 2.51s[2m (transform 63%, import 32%, tests 4%, worker 1%)[22m
+test:policy:loop: 
+test:policy:config: cache miss, executing 5c3d96fee61ff2b6
+test:policy:config: 
+test:policy:config: > nexus-harness@0.1.0 test:policy:config
+test:policy:config: > vitest run --project policy tests/boundaries.test.ts tests/completion-config.test.ts tests/completion-gate.test.ts tests/config.test.ts tests/connect-guide.test.ts tests/validation-cache.test.ts
+test:policy:config: 
+test:policy:config: 
+test:policy:config: [1m[30m[46m RUN [49m[39m[22m [36mv5.0.0 [39m[90m/mnt/e/projects/nexus-jira-runs/workspaces/HARN-49[39m
+test:policy:config: 
+test:policy:config:  [32m✓[39m [30m[45m policy [49m[39m tests/completion-gate.test.ts [2m([22m[2m17 tests[22m[2m)[22m[32m 4[2mms[22m[39m
+test:policy:config:  [32m✓[39m [30m[45m policy [49m[39m tests/connect-guide.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 22[2mms[22m[39m
+test:policy:config:  [32m✓[39m [30m[45m policy [49m[39m tests/completion-config.test.ts [2m([22m[2m22 tests[22m[2m)[22m[32m 57[2mms[22m[39m
+test:policy:config:  [32m✓[39m [30m[45m policy [49m[39m tests/config.test.ts [2m([22m[2m87 tests[22m[2m)[22m[32m 198[2mms[22m[39m
+test:policy:config:  [32m✓[39m [30m[45m policy [49m[39m tests/validation-cache.test.ts [2m([22m[2m9 tests[22m[2m)[22m[33m 713[2mms[22m[39m
+test:policy:config:    [32m✓[39m the validation task cache contract [2m(9)[22m
+test:policy:config:      [33m[2m✓[22m[39m names the files each cache-eligible test group reads[33m 587[2mms[22m[39m
+test:policy:config:  [31m❯[39m [30m[45m policy [49m[39m tests/boundaries.test.ts [2m([22m[2m3 tests[22m[2m | [22m[31m1 failed[39m[2m)[22m[33m 5118[2mms[22m[39m
+test:policy:config:    [31m❯[39m dependency boundaries [2m(3)[22m
+test:policy:config: [31m     [31m×[31m permits a helper module that imports the data contracts[39m[33m 5091[2mms[22m[39m
+test:policy:config:      [32m✓[39m rejects a helper module that imports the CLI[32m 20[2mms[22m[39m
+test:policy:config:      [32m✓[39m rejects runtime I/O in the data-contract module[32m 7[2mms[22m[39m
+test:policy:config: 
+test:policy:config: [31m⎯⎯⎯⎯⎯⎯⎯[39m[1m[41m Failed Tests 1 [49m[22m[31m⎯⎯⎯⎯⎯⎯⎯[39m
+test:policy:config: 
+test:policy:config: [41m[1m FAIL [22m[49m [30m[45m policy [49m[39m tests/boundaries.test.ts[2m > [22mdependency boundaries[2m > [22mpermits a helper module that imports the data contracts
+test:policy:config: [31m[1mError[22m: Test timed out in 5000ms.
+test:policy:config: If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".[39m
+test:policy:config: [36m [2m❯[22m tests/boundaries.test.ts:[2m31:3[22m[39m
+test:policy:config:     [90m 29|[39m
+test:policy:config:     [90m 30|[39m describe('dependency boundaries', () => {
+test:policy:config:     [90m 31|[39m   it('permits a helper module that imports the data contracts', async …
+test:policy:config:     [90m   |[39m   [31m^[39m
+test:policy:config:     [90m 32|[39m     const result = await lintFixture(path.join('allowed', 'uses-types.…
+test:policy:config:     [90m 33|[39m
+test:policy:config: 
+test:policy:config: [31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯[22m[39m
+test:policy:config: 
+test:policy:config: 
+test:policy:config: [2m Test Files [22m [1m[31m1 failed[39m[22m[2m | [22m[1m[32m5 passed[39m[22m[90m (6)[39m
+test:policy:config: [2m      Tests [22m [1m[31m1 failed[39m[22m[2m | [22m[1m[32m141 passed[39m[22m[90m (142)[39m
+test:policy:config: [2m   Start at [22m 21:36:19
+test:policy:config: [2m   Duration [22m 7.32s[2m (tests 57%, import 34%, transform 8%, worker 1%)[22m
+test:policy:config: 
+test:policy:intake: cache miss, executing 3ec2eaa8a8d5565d
+test:policy:config:  ERROR  command (/mnt/e/projects/nexus-jira-runs/workspaces/HARN-49/) /usr/local/bin/npm run test:policy:config exited (1)
+
+ Tasks:    7 successful, 9 total
+Cached:    0 cached, 9 total
+  Time:    44.188s 
+Failed:    //#test:policy:config
+
+ ERROR  run failed: command  exited (1)
+real 44.61
+user 28.97
+sys 7.31
+Validation exit: 1
+New fixture directories:
+Remaining Node/Git processes (no rows means none):
+    PID    PPID                  STARTED COMMAND

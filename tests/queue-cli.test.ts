@@ -592,7 +592,10 @@ describe('the queue command line', () => {
     const context: CliContext = {
       ...fixture.context,
       completionParts: {
-        command: gh.command,
+        // The stand-in as one process, the shape a real `gh` has: these cases
+        // are about the completion path, not about a launcher in front of it
+        // (tests/fixtures/local-target.ts).
+        command: gh.launch,
         env: {
           ...process.env,
           GH_TOKEN: 'operator-token',
@@ -764,7 +767,10 @@ describe('the queue command line', () => {
     const context: CliContext = {
       ...fixture.context,
       completionParts: {
-        command: gh.command,
+        // The stand-in as one process, the shape a real `gh` has: these cases
+        // are about the completion path, not about a launcher in front of it
+        // (tests/fixtures/local-target.ts).
+        command: gh.launch,
         env: {
           ...process.env,
           GH_TOKEN: 'operator-token',

@@ -1,0 +1,49 @@
+
+> nexus-harness@0.1.0 validate
+> node scripts/turbo.mjs run format:check lint typecheck build test:policy:display test:policy:config test:policy:loop test:policy:intake test:policy:history test:boundary
+
+npm.cmd : • turbo 2.11.2
+At C:\Users\User\AppData\Local\Temp\harn49-repair-cycle.ps1:27 char:5
++     & npm.cmd run validate 2>&1 | Tee-Object -FilePath "$stage\after- ...
++     ~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (• turbo 2.11.2:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+
+   • Running format:check, lint, typecheck, build, test:policy:display, test:policy:config, test:policy:loop, test:policy:intake, test:policy:history, test:boundary
+   • Remote caching disabled
+
+format:check: cache miss, executing eb450cdd70966559
+format:check: 
+format:check: > nexus-harness@0.1.0 format:check
+format:check: > prettier --check .
+format:check: 
+format:check: Checking formatting...
+format:check: All matched files use Prettier code style!
+typecheck: cache hit, suppressing logs 800824b1c823de05
+build: cache hit, suppressing logs 572c397fc6dc436f
+lint: cache hit, suppressing logs 43bd85ec4f19d1b9
+test:policy:config: cache hit, suppressing logs 5cbe7b5d4ac082fa
+test:policy:intake: cache hit, suppressing logs c7da5da2d3bccbd8
+test:policy:history: cache hit, suppressing logs 5e973780fd03bd3a
+test:policy:display: cache hit, suppressing logs 8cf8a3d0671740bf
+test:policy:loop: cache hit, suppressing logs 66bc73fc73dc8e54
+test:boundary: cache bypass, force executing a44a352bcd5b25e5
+test:boundary: 
+test:boundary: > nexus-harness@0.1.0 test:boundary
+test:boundary: > vitest run --project boundary
+test:boundary: 
+test:boundary: 
+test:boundary:  RUN  v5.0.0 E:/projects/nexus-jira-runs/workspaces/HARN-49
+test:boundary: 
+test:boundary: 
+test:boundary:  Test Files  34 passed (34)
+test:boundary:       Tests  769 passed | 2 skipped (771)
+test:boundary:    Start at  20:41:40
+test:boundary:    Duration  218.72s (tests 99%, import 1%)
+test:boundary: 
+
+ Tasks:    10 successful, 10 total
+Cached:    8 cached, 10 total
+  Time:    3m43.218s 
+

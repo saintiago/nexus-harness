@@ -3,6 +3,11 @@ node_modules/
 dist/
 coverage/
 .harness/
+# The local validation cache (docs/validation-caching.md). Prettier already
+# skips it through .gitignore; naming it here keeps that true if the ignore
+# rules ever change, because a cache that the gate formats would invalidate
+# itself.
+.turbo/
 
 # Generated lockfile.
 package-lock.json

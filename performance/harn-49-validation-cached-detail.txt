@@ -1,0 +1,43 @@
+
+> nexus-harness@0.1.0 validate
+> node scripts/turbo.mjs run format:check lint typecheck build test:policy:display test:policy:config test:policy:loop test:policy:intake test:policy:history test:boundary
+
+npm.cmd : • turbo 2.11.2
+At E:\projects\nexus-jira-runs\workspaces\HARN-49\performance\measure-windows.ps1:59 char:13
++             & npm.cmd run validate 2>&1 | Tee-Object -FilePath "$pref ...
++             ~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (• turbo 2.11.2:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+
+   • Running format:check, lint, typecheck, build, test:policy:display, test:policy:config, test:policy:loop, test:policy:intake, test:policy:history, test:boundary
+   • Remote caching disabled
+
+build: cache hit, suppressing logs 36bdee892efdd27d
+format:check: cache hit, suppressing logs 77b774a3c1877341
+lint: cache hit, suppressing logs cd2885445676453b
+typecheck: cache hit, suppressing logs 13000a7741b08611
+test:policy:history: cache hit, suppressing logs 70677a8bbf96a78a
+test:policy:loop: cache hit, suppressing logs 888822e8f4fe257b
+test:policy:intake: cache hit, suppressing logs 03dbd4125c264094
+test:policy:display: cache hit, suppressing logs 1f06ef7f579f038a
+test:policy:config: cache hit, suppressing logs 726971d718988c8f
+test:boundary: cache bypass, force executing 0686eccc689563ad
+test:boundary: 
+test:boundary: > nexus-harness@0.1.0 test:boundary
+test:boundary: > vitest run --project boundary
+test:boundary: 
+test:boundary: 
+test:boundary:  RUN  v5.0.0 E:/projects/nexus-jira-runs/workspaces/HARN-49
+test:boundary: 
+test:boundary: 
+test:boundary:  Test Files  37 passed (37)
+test:boundary:       Tests  802 passed | 2 skipped (804)
+test:boundary:    Start at  21:29:07
+test:boundary:    Duration  231.85s (tests 99%, import 1%)
+test:boundary: 
+
+ Tasks:    10 successful, 10 total
+Cached:    9 cached, 10 total
+  Time:    3m52.404s 
+

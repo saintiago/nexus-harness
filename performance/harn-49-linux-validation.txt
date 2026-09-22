@@ -1,0 +1,355 @@
+npm notice Changelog: https://github.com/npm/cli/releases/tag/v11.19.1
+npm notice To update run: npm install -g npm@11.19.1
+npm notice
+2026-09-22T19:37:58+00:00
+212aee1560ac7c9bffc60ec09d01fbc98d41d39d
+Linux Raul 6.18.33.2-microsoft-standard-WSL2 #1 SMP PREEMPT_DYNAMIC Thu Jun 18 21:54:43 UTC 2026 x86_64 x86_64 x86_64 GNU/Linux
+v24.14.1
+11.11.0
+git version 2.43.0
+
+> nexus-harness@0.1.0 validate:fresh
+> npm run cache:clear && npm run validate
+
+
+> nexus-harness@0.1.0 cache:clear
+> node scripts/cache-clear.mjs
+
+no local validation cache to clear (.turbo)
+
+> nexus-harness@0.1.0 validate
+> node scripts/turbo.mjs run format:check lint typecheck build test:policy:display test:policy:config test:policy:loop test:policy:intake test:policy:history test:boundary
+
+• turbo 2.11.2
+
+   • Running format:check, lint, typecheck, build, test:policy:display, test:policy:config, test:policy:loop, test:policy:intake, test:policy:history, test:boundary
+   • Remote caching disabled
+
+lint: cache miss, executing cd2885445676453b
+lint: 
+lint: > nexus-harness@0.1.0 lint
+lint: > eslint . --cache --cache-location .turbo/eslint/.eslintcache --cache-strategy content
+lint: 
+typecheck: cache miss, executing 13000a7741b08611
+typecheck: 
+typecheck: > nexus-harness@0.1.0 typecheck
+typecheck: > tsc --project tsconfig.json --noEmit
+typecheck: 
+build: cache miss, executing 36bdee892efdd27d
+build: 
+build: > nexus-harness@0.1.0 build
+build: > node scripts/build.mjs
+build: 
+format:check: cache miss, executing 7b356a2c9a8300b2
+format:check: 
+format:check: > nexus-harness@0.1.0 format:check
+format:check: > prettier --check .
+format:check: 
+format:check: Checking formatting...
+format:check: All matched files use Prettier code style!
+test:policy:display: cache miss, executing 8b1031e9e1fc72ba
+test:policy:display: 
+test:policy:display: > nexus-harness@0.1.0 test:policy:display
+test:policy:display: > vitest run --project policy tests/activity.test.ts
+test:policy:display: 
+test:policy:display: 
+test:policy:display: [1m[30m[46m RUN [49m[39m[22m [36mv5.0.0 [39m[90m/home/aiur/harn49-linux-check[39m
+test:policy:display: 
+test:policy:display:  [32m✓[39m [30m[45m policy [49m[39m tests/activity.test.ts [2m([22m[2m122 tests[22m[2m)[22m[33m 2406[2mms[22m[39m
+test:policy:display:    [32m✓[39m the invocation timeline [2m(24)[22m
+test:policy:display:      [33m[2m✓[22m[39m preserves complete identities across wrapping at 20 columns[33m 571[2mms[22m[39m
+test:policy:display:      [33m[2m✓[22m[39m preserves complete identities across wrapping at 24 columns[33m 574[2mms[22m[39m
+test:policy:display:      [33m[2m✓[22m[39m preserves complete identities across wrapping at 80 columns[33m 594[2mms[22m[39m
+test:policy:display: 
+test:policy:display: [2m Test Files [22m [1m[32m1 passed[39m[22m[90m (1)[39m
+test:policy:display: [2m      Tests [22m [1m[32m122 passed[39m[22m[90m (122)[39m
+test:policy:display: [2m   Start at [22m 21:38:10
+test:policy:display: [2m   Duration [22m 2.65s[2m (tests 94%, transform 5%, import 2%)[22m
+test:policy:display: 
+test:policy:intake: cache miss, executing 3ec2eaa8a8d5565d
+test:policy:intake: 
+test:policy:intake: > nexus-harness@0.1.0 test:policy:intake
+test:policy:intake: > vitest run --project policy tests/baseline-findings.test.ts tests/jira.test.ts tests/queue-recovery.test.ts tests/queue.test.ts
+test:policy:intake: 
+test:policy:intake: 
+test:policy:intake: [1m[30m[46m RUN [49m[39m[22m [36mv5.0.0 [39m[90m/home/aiur/harn49-linux-check[39m
+test:policy:intake: 
+test:policy:intake:  [32m✓[39m [30m[45m policy [49m[39m tests/queue-recovery.test.ts [2m([22m[2m8 tests[22m[2m)[22m[32m 21[2mms[22m[39m
+test:policy:intake:  [32m✓[39m [30m[45m policy [49m[39m tests/jira.test.ts [2m([22m[2m96 tests[22m[2m)[22m[32m 99[2mms[22m[39m
+test:policy:intake:  [32m✓[39m [30m[45m policy [49m[39m tests/queue.test.ts [2m([22m[2m48 tests[22m[2m)[22m[32m 58[2mms[22m[39m
+test:policy:intake:  [32m✓[39m [30m[45m policy [49m[39m tests/baseline-findings.test.ts [2m([22m[2m8 tests[22m[2m)[22m[32m 6[2mms[22m[39m
+test:policy:intake: 
+test:policy:intake: [2m Test Files [22m [1m[32m4 passed[39m[22m[90m (4)[39m
+test:policy:intake: [2m      Tests [22m [1m[32m160 passed[39m[22m[90m (160)[39m
+test:policy:intake: [2m   Start at [22m 21:38:13
+test:policy:intake: [2m   Duration [22m 593ms[2m (transform 65%, import 22%, tests 13%, worker 1%)[22m
+test:policy:intake: 
+test:policy:history: cache miss, executing 6c62d61bf414533d
+test:policy:history: 
+test:policy:history: > nexus-harness@0.1.0 test:policy:history
+test:policy:history: > vitest run --project policy tests/history-runner.test.ts tests/history-source.test.ts tests/history.test.ts tests/reviews.test.ts
+test:policy:history: 
+test:policy:history: 
+test:policy:history: [1m[30m[46m RUN [49m[39m[22m [36mv5.0.0 [39m[90m/home/aiur/harn49-linux-check[39m
+test:policy:history: 
+test:policy:history:  [32m✓[39m [30m[45m policy [49m[39m tests/history-source.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 33[2mms[22m[39m
+test:policy:history:  [32m✓[39m [30m[45m policy [49m[39m tests/reviews.test.ts [2m([22m[2m68 tests[22m[2m)[22m[32m 255[2mms[22m[39m
+test:policy:history:  [32m✓[39m [30m[45m policy [49m[39m tests/history-runner.test.ts [2m([22m[2m8 tests[22m[2m)[22m[32m 90[2mms[22m[39m
+test:policy:history:  [32m✓[39m [30m[45m policy [49m[39m tests/history.test.ts [2m([22m[2m53 tests[22m[2m)[22m[33m 1622[2mms[22m[39m
+test:policy:history:    [32m✓[39m review follow-up retention regressions [2m(9)[22m
+test:policy:history:      [33m[2m✓[22m[39m bounds consumed responses to an outstanding review in both prompts, with whole local overflow[33m 931[2mms[22m[39m
+test:policy:history: 
+test:policy:history: [2m Test Files [22m [1m[32m4 passed[39m[22m[90m (4)[39m
+test:policy:history: [2m      Tests [22m [1m[32m131 passed[39m[22m[90m (131)[39m
+test:policy:history: [2m   Start at [22m 21:38:14
+test:policy:history: [2m   Duration [22m 2.19s[2m (tests 50%, transform 38%, import 12%)[22m
+test:policy:history: 
+test:policy:config: cache miss, executing 5c3d96fee61ff2b6
+test:policy:config: 
+test:policy:config: > nexus-harness@0.1.0 test:policy:config
+test:policy:config: > vitest run --project policy tests/boundaries.test.ts tests/completion-config.test.ts tests/completion-gate.test.ts tests/config.test.ts tests/connect-guide.test.ts tests/validation-cache.test.ts
+test:policy:config: 
+test:policy:config: 
+test:policy:config: [1m[30m[46m RUN [49m[39m[22m [36mv5.0.0 [39m[90m/home/aiur/harn49-linux-check[39m
+test:policy:config: 
+test:policy:config:  [32m✓[39m [30m[45m policy [49m[39m tests/completion-gate.test.ts [2m([22m[2m17 tests[22m[2m)[22m[32m 4[2mms[22m[39m
+test:policy:config:  [32m✓[39m [30m[45m policy [49m[39m tests/connect-guide.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 5[2mms[22m[39m
+test:policy:config:  [32m✓[39m [30m[45m policy [49m[39m tests/completion-config.test.ts [2m([22m[2m22 tests[22m[2m)[22m[32m 49[2mms[22m[39m
+test:policy:config:  [32m✓[39m [30m[45m policy [49m[39m tests/config.test.ts [2m([22m[2m87 tests[22m[2m)[22m[32m 184[2mms[22m[39m
+test:policy:config:  [32m✓[39m [30m[45m policy [49m[39m tests/validation-cache.test.ts [2m([22m[2m9 tests[22m[2m)[22m[32m 210[2mms[22m[39m
+test:policy:config:  [32m✓[39m [30m[45m policy [49m[39m tests/boundaries.test.ts [2m([22m[2m3 tests[22m[2m)[22m[33m 358[2mms[22m[39m
+test:policy:config:    [32m✓[39m dependency boundaries [2m(3)[22m
+test:policy:config:      [33m[2m✓[22m[39m permits a helper module that imports the data contracts[33m 346[2mms[22m[39m
+test:policy:config: 
+test:policy:config: [2m Test Files [22m [1m[32m6 passed[39m[22m[90m (6)[39m
+test:policy:config: [2m      Tests [22m [1m[32m142 passed[39m[22m[90m (142)[39m
+test:policy:config: [2m   Start at [22m 21:38:16
+test:policy:config: [2m   Duration [22m 595ms[2m (tests 43%, transform 30%, import 26%, worker 1%)[22m
+test:policy:config: 
+test:policy:loop: cache miss, executing 6dbb441554076e73
+test:policy:loop: 
+test:policy:loop: > nexus-harness@0.1.0 test:policy:loop
+test:policy:loop: > vitest run --project policy tests/completion-policy.test.ts tests/runner-policy.test.ts tests/stop.test.ts tests/support.test.ts
+test:policy:loop: 
+test:policy:loop: 
+test:policy:loop: [1m[30m[46m RUN [49m[39m[22m [36mv5.0.0 [39m[90m/home/aiur/harn49-linux-check[39m
+test:policy:loop: 
+test:policy:loop:  [32m✓[39m [30m[45m policy [49m[39m tests/stop.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 3[2mms[22m[39m
+test:policy:loop:  [32m✓[39m [30m[45m policy [49m[39m tests/support.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 10[2mms[22m[39m
+test:policy:loop:  [32m✓[39m [30m[45m policy [49m[39m tests/completion-policy.test.ts [2m([22m[2m12 tests[22m[2m)[22m[32m 54[2mms[22m[39m
+test:policy:loop:  [32m✓[39m [30m[45m policy [49m[39m tests/runner-policy.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 63[2mms[22m[39m
+test:policy:loop: 
+test:policy:loop: [2m Test Files [22m [1m[32m4 passed[39m[22m[90m (4)[39m
+test:policy:loop: [2m      Tests [22m [1m[32m24 passed[39m[22m[90m (24)[39m
+test:policy:loop: [2m   Start at [22m 21:38:17
+test:policy:loop: [2m   Duration [22m 680ms[2m (transform 68%, import 21%, tests 10%, worker 1%)[22m
+test:policy:loop: 
+test:boundary: cache bypass, force executing adabd57115e64f4b
+test:boundary: 
+test:boundary: > nexus-harness@0.1.0 test:boundary
+test:boundary: > vitest run --project boundary
+test:boundary: 
+test:boundary: 
+test:boundary: [1m[30m[46m RUN [49m[39m[22m [36mv5.0.0 [39m[90m/home/aiur/harn49-linux-check[39m
+test:boundary: 
+test:boundary:  [32m✓[39m [30m[43m boundary [49m[39m tests/source.test.ts [2m([22m[2m101 tests[22m[2m)[22m[33m 1010[2mms[22m[39m
+test:boundary:  [32m✓[39m [30m[43m boundary [49m[39m tests/agent.test.ts [2m([22m[2m33 tests[22m[2m | [22m[33m1 skipped[39m[2m)[22m[33m 2941[2mms[22m[39m
+test:boundary:    [32m✓[39m how a turn ends, and what it reports [2m(8)[22m
+test:boundary:      [33m[2m✓[22m[39m retains a full developer message across the adapter (stopped=true)[33m 440[2mms[22m[39m
+test:boundary:    [32m✓[39m stopping what a turn started [2m(5)[22m
+test:boundary:      [33m[2m✓[22m[39m waits for a stopped runtime to end before the turn returns[33m 443[2mms[22m[39m
+test:boundary:  [32m✓[39m [30m[43m boundary [49m[39m tests/baseline.test.ts [2m([22m[2m68 tests[22m[2m)[22m[33m 3622[2mms[22m[39m
+test:boundary:    [32m✓[39m the pre-delivery baseline diagnosis [2m(24)[22m
+test:boundary:      [33m[2m✓[22m[39m keeps the lock when the bounded reviewer timeout cannot confirm its stop[33m 2109[2mms[22m[39m
+test:boundary:  [32m✓[39m [30m[43m boundary [49m[39m tests/baseline-queue.integration.test.ts [2m([22m[2m23 tests[22m[2m)[22m[33m 1128[2mms[22m[39m
+test:boundary:    [32m✓[39m the diagnosis through `source run` [2m(1)[22m
+test:boundary:      [33m[2m✓[22m[39m returns the same ticket to To Do and hands the finding to the next claim[33m 485[2mms[22m[39m
+test:boundary:  [32m✓[39m [30m[43m boundary [49m[39m tests/queue-cli.test.ts [2m([22m[2m21 tests[22m[2m)[22m[33m 2518[2mms[22m[39m
+test:boundary:    [32m✓[39m the queue command line [2m(19)[22m
+test:boundary:      [33m[2m✓[22m[39m resumes an admitted merged In Review ticket, then a restart after Done has no completion effects[33m 578[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m creates the missing completion evidence directory and resolves the ticket it resumes[33m 682[2mms[22m[39m
+test:boundary:  [32m✓[39m [30m[43m boundary [49m[39m tests/local-run.integration.test.ts [2m([22m[2m5 tests[22m[2m)[22m[33m 5539[2mms[22m[39m
+test:boundary:    [32m✓[39m the offline local loop, end to end [2m(5)[22m
+test:boundary:      [33m[2m✓[22m[39m repairs a failed implementation, and tells the repair what was observed[33m 372[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m stops a real hanging check when the run's own deadline expires[33m 4185[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m gives two runs of one task separate directories and separate clones[33m 475[2mms[22m[39m
+test:boundary:  [32m✓[39m [30m[43m boundary [49m[39m tests/source-cli.integration.test.ts [2m([22m[2m27 tests[22m[2m)[22m[33m 8511[2mms[22m[39m
+test:boundary:    [32m✓[39m the source commands through the CLI [2m(27)[22m
+test:boundary:      [33m[2m✓[22m[39m runs one attempt per ladder tier in the same workspace, keeping the issue running until the end[33m 372[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m restarts a re-armed continuation at the first tier, keeping its workspace and its history[33m 499[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m watch picks up an issue made eligible later, then stops on interrupt[33m 5099[2mms[22m[39m
+test:boundary:  [32m✓[39m [30m[43m boundary [49m[39m tests/reviews-cli.integration.test.ts [2m([22m[2m35 tests[22m[2m)[22m[33m 2808[2mms[22m[39m
+test:boundary:  [32m✓[39m [30m[43m boundary [49m[39m tests/runner.test.ts [2m([22m[2m25 tests[22m[2m)[22m[33m 5486[2mms[22m[39m
+test:boundary:    [32m✓[39m a run that continues a workspace [2m(1)[22m
+test:boundary:      [33m[2m✓[22m[39m starts from the red working copy it was pointed at, reaches its turn, and records the attempt[33m 581[2mms[22m[39m
+test:boundary:    [32m✓[39m a run whose attempt cannot be recorded in its workspace ledger [2m(2)[22m
+test:boundary:      [33m[2m✓[22m[39m keeps the report and its check evidence, and names the ledger that did not record it[33m 304[2mms[22m[39m
+test:boundary:    [32m✓[39m a working copy a coding turn commits in [2m(6)[22m
+test:boundary:      [33m[2m✓[22m[39m has its repository-local identity before the turn runs, and keeps the commit[33m 315[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m configures the identity for a continuation that did not go through reopenWorkspace[33m 588[2mms[22m[39m
+test:boundary:    [32m✓[39m a continued run whose source checkout moved on [2m(1)[22m
+test:boundary:      [33m[2m✓[22m[39m keeps the recorded base for comparisons, with commits and leftovers both visible[33m 593[2mms[22m[39m
+test:boundary:    [32m✓[39m a run whose baseline passes [2m(5)[22m
+test:boundary:      [33m[2m✓[22m[39m runs one implementation turn, then setup and every check, and passes[33m 603[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m starts no post-agent command while the implementation turn is running[33m 711[2mms[22m[39m
+test:boundary:  [32m✓[39m [30m[43m boundary [49m[39m tests/lifecycle.test.ts [2m([22m[2m7 tests[22m[2m | [22m[33m1 skipped[39m[2m)[22m[33m 1806[2mms[22m[39m
+test:boundary:    [32m✓[39m a run its caller stops, for real [2m(7)[22m
+test:boundary:      [33m[2m✓[22m[39m stops a baseline command and the tree behind it, and starts nothing after it[33m 444[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m stops the check a turn left hanging, and runs no further round or turn[33m 524[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m stops a single command that was already running when it was asked to stop[33m 376[2mms[22m[39m
+test:boundary:  [32m✓[39m [30m[43m boundary [49m[39m tests/checks.test.ts [2m([22m[2m35 tests[22m[2m | [22m[33m7 skipped[39m[2m)[22m[33m 3992[2mms[22m[39m
+test:boundary:    [32m✓[39m a command that runs out of time [2m(5)[22m
+test:boundary:      [33m[2m✓[22m[39m is stopped with the child it started, and is not waited for[33m 2612[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m runs under the task time that is left when that is the smaller limit[33m 406[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m runs under its own command limit when that is the smaller one[33m 407[2mms[22m[39m
+test:boundary:  [32m✓[39m [30m[43m boundary [49m[39m tests/report.test.ts [2m([22m[2m23 tests[22m[2m)[22m[33m 422[2mms[22m[39m
+test:boundary:  [32m✓[39m [30m[43m boundary [49m[39m tests/runner-repair.test.ts [2m([22m[2m24 tests[22m[2m)[22m[33m 3351[2mms[22m[39m
+test:boundary:    [32m✓[39m a run that runs out of task time [2m(8)[22m
+test:boundary:      [33m[2m✓[22m[39m stops and awaits an implementation turn that is still running when the run is out of time[33m 354[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m stops and awaits a repair turn that is still running when the run is out of time[33m 309[2mms[22m[39m
+test:boundary:    [32m✓[39m a run the caller stops [2m(15)[22m
+test:boundary:      [33m[2m✓[22m[39m keeps the timeout it observed first when the caller stops the run as well[33m 351[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m releases the deadline of a phase that finished inside its budget[33m 755[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m gives a turn only the task time the checkout before it left[33m 351[2mms[22m[39m
+test:boundary:  [32m✓[39m [30m[43m boundary [49m[39m tests/workspace-branch.test.ts [2m([22m[2m25 tests[22m[2m)[22m[33m 1339[2mms[22m[39m
+test:boundary:  [32m✓[39m [30m[43m boundary [49m[39m tests/workspace.test.ts [2m([22m[2m51 tests[22m[2m)[22m[33m 1620[2mms[22m[39m
+test:boundary:  [32m✓[39m [30m[43m boundary [49m[39m tests/cli-run.integration.test.ts [2m([22m[2m24 tests[22m[2m)[22m[33m 1681[2mms[22m[39m
+test:boundary:  [32m✓[39m [30m[43m boundary [49m[39m tests/readme.test.ts [2m([22m[2m9 tests[22m[2m)[22m[33m 1032[2mms[22m[39m
+test:boundary:    [32m✓[39m the documented disposable example [2m(3)[22m
+test:boundary:      [33m[2m✓[22m[39m runs the documented command, and the paths it prints are the real layout[33m 334[2mms[22m[39m
+test:boundary:  [32m✓[39m [30m[43m boundary [49m[39m tests/cli.integration.test.ts [2m([22m[2m6 tests[22m[2m)[22m[33m 2161[2mms[22m[39m
+test:boundary:    [32m✓[39m the built CLI, end to end [2m(6)[22m
+test:boundary:      [33m[2m✓[22m[39m runs a task to a pass, keeping real changes and a parseable report[33m 379[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m launches the configured prefix, literally, and records it in the report and timeline[33m 363[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m refuses invalid input with a nonzero exit and creates no run artifacts[33m 356[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m interrupts a running turn: the CLI stops, its fixture processes stop, and the run is cancelled[33m 338[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m works with spaces in the config, task, source and output paths[33m 376[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m touches neither the runtime nor the source for help and check-config[33m 346[2mms[22m[39m
+test:boundary:  [32m✓[39m [30m[43m boundary [49m[39m tests/cli.test.ts [2m([22m[2m49 tests[22m[2m)[22m[33m 1247[2mms[22m[39m
+test:boundary:    [32m✓[39m as a process [2m(4)[22m
+test:boundary:      [33m[2m✓[22m[39m prints help and exits 0[33m 434[2mms[22m[39m
+test:boundary:  [32m✓[39m [30m[43m boundary [49m[39m tests/completion-arm.test.ts [2m([22m[2m26 tests[22m[2m)[22m[33m 12678[2mms[22m[39m
+test:boundary:    [32m✓[39m arming native auto-merge before the final gate [2m(12)[22m
+test:boundary:      [33m[2m✓[22m[39m recovers a native merge after merge-uncertain (repair: false)[33m 1022[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m recovers a native merge after merge-uncertain (repair: true)[33m 1098[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m recovers a native merge after view-after-arm (repair: false)[33m 986[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m arms while the final required check is pending, then the green gate uses that arm[33m 875[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m returns an armed repair to To Do when the current-head Lens result requests changes[33m 421[2mms[22m[39m
+test:boundary:    [32m✓[39m reconciling terminal states across an auto-merge race [2m(14)[22m
+test:boundary:      [33m[2m✓[22m[39m finishes an already-merged admission without arming or asking for a person[33m 886[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m reconciles an unprocessable arm refusal when GitHub merged the reviewed head[33m 523[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m retries a transient read that reconciles a successful auto-merge response[33m 553[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m retries a transient read that reconciles an unprocessable auto-merge response[33m 568[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m follows a merge that lands between the merge read and the gate read (HARN-34)[33m 468[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m continues when GitHub merges the head before the arm is verified[33m 548[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m retries a read the harness stopped at its command limit without any answer[33m 1496[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m reports a pull request closed while the merge is awaited as a terminal failure[33m 309[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m resumes post-merge verification after a restart without repeating any write[33m 869[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m records a merge it discovers before arming so a restart finishes the failed move[33m 867[2mms[22m[39m
+test:boundary:  [32m✓[39m [30m[43m boundary [49m[39m tests/delivery.test.ts [2m([22m[2m12 tests[22m[2m)[22m[33m 777[2mms[22m[39m
+test:boundary:  [32m✓[39m [30m[43m boundary [49m[39m tests/live-verifier.test.ts [2m([22m[2m19 tests[22m[2m)[22m[33m 14244[2mms[22m[39m
+test:boundary:    [32m✓[39m the entry point, as a process [2m(8)[22m
+test:boundary:      [33m[2m✓[22m[39m refuses a configuration that cannot be used, before any paid work[33m 347[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m runs both exercises through the configured selection, against the fixture[33m 6120[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m is absent from default test discovery[33m 1047[2mms[22m[39m
+test:boundary:    [32m✓[39m the repair fixture’s injected failure [2m(1)[22m
+test:boundary:      [33m[2m✓[22m[39m waits for the arm file it is given, injects once, and never repairs itself[33m 5263[2mms[22m[39m
+test:boundary:    [32m✓[39m the exercises, through the stand-in runtime boundary [2m(2)[22m
+test:boundary:      [33m[2m✓[22m[39m passes the implementation exercise when the turn does the work[33m 356[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m reports what it found instead of passing a run that did not do the work[33m 362[2mms[22m[39m
+test:boundary:  [32m✓[39m [30m[43m boundary [49m[39m tests/runner-records.test.ts [2m([22m[2m7 tests[22m[2m)[22m[33m 1574[2mms[22m[39m
+test:boundary:    [32m✓[39m what a run records about the working copy it left [2m(3)[22m
+test:boundary:      [33m[2m✓[22m[39m lists and flags the changes a coding turn left, against the base it recorded[33m 329[2mms[22m[39m
+test:boundary:    [32m✓[39m the ticket conversation history before a coding turn [2m(3)[22m
+test:boundary:      [33m[2m✓[22m[39m retains the full previous turn report before a repair and advances only consumed input[33m 321[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m prepares one snapshot before the turn and hands the turn its local paths[33m 334[2mms[22m[39m
+test:boundary:  [32m✓[39m [30m[43m boundary [49m[39m tests/validation-cache-turbo.test.ts [2m([22m[2m11 tests[22m[2m)[22m[33m 11470[2mms[22m[39m
+test:boundary:    [32m✓[39m the local task cache [2m(11)[22m
+test:boundary:      [33m[2m✓[22m[39m invalidates on a declared input, and not on a file the task never reads[33m 742[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m never stores a failed task as a success[33m 361[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m never replays work that was interrupted before it finished[33m 7203[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m falls back to executing when the cached artefact is damaged[33m 400[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m reports what it reused, and what it executed, for one whole run[33m 423[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m hands the task the runtime it observed, and cannot reuse a result from another one[33m 775[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m invalidates on a change to the package manifest, and on one to the lockfile[33m 724[2mms[22m[39m
+test:boundary:  [32m✓[39m [30m[43m boundary [49m[39m tests/review-github.test.ts [2m([22m[2m18 tests[22m[2m)[22m[32m 51[2mms[22m[39m
+test:boundary:  [32m✓[39m [30m[43m boundary [49m[39m tests/fixture-beacon.test.ts [2m([22m[2m5 tests[22m[2m)[22m[33m 434[2mms[22m[39m
+test:boundary:  [32m✓[39m [30m[43m boundary [49m[39m tests/refresh.test.ts [2m([22m[2m10 tests[22m[2m)[22m[33m 529[2mms[22m[39m
+test:boundary:  [32m✓[39m [30m[43m boundary [49m[39m tests/fixture-workspace.test.ts [2m([22m[2m13 tests[22m[2m)[22m[32m 24[2mms[22m[39m
+test:boundary:  [32m✓[39m [30m[43m boundary [49m[39m tests/build-guard.test.ts [2m([22m[2m5 tests[22m[2m)[22m[33m 1528[2mms[22m[39m
+test:boundary:    [32m✓[39m the build guard [2m(5)[22m
+test:boundary:      [33m[2m✓[22m[39m emits every module, and regenerates one that was removed[33m 362[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m leaves behind the current sources only, and no incremental state[33m 361[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m rebuilds a behaviour change, and rebuilds the earlier revision again[33m 483[2mms[22m[39m
+test:boundary:  [32m✓[39m [30m[43m boundary [49m[39m tests/completion-cli.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 60[2mms[22m[39m
+test:boundary:  [32m✓[39m [30m[43m boundary [49m[39m tests/fixture-boundary.test.ts [2m([22m[2m7 tests[22m[2m)[22m[32m 11[2mms[22m[39m
+test:boundary:  [32m✓[39m [30m[43m boundary [49m[39m tests/fixture-allocation.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 6[2mms[22m[39m
+test:boundary:  [32m✓[39m [30m[43m boundary [49m[39m tests/fixture-cli.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 8[2mms[22m[39m
+test:boundary:  [32m✓[39m [30m[43m boundary [49m[39m tests/completion-github.test.ts [2m([22m[2m61 tests[22m[2m)[22m[33m 20957[2mms[22m[39m
+test:boundary:    [32m✓[39m review-to-completion [2m(61)[22m
+test:boundary:      [33m[2m✓[22m[39m refreshes the reader credential for later evidence reads without changing the operator identity[33m 496[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m finishes an approved pull request after its merge and main workflow succeeded[33m 481[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m arms native auto-merge with the operator credential and waits for GitHub to merge[33m 749[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m creates the per-issue evidence directory before its first GitHub command[33m 637[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m bounds pending required pull request checks with an attention comment[33m 302[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m returns a request-changes decision to the To Do status with the review link[33m 322[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m treats a failed Lens check associated with request changes as a finding[33m 313[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m treats a failed required pull request check as a finding naming the check[33m 319[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m returns a post-merge workflow failure to To Do with its conclusion and link[33m 457[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m treats a latest workflow attempt of cancelled as unsuccessful[33m 469[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m treats a latest workflow attempt of timed_out as unsuccessful[33m 452[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m treats a latest workflow attempt of action_required as unsuccessful[33m 456[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m treats a latest workflow attempt of stale as unsuccessful[33m 462[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m treats a latest workflow attempt of skipped as unsuccessful[33m 467[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m treats a latest workflow attempt of neutral as unsuccessful[33m 475[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m reads only the latest attempt of each configured workflow[33m 507[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m matches a workflow by its numeric ID as well as its file[33m 471[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m resumes a resolution comment whose Done move never arrived[33m 973[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m follows a merge GitHub makes after auto-merge was armed[33m 950[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m uses the latest review decision even when an older approval is present[33m 313[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m does not arm twice across restart or an uncertain auto-merge response[33m 808[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m returns a failed required check observed after arming to To Do[33m 596[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m does not return an optional failed check for repair[33m 479[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m waits for a post-merge workflow queued without fabricating failure[33m 472[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m waits for a post-merge workflow in_progress without fabricating failure[33m 504[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m selects the latest attempt of the same run ID[33m 529[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m names every unsuccessful configured workflow in one concise comment[33m 599[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m requires workflow health again even when an old resolution comment exists[33m 947[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m respects a human reopening the same resolved merge[33m 682[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m can resolve a reopened ticket only for a later different merged result[33m 979[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m respects a human status change before transition[33m 347[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m includes actionable inline Lens findings in the repair comment[33m 314[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m does not treat a completed workflow without a conclusion as failure[33m 415[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m runs only GitHub commands: no coding runtime is installed or started[33m 455[2mms[22m[39m
+test:boundary:  [32m✓[39m [30m[43m boundary [49m[39m tests/completion-summary.test.ts [2m([22m[2m2 tests[22m[2m)[22m[33m 490[2mms[22m[39m
+test:boundary:    [32m✓[39m the completion summary [2m(2)[22m
+test:boundary:      [33m[2m✓[22m[39m counts what each item ended as and prints it[33m 485[2mms[22m[39m
+test:boundary:  [32m✓[39m [30m[43m boundary [49m[39m tests/git.test.ts [2m([22m[2m7 tests[22m[2m | [22m[33m1 skipped[39m[2m)[22m[33m 11769[2mms[22m[39m
+test:boundary:    [32m✓[39m a Git command under a bound [2m(5)[22m
+test:boundary:      [33m[2m✓[22m[39m stops a hanging command at its bound, and the child it started with it[33m 3023[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m gives each reading what is left of the run, not the budget its step started with[33m 2529[2mms[22m[39m
+test:boundary:    [32m✓[39m workspace steps that use Git [2m(2)[22m
+test:boundary:      [33m[2m✓[22m[39m stops a hanging preparation step at the run deadline, and keeps the run[33m 3030[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m ends a final comparison that hangs at its bound, with the stop it recorded[33m 3044[2mms[22m[39m
+test:boundary:  [32m✓[39m [30m[43m boundary [49m[39m tests/fixture-lifecycle.test.ts [2m([22m[2m4 tests[22m[2m)[22m[33m 58357[2mms[22m[39m
+test:boundary:    [32m✓[39m the fixture lifecycle [2m(4)[22m
+test:boundary:      [33m[2m✓[22m[39m stops a command that outlives its own bound, and waits for it to go[33m 761[2mms[22m[39m
+test:boundary:      [33m[2m✓[22m[39m cleans up after the cases that must fail, time out or cancel[33m 57539[2mms[22m[39m
+test:boundary: 
+test:boundary: [2m Test Files [22m [1m[32m37 passed[39m[22m[90m (37)[39m
+test:boundary: [2m      Tests [22m [1m[32m794 passed[39m[22m[2m | [22m[33m10 skipped[39m[90m (804)[39m
+test:boundary: [2m   Start at [22m 21:38:18
+test:boundary: [2m   Duration [22m 84.92s[2m (tests 97%, import 2%, transform 1%)[22m
+test:boundary: 
+
+ Tasks:    10 successful, 10 total
+Cached:    0 cached, 10 total
+  Time:    1m44.18s 
+
+real 104.49
+user 100.55
+sys 34.47
+Validation exit: 0
+New fixture directories:
+Remaining Node/Git processes (no rows means none):
+    PID    PPID                  STARTED COMMAND
