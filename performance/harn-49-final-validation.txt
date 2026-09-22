@@ -16,29 +16,43 @@ cleared .turbo: task results, the ESLint cache and the incremental metadata are 
    • Running format:check, lint, typecheck, build, test:policy:display, test:policy:config, test:policy:loop, test:policy:intake, test:policy:history, test:boundary
    • Remote caching disabled
 
-typecheck: cache miss, executing 73157e52fd4c33eb
-typecheck: 
-typecheck: > nexus-harness@0.1.0 typecheck
-typecheck: > tsc --project tsconfig.json --noEmit
-typecheck: 
-lint: cache miss, executing fa97ae683260e6ba
+lint: cache miss, executing cd2885445676453b
 lint: 
 lint: > nexus-harness@0.1.0 lint
 lint: > eslint . --cache --cache-location .turbo/eslint/.eslintcache --cache-strategy content
 lint: 
-format:check: cache miss, executing 712fafd276ee33c5
+format:check: cache miss, executing b3aa4564dbec2aae
 format:check: 
 format:check: > nexus-harness@0.1.0 format:check
 format:check: > prettier --check .
 format:check: 
 format:check: Checking formatting...
 format:check: All matched files use Prettier code style!
-build: cache miss, executing 572c397fc6dc436f
+typecheck: cache miss, executing 13000a7741b08611
+typecheck: 
+typecheck: > nexus-harness@0.1.0 typecheck
+typecheck: > tsc --project tsconfig.json --noEmit
+typecheck: 
+build: cache miss, executing 36bdee892efdd27d
 build: 
 build: > nexus-harness@0.1.0 build
 build: > node scripts/build.mjs
 build: 
-test:policy:config: cache miss, executing 9b5eafcdcbebb85e
+test:policy:loop: cache miss, executing 888822e8f4fe257b
+test:policy:loop: 
+test:policy:loop: > nexus-harness@0.1.0 test:policy:loop
+test:policy:loop: > vitest run --project policy tests/completion-policy.test.ts tests/runner-policy.test.ts tests/stop.test.ts tests/support.test.ts
+test:policy:loop: 
+test:policy:loop: 
+test:policy:loop:  RUN  v5.0.0 E:/projects/nexus-jira-runs/workspaces/HARN-49
+test:policy:loop: 
+test:policy:loop: 
+test:policy:loop:  Test Files  4 passed (4)
+test:policy:loop:       Tests  24 passed (24)
+test:policy:loop:    Start at  21:41:23
+test:policy:loop:    Duration  1.99s (import 60%, transform 24%, tests 13%, worker 3%)
+test:policy:loop: 
+test:policy:config: cache miss, executing 2f05f0b6ad496b47
 test:policy:config: 
 test:policy:config: > nexus-harness@0.1.0 test:policy:config
 test:policy:config: > vitest run --project policy tests/boundaries.test.ts tests/completion-config.test.ts tests/completion-gate.test.ts tests/config.test.ts tests/connect-guide.test.ts tests/validation-cache.test.ts
@@ -48,39 +62,25 @@ test:policy:config:  RUN  v5.0.0 E:/projects/nexus-jira-runs/workspaces/HARN-49
 test:policy:config: 
 test:policy:config: 
 test:policy:config:  Test Files  6 passed (6)
-test:policy:config:       Tests  140 passed (140)
-test:policy:config:    Start at  20:53:14
-test:policy:config:    Duration  1.34s (import 61%, tests 27%, transform 12%, worker 1%)
+test:policy:config:       Tests  142 passed (142)
+test:policy:config:    Start at  21:41:25
+test:policy:config:    Duration  922ms (tests 50%, import 32%, transform 16%, worker 1%)
 test:policy:config: 
-test:policy:loop: cache miss, executing 66bc73fc73dc8e54
-test:policy:loop: 
-test:policy:loop: > nexus-harness@0.1.0 test:policy:loop
-test:policy:loop: > vitest run --project policy tests/completion-cli.test.ts tests/completion-policy.test.ts tests/runner-policy.test.ts tests/stop.test.ts tests/support.test.ts
-test:policy:loop: 
-test:policy:loop: 
-test:policy:loop:  RUN  v5.0.0 E:/projects/nexus-jira-runs/workspaces/HARN-49
-test:policy:loop: 
-test:policy:loop: 
-test:policy:loop:  Test Files  5 passed (5)
-test:policy:loop:       Tests  26 passed (26)
-test:policy:loop:    Start at  20:53:16
-test:policy:loop:    Duration  1.08s (transform 38%, tests 38%, import 23%, worker 1%)
-test:policy:loop: 
-test:policy:display: cache miss, executing 8cf8a3d0671740bf
+test:policy:display: cache miss, executing 1f06ef7f579f038a
 test:policy:display: 
 test:policy:display: > nexus-harness@0.1.0 test:policy:display
-test:policy:display: > vitest run --project policy tests/activity.test.ts tests/report.test.ts
+test:policy:display: > vitest run --project policy tests/activity.test.ts
 test:policy:display: 
 test:policy:display: 
 test:policy:display:  RUN  v5.0.0 E:/projects/nexus-jira-runs/workspaces/HARN-49
 test:policy:display: 
 test:policy:display: 
-test:policy:display:  Test Files  2 passed (2)
-test:policy:display:       Tests  145 passed (145)
-test:policy:display:    Start at  20:53:17
-test:policy:display:    Duration  2.90s (tests 82%, transform 12%, import 5%)
+test:policy:display:  Test Files  1 passed (1)
+test:policy:display:       Tests  122 passed (122)
+test:policy:display:    Start at  21:41:27
+test:policy:display:    Duration  3.07s (tests 95%, transform 3%, import 2%)
 test:policy:display: 
-test:policy:history: cache miss, executing 5e973780fd03bd3a
+test:policy:history: cache miss, executing 70677a8bbf96a78a
 test:policy:history: 
 test:policy:history: > nexus-harness@0.1.0 test:policy:history
 test:policy:history: > vitest run --project policy tests/history-runner.test.ts tests/history-source.test.ts tests/history.test.ts tests/reviews.test.ts
@@ -91,10 +91,10 @@ test:policy:history:
 test:policy:history: 
 test:policy:history:  Test Files  4 passed (4)
 test:policy:history:       Tests  131 passed (131)
-test:policy:history:    Start at  20:53:21
-test:policy:history:    Duration  3.44s (tests 67%, transform 21%, import 12%)
+test:policy:history:    Start at  21:41:30
+test:policy:history:    Duration  3.87s (tests 68%, transform 20%, import 11%)
 test:policy:history: 
-test:policy:intake: cache miss, executing c7da5da2d3bccbd8
+test:policy:intake: cache miss, executing 03dbd4125c264094
 test:policy:intake: 
 test:policy:intake: > nexus-harness@0.1.0 test:policy:intake
 test:policy:intake: > vitest run --project policy tests/baseline-findings.test.ts tests/jira.test.ts tests/queue-recovery.test.ts tests/queue.test.ts
@@ -105,10 +105,10 @@ test:policy:intake:
 test:policy:intake: 
 test:policy:intake:  Test Files  4 passed (4)
 test:policy:intake:       Tests  160 passed (160)
-test:policy:intake:    Start at  20:53:25
-test:policy:intake:    Duration  665ms (transform 51%, import 31%, tests 18%, worker 1%)
+test:policy:intake:    Start at  21:41:35
+test:policy:intake:    Duration  772ms (transform 53%, import 29%, tests 17%, worker 1%)
 test:policy:intake: 
-test:boundary: cache bypass, force executing 40df70b773150601
+test:boundary: cache bypass, force executing 52915cc5ca1c97e6
 test:boundary: 
 test:boundary: > nexus-harness@0.1.0 test:boundary
 test:boundary: > vitest run --project boundary
@@ -117,13 +117,13 @@ test:boundary:
 test:boundary:  RUN  v5.0.0 E:/projects/nexus-jira-runs/workspaces/HARN-49
 test:boundary: 
 test:boundary: 
-test:boundary:  Test Files  34 passed (34)
-test:boundary:       Tests  769 passed | 2 skipped (771)
-test:boundary:    Start at  20:53:26
-test:boundary:    Duration  248.94s (tests 99%, import 1%)
+test:boundary:  Test Files  37 passed (37)
+test:boundary:       Tests  802 passed | 2 skipped (804)
+test:boundary:    Start at  21:41:36
+test:boundary:    Duration  274.79s (tests 99%, import 1%)
 test:boundary: 
 
  Tasks:    10 successful, 10 total
 Cached:    0 cached, 10 total
-  Time:    4m32.649s 
+  Time:    5m9.375s 
 

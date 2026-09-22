@@ -42,6 +42,8 @@ Preserve user changes. Use `npm ci` unless intentionally changing dependencies. 
 
 `npm run validate` reuses a local task cache for the checks whose inputs are unchanged — formatting, lint, type checking, the build and the five fast policy groups — and always executes the process-heavy boundary layer. A reused result is never a freshly executed check: run `npm run validate:fresh` when a claim has to rest on execution, and read [docs/validation-caching.md](docs/validation-caching.md) before changing a task's inputs or eligibility.
 
+A case belongs to the boundary layer, and to every-validation execution, as soon as it starts a real process: a real `git`, a real command tree, a clock. The cache holds only what a checked-in declaration fully describes — the files a task reads, the environment it declares, and the `node` and `npm` PATH resolves for it — and `tests/validation-cache.test.ts` fails when a cached group stops satisfying that.
+
 Add tests for meaningful behavior and failure cases. Do not disable checks, weaken assertions, or hide files from validation just to get a pass. Tests must not need a live coding agent, a Jira site, or credentials.
 
 ## Finish honestly

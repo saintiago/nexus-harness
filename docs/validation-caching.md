@@ -343,10 +343,13 @@ edit changed only its own group; a declared environment value changed the five
 groups and nothing else; a source edit and another executing runtime changed
 every task.
 
-The delivered revision was validated with `npm run validate:fresh` a final time
-after the last edit; the numbers above are the ones recorded above, and
-[performance/harn-49-final-validation.txt](../performance/harn-49-final-validation.txt)
-is that last run.
+The delivered revision (`f135055`) was then validated with `npm run
+validate:fresh` once more, from a clean working tree: 10 tasks, 0 cached, exit
+0, 1,381 passed and 2 skipped in `5 m 9.4 s` of Turborepo time — the policy
+layer's 579 cases over its five groups and the boundary layer's 802 cases in
+274.8 s over 37 files. Its transcript is
+[performance/harn-49-final-validation.txt](../performance/harn-49-final-validation.txt).
+Only that record and this paragraph changed after the validated revision.
 
 Linux is a separate check, not a comparison. `bash performance/validate-linux.sh`
 ran `npm run validate:fresh` on a WSL2 **ext4** filesystem (Linux

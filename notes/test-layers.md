@@ -756,13 +756,21 @@ eligible. These samples are not a controlled comparison with HARN-48's 207–210
 were taken at different times on the same busy host, and no claim is made that the gate got faster
 beyond the reuse itself.
 
+One more run of the same revision is worth recording for the same reason: while other work on this
+host held more than thirty Node processes, `npm run validate` failed six boundary cases at their
+five-second defaults (`workspace-branch.test.ts`, `completion-arm.test.ts`,
+`completion-github.test.ts`), all of which had passed in the three full runs above. Running those
+three files together once the host had quietened passed 111 cases with 1 platform skip in 86.6 s.
+That is the contention HARN-48's audit recorded, not a changed case or deadline — and it is exactly
+why this layer executes on every validation instead of being replayed from a stored result.
+
 The delivered revision was validated with `npm run validate:fresh`: 10 tasks, 0 cached, exit 0,
-1,371 passed and 2 skipped in 273.6 s wall (policy 602 in 9.4 s over five groups; boundary 769 + 2
-skips over 34 files in 248.9 s). Its transcript is
+1,381 passed and 2 skipped over 56 files, in 5 m 9.4 s of Turborepo time (policy 579 over its five
+groups; boundary 802 + 2 skips over 37 files in 274.8 s). Its transcript is
 [harn-49-final-validation.txt](../performance/harn-49-final-validation.txt). The boundary layer
-measured 171.3 s, 176.1 s and 248.9 s for the same files on the same host across these sessions:
-that spread is exactly why the layer is never replayed, and no number here is offered as a stable
-distribution. Only this paragraph and that record changed after the validated revision.
+measured 176.1 s, 227.5 s, 231.9 s and 274.8 s for the same 34–37 files on this host across these
+sessions: that spread is exactly why the layer is never replayed, and no number here is offered as
+a stable distribution. Only this paragraph and that record changed after the validated revision.
 
 The single-pool `test:four-workers` comparison was not re-measured for HARN-49: it is a measurement
 command, not part of the gate, and this ticket's claims rest on the two runs above.
