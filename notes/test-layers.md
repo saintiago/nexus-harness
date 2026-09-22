@@ -140,11 +140,14 @@ asks for, run back to back on the same host and toolchain — Windows, 24 logica
 CPUs, node `v24.14.1`, npm `11.11.0`, vitest `5.0.0` — at the layer policy
 above (`policy` first with `maxWorkers: 8`, then `boundary` with
 `maxWorkers: 4`), with no other Nexus run or test workload on the machine.
-Nothing in the tree changed between them. The measured tree is commit `b528855`;
-the commits that carry this table change no test or source file.
+Nothing in the tree changed between runs 1 and 2, and nothing else was started on
+the machine by this turn; the final check below ran on the committed tree,
+including this document. The measured tree is commit `b528855`; the commits that
+carry this table change no test or source file.
 
-Raw output: [validation 1](../performance/harn-48-validation-1.txt) and
-[validation 2](../performance/harn-48-validation-2.txt) are the complete
+Raw output: [validation 1](../performance/harn-48-validation-1.txt),
+[validation 2](../performance/harn-48-validation-2.txt) and
+[the final check](../performance/harn-48-final-check.txt) are the complete
 `npm run validate` output of each run, and the per-suite and per-case durations
 in [the timing detail](../performance/harn-48-after-timings-per-test.txt) come
 from a third run of the same test command with the JSON reporter
@@ -156,19 +159,22 @@ summary when its output is not a terminal.
 | 1   | `npm run validate`            |   206.46 s |         218.23 s | pass    | 1,341 / 2        |
 | 2   | `npm run validate`            |   206.44 s |         218.09 s | pass    | 1,341 / 2        |
 | 3   | `npx vitest run` (detail run) |   197.88 s |                — | pass    | 1,341 / 2        |
+| 4   | `npm run validate` (final)    |   220.27 s |         231.95 s | pass    | 1,341 / 2        |
 
 Run 3 is the test command alone, timed from outside vitest for the whole
 process; runs 1 and 2 are the complete gate, and their test phase is the
 `Duration` line vitest itself printed.
 
 Against the 192.50 s reference that is **+13.96 s (+7.25 %)** for run 1 and
-**+13.94 s (+7.24 %)** for run 2. The detail run is **+5.4 s (+2.8 %)**. This is
-not a speedup and is not claimed as one: two samples on one host cannot separate
-the change from run-to-run variance, and the reference itself is a single
-observation. What the numbers do show is that the restored suite runs in the
-same order as the four-worker baseline while carrying 40 more active cases, 12
-more files, and the deadlines whose timeouts the containment gate could not get
-past.
+**+13.94 s (+7.24 %)** for run 2, **+5.38 s (+2.8 %)** for the detail run, and
+**+27.77 s (+14.4 %)** for the final check. That spread — 197.9 s to 220.3 s for
+identical content — is wider than the gap to the reference, so this is neither a
+speedup nor a demonstrated slowdown: it is the range this host produced, and a
+single historical reference cannot be separated from it. What the numbers do
+show is that the restored suite runs in the same order as the four-worker
+baseline while carrying 40 more active cases, 12 more files, and the deadlines
+whose timeouts the containment gate could not get past. The honest summary for
+the next person is the tail below, not the total.
 
 Where the after time goes, from the detail run:
 
@@ -208,13 +214,16 @@ recovery case at 15 s; every other case still runs under the default 5 s.
 Measured on this host, at these worker settings, with the machine otherwise
 idle: **test phase ≤ 212 s (the 192.50 s reference plus 10 %), no single suite
 over 110 s, `policy` under 15 s, and no per-case bound widened past the one
-documented 15 s case.** Runs 1 and 2 leave about 5.5 s of headroom; the
-`policy` layer costs 3.6 s against its 15 s, and the suite that dominates the
-tail (`completion-github`, 100.6 s) is the first thing to attack if a future
-change needs the wall time back — the known gaps below name the intended next
-reduction. A future change that cannot fit the budget has to explain itself
-here, and it does not get to fit by widening deadlines, skipping cases or
-running fewer workers.
+documented 15 s case.** The per-suite, layer and per-case parts hold in every
+run above (`completion-github`, the slowest suite, was 100.6 s; the `policy`
+layer costs 3.6 s). The test-phase total does not: runs 1 and 2 sit 5.5 s inside
+it, and the final check run overran it by 8.3 s. That overrun is recorded here
+rather than smoothed away, and it is the reason the budget is stated as a
+ceiling to investigate against, not as a settled result: a future change that
+cannot fit it has to explain itself here, and it does not get to fit by
+widening deadlines, skipping cases or running fewer workers. If the wall time
+needs to come down, `completion-github` is the first thing to attack — the known
+gaps below name the intended next reduction.
 
 ### Cleanup after each run
 
@@ -268,9 +277,11 @@ this local run is evidence, not that job's result.
 
 ### Limitations
 
-- Two sequential Windows runs and one detail run on one host. The reference is a
-  single historical four-worker observation, so the ±7 % figures are an
-  observed range, not a measured distribution.
+- Three Windows gate runs and one detail run on one host, all passing. The
+  reference is a single historical four-worker observation, and the runs above
+  spread by 22 s (197.9 s to 220.3 s) on identical content, so the percentages
+  are an observed range, not a measured distribution or a claim about the
+  change.
 - The timing detail run measures the test command alone; runs 1 and 2 measure it
   inside `npm run validate`, after the format, lint, typecheck and build steps.
   The 8.5 s between them was not investigated further and is inside the range

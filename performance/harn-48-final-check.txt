@@ -1,0 +1,35 @@
+
+> nexus-harness@0.1.0 validate
+> npm run format:check && npm run lint && npm run typecheck && npm run build && npm run test
+
+
+> nexus-harness@0.1.0 format:check
+> prettier --check .
+
+Checking formatting...
+All matched files use Prettier code style!
+
+> nexus-harness@0.1.0 lint
+> eslint .
+
+
+> nexus-harness@0.1.0 typecheck
+> tsc --project tsconfig.json --noEmit
+
+
+> nexus-harness@0.1.0 build
+> tsc --project tsconfig.build.json
+
+
+> nexus-harness@0.1.0 test
+> vitest run
+
+
+ RUN  v5.0.0 E:/projects/nexus-jira-runs/workspaces/HARN-48
+
+
+ Test Files  46 passed (46)
+      Tests  1341 passed | 2 skipped (1343)
+   Start at  12:18:19
+   Duration  220.27s (tests 99%, import 1%)
+
