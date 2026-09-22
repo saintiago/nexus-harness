@@ -24,7 +24,7 @@ choosing a maintained task cache over a hand-rolled one (see
 | `typecheck`            | yes   | `src/**`, `tests/**`, `tsconfig*.json`, `vitest*.config.ts`                                   | none      |
 | `build`                | yes   | `src/**`, `tsconfig*.json`, `scripts/build.mjs`                                              | `dist/**` |
 | `test:policy:display`  | yes   | `src/**`, `tests/activity.test.ts` and what it reads                                         | none      |
-| `test:policy:config`   | yes   | `src/**`, the six configuration/contract test files, and the guide, examples, scripts and root files they read | none      |
+| `test:policy:config`   | yes   | `src/**`, the whole `tests/` tree, and the guide, examples, scripts and root files the contract reads         | none      |
 | `test:policy:loop`     | yes   | `src/**`, the four run-loop/completion policy files and what they read                        | none      |
 | `test:policy:intake`   | yes   | `src/**`, the four queue/Jira/baseline-finding files and what they read                       | none      |
 | `test:policy:history`  | yes   | `src/**`, the four history/review files and what they read                                    | none      |
@@ -34,17 +34,44 @@ Every task's row is the `turbo.json` entry of the same name; the test groups
 also declare `tests/support.ts`, `tests/reviews-shared.ts` or `tests/fixtures/**`
 where their files reach those helpers, `vitest.config.ts` (the layer's file list,
 project settings and worker caps), and `eslint.config.js` for the group that
-reads it. `package.json`, `package-lock.json`, `.gitattributes` and `.nvmrc` are
-in every task's hash because Turborepo hashes the package graph and the global
+reads it. The configuration group declares the whole test tree, because the
+cache contract it runs reads every policy group's files and inventories the test
+directory: see [The contract task declares what it inspects](#the-contract-task-declares-what-it-inspects).
+`package.json`, `package-lock.json`, `.gitattributes` and `.nvmrc` are in every
+task's hash because Turborepo hashes the package graph and the global
 dependencies it is given, and `turbo.json` itself is part of the run's
 configuration hash (`npm run validate -- --dry=json` prints both).
 
 Each policy group names its own files instead of falling back to "everything in
-the checkout". A change to one test file therefore invalidates that group, the
-checks that read every source file (`lint`, `typecheck`, `format:check`) and the
-build if it is a source change — not every group. A change that *every* cached
-task genuinely reads (a source file, the lockfile, a declared environment value,
-the runtime) invalidates everything it should.
+the checkout". A change to one test file therefore invalidates the groups that
+read it — its own group, and the configuration group, whose contract parses every
+policy group's files — the checks that read every source file (`lint`,
+`typecheck`, `format:check`) and the build if it is a source change. The other
+policy groups keep their hashes. A change that *every* cached task genuinely
+reads (a source file, the lockfile, a declared environment value, the runtime)
+invalidates everything it should.
+
+### The contract task declares what it inspects
+
+`test:policy:config` is a cached task that runs the cases in
+`tests/validation-cache.test.ts`. Those cases do not only read their own group:
+they parse the syntax of every policy group's files — the imports each one
+reaches, the paths it reads, the processes it starts — and they inventory the
+test tree to prove every file belongs to exactly one layer. Turborepo keys a
+task on the contents of the files that task declares, so a declaration narrower
+than that inspection would let a relevant edit replay an answer it invalidates:
+a real child-process call added to, say, `tests/queue.test.ts` would execute and
+cache the intake group's run while the configuration task replayed the contract
+result that edit should have failed.
+
+The task therefore declares `tests/**`, alongside the `src/**`, `docs/**`,
+`examples/**`, `scripts/**`, `README.md`, `nexus.project.json`, ignore files and
+TypeScript/Vitest/Prettier configuration it already read.
+`tests/validation-cache.test.ts` checks that declaration against the same walk it
+performs — every test file on disk, every file reachable from a policy group's
+files by relative import, every literal path those files read — and fails when
+one of them is not declared. The narrower declarations of the other groups are
+checked the same way, against what *those* groups read.
 
 ### What may be cached, and what may not
 
@@ -73,10 +100,13 @@ layer. They are cases of the boundary layer now
 (`vitest.config.ts`, `policyFiles`), so they still run, and they still run on
 every validation. No case was deleted, skipped or weakened, and no case's own
 deadline changed by that repair: the moved files keep their own per-case bounds.
-The repair turn that followed the harness's own check changed exactly one bound —
-the boundary layer's *default*, from Vitest's five seconds to 15 s
-(`BOUNDARY_DEFAULT_TIMEOUT_MS`) — and no case's own bound; the failure and the
-measurements are in [windows-fixture-flakes.md](../notes/windows-fixture-flakes.md).
+The repair round that followed the harness's own check changed no deadline
+either. Both layers keep Vitest's five-second default, and the two cases that
+stopped that gate were repaired by shrinking the work they start rather than by
+moving their bound: the stand-in `gh` those cases drive is now launched as one
+process instead of through a `cmd.exe` shim, which is the shape a real `gh` has.
+The failure, the measurements and the residual risk are in
+[windows-fixture-flakes.md](../notes/windows-fixture-flakes.md).
 
 ### Why the boundary layer is never cached
 
@@ -89,10 +119,13 @@ released — and HARN-48's audit is the record of how contention changes what th
 observe. A replayed result would describe a machine that no longer exists, so
 the task declares `"cache": false` and runs on every validation, before nothing
 and after all five policy groups (`dependsOn`). `tests/validation-cache.test.ts`
-fails if that ever stops being true. The layer also states a default deadline of
-its own (15 s, `BOUNDARY_DEFAULT_TIMEOUT_MS`): a case here waits on real
-processes, so Vitest's five-second unit default reported host load as a failure
-of the revision, and a case that states a bound of its own still overrides it.
+fails if that ever stops being true. The layer states no deadline of its own:
+every case here keeps Vitest's five-second default unless it states a bound of
+its own, and `tests/validation-cache.test.ts` fails if either layer grows a
+shared `testTimeout`. A case whose work is bigger than one round of itself
+states its bound in the case (HARN-48's map names them); a case whose work is
+close to the default is repaired by making it start less, not by moving the
+bound.
 
 Nothing else is eligible either, and nothing outside this repository is:
 
@@ -126,8 +159,11 @@ only costs a re-execution.
   this repository's own `nexus.project.json`, `tests/connect-guide.test.ts` reads
   `docs/connect-a-project.md` and resolves the files and headings it links to,
   and `tests/validation-cache.test.ts` reads `turbo.json`, both `tsconfig`s, the
-  ignore files and the two scripts the gate runs. Those reads are declared, and
-  `tests/validation-cache.test.ts` follows the calls it can see
+  ignore files and the two scripts the gate runs. The configuration group also
+  declares the whole test tree, because the contract parses every policy group's
+  files and inventories the directory
+  ([above](#the-contract-task-declares-what-it-inspects)). Those reads are
+  declared, and `tests/validation-cache.test.ts` follows the calls it can see
   (`path.join(repoRoot, …)` written entirely in literals, and read helpers handed
   a literal path) and fails when one of them is not. Reads the walk cannot see —
   a path built from a constant, or one of several literals a loop hands to a
@@ -302,9 +338,12 @@ their raw transcripts are named in each row.
 | An unobservable runtime stops the gate                       | Same fixture with a PATH that resolves no `node`                                         | Nonzero exit, the message names `node --version`, the task did not run  |
 | The manifest and the lockfile are inputs                     | Fixture: change `package.json`'s version, then the lockfile, rerun                        | Miss after each; the task executes                                       |
 | A relevant source edit invalidates the work it affects       | `--dry` hashes before and after an edit to `src/cli/options.ts`                          | Every one of the ten tasks changed its hash                             |
-| A test-file edit invalidates one group, not all              | `--dry` hashes with one comment added to `tests/queue.test.ts`                            | That group changed, plus the checks that read every file (format, lint, type check) and the boundary task; the other four groups kept their hashes |
+| A test-file edit invalidates the groups that read it          | `--dry` hashes with one comment added to `tests/queue.test.ts`                            | Its own group and the configuration group changed — the configuration group's contract parses every policy group's files — plus the checks that read every file (format, lint, type check) and the boundary task; the other three groups kept their hashes |
+| The contract task re-runs, and can fail, on another group's edit | Add a real `node:child_process` call to `tests/queue.test.ts`; hash the gate, then run the configuration group | `test:policy:config`'s hash changed, and the group failed: `test:policy:intake caches tests/queue.test.ts, which starts a real process (node:child_process)` |
 | A documentation edit invalidates the group that reads it     | `--dry` hashes with `docs/connect-a-project.md` edited                                   | The configuration group's hash changed; the other groups did not        |
 | A declared environment value invalidates the test tasks      | `--dry` hashes with `TZ` set                                                             | The five test tasks changed their hash; the other tasks did not         |
+| Neither test layer states a shared deadline                  | `tests/validation-cache.test.ts`                                                         | The configuration declares no `testTimeout`; every case keeps Vitest's five-second default unless the case states its own bound |
+| A real-process case is repaired by starting less, not by moving its deadline | The stand-in `gh` launched as one process instead of through a `cmd.exe` shim (the shape a real `gh` has) | The two cases the last gate stopped on: 3,000 ms → 2,144 ms and 2,485 ms → 1,578 ms when run alone; the whole boundary layer stayed green (802 passed, 2 skipped) |
 | The native lint cache is invalidated by a configuration change | Add a rule to `eslint.config.js`, run `npm run lint`                                    | Every file re-linted; a comment in the same file did not invalidate anything |
 | The native lint cache survives unchanged files               | `npm run lint` twice                                                                     | 3.35 s cold, 1.26 s warm                                                |
 | Incremental type checking works                              | `npm run typecheck` twice                                                                | 3.04 s cold, 1.15 s warm — the check-only program keeps its state        |
@@ -346,9 +385,19 @@ the ten gate tasks' hashes from `--dry=json`, before and after one probe at a
 time, each probe reverted and the tree checked clean again. A documentation edit
 changed `test:policy:config` (and, through it, `test:boundary`, whose hash
 includes its dependencies) while the other four groups kept theirs; a test-file
-edit changed only its own group; a declared environment value changed the five
-groups and nothing else; a source edit and another executing runtime changed
-every task.
+edit changed its own group; a declared environment value changed the five groups
+and nothing else; a source edit and another executing runtime changed every task.
+
+The second round's comparisons
+([performance/harn-49-contract-inputs.txt](../performance/harn-49-contract-inputs.txt))
+add the case the cache contract itself relies on: one comment in
+`tests/queue.test.ts` changed `test:policy:config` — the task that runs the
+contract — as well as that file's own group, the checks that read every file
+(`format:check`, `lint`, `typecheck`) and `test:boundary`, while the other three
+policy groups kept their hashes. The same file's probe with a real
+`node:child_process` call shows why that matters: the configuration group
+executed and failed on it (`test:policy:intake caches tests/queue.test.ts, which
+starts a real process`), instead of replaying the earlier passing contract.
 
 The earlier round's repair-cycle transcripts — the gate after a source edit and
 after the revert, with the summary between them
@@ -369,20 +418,31 @@ checks that read those files — `format:check`, and the configuration group
 through its declared `docs/**` input — re-hash them instead of reusing the
 earlier result.
 
-The repair turn that followed the harness's own check changed one behaviour — the
-boundary layer's default deadline (see
-[Why the boundary layer is never cached](#why-the-boundary-layer-is-never-cached)) —
-and added its contract case, so the gate is 1,384 tests now: the policy layer's
-580 cases over the same five groups (configuration 143, intake 160, history 131,
-loop 24, display 122) and the boundary layer's 802 plus the two pre-existing
-platform skips. Both of its runs exit 0: `npm run validate` with 2 cached of 10
-(`build` and `lint` replayed; everything that reads `vitest.config.ts`, the new
-contract case or the edited notes missed) in `4 m 17.9 s`, and `npm run
-validate:fresh` with 0 cached in `4 m 31.6 s` (boundary 802 passed and 2 skipped
-in 247.3 s). Transcripts:
-[validate](../performance/harn-49-timeout-repair-validate.txt) and
-[fresh](../performance/harn-49-timeout-repair-validate-fresh.txt); the failure it
-repairs and the reproduction are in
+The next round's repair answers the review's two findings without changing any
+deadline. The contract task declares the whole test tree it inspects
+([above](#the-contract-task-declares-what-it-inspects)), and the two cases that
+stopped the previous gate start one process per `gh` invocation instead of two
+([windows-fixture-flakes.md](../notes/windows-fixture-flakes.md)). The gate is
+1,385 tests now: the policy layer's 581 cases over the same five groups
+(configuration 144, intake 160, history 131, loop 24, display 122) and the
+boundary layer's 802 plus the two pre-existing platform skips. Both of this
+round's runs are on the delivered revision: `npm run validate:fresh` with 0
+cached of 10, exit 0, in `4 m 45.6 s` (boundary 802 passed and 2 skipped in
+261.9 s) —
+[transcript](../performance/harn-49-deadline-repair-validate-fresh.txt) — and
+then `npm run validate` unchanged, with 9 cached of 10 and the boundary layer
+executing fresh —
+[transcript](../performance/harn-49-deadline-repair-validate.txt). The cached run
+failed one boundary case, `fixture-lifecycle.test.ts > cleans up after the cases
+that must fail, time out or cancel`, on the bare-PID liveness reading
+`notes/windows-fixture-flakes.md` records as open; the run left no leftover
+process, and that file passed 4/4 on its own immediately afterwards. It is the
+layer the gate always executes, so it is not a cached result that failed, and it
+is recorded rather than smoothed over. The withdrawn round's runs, which measured
+the layer-wide 15 s default, stay in
+[harn-49-timeout-repair-validate.txt](../performance/harn-49-timeout-repair-validate.txt),
+[harn-49-timeout-repair-validate-fresh.txt](../performance/harn-49-timeout-repair-validate-fresh.txt)
+and
 [harn-49-boundary-timeout-repair.txt](../performance/harn-49-boundary-timeout-repair.txt).
 
 Linux is a separate check, not a comparison. `bash performance/validate-linux.sh`
@@ -499,6 +559,11 @@ configuration rather than the file's bytes.
   `noEmit`, `outDir` and `include` settings; nothing was reported as built.
 - **An untrusted cache, or disk space.** `npm run cache:clear`. Nothing outside
   `.turbo/` is touched, and the next validation simply executes more.
+- **`cache:clear` refuses with `EPERM` or `EBUSY`.** Something still holds a file
+  under `.turbo/` — usually a task that has only just ended, or an editor
+  indexing it. Nothing was cleared and nothing was corrupted; run the command
+  again. The clear is `rmSync` on one directory and it never falls back to a
+  partial success.
 
 ## Limits
 

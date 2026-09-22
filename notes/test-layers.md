@@ -51,14 +51,16 @@ count. HARN-48 gave a case a bound of its own only where its work was bigger tha
 one round of it: `completion-arm.test.ts > recovers a native merge after …` makes
 three arm/pass calls over real `gh` commands (15 s), and the cases that make two
 or more complete passes state `TWO_PASSES_TIMEOUT_MS` (10 s). Everything else
-kept Vitest's 5 s default — until HARN-49's repair turn, when the harness's own
-check stopped on two of those cases at 5,203 ms and 5,246 ms. The boundary
-project now states a default bound of its own (`BOUNDARY_DEFAULT_TIMEOUT_MS`,
-15 s, in `vitest.config.ts`); a case that states a bound of its own still
-overrides it, and the policy layer keeps Vitest's default because nothing there
-starts a process. The cap and every case-owned bound are what they were;
-`notes/windows-fixture-flakes.md` records the failure, the measurements and the
-reasoning.
+keeps Vitest's 5 s default, in both layers; neither layer states a `testTimeout`
+of its own, and `tests/validation-cache.test.ts` fails if one appears. HARN-49's
+repair turn had answered the harness's own check (two cases stopped at 5,203 ms
+and 5,246 ms) by giving the boundary layer a 15 s default; that moved every
+case's actual deadline in the layer and was withdrawn. The two cases were
+repaired by starting fewer processes instead: the stand-in `gh` they drive is
+launched as one process, not through a `cmd.exe` shim, which cuts the two cases
+from 3.0 s and 2.5 s to about 2.1 s and 1.6 s of their own work on this host.
+`notes/windows-fixture-flakes.md` records the failure, both repairs and the
+measurements.
 
 ## Ownership of the overlapping scenarios
 
@@ -147,11 +149,12 @@ boundary state their own bound (`TWO_PASSES_TIMEOUT_MS`, 10 s in
 `tests/fixtures/completion.ts`): six in `completion-github.test.ts` and four in
 `completion-arm.test.ts`, plus the three-call `completion-arm` recovery case that
 already had 15 s. That is the case's own work, not the layer's policy. A case
-that makes a single pass kept the default five seconds; HARN-49's repair turn then
-gave the layer a bounded default of 15 s, because the recorded contention pushed
-single passes with two to four seconds of quiet work past five
-(`notes/windows-fixture-flakes.md`). The bounds stated here are unchanged and
-override it, and the layer's cap remains a scheduling policy no case asserts on.
+that makes a single pass keeps the default five seconds. The two cases HARN-49's
+harness check stopped on kept the bound they had, too — that was the point of the
+repair — and the work they start was cut instead, by making the stand-in `gh` one
+process rather than a shell plus a process
+(`notes/windows-fixture-flakes.md`). The bounds stated here are unchanged, and the
+layer's cap remains a scheduling policy no case asserts on.
 
 ### The run loop: in-memory collaborators (`runner-policy.test.ts`)
 
@@ -698,7 +701,7 @@ The runtime the tasks execute on is a declared input now: `scripts/turbo.mjs` ob
 remain the declared runtime and are hashed as files, but they are not enforced, so on their own
 they let a checkout on another Node reuse this one's results.
 
-### The repair turn: the boundary layer's default bound
+### The repair turn that was withdrawn: a layer-wide bound
 
 The harness ran `npm run validate` after that delivery and it stopped on two boundary cases —
 `completion-arm.test.ts > reconciling terminal states across an auto-merge race > finishes an
@@ -710,38 +713,43 @@ HARN-48's own four-worker record has them at 3.6–3.9 s and 2.5–2.8 s on a qu
 reproduced the first at 5,188 ms in isolation before the change. A case's wall time here is the
 host's as much as the checkout's, which is exactly the contention this map's audit recorded.
 
-The repair states what the layer always meant. The boundary project carries
-`testTimeout: BOUNDARY_DEFAULT_TIMEOUT_MS` (15 s, `vitest.config.ts`): still bounded, so a case that
-really hangs fails. Every case or block that states a bound of its own keeps it, the worker cap is
-unchanged, and the policy layer keeps Vitest's default because nothing there starts a process. A
-temporary probe — a case that sleeps 6.5 s, removed again and not part of the suite — passes under
-the layer's default and fails when the same run is given the unit default with `--testTimeout=5000`,
-which is what makes the project setting the effective one. No assertion, case or count moved for
-it; what is new is one policy case (`tests/validation-cache.test.ts`, 10 cases now) that fails if
-the layer stops stating a bound above the unit default. The failure, the measurements and the
-honest limits are in `notes/windows-fixture-flakes.md`.
+The first repair turn answered that with `testTimeout: BOUNDARY_DEFAULT_TIMEOUT_MS` (15 s) on the
+boundary project. It was withdrawn: it moved the actual deadline of every case in the layer that
+states none — the two that failed and every case beside them — and HARN-49's ticket preserves this
+suite's deadlines. `vitest.config.ts` states no deadline for either layer, and
+`tests/validation-cache.test.ts` fails if a shared `testTimeout` appears anywhere in it. The
+withdrawn round's failure, probe and measurements are in
+`performance/harn-49-boundary-timeout-repair.txt` and `notes/windows-fixture-flakes.md`, which is
+also where the replacement repair is recorded: the two cases, and the two `queue-cli.test.ts` cases
+that drive the same stand-in, now run the stand-in `gh` as one process instead of through a
+`cmd.exe` shim, which is the shape a real `gh` has. No bound, case, assertion or count moved for
+that; one policy case was added, which is why `tests/validation-cache.test.ts` is 11 cases now.
 
 ### Counts
 
-| Revision                                                  | Files | Tests | Passed | Skipped |
-| --------------------------------------------------------- | ----- | ----- | ------ | ------- |
-| HARN-48 final (53 files)                                  | 53    | 1,358 | 1,356  | 2       |
-| HARN-49 first delivery (55 files): policy 21, boundary 34 | 55    | 1,373 | 1,371  | 2       |
-| HARN-49 repair (56 files): policy 19, boundary 37         | 56    | 1,383 | 1,381  | 2       |
-| HARN-49 timeout repair (56 files): policy 19, boundary 37 | 56    | 1,384 | 1,382  | 2       |
+| Revision                                                   | Files | Tests | Passed | Skipped |
+| ---------------------------------------------------------- | ----- | ----- | ------ | ------- |
+| HARN-48 final (53 files)                                   | 53    | 1,358 | 1,356  | 2       |
+| HARN-49 first delivery (55 files): policy 21, boundary 34  | 55    | 1,373 | 1,371  | 2       |
+| HARN-49 repair (56 files): policy 19, boundary 37          | 56    | 1,383 | 1,381  | 2       |
+| HARN-49 timeout repair (56 files): policy 19, boundary 37  | 56    | 1,384 | 1,382  | 2       |
+| HARN-49 deadline repair (56 files): policy 19, boundary 37 | 56    | 1,385 | 1,383  | 2       |
 
-The repair moved two files and added ten cases, and the timeout repair below added one more; no case
-was removed, skipped or given a different bound of its own by either, which is why the total only
+The repair moved two files and added ten cases; the timeout round added one more, and this round
+added another — the check that the contract task declares every file it inspects. No case was
+removed, skipped or given a different bound of its own by any of them, which is why the total only
 grows:
 
-- `tests/validation-cache.test.ts` (policy, 10 cases now) reads back the declarations this map
+- `tests/validation-cache.test.ts` (policy, 11 cases now) reads back the declarations this map
   depends on: the gate's task list, that exactly one of those tasks is ineligible and it is the
   boundary layer, that every cache-eligible group declares the files its tests import _and_ the
   ones they read through the filesystem, that a cached group contains no case that starts a real
-  process, that every test file belongs to exactly one layer, that the groups cover the policy list
-  exactly once, that the declared runtime is the executing one, that the caches live in an ignored
-  directory the checks themselves ignore, that the build regenerates its output rather than
-  resuming it, and that no credential-shaped name is a cache input. Two of those cases are new.
+  process, that the task running those checks declares every file it inspects, that every test file
+  belongs to exactly one layer, that both layers keep Vitest's own deadline, that the groups cover
+  the policy list exactly once, that the declared runtime is the executing one, that the caches live
+  in an ignored directory the checks themselves ignore, that the build regenerates its output
+  rather than resuming it, and that no credential-shaped name is a cache input. Three of those
+  cases are new.
 - `tests/validation-cache-turbo.test.ts` (boundary, 11 cases now) runs the installed Turborepo
   through `scripts/turbo.mjs` against a throwaway single-package fixture: a hit replays without
   executing the task, a declared input invalidates while an undeclared file does not, a removed
@@ -808,15 +816,27 @@ measured 176.1 s, 227.5 s, 231.9 s and 274.8 s for the same 34–37 files on thi
 sessions: that spread is exactly why the layer is never replayed, and no number here is offered as
 a stable distribution. Only this paragraph and that record changed after the validated revision.
 
-The timeout repair's own two runs, both on this revision (code, docs and evidence in the tree):
-`npm run validate` — 10 tasks, **2 cached**, exit 0, 4 m 17.9 s, the boundary layer executing in
-240.6 s — and `npm run validate:fresh` — 10 tasks, 0 cached, exit 0, 4 m 31.6 s, boundary 802 passed
-and 2 skipped in 247.3 s. The policy layer is 580 cases now: the configuration group's 143 include
-the layer-deadline contract, and the other four groups are unchanged (160, 131, 24, 122). Files:
-[validate](../performance/harn-49-timeout-repair-validate.txt) and
-[fresh](../performance/harn-49-timeout-repair-validate-fresh.txt), with the failure, the
-reproduction and the probe in
-[harn-49-boundary-timeout-repair.txt](../performance/harn-49-boundary-timeout-repair.txt).
+The withdrawn round's two runs are kept where they were recorded — `npm run validate` with 2 cached
+of 10 and `npm run validate:fresh` with 0 cached, both exit 0, boundary 802 passed and 2 skipped in
+247.3 s ([harn-49-timeout-repair-validate.txt](../performance/harn-49-timeout-repair-validate.txt),
+[harn-49-timeout-repair-validate-fresh.txt](../performance/harn-49-timeout-repair-validate-fresh.txt),
+with the failure, the reproduction and the probe in
+[harn-49-boundary-timeout-repair.txt](../performance/harn-49-boundary-timeout-repair.txt)) — because
+what they measured is what the deadline repair answered, not because that repair stands.
+
+This round's runs, on the delivered revision and from a clean working tree: `npm run validate:fresh`
+— 10 tasks, 0 cached, exit 0, **1,385 passed and 2 skipped**, 4 m 45.6 s of Turborepo time, the
+boundary layer 802 passed and 2 skipped over 37 files in 261.9 s
+([transcript](../performance/harn-49-deadline-repair-validate-fresh.txt)) — and then `npm run
+validate` unchanged — 10 tasks, **9 cached**, the boundary layer executing fresh
+([transcript](../performance/harn-49-deadline-repair-validate.txt)). That cached run failed one
+case, `fixture-lifecycle.test.ts > cleans up after the cases that must fail, time out or cancel`, on
+the bare-PID liveness reading this map's notes already keep open (a recycled PID answering for a
+process that had ended; the run left no `dist/cli.js` process behind and the file passed 4/4 on its
+own immediately afterwards in 78.56 s). It is recorded rather than smoothed over, and it is not a
+task-cache hit: the task it is in is the one the gate always executes. The policy layer is 581
+cases now: the configuration group's 144 carry the contract checks, and the other four groups are
+unchanged (160, 131, 24, 122).
 
 The single-pool `test:four-workers` comparison was not re-measured for HARN-49: it is a measurement
 command, not part of the gate, and this ticket's claims rest on the two runs above.

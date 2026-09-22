@@ -96,7 +96,8 @@ deadline.
 `npm run validate` runs those layers as Turborepo tasks (`turbo.json`). Formatting, lint, type
 checking, the build and the five fast policy groups are cache-eligible: each names the files it
 imports _and_ the files its cases read, so an unchanged rerun replays them and an edited test file
-invalidates the group that reads it rather than all of them. The process-heavy boundary layer is
+invalidates the groups that read it — its own, and the configuration group, whose contract cases
+parse every policy group's files — rather than all of them. The process-heavy boundary layer is
 **never** cached — real Git, real command trees, the fixture-lifecycle proof and the built CLI run
 on every validation, after the fast layer — and neither is anything outside this repository's own
 checks (the live provider exercise, agent turns, Jira or GitHub writes, approvals, completion
