@@ -63,6 +63,15 @@ The same case, the same configuration file, the same command: only the deadline 
 `testTimeout: BOUNDARY_DEFAULT_TIMEOUT_MS` in the boundary project is what applies to a case that
 states no bound of its own.
 
+The other direction, so the bound is not simply "no deadline": a second temporary case that sleeps
+20 s (`tests/timeout-probe-overrun.test.ts`, removed again) still fails:
+
+   $ npx vitest run --project boundary tests/timeout-probe-overrun.test.ts
+   Error: Test timed out in 15000ms.
+   Test Files  1 failed (1)
+        Tests  1 failed (1)
+     Duration  15.22s (tests 100%)
+
 4. Focused runs of the two files that failed, under the new default
 -------------------------------------------------------------------
 

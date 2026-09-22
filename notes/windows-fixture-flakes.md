@@ -414,9 +414,11 @@ nothing there starts a process.
 
 **Evidence.** A temporary probe case (removed again, not part of the suite) that sleeps 6.5 s passes
 in the boundary project and fails when the same run is given the unit default with
-`--testTimeout=5000`, so the project setting is the effective one. The two files that failed pass
-87/87 together under it, and the whole boundary layer passes 802 cases with 2 skips. The recordings
-are in `performance/harn-49-boundary-timeout-repair.txt`.
+`--testTimeout=5000`, so the project setting is the effective one; a second probe that sleeps 20 s
+still fails with `Test timed out in 15000ms`, so the new default is a bound rather than no bound.
+The two files that failed pass 87/87 together under it, and the whole boundary layer passes 802
+cases with 2 skips. The recordings are in
+`performance/harn-49-boundary-timeout-repair.txt`.
 
 **Honest limits.** This is a deadline change, and the only one in HARN-49: HARN-48's map said a
 single-pass case keeps the five-second default, and it now keeps the layer's 15 s default instead —
