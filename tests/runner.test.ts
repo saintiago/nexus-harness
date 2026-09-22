@@ -48,6 +48,9 @@ const LOST_REPORT = 'the reports directory is not writable';
 /** What a turn that could not confirm the stop of its own runtime reports. */
 const UNSETTLED_RUNTIME = 'the runtime child may still be writing';
 
+/** What a stopped command that could not confirm its own end reports. */
+const UNSETTLED_COMMAND = 'the command tree may still be running';
+
 /** One red round whose only check exited nonzero, with its output written. */
 function redAfter(asked: CheckRoundRequest): Promise<CheckRoundResult> {
   return standInCommand(
@@ -475,6 +478,159 @@ describe('the stops a run observes', () => {
     expect(result.timeout?.limitMs).toBe(minutes(2));
     expect(run.turns.requests).toHaveLength(1);
     expect(result.reason).toMatch(/task deadline expired before repair turn 2 was started/);
+  });
+
+  it('stops the baseline at the task time that was left, before any coding turn', async () => {
+    const run = await memoryRun({
+      rounds: async (asked) =>
+        executionErrorRound(
+          await standInCommand(
+            { cwd: asked.cwd, logsDir: asked.logsDir },
+            {
+              label: `${asked.name}-setup-1`,
+              outcome: 'timed-out',
+              timeoutMs: minutes(4),
+              termination: 'confirmed',
+            },
+          ),
+          { as: 'setup', problem: 'the setup command was stopped at the 4 minutes it was given' },
+        ),
+      turns: () => ({ summary: 'never reached' }),
+    });
+
+    const result = await runMemoryTask(run);
+
+    expect(result.status).toBe('failed');
+    // Four minutes is less than the configured ten, so the task time that was
+    // left is the limit that expired — and the record names that limit, not the
+    // command's own.
+    expect(result.timeout).toEqual({
+      limit: 'task',
+      phase: 'the baseline checks',
+      limitMs: minutes(4),
+      elapsedMs: 0,
+      termination: 'confirmed',
+      problem: null,
+    });
+    expect(result.reason).toMatch(
+      /the run's task deadline expired during the baseline checks: nothing further was started/,
+    );
+    // A stopped command is an execution failure, not a red round to repair, and
+    // nothing at all follows it: no coding turn and no second round.
+    expect(run.turns.requests).toEqual([]);
+    expect(run.rounds.requests.map((round) => round.name)).toEqual(['baseline']);
+    // The report keeps the round's own evidence beside the limit that ended it.
+    const report = run.reports.at(-1);
+    expect(report?.status).toBe('failed');
+    expect(report?.timeout).toEqual(result.timeout);
+    expect(report?.baseline?.outcome).toBe('execution-error');
+    expect(report?.baseline?.setup[0]?.outcome).toBe('timed-out');
+    expect(report?.attempts).toEqual([]);
+    expect(run.timeline).toContain(
+      "timeout: the run's task deadline (240000 ms) expired during the baseline checks",
+    );
+    expect(run.timeline.at(-1)).toMatch(/^final status: failed, the run's task deadline expired/);
+  });
+
+  it('stops a post-agent round at its command limit, before any repair', async () => {
+    const run = await memoryRun({
+      config: { maxRepairs: 2 },
+      rounds: async (asked) => {
+        if (asked.name === 'baseline') {
+          return passedRound();
+        }
+        return executionErrorRound(
+          await standInCommand(
+            { cwd: asked.cwd, logsDir: asked.logsDir },
+            {
+              label: `${asked.name}-check-1`,
+              outcome: 'timed-out',
+              timeoutMs: minutes(10),
+              termination: 'confirmed',
+            },
+          ),
+          { as: 'check', problem: 'the check was stopped at its command limit' },
+        );
+      },
+      turns: () => ({ summary: 'did the work' }),
+    });
+
+    const result = await runMemoryTask(run);
+
+    expect(result.status).toBe('failed');
+    // The command ran under its full configured limit, so that limit — not the
+    // task time — is the one the record names.
+    expect(result.timeout?.limit).toBe('command');
+    expect(result.timeout?.phase).toBe('the checks after the implementation turn');
+    expect(result.timeout?.limitMs).toBe(minutes(10));
+    expect(result.timeout?.termination).toBe('confirmed');
+    expect(result.timeout?.problem).toBeNull();
+    expect(result.reason).toMatch(
+      /a configured command was stopped at its limit during the checks after the implementation turn: nothing further was started/,
+    );
+    // The round that hit the limit is not repair feedback and spends no repair
+    // turn: no second round and no further coding turn follows it.
+    expect(run.rounds.requests.map((round) => round.name)).toEqual(['baseline', 'attempt-1']);
+    expect(run.turns.requests.map((turn) => `${turn.kind} ${String(turn.turn)}`)).toEqual([
+      'implementation 1',
+    ]);
+    expect(run.reports.at(-1)?.attempts.map((attempt) => attempt.checks?.outcome)).toEqual([
+      'execution-error',
+    ]);
+    expect(run.timeline).toContain(
+      'timeout: a configured command limit (600000 ms) expired during the checks after the ' +
+        'implementation turn',
+    );
+  });
+
+  it('carries a command stop it could not confirm, and reads no final changes', async () => {
+    const run = await memoryRun({
+      config: { maxRepairs: 1 },
+      rounds: async (asked) => {
+        if (asked.name === 'baseline') {
+          return passedRound();
+        }
+        return executionErrorRound(
+          await standInCommand(
+            { cwd: asked.cwd, logsDir: asked.logsDir },
+            {
+              label: `${asked.name}-check-1`,
+              outcome: 'timed-out',
+              timeoutMs: minutes(10),
+              termination: 'unconfirmed',
+              terminationProblem: UNSETTLED_COMMAND,
+            },
+          ),
+          { as: 'check', problem: 'the check was stopped without confirming its end' },
+        );
+      },
+      turns: () => ({ summary: 'did the work' }),
+    });
+
+    const result = await runMemoryTask(run);
+
+    expect(result.status).toBe('failed');
+    // The command's own record of the stop travels whole into the run's
+    // evidence: the limit that expired, and what could not be confirmed.
+    expect(result.timeout?.limit).toBe('command');
+    expect(result.timeout?.phase).toBe('the checks after the implementation turn');
+    expect(result.timeout?.limitMs).toBe(minutes(10));
+    expect(result.timeout?.termination).toBe('unconfirmed');
+    expect(result.timeout?.problem).toBe(UNSETTLED_COMMAND);
+    expect(result.reason).toMatch(
+      /the stop could not be confirmed, so the working copy must not be reused and nothing further was started/,
+    );
+    expect(run.rounds.requests.map((round) => round.name)).toEqual(['baseline', 'attempt-1']);
+    expect(run.turns.requests).toHaveLength(1);
+    // A working copy something may still be writing to is never read as the
+    // run's final record.
+    expect(run.inspected).toEqual([]);
+    expect(result.changes.inspected).toBe(false);
+    expect(result.changes.problem).toMatch(/may still be written to/);
+    expect(run.timeline).toContain(
+      'timeout: a configured command limit (600000 ms) expired during the checks after the ' +
+        `implementation turn; termination unconfirmed: ${UNSETTLED_COMMAND}`,
+    );
   });
 
   it('ends cancelled before a repair turn the caller stopped the run ahead of', async () => {
