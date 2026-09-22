@@ -1,0 +1,227 @@
+commit: b52885506c2ad98305c04c35827dc05f2cbdf89c
+node: v24.14.1 npm: 11.11.0
+Linux 6.18.33.2-microsoft-standard-WSL2 x86_64
+24
+
+> nexus-harness@0.1.0 validate
+> npm run format:check && npm run lint && npm run typecheck && npm run build && npm run test
+
+
+> nexus-harness@0.1.0 format:check
+> prettier --check .
+
+Checking formatting...
+All matched files use Prettier code style!
+
+> nexus-harness@0.1.0 lint
+> eslint .
+
+
+> nexus-harness@0.1.0 typecheck
+> tsc --project tsconfig.json --noEmit
+
+
+> nexus-harness@0.1.0 build
+> tsc --project tsconfig.build.json
+
+
+> nexus-harness@0.1.0 test
+> vitest run
+
+
+[1m[30m[46m RUN [49m[39m[22m [36mv5.0.0 [39m[90m/home/aiur/harn48-linux-check/repo[39m
+
+ [32m✓[39m [30m[45m policy [49m[39m tests/completion-config.test.ts [2m([22m[2m22 tests[22m[2m)[22m[32m 57[2mms[22m[39m
+ [32m✓[39m [30m[45m policy [49m[39m tests/jira.test.ts [2m([22m[2m96 tests[22m[2m)[22m[32m 114[2mms[22m[39m
+ [32m✓[39m [30m[45m policy [49m[39m tests/config.test.ts [2m([22m[2m87 tests[22m[2m)[22m[32m 219[2mms[22m[39m
+ [32m✓[39m [30m[45m policy [49m[39m tests/queue.test.ts [2m([22m[2m48 tests[22m[2m)[22m[32m 72[2mms[22m[39m
+ [32m✓[39m [30m[45m policy [49m[39m tests/history-runner.test.ts [2m([22m[2m8 tests[22m[2m)[22m[32m 107[2mms[22m[39m
+ [32m✓[39m [30m[45m policy [49m[39m tests/history-source.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 39[2mms[22m[39m
+ [32m✓[39m [30m[45m policy [49m[39m tests/connect-guide.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 5[2mms[22m[39m
+ [32m✓[39m [30m[45m policy [49m[39m tests/completion-gate.test.ts [2m([22m[2m17 tests[22m[2m)[22m[32m 5[2mms[22m[39m
+ [32m✓[39m [30m[45m policy [49m[39m tests/queue-recovery.test.ts [2m([22m[2m8 tests[22m[2m)[22m[32m 23[2mms[22m[39m
+ [32m✓[39m [30m[45m policy [49m[39m tests/stop.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 3[2mms[22m[39m
+ [32m✓[39m [30m[45m policy [49m[39m tests/completion-policy.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 18[2mms[22m[39m
+ [32m✓[39m [30m[45m policy [49m[39m tests/support.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 9[2mms[22m[39m
+ [32m✓[39m [30m[45m policy [49m[39m tests/report.test.ts [2m([22m[2m23 tests[22m[2m)[22m[33m 442[2mms[22m[39m
+ [32m✓[39m [30m[45m policy [49m[39m tests/completion-cli.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 58[2mms[22m[39m
+ [32m✓[39m [30m[45m policy [49m[39m tests/boundaries.test.ts [2m([22m[2m3 tests[22m[2m)[22m[33m 352[2mms[22m[39m
+   [32m✓[39m dependency boundaries [2m(3)[22m
+     [33m[2m✓[22m[39m permits a helper module that imports the data contracts[33m 342[2mms[22m[39m
+ [32m✓[39m [30m[45m policy [49m[39m tests/history.test.ts [2m([22m[2m53 tests[22m[2m)[22m[33m 1614[2mms[22m[39m
+   [32m✓[39m review follow-up retention regressions [2m(9)[22m
+     [33m[2m✓[22m[39m bounds consumed responses to an outstanding review in both prompts, with whole local overflow[33m 860[2mms[22m[39m
+ [32m✓[39m [30m[45m policy [49m[39m tests/activity.test.ts [2m([22m[2m122 tests[22m[2m)[22m[33m 2335[2mms[22m[39m
+   [32m✓[39m the invocation timeline [2m(24)[22m
+     [33m[2m✓[22m[39m preserves complete identities across wrapping at 20 columns[33m 557[2mms[22m[39m
+     [33m[2m✓[22m[39m preserves complete identities across wrapping at 24 columns[33m 551[2mms[22m[39m
+     [33m[2m✓[22m[39m preserves complete identities across wrapping at 80 columns[33m 541[2mms[22m[39m
+ [32m✓[39m [30m[43m boundary [49m[39m tests/source.test.ts [2m([22m[2m101 tests[22m[2m)[22m[33m 885[2mms[22m[39m
+ [32m✓[39m [30m[43m boundary [49m[39m tests/reviews.test.ts [2m([22m[2m102 tests[22m[2m)[22m[33m 2673[2mms[22m[39m
+ [32m✓[39m [30m[43m boundary [49m[39m tests/baseline.test.ts [2m([22m[2m76 tests[22m[2m)[22m[33m 3484[2mms[22m[39m
+   [32m✓[39m the pre-delivery baseline diagnosis [2m(24)[22m
+     [33m[2m✓[22m[39m keeps the lock when the bounded reviewer timeout cannot confirm its stop[33m 2106[2mms[22m[39m
+ [32m✓[39m [30m[43m boundary [49m[39m tests/agent.test.ts [2m([22m[2m33 tests[22m[2m | [22m[33m1 skipped[39m[2m)[22m[33m 2754[2mms[22m[39m
+   [32m✓[39m how a turn ends, and what it reports [2m(8)[22m
+     [33m[2m✓[22m[39m retains a full developer message across the adapter (stopped=true)[33m 439[2mms[22m[39m
+   [32m✓[39m stopping what a turn started [2m(5)[22m
+     [33m[2m✓[22m[39m waits for a stopped runtime to end before the turn returns[33m 437[2mms[22m[39m
+ [32m✓[39m [30m[43m boundary [49m[39m tests/baseline-queue.integration.test.ts [2m([22m[2m23 tests[22m[2m)[22m[33m 1040[2mms[22m[39m
+   [32m✓[39m the diagnosis through `source run` [2m(1)[22m
+     [33m[2m✓[22m[39m returns the same ticket to To Do and hands the finding to the next claim[33m 461[2mms[22m[39m
+ [32m✓[39m [30m[43m boundary [49m[39m tests/local-run.integration.test.ts [2m([22m[2m10 tests[22m[2m)[22m[33m 6498[2mms[22m[39m
+   [32m✓[39m the offline local loop, end to end [2m(10)[22m
+     [33m[2m✓[22m[39m repairs a failed implementation, and tells the repair what was observed[33m 351[2mms[22m[39m
+     [33m[2m✓[22m[39m spends the exact repair allowance and reports the last round red[33m 444[2mms[22m[39m
+     [33m[2m✓[22m[39m stops a real hanging check when the run's own deadline expires[33m 4177[2mms[22m[39m
+     [33m[2m✓[22m[39m gives two runs of one task separate directories and separate clones[33m 441[2mms[22m[39m
+ [32m✓[39m [30m[43m boundary [49m[39m tests/runner-repair.test.ts [2m([22m[2m29 tests[22m[2m)[22m[33m 3924[2mms[22m[39m
+   [32m✓[39m a run that runs out of task time [2m(10)[22m
+     [33m[2m✓[22m[39m stops and awaits an implementation turn that is still running when the run is out of time[33m 350[2mms[22m[39m
+   [32m✓[39m a run the caller stops [2m(15)[22m
+     [33m[2m✓[22m[39m keeps the timeout it observed first when the caller stops the run as well[33m 346[2mms[22m[39m
+     [33m[2m✓[22m[39m releases the deadline of a phase that finished inside its budget[33m 746[2mms[22m[39m
+     [33m[2m✓[22m[39m gives a turn only the task time the checkout before it left[33m 342[2mms[22m[39m
+ [32m✓[39m [30m[43m boundary [49m[39m tests/source-cli.integration.test.ts [2m([22m[2m26 tests[22m[2m)[22m[33m 8198[2mms[22m[39m
+   [32m✓[39m the source commands through the CLI [2m(26)[22m
+     [33m[2m✓[22m[39m runs one attempt per ladder tier in the same workspace, keeping the issue running until the end[33m 353[2mms[22m[39m
+     [33m[2m✓[22m[39m restarts a re-armed continuation at the first tier, keeping its workspace and its history[33m 459[2mms[22m[39m
+     [33m[2m✓[22m[39m watch picks up an issue made eligible later, then stops on interrupt[33m 5096[2mms[22m[39m
+ [32m✓[39m [30m[43m boundary [49m[39m tests/queue-cli.test.ts [2m([22m[2m21 tests[22m[2m)[22m[33m 2484[2mms[22m[39m
+   [32m✓[39m the queue command line [2m(19)[22m
+     [33m[2m✓[22m[39m resumes an admitted merged In Review ticket, then a restart after Done has no completion effects[33m 573[2mms[22m[39m
+     [33m[2m✓[22m[39m creates the missing completion evidence directory and resolves the ticket it resumes[33m 597[2mms[22m[39m
+ [32m✓[39m [30m[43m boundary [49m[39m tests/lifecycle.test.ts [2m([22m[2m7 tests[22m[2m | [22m[33m1 skipped[39m[2m)[22m[33m 1758[2mms[22m[39m
+   [32m✓[39m a run its caller stops, for real [2m(7)[22m
+     [33m[2m✓[22m[39m stops a baseline command and the tree behind it, and starts nothing after it[33m 425[2mms[22m[39m
+     [33m[2m✓[22m[39m stops the check a turn left hanging, and runs no further round or turn[33m 511[2mms[22m[39m
+     [33m[2m✓[22m[39m stops a single command that was already running when it was asked to stop[33m 377[2mms[22m[39m
+ [32m✓[39m [30m[43m boundary [49m[39m tests/workspace.test.ts [2m([22m[2m51 tests[22m[2m)[22m[33m 1544[2mms[22m[39m
+ [32m✓[39m [30m[43m boundary [49m[39m tests/workspace-branch.test.ts [2m([22m[2m25 tests[22m[2m)[22m[33m 1248[2mms[22m[39m
+ [32m✓[39m [30m[43m boundary [49m[39m tests/checks.test.ts [2m([22m[2m35 tests[22m[2m | [22m[33m7 skipped[39m[2m)[22m[33m 3959[2mms[22m[39m
+   [32m✓[39m a command that runs out of time [2m(5)[22m
+     [33m[2m✓[22m[39m is stopped with the child it started, and is not waited for[33m 2613[2mms[22m[39m
+     [33m[2m✓[22m[39m runs under the task time that is left when that is the smaller limit[33m 405[2mms[22m[39m
+     [33m[2m✓[22m[39m runs under its own command limit when that is the smaller one[33m 405[2mms[22m[39m
+ [32m✓[39m [30m[43m boundary [49m[39m tests/runner.test.ts [2m([22m[2m25 tests[22m[2m)[22m[33m 5414[2mms[22m[39m
+   [32m✓[39m a run that continues a workspace [2m(1)[22m
+     [33m[2m✓[22m[39m starts from the red working copy it was pointed at, reaches its turn, and records the attempt[33m 563[2mms[22m[39m
+   [32m✓[39m a working copy a coding turn commits in [2m(6)[22m
+     [33m[2m✓[22m[39m configures the identity for a continuation that did not go through reopenWorkspace[33m 568[2mms[22m[39m
+   [32m✓[39m a continued run whose source checkout moved on [2m(1)[22m
+     [33m[2m✓[22m[39m keeps the recorded base for comparisons, with commits and leftovers both visible[33m 592[2mms[22m[39m
+   [32m✓[39m a run whose baseline passes [2m(5)[22m
+     [33m[2m✓[22m[39m runs one implementation turn, then setup and every check, and passes[33m 594[2mms[22m[39m
+     [33m[2m✓[22m[39m starts no post-agent command while the implementation turn is running[33m 704[2mms[22m[39m
+ [32m✓[39m [30m[43m boundary [49m[39m tests/cli-run.integration.test.ts [2m([22m[2m24 tests[22m[2m)[22m[33m 1497[2mms[22m[39m
+ [32m✓[39m [30m[43m boundary [49m[39m tests/cli.integration.test.ts [2m([22m[2m11 tests[22m[2m)[22m[33m 3852[2mms[22m[39m
+   [32m✓[39m the built CLI, end to end [2m(11)[22m
+     [33m[2m✓[22m[39m runs a task to a pass, keeping real changes and a parseable report[33m 363[2mms[22m[39m
+     [33m[2m✓[22m[39m launches the configured prefix, literally, and records it in the report and timeline[33m 336[2mms[22m[39m
+     [33m[2m✓[22m[39m repairs a failed round and passes, keeping the failed round and its feedback[33m 479[2mms[22m[39m
+     [33m[2m✓[22m[39m spends the whole repair allowance and no turn beyond it, then fails[33m 560[2mms[22m[39m
+     [33m[2m✓[22m[39m refuses invalid input with a nonzero exit and creates no run artifacts[33m 318[2mms[22m[39m
+     [33m[2m✓[22m[39m interrupts a running turn: the CLI stops, its fixture processes stop, and the run is cancelled[33m 302[2mms[22m[39m
+     [33m[2m✓[22m[39m works with spaces in the config, task, source and output paths[33m 341[2mms[22m[39m
+     [33m[2m✓[22m[39m touches neither the runtime nor the source for help and check-config[33m 331[2mms[22m[39m
+ [32m✓[39m [30m[43m boundary [49m[39m tests/readme.test.ts [2m([22m[2m9 tests[22m[2m)[22m[33m 950[2mms[22m[39m
+   [32m✓[39m the documented disposable example [2m(3)[22m
+     [33m[2m✓[22m[39m runs the documented command, and the paths it prints are the real layout[33m 302[2mms[22m[39m
+ [32m✓[39m [30m[43m boundary [49m[39m tests/cli.test.ts [2m([22m[2m49 tests[22m[2m)[22m[33m 1132[2mms[22m[39m
+   [32m✓[39m as a process [2m(4)[22m
+     [33m[2m✓[22m[39m prints help and exits 0[33m 376[2mms[22m[39m
+ [32m✓[39m [30m[43m boundary [49m[39m tests/delivery.test.ts [2m([22m[2m12 tests[22m[2m)[22m[33m 731[2mms[22m[39m
+ [32m✓[39m [30m[43m boundary [49m[39m tests/runner-records.test.ts [2m([22m[2m7 tests[22m[2m)[22m[33m 1369[2mms[22m[39m
+   [32m✓[39m what a run records about the working copy it left [2m(3)[22m
+     [33m[2m✓[22m[39m lists and flags the changes a coding turn left, against the base it recorded[33m 307[2mms[22m[39m
+   [32m✓[39m the ticket conversation history before a coding turn [2m(3)[22m
+     [33m[2m✓[22m[39m prepares one snapshot before the turn and hands the turn its local paths[32m 300[2mms[22m[39m
+ [32m✓[39m [30m[43m boundary [49m[39m tests/completion-arm.test.ts [2m([22m[2m32 tests[22m[2m)[22m[33m 13913[2mms[22m[39m
+   [32m✓[39m arming native auto-merge before the final gate [2m(13)[22m
+     [33m[2m✓[22m[39m recovers a native merge after merge-uncertain (repair: false)[33m 958[2mms[22m[39m
+     [33m[2m✓[22m[39m recovers a native merge after merge-uncertain (repair: true)[33m 1032[2mms[22m[39m
+     [33m[2m✓[22m[39m recovers a native merge after view-after-arm (repair: false)[33m 953[2mms[22m[39m
+     [33m[2m✓[22m[39m arms while the final required check is pending, then the green gate uses that arm[33m 823[2mms[22m[39m
+     [33m[2m✓[22m[39m returns an armed repair to To Do when the current-head Lens result requests changes[33m 401[2mms[22m[39m
+   [32m✓[39m reconciling terminal states across an auto-merge race [2m(19)[22m
+     [33m[2m✓[22m[39m finishes an already-merged admission without arming or asking for a person[33m 824[2mms[22m[39m
+     [33m[2m✓[22m[39m reconciles an unprocessable arm refusal when GitHub merged the reviewed head[33m 489[2mms[22m[39m
+     [33m[2m✓[22m[39m retries a transient read that reconciles a successful auto-merge response[33m 507[2mms[22m[39m
+     [33m[2m✓[22m[39m retries a transient read that reconciles an unprocessable auto-merge response[33m 514[2mms[22m[39m
+     [33m[2m✓[22m[39m follows a merge that lands between the merge read and the gate read (HARN-34)[33m 426[2mms[22m[39m
+     [33m[2m✓[22m[39m continues when GitHub merges the head before the arm is verified[33m 486[2mms[22m[39m
+     [33m[2m✓[22m[39m retries a transient GitHub failure within the deadline instead of stopping for a person[33m 477[2mms[22m[39m
+     [33m[2m✓[22m[39m retries a transient failure of the required-check read instead of aborting the item[33m 589[2mms[22m[39m
+     [33m[2m✓[22m[39m retries a read the harness stopped at its command limit without any answer[33m 1461[2mms[22m[39m
+     [33m[2m✓[22m[39m resumes post-merge verification after a restart without repeating any write[33m 826[2mms[22m[39m
+     [33m[2m✓[22m[39m records a merge it discovers before arming so a restart finishes the failed move[33m 833[2mms[22m[39m
+     [33m[2m✓[22m[39m does not mint a fresh deadline for the guard before the status move[33m 355[2mms[22m[39m
+ [32m✓[39m [30m[43m boundary [49m[39m tests/review-github.test.ts [2m([22m[2m18 tests[22m[2m)[22m[32m 47[2mms[22m[39m
+ [32m✓[39m [30m[43m boundary [49m[39m tests/fixture-beacon.test.ts [2m([22m[2m5 tests[22m[2m)[22m[33m 302[2mms[22m[39m
+ [32m✓[39m [30m[43m boundary [49m[39m tests/refresh.test.ts [2m([22m[2m10 tests[22m[2m)[22m[33m 470[2mms[22m[39m
+ [32m✓[39m [30m[43m boundary [49m[39m tests/fixture-lifecycle.test.ts [2m([22m[2m4 tests[22m[2m)[22m[33m 3091[2mms[22m[39m
+   [32m✓[39m the fixture lifecycle [2m(4)[22m
+     [33m[2m✓[22m[39m stops a command that outlives its own bound, and waits for it to go[33m 758[2mms[22m[39m
+     [33m[2m✓[22m[39m cleans up after the cases that must fail, time out or cancel[33m 2181[2mms[22m[39m
+ [32m✓[39m [30m[43m boundary [49m[39m tests/completion-summary.test.ts [2m([22m[2m2 tests[22m[2m)[22m[33m 466[2mms[22m[39m
+   [32m✓[39m the completion summary [2m(2)[22m
+     [33m[2m✓[22m[39m counts what each item ended as and prints it[33m 461[2mms[22m[39m
+ [32m✓[39m [30m[43m boundary [49m[39m tests/live-verifier.test.ts [2m([22m[2m20 tests[22m[2m)[22m[33m 19120[2mms[22m[39m
+   [32m✓[39m the entry point, as a process [2m(8)[22m
+     [33m[2m✓[22m[39m runs both exercises through the configured selection, against the fixture[33m 5970[2mms[22m[39m
+     [33m[2m✓[22m[39m is absent from default test discovery[33m 952[2mms[22m[39m
+   [32m✓[39m the repair fixture’s injected failure [2m(1)[22m
+     [33m[2m✓[22m[39m waits for the arm file it is given, injects once, and never repairs itself[33m 5247[2mms[22m[39m
+   [32m✓[39m the exercises, through the stand-in runtime boundary [2m(3)[22m
+     [33m[2m✓[22m[39m passes the implementation exercise when the turn does the work[33m 341[2mms[22m[39m
+     [33m[2m✓[22m[39m passes the repair exercise, and hands the injected failure to the repair turn[33m 5463[2mms[22m[39m
+     [33m[2m✓[22m[39m reports what it found instead of passing a run that did not do the work[33m 344[2mms[22m[39m
+ [32m✓[39m [30m[43m boundary [49m[39m tests/git.test.ts [2m([22m[2m7 tests[22m[2m | [22m[33m1 skipped[39m[2m)[22m[33m 11729[2mms[22m[39m
+   [32m✓[39m a Git command under a bound [2m(5)[22m
+     [33m[2m✓[22m[39m stops a hanging command at its bound, and the child it started with it[33m 3016[2mms[22m[39m
+     [33m[2m✓[22m[39m gives each reading what is left of the run, not the budget its step started with[33m 2519[2mms[22m[39m
+   [32m✓[39m workspace steps that use Git [2m(2)[22m
+     [33m[2m✓[22m[39m stops a hanging preparation step at the run deadline, and keeps the run[33m 3026[2mms[22m[39m
+     [33m[2m✓[22m[39m ends a final comparison that hangs at its bound, with the stop it recorded[33m 3041[2mms[22m[39m
+ [32m✓[39m [30m[43m boundary [49m[39m tests/completion-github.test.ts [2m([22m[2m66 tests[22m[2m)[22m[33m 22377[2mms[22m[39m
+   [32m✓[39m review-to-completion [2m(66)[22m
+     [33m[2m✓[22m[39m refreshes the reader credential for later evidence reads without changing the operator identity[33m 482[2mms[22m[39m
+     [33m[2m✓[22m[39m finishes an approved pull request after its merge and main workflow succeeded[33m 443[2mms[22m[39m
+     [33m[2m✓[22m[39m arms native auto-merge with the operator credential and waits for GitHub to merge[33m 705[2mms[22m[39m
+     [33m[2m✓[22m[39m creates the per-issue evidence directory before its first GitHub command[33m 606[2mms[22m[39m
+     [33m[2m✓[22m[39m returns a request-changes decision to the To Do status with the review link[33m 307[2mms[22m[39m
+     [33m[2m✓[22m[39m returns a post-merge workflow failure to To Do with its conclusion and link[33m 431[2mms[22m[39m
+     [33m[2m✓[22m[39m treats a latest workflow attempt of cancelled as unsuccessful[33m 428[2mms[22m[39m
+     [33m[2m✓[22m[39m treats a latest workflow attempt of timed_out as unsuccessful[33m 430[2mms[22m[39m
+     [33m[2m✓[22m[39m treats a latest workflow attempt of action_required as unsuccessful[33m 435[2mms[22m[39m
+     [33m[2m✓[22m[39m treats a latest workflow attempt of stale as unsuccessful[33m 432[2mms[22m[39m
+     [33m[2m✓[22m[39m treats a latest workflow attempt of skipped as unsuccessful[33m 427[2mms[22m[39m
+     [33m[2m✓[22m[39m treats a latest workflow attempt of neutral as unsuccessful[33m 440[2mms[22m[39m
+     [33m[2m✓[22m[39m reads only the latest attempt of each configured workflow[33m 439[2mms[22m[39m
+     [33m[2m✓[22m[39m matches a workflow by its numeric ID as well as its file[33m 433[2mms[22m[39m
+     [33m[2m✓[22m[39m writes one findings comment and one move when the pass is repeated[33m 400[2mms[22m[39m
+     [33m[2m✓[22m[39m resumes a resolution comment whose Done move never arrived[33m 874[2mms[22m[39m
+     [33m[2m✓[22m[39m does not duplicate the resolution comment when the move failed first[33m 876[2mms[22m[39m
+     [33m[2m✓[22m[39m follows a merge GitHub makes after auto-merge was armed[33m 891[2mms[22m[39m
+     [33m[2m✓[22m[39m does not write a second comment when the first write was uncertain[33m 489[2mms[22m[39m
+     [33m[2m✓[22m[39m does not arm twice across restart or an uncertain auto-merge response[33m 773[2mms[22m[39m
+     [33m[2m✓[22m[39m returns a failed required check observed after arming to To Do[33m 547[2mms[22m[39m
+     [33m[2m✓[22m[39m does not return an optional failed check for repair[33m 454[2mms[22m[39m
+     [33m[2m✓[22m[39m waits for a post-merge workflow queued without fabricating failure[33m 395[2mms[22m[39m
+     [33m[2m✓[22m[39m waits for a post-merge workflow in_progress without fabricating failure[33m 396[2mms[22m[39m
+     [33m[2m✓[22m[39m selects the latest attempt of the same run ID[33m 445[2mms[22m[39m
+     [33m[2m✓[22m[39m names every unsuccessful configured workflow in one concise comment[33m 511[2mms[22m[39m
+     [33m[2m✓[22m[39m requires workflow health again even when an old resolution comment exists[33m 834[2mms[22m[39m
+     [33m[2m✓[22m[39m respects a human reopening the same resolved merge[33m 646[2mms[22m[39m
+     [33m[2m✓[22m[39m can resolve a reopened ticket only for a later different merged result[33m 953[2mms[22m[39m
+     [33m[2m✓[22m[39m recovers a comment accepted by Jira whose response was lost[33m 864[2mms[22m[39m
+     [33m[2m✓[22m[39m does not repeat a transition that Jira accepted with a lost response[33m 434[2mms[22m[39m
+     [33m[2m✓[22m[39m respects a human status change before transition[33m 314[2mms[22m[39m
+     [33m[2m✓[22m[39m does not treat a completed workflow without a conclusion as failure[33m 395[2mms[22m[39m
+     [33m[2m✓[22m[39m runs only GitHub commands: no coding runtime is installed or started[33m 428[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m46 passed[39m[22m[90m (46)[39m
+[2m      Tests [22m [1m[32m1333 passed[39m[22m[2m | [22m[33m10 skipped[39m[90m (1343)[39m
+[2m   Start at [22m 12:15:47
+[2m   Duration [22m 37.06s[2m (tests 96%, import 2%, transform 2%)[22m
+
