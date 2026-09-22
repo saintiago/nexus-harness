@@ -18,7 +18,7 @@ configuration that enables neither step changes nothing.
 ## Requirements and supported platforms
 
 - **Node.js 24 or newer.** `engines` requires `>=24.0.0`, and `.nvmrc` records `24.14.1`, which is
-  the repository uses.
+  the version used by the repository.
 - **A coding runtime: the Codex CLI** (`@openai/codex`).
   It is not an npm dependency of this repository: you install it globally and authenticate it
   yourself. The harness starts it with a launch you configure — `codex` on `PATH` by default, or a
@@ -62,7 +62,9 @@ CLI from TypeScript sources through `tsx` if you would rather not build.
 | `npm run test:four-workers` | Run all tests in one pool with four workers. |
 | `npm run test:watch`        | Run the offline suite in watch mode.                              |
 | `npm run format:check`      | Check formatting without writing.                                 |
-| `npm run validate`          | Format, lint, typecheck, build, test — the gate CI runs.          |
+| `npm run validate`          | Run the validation gate, reusing eligible unchanged results. |
+| `npm run validate:fresh`    | Clear local caches and execute every validation task. |
+| `npm run cache:clear`       | Clear this checkout's local validation caches. |
 | `npm run test:live`         | The opt-in **live** check: builds, then drives a real Codex CLI.  |
 
 The suite has two projects: `policy` for decisions and data handling, and `boundary` for
@@ -116,8 +118,7 @@ identity and destination repository, so equal issue IDs on different Jira sites 
 `docs/nexus.config.example.json` is a credential-free Nexus-wide example,
 `docs/nexus.project.example.json` a credential-free project example, and this repository's own
 `nexus.project.json` is what it commits for itself. `examples/task.json` is the task example. Their
-formats are defined in [docs/WORKFLOW.md](../docs/WORKFLOW.md) §1–2; that document is the contract —
-this README does not restate it.
+formats are defined in [WORKFLOW.md](WORKFLOW.md) §1–2.
 
 ### Connecting a new repository
 

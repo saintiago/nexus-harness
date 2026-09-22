@@ -4,7 +4,9 @@
     "noEmit": false,
     "rootDir": "src",
     "outDir": "dist",
-    "sourceMap": true
+    "sourceMap": true,
+    "incremental": false,
+    "tsBuildInfoFile": null
   },
   "include": ["src/**/*.ts"],
   "exclude": ["tests"]

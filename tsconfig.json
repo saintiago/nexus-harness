@@ -19,7 +19,10 @@
     "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true,
 
-    "noEmit": true
+    "noEmit": true,
+
+    "incremental": true,
+    "tsBuildInfoFile": ".turbo/tsc/typecheck.tsbuildinfo"
   },
   "include": ["src/**/*.ts", "tests/**/*.ts", "vitest.config.ts"],
   "exclude": ["tests/fixtures"]

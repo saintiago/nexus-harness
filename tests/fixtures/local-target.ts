@@ -368,6 +368,17 @@ export interface FakeCompletionState {
   readonly runsFile: string;
   /** The GitHub CLI this stand-in is installed as. */
   readonly command: string;
+  /**
+   * How the completion step is pointed at the stand-in: this suite's own Node,
+   * with the stand-in script as its fixed first argument.
+   *
+   * A `gh` on a real host is one native executable, so this is the shape a
+   * completion step runs: one process, no launcher. The `command` above is the
+   * shim form, which a test needs when it puts the stand-in on `PATH` or names
+   * it in a configuration; going through a shim costs a `cmd.exe` (or `/bin/sh`)
+   * round trip per invocation, which is real work no case here is about.
+   */
+  readonly launch: readonly string[];
 }
 
 /**
@@ -391,6 +402,7 @@ export async function installFakeGhCompletion(
     checksFile: path.join(stateDir, 'pr-checks.json'),
     runsFile: path.join(stateDir, 'workflow-runs.json'),
     command,
+    launch: [process.execPath, FAKE_GH_COMPLETION],
   };
 }
 

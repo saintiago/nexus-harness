@@ -49,7 +49,8 @@ implementation against the required behavior, not documentation against existing
 ## Tech stack
 
 Use Node.js, TypeScript ES modules and npm. Use Zod for input validation, Vitest for behavior tests,
-and ESLint and Prettier for code quality and formatting.
+and ESLint and Prettier for code quality and formatting. Use Turborepo for local validation task
+caching and the tools' native caches where appropriate.
 
 Prefer existing code and native capabilities. Use a suitable maintained package for established
 infrastructure rather than rebuilding its mechanics. Choose the smallest adequate solution by

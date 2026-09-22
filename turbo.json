@@ -1,0 +1,131 @@
+{
+  "$schema": "https://turborepo.dev/schema.json",
+  "ui": "stream",
+  "concurrency": "1",
+  "envMode": "loose",
+  "cacheDir": ".turbo/cache",
+  "noUpdateNotifier": true,
+  "remoteCache": {
+    "enabled": false
+  },
+  "globalEnv": ["CI", "NODE_ENV", "NODE_OPTIONS", "NEXUS_VALIDATE_NODE", "NEXUS_VALIDATE_NPM"],
+  "globalDependencies": [".gitattributes", ".nvmrc"],
+  "tasks": {
+    "format:check": {
+      "inputs": ["$TURBO_DEFAULT$"],
+      "outputs": [],
+      "outputLogs": "new-only"
+    },
+    "lint": {
+      "inputs": ["$TURBO_DEFAULT$", "!**/*.md", "!docs/**", "!notes/**", "!performance/**"],
+      "outputs": [],
+      "outputLogs": "new-only"
+    },
+    "typecheck": {
+      "inputs": ["src/**", "tests/**", "tsconfig*.json", "vitest*.config.ts"],
+      "outputs": [],
+      "outputLogs": "new-only"
+    },
+    "build": {
+      "inputs": ["src/**", "tsconfig*.json", "scripts/build.mjs"],
+      "outputs": ["dist/**"],
+      "outputLogs": "new-only"
+    },
+    "test:policy:display": {
+      "env": ["TZ", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "TEMP", "TMP", "VITEST_*"],
+      "inputs": [
+        "src/**",
+        "tests/activity.test.ts",
+        "tests/support.ts",
+        "tests/fixtures/**",
+        "vitest.config.ts"
+      ],
+      "outputs": [],
+      "outputLogs": "new-only",
+      "dependsOn": ["build"]
+    },
+    "test:policy:config": {
+      "env": ["TZ", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "TEMP", "TMP", "VITEST_*"],
+      "inputs": [
+        ".gitignore",
+        ".prettierignore",
+        "README.md",
+        "docs/**",
+        "eslint.config.js",
+        "examples/**",
+        "nexus.project.json",
+        "scripts/**",
+        "src/**",
+        "tests/**",
+        "tsconfig*.json",
+        "turbo.json",
+        "vitest.config.ts"
+      ],
+      "outputs": [],
+      "outputLogs": "new-only",
+      "dependsOn": ["build"]
+    },
+    "test:policy:loop": {
+      "env": ["TZ", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "TEMP", "TMP", "VITEST_*"],
+      "inputs": [
+        "src/**",
+        "tests/completion-policy.test.ts",
+        "tests/runner-policy.test.ts",
+        "tests/stop.test.ts",
+        "tests/support.test.ts",
+        "tests/support.ts",
+        "tests/fixtures/**",
+        "vitest.config.ts"
+      ],
+      "outputs": [],
+      "outputLogs": "new-only",
+      "dependsOn": ["build"]
+    },
+    "test:policy:intake": {
+      "env": ["TZ", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "TEMP", "TMP", "VITEST_*"],
+      "inputs": [
+        "src/**",
+        "tests/baseline-findings.test.ts",
+        "tests/jira.test.ts",
+        "tests/queue-recovery.test.ts",
+        "tests/queue.test.ts",
+        "tests/support.ts",
+        "tests/fixtures/**",
+        "vitest.config.ts"
+      ],
+      "outputs": [],
+      "outputLogs": "new-only",
+      "dependsOn": ["build"]
+    },
+    "test:policy:history": {
+      "env": ["TZ", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "TEMP", "TMP", "VITEST_*"],
+      "inputs": [
+        "src/**",
+        "tests/history-runner.test.ts",
+        "tests/history-source.test.ts",
+        "tests/history.test.ts",
+        "tests/reviews-shared.ts",
+        "tests/reviews.test.ts",
+        "tests/support.ts",
+        "tests/fixtures/**",
+        "vitest.config.ts"
+      ],
+      "outputs": [],
+      "outputLogs": "new-only",
+      "dependsOn": ["build"]
+    },
+    "test:boundary": {
+      "cache": false,
+      "inputs": ["src/**", "tests/**", "tsconfig*.json", "vitest*.config.ts"],
+      "outputs": [],
+      "dependsOn": [
+        "build",
+        "test:policy:display",
+        "test:policy:config",
+        "test:policy:loop",
+        "test:policy:intake",
+        "test:policy:history"
+      ]
+    }
+  }
+}
