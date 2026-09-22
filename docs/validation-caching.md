@@ -264,6 +264,15 @@ ended with no new fixture directory and no new Node/Git/cmd/taskkill process ide
 cycle above is recorded the same way in
 [performance/harn-49-repair-cycle.txt](../performance/harn-49-repair-cycle.txt).
 
+The delivered revision was then validated with `npm run validate:fresh` on the same host: **10
+tasks, 0 cached**, 1,371 passed and 2 skipped (policy 602, boundary 769 + 2 skips), exit 0 in 273.6 s
+wall — policy 9.4 s over its five groups, boundary 248.9 s. Its whole transcript is
+[performance/harn-49-final-validation.txt](../performance/harn-49-final-validation.txt). Note the
+spread in that one layer across the sessions recorded here: 171.3 s, 176.1 s and 248.9 s for the
+same 34 files on the same host. That variance is one reason the boundary layer is never replayed,
+and it is why no timing here is presented as a stable distribution. Only this paragraph and the
+record it names changed after the validated revision.
+
 The comparable pre-change numbers are HARN-48's: 207–210 s test phase, 219–222 s
 wall. Those samples were taken at different times on a busy desktop host and are
 not a controlled comparison; the honest reading is that the boundary layer still

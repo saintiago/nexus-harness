@@ -701,6 +701,14 @@ majority of it, is not eligible. These two samples are not a controlled comparis
 207–210 s test phase: they were taken at different times on a busy desktop host, and no claim is
 made that the gate got faster beyond the reuse itself.
 
+The delivered revision was validated with `npm run validate:fresh`: 10 tasks, 0 cached, exit 0,
+1,371 passed and 2 skipped in 273.6 s wall (policy 602 in 9.4 s over five groups; boundary 769 + 2
+skips over 34 files in 248.9 s). Its transcript is
+[harn-49-final-validation.txt](../performance/harn-49-final-validation.txt). The boundary layer
+measured 171.3 s, 176.1 s and 248.9 s for the same files on the same host across these sessions:
+that spread is exactly why the layer is never replayed, and no number here is offered as a stable
+distribution. Only this paragraph and that record changed after the validated revision.
+
 The single-pool `test:four-workers` comparison was not re-measured for HARN-49: it is a measurement
 command, not part of the gate, and this ticket's claims rest on the two runs above.
 
