@@ -305,7 +305,7 @@ Discover available transitions for the issue and select a unique transition by i
 
 Save local results first. Post one compact result comment with run ID, observed outcome/reason, check summary, repairs used, local artifact locations, and — when the attempt was delivered — its pull request URL; mark paths as local, not downloadable Jira attachments. Exclude transcripts, diffs, environment variables, tokens, and native provider configuration. Then move to review only if the issue is still in the running status; respect subsequent human status changes. Jira comments use ADF. [J3]
 
-While an `escalation` ladder still has a rung to try, that comment is one attempt's own and the issue stays in the running status; only the climb's last attempt moves it to review, and only an exhausted ordinary red check round — one whose rung spent its own repair allowance — lets the climb continue ([implement-workspace-continuation.md](implement-workspace-continuation.md)). Escalation is local to one coding cycle: every claim, a first attempt and a claim that continues the workspace a reviewer's findings, a failed required check, a delivery failure, or a failed post-merge workflow returned to the ready status alike, starts at the first configured tier in that same retained workspace, and the workspace's own attempt count never selects one.
+While an `escalation` ladder still has a rung to try, that comment is one attempt's own and the issue stays in the running status; only the climb's last attempt moves it to review, and only an exhausted ordinary red check round — one whose rung spent its own repair allowance — lets the climb continue ([workspace continuation](spec.md#2-what-the-working-version-does)). Escalation is local to one coding cycle: every claim, a first attempt and a claim that continues the workspace a reviewer's findings, a failed required check, a delivery failure, or a failed post-merge workflow returned to the ready status alike, starts at the first configured tier in that same retained workspace, and the workspace's own attempt count never selects one.
 
 A feedback failure keeps the original local run outcome and a separate `feedback: failed` receipt entry. Record whether a comment was acknowledged before a later transition failed. Do not blindly resend comments after an ambiguous response. No automatic outbox/reconciliation loop in this increment.
 
@@ -357,19 +357,16 @@ Delivery applies to a source-triggered attempt, whose workspace and branch survi
 
 Delivery uses the operator's own Git and `gh` authentication; the configured repository and base branch are trusted local inputs, like the configured commands, and no GitHub credential is stored by the harness. A destination the harness cannot write to fails with what Git or `gh` said rather than falling back to anything else.
 
-## 8. Current increment and later work
+## 8. Scope
 
-**Keep:** the existing workspace/check/report loop, file-task CLI, configurable Codex adapter and DeepSeek profile selection, offline tests, logging, deadlines, cancellation, and retained artifacts. Inspect actual code and preserve user changes. The production harness still never configures the user's coding-provider account.
+Support local file tasks and configured Jira intake through the same implementation/check/repair
+lifecycle. Keep delivery, review and completion optional. Commands that do not use a provider
+must not require its credentials. Use the selected coding runtime without altering the user's
+provider account or global settings.
 
-**Implemented by this increment:** optional source configuration; a small source contract; Jira Cloud mapping, discovery, claim, and result feedback; list/run/watch commands; a per-connected-project single-consumer lock and local receipts; offline tests and an opt-in Jira exercise. Do not require Jira credentials for existing file-task commands or ordinary validation. The later workspace-continuation increment builds on it: see [implement-workspace-continuation.md](implement-workspace-continuation.md).
-
-**Later, only when needed:** another concrete task source, real Claude Code adapter, webhooks, parallel consumers of one project's queue, dependency scheduling, automatic merging, stronger isolation, or remote recovery. The optional GitHub delivery step of §7 opens or updates a pull request and stops there. Merging and reacting to CI on the pull request happen only through the explicitly configured completion path of §10, which the serial queue of §11 composes into one lifecycle per ticket; without it they stay outside the harness. Add another connector without changing Task or the coding loop; do not ship a placeholder connector now.
-
-**Implemented by the review increment:** the optional Nexus-wide `reviewer` object and the `review scan` / `review watch` commands of §9 below. They add no field to Task, no change to the coding loop, and no new process: a scan reads the Jira queue through the connected project's `source`, starts the configured reviewer as one bounded turn, and publishes a native GitHub review and an app-owned check run on the repository that project delivers to. Merging, Jira completion, and coordinator decisions remain outside it.
-
-**Implemented by the queue increment:** the opt-in `queue run` and `queue watch` commands of §11 below, and the source-readiness step they use between tickets. They add no new agent, connector, or state: they compose the existing Jira source, the existing runner and delivery step, the existing Nexus Lens scan, and the existing completion pass into one serial lifecycle, and they decide only the order.
-
-Regression verification must retain baseline failure, pass without repair, repair then pass, repair exhaustion, execution/auth/protocol errors, timeout/cancellation, retained workspace/logs, and unchanged source. Add source tests without weakening those cases. Default tests must not call Jira or a real LLM. T16 is not considered passed by mocked connector tests.
+Retain work, logs and observed outcomes across attempts. Preserve the source checkout and respect
+exclusive workspace ownership. Additional sources, runtimes, parallel consumers or recovery
+capabilities require explicit requirements rather than placeholder infrastructure.
 
 ## 9. Optional Nexus Lens reviews
 

@@ -1,14 +1,17 @@
 # Documentation reference
 
+Documentation is the law; code is not. Documentation states intent, and code is its embodiment.
+If code contradicts documentation, correct the code.
+
 ## Purpose and design
 
 - [Long-term vision](docs/LONG_TERM_VISION.md): future purpose and direction; not current behavior.
 - [Architecture](docs/architecture.md): design principles, ownership, testing and tech stack.
-- [Module structure](docs/module-structure.md): source-file responsibilities and dependencies.
+- [Components](docs/components.md): responsibilities and required behavior.
 
 ## Behavior and operation
 
-- [Specification](docs/spec.md): authoritative current behavior and limits.
+- [Specification](docs/spec.md): required behavior and limits.
 - [Workflow](docs/WORKFLOW.md): configuration and command contracts.
 - [Operations](docs/operations.md): installation, commands and examples.
 - [Connect a project](docs/connect-a-project.md): project onboarding.
@@ -21,11 +24,3 @@
 - [Development guide](docs/development.md): implementation, verification and role boundaries.
 - [Git workflow](docs/GIT-WORKFLOW.md): branches, pull requests and integration.
 - [Documentation guide](docs/documentation.md): document ownership and maintenance.
-- [Test coverage map](notes/test-layers.md): current suite responsibilities.
-
-## Detailed contracts
-
-- [Source intake](docs/implement-task-source-connectors.md): Jira intake contract.
-- [Workspace continuation](docs/implement-workspace-continuation.md): retained-workspace contract.
-- [Serial queue](docs/implement-queue-run.md): queue lifecycle contract.
-- [Baseline diagnosis](docs/implement-baseline-diagnosis.md): baseline diagnosis contract.

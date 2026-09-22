@@ -28,7 +28,6 @@ const policyFiles = [
   'tests/completion-gate.test.ts',
   'tests/completion-policy.test.ts',
   'tests/config.test.ts',
-  'tests/connect-guide.test.ts',
   'tests/history-source.test.ts',
   'tests/history-runner.test.ts',
   'tests/history.test.ts',

@@ -55,11 +55,11 @@ CLI from TypeScript sources through `tsx` if you would rather not build.
 | `npm run dev`               | Run the CLI from TypeScript sources via `tsx`.                    |
 | `npm run build`             | Compile `src/` to `dist/`.                                        |
 | `npm run typecheck`         | Type-check sources and tests without emitting.                    |
-| `npm run lint`              | ESLint, including the dependency boundaries below.                |
+| `npm run lint`              | Check code quality with ESLint.                |
 | `npm test`                  | Run the offline suite once. Needs no credentials.                 |
 | `npm run test:policy`       | Run the fast policy layer alone.                                  |
 | `npm run test:boundary`     | Run the process-heavy boundary layer alone.                       |
-| `npm run test:four-workers` | The comparable measurement: every file in one pool, four workers. |
+| `npm run test:four-workers` | Run all tests in one pool with four workers. |
 | `npm run test:watch`        | Run the offline suite in watch mode.                              |
 | `npm run format:check`      | Check formatting without writing.                                 |
 | `npm run validate`          | Format, lint, typecheck, build, test — the gate CI runs.          |
@@ -67,8 +67,7 @@ CLI from TypeScript sources through `tsx` if you would rather not build.
 
 The suite has two projects: `policy` for decisions and data handling, and `boundary` for
 integration and process behavior. `npm test` and `npm run validate` run both. See the
-[test coverage map](../notes/test-layers.md) for ownership and the
-[development guide](../docs/development.md) for verification practice.
+[development guide](development.md) for verification practice.
 
 `npm start -- --help` prints the full usage text, and `npm start -- run` with a missing option
 prints a usage error and exits `2`.
@@ -1031,181 +1030,33 @@ tickets stop for attention. A merged pull request must still pass the existing a
 GitHub checks. Ready tickets with retained workspace pointers resume before unrelated new work;
 Done tickets are never rerun. The queue never adopts or resets a workspace.
 
-## Try it on a disposable project
+## Example task
 
-This is the offline-verified example: a throwaway project with a committed, green baseline, and an
-output directory **outside** the source repository. Follow it somewhere you do not mind leaving
-behind, then delete it.
+A local task describes an outcome for a connected repository. For example:
 
-**1. A disposable target project** with its own setup step and check runner (all four files are
-plain ES modules, and the project has no dependencies):
-
-```sh
-mkdir -p /tmp/nexus-demo/tiny-project/src /tmp/nexus-demo/tiny-project/test /tmp/nexus-demo/tiny-project/tools
-cd /tmp/nexus-demo/tiny-project
-git init --initial-branch=main
-cat > .gitignore <<'EOF'
-build/
-EOF
-cat > src/greet.mjs <<'EOF'
-export function greet(name) {
-  return `Hello, ${name}!`;
-}
-EOF
-cat > test/greet.test.mjs <<'EOF'
-import assert from 'node:assert/strict';
-import { greet } from '../src/greet.mjs';
-
-assert.equal(greet('Ada'), 'Hello, Ada!');
-console.log('greet: ok');
-EOF
-cat > test/greet-all.test.mjs <<'EOF'
-import assert from 'node:assert/strict';
-import { existsSync } from 'node:fs';
-
-// The task's acceptance test. It reports the feature as missing and passes while
-// src/greet-all.mjs is absent, which is what makes the committed baseline green;
-// once the module exists this test imports it and asserts the real criteria.
-const location = new URL('../src/greet-all.mjs', import.meta.url);
-
-if (!existsSync(location)) {
-  console.log('greet-all: skipped, the feature is not here yet');
-} else {
-  const { greetAll } = await import(location.href);
-  assert.equal(greetAll(['Ada']), 'Hello, Ada!');
-  assert.equal(greetAll(['Ada', 'Grace']), 'Hello, Ada and Grace!');
-  assert.equal(greetAll([]), 'Hello, nobody!');
-  console.log('greet-all: ok');
-}
-EOF
-cat > tools/run-checks.mjs <<'EOF'
-import { spawn } from 'node:child_process';
-import { mkdirSync, readdirSync } from 'node:fs';
-import path from 'node:path';
-
-mkdirSync('build', { recursive: true });
-const files = readdirSync('test').filter((name) => name.endsWith('.test.mjs')).sort();
-
-let failed = 0;
-for (const file of files) {
-  const child = spawn(process.execPath, [path.join('test', file)], { stdio: 'inherit' });
-  const code = await new Promise((resolve) => child.on('close', resolve));
-  failed += code === 0 ? 0 : 1;
-}
-console.log(`run-checks: ${files.length - failed} of ${files.length} test files passed`);
-process.exitCode = failed === 0 ? 0 : 1;
-EOF
-git add --all && git commit --quiet -m 'tiny-project: baseline'
-node tools/run-checks.mjs      # green before any run: 2 of 2 test files passed
-```
-
-**2. The two configuration files.** The project's own configuration sits at its root and is
-committed with it; the Nexus-wide file sits outside the project, and `workDir` resolves from _its_
-own directory, which is exactly why the output can be kept out of the source repository:
-
-```sh
-cd /tmp/nexus-demo/tiny-project
-cat > nexus.project.json <<'EOF'
+```json
 {
-  "setup": [],
-  "checks": [["node", "tools/run-checks.mjs"]]
+  "id": "greeting",
+  "title": "Greet a list of names",
+  "description": "The application greets one person. Add a way to greet every supplied name while preserving single-person greetings.",
+  "acceptanceCriteria": ["Every supplied name receives a greeting."]
 }
-EOF
-git add --all && git commit --quiet -m 'tiny-project: project configuration'
-
-mkdir -p /tmp/nexus-demo/harness && cd /tmp/nexus-demo/harness
-cat > nexus.config.json <<'EOF'
-{
-  "workDir": ".",
-  "maxRepairs": 2,
-  "taskTimeoutMinutes": 30,
-  "commandTimeoutMinutes": 5
-}
-EOF
-cat > task.json <<'EOF'
-{
-  "id": "greet-all",
-  "title": "Add a greetAll helper to tiny-project",
-  "description": "tiny-project needs a greetAll helper that greets several names in one sentence, following the conventions of src/greet.mjs.",
-  "acceptanceCriteria": [
-    "src/greet-all.mjs exports greetAll(names).",
-    "greetAll(['Ada']) is 'Hello, Ada!'.",
-    "greetAll(['Ada', 'Grace']) is 'Hello, Ada and Grace!'.",
-    "greetAll([]) is 'Hello, nobody!'.",
-    "The project's own checks (node tools/run-checks.mjs) exit 0."
-  ]
-}
-EOF
-node /path/to/nexus/dist/cli.js check-config --config nexus.config.json --project /tmp/nexus-demo/tiny-project --task task.json
 ```
 
-**3. Run it.** From a checkout of this repository, after `npm ci && npm run build`:
+With the project's own setup and checks configured, a run follows this idea:
 
-```sh
-npm start -- run --repo /tmp/nexus-demo/tiny-project --config /tmp/nexus-demo/harness/nexus.config.json --task /tmp/nexus-demo/harness/task.json
+```text
+prepare working copy
+check the baseline
+ask the developer to implement the task
+run the configured checks
+while checks fail and repair allowance remains:
+    give the observed failures to the developer
+    run the checks again
+retain the work and report the observed outcome
 ```
 
-**4. What it prints.** Progress lines come from the run's own timeline as it goes — each stamped with
-the local time it reached the terminal — and then the outcome block, stamped the same way:
-
-```
-09:41:07 run run-20260101000000-1a2b3c4d: passed
-09:41:07   reason     every configured check passed after the implementation turn
-09:41:07   repairs    0 of 2 repair turns used
-09:41:07   run dir    /tmp/nexus-demo/harness/runs/run-20260101000000-1a2b3c4d
-09:41:07   workspace  /tmp/nexus-demo/harness/workspaces/run-20260101000000-1a2b3c4d (branch harness/run-20260101000000-1a2b3c4d)
-09:41:07   report     /tmp/nexus-demo/harness/runs/run-20260101000000-1a2b3c4d/result.json
-```
-
-That layout is the real one — `<workDir>/runs/<runId>` for the evidence,
-`<workDir>/workspaces/<workspaceId>` for the working copy beside it — and it sits outside
-`/tmp/nexus-demo/tiny-project`. A later attempt of the same Jira issue continues that working copy
-instead of cloning again when the issue carries its `harness-ws-<workspaceId>` pointer label; that
-is the implemented contract in
-[docs/implement-workspace-continuation.md](../docs/implement-workspace-continuation.md) and the
-operator-facing rules in [docs/WORKFLOW.md](../docs/WORKFLOW.md) §7. The run above was produced and
-checked **offline**, with the runtime boundary substituted by a stand-in `codex` on the CLI's
-`PATH` (the same boundary the end-to-end suite uses). It is not a live Codex result; a live run
-needs your own account, and the printed paths are always derived from the run directory the CLI
-really allocated.
-
-While an agent invocation runs, the CLI also draws what the runtime is doing — its messages, the
-commands it runs and their results, and the files it changed — in a fixed pane under the progress.
-Every invocation gets a pane of its own, opened by a boundary line naming the phase that launched it
-— `developer` for an implementation or repair turn, `reviewer` for a Nexus Lens turn — and the
-ticket it works on, so consecutive turns and tickets stay apart in scrollback. When the invocation
-ends its pane is finalized: the rows it kept are left exactly where the pane drew them, as that
-invocation's own segment of the timeline, in order, before anything that follows — a repaint only
-ever rewrites those rows, so a retained row is never written a second time. If the terminal size
-changes, the existing rows are left in place and new activity starts a fresh segment fitted to the
-current size; rows that may have wrapped or entered scrollback are never replayed. A command is shown as the payload the runtime's
-shell wrapper was given, so a long PowerShell path cannot hide the operation, and a completion names
-the operation, its recorded exit code or status, and the last line of what it printed. Every entry
-starts with the local time the viewer received it (`HH:mm:ss`, captured once and kept across redraws —
-the runtime reports no event time of its own), and an agent message is highlighted in yellow and reset
-again so the work lines stay in your terminal's ordinary color. Within one pane the history is
-grouped by the agent's messages — each message keeps at most its three latest work lines — and the
-whole pane is at most twenty lines: the oldest work disappears first, so earlier messages stay in
-order as the work between them disappears. Agent messages wrap in full by display columns, preserving
-CJK and emoji graphemes, with one timestamp and label and yellow highlighting on every wrapped row.
-All message rows count toward the twenty-row pane; older rows enter terminal history before leaving
-the managed pane, even for a message taller than the screen. Command and result summaries remain
-bounded to one row with their timestamp counted. Control characters in runtime text are never
-written as terminal commands. The progress above keeps the task, the phase, and the selected model
-readable; the startup inventory — receipt
-paths, IDs, hashes, launch arguments — stays in the run log. A redirected, noninteractive, too small,
-or too narrow terminal gets every line — the boundaries included — as stamped ordinary output
-instead, with no cursor or color sequence at all; `NO_COLOR` selects the same plain output
-with timestamps and role boundaries. The full runtime output always stays in the turn's own
-`logs/agent-*.log`.
-
-**5. Look at it, then delete it.**
-
-```sh
-cat /tmp/nexus-demo/harness/runs/*/result.json
-git -C /tmp/nexus-demo/harness/workspaces/* log --stat   # the turn's commits, if it made any
-rm -rf /tmp/nexus-demo                                        # nothing was cleaned up for you
-```
+The exact setup and checks come from the connected project, not from task prose.
 
 ## Safety, limits, and what a run does to your machine
 
@@ -1318,7 +1169,7 @@ Read this before pointing a run at anything you care about.
 
 **Verified offline** means the repository tests executed without live provider credentials.
 They cover decisions, command and Git boundaries, and representative assembled workflows with
-controlled external services. See the [coverage map](../notes/test-layers.md) for ownership.
+controlled external services.
 
 Live behavior requires evidence from actual provider execution. `npm run test:live` is an
 explicit, opt-in exercise; it is not part of ordinary validation. Local or mocked checks do not
@@ -1338,52 +1189,6 @@ requires its own concrete adapter rather than being disguised as a Codex launche
 The harness does not change the user's global runtime configuration. The configured launch is
 reported as launch information, not proof of the upstream model that served the response.
 See the [runtime invocation contract](../docs/WORKFLOW.md).
-
-## Module ownership
-
-`src/` is a small hierarchy of responsibility-based modules; [docs/module-structure.md](../docs/module-structure.md)
-is the full tree, the placement rules, and the steps for adding a source or a runtime.
-
-| Module                    | Responsibility                                                                                                                 |
-| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| `src/cli.ts` + `src/cli/` | Arguments, help, exit codes, command dispatch, and top-level wiring. Owns all presentation.                                    |
-| `src/config/`             | The input schemas and their documented defaults, and reading/validating the two JSON inputs.                                   |
-| `src/shared/`             | The data contracts (data only: no imports, no runtime I/O) and the one message helper.                                         |
-| `src/process/`            | Starting one command or Git reading, its limit, and stopping its process tree.                                                 |
-| `src/checks/`             | One setup/check round and what a command's result means.                                                                       |
-| `src/workspace/`          | Preflight, run directory allocation, the working copy, the ledger, and the change summary.                                     |
-| `src/runs/`               | The order the work happens in: baseline, turns, checks, repair, deadlines, the report.                                         |
-| `src/reporting/`          | `result.json`, the logs under `<runDir>/logs`, and the change summary.                                                         |
-| `src/sources/`            | The task-source contract, receipts, eligibility, guidance, and the serial coordinator.                                         |
-| `src/sources/jira/`       | The Jira Cloud connector: HTTP, search, reads, transitions, comments, the ADF reader.                                          |
-| `src/delivery/`           | The optional GitHub step: push a passed attempt's branch, create or update its pull request.                                   |
-| `src/reviews/`            | The optional Nexus Lens path: one scan or watch, the App installation, the reviewer turn, and the published review and check.  |
-| `src/history/`            | The ticket conversation snapshot both roles read, complete developer/reviewer report retention, and the shared prompt section. |
-| `src/agents/codex/`       | The coding runtime: one turn through the Codex CLI, normalized for the runner.                                                 |
-
-`src/cli.ts` (and `src/cli/`) depends on the modules below it; nothing depends on `cli.ts`. Helper
-modules never import the CLI, and `src/shared/types.ts` is data only. Both rules are enforced by
-`no-restricted-imports` entries in `eslint.config.js`, and `tests/boundaries.test.ts` demonstrates
-one permitted and one rejected import against fixtures in `tests/fixtures/boundaries/`.
-
-The intake boundary is the `TaskSource` contract in `src/sources/contract.ts`. The coordinator knows
-ordinary data and functions, the runner never imports Jira, and the source command in `src/cli/`
-selects the connector with one explicit branch on `source.type`: a second source would be a concrete
-adapter plus configuration and CLI wiring, not a change to `Task` or to the loop.
-
-Delivery is not a source and not a connector: `src/delivery/github.ts` is one optional step the
-source command hands to the coordinator, and it starts its `git` and `gh` commands through the same
-bounded runner every configured command uses.
-
-Review is its own optional path, not a source and not delivery: `src/reviews/` reads the Jira queue
-through the existing connector without claiming anything, runs the explicitly configured reviewer
-through the same Codex adapter, and publishes as the configured GitHub App installation. Nothing in
-it merges, changes Jira, or touches the working copy a coding attempt used: the reviewer inspects
-its own repository view, cloned from the ticket's retained workspace and pinned at the reviewed
-head, and a configuration without `review` never constructs any of it.
-
-`.prettierignore` excludes the supplied `AGENTS.md` and `docs/` so those design documents stay
-byte-for-byte as written.
 
 ## Toolchain
 

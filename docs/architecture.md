@@ -13,35 +13,27 @@ Git, process and service operations. Use ordinary functions and explicit inputs.
 when it clarifies a real responsibility, not to prepare for hypothetical future work.
 
 The intended recovery direction is a supervisor around Nexus with a separate recovery agent.
-This is planned work, not current functionality or a change in permissions. The spec remains
-accurate about existing recovery until an implementation task replaces it.
+Planned changes do not replace required recovery behavior or permissions until those requirements
+are explicitly revised.
 
-## Responsibilities
+## Component boundaries
 
-| Area | Owns |
-| --- | --- |
-| `cli/`, `config/` | Inputs, configuration, component assembly and presentation |
-| `runs/`, `checks/` | Implementation/check/repair order and run outcomes |
-| `process/` | Starting, observing and stopping owned processes |
-| `workspace/` | Git, retained workspace identity, branches and source readiness |
-| `sources/`, `sources/jira/` | Intake, receipts, continuation, completion and Jira integration |
-| `delivery/` | GitHub delivery and completion operations |
-| `reviews/` | Review snapshots, reviewer turns, findings and App-owned publication |
-| `history/`, `reporting/` | Conversation snapshots, complete reports and observed results |
-| `queue/` | Serial progression through the task lifecycle |
-| `agents/codex/` | Coding-runtime invocation and normalized results |
+Task intake supplies work and context. Workspace management provides an owned working copy.
+Execution coordinates developer turns and checks; review evaluates the result; delivery and
+completion integrate it through the configured gates. Queue coordination carries one ticket
+through these responsibilities. Process execution and records support every phase.
 
-The [file inventory](module-structure.md) is a reference, not a requirement to preserve every
-file. Improve boundaries within the task's scope. Git owns commit history; local records retain
-execution and ownership facts. Each operation owns its pending work and resources through cleanup.
+Each component has a clear [responsibility](components.md). Keep external protocols behind
+adapters. Pass observations and requested operations across boundaries rather than exposing
+another component's internal state. Git owns version history; Nexus retains execution and
+ownership facts. Pending work has an owner through cancellation and cleanup.
 
 The harness configuration owns storage, limits and agent launches. The connected project's
 `nexus.project.json` owns its setup/checks and integrations. Native runtime configuration owns
 provider and model settings. Keep these responsibilities separate.
 
 Coding turns leave local work. Optional delivery publishes a passed attempt; configured
-completion can arm GitHub auto-merge, verify post-merge checks and transition Jira. The exact
-permissions, gates and restart behavior belong in the spec, not a second implementation recipe here.
+completion can arm GitHub auto-merge, verify post-merge checks and transition Jira.
 
 ## Testing
 
@@ -51,14 +43,13 @@ Test each guarantee at the lowest level that can detect its failure:
 - Boundaries: real temporary files, Git repositories or processes where their behavior matters.
 - Assembled workflows: a few cases proving connections or failures lower-level tests cannot prove.
 
-Keep fixtures small. Avoid replaying the same decision matrix through every wrapper. Preserve
-required behavioral coverage when moving tests. [The current coverage map](../notes/test-layers.md)
-describes coverage ownership.
+Keep fixtures small. Avoid replaying the same decision matrix through every wrapper. Test the
+implementation against the required behavior, not documentation against existing code.
 
 ## Tech stack
 
-Use Node.js, TypeScript ES modules and npm, with Zod, Vitest, ESLint and Prettier for their existing
-roles. Actual versions live in `package.json`, `package-lock.json` and `.nvmrc`.
+Use Node.js, TypeScript ES modules and npm. Use Zod for input validation, Vitest for behavior tests,
+and ESLint and Prettier for code quality and formatting.
 
 Prefer existing code and native capabilities. Use a suitable maintained package for established
 infrastructure rather than rebuilding its mechanics. Choose the smallest adequate solution by

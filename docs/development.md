@@ -2,6 +2,9 @@
 
 ## Implement and verify
 
+Implement the documented requirements. When requirements change, revise them before changing code.
+Tests verify implementation behavior; do not create tests that require documentation to match code.
+
 Preserve user changes. Work on a task branch; `main` stays green and changes integrate through a
 PR with the required gates. Follow [GIT-WORKFLOW.md](GIT-WORKFLOW.md).
 
