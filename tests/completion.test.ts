@@ -2,12 +2,15 @@
  * The review-to-completion decisions: which pull request check is a definitive
  * failure, what a post-merge workflow's latest attempt means, which credential
  * and workflow boundaries the GitHub completion refuses to construct without,
- * where one item's merge deadline is measured from, and what one completion
- * pass writes and moves over stand-in collaborators.
+ * where one item's merge deadline is measured from and what keeps it across
+ * passes, what one completion pass writes and moves over stand-in
+ * collaborators, and which outstanding transition or reopened ticket a
+ * repeated pass may act on.
  *
  * No `gh` command, no live GitHub and no agent runs here: the GitHub evidence
- * boundary is a fake, and the Jira side is a fake too (docs/testing.md).
+ * boundary is a fake, and the Jira side is a mutable fake too (docs/testing.md).
  */
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { createGitHubCompletion } from '../src/delivery/completion.js';
 import type { CompletionConfig } from '../src/shared/types.js';
@@ -21,6 +24,7 @@ import {
 } from '../src/delivery/gate.js';
 import type { WorkflowRunSnapshot } from '../src/delivery/gate.js';
 import {
+  completionLogsDir,
   createCompletionPass,
   createCompletionRun,
   mergeWaitDeadline,
@@ -35,7 +39,7 @@ import type { CompletionSource, IssueNote, ReviewItem } from '../src/sources/jir
 import { noteWithMarker, reviewQueueJql } from '../src/sources/jira/completion.js';
 import type { SourceCandidate } from '../src/sources/contract.js';
 import type { JiraSourceConfig, SourceRef } from '../src/shared/types.js';
-import { createTempDir } from './support.js';
+import { createTempDir, readText } from './support.js';
 
 const HEAD = 'b'.repeat(40);
 const MERGE_COMMIT = 'e'.repeat(40);
@@ -256,24 +260,36 @@ describe('the Jira side of completion', () => {
   });
 });
 
-/** One completion pass over a scripted item, actions and thread. */
+/** One status move the pass may ask for: what Jira answers, and whether it lands first. */
+type MoveAnswer = 'moved' | 'left-alone' | { readonly failure: string; readonly lands?: boolean };
+
+/**
+ * One completion pass over a scripted item, actions and thread. The Jira fake is
+ * mutable: a move that lands changes the item's status, the queue lists only
+ * what is still In Review, and the changelog remembers when the item left it —
+ * so a repeated pass reads the state its own write left behind.
+ */
 async function completionHarness(parts: {
   readonly item?: ReviewItem | null;
   readonly pullRequest?: PullRequestSnapshot | null;
   readonly gate?: () => Promise<GateVerdict> | GateVerdict;
   readonly merge?: () => Promise<MergeVerdict> | MergeVerdict;
   readonly approvedHead?: string | null;
+  /** What each read of the reviewer's approval answers, in order; the last repeats. */
+  readonly approvedHeadReads?: readonly (string | null | Error)[];
   readonly pullReads?: PullRequestSnapshot[];
   /** Whether GitHub already records auto-merge for the delivered head. */
   readonly armed?: boolean;
   readonly config?: Partial<CompletionConfig>;
   /** Whether the first comment write lands without answering. */
   readonly uncertainWrite?: boolean;
+  /** What each status move answers, in order; a move the script does not name lands. */
+  readonly moveAnswers?: readonly MoveAnswer[];
   /** The clock the pass reads; a case may move it past the item deadline. */
   readonly clockAt?: () => Date;
 }) {
   const workDir = await createTempDir();
-  const item: ReviewItem =
+  const base: ReviewItem | null =
     parts.item === undefined
       ? {
           ref: REF,
@@ -281,37 +297,52 @@ async function completionHarness(parts: {
           statusName: 'In Review',
           pointers: ['HARN-11'],
         }
-      : (parts.item as ReviewItem);
+      : parts.item;
+  // The item's live status: a move that lands changes it, and a person may move
+  // it back, exactly as Jira's own status would.
+  let statusName = base?.statusName ?? 'In Review';
+  const item = (): ReviewItem | null => (base === null ? null : { ...base, statusName });
   const ground =
     parts.armed === true
       ? { ...openPull(), autoMergeRequest: { enabledAt: 'earlier' } }
       : openPull();
   const pull = parts.pullRequest === undefined ? ground : parts.pullRequest;
+  const clock = parts.clockAt ?? ((): Date => new Date('2026-09-16T11:10:00.000Z'));
   const comments: IssueNote[] = [];
+  /** Jira's changelog: the moments this item left In Review. */
+  const leftReviewAt: string[] = [];
   const calls = {
     posted: [] as { id: string; paragraphs: readonly string[] }[],
     moves: [] as { id: string; target: string }[],
     enableAutoMerge: 0,
     sleeps: 0,
+    gates: 0,
+    merges: 0,
+    approvals: 0,
   };
 
   const readQueue = [...(parts.pullReads ?? [])];
   const actions: CompletionActions = {
     findPullRequest: async () => pull,
     findMergedPullRequest: async () => readQueue.shift() ?? pull ?? ground,
-    readGate: async () => (parts.gate === undefined ? approvedGate() : await parts.gate()),
-    readApprovedHead: async () => (parts.approvedHead === undefined ? HEAD : parts.approvedHead),
-    readMerge: async () =>
-      parts.merge === undefined
-        ? {
-            status: 'complete',
-            reason: 'the merge and every post-merge workflow succeeded',
-            mergeCommit: MERGE_COMMIT,
-            workflows: [
-              { identifier: 'ci.yml', state: 'success', run: run({}), conclusion: 'SUCCESS' },
-            ],
-          }
-        : await parts.merge(),
+    readGate: async () => {
+      calls.gates += 1;
+      return parts.gate === undefined ? approvedGate() : await parts.gate();
+    },
+    readApprovedHead: async () => {
+      calls.approvals += 1;
+      const scripted = parts.approvedHeadReads;
+      if (scripted !== undefined && scripted.length > 0) {
+        const answer = scripted[Math.min(calls.approvals - 1, scripted.length - 1)];
+        if (answer instanceof Error) throw answer;
+        return answer ?? null;
+      }
+      return parts.approvedHead === undefined ? HEAD : parts.approvedHead;
+    },
+    readMerge: async () => {
+      calls.merges += 1;
+      return parts.merge === undefined ? verifiedMerge() : await parts.merge();
+    },
     enableAutoMerge: async () => {
       calls.enableAutoMerge += 1;
       return 'enabled';
@@ -319,15 +350,19 @@ async function completionHarness(parts: {
   };
 
   const completionSource: CompletionSource = {
-    listReview: async (): Promise<readonly SourceCandidate[]> => [{ ref: REF, title: item.title }],
-    readItem: async () => (parts.item === null ? null : item),
+    listReview: async (): Promise<readonly SourceCandidate[]> =>
+      base !== null && statusName === 'In Review' ? [{ ref: base.ref, title: base.title }] : [],
+    readItem: async () => (statusName === 'In Review' ? item() : null),
     listComments: async () => comments,
-    leftReviewSince: async () => false,
+    // Whatever left the item In Review at or after `since` is what a reopening
+    // looks like: the item is In Review now only because a person moved it back.
+    leftReviewSince: async (_id, since) =>
+      leftReviewAt.some((at) => Date.parse(at) >= Date.parse(since)),
     postComment: async (id, paragraphs) => {
       calls.posted.push({ id, paragraphs });
       const note: IssueNote = {
         id: 'comment-1',
-        createdAt: '2026-09-16T11:20:00.000Z',
+        createdAt: clock().toISOString(),
         text: paragraphs.join('\n'),
       };
       comments.push(note);
@@ -337,8 +372,20 @@ async function completionHarness(parts: {
       }
       return note.id;
     },
-    moveTo: async (id, target) => {
+    moveTo: async (id, target, _stop, beforeWrite) => {
+      const attempt = calls.moves.length;
       calls.moves.push({ id, target });
+      // The production move re-reads the item and its guards before it writes.
+      if (beforeWrite !== undefined && !(await beforeWrite())) return 'left-alone';
+      const answer = parts.moveAnswers?.[attempt];
+      if (answer === 'left-alone') return 'left-alone';
+      if (answer === undefined || answer === 'moved' || answer.lands === true) {
+        statusName = target;
+        leftReviewAt.push(clock().toISOString());
+      }
+      if (answer !== undefined && answer !== 'moved') {
+        throw new Error(answer.failure);
+      }
       return 'moved';
     },
   };
@@ -352,12 +399,24 @@ async function completionHarness(parts: {
     actions,
     workDir,
     io: { out: (text) => outputs.push(text), err: (text) => outputs.push(text) },
-    now: parts.clockAt ?? (() => new Date('2026-09-16T11:10:00.000Z')),
+    now: clock,
     sleep: async () => {
       calls.sleeps += 1;
     },
   });
-  return { pass, calls, outputs, comments };
+  return {
+    workDir,
+    pass,
+    calls,
+    outputs,
+    comments,
+    /** The item's status right now, as Jira would report it. */
+    itemStatus: (): string => statusName,
+    /** A person moves the item back into the review status. */
+    reopen: (): void => {
+      statusName = 'In Review';
+    },
+  };
 }
 
 function openPull(): PullRequestSnapshot {
@@ -375,6 +434,46 @@ function openPull(): PullRequestSnapshot {
   };
 }
 
+/** The pull request GitHub has already merged at the reviewed head. */
+function mergedPull(): PullRequestSnapshot {
+  return {
+    ...openPull(),
+    state: 'MERGED',
+    autoMergeRequest: { enabledAt: 'now' },
+    mergeCommit: { oid: MERGE_COMMIT },
+  };
+}
+
+/** A merge reading that verified one merge commit and its post-merge workflow. */
+function verifiedMerge(): MergeVerdict {
+  return {
+    status: 'complete',
+    reason: 'the merge and every post-merge workflow succeeded',
+    mergeCommit: MERGE_COMMIT,
+    workflows: [{ identifier: 'ci.yml', state: 'success', run: run({}), conclusion: 'SUCCESS' }],
+  };
+}
+
+/** A merge GitHub has not made yet: the item stays In Review and waits. */
+function pendingMerge(): MergeVerdict {
+  return {
+    status: 'pending',
+    reason: 'GitHub has not merged this pull request yet',
+    mergeCommit: null,
+    workflows: [],
+  };
+}
+
+/** The wait start one pass recorded for the default item, as the next pass reads it. */
+async function recordedWaitStart(workDir: string): Promise<string | null> {
+  const file = path.join(
+    completionLogsDir(workDir, REF, 'owner/name'),
+    'completion-armed-head.json',
+  );
+  const record = JSON.parse(await readText(file)) as { waitingSince?: string | null };
+  return record.waitingSince ?? null;
+}
+
 function approvedGate(): GateVerdict {
   return {
     status: 'approved',
@@ -388,6 +487,29 @@ function approvedGate(): GateVerdict {
       url: 'https://github.com/owner/name/pull/7#review-21',
     },
     findings: [],
+  };
+}
+
+/** The gate reading that returns a pull request to To Do with its findings. */
+function changesRequestedGate(): GateVerdict {
+  return {
+    status: 'failed',
+    reason: 'the reviewer requested changes on the current head',
+    review: {
+      id: '21',
+      author: CONFIG.lensApp,
+      state: 'CHANGES_REQUESTED',
+      body: 'please fix the greeting',
+      commitId: HEAD,
+      url: 'https://github.com/owner/name/pull/7#review-21',
+    },
+    findings: [
+      {
+        label: 'src/greeting.ts',
+        detail: 'the greeting ignores the supplied name',
+        link: 'https://github.com/owner/name/pull/7#discussion_r1',
+      },
+    ],
   };
 }
 
@@ -464,14 +586,8 @@ describe('one completion pass', () => {
   });
 
   it('needs a person when GitHub merged a head the reviewer did not approve', async () => {
-    const merged: PullRequestSnapshot = {
-      ...openPull(),
-      state: 'MERGED',
-      mergeCommit: { oid: MERGE_COMMIT },
-      autoMergeRequest: { enabledAt: 'now' },
-    };
     const harness = await completionHarness({
-      pullRequest: merged,
+      pullRequest: mergedPull(),
       approvedHead: null,
     });
 
@@ -509,19 +625,83 @@ describe('one completion pass', () => {
     expect(outcomes[0]?.detail).toMatch(/no workspace pointer/);
   });
 
-  it('writes one comment for one outcome, however often the pass runs', async () => {
-    const harness = await completionHarness({ armed: true });
+  it('retries only the transition a verified comment left outstanding', async () => {
+    const harness = await completionHarness({
+      armed: true,
+      // The comment lands and the transition does not: Jira refused it.
+      moveAnswers: [{ failure: 'Jira refused the transition', lands: false }],
+    });
     const stop = new AbortController().signal;
 
     const first = await harness.pass.run(stop);
+
+    expect(first[0]?.status).toBe('attention');
+    expect(first[0]?.detail).toMatch(/moving it to "Done" failed/);
+    expect(first[0]?.commentId).toBe('comment-1');
+    expect(harness.itemStatus()).toBe('In Review');
+    expect(harness.calls.posted).toHaveLength(1);
+    expect(harness.calls.moves).toHaveLength(1);
+
+    // The next pass finds the resolution comment its own marker names and retries
+    // only the outstanding transition: the outcome is not written twice.
     const second = await harness.pass.run(stop);
 
-    expect(first[0]?.status).toBe('done');
     expect(second[0]?.status).toBe('done');
-    // The marker already on the thread is the deduplication evidence: the second
-    // pass finds its own comment instead of writing a second one.
-    expect(harness.calls.posted).toHaveLength(1);
     expect(second[0]?.commentId).toBe('comment-1');
+    expect(harness.itemStatus()).toBe('Done');
+    expect(harness.calls.posted).toHaveLength(1);
+    expect(harness.calls.moves).toHaveLength(2);
+  });
+
+  it('does not ask again for a transition Jira accepted without answering', async () => {
+    const harness = await completionHarness({
+      armed: true,
+      // The transition landed at Jira, and the answer to the request was lost.
+      moveAnswers: [{ failure: 'the answer to the status move was lost', lands: true }],
+    });
+    const stop = new AbortController().signal;
+
+    const first = await harness.pass.run(stop);
+
+    expect(first[0]?.status).toBe('attention');
+    expect(first[0]?.detail).toMatch(/moving it to "Done" failed/);
+    expect(harness.itemStatus()).toBe('Done');
+    expect(harness.calls.posted).toHaveLength(1);
+
+    // The item left In Review, so the next pass has nothing to do — and no second
+    // transition is ever asked for.
+    const second = await harness.pass.run(stop);
+
+    expect(second).toEqual([]);
+    expect(harness.calls.moves).toHaveLength(1);
+    expect(harness.calls.posted).toHaveLength(1);
+  });
+
+  it('does not replay an outcome a person reopened the ticket after', async () => {
+    const harness = await completionHarness({
+      gate: () => changesRequestedGate(),
+    });
+    const stop = new AbortController().signal;
+
+    const first = await harness.pass.run(stop);
+
+    expect(first[0]?.status).toBe('to-do');
+    expect(harness.itemStatus()).toBe('To Do');
+    expect(harness.calls.posted).toHaveLength(1);
+    expect(harness.calls.moves).toEqual([{ id: REF.id, target: 'To Do' }]);
+
+    // A person moves the item back into review. The item's own changelog says it
+    // left review after this outcome, so the old one is not replayed: the next
+    // pass only observes, and neither writes nor moves anything.
+    harness.reopen();
+    const second = await harness.pass.run(stop);
+
+    expect(second[0]?.status).toBe('observed');
+    expect(second[0]?.detail).toMatch(/reopened after this outcome/);
+    expect(second[0]?.commentId).toBe('comment-1');
+    expect(harness.calls.posted).toHaveLength(1);
+    expect(harness.calls.moves).toHaveLength(1);
+    expect(harness.itemStatus()).toBe('In Review');
   });
 
   it('reads a transient GitHub failure again inside the item deadline', async () => {
@@ -603,6 +783,131 @@ describe('one completion pass', () => {
     expect(outcomes[0]?.status).toBe('attention');
     expect(outcomes[0]?.detail).toMatch(/still pending when this item's deadline expired/);
     expect(harness.calls.sleeps).toBe(0);
+  });
+
+  it('keeps one item deadline across passes and reports its expiry once', async () => {
+    const start = Date.parse('2026-09-16T11:10:00.000Z');
+    let at = start;
+    const harness = await completionHarness({
+      armed: true,
+      config: { deadlineSeconds: 60 },
+      merge: () => pendingMerge(),
+      clockAt: () => new Date(at),
+    });
+    const stop = new AbortController().signal;
+
+    // One pass waits its bounded number of rounds, writes nothing, and records
+    // the moment the item began waiting for GitHub.
+    const first = await harness.pass.run(stop);
+
+    expect(first[0]?.status).toBe('pending');
+    expect(harness.calls.merges).toBe(3);
+    expect(harness.calls.sleeps).toBe(2);
+    expect(harness.calls.posted).toEqual([]);
+    expect(harness.calls.moves).toEqual([]);
+    const waitingSince = await recordedWaitStart(harness.workDir);
+    expect(waitingSince).toBe(new Date(start).toISOString());
+
+    // A later pass, still inside the deadline, reads that recorded start back
+    // instead of beginning the wait again.
+    at = start + 5_000;
+    const readsSoFar = harness.calls.merges;
+    const second = await harness.pass.run(stop);
+
+    expect(second[0]?.status).toBe('pending');
+    expect(harness.calls.merges - readsSoFar).toBe(3);
+    expect(await recordedWaitStart(harness.workDir)).toBe(waitingSince);
+
+    // Past the item's deadline the still-pending merge is reported once, and the
+    // item stays In Review: no failure conclusion was ever observed.
+    at = start + 120_000;
+    const third = await harness.pass.run(stop);
+
+    expect(third[0]?.status).toBe('attention');
+    expect(third[0]?.detail).toMatch(/still pending when this item's deadline expired/);
+    expect(harness.calls.posted).toHaveLength(1);
+    expect(harness.calls.posted[0]?.paragraphs.join('\n')).toContain('nexus-completion:attention:');
+    expect(harness.calls.moves).toEqual([]);
+    expect(harness.itemStatus()).toBe('In Review');
+
+    // A later pass reports the same expiry without a second notification.
+    at = start + 125_000;
+    const fourth = await harness.pass.run(stop);
+
+    expect(fourth[0]?.status).toBe('attention');
+    expect(fourth[0]?.commentId).toBe(third[0]?.commentId);
+    expect(harness.calls.posted).toHaveLength(1);
+  });
+
+  it('does not mint a fresh deadline for the read guarding the resolution comment', async () => {
+    const start = Date.parse('2026-09-16T11:10:00.000Z');
+    let readings = 0;
+    const harness = await completionHarness({
+      pullRequest: mergedPull(),
+      config: { deadlineSeconds: 60 },
+      // Every reading of the clock is a step of its own, so by the time the
+      // guard's read is refused the item's one budget has been spent. The read
+      // after the refusal would have answered: a fresh budget would have written
+      // the comment, moved the item, and concluded the merge.
+      clockAt: () => {
+        readings += 1;
+        return new Date(start + readings * 30_000);
+      },
+      approvedHeadReads: [
+        HEAD,
+        new DeliveryError('GitHub returned HTTP 503', { retryable: true }),
+        HEAD,
+      ],
+    });
+
+    const outcomes = await harness.pass.run(new AbortController().signal);
+
+    expect(outcomes[0]?.status).toBe('attention');
+    expect(outcomes[0]?.detail).toContain('503');
+    // The unreadable answer was refused, not repeated: the first read and the
+    // refusal are all the pass took, and nothing was written from a state it
+    // could not verify.
+    expect(harness.calls.approvals).toBe(2);
+    expect(harness.calls.sleeps).toBe(0);
+    expect(harness.calls.posted).toEqual([]);
+    expect(harness.calls.moves).toEqual([]);
+    expect(harness.itemStatus()).toBe('In Review');
+  });
+
+  it('does not mint a fresh deadline for the read guarding the status move', async () => {
+    const start = Date.parse('2026-09-16T11:10:00.000Z');
+    let readings = 0;
+    const harness = await completionHarness({
+      pullRequest: mergedPull(),
+      config: { deadlineSeconds: 60 },
+      clockAt: () => {
+        readings += 1;
+        return new Date(start + readings * 30_000);
+      },
+      approvedHeadReads: [
+        HEAD,
+        HEAD,
+        new DeliveryError('GitHub returned HTTP 503', { retryable: true }),
+        HEAD,
+      ],
+    });
+
+    const outcomes = await harness.pass.run(new AbortController().signal);
+
+    expect(outcomes[0]?.status).toBe('attention');
+    expect(outcomes[0]?.detail).toMatch(/moving it to "Done" failed/);
+    expect(outcomes[0]?.detail).toContain('503');
+    // The same bound covers the move's own guard: the resolution comment is
+    // published exactly once, the move is left outstanding, and no fresh
+    // deadline is minted to retry it here.
+    expect(harness.calls.approvals).toBe(3);
+    expect(harness.calls.sleeps).toBe(0);
+    expect(harness.calls.posted).toHaveLength(1);
+    expect(harness.calls.posted[0]?.paragraphs.join('\n')).toContain(
+      'nexus-completion:resolution:',
+    );
+    expect(harness.calls.moves).toHaveLength(1);
+    expect(harness.itemStatus()).toBe('In Review');
   });
 });
 
