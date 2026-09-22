@@ -808,6 +808,16 @@ measured 176.1 s, 227.5 s, 231.9 s and 274.8 s for the same 34–37 files on thi
 sessions: that spread is exactly why the layer is never replayed, and no number here is offered as
 a stable distribution. Only this paragraph and that record changed after the validated revision.
 
+The timeout repair's own two runs, both on this revision (code, docs and evidence in the tree):
+`npm run validate` — 10 tasks, **2 cached**, exit 0, 4 m 17.9 s, the boundary layer executing in
+240.6 s — and `npm run validate:fresh` — 10 tasks, 0 cached, exit 0, 4 m 31.6 s, boundary 802 passed
+and 2 skipped in 247.3 s. The policy layer is 580 cases now: the configuration group's 143 include
+the layer-deadline contract, and the other four groups are unchanged (160, 131, 24, 122). Files:
+[validate](../performance/harn-49-timeout-repair-validate.txt) and
+[fresh](../performance/harn-49-timeout-repair-validate-fresh.txt), with the failure, the
+reproduction and the probe in
+[harn-49-boundary-timeout-repair.txt](../performance/harn-49-boundary-timeout-repair.txt).
+
 The single-pool `test:four-workers` comparison was not re-measured for HARN-49: it is a measurement
 command, not part of the gate, and this ticket's claims rest on the two runs above.
 

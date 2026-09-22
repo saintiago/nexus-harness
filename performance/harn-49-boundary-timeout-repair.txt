@@ -113,3 +113,17 @@ policy group and of `typecheck`, the new contract case is a declared input of th
 group, and the two edited notes files are inputs of `format:check`. `build` and `lint` replayed
 because no source or configuration they read changed. The full transcript is
 `harn-49-timeout-repair-validate.txt` beside this file.
+
+   $ npm run validate:fresh            (on feda9c7, after the code, the docs and the evidence above)
+   format:check, lint, typecheck, build and all five policy groups executed; every task a miss.
+   test:boundary: Test Files  37 passed (37)
+   test:boundary:      Tests  802 passed | 2 skipped (804)
+   test:boundary:   Duration  247.31s (tests 99%, import 1%)
+   Tasks:    10 successful, 10 total
+   Cached:    0 cached, 10 total
+   Time:    4m31.628s
+
+Exit 0. This is the fully uncached run the ticket asks for: nothing was replayed. Its transcript is
+`harn-49-timeout-repair-validate-fresh.txt`. The commits after that run add evidence and sentences
+only — this file and the fresh transcript — and no behaviour; the harness runs the gate again on the
+delivered revision.

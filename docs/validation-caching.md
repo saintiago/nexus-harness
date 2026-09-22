@@ -369,6 +369,22 @@ checks that read those files — `format:check`, and the configuration group
 through its declared `docs/**` input — re-hash them instead of reusing the
 earlier result.
 
+The repair turn that followed the harness's own check changed one behaviour — the
+boundary layer's default deadline (see
+[Why the boundary layer is never cached](#why-the-boundary-layer-is-never-cached)) —
+and added its contract case, so the gate is 1,384 tests now: the policy layer's
+580 cases over the same five groups (configuration 143, intake 160, history 131,
+loop 24, display 122) and the boundary layer's 802 plus the two pre-existing
+platform skips. Both of its runs exit 0: `npm run validate` with 2 cached of 10
+(`build` and `lint` replayed; everything that reads `vitest.config.ts`, the new
+contract case or the edited notes missed) in `4 m 17.9 s`, and `npm run
+validate:fresh` with 0 cached in `4 m 31.6 s` (boundary 802 passed and 2 skipped
+in 247.3 s). Transcripts:
+[validate](../performance/harn-49-timeout-repair-validate.txt) and
+[fresh](../performance/harn-49-timeout-repair-validate-fresh.txt); the failure it
+repairs and the reproduction are in
+[harn-49-boundary-timeout-repair.txt](../performance/harn-49-boundary-timeout-repair.txt).
+
 Linux is a separate check, not a comparison. `bash performance/validate-linux.sh`
 ran `npm run validate:fresh` on a WSL2 **ext4** filesystem (Linux
 `6.18.33.2-microsoft-standard-WSL2`, Node `v24.14.1`, npm `11.11.0`, Git
