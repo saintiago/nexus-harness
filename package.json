@@ -20,7 +20,10 @@
     "format:check": "prettier --check .",
     "test": "vitest run",
     "test:watch": "vitest",
-    "validate": "node scripts/turbo.mjs run format:check lint typecheck build test",
+    "test:unit": "vitest run --project unit",
+    "test:boundary": "vitest run --project boundary",
+    "test:workflow": "vitest run --project workflow",
+    "validate": "node scripts/turbo.mjs run format:check lint typecheck build test:unit test:boundary test:workflow",
     "validate:fresh": "npm run cache:clear && npm run validate",
     "cache:clear": "node scripts/cache-clear.mjs"
   },

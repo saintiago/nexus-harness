@@ -9,7 +9,7 @@
     "enabled": false
   },
   "globalEnv": ["CI", "NODE_ENV", "NODE_OPTIONS", "NEXUS_VALIDATE_NODE", "NEXUS_VALIDATE_NPM"],
-  "globalDependencies": [".gitattributes", ".nvmrc"],
+  "globalDependencies": [".gitattributes", ".nvmrc", "package.json", "package-lock.json"],
   "tasks": {
     "format:check": {
       "inputs": ["$TURBO_DEFAULT$"],
@@ -31,11 +31,30 @@
       "outputs": ["dist/**"],
       "outputLogs": "new-only"
     },
-    "test": {
-      "cache": false,
-      "inputs": ["src/**", "tests/**", "tsconfig*.json", "vitest.config.ts"],
+    "test:unit": {
+      "inputs": [
+        "src/**",
+        "tests/**",
+        "docs/nexus.config.example.json",
+        "docs/nexus.project.example.json",
+        "vitest.config.ts"
+      ],
       "outputs": [],
-      "dependsOn": ["build"]
+      "outputLogs": "new-only"
+    },
+    "test:boundary": {
+      "cache": false,
+      "inputs": ["src/**", "tests/**", "vitest.config.ts"],
+      "outputs": [],
+      "dependsOn": ["build"],
+      "outputLogs": "new-only"
+    },
+    "test:workflow": {
+      "cache": false,
+      "inputs": ["src/**", "tests/**", "vitest.config.ts"],
+      "outputs": [],
+      "dependsOn": ["build"],
+      "outputLogs": "new-only"
     }
   }
 }

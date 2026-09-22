@@ -10,7 +10,7 @@
  * and workflow layers' (docs/testing.md).
  */
 import { describe, expect, it } from 'vitest';
-import { runQueue } from '../src/queue/loop.js';
+import { runQueue } from '../../src/queue/loop.js';
 import type {
   QueueArmOutcome,
   QueueCompletionOutcome,
@@ -18,8 +18,8 @@ import type {
   QueueLoopContext,
   QueueRecovery,
   QueueReviewOutcome,
-} from '../src/queue/loop.js';
-import type { QueueTicket, SourceTake } from '../src/sources/contract.js';
+} from '../../src/queue/loop.js';
+import type { QueueTicket, SourceTake } from '../../src/sources/contract.js';
 
 const TICKET: QueueTicket = {
   ref: {

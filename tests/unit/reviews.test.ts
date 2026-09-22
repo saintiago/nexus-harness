@@ -18,15 +18,15 @@ import type {
   ReviewRepository,
   ReviewScanContext,
   ReviewViewSource,
-} from '../src/reviews/contract.js';
-import { ReviewError } from '../src/reviews/contract.js';
-import { diffPosition, positionFindings } from '../src/reviews/diff.js';
-import { parseVerdict, reviewEvidenceProblem, reviewPrompt } from '../src/reviews/reviewer.js';
-import { scanReviews } from '../src/reviews/scan.js';
-import type { SourceCandidate, SourceTask } from '../src/sources/contract.js';
-import type { SourceRef, Task } from '../src/shared/types.js';
-import { sourceItemFor, writeWorkspaceState } from '../src/workspace/state.js';
-import { createTempDir } from './support.js';
+} from '../../src/reviews/contract.js';
+import { ReviewError } from '../../src/reviews/contract.js';
+import { diffPosition, positionFindings } from '../../src/reviews/diff.js';
+import { parseVerdict, reviewEvidenceProblem, reviewPrompt } from '../../src/reviews/reviewer.js';
+import { scanReviews } from '../../src/reviews/scan.js';
+import type { SourceCandidate, SourceTask } from '../../src/sources/contract.js';
+import type { SourceRef, Task } from '../../src/shared/types.js';
+import { sourceItemFor, writeWorkspaceState } from '../../src/workspace/state.js';
+import { createTempDir } from '../support.js';
 
 const REF: SourceRef = {
   type: 'jira',

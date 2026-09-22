@@ -12,9 +12,9 @@
  */
 import { generateKeyPairSync, verify } from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { GitHubReviewConfig } from '../src/shared/types.js';
-import { ReviewError } from '../src/reviews/contract.js';
-import { GITHUB_API_VERSION, createGitHubReviewClient } from '../src/reviews/github.js';
+import type { GitHubReviewConfig } from '../../src/shared/types.js';
+import { ReviewError } from '../../src/reviews/contract.js';
+import { GITHUB_API_VERSION, createGitHubReviewClient } from '../../src/reviews/github.js';
 import { startLocalService } from './integration-support.js';
 import type { LocalService, ReceivedRequest } from './integration-support.js';
 

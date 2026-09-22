@@ -10,16 +10,16 @@
  */
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import type { CheckRoundRequest } from '../src/checks/round.js';
-import { agentLogPath } from '../src/reporting/logs.js';
-import type { RunReportRequest } from '../src/reporting/report.js';
+import type { CheckRoundRequest } from '../../src/checks/round.js';
+import { agentLogPath } from '../../src/reporting/logs.js';
+import type { RunReportRequest } from '../../src/reporting/report.js';
 import type {
   AgentTurnRequest,
   AgentTurnResult,
   RunTaskRequest,
   RunnerDependencies,
-} from '../src/runs/contracts.js';
-import { runTask } from '../src/runs/runner.js';
+} from '../../src/runs/contracts.js';
+import { runTask } from '../../src/runs/runner.js';
 import type {
   ChangedPath,
   CheckRoundResult,
@@ -28,10 +28,10 @@ import type {
   HarnessConfig,
   Task,
   TerminationOutcome,
-} from '../src/shared/types.js';
-import type { ContinuedWorkspace } from '../src/workspace/reopen.js';
-import type { WorkspaceAttempt } from '../src/workspace/state.js';
-import { createTempDir } from './support.js';
+} from '../../src/shared/types.js';
+import type { ContinuedWorkspace } from '../../src/workspace/reopen.js';
+import type { WorkspaceAttempt } from '../../src/workspace/state.js';
+import { createTempDir } from '../support.js';
 
 /** The moment every in-memory run starts at. */
 export const CLOCK_START = new Date('2026-03-01T00:00:00.000Z');

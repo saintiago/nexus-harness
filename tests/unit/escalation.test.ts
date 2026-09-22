@@ -9,21 +9,21 @@
  * (docs/testing.md).
  */
 import { describe, expect, it } from 'vitest';
-import type { RunTaskResult } from '../src/runs/contracts.js';
-import type { BaselineFinding } from '../src/sources/contract.js';
+import type { RunTaskResult } from '../../src/runs/contracts.js';
+import type { BaselineFinding } from '../../src/sources/contract.js';
 import {
   BASELINE_MARKER_PREFIX,
   baselineCommentFinding,
   baselineEvidenceId,
   baselineFindingGuidanceLines,
   baselineThreadFinding,
-} from '../src/sources/baseline.js';
-import { guidanceFrom } from '../src/sources/guidance.js';
-import { completedRedBaseline, exhaustedRedRound } from '../src/sources/run-outcomes.js';
-import { parseBaselineFinding } from '../src/reviews/baseline.js';
-import { summarizeChanges } from '../src/reporting/changes.js';
-import type { CheckRoundResult, CommandResult, SourceRef } from '../src/shared/types.js';
-import type { PreparedWorkspace } from '../src/workspace/prepare.js';
+} from '../../src/sources/baseline.js';
+import { guidanceFrom } from '../../src/sources/guidance.js';
+import { completedRedBaseline, exhaustedRedRound } from '../../src/sources/run-outcomes.js';
+import { parseBaselineFinding } from '../../src/reviews/baseline.js';
+import { summarizeChanges } from '../../src/reporting/changes.js';
+import type { CheckRoundResult, CommandResult, SourceRef } from '../../src/shared/types.js';
+import type { PreparedWorkspace } from '../../src/workspace/prepare.js';
 
 const REF: SourceRef = {
   type: 'jira',

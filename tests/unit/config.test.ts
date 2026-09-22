@@ -19,7 +19,7 @@ import {
   projectLockNamespace,
   resolveAgentSelection,
   resolveWorkDir,
-} from '../src/config/load.js';
+} from '../../src/config/load.js';
 import {
   COMPLETION_DEFAULTS,
   DEFAULT_AGENT_SELECTION,
@@ -31,9 +31,9 @@ import {
   projectConfigSchema,
   sourceSchema,
   taskSchema,
-} from '../src/config/schema.js';
-import type { CompletionConfig, HarnessConfig } from '../src/shared/types.js';
-import { createTempDir, repoRoot, writeJsonFile } from './support.js';
+} from '../../src/config/schema.js';
+import type { CompletionConfig, HarnessConfig } from '../../src/shared/types.js';
+import { createTempDir, repoRoot, writeJsonFile } from '../support.js';
 
 /** The documented Nexus-wide harness configuration. */
 const HARNESS = {
