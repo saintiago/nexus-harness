@@ -14,8 +14,14 @@ import { generateKeyPairSync } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
-import { runCli } from '../src/cli.js';
+import { describe, expect, it } from 'vitest';
+import { runCli } from './fixtures/operations.js';
+import {
+  disposeFixtures,
+  ownFixtureOperation,
+  runProcess,
+  useFixtureLifecycle,
+} from './fixtures/lifecycle.js';
 import { EXIT_INPUT_ERROR, EXIT_OK } from '../src/cli/context.js';
 import type { CliContext, InterruptSignals } from '../src/cli/context.js';
 import { HARNESS_CONFIG_FILE_NAME, PROJECT_CONFIG_FILE_NAME } from '../src/config/paths.js';
@@ -26,19 +32,20 @@ import {
   reviewViewProblem,
 } from '../src/reviews/view.js';
 import { sourceItemFor } from '../src/workspace/state.js';
-import { fakeEvents, fakeTurns, git, installFakeRuntime } from './fixtures/local-target.js';
-import type { FakePlan, FakeState } from './fixtures/local-target.js';
 import {
-  cleanupTempDirectories,
-  createTempDir,
-  fakeConsole,
-  screenAfter,
-  writeJsonFile,
-} from './support.js';
+  fakeEvents,
+  fakeTurns,
+  fixtureProcessGone,
+  git,
+  gitEnvironment,
+  installFakeRuntime,
+  processGone,
+  waitFor,
+} from './fixtures/local-target.js';
+import type { FakePlan, FakeState } from './fixtures/local-target.js';
+import { createTempDir, fakeConsole, screenAfter, writeJsonFile } from './support.js';
 
-afterEach(async () => {
-  await cleanupTempDirectories();
-});
+useFixtureLifecycle();
 
 import {
   APPROVE,
@@ -393,28 +400,34 @@ function sourceIssue(labels: string[]): FakeIssue {
  * history holds the change's base commit. Returns the two commits so the fake
  * world can report them.
  */
+async function setupGit(cwd: string, ...args: readonly string[]): Promise<string> {
+  const result = await runProcess('git', args, { cwd, env: gitEnvironment() });
+  if (result.code !== 0) throw new Error(`fixture Git failed: ${result.stderr}`);
+  return result.stdout;
+}
+
 async function writeReviewWorkspace(
   workDir: string,
   extra: readonly ReviewedFile[] = [],
 ): Promise<{ readonly path: string; readonly base: string; readonly head: string }> {
   const workspace = path.join(workDir, 'workspaces', WORKSPACE_ID);
   await mkdir(workspace, { recursive: true });
-  git(workspace, 'init', '--quiet', '--initial-branch=main');
+  await setupGit(workspace, 'init', '--quiet', '--initial-branch=main');
   await writeFile(path.join(workspace, 'README.md'), '# The example project\n', 'utf8');
-  git(workspace, 'add', '--all');
-  git(workspace, 'commit', '--quiet', '--message', 'the example project');
-  const base = git(workspace, 'rev-parse', 'HEAD').trim();
+  await setupGit(workspace, 'add', '--all');
+  await setupGit(workspace, 'commit', '--quiet', '--message', 'the example project');
+  const base = (await setupGit(workspace, 'rev-parse', 'HEAD')).trim();
 
-  git(workspace, 'checkout', '--quiet', '-b', BRANCH);
+  await setupGit(workspace, 'checkout', '--quiet', '-b', BRANCH);
   await mkdir(path.dirname(path.join(workspace, REVIEWED_FILE)), { recursive: true });
   await writeFile(path.join(workspace, REVIEWED_FILE), REVIEWED_SOURCE, 'utf8');
   for (const file of extra) {
     await mkdir(path.dirname(path.join(workspace, file.path)), { recursive: true });
     await writeFile(path.join(workspace, file.path), file.content, 'utf8');
   }
-  git(workspace, 'add', '--all');
-  git(workspace, 'commit', '--quiet', '--message', 'add greetAll');
-  const head = git(workspace, 'rev-parse', 'HEAD').trim();
+  await setupGit(workspace, 'add', '--all');
+  await setupGit(workspace, 'commit', '--quiet', '--message', 'add greetAll');
+  const head = (await setupGit(workspace, 'rev-parse', 'HEAD')).trim();
   await writeReviewLedger(workDir, { baseCommit: base });
   return { path: workspace, base, head };
 }
@@ -444,122 +457,167 @@ async function reviewCommandFixture(options: {
   readonly run: () => Promise<{ code: number; out: string; err: string }>;
   readonly signals: InterruptSignals;
 }> {
-  const directory = await createTempDir();
-  // The fixture's own output directory and limits: a review turn is bounded by
-  // the harness configuration's task timeout, and keeps its evidence there.
-  const configPath = await writeJsonFile(directory, HARNESS_CONFIG_FILE_NAME, {
-    ...harnessConfig(options.harness ?? {}),
-    workDir: './runs',
-    maxRepairs: 0,
-    taskTimeoutMinutes: 5,
-  } as Record<string, unknown>);
-  // The retained workspace the ticket's pointer label names: a review happens
-  // in a repository view cloned from it, so it has to be really there.
-  const workDir = path.join(directory, 'runs');
-  const workspace =
-    options.workspace === false
-      ? null
-      : await writeReviewWorkspace(workDir, options.readFiles ?? []);
-  if (workspace !== null) {
-    options.world.setHead(workspace.head);
-    options.world.setBase(workspace.base);
-  }
-  const projectPath = await writeJsonFile(
-    directory,
-    PROJECT_CONFIG_FILE_NAME,
-    options.project ?? projectConfig(),
-  );
-  const keyFile = path.join(directory, 'nexus-lens.pem');
-  if (options.key !== null) {
-    const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
-    await writeFile(
-      keyFile,
-      privateKey.export({ type: 'pkcs8', format: 'pem' }).toString(),
-      'utf8',
-    );
-  }
-  const runtime = await installFakeRuntime(directory);
-
-  const handlers: Array<() => void> = [];
-  const signals: InterruptSignals = {
-    onInterrupt: (handler) => {
-      handlers.push(handler);
-      return () => {
-        const index = handlers.indexOf(handler);
-        if (index >= 0) {
-          handlers.splice(index, 1);
-        }
-      };
-    },
-  };
-
-  const run = async (): Promise<{ code: number; out: string; err: string }> => {
-    const out: string[] = [];
-    const err: string[] = [];
-    const previous = {
-      PATH: process.env.PATH,
-      FAKE_CODEX: process.env.FAKE_CODEX,
-      JIRA_API_TOKEN: process.env.JIRA_API_TOKEN,
-      GH_TOKEN: process.env.GH_TOKEN,
-      GITHUB_TOKEN: process.env.GITHUB_TOKEN,
-      NEXUS_LENS_KEY_PATH: process.env.NEXUS_LENS_KEY_PATH,
-    };
-    process.env.PATH = `${runtime.bin}${path.delimiter}${previous.PATH ?? ''}`;
-    process.env.FAKE_CODEX = JSON.stringify({
-      stateDir: runtime.state.dir,
-      plans: options.plans ?? [],
-    });
-    process.env.JIRA_API_TOKEN = 'test-token';
-    process.env.GH_TOKEN = 'operator-token';
-    process.env.GITHUB_TOKEN = 'operator-alternate-token';
-    if (options.key === null) {
-      delete process.env.NEXUS_LENS_KEY_PATH;
-    } else {
-      process.env.NEXUS_LENS_KEY_PATH = keyFile;
+  return ownFixtureOperation('reviewCommandFixture setup', async () => {
+    const directory = await createTempDir();
+    // The fixture's own output directory and limits: a review turn is bounded by
+    // the harness configuration's task timeout, and keeps its evidence there.
+    const configPath = await writeJsonFile(directory, HARNESS_CONFIG_FILE_NAME, {
+      ...harnessConfig(options.harness ?? {}),
+      workDir: './runs',
+      maxRepairs: 0,
+      taskTimeoutMinutes: 5,
+    } as Record<string, unknown>);
+    // The retained workspace the ticket's pointer label names: a review happens
+    // in a repository view cloned from it, so it has to be really there.
+    const workDir = path.join(directory, 'runs');
+    const workspace =
+      options.workspace === false
+        ? null
+        : await writeReviewWorkspace(workDir, options.readFiles ?? []);
+    if (workspace !== null) {
+      options.world.setHead(workspace.head);
+      options.world.setBase(workspace.base);
     }
-    const context: CliContext = {
-      cwd: directory,
-      io: {
-        out: (text) => out.push(text),
-        err: (text) => err.push(text),
-        ...(options.terminal === undefined ? {} : { terminal: options.terminal }),
+    const projectPath = await writeJsonFile(
+      directory,
+      PROJECT_CONFIG_FILE_NAME,
+      options.project ?? projectConfig(),
+    );
+    const keyFile = path.join(directory, 'nexus-lens.pem');
+    if (options.key !== null) {
+      const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+      await writeFile(
+        keyFile,
+        privateKey.export({ type: 'pkcs8', format: 'pem' }).toString(),
+        'utf8',
+      );
+    }
+    const runtime = await installFakeRuntime(directory);
+
+    const handlers: Array<() => void> = [];
+    const signals: InterruptSignals = {
+      onInterrupt: (handler) => {
+        handlers.push(handler);
+        return () => {
+          const index = handlers.indexOf(handler);
+          if (index >= 0) {
+            handlers.splice(index, 1);
+          }
+        };
       },
-      fetch: options.world.fetch,
+    };
+
+    const run = async (): Promise<{ code: number; out: string; err: string }> => {
+      return ownFixtureOperation('review CLI fixture', async () => {
+        const out: string[] = [];
+        const err: string[] = [];
+        const previous = {
+          PATH: process.env.PATH,
+          FAKE_CODEX: process.env.FAKE_CODEX,
+          JIRA_API_TOKEN: process.env.JIRA_API_TOKEN,
+          GH_TOKEN: process.env.GH_TOKEN,
+          GITHUB_TOKEN: process.env.GITHUB_TOKEN,
+          NEXUS_LENS_KEY_PATH: process.env.NEXUS_LENS_KEY_PATH,
+        };
+        process.env.PATH = `${runtime.bin}${path.delimiter}${previous.PATH ?? ''}`;
+        process.env.FAKE_CODEX = JSON.stringify({
+          stateDir: runtime.state.dir,
+          plans: options.plans ?? [],
+        });
+        process.env.JIRA_API_TOKEN = 'test-token';
+        process.env.GH_TOKEN = 'operator-token';
+        process.env.GITHUB_TOKEN = 'operator-alternate-token';
+        if (options.key === null) {
+          delete process.env.NEXUS_LENS_KEY_PATH;
+        } else {
+          process.env.NEXUS_LENS_KEY_PATH = keyFile;
+        }
+        const context: CliContext = {
+          cwd: directory,
+          io: {
+            out: (text) => out.push(text),
+            err: (text) => err.push(text),
+            ...(options.terminal === undefined ? {} : { terminal: options.terminal }),
+          },
+          fetch: options.world.fetch,
+          signals,
+        };
+        try {
+          const code = await runCli(
+            ['review', 'scan', '--config', configPath, '--project', path.dirname(projectPath)],
+            context,
+          );
+          // Child filtering must leave the operator's process environment intact.
+          expect(process.env.JIRA_API_TOKEN).toBe('test-token');
+          expect(process.env.NEXUS_LENS_KEY_PATH).toBe(options.key === null ? undefined : keyFile);
+          return { code, out: out.join('\n'), err: err.join('\n') };
+        } finally {
+          for (const [name, value] of Object.entries(previous)) {
+            if (value === undefined) {
+              delete process.env[name];
+            } else {
+              process.env[name] = value;
+            }
+          }
+        }
+      });
+    };
+
+    return {
+      cwd: directory,
+      configPath,
+      head: workspace?.head ?? null,
+      base: workspace?.base ?? null,
+      workspacePath: path.join(workDir, 'workspaces', WORKSPACE_ID),
+      runtime,
+      run,
       signals,
     };
-    try {
-      const code = await runCli(
-        ['review', 'scan', '--config', configPath, '--project', path.dirname(projectPath)],
-        context,
-      );
-      // Child filtering must leave the operator's process environment intact.
-      expect(process.env.JIRA_API_TOKEN).toBe('test-token');
-      expect(process.env.NEXUS_LENS_KEY_PATH).toBe(options.key === null ? undefined : keyFile);
-      return { code, out: out.join('\n'), err: err.join('\n') };
-    } finally {
-      for (const [name, value] of Object.entries(previous)) {
-        if (value === undefined) {
-          delete process.env[name];
-        } else {
-          process.env[name] = value;
-        }
-      }
-    }
-  };
-
-  return {
-    cwd: directory,
-    configPath,
-    head: workspace?.head ?? null,
-    base: workspace?.base ?? null,
-    workspacePath: path.join(workDir, 'workspaces', WORKSPACE_ID),
-    runtime,
-    run,
-    signals,
-  };
+  });
 }
 
 describe('the review command through the CLI', () => {
+  it('disposes a pending review and restores its environment before removing its fixture', async () => {
+    const world = fakeWorld({ issues: [sourceIssue([WORKSPACE_LABEL])] });
+    const fixture = await reviewCommandFixture({ world, plans: [{ holdMs: 60_000 }] });
+    const previous = { ...process.env };
+    let existedAtSettlement = false;
+    const reviewing = fixture.run().then((result) => {
+      existedAtSettlement = existsSync(fixture.cwd);
+      return result;
+    });
+    await waitFor(
+      async () =>
+        (await fakeEvents(fixture.runtime.state)).some((event) => event.event === 'holding'),
+      'the reviewer to hold a real child tree',
+    );
+    const [turn] = await fakeTurns(fixture.runtime.state);
+    expect(turn?.pidToken).toBeTruthy();
+    expect(turn?.childToken).toBeTruthy();
+    await disposeFixtures();
+    const result = await reviewing;
+    // A stopped reviewer is reported as attention with no verdict.
+    expect(result.code).toBe(EXIT_INPUT_ERROR);
+    expect(`${result.out} ${result.err}`).toContain('was stopped before it produced');
+    expect(existedAtSettlement).toBe(true);
+    expect(existsSync(fixture.cwd)).toBe(false);
+    expect(processGone(turn!.pid)).toBe(true);
+    expect(processGone(turn!.child!)).toBe(true);
+    expect(await fixtureProcessGone(fixture.runtime.state, turn!.pidToken!)).toBe(true);
+    expect(await fixtureProcessGone(fixture.runtime.state, turn!.childToken!)).toBe(true);
+    for (const name of [
+      'PATH',
+      'FAKE_CODEX',
+      'JIRA_API_TOKEN',
+      'GH_TOKEN',
+      'GITHUB_TOKEN',
+      'NEXUS_LENS_KEY_PATH',
+    ]) {
+      expect(process.env[name], name).toBe(previous[name]);
+    }
+    expect(world.publishedReviews).toEqual([]);
+  });
+
   it.each(['item', 'repository'] as const)(
     'refuses a real retained workspace owned by another %s before starting the runtime',
     async (mismatch) => {

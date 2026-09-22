@@ -751,10 +751,6 @@ describe('run refusals', () => {
 // Interrupts
 // ---------------------------------------------------------------------------
 
-/** How long a fixture turn waits for a stop that a failing test never sends. */
-
-const TURN_BACKSTOP_MS = 15_000;
-
 /**
  * A coding turn that runs until the run it belongs to is stopped, and records
  * whether it saw that stop. It is the collaborator a real interrupt has to reach.
@@ -771,17 +767,9 @@ function waitingAgent(marks: {
         resolve();
         return;
       }
-      // The backstop exists only so that a test which fails before it interrupts
-      // cannot leave this turn waiting until the run's own deadline: it is never
-      // what ends a passing test.
-      const backstop = setTimeout(() => {
-        resolve();
-      }, TURN_BACKSTOP_MS);
-      backstop.unref();
       request.stop.addEventListener(
         'abort',
         () => {
-          clearTimeout(backstop);
           marks.sawStop = true;
           resolve();
         },

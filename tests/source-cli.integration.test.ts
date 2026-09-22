@@ -9,10 +9,9 @@
 
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
-import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { runCli } from '../src/cli.js';
+import { runCli } from './fixtures/operations.js';
 import { EXIT_CANCELLED, EXIT_INPUT_ERROR, EXIT_OK } from '../src/cli/context.js';
 import type { CliContext, InterruptSignals } from '../src/cli/context.js';
 import { readReceipt, receiptFilePath } from '../src/sources/receipts.js';
@@ -33,7 +32,12 @@ import {
   installFakeRuntime,
 } from './fixtures/local-target.js';
 import type { FakeGhState, FakePlan } from './fixtures/local-target.js';
-import { useFixtureLifecycle } from './fixtures/lifecycle.js';
+import {
+  disposeFixtures,
+  ownFixtureOperation,
+  runProcess as ownedProcess,
+  useFixtureLifecycle,
+} from './fixtures/lifecycle.js';
 import { SCOPE, refFor, until } from './fixtures/source.js';
 import {
   createTempDir,
@@ -263,21 +267,7 @@ function runProcess(
   args: readonly string[],
   cwd: string,
 ): Promise<{ code: number | null; stdout: string; stderr: string }> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, [...args], { cwd, env: fixtureEnvironment, windowsHide: true });
-    let stdout = '';
-    let stderr = '';
-    child.stdout.setEncoding('utf8');
-    child.stderr.setEncoding('utf8');
-    child.stdout.on('data', (chunk: string) => {
-      stdout += chunk;
-    });
-    child.stderr.on('data', (chunk: string) => {
-      stderr += chunk;
-    });
-    child.on('error', reject);
-    child.on('close', (code) => resolve({ code, stdout, stderr }));
-  });
+  return ownedProcess(command, args, { cwd, env: fixtureEnvironment });
 }
 
 async function gitOrFail(args: readonly string[], cwd: string): Promise<void> {
@@ -304,60 +294,62 @@ async function createTarget(
   configPath: string;
   workDir: string;
 }> {
-  const directory = await createTempDir();
-  const repo = path.join(directory, 'target-project');
-  await mkdir(repo, { recursive: true });
-  // The target project's bytes are what this fixture writes, on any host: the
-  // harness's own Git invocations inherit this machine's system configuration,
-  // which rewrites line endings at checkout, while the fixture's do not, so
-  // without this a committed file would read as modified after a checkout the
-  // harness made (tests/runner.test.ts commits the same file for the same
-  // reason).
-  await writeFile(path.join(repo, '.gitattributes'), '* -text\n', 'utf8');
-  await writeFile(path.join(repo, 'README.md'), '# target\n', 'utf8');
-  if (options.markerCheck === true) {
-    await mkdir(path.join(repo, 'tools'), { recursive: true });
-    await writeFile(path.join(repo, 'tools', 'check.mjs'), MARKER_CHECK_SOURCE, 'utf8');
-  }
-  // The connected project's own configuration is committed with it: its Jira
-  // queue, its check, and — when a test asks for one — its GitHub destination.
-  await writeJsonFile(repo, PROJECT_CONFIG_FILE_NAME, {
-    setup: [],
-    checks:
-      options.markerCheck === true
-        ? [[process.execPath, 'tools/check.mjs']]
-        : [[process.execPath, '-e', 'process.exit(0)']],
-    source: {
-      type: 'jira',
-      siteUrl: SCOPE,
-      cloudId: '9337c4da-7d33-4c1d-b03c-db207e537f88',
-      projectKey: 'SAM1',
-      ...(options.ordering === undefined ? {} : { ordering: options.ordering }),
-      pollIntervalSeconds: 5,
-      tokenEnv: 'JIRA_API_TOKEN',
-    },
-    ...(options.delivery === true
-      ? {
-          delivery: {
-            type: 'github',
-            repository: 'example-owner/example-repo',
-            baseBranch: 'main',
-          },
-        }
-      : {}),
-  });
-  await gitOrFail(['init', '--quiet', '--initial-branch=main'], repo);
-  await gitOrFail(['add', '--all'], repo);
-  await gitOrFail(['commit', '--quiet', '--message', 'baseline'], repo);
+  return ownFixtureOperation('createTarget setup', async () => {
+    const directory = await createTempDir();
+    const repo = path.join(directory, 'target-project');
+    await mkdir(repo, { recursive: true });
+    // The target project's bytes are what this fixture writes, on any host: the
+    // harness's own Git invocations inherit this machine's system configuration,
+    // which rewrites line endings at checkout, while the fixture's do not, so
+    // without this a committed file would read as modified after a checkout the
+    // harness made (tests/runner.test.ts commits the same file for the same
+    // reason).
+    await writeFile(path.join(repo, '.gitattributes'), '* -text\n', 'utf8');
+    await writeFile(path.join(repo, 'README.md'), '# target\n', 'utf8');
+    if (options.markerCheck === true) {
+      await mkdir(path.join(repo, 'tools'), { recursive: true });
+      await writeFile(path.join(repo, 'tools', 'check.mjs'), MARKER_CHECK_SOURCE, 'utf8');
+    }
+    // The connected project's own configuration is committed with it: its Jira
+    // queue, its check, and — when a test asks for one — its GitHub destination.
+    await writeJsonFile(repo, PROJECT_CONFIG_FILE_NAME, {
+      setup: [],
+      checks:
+        options.markerCheck === true
+          ? [[process.execPath, 'tools/check.mjs']]
+          : [[process.execPath, '-e', 'process.exit(0)']],
+      source: {
+        type: 'jira',
+        siteUrl: SCOPE,
+        cloudId: '9337c4da-7d33-4c1d-b03c-db207e537f88',
+        projectKey: 'SAM1',
+        ...(options.ordering === undefined ? {} : { ordering: options.ordering }),
+        pollIntervalSeconds: 5,
+        tokenEnv: 'JIRA_API_TOKEN',
+      },
+      ...(options.delivery === true
+        ? {
+            delivery: {
+              type: 'github',
+              repository: 'example-owner/example-repo',
+              baseBranch: 'main',
+            },
+          }
+        : {}),
+    });
+    await gitOrFail(['init', '--quiet', '--initial-branch=main'], repo);
+    await gitOrFail(['add', '--all'], repo);
+    await gitOrFail(['commit', '--quiet', '--message', 'baseline'], repo);
 
-  const configPath = await writeJsonFile(directory, HARNESS_CONFIG_FILE_NAME, {
-    ...documentedHarnessConfig,
-    workDir: './runs',
-    maxRepairs: 1,
-    ...(options.escalation === undefined ? {} : { escalation: options.escalation }),
-  });
+    const configPath = await writeJsonFile(directory, HARNESS_CONFIG_FILE_NAME, {
+      ...documentedHarnessConfig,
+      workDir: './runs',
+      maxRepairs: 1,
+      ...(options.escalation === undefined ? {} : { escalation: options.escalation }),
+    });
 
-  return { directory, repo, configPath, workDir: path.join(directory, 'runs') };
+    return { directory, repo, configPath, workDir: path.join(directory, 'runs') };
+  });
 }
 
 /**
@@ -2566,6 +2558,38 @@ describe('the source commands through the CLI', { timeout: 20_000 }, () => {
       } else {
         process.env.JIRA_API_TOKEN = previous;
       }
+    }
+  });
+
+  it('disposes a pending source watch before removing its fixture', async () => {
+    const target = await createTarget();
+    const jira = fakeJira([]);
+    const signals = recordingSignals();
+    const previous = process.env.JIRA_API_TOKEN;
+    process.env.JIRA_API_TOKEN = 'test-token';
+    let existedAtSettlement = false;
+    try {
+      const watching = runSourceCli(
+        ['source', 'watch', '--repo', target.repo, '--config', target.configPath],
+        target.directory,
+        { fetch: jira.fetch, signals },
+      ).then((result) => {
+        existedAtSettlement = existsSync(target.directory);
+        return result;
+      });
+      await until(
+        () => jira.calls.some((call) => call.url.endsWith('/search/jql')),
+        'the source watch to be pending between polls',
+      );
+      expect(signals.registered()).toBe(1);
+      await disposeFixtures();
+      expect((await watching).code).toBe(EXIT_CANCELLED);
+      expect(existedAtSettlement).toBe(true);
+      expect(signals.registered()).toBe(0);
+      expect(existsSync(target.directory)).toBe(false);
+    } finally {
+      if (previous === undefined) delete process.env.JIRA_API_TOKEN;
+      else process.env.JIRA_API_TOKEN = previous;
     }
   });
 

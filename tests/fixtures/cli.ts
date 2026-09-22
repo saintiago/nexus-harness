@@ -32,11 +32,11 @@
  * the platform's delivery of a real signal is not exercised here.
  */
 
-import { spawn } from 'node:child_process';
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { expect } from 'vitest';
-import { runCli } from '../../src/cli.js';
+import { runCli } from './operations.js';
+import { ownFixtureOperation, runProcess as ownedProcess } from './lifecycle.js';
 import type { CliContext, CliTerminal, InterruptSignals } from '../../src/cli/context.js';
 import type { AgentTurnRequest, RunnerDependencies } from '../../src/runs/contracts.js';
 import type { RunReport } from '../../src/shared/types.js';
@@ -114,21 +114,7 @@ export interface ProcessResult {
 
 /** Runs the CLI in a real process, exercising the entry-point guard. */
 export function runProcess(args: readonly string[], cwd: string): Promise<ProcessResult> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [...args], { cwd });
-    let stdout = '';
-    let stderr = '';
-    child.stdout.setEncoding('utf8');
-    child.stderr.setEncoding('utf8');
-    child.stdout.on('data', (chunk: string) => {
-      stdout += chunk;
-    });
-    child.stderr.on('data', (chunk: string) => {
-      stderr += chunk;
-    });
-    child.on('error', reject);
-    child.on('close', (code) => resolve({ code, stdout, stderr }));
-  });
+  return ownedProcess(process.execPath, args, { cwd });
 }
 
 /**
@@ -146,12 +132,14 @@ export async function writeInputs(
   projectPath: string;
   taskPath: string;
 }> {
-  const directory = await createTempDir();
-  const { harness, project } = splitConfig(config as JsonObject);
-  const configPath = await writeJsonFile(directory, HARNESS_CONFIG_FILE_NAME, harness);
-  const projectPath = await writeJsonFile(directory, PROJECT_CONFIG_FILE_NAME, project);
-  const taskPath = await writeJsonFile(directory, 'task.json', task);
-  return { directory, configPath, projectPath, taskPath };
+  return ownFixtureOperation('writeInputs setup', async () => {
+    const directory = await createTempDir();
+    const { harness, project } = splitConfig(config as JsonObject);
+    const configPath = await writeJsonFile(directory, HARNESS_CONFIG_FILE_NAME, harness);
+    const projectPath = await writeJsonFile(directory, PROJECT_CONFIG_FILE_NAME, project);
+    const taskPath = await writeJsonFile(directory, 'task.json', task);
+    return { directory, configPath, projectPath, taskPath };
+  });
 }
 
 /** The argv of a `check-config` from `cwd`, with every path as given. */
@@ -196,21 +184,7 @@ export async function waitFor(
 }
 
 export function runGit(args: readonly string[], cwd: string): Promise<ProcessResult> {
-  return new Promise((resolve, reject) => {
-    const child = spawn('git', [...args], { cwd, env: fixtureEnvironment, windowsHide: true });
-    let stdout = '';
-    let stderr = '';
-    child.stdout.setEncoding('utf8');
-    child.stderr.setEncoding('utf8');
-    child.stdout.on('data', (chunk: string) => {
-      stdout += chunk;
-    });
-    child.stderr.on('data', (chunk: string) => {
-      stderr += chunk;
-    });
-    child.on('error', reject);
-    child.on('close', (code) => resolve({ code, stdout, stderr }));
-  });
+  return ownedProcess('git', args, { cwd, env: fixtureEnvironment });
 }
 
 export async function gitOrThrow(args: readonly string[], cwd: string): Promise<string> {
@@ -232,14 +206,16 @@ export async function createSourceRepository(
   project: JsonObject = documentedProjectConfig,
   name = 'target-project',
 ): Promise<string> {
-  const repo = path.join(parent, name);
-  await mkdir(repo, { recursive: true });
-  await writeFile(path.join(repo, 'README.md'), '# target project\n', 'utf8');
-  await writeJsonFile(repo, PROJECT_CONFIG_FILE_NAME, project);
-  await gitOrThrow(['init', '--quiet', '--initial-branch=main'], repo);
-  await gitOrThrow(['add', '--all'], repo);
-  await gitOrThrow(['commit', '--quiet', '--message', 'target: baseline'], repo);
-  return repo;
+  return ownFixtureOperation('createSourceRepository setup', async () => {
+    const repo = path.join(parent, name);
+    await mkdir(repo, { recursive: true });
+    await writeFile(path.join(repo, 'README.md'), '# target project\n', 'utf8');
+    await writeJsonFile(repo, PROJECT_CONFIG_FILE_NAME, project);
+    await gitOrThrow(['init', '--quiet', '--initial-branch=main'], repo);
+    await gitOrThrow(['add', '--all'], repo);
+    await gitOrThrow(['commit', '--quiet', '--message', 'target: baseline'], repo);
+    return repo;
+  });
 }
 
 /** A configured command that records that it ran. */
@@ -300,50 +276,52 @@ export async function createRunFixture(
     readonly agent?: RunnerDependencies['runAgentTurn'];
   } = {},
 ): Promise<RunFixture> {
-  const parent = await createTempDir();
-  const outDir = path.join(parent, 'out');
-  const sentinel = path.join(parent, 'sentinel.txt');
-  const probe = path.join(parent, 'probe.cjs');
-  await writeFile(probe, PROBE_SOURCE, 'utf8');
+  return ownFixtureOperation('createRunFixture setup', async () => {
+    const parent = await createTempDir();
+    const outDir = path.join(parent, 'out');
+    const sentinel = path.join(parent, 'sentinel.txt');
+    const probe = path.join(parent, 'probe.cjs');
+    await writeFile(probe, PROBE_SOURCE, 'utf8');
 
-  // The fixture's fields, routed to the file that owns each of them: the
-  // project's own commands are committed in the repository a run clones, and
-  // the Nexus-wide settings live beside it.
-  const { harness, project } = splitConfig({
-    workDir: './out',
-    maxRepairs: 2,
-    taskTimeoutMinutes: 30,
-    commandTimeoutMinutes: 5,
-    setup: [],
-    checks: [GREEN_CHECK],
-    ...parts.config,
-  } as JsonObject);
-  const source = await createSourceRepository(parent, project);
+    // The fixture's fields, routed to the file that owns each of them: the
+    // project's own commands are committed in the repository a run clones, and
+    // the Nexus-wide settings live beside it.
+    const { harness, project } = splitConfig({
+      workDir: './out',
+      maxRepairs: 2,
+      taskTimeoutMinutes: 30,
+      commandTimeoutMinutes: 5,
+      setup: [],
+      checks: [GREEN_CHECK],
+      ...parts.config,
+    } as JsonObject);
+    const source = await createSourceRepository(parent, project);
 
-  const calls: AgentTurnRequest[] = [];
-  const agent: RunnerDependencies['runAgentTurn'] =
-    parts.agent ??
-    (async (request) => {
-      calls.push(request);
-      return { summary: 'the fixture turn changed nothing' };
-    });
+    const calls: AgentTurnRequest[] = [];
+    const agent: RunnerDependencies['runAgentTurn'] =
+      parts.agent ??
+      (async (request) => {
+        calls.push(request);
+        return { summary: 'the fixture turn changed nothing' };
+      });
 
-  const configDirectory = parts.configDirectory ?? parent;
-  await mkdir(configDirectory, { recursive: true });
-  const configPath = await writeJsonFile(configDirectory, HARNESS_CONFIG_FILE_NAME, harness);
-  const taskPath = await writeJsonFile(parent, 'task.json', documentedTask);
+    const configDirectory = parts.configDirectory ?? parent;
+    await mkdir(configDirectory, { recursive: true });
+    const configPath = await writeJsonFile(configDirectory, HARNESS_CONFIG_FILE_NAME, harness);
+    const taskPath = await writeJsonFile(parent, 'task.json', documentedTask);
 
-  return {
-    parent,
-    source,
-    outDir,
-    configPath,
-    taskPath,
-    sentinel,
-    probe,
-    calls,
-    dependencies: { runAgentTurn: agent },
-  };
+    return {
+      parent,
+      source,
+      outDir,
+      configPath,
+      taskPath,
+      sentinel,
+      probe,
+      calls,
+      dependencies: { runAgentTurn: agent },
+    };
+  });
 }
 
 /** The argv of a run from `cwd`, with every path given relative to it. */

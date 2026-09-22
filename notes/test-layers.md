@@ -320,6 +320,38 @@ passing cases. The suite has 50 files and 1,331 active Windows cases, with the
 two pre-existing platform skips. Earlier successful measurements at `5ec1316`
 predate these fixes and are replaced below by final-code measurements.
 
+## Repair after the in-process CLI review finding
+
+The review at `b7a53b9` correctly identified three remaining unowned entry points:
+`fixtures/cli.ts`, `source-cli.integration.test.ts`, and
+`reviews-cli.integration.test.ts`. They now use the same owned `runCli` wrapper
+in `fixtures/operations.ts`. It registers before dispatch, connects fixture
+cancellation to the production interrupt interface, handles a listener installed
+after disposal starts, and releases listeners on both return and rejection.
+The default still uses production `hostSignals`; the original real host-listener
+and explicitly supplied signal assertions remain active.
+
+CLI and source setup Git/Node commands now use the shared process runner. Review
+command workspace setup also uses that runner instead of synchronous Git calls.
+The complete asynchronous setup operations and review environment restoration
+are registered, so disposal awaits their continuations as well as commands.
+The review suite now installs `useFixtureLifecycle` instead of removing
+directories directly. The waiting agent needs no 15-second emergency timer:
+the test's disposal reaches its existing abort listener.
+
+| Guarantee                                                                         | Active owner and observable evidence                                                                                                                                                                                                                                                                                                      |
+| --------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Pending real in-process CLI at a Vitest timeout or setup failure                  | `fixture-lifecycle.test.ts` runs `nested/in-process-cli.test.ts` through actual Vitest failure/timeout hooks. The actual `fixtures/cli.ts` helper runs a real check tree, returns exit 130 while its directory still exists, and releases its supplied signal handler; afterwards both process generations and the directory are gone.    |
+| CLI fixture Git still pending when setup fails                                    | The same nested proof starts real Git with a fixture alias that holds a child tree. Setup throws before awaiting Git. The shared helper rejects on disposal while its directory exists; the parent proof observes the entire recorded tree and directory gone.                                                                            |
+| Disposal before CLI interrupt registration; rejection; late calls in a newer test | `fixture-cli.test.ts` controls dispatch through the actual fixture helper. An invocation paused before registering observes the already-aborted stop; directory removal waits for settlement. A throwing dispatch releases actual host handlers. A continuation from a disposed scope cannot dispatch or register work in the next scope. |
+| Source CLI watch teardown                                                         | `source-cli.integration.test.ts` disposes an actual pending source watch without the test sending its planned interrupt; it settles with exit 130 before removal and releases its handler. The original poll/interrupt assertions remain.                                                                                                 |
+| Review CLI teardown and environment restoration                                   | `reviews-cli.integration.test.ts` disposes while the real reviewer adapter and its child are holding. It observes both processes gone, the stopped-review diagnostic with no verdict, restoration of six environment variables, and settlement before removal.                                                                            |
+
+No existing assertion or case was removed. Five new ordinary cases plus three
+nested failure-path cases extend the proof. Production behavior, test deadlines,
+worker settings and validation commands are unchanged. Earlier measurements at
+`f7b37b7` predate this repair and must not be used as final-code evidence.
+
 ## Performance
 
 Final-code measurements replace this recovery's interrupted and historical

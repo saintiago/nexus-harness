@@ -97,7 +97,9 @@ It runs two complete validations sequentially with detailed reporters;
 `-Mode four-workers` measures the separate single-pool comparison. Run it without
 another test workload or Nexus queue. It inventories processes without killing
 them. Fixture teardown cancels and awaits owned work before removing directories;
-an unconfirmed owner keeps its directory for inspection.
+an unconfirmed owner keeps its directory for inspection. In-process CLI fixtures
+use `tests/fixtures/operations.ts` to register work and connect teardown to the
+CLI interrupt interface; setup commands use the shared fixture process runner.
 
 `npm start -- --help` prints the full usage text, and `npm start -- run` with a missing option
 prints a usage error and exits `2`.

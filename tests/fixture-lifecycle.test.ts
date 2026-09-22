@@ -49,6 +49,10 @@ interface Started {
   readonly cliPid?: number;
   /** What the case itself reported about what happened to it afterwards. */
   readonly outcome?: string;
+  readonly code?: number;
+  readonly registered?: number;
+  readonly released?: number;
+  readonly problem?: string;
 }
 
 /**
@@ -252,6 +256,12 @@ describe('the fixture lifecycle', () => {
       'operation-round-settled',
       'operation-task',
       'operation-task-settled',
+      'in-process-cli-timeout',
+      'in-process-cli-timeout-settled',
+      'in-process-cli-setup',
+      'in-process-cli-setup-settled',
+      'cli-git-setup',
+      'cli-git-setup-settled',
     ];
     if (process.platform === 'win32') {
       // The unconfirmed stop needs a host utility the harness stops trees with,
@@ -273,6 +283,14 @@ describe('the fixture lifecycle', () => {
       }
       if (entry.case.endsWith('-settled')) {
         expect(entry.outcome).toBe('directory exists at settlement: true');
+        if (entry.case === 'cli-git-setup-settled') {
+          expect(entry.problem).toContain('was stopped because the test ended');
+        }
+        if (entry.case.startsWith('in-process-cli-')) {
+          expect(entry.code).toBe(130);
+          expect(entry.registered).toBe(1);
+          expect(entry.released).toBe(1);
+        }
       }
       if (entry.case === 'unconfirmed') {
         // A stop the host would not carry out: the directory is preserved and
