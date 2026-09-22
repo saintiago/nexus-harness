@@ -6,10 +6,10 @@
  * nobody else: a pointer label is untrusted text on an issue, so the id, the
  * resolved path, and what the ledger records are all checked before anything is
  * reopened. A checkout a coding turn left on a branch of its own is returned to
- * the recorded branch by fast-forwarding it — losing no commit, writing over no
- * ignored local file Git configuration would squash, and reading the state it
- * left back rather than trusting an exit code — and anything else stops with
- * the branch names and the paths instead of being forced.
+ * the recorded branch by fast-forwarding it — losing no commit, overwriting no
+ * ignored local file whatever Git configuration says, and reading the state it
+ * left back rather than trusting that exit code — while anything else stops
+ * with the branch names and the paths instead of being forced.
  *
  * Every case works in temporary repositories, and the Git environment is the
  * suite's own private one.
