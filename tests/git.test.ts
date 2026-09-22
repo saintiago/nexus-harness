@@ -28,7 +28,7 @@ import {
   runGit,
   withFixtureEnvironment,
 } from './fixtures/boundary-operations.js';
-import { allocateRunDirectory } from '../src/workspace/run-directory.js';
+import { allocateRunDirectory } from './fixtures/boundary-operations.js';
 import { installFakeGit } from './fixtures/local-target.js';
 import type { FakeGitState, FixtureProcessRecord } from './fixtures/local-target.js';
 import {

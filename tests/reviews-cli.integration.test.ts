@@ -26,11 +26,12 @@ import { EXIT_INPUT_ERROR, EXIT_OK } from '../src/cli/context.js';
 import type { CliContext, InterruptSignals } from '../src/cli/context.js';
 import { HARNESS_CONFIG_FILE_NAME, PROJECT_CONFIG_FILE_NAME } from '../src/config/paths.js';
 import { allocateReviewDirectory } from '../src/reviews/scan.js';
+import { REVIEW_VIEW_DIRECTORY } from '../src/reviews/view.js';
 import {
-  REVIEW_VIEW_DIRECTORY,
   prepareReviewView,
   reviewViewProblem,
-} from '../src/reviews/view.js';
+  withFixtureEnvironment,
+} from './fixtures/boundary-operations.js';
 import { sourceItemFor } from '../src/workspace/state.js';
 import {
   fakeEvents,
@@ -1208,9 +1209,7 @@ describe('the review command through the CLI', () => {
     const out: string[] = [];
     const err: string[] = [];
     const world = fakeWorld({ issues: [] });
-    const previous = process.env.JIRA_API_TOKEN;
-    delete process.env.JIRA_API_TOKEN;
-    try {
+    await withFixtureEnvironment({ JIRA_API_TOKEN: undefined }, async () => {
       const code = await runCli(
         ['review', 'scan', '--config', configPath, '--project', directory],
         {
@@ -1220,11 +1219,7 @@ describe('the review command through the CLI', () => {
         },
       );
       expect(code).toBe(EXIT_INPUT_ERROR);
-    } finally {
-      if (previous !== undefined) {
-        process.env.JIRA_API_TOKEN = previous;
-      }
-    }
+    });
     expect(err.join('\n')).toContain('JIRA_API_TOKEN is missing or blank');
     expect(world.jiraCalls).toEqual([]);
     expect(world.githubCalls).toEqual([]);
@@ -1345,19 +1340,13 @@ describe('the review command through the CLI', () => {
     const directory = await createTempDir();
     const { harnessPath: configPath } = await writeFixtureConfig(directory);
     const out: string[] = [];
-    const previous = process.env.NEXUS_LENS_KEY_PATH;
-    delete process.env.NEXUS_LENS_KEY_PATH;
-    try {
+    await withFixtureEnvironment({ NEXUS_LENS_KEY_PATH: undefined }, async () => {
       const code = await runCli(['check-config', '--config', configPath, '--project', directory], {
         cwd: directory,
         io: { out: (text) => out.push(text), err: () => undefined },
       });
       expect(code).toBe(EXIT_OK);
-    } finally {
-      if (previous !== undefined) {
-        process.env.NEXUS_LENS_KEY_PATH = previous;
-      }
-    }
+    });
     const printed = out.join('\n');
     expect(printed).toContain(`review                 github ${REPOSITORY} as ${LOGIN}`);
     expect(printed).toContain('review scanning        In Review');
@@ -1381,21 +1370,23 @@ async function viewWorkspace(): Promise<{
   readonly base: string;
   readonly head: string;
 }> {
-  const root = await createTempDir();
-  const workspacePath = path.join(root, 'workspaces', WORKSPACE_ID);
-  await mkdir(workspacePath, { recursive: true });
-  git(workspacePath, 'init', '--quiet', '--initial-branch=main');
-  await writeFile(path.join(workspacePath, 'README.md'), '# the example project\n', 'utf8');
-  git(workspacePath, 'add', '--all');
-  git(workspacePath, 'commit', '--quiet', '--message', 'the example project');
-  const base = git(workspacePath, 'rev-parse', 'HEAD').trim();
+  return ownFixtureOperation('review view workspace setup', async () => {
+    const root = await createTempDir();
+    const workspacePath = path.join(root, 'workspaces', WORKSPACE_ID);
+    await mkdir(workspacePath, { recursive: true });
+    git(workspacePath, 'init', '--quiet', '--initial-branch=main');
+    await writeFile(path.join(workspacePath, 'README.md'), '# the example project\n', 'utf8');
+    git(workspacePath, 'add', '--all');
+    git(workspacePath, 'commit', '--quiet', '--message', 'the example project');
+    const base = git(workspacePath, 'rev-parse', 'HEAD').trim();
 
-  git(workspacePath, 'checkout', '--quiet', '-b', BRANCH);
-  await writeFile(path.join(workspacePath, 'app.mjs'), 'export const ready = true;\n', 'utf8');
-  git(workspacePath, 'add', '--all');
-  git(workspacePath, 'commit', '--quiet', '--message', 'the reviewed change');
-  const head = git(workspacePath, 'rev-parse', 'HEAD').trim();
-  return { path: workspacePath, base, head };
+    git(workspacePath, 'checkout', '--quiet', '-b', BRANCH);
+    await writeFile(path.join(workspacePath, 'app.mjs'), 'export const ready = true;\n', 'utf8');
+    git(workspacePath, 'add', '--all');
+    git(workspacePath, 'commit', '--quiet', '--message', 'the reviewed change');
+    const head = git(workspacePath, 'rev-parse', 'HEAD').trim();
+    return { path: workspacePath, base, head };
+  });
 }
 
 /** An aborted-never signal: these steps are not the ones a stop races here. */

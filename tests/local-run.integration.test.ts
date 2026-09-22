@@ -91,11 +91,11 @@ import type {
   Task,
 } from '../src/shared/types.js';
 import { configureWorkspaceIdentity } from '../src/workspace/git.js';
-import { returnToRecordedBranch } from '../src/workspace/branch.js';
+import { returnToRecordedBranch } from './fixtures/boundary-operations.js';
 import type { PreparedWorkspace } from '../src/workspace/prepare.js';
-import { prepareWorkspace } from '../src/workspace/prepare.js';
-import { preflightSource } from '../src/workspace/preflight.js';
-import { allocateRunDirectory } from '../src/workspace/run-directory.js';
+import { prepareWorkspace } from './fixtures/boundary-operations.js';
+import { preflightSource } from './fixtures/boundary-operations.js';
+import { allocateRunDirectory } from './fixtures/boundary-operations.js';
 import { recordWorkspaceAttempt } from '../src/workspace/state.js';
 import { beaconModuleUrl, endFixtureTree } from './fixtures/local-target.js';
 import type { FixtureProcessRecord } from './fixtures/local-target.js';

@@ -24,13 +24,13 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { taskSchema } from '../src/config/schema.js';
-import { inspectWorkspaceChanges } from '../src/workspace/changes.js';
+import { inspectWorkspaceChanges } from './fixtures/boundary-operations.js';
 
-import { prepareWorkspace } from '../src/workspace/prepare.js';
+import { prepareWorkspace } from './fixtures/boundary-operations.js';
 import type { PreparedWorkspace } from '../src/workspace/prepare.js';
-import { preflightSource } from '../src/workspace/preflight.js';
+import { preflightSource } from './fixtures/boundary-operations.js';
 import type { SourcePreflight } from '../src/workspace/preflight.js';
-import { allocateRunDirectory } from '../src/workspace/run-directory.js';
+import { allocateRunDirectory } from './fixtures/boundary-operations.js';
 
 import { runProcess, useFixtureLifecycle } from './fixtures/lifecycle.js';
 import { createTempDir, repoRoot } from './support.js';

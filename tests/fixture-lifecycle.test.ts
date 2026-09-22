@@ -56,6 +56,9 @@ interface Started {
   readonly environmentRestored?: boolean;
   readonly closed?: boolean;
   readonly callerAborted?: boolean;
+  readonly allocatedAfterStop?: boolean;
+  readonly sourceStatus?: string;
+  readonly sourceComments?: string;
   readonly result?: {
     readonly outcome?: string;
     readonly shutdown?: { readonly termination: string };
@@ -275,6 +278,12 @@ describe('the fixture lifecycle', () => {
           `boundary-${entry}-${ending}-settled`,
         ]),
       ),
+      ...['workspace', 'review-view', 'baseline-reviewer', 'baseline-cli'].flatMap((entry) =>
+        ['timeout', 'setup'].flatMap((ending) => [
+          `restored-${entry}-${ending}`,
+          `restored-${entry}-${ending}-settled`,
+        ]),
+      ),
     ];
     if (process.platform === 'win32') {
       // The unconfirmed stop needs a host utility the harness stops trees with,
@@ -308,6 +317,30 @@ describe('the fixture lifecycle', () => {
             expect(entry.result?.shutdown?.termination, entry.case).toBe('confirmed');
           }
         }
+        if (entry.case.startsWith('restored-')) {
+          expect(entry.environmentRestored, entry.case).toBe(true);
+          expect(entry.callerAborted, entry.case).toBe(false);
+          expect(entry.allocatedAfterStop, entry.case).toBe(false);
+          if (entry.case.startsWith('restored-baseline-reviewer-')) {
+            expect(entry.result?.shutdown?.termination, entry.case).toBe('confirmed');
+          } else if (entry.case.startsWith('restored-baseline-cli-')) {
+            // A stopped baseline diagnosis finishes its bounded attention
+            // publication and returns the source command's failure status.
+            expect(entry.result, entry.case).toBe(1);
+            expect(entry.sourceStatus, entry.case).toBe('In Review');
+            expect(entry.sourceComments, entry.case).toContain(
+              'was stopped before it produced a finding',
+            );
+          } else if (entry.case.startsWith('restored-review-view-')) {
+            // The view reports a failed clone, while the separate tree/beacon
+            // assertions below prove that cancellation actually ended Git.
+            expect(entry.problem, entry.case).toContain(
+              'could not be cloned into a repository view',
+            );
+          } else {
+            expect(entry.problem, entry.case).toContain('stopped');
+          }
+        }
         if (entry.case === 'cli-git-setup-settled') {
           expect(entry.problem).toContain('was stopped because the test ended');
         }
@@ -317,7 +350,10 @@ describe('the fixture lifecycle', () => {
           expect(entry.released).toBe(1);
         }
       }
-      if (entry.case.startsWith('boundary-') && !entry.case.endsWith('-settled')) {
+      if (
+        (entry.case.startsWith('boundary-') || entry.case.startsWith('restored-')) &&
+        !entry.case.endsWith('-settled')
+      ) {
         expect(entry.pid, entry.case).toBeTypeOf('number');
         expect(entry.grandchild, entry.case).toBeTypeOf('number');
         expect(entry.token, entry.case).toBeTypeOf('string');

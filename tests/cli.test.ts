@@ -10,7 +10,7 @@ import path from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { colorAllowed } from '../src/cli.js';
 import { EXIT_INPUT_ERROR, EXIT_OK, EXIT_USAGE } from '../src/cli/context.js';
-import { preflightSource } from '../src/workspace/preflight.js';
+import { preflightSource } from './fixtures/boundary-operations.js';
 import {
   createTempDir,
   documentedConfig,

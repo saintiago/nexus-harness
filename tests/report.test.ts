@@ -11,12 +11,12 @@
  * failure output a repair turn is given.
  */
 
-import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
-import { runCheckRound } from '../src/checks/round.js';
+import { describe, expect, it } from 'vitest';
+import { runCheckRound } from './fixtures/operations.js';
+import { runProcess, useFixtureLifecycle } from './fixtures/lifecycle.js';
 import { ReportError } from '../src/reporting/errors.js';
 import {
   agentLogPath,
@@ -39,14 +39,14 @@ import type {
   RunStatus,
 } from '../src/shared/types.js';
 import { WorkspaceError } from '../src/workspace/errors.js';
-import { prepareWorkspace } from '../src/workspace/prepare.js';
+import { prepareWorkspace } from './fixtures/boundary-operations.js';
 import type { PreparedWorkspace } from '../src/workspace/prepare.js';
-import { allocateRunDirectory } from '../src/workspace/run-directory.js';
+import { allocateRunDirectory } from './fixtures/boundary-operations.js';
 import type { RunDirectory } from '../src/workspace/run-directory.js';
 import type { SourcePreflight } from '../src/workspace/preflight.js';
-import { cleanupTempDirectories, createTempDir } from './support.js';
+import { createTempDir } from './support.js';
 
-afterEach(cleanupTempDirectories);
+useFixtureLifecycle();
 
 /** The committed base a fixture run records. */
 const BASE_COMMIT = '5f2b1c4e7a9d0b3f6c8e1a2d4b5c7e9f0a1b2c3d';
@@ -708,23 +708,7 @@ describe('a run whose preparation failed', () => {
   /** Runs `git` with literal arguments and fails the test when it does not succeed. */
   async function gitOrFail(args: readonly string[], cwd: string): Promise<string> {
     const environment = await privateGitEnvironment();
-    const result = await new Promise<{ code: number | null; stdout: string; stderr: string }>(
-      (resolve, reject) => {
-        const child = spawn('git', [...args], { cwd, env: environment, windowsHide: true });
-        let stdout = '';
-        let stderr = '';
-        child.stdout.setEncoding('utf8');
-        child.stderr.setEncoding('utf8');
-        child.stdout.on('data', (chunk: string) => {
-          stdout += chunk;
-        });
-        child.stderr.on('data', (chunk: string) => {
-          stderr += chunk;
-        });
-        child.on('error', reject);
-        child.on('close', (code) => resolve({ code, stdout, stderr }));
-      },
-    );
+    const result = await runProcess('git', args, { cwd, env: environment });
     if (result.code !== 0) {
       throw new Error(`git ${args.join(' ')} failed in ${cwd}: ${result.stderr.trim()}`);
     }

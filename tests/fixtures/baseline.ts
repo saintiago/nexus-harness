@@ -25,7 +25,9 @@ import type { Delivery } from '../../src/delivery/github.js';
 import { summarizeChanges } from '../../src/reporting/changes.js';
 import type { RunTaskResult } from '../../src/runs/contracts.js';
 import type { TicketHistory } from '../../src/history/contract.js';
-import { baselineFindingPath, createBaselineReviewer } from '../../src/reviews/baseline.js';
+import { baselineFindingPath } from '../../src/reviews/baseline.js';
+import { createBaselineReviewer } from './boundary-operations.js';
+import { ownFixtureOperation } from './lifecycle.js';
 import type {
   BaselineDiagnosis,
   BaselineDiagnosisOutcome,
@@ -43,9 +45,10 @@ import type {
   SourceTask,
   TaskSource,
 } from '../../src/sources/contract.js';
-import { BASELINE_MARKER_PREFIX, createBaselineDiagnosis } from '../../src/sources/baseline.js';
+import { BASELINE_MARKER_PREFIX } from '../../src/sources/baseline.js';
+import { createBaselineDiagnosis } from './operations.js';
 
-import { takeOneItem } from '../../src/sources/coordinator.js';
+import { takeOneItem } from './operations.js';
 
 import type { CheckRoundResult, CommandResult } from '../../src/shared/types.js';
 import type { SourceRef, Task } from '../../src/shared/types.js';
@@ -135,13 +138,15 @@ export function redBaseline(overrides: Partial<CheckRoundResult> = {}): CheckRou
  * evidence the diagnosis refuses rather than hands to a reviewer.
  */
 export async function baselineWithLogs(): Promise<CheckRoundResult> {
-  const dir = await createTempDir();
-  const stdoutPath = path.join(dir, 'baseline-check-1.stdout.log');
-  const stderrPath = path.join(dir, 'baseline-check-1.stderr.log');
-  await writeFile(stdoutPath, 'running test/load.test.mjs\nFAILED test/load.test.mjs\n', 'utf8');
-  await writeFile(stderrPath, 'the load test timed out after 30s\n', 'utf8');
-  return redBaseline({
-    checks: [commandFor({ command: ['npm', 'run', 'validate'], stdoutPath, stderrPath })],
+  return ownFixtureOperation('baselineWithLogs setup', async () => {
+    const dir = await createTempDir();
+    const stdoutPath = path.join(dir, 'baseline-check-1.stdout.log');
+    const stderrPath = path.join(dir, 'baseline-check-1.stderr.log');
+    await writeFile(stdoutPath, 'running test/load.test.mjs\nFAILED test/load.test.mjs\n', 'utf8');
+    await writeFile(stderrPath, 'the load test timed out after 30s\n', 'utf8');
+    return redBaseline({
+      checks: [commandFor({ command: ['npm', 'run', 'validate'], stdoutPath, stderrPath })],
+    });
   });
 }
 
@@ -446,10 +451,12 @@ export async function writeTurnFinding(
   finding: BaselineFinding = REPAIR_FINDING,
   project: string = PROJECT,
 ): Promise<void> {
-  await writeJsonFile(path.join(workDir, 'baseline', project, evidenceId), 'outcome.json', {
-    version: 1,
-    state: 'finding',
-    finding,
+  return ownFixtureOperation('writeTurnFinding setup', async () => {
+    await writeJsonFile(path.join(workDir, 'baseline', project, evidenceId), 'outcome.json', {
+      version: 1,
+      state: 'finding',
+      finding,
+    });
   });
 }
 
@@ -623,39 +630,41 @@ export async function retainedWorkspace(
   readonly workspacePath: string;
   readonly base: string;
 }> {
-  const sourceRepo = path.join(await createTempDir(), 'source-repo');
-  await mkdir(sourceRepo, { recursive: true });
-  await writeFile(path.join(sourceRepo, 'README.md'), 'the source repository\n', 'utf8');
-  git(sourceRepo, 'init', '--quiet', '--initial-branch=main');
-  git(sourceRepo, 'add', '--all');
-  git(sourceRepo, 'commit', '--quiet', '--message', 'the baseline');
-  const base = git(sourceRepo, 'rev-parse', 'HEAD').trim();
+  return ownFixtureOperation('retained baseline workspace setup', async () => {
+    const sourceRepo = path.join(await createTempDir(), 'source-repo');
+    await mkdir(sourceRepo, { recursive: true });
+    await writeFile(path.join(sourceRepo, 'README.md'), 'the source repository\n', 'utf8');
+    git(sourceRepo, 'init', '--quiet', '--initial-branch=main');
+    git(sourceRepo, 'add', '--all');
+    git(sourceRepo, 'commit', '--quiet', '--message', 'the baseline');
+    const base = git(sourceRepo, 'rev-parse', 'HEAD').trim();
 
-  const workspaceId = ISSUE_KEY;
-  const workspacePath = path.join(workDir, 'workspaces', workspaceId);
-  await mkdir(path.dirname(workspacePath), { recursive: true });
-  git(
-    path.dirname(workspacePath),
-    'clone',
-    '--quiet',
-    '--local',
-    '--no-hardlinks',
-    '--',
-    sourceRepo,
-    workspaceId,
-  );
-  git(workspacePath, 'switch', '--quiet', '-c', `harness/${workspaceId}`);
-  await writeWorkspaceState(workDir, {
-    version: 1,
-    workspaceId,
-    sourceRoot: sourceRepo,
-    baseCommit: base,
-    branch: `harness/${workspaceId}`,
-    createdAt: '2026-09-21T10:00:00.000Z',
-    sourceItem: { type: 'jira', scope: SCOPE, id: ISSUE_ID, key: ISSUE_KEY },
-    attempts,
+    const workspaceId = ISSUE_KEY;
+    const workspacePath = path.join(workDir, 'workspaces', workspaceId);
+    await mkdir(path.dirname(workspacePath), { recursive: true });
+    git(
+      path.dirname(workspacePath),
+      'clone',
+      '--quiet',
+      '--local',
+      '--no-hardlinks',
+      '--',
+      sourceRepo,
+      workspaceId,
+    );
+    git(workspacePath, 'switch', '--quiet', '-c', `harness/${workspaceId}`);
+    await writeWorkspaceState(workDir, {
+      version: 1,
+      workspaceId,
+      sourceRoot: sourceRepo,
+      baseCommit: base,
+      branch: `harness/${workspaceId}`,
+      createdAt: '2026-09-21T10:00:00.000Z',
+      sourceItem: { type: 'jira', scope: SCOPE, id: ISSUE_ID, key: ISSUE_KEY },
+      attempts,
+    });
+    return { sourceRepo, workspaceId, workspacePath, base };
   });
-  return { sourceRepo, workspaceId, workspacePath, base };
 }
 
 /** The one failed baseline attempt a retained workspace starts from. */
@@ -845,12 +854,14 @@ export async function writeReviewerFinding(
   finding: BaselineFinding = REPAIR_FINDING,
   project: string = PROJECT,
 ): Promise<void> {
-  const evidence = await evidenceRecordFor(workDir, project);
-  const dir = path.dirname(evidence.file);
-  const file = baselineFindingPath(dir);
-  await mkdir(path.dirname(file), { recursive: true });
-  await writeFile(file, `${JSON.stringify(finding)}\n`, 'utf8');
-  await writeJsonFile(dir, 'outcome.json', { version: 1, state: 'finding', finding });
+  return ownFixtureOperation('writeReviewerFinding setup', async () => {
+    const evidence = await evidenceRecordFor(workDir, project);
+    const dir = path.dirname(evidence.file);
+    const file = baselineFindingPath(dir);
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(file, `${JSON.stringify(finding)}\n`, 'utf8');
+    await writeJsonFile(dir, 'outcome.json', { version: 1, state: 'finding', finding });
+  });
 }
 
 /** The Jira side of the diagnosis fixtures: one fake site that speaks REST API v3. */

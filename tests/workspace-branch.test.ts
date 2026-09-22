@@ -11,13 +11,13 @@ import path from 'node:path';
 
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { inspectBranchStanding, returnToRecordedBranch } from '../src/workspace/branch.js';
-import { inspectWorkspaceChanges } from '../src/workspace/changes.js';
+import { inspectBranchStanding, returnToRecordedBranch } from './fixtures/boundary-operations.js';
+import { inspectWorkspaceChanges } from './fixtures/boundary-operations.js';
 import { WorkspaceError } from '../src/workspace/errors.js';
 
 import type { PreparedWorkspace } from '../src/workspace/prepare.js';
 
-import { reopenWorkspace, resolveWorkspace } from '../src/workspace/reopen.js';
+import { reopenWorkspace, resolveWorkspace } from './fixtures/boundary-operations.js';
 import { workspacePathFor } from '../src/workspace/run-directory.js';
 
 import { readWorkspaceState, workspaceStatePath } from '../src/workspace/state.js';

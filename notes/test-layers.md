@@ -379,6 +379,35 @@ remain active. Existing late-allocation, repeated preservation, CLI teardown and
 POSIX process-group proofs remain unchanged. Final measurements below replace
 the previous implementation's evidence.
 
+### Remaining workspace and review ownership (2026-09-22)
+
+The review of `9fd8f50` correctly identified still-unowned production calls in
+workspace and review helpers. This repair keeps their existing substantive
+assertions and routes those calls through the same fixture lifecycle; it changes
+no product behavior or HARN-46 baseline orchestration. The production baseline
+reviewer itself is owned, including its internally imported adapter, view checks,
+log closure and persisted outcome. `prepareRun` owns preflight through allocation
+and preparation, and refuses allocation after preflight returns to a stopped scope.
+Standalone diagnosis/source entry points own persistence and publication after the
+reviewer returns; a controlled publication barrier in `fixture-workspace.test.ts`
+proves teardown waits for that enclosing operation too.
+
+| Guarantee                                                         | Active owner and evidence                                                                                                                                                                                                                                                                                                                                                |
+| ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Pending helper settlement precedes directory removal              | `fixture-workspace.test.ts`: controlled barriers through actual `accepted`, `expectRejected`, `prepareRun`, branch inspection/recovery, reopening, view preparation/verification, and `reviewerFor`; each receives teardown cancellation while an unrelated caller signal stays unchanged.                                                                               |
+| Preflight/allocation continuations cannot start later preparation | Same file: preflight returning success after disposal starts cannot allocate; an allocation already pending must settle before removal and cannot invoke preparation.                                                                                                                                                                                                    |
+| Late entry belongs to the old test                                | Same file: all nine helpers are refused after disposal while another scope is active; no production call or allocation starts and the newer test owns no work.                                                                                                                                                                                                           |
+| Real pending workspace/review work at timeout and setup failure   | `fixtures/lifecycle/nested/workspace.test.ts`, asserted by `fixture-lifecycle.test.ts`: eight deliberately failing cases through actual `prepareRun`, `prepareReviewView`, `reviewerFor`, and baseline `source run`; parent and child PIDs plus both beacons must be gone, environment restored, directories present at settlement and removed afterward.                |
+| Baseline CLI environment and internal reviewer lifetime           | `baseline-queue.integration.test.ts` uses the owned CLI entry and owns the environment restoration around both claims. The nested baseline CLI cases stop a real pending reviewer and assert the existing failure exit, the stopped-diagnosis comment and In Review status, plus tree termination.                                                                       |
+| Async setup and other callers of the same boundaries              | Workspace repository/environment/preparation, baseline evidence/retained-workspace and review-view setup register their whole promises. Source, queue and report suites now dispose owned work before their old cleanup/restoration hooks; report Git commands use the shared process runner. Other runner/agent/source collaborators use the same owned boundary calls. |
+
+Thirteen top-level cases and eight nested failure cases are added; no existing test,
+assertion, deadline, quarantine or skip is removed. Existing assertion-failure,
+caller-cancellation, repeated directory preservation, credential-isolation and
+POSIX process-group proofs remain active. The new view cancellation assertion
+keeps its actual production diagnostic (failed clone); independent process and
+beacon assertions prove termination instead of inferring it from that text.
+
 ## Performance
 
 Final-code measurements replace this recovery's interrupted and historical

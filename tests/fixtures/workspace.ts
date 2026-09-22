@@ -11,15 +11,15 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { WorkspaceError } from '../../src/workspace/errors.js';
-import { prepareWorkspace } from '../../src/workspace/prepare.js';
+import { prepareWorkspace } from './boundary-operations.js';
 import type { PreparedWorkspace, PrepareWorkspaceBounds } from '../../src/workspace/prepare.js';
-import { preflightSource } from '../../src/workspace/preflight.js';
+import { preflightSource } from './boundary-operations.js';
 import type { PreflightRequest, SourcePreflight } from '../../src/workspace/preflight.js';
-import { allocateRunDirectory } from '../../src/workspace/run-directory.js';
+import { allocateRunDirectory } from './boundary-operations.js';
 import type { WorkspaceSourceItem } from '../../src/workspace/state.js';
 import { createTempDir } from '../support.js';
 import { gitFixtureEnvironment } from './git.js';
-import { runProcess } from './lifecycle.js';
+import { ownFixtureOperation, runProcess } from './lifecycle.js';
 import type { ProcessResult } from './lifecycle.js';
 
 import { expect } from 'vitest';
@@ -33,9 +33,11 @@ let fixtureEnvironment: NodeJS.ProcessEnv = {};
  * decide what a test observes.
  */
 export async function beginFixtureGitEnvironment(): Promise<void> {
-  fixtureEnvironment = await gitFixtureEnvironment({
-    name: 'Harness Test',
-    email: 'harness@example.test',
+  return ownFixtureOperation('workspace Git environment', async () => {
+    fixtureEnvironment = await gitFixtureEnvironment({
+      name: 'Harness Test',
+      email: 'harness@example.test',
+    });
   });
 }
 /** Runs `git` with literal arguments in the fixture environment. */
@@ -63,15 +65,17 @@ export interface Fixture {
 
 /** A temporary repository whose only commit is a clean baseline. */
 export async function createRepository(): Promise<Fixture> {
-  const parent = await createTempDir();
-  const repo = path.join(parent, 'repo');
-  await mkdir(repo);
-  await gitOrFail(['init', '--quiet', '--initial-branch=main'], repo);
-  await writeFile(path.join(repo, '.gitignore'), 'ignored.txt\nignored-tree/\n', 'utf8');
-  await writeFile(path.join(repo, 'README.md'), 'baseline\n', 'utf8');
-  await gitOrFail(['add', '--all'], repo);
-  await gitOrFail(['commit', '--quiet', '--message', 'baseline'], repo);
-  return { parent, repo, workDir: path.join(parent, 'runs') };
+  return ownFixtureOperation('workspace repository setup', async () => {
+    const parent = await createTempDir();
+    const repo = path.join(parent, 'repo');
+    await mkdir(repo);
+    await gitOrFail(['init', '--quiet', '--initial-branch=main'], repo);
+    await writeFile(path.join(repo, '.gitignore'), 'ignored.txt\nignored-tree/\n', 'utf8');
+    await writeFile(path.join(repo, 'README.md'), 'baseline\n', 'utf8');
+    await gitOrFail(['add', '--all'], repo);
+    await gitOrFail(['commit', '--quiet', '--message', 'baseline'], repo);
+    return { parent, repo, workDir: path.join(parent, 'runs') };
+  });
 }
 
 export async function headOf(repo: string): Promise<string> {
@@ -197,13 +201,16 @@ export function taskBounds(): PrepareWorkspaceBounds {
 
 /** Preflights a fixture, allocates a run, and prepares its working copy. */
 export async function prepareRun(fixture: Fixture): Promise<PreparedWorkspace> {
-  const source = await preflightSource({ repoPath: fixture.repo, workDir: fixture.workDir });
-  return prepareWorkspace(
-    await allocateRunDirectory(fixture.workDir),
-    source,
-    taskBounds(),
-    FIXTURE_SOURCE_ITEM,
-  );
+  return ownFixtureOperation('prepareRun setup', async (stop) => {
+    const source = await preflightSource({ repoPath: fixture.repo, workDir: fixture.workDir });
+    stop.throwIfAborted();
+    return prepareWorkspace(
+      await allocateRunDirectory(fixture.workDir),
+      source,
+      taskBounds(),
+      FIXTURE_SOURCE_ITEM,
+    );
+  });
 }
 
 /**

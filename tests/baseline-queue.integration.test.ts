@@ -8,14 +8,15 @@ import { rm } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { runCli } from '../src/cli.js';
+import { runCli } from './fixtures/operations.js';
+import { withFixtureEnvironment } from './fixtures/boundary-operations.js';
 import { EXIT_INPUT_ERROR } from '../src/cli/context.js';
 import { HARNESS_CONFIG_FILE_NAME, PROJECT_CONFIG_FILE_NAME } from '../src/config/paths.js';
 
 import { BASELINE_MARKER_PREFIX } from '../src/sources/baseline.js';
-import { createBaselineDiagnosis } from '../src/sources/baseline.js';
+import { createBaselineDiagnosis } from './fixtures/operations.js';
 
-import { runSource, takeOneItem, watchSource } from '../src/sources/coordinator.js';
+import { runSource, takeOneItem, watchSource } from './fixtures/operations.js';
 import {
   baselineEvidenceId,
   baselineFindingGuidanceLines,
@@ -39,7 +40,7 @@ import { runQueue } from '../src/queue/loop.js';
 import { recordWorkspaceAttempt } from '../src/workspace/state.js';
 import { createLocalTarget, fakeTurns, git } from './fixtures/local-target.js';
 import type { LocalTarget } from './fixtures/local-target.js';
-import { useFixtureLifecycle } from './fixtures/lifecycle.js';
+import { ownFixtureOperation, useFixtureLifecycle } from './fixtures/lifecycle.js';
 import { createTempDir, latestHistorySnapshot, writeJsonFile } from './support.js';
 import {
   ISSUE_KEY,
@@ -1313,65 +1314,68 @@ describe('the diagnosis through `source run`', () => {
   }
 
   it('returns the same ticket to To Do and hands the finding to the next claim', async () => {
-    const target = await createLocalTarget({ brokenBaseline: true });
-    const site = fakeJira('To Do');
+    const { target, site } = await ownFixtureOperation('baseline source CLI setup', async () => {
+      const target = await createLocalTarget({ brokenBaseline: true });
+      const site = fakeJira('To Do');
 
-    // The connected project's own configuration, committed: the queue, the
-    // checks, and the GitHub destination the configured reviewer composes with.
-    // The baseline this project commits is red — exactly HARN-34's situation.
-    await writeJsonFile(target.repo, PROJECT_CONFIG_FILE_NAME, {
-      setup: [[process.execPath, 'tools/prepare.mjs']],
-      checks: [[process.execPath, 'tools/run-checks.mjs']],
-      source: { ...SOURCE_CONFIG },
-      delivery: {
-        type: 'github',
-        repository: 'example-owner/tiny-target',
-        baseBranch: 'main',
-      },
-    });
-    git(target.repo, 'add', '--all');
-    git(target.repo, 'commit', '--quiet', '--message', 'connect the queue');
-    // The harness file the reviewer comes from; no completion object, so the
-    // diagnosis is the only reviewer path configured here.
-    await writeJsonFile(target.configDir, HARNESS_CONFIG_FILE_NAME, {
-      workDir: './runs',
-      maxRepairs: 0,
-      taskTimeoutMinutes: 60,
-      commandTimeoutMinutes: 10,
-      agent: { runtime: 'codex', command: [target.runtimePath] },
-      reviewer: {
-        app: {
-          appId: 123,
-          installationId: 456,
-          privateKeyPathEnv: 'NEXUS_LENS_KEY_PATH',
-          login: 'nexus-lens',
+      // The connected project's own configuration, committed: the queue, the
+      // checks, and the GitHub destination the configured reviewer composes with.
+      // The baseline this project commits is red — exactly HARN-34's situation.
+      await writeJsonFile(target.repo, PROJECT_CONFIG_FILE_NAME, {
+        setup: [[process.execPath, 'tools/prepare.mjs']],
+        checks: [[process.execPath, 'tools/run-checks.mjs']],
+        source: { ...SOURCE_CONFIG },
+        delivery: {
+          type: 'github',
+          repository: 'example-owner/tiny-target',
+          baseBranch: 'main',
         },
-        reviewer: { runtime: 'codex', command: [target.runtimePath] },
-        checkName: 'Nexus Lens review',
-      },
-    });
+      });
+      git(target.repo, 'add', '--all');
+      git(target.repo, 'commit', '--quiet', '--message', 'connect the queue');
+      // The harness file the reviewer comes from; no completion object, so the
+      // diagnosis is the only reviewer path configured here.
+      await writeJsonFile(target.configDir, HARNESS_CONFIG_FILE_NAME, {
+        workDir: './runs',
+        maxRepairs: 0,
+        taskTimeoutMinutes: 60,
+        commandTimeoutMinutes: 10,
+        agent: { runtime: 'codex', command: [target.runtimePath] },
+        reviewer: {
+          app: {
+            appId: 123,
+            installationId: 456,
+            privateKeyPathEnv: 'NEXUS_LENS_KEY_PATH',
+            login: 'nexus-lens',
+          },
+          reviewer: { runtime: 'codex', command: [target.runtimePath] },
+          checkName: 'Nexus Lens review',
+        },
+      });
 
-    const previousToken = process.env.JIRA_API_TOKEN;
-    const previousPlan = process.env.FAKE_CODEX;
-    process.env.JIRA_API_TOKEN = 'test-token';
-    process.env.FAKE_CODEX = JSON.stringify({
-      stateDir: target.state.dir,
-      plans: [
-        // The pre-delivery reviewer turn: one finding and nothing else, its
-        // repair longer than the one comment line the diagnosis renders.
-        { finding: JSON.stringify(WIDE_REPAIR_FINDING) },
-        // The next claim's developer turn: it continues the ticket's own work
-        // and does not repair the baseline it was told about, so the round that
-        // judges it is still red.
-        {
-          edits: [{ file: 'WORK.md', text: 'the ticket work is next\n' }],
-          commit: 'harn-38: start the ticket work',
-          summary: 'the ticket work is next',
-        },
-      ],
+      return { target, site };
     });
+    const environment = {
+      JIRA_API_TOKEN: 'test-token',
+      FAKE_CODEX: JSON.stringify({
+        stateDir: target.state.dir,
+        plans: [
+          // The pre-delivery reviewer turn: one finding and nothing else, its
+          // repair longer than the one comment line the diagnosis renders.
+          { finding: JSON.stringify(WIDE_REPAIR_FINDING) },
+          // The next claim's developer turn: it continues the ticket's own work
+          // and does not repair the baseline it was told about, so the round that
+          // judges it is still red.
+          {
+            edits: [{ file: 'WORK.md', text: 'the ticket work is next\n' }],
+            commit: 'harn-38: start the ticket work',
+            summary: 'the ticket work is next',
+          },
+        ],
+      }),
+    };
     const argv = ['source', 'run', '--repo', target.repo, '--config', target.configPath];
-    try {
+    await withFixtureEnvironment(environment, async () => {
       // The first claim: the baseline is red, and the diagnosis returns the
       // ticket to To Do with one comment. No coding turn ran.
       const first = await runIn(target, site, argv);
@@ -1449,17 +1453,6 @@ describe('the diagnosis through `source run`', () => {
       expect(second.out).not.toContain('source stopped');
       expect(second.code).toBe(EXIT_INPUT_ERROR);
       expect(existsSync(path.join(target.workDir, 'baseline'))).toBe(true);
-    } finally {
-      if (previousToken === undefined) {
-        delete process.env.JIRA_API_TOKEN;
-      } else {
-        process.env.JIRA_API_TOKEN = previousToken;
-      }
-      if (previousPlan === undefined) {
-        delete process.env.FAKE_CODEX;
-      } else {
-        process.env.FAKE_CODEX = previousPlan;
-      }
-    }
+    });
   }, 60_000);
 });

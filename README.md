@@ -100,6 +100,10 @@ them. Fixture teardown cancels and awaits owned work before removing directories
 an unconfirmed owner keeps its directory for inspection. In-process CLI fixtures
 use `tests/fixtures/operations.ts` to register work and connect teardown to the
 CLI interrupt interface; setup commands use the shared fixture process runner.
+Standalone workspace, branch, review-view and baseline-reviewer calls use
+`tests/fixtures/boundary-operations.ts`. Own the entire asynchronous setup or
+environment-changing operation, including its restoration, so teardown waits for
+late continuations before removing the directories they can still access.
 
 `npm start -- --help` prints the full usage text, and `npm start -- run` with a missing option
 prints a usage error and exits `2`.

@@ -58,9 +58,11 @@ let fixtureEnvironment: NodeJS.ProcessEnv = {};
 
 /** Prepares that environment for one test, before anything commits. */
 export async function beginCliFixtureEnvironment(): Promise<void> {
-  fixtureEnvironment = await gitFixtureEnvironment({
-    name: 'Nexus CLI Test',
-    email: 'cli@example.test',
+  return ownFixtureOperation('CLI Git environment setup', async () => {
+    fixtureEnvironment = await gitFixtureEnvironment({
+      name: 'Nexus CLI Test',
+      email: 'cli@example.test',
+    });
   });
 }
 

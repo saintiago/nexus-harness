@@ -10,11 +10,8 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { BaselineReview, BaselineReviewResult } from '../src/sources/contract.js';
-import {
-  BASELINE_MARKER_PREFIX,
-  baselineEvidenceId,
-  createBaselineDiagnosis,
-} from '../src/sources/baseline.js';
+import { BASELINE_MARKER_PREFIX, baselineEvidenceId } from '../src/sources/baseline.js';
+import { createBaselineDiagnosis } from './fixtures/operations.js';
 import type {
   BaselineDiagnosisRequest,
   BaselineFinding,
@@ -26,13 +23,13 @@ import type {
   HistorySnapshot,
   TicketHistory,
 } from '../src/history/contract.js';
-import { createBaselineReviewer } from '../src/reviews/baseline.js';
+import { createBaselineReviewer } from './fixtures/boundary-operations.js';
 import {
   baselineFailures,
   baselineFindingPath,
   readBaselineOutcome,
 } from '../src/reviews/baseline.js';
-import { takeOneItem } from '../src/sources/coordinator.js';
+import { takeOneItem } from './fixtures/operations.js';
 import { createHttpClient } from '../src/sources/jira/http.js';
 import { createJiraBaselineRecord } from '../src/sources/jira/baseline.js';
 import { intakeLockPath, readReceipt, receiptFilePath } from '../src/sources/receipts.js';
@@ -41,7 +38,7 @@ import type { CheckRoundResult } from '../src/shared/types.js';
 
 import { createLocalTarget, endFixtureTree, fakeTurns, git } from './fixtures/local-target.js';
 
-import { useFixtureLifecycle } from './fixtures/lifecycle.js';
+import { ownFixtureOperation, useFixtureLifecycle } from './fixtures/lifecycle.js';
 import { createTempDir, writeJsonFile } from './support.js';
 import {
   ISSUE_KEY,
@@ -918,28 +915,30 @@ describe('the baseline reviewer turn', { timeout: 30_000 }, () => {
     readonly dir: string;
     readonly baseline: CheckRoundResult;
   }> {
-    const dir = await createTempDir();
-    const stdoutPath = path.join(dir, 'baseline-check-1.stdout.log');
-    const stderrPath = path.join(dir, 'baseline-check-1.stderr.log');
-    await writeFile(
-      stdoutPath,
-      'running test/greet.test.mjs (pid 1)\nFAILED test/greet.test.mjs (exit code 1)\n',
-      'utf8',
-    );
-    await writeFile(stderrPath, 'greet: expected "Hello, Ada!", received "Hi"\n', 'utf8');
-    return {
-      dir: path.join(dir, 'baseline-diagnosis'),
-      baseline: redBaseline({
-        setup: [commandFor({ command: [process.execPath, 'tools/prepare.mjs'], exitCode: 0 })],
-        checks: [
-          commandFor({
-            command: [process.execPath, 'tools/run-checks.mjs'],
-            stdoutPath,
-            stderrPath,
-          }),
-        ],
-      }),
-    };
+    return ownFixtureOperation('baseline evidence setup', async () => {
+      const dir = await createTempDir();
+      const stdoutPath = path.join(dir, 'baseline-check-1.stdout.log');
+      const stderrPath = path.join(dir, 'baseline-check-1.stderr.log');
+      await writeFile(
+        stdoutPath,
+        'running test/greet.test.mjs (pid 1)\nFAILED test/greet.test.mjs (exit code 1)\n',
+        'utf8',
+      );
+      await writeFile(stderrPath, 'greet: expected "Hello, Ada!", received "Hi"\n', 'utf8');
+      return {
+        dir: path.join(dir, 'baseline-diagnosis'),
+        baseline: redBaseline({
+          setup: [commandFor({ command: [process.execPath, 'tools/prepare.mjs'], exitCode: 0 })],
+          checks: [
+            commandFor({
+              command: [process.execPath, 'tools/run-checks.mjs'],
+              stdoutPath,
+              stderrPath,
+            }),
+          ],
+        }),
+      };
+    });
   }
 
   it('inspects a read-only snapshot of the workspace and validates the finding it wrote', async () => {

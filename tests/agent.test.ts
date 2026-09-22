@@ -47,10 +47,10 @@ import type {
   Task,
 } from '../src/shared/types.js';
 import { configureWorkspaceIdentity } from '../src/workspace/git.js';
-import { returnToRecordedBranch } from '../src/workspace/branch.js';
-import { prepareWorkspace } from '../src/workspace/prepare.js';
-import { preflightSource } from '../src/workspace/preflight.js';
-import { allocateRunDirectory } from '../src/workspace/run-directory.js';
+import { returnToRecordedBranch } from './fixtures/boundary-operations.js';
+import { prepareWorkspace } from './fixtures/boundary-operations.js';
+import { preflightSource } from './fixtures/boundary-operations.js';
+import { allocateRunDirectory } from './fixtures/boundary-operations.js';
 import { recordWorkspaceAttempt } from '../src/workspace/state.js';
 import {
   beaconModuleUrl,

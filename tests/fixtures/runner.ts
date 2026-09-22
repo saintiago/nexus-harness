@@ -49,11 +49,11 @@ import type {
   TerminationOutcome,
 } from '../../src/shared/types.js';
 
-import { returnToRecordedBranch } from '../../src/workspace/branch.js';
+import { returnToRecordedBranch } from './boundary-operations.js';
 import { configureWorkspaceIdentity } from '../../src/workspace/git.js';
-import { prepareWorkspace } from '../../src/workspace/prepare.js';
+import { prepareWorkspace } from './boundary-operations.js';
 
-import { preflightSource } from '../../src/workspace/preflight.js';
+import { preflightSource } from './boundary-operations.js';
 
 import type { WorkspaceExpectation } from '../../src/workspace/reopen.js';
 

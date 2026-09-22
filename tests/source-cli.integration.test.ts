@@ -16,9 +16,9 @@ import { EXIT_CANCELLED, EXIT_INPUT_ERROR, EXIT_OK } from '../src/cli/context.js
 import type { CliContext, InterruptSignals } from '../src/cli/context.js';
 import { readReceipt, receiptFilePath } from '../src/sources/receipts.js';
 import type { EscalationTier, RunReport } from '../src/shared/types.js';
-import { prepareWorkspace } from '../src/workspace/prepare.js';
-import { preflightSource } from '../src/workspace/preflight.js';
-import { allocateRunDirectory } from '../src/workspace/run-directory.js';
+import { prepareWorkspace } from './fixtures/boundary-operations.js';
+import { preflightSource } from './fixtures/boundary-operations.js';
+import { allocateRunDirectory } from './fixtures/boundary-operations.js';
 import {
   readWorkspaceState,
   recordWorkspaceAttempt,

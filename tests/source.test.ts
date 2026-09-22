@@ -34,7 +34,7 @@ import { writeRunReport } from '../src/reporting/report.js';
 import { createRunFinalizer } from '../src/runs/finalize.js';
 import { WorkspaceError } from '../src/workspace/errors.js';
 import { configureWorkspaceIdentity, runGit } from '../src/workspace/git.js';
-import { inspectWorkspaceChanges } from '../src/workspace/changes.js';
+import { inspectWorkspaceChanges } from './fixtures/boundary-operations.js';
 import type { Delivery, DeliveryRequest } from '../src/delivery/github.js';
 import { DeliveryError } from '../src/delivery/github.js';
 import type { TicketHistory } from '../src/history/contract.js';
@@ -53,7 +53,7 @@ import type {
   TaskSource,
 } from '../src/sources/contract.js';
 import { SourceError, SourceFeedbackError } from '../src/sources/contract.js';
-import { runSource, watchSource } from '../src/sources/coordinator.js';
+import { runSource, watchSource } from './fixtures/operations.js';
 import { listSource } from '../src/sources/list.js';
 import {
   acquireIntakeLock,
@@ -75,23 +75,20 @@ import type {
   Task,
 } from '../src/shared/types.js';
 import type { PreparedWorkspace } from '../src/workspace/prepare.js';
-import { prepareWorkspace } from '../src/workspace/prepare.js';
-import { preflightSource } from '../src/workspace/preflight.js';
-import { allocateRunDirectory } from '../src/workspace/run-directory.js';
+import { prepareWorkspace } from './fixtures/boundary-operations.js';
+import { preflightSource } from './fixtures/boundary-operations.js';
+import { allocateRunDirectory } from './fixtures/boundary-operations.js';
 import type { RunDirectory } from '../src/workspace/run-directory.js';
 import type { WorkspaceSourceItem } from '../src/workspace/state.js';
 import { readWorkspaceState, sourceItemFor, workspaceStatePath } from '../src/workspace/state.js';
-import {
-  cleanupTempDirectories,
-  createTempDir,
-  documentedConfig,
-  publishedComment,
-} from './support.js';
+import { createTempDir, documentedConfig, publishedComment } from './support.js';
+import { disposeFixtures, useFixtureLifecycle } from './fixtures/lifecycle.js';
 import { SCOPE, refFor, until } from './fixtures/source.js';
 
+useFixtureLifecycle();
 afterEach(async () => {
+  await disposeFixtures();
   vi.restoreAllMocks();
-  await cleanupTempDirectories();
 });
 
 function candidateFor(id: string, key = `SAM1-${id}`): SourceCandidate {
