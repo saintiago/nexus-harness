@@ -1,30 +1,27 @@
     PID    PPID                  STARTED COMMAND         COMMAND
-      1       0 Tue Sep 22 16:50:14 2026 systemd         /sbin/init
-      2       1 Tue Sep 22 16:50:14 2026 init-systemd(Ne /init
-     42       1 Tue Sep 22 16:50:15 2026 systemd-journal /usr/lib/systemd/systemd-journald
-     88       1 Tue Sep 22 16:50:15 2026 systemd-udevd   /usr/lib/systemd/systemd-udevd
-    154       1 Tue Sep 22 16:50:15 2026 systemd-resolve /usr/lib/systemd/systemd-resolved
-    156       1 Tue Sep 22 16:50:15 2026 systemd-timesyn /usr/lib/systemd/systemd-timesyncd
-    167       1 Tue Sep 22 16:50:15 2026 cron            /usr/sbin/cron -f -P
-    168       1 Tue Sep 22 16:50:15 2026 dbus-daemon     @dbus-daemon --system --address=systemd: --nofork --nopidfile --systemd-activation --syslog-only
-    175       1 Tue Sep 22 16:50:15 2026 systemd-logind  /usr/lib/systemd/systemd-logind
-    196       1 Tue Sep 22 16:50:15 2026 agetty          /sbin/agetty -o -p -- \u --noclear - linux
-    198       1 Tue Sep 22 16:50:15 2026 rsyslogd        /usr/sbin/rsyslogd -n -iNONE
-    217       1 Tue Sep 22 16:50:15 2026 unattended-upgr /usr/bin/python3 /usr/share/unattended-upgrades/unattended-upgrade-shutdown --wait-for-signal
-    250       1 Tue Sep 22 16:50:15 2026 systemd-timedat /usr/lib/systemd/systemd-timedated
-    252       1 Tue Sep 22 16:50:15 2026 systemd         /usr/lib/systemd/systemd --user
-    253     252 Tue Sep 22 16:50:15 2026 (sd-pam)        (sd-pam)
-    304       2 Tue Sep 22 16:50:15 2026 login           /bin/login -f
-    357       1 Tue Sep 22 16:50:15 2026 systemd         /usr/lib/systemd/systemd --user
-    358     357 Tue Sep 22 16:50:15 2026 (sd-pam)        (sd-pam)
-    382     304 Tue Sep 22 16:50:16 2026 bash            -bash
-    406       2 Tue Sep 22 16:50:16 2026 SessionLeader   /init
-    407     406 Tue Sep 22 16:50:16 2026 Relay(408)      /init
-    408     407 Tue Sep 22 16:50:16 2026 bash            bash -lc cd /mnt/e/projects/nexus-jira-runs/workspaces/HARN-48 && npm ci --cache .harness/npm-cache > .harness/harn-48-linux-install.txt 2>&1 && bash performance/validate-linux.sh > performance/harn-48-linux-validation.txt 2>&1
-    409       2 Tue Sep 22 16:50:16 2026 login           /bin/login -f
-    445     409 Tue Sep 22 16:50:16 2026 bash            -bash
-    471      88 Tue Sep 22 16:50:24 2026 (udev-worker)   (udev-worker)
-    472      88 Tue Sep 22 16:50:24 2026 (udev-worker)   (udev-worker)
-    473      88 Tue Sep 22 16:50:24 2026 (udev-worker)   (udev-worker)
-    488     408 Tue Sep 22 16:50:26 2026 bash            bash performance/validate-linux.sh
-    505     488 Tue Sep 22 16:50:26 2026 ps              ps -eo pid,ppid,lstart,comm,args
+      1       0 Tue Sep 22 17:25:55 2026 systemd         /sbin/init
+      2       1 Tue Sep 22 17:25:55 2026 init-systemd(Ne /init
+     42       1 Tue Sep 22 17:25:56 2026 systemd-journal /usr/lib/systemd/systemd-journald
+     88       1 Tue Sep 22 17:25:56 2026 systemd-udevd   /usr/lib/systemd/systemd-udevd
+    148       1 Tue Sep 22 17:25:56 2026 systemd-resolve /usr/lib/systemd/systemd-resolved
+    156       1 Tue Sep 22 17:25:56 2026 systemd-timesyn /usr/lib/systemd/systemd-timesyncd
+    185       1 Tue Sep 22 17:25:56 2026 cron            /usr/sbin/cron -f -P
+    186       1 Tue Sep 22 17:25:56 2026 dbus-daemon     @dbus-daemon --system --address=systemd: --nofork --nopidfile --systemd-activation --syslog-only
+    193       1 Tue Sep 22 17:25:56 2026 systemd-logind  /usr/lib/systemd/systemd-logind
+    203       1 Tue Sep 22 17:25:56 2026 rsyslogd        /usr/sbin/rsyslogd -n -iNONE
+    216       1 Tue Sep 22 17:25:56 2026 agetty          /sbin/agetty -o -p -- \u --noclear - linux
+    217       1 Tue Sep 22 17:25:56 2026 unattended-upgr /usr/bin/python3 /usr/share/unattended-upgrades/unattended-upgrade-shutdown --wait-for-signal
+    248       1 Tue Sep 22 17:25:56 2026 systemd         /usr/lib/systemd/systemd --user
+    266     248 Tue Sep 22 17:25:56 2026 (sd-pam)        (sd-pam)
+    267       1 Tue Sep 22 17:25:56 2026 systemd-timedat /usr/lib/systemd/systemd-timedated
+    327       2 Tue Sep 22 17:25:56 2026 SessionLeader   /init
+    328     327 Tue Sep 22 17:25:56 2026 Relay(329)      /init
+    329     328 Tue Sep 22 17:25:56 2026 sh              sh -lc mount -t drvfs E: /mnt/e -o uid=1000,gid=1000 && runuser -u aiur -- sh -lc "cd /mnt/e/projects/nexus-jira-runs/workspaces/HARN-48 && npm ci --cache .harness/npm-cache && bash performance/validate-linux.sh"
+    330       2 Tue Sep 22 17:25:56 2026 login           /bin/login -f
+    362       1 Tue Sep 22 17:25:56 2026 systemd         /usr/lib/systemd/systemd --user
+    363     362 Tue Sep 22 17:25:56 2026 (sd-pam)        (sd-pam)
+    385     330 Tue Sep 22 17:25:56 2026 bash            -bash
+    417     329 Tue Sep 22 17:25:56 2026 runuser         runuser -u aiur -- sh -lc cd /mnt/e/projects/nexus-jira-runs/workspaces/HARN-48 && npm ci --cache .harness/npm-cache && bash performance/validate-linux.sh
+    418     417 Tue Sep 22 17:25:56 2026 sh              sh -lc cd /mnt/e/projects/nexus-jira-runs/workspaces/HARN-48 && npm ci --cache .harness/npm-cache && bash performance/validate-linux.sh
+    452     418 Tue Sep 22 17:26:07 2026 bash            bash performance/validate-linux.sh
+    469     452 Tue Sep 22 17:26:07 2026 ps              ps -eo pid,ppid,lstart,comm,args

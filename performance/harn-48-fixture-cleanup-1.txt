@@ -71,8 +71,8 @@
                                 "CommandLine":  "\"C:\\Program Files\\nodejs\\node.exe\" E:/projects/nexus-jira-runs/recovery-HARN-48-astra-20260922/run.mjs"
                             },
                             {
-                                "Identity":  "6600/2026-09-22T14:29:46.5931860Z",
-                                "Parent":  68472,
+                                "Identity":  "62116/2026-09-22T15:06:27.0127300Z",
+                                "Parent":  13196,
                                 "Name":  "node.exe",
                                 "CommandLine":  "\"C:\\Users\\User\\AppData\\Local\\OpenAI\\Codex\\runtimes\\cua_node\\df473e5367fa2b42\\bin\\node.exe\" C:\\Users\\User\\AppData\\Local\\OpenAI\\Codex\\runtimes\\cua_node\\df473e5367fa2b42\\bin\\node_modules\\@oai\\cua-repl\\bin\\cua-repl.mjs"
                             }
@@ -149,8 +149,8 @@
                                "CommandLine":  "\"C:\\Program Files\\nodejs\\node.exe\" E:/projects/nexus-jira-runs/recovery-HARN-48-astra-20260922/run.mjs"
                            },
                            {
-                               "Identity":  "6600/2026-09-22T14:29:46.5931860Z",
-                               "Parent":  68472,
+                               "Identity":  "62116/2026-09-22T15:06:27.0127300Z",
+                               "Parent":  13196,
                                "Name":  "node.exe",
                                "CommandLine":  "\"C:\\Users\\User\\AppData\\Local\\OpenAI\\Codex\\runtimes\\cua_node\\df473e5367fa2b42\\bin\\node.exe\" C:\\Users\\User\\AppData\\Local\\OpenAI\\Codex\\runtimes\\cua_node\\df473e5367fa2b42\\bin\\node_modules\\@oai\\cua-repl\\bin\\cua-repl.mjs"
                            }
