@@ -11,7 +11,7 @@
  * `docs/testing.md` asks of this layer. Nothing here is a second copy of Nexus,
  * and no case starts a live provider.
  */
-import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import { readFile, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { CliContext, CliIo } from '../../src/cli/context.js';
 import { composeDependencies } from '../../src/cli/dependencies.js';
@@ -19,7 +19,7 @@ import { loadConfiguration, loadTask } from '../../src/config/load.js';
 import { projectConfigFile } from '../../src/config/paths.js';
 import type { AgentTurnRequest, AgentTurnResult, RunTaskResult } from '../../src/runs/contracts.js';
 import { runTask } from '../../src/runs/runner.js';
-import type { HarnessConfig, SourceRef } from '../../src/shared/types.js';
+import type { SourceRef } from '../../src/shared/types.js';
 import type { ContinuedWorkspace } from '../../src/workspace/reopen.js';
 import { createRepository, gitOrFail } from '../boundary/integration-support.js';
 
@@ -101,13 +101,7 @@ export const WORKFLOW_TASK = {
  * check reads `result.txt`, the project configuration that points at it, the
  * harness configuration beside both, and a task file.
  */
-export async function createTargetProject(
-  parts: {
-    readonly config?: Partial<HarnessConfig>;
-    readonly task?: Record<string, unknown>;
-    readonly commits?: readonly { readonly path: string; readonly text: string }[];
-  } = {},
-): Promise<WorkflowProject> {
+export async function createTargetProject(): Promise<WorkflowProject> {
   const fixture = await createRepository();
   await writeFile(path.join(fixture.repo, 'check.mjs'), TARGET_CHECK_SCRIPT, 'utf8');
   await writeFile(
@@ -122,10 +116,6 @@ export async function createTargetProject(
     )}\n`,
     'utf8',
   );
-  for (const commit of parts.commits ?? []) {
-    await mkdir(path.dirname(path.join(fixture.repo, commit.path)), { recursive: true });
-    await writeFile(path.join(fixture.repo, commit.path), commit.text, 'utf8');
-  }
   await commitEverything(fixture.repo, 'the target project');
 
   const configPath = path.join(fixture.parent, 'nexus.config.json');
@@ -137,7 +127,6 @@ export async function createTargetProject(
         maxRepairs: 2,
         taskTimeoutMinutes: 10,
         commandTimeoutMinutes: 5,
-        ...parts.config,
       },
       null,
       2,
@@ -146,11 +135,7 @@ export async function createTargetProject(
   );
 
   const taskPath = path.join(fixture.parent, 'task.json');
-  await writeFile(
-    taskPath,
-    `${JSON.stringify({ ...WORKFLOW_TASK, ...parts.task }, null, 2)}\n`,
-    'utf8',
-  );
+  await writeFile(taskPath, `${JSON.stringify(WORKFLOW_TASK, null, 2)}\n`, 'utf8');
   return { ...fixture, configPath, taskPath };
 }
 
@@ -206,9 +191,12 @@ export async function runTicket(input: {
   readonly stop?: AbortSignal;
 }): Promise<RunTaskResult> {
   const { project, ref, workspaceId, turn, continued, stop } = input;
+  // This helper is about the run's observable result, not its progress: the
+  // cases that assert what the terminal was told record that io themselves.
+  const io: CliIo = { out: () => undefined, err: () => undefined };
   const context: CliContext = {
     cwd: project.parent,
-    io: recordingIo().io,
+    io,
     dependencies: { runAgentTurn: turn },
   };
   const { config } = await loadConfiguration(project.configPath, projectConfigFile(project.repo));
@@ -224,7 +212,7 @@ export async function runTicket(input: {
       ...(continued === undefined ? {} : { continuedWorkspace: continued }),
       ...(stop === undefined ? {} : { stop }),
     },
-    composeDependencies(context, context.io, () => undefined, {
+    composeDependencies(context, io, () => undefined, {
       runtime: 'codex',
       command: ['codex'],
     }),

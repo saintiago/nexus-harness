@@ -45,14 +45,20 @@
     },
     "test:boundary": {
       "cache": false,
-      "inputs": ["src/**", "tests/**", "vitest.config.ts"],
+      "inputs": ["src/**", "tests/boundary/**", "tests/support.ts", "vitest.config.ts"],
       "outputs": [],
       "dependsOn": ["build"],
       "outputLogs": "new-only"
     },
     "test:workflow": {
       "cache": false,
-      "inputs": ["src/**", "tests/**", "vitest.config.ts"],
+      "inputs": [
+        "src/**",
+        "tests/workflow/**",
+        "tests/boundary/integration-support.ts",
+        "tests/support.ts",
+        "vitest.config.ts"
+      ],
       "outputs": [],
       "dependsOn": ["build"],
       "outputLogs": "new-only"
