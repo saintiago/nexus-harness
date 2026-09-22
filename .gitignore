@@ -8,6 +8,12 @@ dist/
 # Test output
 coverage/
 
+# Validation caches: Turborepo's task results, the ESLint content cache and
+# TypeScript's incremental metadata. Local to this checkout, disposable, and
+# never committed. `npm run cache:clear` removes them; `npm run validate:fresh`
+# clears them and then executes every task (docs/validation-caching.md).
+.turbo/
+
 # Harness runtime data (generated run directories)
 .harness/
 

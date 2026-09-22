@@ -18,8 +18,13 @@ import { configDefaults, defineConfig } from 'vitest/config';
  * `npm run test:boundary` run one layer, for the loop an operator uses while
  * working on it. The opt-in live provider exercise stays `npm run test:live`
  * and is never part of either layer.
+ *
+ * The gate itself runs the layers as one Turborepo task each —
+ * `turbo.json` splits the fast layer into the cache-eligible groups and keeps
+ * the process-heavy layer uncached — so this file stays the one place that says
+ * what each layer contains (docs/validation-caching.md).
  */
-const policyFiles = [
+export const policyFiles = [
   'tests/activity.test.ts',
   'tests/baseline-findings.test.ts',
   'tests/boundaries.test.ts',
@@ -40,10 +45,24 @@ const policyFiles = [
   'tests/runner-policy.test.ts',
   'tests/stop.test.ts',
   'tests/support.test.ts',
+  'tests/validation-cache.test.ts',
 ];
+
+/**
+ * `performance/measure-windows.ps1` and `performance/validate-linux.sh` record
+ * per-case timings without giving the gate a second command: when
+ * `NEXUS_VALIDATE_TIMINGS` names a file, the same run also writes Vitest's
+ * verbose output and its JSON report there. Every test task declares the
+ * variable in `turbo.json`, so a measured run cannot reuse a cached result that
+ * carries no report, and no test's own result depends on it.
+ */
+const timingsFile = process.env.NEXUS_VALIDATE_TIMINGS ?? '';
 
 export default defineConfig({
   test: {
+    ...(timingsFile === ''
+      ? {}
+      : { outputFile: { json: timingsFile }, reporters: ['default', 'verbose', 'json'] }),
     projects: [
       {
         test: {

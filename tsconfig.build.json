@@ -4,7 +4,8 @@
     "noEmit": false,
     "rootDir": "src",
     "outDir": "dist",
-    "sourceMap": true
+    "sourceMap": true,
+    "tsBuildInfoFile": ".turbo/tsc/build.tsbuildinfo"
   },
   "include": ["src/**/*.ts"],
   "exclude": ["tests"]
