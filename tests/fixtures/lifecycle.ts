@@ -19,6 +19,12 @@
  *   unconfirmed owner might still hold: a stop that could not be confirmed keeps
  *   its directory and is reported as a problem, so a leaked process fails the
  *   test that leaked it instead of being quietly removed with its tree.
+ * - A fixture call belongs to the *context it is first made from*: the first call
+ *   from a test body binds that body's context to the test's scope, and every
+ *   continuation the body creates afterwards carries the same binding. Work that
+ *   outlives its test therefore resumes holding the closed scope it started in
+ *   and is refused, rather than finding whatever test is running by then and
+ *   registering itself as that test's.
  *
  * The wait is bounded and proven: a fixture process is asked through its own
  * beacon, so a PID this host has already handed to another process is never
@@ -28,6 +34,7 @@
  * because the directory could be removed.
  */
 
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { spawn, type ChildProcess } from 'node:child_process';
 import path from 'node:path';
 import { afterEach } from 'vitest';
@@ -78,6 +85,8 @@ interface OwnedWork {
   readonly what: string;
   /** Resolves when the operation settles, either way. */
   readonly settled: Promise<void>;
+  /** Whether it has settled. A settled operation holds no directory any more. */
+  hasSettled(): boolean;
 }
 
 /**
@@ -114,20 +123,73 @@ function newScope(): FixtureScope {
 
 /**
  * The scope of the test that is running. It is replaced as soon as one test's
- * disposal finishes, so a continuation that outlives its test is still holding
- * the *closed* scope it started in and cannot start anything new.
+ * disposal finishes.
  */
 let scope: FixtureScope = newScope();
 
+/**
+ * The scope each async context's fixture calls belong to. A context is bound the
+ * first time it asks for one, and never rebound: the test body's context is
+ * bound to the test's scope, and every continuation that context creates — the
+ * operation a fixture registered, the command it started — carries the binding,
+ * so a continuation that resumes after its test ended still sees the *closed*
+ * scope it started in instead of whatever test is running by then.
+ *
+ * A hook cannot make that binding for the body. Its own async context is not the
+ * one a test body runs in (measured on vitest 5: a store entered by a
+ * `beforeEach` is not visible in the body), so binding where the first call is
+ * made is the only place the body and its continuations are both reachable.
+ */
+const contexts = new AsyncLocalStorage<FixtureScope>();
+
+/**
+ * One owner a finished test could not confirm ended, and how it is confirmed.
+ * `directory` is `null` when the scope cannot say which directory the owner ran
+ * in — an operation that was still unsettled — which is a hold on every
+ * directory the test had registered. Whatever the shape, a hold outlives the
+ * scope that made it: the hooks that follow keep preserving those directories,
+ * so the next test's cleanup cannot remove what the previous test's unconfirmed
+ * owner may still be writing into.
+ */
+interface UnconfirmedOwner {
+  readonly directory: string | null;
+  /** What the owner is, as a failure message names it. */
+  readonly what: string;
+  /** Whether every owner of this directory is now confirmed to have ended. */
+  confirmedGone(): Promise<boolean>;
+}
+
+/** The holds the registry keeps: every one of them names its directory. */
+interface HeldDirectory extends UnconfirmedOwner {
+  readonly directory: string;
+}
+
+/** The holds earlier tests left behind, still keeping their directories. */
+const heldDirectories: HeldDirectory[] = [];
+
+/**
+ * The scope a fixture call belongs to: the one its context was bound to, or —
+ * for the first call a context makes — the scope of the test running now, which
+ * that context is then bound to for good.
+ */
+function currentScope(): FixtureScope {
+  const bound = contexts.getStore();
+  if (bound !== undefined) {
+    return bound;
+  }
+  contexts.enterWith(scope);
+  return scope;
+}
+
 /** The stop of the test that is running, for a fixture that runs the thing itself. */
 export function fixtureStop(): AbortSignal {
-  return scope.stop.signal;
+  return currentScope().stop.signal;
 }
 
 /** The stop of the test that is running, plus one a caller supplied itself. */
 export function combineStop(...signals: readonly (AbortSignal | undefined)[]): AbortSignal {
   const supplied = signals.filter((signal): signal is AbortSignal => signal !== undefined);
-  return supplied.length === 0 ? scope.stop.signal : AbortSignal.any(supplied);
+  return supplied.length === 0 ? currentScope().stop.signal : AbortSignal.any(supplied);
 }
 
 /**
@@ -140,7 +202,7 @@ export function ownFixtureOperation<T>(
   what: string,
   run: (stop: AbortSignal) => Promise<T>,
 ): Promise<T> {
-  const running = scope;
+  const running = currentScope();
   if (running.disposing) {
     return Promise.reject(
       new Error(`${what} was refused: the test's fixtures are already being disposed`),
@@ -152,15 +214,20 @@ export function ownFixtureOperation<T>(
   } catch (cause) {
     work = Promise.reject(cause);
   }
+  let settled = false;
   const owned: OwnedWork = {
     what,
     settled: work.then(
       () => undefined,
       () => undefined,
     ),
+    hasSettled: () => settled,
   };
   running.work.add(owned);
-  void owned.settled.then(() => running.work.delete(owned));
+  void owned.settled.then(() => {
+    settled = true;
+    running.work.delete(owned);
+  });
   return work;
 }
 
@@ -181,7 +248,7 @@ export function ownChildProcess(what: string, child: ChildProcess, cwd: string):
     ended,
     hasEnded: () => child.exitCode !== null || child.signalCode !== null,
   };
-  const running = scope;
+  const running = currentScope();
   if (running.disposing) {
     // The caller has the child already; the scope still stops it, but nothing
     // may be registered as if it belonged to the next test.
@@ -198,17 +265,47 @@ export function ownChildProcess(what: string, child: ChildProcess, cwd: string):
  * assertion, so a failure or a timeout still cleans up.
  */
 export function ownFixtureProcess(record: OwnedFixture): void {
-  scope.fixtures.push({
+  const running = currentScope();
+  if (running.disposing) {
+    // The test this record belongs to has already been disposed: the process is
+    // stopped rather than pushed into a scope whose hook has already looked at
+    // what it owned, and it is never registered as the next test's.
+    stopLateFixture(record);
+    return;
+  }
+  running.fixtures.push({
     pid: record.pid,
     token: record.token,
     beaconDirectory: record.beaconDirectory,
   });
   if (record.child !== undefined && record.child !== null && record.childToken != null) {
-    scope.fixtures.push({
+    running.fixtures.push({
       pid: record.child,
       token: record.childToken,
       beaconDirectory: record.beaconDirectory,
     });
+  }
+}
+
+/**
+ * Stops a fixture process whose own test has ended. Only a process whose own
+ * beacon still answers is signalled, exactly as in disposal: a bare PID is never
+ * enough to end anything by, and the stop is the best the disposed scope can do
+ * for work that arrived too late to be awaited by its hook.
+ */
+function stopLateFixture(record: OwnedFixture): void {
+  const recorded: FixtureProcessRecord[] = [
+    { pid: record.pid, token: record.token, beaconDirectory: record.beaconDirectory },
+  ];
+  if (record.child !== undefined && record.child !== null && record.childToken != null) {
+    recorded.push({
+      pid: record.child,
+      token: record.childToken,
+      beaconDirectory: record.beaconDirectory,
+    });
+  }
+  for (const one of recorded) {
+    void endFixtureTree(one);
   }
 }
 
@@ -251,11 +348,20 @@ async function stopOwnedFixtures(running: FixtureScope): Promise<DisposalProblem
     const stopped = await endFixtureTree(record);
     const gone = stopped ? await awaitFixtureGone(record) : !(await ownedFixtureAnswers(record));
     if (!gone) {
+      const what = `fixture process ${String(record.pid)}`;
       problems.push(
         stopped
-          ? `fixture process ${String(record.pid)} still answers on its own beacon after its stop`
-          : `fixture process ${String(record.pid)} could not be stopped and still answers on its beacon`,
-        record.beaconDirectory,
+          ? `${what} still answers on its own beacon after its stop`
+          : `${what} could not be stopped and still answers on its beacon`,
+        {
+          directory: record.beaconDirectory,
+          what,
+          // Asked again by the hooks that follow, and released only on the
+          // process's own answer: a silent beacon is the one proof it is gone.
+          confirmedGone: async () =>
+            record.token === null ||
+            (await fixtureProcessGone({ dir: record.beaconDirectory }, record.token)),
+        },
       );
     }
   }
@@ -286,10 +392,13 @@ async function stopOwnedProcesses(running: FixtureScope): Promise<DisposalProble
       running.processes.delete(owned);
       continue;
     }
-    problems.push(
-      `${owned.what} (${String(owned.pid ?? '')}) did not end after its stop`,
-      owned.cwd,
-    );
+    problems.push(`${owned.what} (${String(owned.pid ?? '')}) did not end after its stop`, {
+      directory: owned.cwd,
+      what: owned.what,
+      // Deliberately cheap: a later hook asks again, and a stop that is still
+      // being confirmed is never waited out twice.
+      confirmedGone: async () => owned.hasEnded(),
+    });
   }
   return problems;
 }
@@ -297,20 +406,21 @@ async function stopOwnedProcesses(running: FixtureScope): Promise<DisposalProble
 /** What a disposal found: the failures, and the directories it must not remove. */
 class DisposalProblems {
   readonly messages: string[] = [];
-  readonly preserve: string[] = [];
+  /** The owners of this test that could not be confirmed ended. */
+  readonly held: UnconfirmedOwner[] = [];
   /** Set when the scope cannot say which directory the unfinished work holds. */
   preserveEverything = false;
 
-  push(message: string, directory?: string): void {
+  push(message: string, owner?: UnconfirmedOwner): void {
     this.messages.push(message);
-    if (directory !== undefined) {
-      this.preserve.push(directory);
+    if (owner !== undefined) {
+      this.held.push(owner);
     }
   }
 
   merge(other: DisposalProblems): void {
     this.messages.push(...other.messages);
-    this.preserve.push(...other.preserve);
+    this.held.push(...other.held);
     this.preserveEverything = this.preserveEverything || other.preserveEverything;
   }
 }
@@ -334,14 +444,33 @@ async function settleOwnedWork(running: FixtureScope): Promise<DisposalProblems>
     return problems;
   }
   for (const owned of pending) {
-    problems.messages.push(
-      `${owned.what} was still running when the test's fixtures were disposed`,
-    );
+    problems.push(`${owned.what} was still running when the test's fixtures were disposed`, {
+      // Which directory a still-running operation holds is exactly what is
+      // unknown, so its hold covers everything this test registered until the
+      // operation itself says it has settled.
+      directory: null,
+      what: owned.what,
+      confirmedGone: async () => owned.hasSettled(),
+    });
   }
-  // Which directory a still-running operation holds is exactly what is unknown,
-  // so nothing this test registered is removed while it is unsettled.
+  // So nothing this test registered is removed while it is unsettled.
   problems.preserveEverything = true;
   return problems;
+}
+
+/**
+ * The holds whose owners are still unconfirmed. A hold whose owner has answered
+ * that it is gone is dropped here, and dropping it is what lets the directory it
+ * kept be removed: nothing is released on a guess, only on the owner's answer.
+ */
+async function unresolvedHolds(): Promise<readonly HeldDirectory[]> {
+  const remaining: HeldDirectory[] = [];
+  for (const one of heldDirectories.splice(0)) {
+    if (!(await one.confirmedGone())) {
+      remaining.push(one);
+    }
+  }
+  return remaining;
 }
 
 /**
@@ -351,15 +480,17 @@ async function settleOwnedWork(running: FixtureScope): Promise<DisposalProblems>
  * settle. Only after all of that are the temporary directories removed — and a
  * directory an unconfirmed owner might still hold is kept and reported, so a
  * leaked process fails the test that leaked it instead of being quietly removed
- * with its tree.
+ * with its tree. A hold an earlier test left is asked again first and released
+ * only if its owner now answers that it is gone, so what one hook had to keep is
+ * never removed by the next one on the strength of the current test's problems
+ * alone.
  *
  * The hook runs after a passing test, after an assertion failure, after a setup
  * failure and after a timeout, which is what makes the lifecycle the same in
  * each case. It is idempotent, so a test that disposed its own fixtures is not
  * disposed twice.
  */
-export async function disposeFixtures(): Promise<void> {
-  const running = scope;
+export async function disposeFixtures(running: FixtureScope = currentScope()): Promise<void> {
   if (running.disposing) {
     return;
   }
@@ -369,15 +500,47 @@ export async function disposeFixtures(): Promise<void> {
   problems.merge(await stopOwnedProcesses(running));
   problems.merge(await settleOwnedWork(running));
 
+  // A directory an earlier test's unconfirmed owner may still hold stays out of
+  // automatic cleanup until that owner answers: the hook of the next test must
+  // not remove what the previous one kept. The holds that follow name their
+  // directories, so a test whose work never settled does not wall off the
+  // directories later tests create.
+  const stillHeld = await unresolvedHolds();
+  const seen: string[] = [];
   const kept = await cleanupTempDirectories({
-    preserve: (directory) =>
-      problems.preserveEverything || problems.preserve.some((held) => holds(directory, held)),
+    preserve: (directory) => {
+      seen.push(directory);
+      return (
+        problems.preserveEverything ||
+        names(stillHeld, directory) ||
+        names(problems.held, directory)
+      );
+    },
   });
+  heldDirectories.push(...stillHeld, ...named(problems.held, seen));
   if (problems.messages.length > 0) {
     const preserved =
       kept.length === 0 ? '' : `; kept ${kept.join(', ')} for the owner that may still hold it`;
     throw new Error(`${problems.messages.join('; ')}${preserved}`);
   }
+}
+
+/** Whether one of these owners names, or is held inside, this directory. */
+function names(owners: readonly UnconfirmedOwner[], directory: string): boolean {
+  return owners.some((one) => one.directory !== null && holds(directory, one.directory));
+}
+
+/**
+ * The holds to keep for owners whose directory the scope could not name: the
+ * directories that existed when the owner was still unsettled, which are exactly
+ * the ones the work could have been holding.
+ */
+function named(owners: readonly UnconfirmedOwner[], seen: readonly string[]): HeldDirectory[] {
+  return owners.flatMap((one) =>
+    one.directory === null
+      ? seen.map((directory) => ({ directory, what: one.what, confirmedGone: one.confirmedGone }))
+      : [{ directory: one.directory, what: one.what, confirmedGone: one.confirmedGone }],
+  );
 }
 
 /** Whether `directory` is, or contains, a path one unconfirmed owner holds. */
@@ -388,13 +551,15 @@ function holds(directory: string, held: string): boolean {
 
 /**
  * Registers the one cleanup hook a fixture suite uses, and resets the scope for
- * the next test once the hook finishes. A continuation that outlives its test
- * still holds the *closed* scope it started in, so it cannot start anything new.
+ * the next test once the hook finishes. The hook disposes the scope it started
+ * with; a continuation that outlives its test still holds the closed scope it
+ * was bound to, so it cannot start anything new.
  */
 export function useFixtureLifecycle(): void {
   afterEach(async () => {
+    const running = scope;
     try {
-      await disposeFixtures();
+      await disposeFixtures(running);
     } finally {
       scope = newScope();
     }
@@ -416,7 +581,7 @@ export function runProcess(
   args: readonly string[],
   options: ProcessOptions,
 ): Promise<ProcessResult> {
-  const running = scope;
+  const running = currentScope();
   if (running.disposing) {
     return Promise.reject(
       new Error(
@@ -529,14 +694,19 @@ export function runProcess(
   // The command is owned work as well as an owned process: disposal waits,
   // bounded, for this promise to settle, so the caller is never told about a
   // directory that was removed while the command it started was still answering.
+  let settledWork = false;
   const owned: OwnedWork = {
     what: `"${command}"`,
     settled: work.then(
       () => undefined,
       () => undefined,
     ),
+    hasSettled: () => settledWork,
   };
   running.work.add(owned);
-  void owned.settled.then(() => running.work.delete(owned));
+  void owned.settled.then(() => {
+    settledWork = true;
+    running.work.delete(owned);
+  });
   return work;
 }

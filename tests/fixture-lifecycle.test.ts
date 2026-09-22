@@ -42,6 +42,10 @@ interface Started {
   readonly pid: number | null;
   readonly token: string | null;
   readonly grandchild: number | null;
+  /** The directory the recorded beacon answers from, when it is not `directory`. */
+  readonly beaconDirectory?: string;
+  /** The beacon token of the recorded child, when it recorded one. */
+  readonly childToken?: string | null;
   /** What the case itself reported about what happened to it afterwards. */
   readonly outcome?: string;
 }
@@ -229,14 +233,25 @@ describe('the fixture lifecycle', () => {
       .split('\n')
       .filter((line) => line !== '')
       .map((line) => JSON.parse(line) as Started);
-    const expected = ['assertion', 'cancellation', 'continuation', 'setup', 'timeout'];
+    const expected = [
+      'assertion',
+      'cancellation',
+      'cli-setup',
+      'cli-timeout',
+      'continuation',
+      'late',
+      'setup',
+      'timeout',
+      'unsettled',
+    ];
     if (process.platform === 'win32') {
       // The unconfirmed stop needs a host utility the harness stops trees with,
       // which only the Windows path takes `PATH` for.
       expected.push('unconfirmed');
     }
-    // The continuation writes a second record once it has resumed: that record
-    // is how the proof sees that the closed scope refused its late command.
+    // Each continuation writes a second record once it has resumed: those
+    // records are how the proof sees that the closed scope refused its late
+    // command.
     const cases = new Set(started.map((entry) => entry.case));
     expect([...cases].sort()).toEqual(expected.sort());
     const first = new Map(started.map((entry) => [entry.case, entry]));
@@ -259,6 +274,22 @@ describe('the fixture lifecycle', () => {
         expect(existsSync(entry.directory), 'unconfirmed: directory removed').toBe(false);
         continue;
       }
+      if (entry.case === 'unsettled') {
+        // Work that never settled: the hook cannot say which directory it holds,
+        // so it keeps the one the test registered and reports it. The hold it
+        // leaves has to keep the *next* test's cleanup from removing it — that
+        // test's own problems say nothing about this owner — which is why the
+        // directory is still here, with several cases having ended since.
+        expect(existsSync(entry.directory), 'unsettled: directory').toBe(true);
+        expect(
+          `${result.stdout}${result.stderr}`,
+          'unsettled: the failure names the kept directory',
+        ).toContain('for the owner that may still hold it');
+        // Nothing but this proof holds it now, so the proof ends it by name.
+        await removeDirectory(entry.directory);
+        expect(existsSync(entry.directory), 'unsettled: directory removed').toBe(false);
+        continue;
+      }
       // Every directory the case registered is gone: the hook removed it after
       // the work the case owned had been stopped and awaited.
       expect(existsSync(entry.directory), `${entry.case}: directory`).toBe(false);
@@ -268,9 +299,19 @@ describe('the fixture lifecycle', () => {
       if (entry.token !== null) {
         // A fixture process is proved gone through its own beacon: a PID this
         // host may already have handed on is never signalled, and never trusted.
+        const beaconDirectory = entry.beaconDirectory ?? entry.directory;
         expect(
-          await fixtureProcessGone({ dir: entry.directory }, entry.token),
+          await fixtureProcessGone({ dir: beaconDirectory }, entry.token),
           `${entry.case}: beacon`,
+        ).toBe(true);
+      }
+      if (typeof entry.childToken === 'string' && entry.childToken !== '') {
+        // The same proof for the child the runtime held: it is the process a
+        // stop that only reached the parent would leave behind.
+        const beaconDirectory = entry.beaconDirectory ?? entry.directory;
+        expect(
+          await fixtureProcessGone({ dir: beaconDirectory }, entry.childToken),
+          `${entry.case}: child beacon`,
         ).toBe(true);
       }
     }
@@ -278,10 +319,24 @@ describe('the fixture lifecycle', () => {
     // The continuation resumed after its test had timed out and been disposed:
     // the hook waited for it, its late command was refused rather than started,
     // and only then was the directory removed.
-    const resumed = started.find((entry) => entry.outcome !== undefined);
+    const resumed = started.find(
+      (entry) => entry.case === 'continuation' && entry.outcome !== undefined,
+    );
     expect(resumed?.outcome).toContain('refused');
     expect(resumed?.outcome).toContain('the command ran: false');
     expect(existsSync(resumed?.directory ?? ''), 'continuation: directory').toBe(false);
     expect(existsSync(first.get('continuation')?.directory ?? '')).toBe(false);
+
+    // The later continuation resumed *after* its own hook had returned: the
+    // marker it waited for is written by the case that follows, so the command it
+    // asked for arrived while another test was the running one. It was refused by
+    // the closed scope it started in, never started in that next test's, and the
+    // directory the hook had to keep was released and removed once the
+    // continuation had settled.
+    const late = started.find((entry) => entry.case === 'late' && entry.outcome !== undefined);
+    expect(late?.outcome).toContain('refused');
+    expect(late?.outcome).toContain('the command ran: false');
+    expect(existsSync(late?.directory ?? ''), 'late: directory').toBe(false);
+    expect(existsSync(first.get('late')?.directory ?? ''), 'late: kept directory').toBe(false);
   }, 180_000);
 });

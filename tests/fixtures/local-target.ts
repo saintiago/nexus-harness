@@ -867,6 +867,12 @@ export function startCli(invocation: CliInvocation): {
     env: cliEnvironment(invocation),
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
+    // A group of its own on POSIX, exactly as `runProcess` starts a command: the
+    // stop the lifecycle asks for is the production tree stop, which addresses a
+    // POSIX tree by its negated group leader's PID. A CLI left in this worker's
+    // own group would have no group of its own to stop, and the request would
+    // reach nothing while the CLI kept running.
+    detached: process.platform !== 'win32',
   });
 
   let stdout = '';
@@ -1207,6 +1213,11 @@ async function interruptWithConsoleEvent(
     ],
     { cwd: repoRoot, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true },
   );
+  // The helper is a process this test started, and the CLI it creates through
+  // `CreateProcess` is its child: registering it gives the lifecycle the one
+  // handle this side has on a run that is still being interrupted when the test
+  // ends, because a console control event cannot be reached by PID from here.
+  void ownChildProcess('the console-interrupt helper', helper, repoRoot);
 
   let output = '';
   let errors = '';

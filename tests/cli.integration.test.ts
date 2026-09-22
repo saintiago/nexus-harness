@@ -17,7 +17,7 @@
 import { existsSync } from 'node:fs';
 import { readdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import {
   BUILT_CLI,
   FEATURE_IMPLEMENTED,
@@ -33,15 +33,29 @@ import {
   git,
   interruptCli,
   processGone,
-  removeDirectory,
   runCli,
   waitFor,
 } from './fixtures/local-target.js';
 import type { LocalTarget } from './fixtures/local-target.js';
-import { cleanupTempDirectories, writeJsonFile } from './support.js';
+import { disposeFixtures, useFixtureLifecycle } from './fixtures/lifecycle.js';
+import { writeJsonFile } from './support.js';
 import type { AttemptEvidence, CommandResult, RunReport } from '../src/shared/types.js';
 
-/** Every fixture created by this file, so that all of them are removed after it. */
+/**
+ * Every fixture process this file's runs recorded is asked, test by test, whether
+ * it is gone — and every fixture's target is removed, through the same bounded
+ * lifecycle every other process suite uses.
+ *
+ * The order is what makes the check possible: `useFixtureLifecycle` registers the
+ * hook that removes the temporary directories and it is registered first, so it
+ * runs *last* (vitest runs `afterEach` hooks in reverse). The hook below runs
+ * first, reads the runtime's own records while the target still holds them, and
+ * disposes the fixtures itself — in a `finally`, so a leftover process is
+ * reported without leaving the CLI that produced it running.
+ */
+useFixtureLifecycle();
+
+/** Every fixture this file created, for the check the hook runs after each test. */
 const targets: LocalTarget[] = [];
 
 /** How long one end-to-end run may take before the test that started it fails. */
@@ -159,14 +173,18 @@ function recordedBeaconToken(value: string | null | undefined): string | null {
   return typeof value === 'string' && value !== '' ? value : null;
 }
 
-afterAll(async () => {
-  // A run stops what it started; a fixture process still alive here is a defect
-  // worth failing for, not something to clean up quietly. Each process is asked
-  // itself, through the beacon it recorded, rather than asked for by PID: a PID
-  // is reused long before a suite this size ends. A record whose beacon never
-  // answered is still checked by PID.
+/**
+ * Asks every runtime process the targets' runs recorded whether it is gone,
+ * while the target still holds the records that name it. A run stops what it
+ * started; a fixture process still alive here is a defect worth failing for, not
+ * something to clean up quietly. Each process is asked itself, through the
+ * beacon it recorded, rather than asked for by PID: a PID is reused long before
+ * a suite this size ends. A record whose beacon never answered is still checked
+ * by PID.
+ */
+async function checkFixtureProcessesGone(recorded: readonly LocalTarget[]): Promise<void> {
   const leftovers: string[] = [];
-  for (const target of targets) {
+  for (const target of recorded) {
     for (const turn of await fakeTurns(target.state)) {
       const recorded: readonly (readonly [number | null, string | null])[] = [
         [turn.pid, recordedBeaconToken(turn.pidToken)],
@@ -187,13 +205,21 @@ afterAll(async () => {
       }
     }
   }
+  expect(leftovers, 'fixture processes still running after the test').toEqual([]);
+}
 
-  for (const target of targets) {
-    await removeDirectory(target.parent);
+afterEach(async () => {
+  const created = targets.splice(0);
+  try {
+    await checkFixtureProcessesGone(created);
+  } finally {
+    // The lifecycle stops the tree of every CLI this test still owned — a CLI
+    // left holding a turn when the test timed out among them — waits for it to
+    // end, and only then removes the target directories. Running it here, in a
+    // `finally`, is what keeps a failure in the check above from leaving the CLI
+    // that produced it behind.
+    await disposeFixtures();
   }
-  await cleanupTempDirectories();
-
-  expect(leftovers, 'fixture processes still running after the suite').toEqual([]);
 });
 
 describe('the built CLI, end to end', () => {
