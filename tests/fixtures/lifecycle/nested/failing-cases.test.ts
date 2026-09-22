@@ -204,7 +204,7 @@ describe('the built CLI a test had to stop', () => {
     // one real CLI run up to the turn's hold, plus the room a loaded host needs —
     // not a layer-wide deadline.
     await new Promise(() => undefined);
-  }, 10_000);
+  }, 8_000);
 
   /**
    * A setup failure that leaves a real CLI running: the hook meets the same

@@ -1,0 +1,8 @@
+HARN-48 fixture cleanup evidence, comparable four-worker measurement (Windows).
+Total wall time: 228.57 s
+Fixture directories before: 459; after: 459; newly left behind: 0
+Removed by the run: 0
+Processes naming a fixture directory before: 0; after: 0
+After: 
+node v24.14.1 / npm 11.11.0 / vitest 5.0.0 / workers: 4, one pool
+Raw: performance/harn-48-four-workers-detail.txt; json: performance/harn-48-four-workers.json
