@@ -196,10 +196,7 @@ describe('the failing cases the proof runs', () => {
       try {
         await runProcess(
           process.execPath,
-          [
-            '-e',
-            `require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, 'ran')`,
-          ],
+          ['-e', `require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, 'ran')`],
           { cwd: directory },
         );
       } catch (cause) {

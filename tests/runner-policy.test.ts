@@ -27,12 +27,7 @@ import { agentLogPath, appendRunLog, openAgentLog } from '../src/reporting/logs.
 import { writeRunReport } from '../src/reporting/report.js';
 import type { AgentTurnRequest, RunnerDependencies } from '../src/runs/contracts.js';
 import { runTask } from '../src/runs/runner.js';
-import type {
-  CheckRoundResult,
-  HarnessConfig,
-  RunReport,
-  Task,
-} from '../src/shared/types.js';
+import type { CheckRoundResult, HarnessConfig, RunReport, Task } from '../src/shared/types.js';
 import { recordWorkspaceAttempt, writeWorkspaceState } from '../src/workspace/state.js';
 import { useFixtureLifecycle } from './fixtures/lifecycle.js';
 import {
@@ -74,8 +69,14 @@ interface MemoryRun {
   readonly config: HarnessConfig;
   readonly clock: TestClock;
   readonly deps: RunnerDependencies;
-  readonly rounds: { readonly requests: CheckRoundRequest[]; readonly run: RunnerDependencies['runCheckRound'] };
-  readonly turns: { readonly requests: AgentTurnRequest[]; readonly run: RunnerDependencies['runAgentTurn'] };
+  readonly rounds: {
+    readonly requests: CheckRoundRequest[];
+    readonly run: RunnerDependencies['runCheckRound'];
+  };
+  readonly turns: {
+    readonly requests: AgentTurnRequest[];
+    readonly run: RunnerDependencies['runAgentTurn'];
+  };
 }
 
 /**
@@ -87,13 +88,16 @@ interface MemoryRun {
  */
 async function memoryRun(parts: {
   readonly rounds: (asked: CheckRoundRequest) => Promise<CheckRoundResult> | CheckRoundResult;
-  readonly turns: (asked: AgentTurnRequest) => Promise<{ summary: string | null }> | { summary: string | null };
+  readonly turns: (
+    asked: AgentTurnRequest,
+  ) => Promise<{ summary: string | null }> | { summary: string | null };
   readonly config?: Partial<HarnessConfig>;
+  readonly clock?: TestClock;
 }): Promise<MemoryRun> {
   const workDir = await createTempDir();
   const repoPath = path.join(workDir, 'source');
   await mkdir(repoPath, { recursive: true });
-  const clock = testClock();
+  const clock = parts.clock ?? testClock();
   const rounds = standInRounds(parts.rounds);
   const turns = standInTurns(parts.turns);
   const config: HarnessConfig = {
@@ -167,7 +171,12 @@ async function memoryRun(parts: {
 
 /** The request one in-memory run is given: no source item, no continuation. */
 function requestFor(run: MemoryRun): Parameters<typeof runTask>[0] {
-  return { task: run.task, config: run.config, repoPath: path.join(run.workDir, 'source'), workDir: run.workDir };
+  return {
+    task: run.task,
+    config: run.config,
+    repoPath: path.join(run.workDir, 'source'),
+    workDir: run.workDir,
+  };
 }
 
 async function reportOf(result: Awaited<ReturnType<typeof runTask>>): Promise<RunReport> {
@@ -351,7 +360,10 @@ describe('the bounded repair loop', () => {
               termination: null,
             },
           ),
-          { as: 'setup', problem: 'setup command 1 of 1 exited with code 1 (gate.txt says closed)' },
+          {
+            as: 'setup',
+            problem: 'setup command 1 of 1 exited with code 1 (gate.txt says closed)',
+          },
         );
       },
       turns: (asked) => ({ summary: `turn ${String(asked.turn)} did its work` }),
@@ -393,13 +405,12 @@ describe('a run that runs out of task time', () => {
     // implementation, ten more of checks that come back red, fifteen of repair,
     // and five of the checks that then pass.
     const leftAt: number[] = [];
-    let clock: TestClock | undefined;
+    const clock = testClock();
     const run = await memoryRun({
+      clock,
       rounds: async (asked) => {
-        const moving = clock;
-        if (moving === undefined) throw new Error('the clock was not ready');
         leftAt.push(asked.deadlineMs - asked.now().getTime());
-        moving.advance(minutes(asked.name === 'attempt-2' ? 5 : 10));
+        clock.advance(minutes(asked.name === 'attempt-2' ? 5 : 10));
         return asked.name === 'attempt-1'
           ? redRound(
               await standInCommand(
@@ -410,11 +421,10 @@ describe('a run that runs out of task time', () => {
           : passedRound();
       },
       turns: (asked) => {
-        clock?.advance(minutes(15));
+        clock.advance(minutes(15));
         return { summary: `turn ${String(asked.turn)} did its work` };
       },
     });
-    clock = run.clock;
     const bounds: number[] = [];
     const deps: RunnerDependencies = {
       ...run.deps,
@@ -460,10 +470,7 @@ describe('a run that runs out of task time', () => {
     expect(report.status).toBe('passed');
     expect(report.timeout).toBeNull();
     expect(report.repairsUsed).toBe(1);
-    expect(report.attempts.map((attempt) => attempt.checks?.outcome)).toEqual([
-      'failed',
-      'passed',
-    ]);
+    expect(report.attempts.map((attempt) => attempt.checks?.outcome)).toEqual(['failed', 'passed']);
     expect(timelineMessages(await readFile(report.runLog, 'utf8'))).toContain(
       `task deadline set for ${new Date(deadline).toISOString()}: 3600000 ms of total task time, 600000 ms per configured command`,
     );

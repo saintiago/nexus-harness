@@ -228,9 +228,12 @@ export async function writeFixtureConfig(
   };
 }
 
-export const REVIEWED_SOURCE = ['export function greetAll(names) {', '  return names;', '}', ''].join(
-  '\n',
-);
+export const REVIEWED_SOURCE = [
+  'export function greetAll(names) {',
+  '  return names;',
+  '}',
+  '',
+].join('\n');
 /** The one file the fixture's pull request changes. */
 export const REVIEWED_FILE = 'src/greet-all.mjs';
 

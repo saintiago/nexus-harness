@@ -169,11 +169,7 @@ export function ownFixtureOperation<T>(
  * stand-in runtime — so disposal stops its tree and waits for it to end. The
  * caller keeps its own promise over the same exit.
  */
-export function ownChildProcess(
-  what: string,
-  child: ChildProcess,
-  cwd: string,
-): Promise<void> {
+export function ownChildProcess(what: string, child: ChildProcess, cwd: string): Promise<void> {
   const ended = new Promise<void>((resolve) => {
     child.on('close', () => resolve());
     child.on('error', () => resolve());
@@ -375,8 +371,7 @@ export async function disposeFixtures(): Promise<void> {
 
   const kept = await cleanupTempDirectories({
     preserve: (directory) =>
-      problems.preserveEverything ||
-      problems.preserve.some((held) => holds(directory, held)),
+      problems.preserveEverything || problems.preserve.some((held) => holds(directory, held)),
   });
   if (problems.messages.length > 0) {
     const preserved =

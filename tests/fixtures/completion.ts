@@ -503,9 +503,15 @@ export function passFor(
     arm: (stop: AbortSignal) => Promise<readonly ArmOutcome[]>;
   } = {
     run: async (stop: AbortSignal) =>
-      await ownFixtureOperation('a completion pass', async (own) => await pass.run(combineStop(own, stop))),
+      await ownFixtureOperation(
+        'a completion pass',
+        async (own) => await pass.run(combineStop(own, stop)),
+      ),
     arm: async (stop: AbortSignal) =>
-      await ownFixtureOperation('the arm step', async (own) => await pass.arm(combineStop(own, stop))),
+      await ownFixtureOperation(
+        'the arm step',
+        async (own) => await pass.arm(combineStop(own, stop)),
+      ),
   };
   return wrapper;
 }

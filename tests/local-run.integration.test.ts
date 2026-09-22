@@ -1233,7 +1233,6 @@ describe('the offline local loop, end to end', () => {
     ]);
   }, 120_000);
 
-
   it("stops a real hanging check when the run's own deadline expires", async () => {
     const target = await createTarget();
     const start = Date.parse('2026-01-01T00:00:00.000Z');

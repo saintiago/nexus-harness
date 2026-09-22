@@ -82,7 +82,6 @@ afterEach(async () => {
   await cleanupTempDirectories();
 });
 
-
 // ---------------------------------------------------------------------------
 // The diff and the verdict
 // ---------------------------------------------------------------------------
@@ -1552,7 +1551,6 @@ describe('the review watch', () => {
 // ---------------------------------------------------------------------------
 // Configuration and the App key
 // ---------------------------------------------------------------------------
-
 
 describe('the review configuration', () => {
   it('accepts the documented reviewer object and defaults the check name', async () => {

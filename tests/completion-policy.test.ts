@@ -105,10 +105,7 @@ interface Scenario {
   readonly boundary: InMemoryCompletion;
   readonly sleeps: { count: number };
   /** One pass over the boundary, with a clock that steps by its own interval. */
-  pass(options?: {
-    readonly startMs?: number;
-    readonly stepMs?: number;
-  }): {
+  pass(options?: { readonly startMs?: number; readonly stepMs?: number }): {
     run: (stop: AbortSignal) => Promise<readonly CompletionOutcome[]>;
     arm: (stop: AbortSignal) => Promise<readonly { readonly status: string }[]>;
   };
@@ -190,7 +187,9 @@ function only(outcomes: readonly CompletionOutcome[]): CompletionOutcome {
 }
 
 /** The armed-head record one scenario wrote, as the pass persists it. */
-async function armedHead(logsDir: string): Promise<{ head?: string; waitingSince?: string | null }> {
+async function armedHead(
+  logsDir: string,
+): Promise<{ head?: string; waitingSince?: string | null }> {
   return JSON.parse(await readFile(path.join(logsDir, 'completion-armed-head.json'), 'utf8')) as {
     head?: string;
     waitingSince?: string | null;

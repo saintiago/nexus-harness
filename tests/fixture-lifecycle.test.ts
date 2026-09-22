@@ -95,11 +95,7 @@ function endLeftoverTree(pid: number | null, grandchild: number | null): void {
   if (process.platform !== 'win32') {
     return;
   }
-  const taskkill = path.join(
-    process.env.SystemRoot ?? 'C:\\Windows',
-    'System32',
-    'taskkill.exe',
-  );
+  const taskkill = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'taskkill.exe');
   for (const target of [grandchild, pid]) {
     if (target !== null) {
       spawnSync(taskkill, ['/PID', String(target), '/T', '/F'], { stdio: 'ignore' });

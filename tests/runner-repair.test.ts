@@ -177,8 +177,6 @@ describe('the bounded repair loop', () => {
     expect(timeline).toContain('repair turn 2 started: repair 1 of 2 allowed');
     expect(timeline.at(-1)).toMatch(/^final status: passed, /);
   }, 60_000);
-
-
 });
 
 /**
@@ -189,8 +187,6 @@ describe('the bounded repair loop', () => {
  */
 
 describe('a run that runs out of task time', () => {
-
-
   it('stops the run at a command limit without confirming the stop, and starts nothing further', async () => {
     const fixture = await createFixture();
     const clock = testClock();

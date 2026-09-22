@@ -798,5 +798,4 @@ describe('reconciling terminal states across an auto-merge race', () => {
       (await fakeCompletionCalls(fixture.gh)).filter((call) => call.op === 'merge'),
     ).toHaveLength(0);
   });
-
 });

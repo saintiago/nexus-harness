@@ -81,8 +81,10 @@ export function runTask(
   request: Parameters<typeof runTaskThrough>[0],
   dependencies: RunnerDependencies,
 ): ReturnType<typeof runTaskThrough> {
-  return ownFixtureOperation('the run', async (own) =>
-    await runTaskThrough({ ...request, stop: combineStop(own, request.stop) }, dependencies),
+  return ownFixtureOperation(
+    'the run',
+    async (own) =>
+      await runTaskThrough({ ...request, stop: combineStop(own, request.stop) }, dependencies),
   );
 }
 

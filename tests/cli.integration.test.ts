@@ -367,7 +367,6 @@ describe('the built CLI, end to end', () => {
     RUN_TIMEOUT_MS,
   );
 
-
   it(
     'refuses invalid input with a nonzero exit and creates no run artifacts',
     async () => {
