@@ -1,5 +1,12 @@
 # Test architecture audit and temporary quarantine
 
+**Restored, 2026-09-21.** [HARN-48](https://malton-family.atlassian.net/browse/HARN-48) re-enabled
+all nine quarantined suites, split the mixed ones by responsibility, gave the fast and process-heavy
+layers their own concurrency policy, and replaced the duplicated fixture helpers with one bounded,
+cancelling lifecycle. The behaviour-to-test ownership map, the layer policy and the before/after
+measurement are in [test-layers.md](test-layers.md); the quarantine below is kept as the evidence
+the containment decision was made from.
+
 Operator decision, 2026-09-21. Restoration owner:
 [HARN-48](https://malton-family.atlassian.net/browse/HARN-48).
 

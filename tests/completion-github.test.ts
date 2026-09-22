@@ -479,49 +479,6 @@ describe('review-to-completion', () => {
     expect(commentTexts(fixture)[0]).toContain('no run yet');
   });
 
-  it('bounds a merge that never finishes across passes, then reports attention once', async () => {
-    const fixture = await createFixture({
-      pulls: [ONE_PULL_REQUEST],
-      config: { deadlineSeconds: 30 },
-    });
-    const start = Date.parse('2026-09-20T12:00:00.000Z');
-    // Two passes with a one-second clock: auto-merge is armed by the first, the
-    // item is left In Review waiting, and no comment claims anything about a
-    // merge that has not happened.
-    const first = only(await runPass(fixture, { clockStartMs: start, clockStepMs: 1_000 }));
-    const second = only(
-      await runPass(fixture, { clockStartMs: start + 5_000, clockStepMs: 1_000 }),
-    );
-    expect(first.status).toBe('pending');
-    expect(second.status).toBe('pending');
-    expect(commentTexts(fixture)).toHaveLength(0);
-    // The moment the item began waiting is kept as the first pass recorded it:
-    // a later pass reads it back instead of starting the deadline again.
-    const armed = JSON.parse(
-      await readFile(path.join(fixture.logsDir, 'completion-armed-head.json'), 'utf8'),
-    ) as { waitingSince?: string };
-    expect(Date.parse(armed.waitingSince ?? '')).toBeGreaterThanOrEqual(start);
-    expect(Date.parse(armed.waitingSince ?? '')).toBeLessThan(start + 5_000);
-
-    // A later pass over the same item, far past the deadline, reports the wait
-    // once and leaves the item In Review: no failure conclusion was observed.
-    const third = only(
-      await runPass(fixture, { clockStartMs: start + 120_000, clockStepMs: 1_000 }),
-    );
-    expect(third.status).toBe('attention');
-    expect(fixture.jira.status).toBe('In Review');
-    expect(commentTexts(fixture)).toHaveLength(1);
-    expect(commentTexts(fixture)[0]).toContain('nexus-completion:attention:');
-    expect(commentTexts(fixture)[0]).toContain('deadline expired');
-
-    const fourth = only(
-      await runPass(fixture, { clockStartMs: start + 125_000, clockStepMs: 1_000 }),
-    );
-    expect(fourth.status).toBe('attention');
-    expect(transitions(fixture)).toHaveLength(0);
-    expect(commentTexts(fixture)).toHaveLength(1);
-  });
-
   it('writes one findings comment and one move when the pass is repeated', async () => {
     const fixture = await createFixture({
       reviews: [{ ...APPROVED_REVIEW, state: 'CHANGES_REQUESTED' }],

@@ -404,10 +404,15 @@ describe('the entry point, as a process', () => {
         listed.stdout
           .split('\n')
           .filter((line) => line.trim() !== '')
+          // Every line names the layer that discovered it first (`[policy]`,
+          // `[boundary]`); the file name is what this test is about.
+          .map((line) => line.replace(/^\[[a-z]+\] /u, ''))
           .map((line) => line.split(' > ')[0] ?? ''),
       );
       expect(files).toContain('tests/cli.integration.test.ts');
       expect(files).toContain('tests/live-verifier.test.ts');
+      // Both documented layers are discovered by the default command.
+      expect(files).toContain('tests/activity.test.ts');
       expect(files).not.toContain('tests/live/codex-live-check.ts');
       expect(listed.stdout).not.toContain('codex-live-check');
     },

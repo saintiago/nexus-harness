@@ -58,24 +58,30 @@ CLI from TypeScript sources through `tsx` if you would rather not build.
 
 ## Commands
 
-| Script                 | What it does                                                     |
-| ---------------------- | ---------------------------------------------------------------- |
-| `npm start`            | Run the built CLI (`dist/cli.js`).                               |
-| `npm run dev`          | Run the CLI from TypeScript sources via `tsx`.                   |
-| `npm run build`        | Compile `src/` to `dist/`.                                       |
-| `npm run typecheck`    | Type-check sources and tests without emitting.                   |
-| `npm run lint`         | ESLint, including the dependency boundaries below.               |
-| `npm test`             | Run the offline suite once. Needs no credentials.                |
-| `npm run test:watch`   | Run the offline suite in watch mode.                             |
-| `npm run format:check` | Check formatting without writing.                                |
-| `npm run validate`     | Format, lint, typecheck, build, test — the gate CI runs.         |
-| `npm run test:live`    | The opt-in **live** check: builds, then drives a real Codex CLI. |
+| Script                  | What it does                                                     |
+| ----------------------- | ---------------------------------------------------------------- |
+| `npm start`             | Run the built CLI (`dist/cli.js`).                               |
+| `npm run dev`           | Run the CLI from TypeScript sources via `tsx`.                   |
+| `npm run build`         | Compile `src/` to `dist/`.                                       |
+| `npm run typecheck`     | Type-check sources and tests without emitting.                   |
+| `npm run lint`          | ESLint, including the dependency boundaries below.               |
+| `npm test`              | Run the offline suite once. Needs no credentials.                |
+| `npm run test:policy`   | Run the fast policy layer alone.                                 |
+| `npm run test:boundary` | Run the process-heavy boundary layer alone.                      |
+| `npm run test:watch`    | Run the offline suite in watch mode.                             |
+| `npm run format:check`  | Check formatting without writing.                                |
+| `npm run validate`      | Format, lint, typecheck, build, test — the gate CI runs.         |
+| `npm run test:live`     | The opt-in **live** check: builds, then drives a real Codex CLI. |
 
-Temporary test quarantine (2026-09-21): nine process-heavy or overlapping suites are visibly
-skipped by operator request pending [HARN-48](https://malton-family.atlassian.net/browse/HARN-48).
-Their sources still lint and typecheck; a passing validation currently covers only the active
-suites. See the [test architecture audit](notes/test-architecture-audit.md) for the exact list,
-lost coverage, timing evidence and restoration requirements. Test workers are capped at four.
+The suite is two layers with their own concurrency policy (`vitest.config.ts`): a fast **policy**
+layer of configuration, parsing, terminal, reporting, queue and history tests with no child
+processes of their own, and a process-heavy **boundary** layer of real Git, real commands and real
+children capped at four workers. `npm test` and `npm run validate` run both, policy first;
+`npm run test:policy` and `npm run test:boundary` run one layer while working on it. The opt-in
+live provider exercise stays `npm run test:live` and is never part of the gate. What each suite
+owns, what moved and how the restored suite compares with the audit baseline is in the
+[test layer and coverage map](notes/test-layers.md); the evidence behind the temporary quarantine
+is in the [test architecture audit](notes/test-architecture-audit.md).
 
 `npm start -- --help` prints the full usage text, and `npm start -- run` with a missing option
 prints a usage error and exits `2`.
