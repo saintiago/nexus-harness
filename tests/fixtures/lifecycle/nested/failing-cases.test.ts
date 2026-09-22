@@ -1,10 +1,12 @@
 /**
  * The cases the fixture-lifecycle proof runs on purpose. Each one must end the
  * way a real gate can end — a timeout with work still pending, a failed
- * assertion beside a running command tree, a cancelled command, and a setup
- * failure after a directory was registered — and each writes what it started to
- * `$NEXUS_LIFECYCLE_REPORT`, so the proof can ask afterwards whether the
- * fixture's own beacon fell silent and whether its directory was removed.
+ * assertion beside a running command tree, a cancelled command, a setup failure
+ * after a directory was registered, a stop the host would not carry out, and a
+ * continuation that resumes after its test timed out and tries to start another
+ * command — and each writes what it started to `$NEXUS_LIFECYCLE_REPORT`, so the
+ * proof can ask afterwards whether the fixture's own beacon fell silent and
+ * whether its directory was removed.
  *
  * `tests/fixture-lifecycle.test.ts` runs this suite through
  * `vitest.lifecycle.config.ts` and this file's own hook is the subject. The
@@ -13,12 +15,18 @@
  */
 
 import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { appendFile, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { beaconModuleUrl } from '../../local-target.js';
 import { createTempDir } from '../../../support.js';
-import { ownFixtureProcess, runProcess, useFixtureLifecycle } from '../../lifecycle.js';
+import {
+  ownFixtureOperation,
+  ownFixtureProcess,
+  runProcess,
+  useFixtureLifecycle,
+} from '../../lifecycle.js';
 
 useFixtureLifecycle();
 
@@ -32,6 +40,8 @@ interface Started {
   readonly pid: number | null;
   readonly token: string | null;
   readonly grandchild: number | null;
+  /** What the case itself reported about what happened to it afterwards. */
+  readonly outcome?: string;
 }
 
 async function record(started: Started): Promise<void> {
@@ -72,7 +82,10 @@ async function startBeaconProcess(directory: string): Promise<{ pid: number; tok
  * its own and writes both PIDs where the proof can read them, because the
  * fixture's own directory is removed by the cleanup being proved.
  */
-async function startHangingTree(name: string): Promise<{ grandchild: number; pid: number }> {
+async function startHangingTree(
+  name: string,
+  cwd = PIDS,
+): Promise<{ grandchild: number; pid: number }> {
   const file = path.join(PIDS, `${name}-tree.mjs`);
   await writeFile(
     file,
@@ -89,7 +102,7 @@ async function startHangingTree(name: string): Promise<{ grandchild: number; pid
     'utf8',
   );
   const pidFile = path.join(PIDS, `${name}.json`);
-  const running = runProcess(process.execPath, [file, pidFile], { cwd: path.dirname(file) });
+  const running = runProcess(process.execPath, [file, pidFile], { cwd });
   // The promise the runner returns is awaited by the case that stops it; a case
   // that fails first leaves it to the lifecycle, which ends it without turning
   // its own stop into an unhandled rejection.
@@ -147,6 +160,64 @@ describe('the failing cases the proof runs', () => {
     setTimeout(() => controller.abort(), 150);
     await expect(running).rejects.toThrow(/was stopped while the test was still running/u);
   }, 30_000);
+
+  /**
+   * The directory a stop could not be confirmed for. On Windows the harness
+   * stops a command tree by running `taskkill`, so taking that utility off this
+   * process's `PATH` leaves the tree running and the stop unconfirmed — exactly
+   * the state the fixture lifecycle must not remove a directory in.
+   */
+  it.skipIf(process.platform !== 'win32')(
+    'cannot confirm the stop of a command tree, and leaves its directory in place',
+    async () => {
+      const directory = await createTempDir();
+      const pids = await startHangingTree('unconfirmed', directory);
+      await record({ case: 'unconfirmed', directory, token: null, ...pids });
+      // Narrowing `PATH` is not undone here: the cleanup hook has to meet the
+      // same condition the test left behind, which is the whole point.
+      process.env.PATH = path.dirname(process.execPath);
+    },
+    20_000,
+  );
+
+  /**
+   * A continuation that outlives its own test. The body hands the scope work
+   * that is still sleeping when the test times out; when it resumes it tries to
+   * start another command, and the closed scope has to refuse it rather than let
+   * it run while the hook removes the directory it would write into.
+   */
+  it('times out while a continuation still intends to start another command', async () => {
+    const directory = await createTempDir();
+    const pidFile = path.join(directory, 'late.json');
+    await record({ case: 'continuation', directory, pid: null, token: null, grandchild: null });
+    void ownFixtureOperation('the delayed continuation', async () => {
+      await new Promise((resolve) => setTimeout(resolve, 2500));
+      let outcome = 'the command was not refused';
+      try {
+        await runProcess(
+          process.execPath,
+          [
+            '-e',
+            `require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, 'ran')`,
+          ],
+          { cwd: directory },
+        );
+      } catch (cause) {
+        outcome = `refused: ${cause instanceof Error ? cause.message : String(cause)}`;
+      }
+      await record({
+        case: 'continuation',
+        directory,
+        pid: null,
+        token: null,
+        grandchild: null,
+        outcome: `${outcome}; the command ran: ${String(existsSync(pidFile))}`,
+      });
+    });
+    // Never settles: the suite's own deadline ends this test while the
+    // continuation is still asleep.
+    await new Promise(() => undefined);
+  }, 1500);
 });
 
 describe('a setup failure', () => {

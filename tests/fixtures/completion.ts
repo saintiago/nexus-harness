@@ -21,6 +21,7 @@ import { createJiraCompletionSource } from '../../src/sources/jira/completion.js
 import type { CompletionConfig, JiraSourceConfig } from '../../src/shared/types.js';
 import { installFakeGhCompletion } from './local-target.js';
 import type { FakeCompletionState } from './local-target.js';
+import { combineStop, ownFixtureOperation } from './lifecycle.js';
 import { createTempDir } from '../support.js';
 
 // ---------------------------------------------------------------------------
@@ -414,7 +415,16 @@ export async function createFixture(options: FixtureOptions = {}): Promise<Fixtu
   return { parent, workDir, logsDir, gh, jira, config };
 }
 
-/** The completion pass one fixture describes, with a stand-in clock. */
+/**
+ * The completion pass one fixture describes, with a stand-in clock.
+ *
+ * The pass is wrapped in the fixture lifecycle: each `run` and `arm` is owned
+ * work of the test that asked for it, it takes the test's own stop alongside
+ * whatever bound the caller gave it, and disposal waits for it (bounded) after
+ * stopping the command trees it started. A production command invocation is
+ * therefore never still running when the fixture directory it writes into is
+ * removed, and a continuation that outlives its test cannot start one.
+ */
 export function passFor(
   fixture: Fixture,
   parts: {
@@ -472,7 +482,7 @@ export function passFor(
     ...(parts.commandTimeoutMs === undefined ? {} : { commandTimeoutMs: parts.commandTimeoutMs }),
   });
   const io = { out: () => undefined, err: () => undefined };
-  return createCompletionPass({
+  const pass = createCompletionPass({
     config: fixture.config,
     repository: parts.repository ?? REPOSITORY,
     baseBranch: BASE_BRANCH,
@@ -488,6 +498,16 @@ export function passFor(
       await parts.onSleep?.();
     },
   });
+  const wrapper: {
+    run: (stop: AbortSignal) => Promise<readonly CompletionOutcome[]>;
+    arm: (stop: AbortSignal) => Promise<readonly ArmOutcome[]>;
+  } = {
+    run: async (stop: AbortSignal) =>
+      await ownFixtureOperation('a completion pass', async (own) => await pass.run(combineStop(own, stop))),
+    arm: async (stop: AbortSignal) =>
+      await ownFixtureOperation('the arm step', async (own) => await pass.arm(combineStop(own, stop))),
+  };
+  return wrapper;
 }
 
 export async function runPass(

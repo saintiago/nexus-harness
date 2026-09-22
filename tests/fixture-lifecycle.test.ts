@@ -17,12 +17,12 @@
  * unbounded.
  */
 
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { fixtureProcessGone, processGone } from './fixtures/local-target.js';
+import { fixtureProcessGone, processGone, removeDirectory } from './fixtures/local-target.js';
 import { beaconModuleUrl } from './fixtures/local-target.js';
 import {
   disposeFixtures,
@@ -42,6 +42,8 @@ interface Started {
   readonly pid: number | null;
   readonly token: string | null;
   readonly grandchild: number | null;
+  /** What the case itself reported about what happened to it afterwards. */
+  readonly outcome?: string;
 }
 
 /**
@@ -81,6 +83,27 @@ async function gone(pid: number | null): Promise<boolean> {
       return false;
     }
     await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+
+/**
+ * Ends a tree this proof deliberately left running. The unconfirmed case took
+ * `taskkill` off its own `PATH`; the proof still reaches it by its absolute path,
+ * because the tree has to be ended by whoever left it — nobody else will.
+ */
+function endLeftoverTree(pid: number | null, grandchild: number | null): void {
+  if (process.platform !== 'win32') {
+    return;
+  }
+  const taskkill = path.join(
+    process.env.SystemRoot ?? 'C:\\Windows',
+    'System32',
+    'taskkill.exe',
+  );
+  for (const target of [grandchild, pid]) {
+    if (target !== null) {
+      spawnSync(taskkill, ['/PID', String(target), '/T', '/F'], { stdio: 'ignore' });
+    }
   }
 }
 
@@ -210,14 +233,36 @@ describe('the fixture lifecycle', () => {
       .split('\n')
       .filter((line) => line !== '')
       .map((line) => JSON.parse(line) as Started);
-    expect(started.map((entry) => entry.case).sort()).toEqual([
-      'assertion',
-      'cancellation',
-      'setup',
-      'timeout',
-    ]);
+    const expected = ['assertion', 'cancellation', 'continuation', 'setup', 'timeout'];
+    if (process.platform === 'win32') {
+      // The unconfirmed stop needs a host utility the harness stops trees with,
+      // which only the Windows path takes `PATH` for.
+      expected.push('unconfirmed');
+    }
+    // The continuation writes a second record once it has resumed: that record
+    // is how the proof sees that the closed scope refused its late command.
+    const cases = new Set(started.map((entry) => entry.case));
+    expect([...cases].sort()).toEqual(expected.sort());
+    const first = new Map(started.map((entry) => [entry.case, entry]));
 
     for (const entry of started) {
+      if (entry.case === 'unconfirmed') {
+        // A stop the host would not carry out: the directory is preserved and
+        // reported, and the tree is still running, which is why it was preserved.
+        expect(existsSync(entry.directory), 'unconfirmed: directory').toBe(true);
+        expect(
+          `${result.stdout}${result.stderr}`,
+          'unconfirmed: the failure names the kept directory',
+        ).toContain('for the owner that may still hold it');
+        // The proof ends what it left behind itself, using the host utility the
+        // case took off `PATH`, and only then removes the preserved directory.
+        endLeftoverTree(entry.pid, entry.grandchild);
+        expect(await gone(entry.pid), 'unconfirmed: process').toBe(true);
+        expect(await gone(entry.grandchild), 'unconfirmed: grandchild').toBe(true);
+        await removeDirectory(entry.directory);
+        expect(existsSync(entry.directory), 'unconfirmed: directory removed').toBe(false);
+        continue;
+      }
       // Every directory the case registered is gone: the hook removed it after
       // the work the case owned had been stopped and awaited.
       expect(existsSync(entry.directory), `${entry.case}: directory`).toBe(false);
@@ -233,5 +278,14 @@ describe('the fixture lifecycle', () => {
         ).toBe(true);
       }
     }
+
+    // The continuation resumed after its test had timed out and been disposed:
+    // the hook waited for it, its late command was refused rather than started,
+    // and only then was the directory removed.
+    const resumed = started.find((entry) => entry.outcome !== undefined);
+    expect(resumed?.outcome).toContain('refused');
+    expect(resumed?.outcome).toContain('the command ran: false');
+    expect(existsSync(resumed?.directory ?? ''), 'continuation: directory').toBe(false);
+    expect(existsSync(first.get('continuation')?.directory ?? '')).toBe(false);
   }, 180_000);
 });

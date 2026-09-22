@@ -312,17 +312,40 @@ export async function writeConfigPair(
   };
 }
 
+/** Every temporary directory this file's tests created and have not removed. */
+export function tempDirectories(): readonly string[] {
+  return [...temporaryDirectories];
+}
+
 /**
  * Removes every directory created by {@link createTempDir}, through
- * {@link removeWithRetry}.
+ * {@link removeWithRetry}, and returns the ones it kept.
+ *
+ * A caller that owns a process it could not confirm ended names that process's
+ * directory through `preserve`: removing a tree something may still be writing
+ * to destroys the evidence of the leak and can fail the hook with the platform's
+ * `EBUSY` instead of reporting the stop that did not land. Kept directories are
+ * left registered, so a later disposal can still remove them.
  */
-export async function cleanupTempDirectories(): Promise<void> {
-  const directories = temporaryDirectories.splice(0);
+export async function cleanupTempDirectories(
+  options: { readonly preserve?: (directory: string) => boolean } = {},
+): Promise<readonly string[]> {
+  const kept: string[] = [];
+  const removing: string[] = [];
+  for (const directory of temporaryDirectories.splice(0)) {
+    if (options.preserve?.(directory) === true) {
+      kept.push(directory);
+    } else {
+      removing.push(directory);
+    }
+  }
+  temporaryDirectories.push(...kept);
   await Promise.all(
-    directories.map(async (directory) =>
+    removing.map(async (directory) =>
       removeWithRetry(async () => rm(directory, { recursive: true, force: true })),
     ),
   );
+  return kept;
 }
 
 /**
