@@ -183,7 +183,7 @@ describe('the baseline decision', () => {
     // and the report says it continued rather than created one.
     expect(result.workspace?.baseCommit).toBe(BASE_COMMIT);
     expect(result.workspace?.attempt).toBe(2);
-    expect(run.reports.at(-1)?.workspace.continued).toBe(true);
+    expect(run.reports.at(-1)?.workspace?.continued).toBe(true);
   });
 });
 
