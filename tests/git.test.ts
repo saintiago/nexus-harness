@@ -7,9 +7,10 @@
  * arguments and no shell, inherited Git variables dropped so a reading cannot be
  * redirected at another repository, a failure that keeps Git's own diagnostic, a
  * workspace identity that is written locally and nowhere else, and a bound or a
- * caller's stop that ends the invocation and the whole tree it started. Which
- * workspace step runs is the workspace suite's; what a result means to a run is
- * the fast suites'.
+ * caller's stop that ends the invocation and the whole tree it started — or a
+ * stop the host could not make, which the result reports as unconfirmed instead
+ * of as a clean end. Which workspace step runs is the workspace suite's; what a
+ * result means to a run is the fast suites'.
  *
  * The stand-in is only reached while a case puts it first on `PATH`, so the real
  * Git is never mistaken for it. Every process a case starts is confirmed gone
@@ -42,6 +43,7 @@ import {
   gitOrFail,
   installStandIn,
   readJsonWhenWritten,
+  stillRunning,
   useOwnedProcesses,
   useIsolatedGitEnvironment,
   waitUntilGone,
@@ -351,6 +353,90 @@ describe('a Git invocation with a bound', () => {
     expect(await waitUntilGone(record.pid)).toBe(true);
     expect(await waitUntilGone(record.child ?? 0)).toBe(true);
   }, 90_000);
+
+  // Windows-only by construction: this case defeats the stop by emptying PATH,
+  // so the harness cannot find `taskkill` — the utility this host ends a tree
+  // with. Elsewhere the harness signals the invocation's process group directly
+  // (`process.kill(-pid)`), which needs no utility to be found, so the stop
+  // succeeds and there is no unconfirmed stop to report.
+  it.skipIf(process.platform !== 'win32')(
+    'reports a stop it could not make as unconfirmed, and leaves the live tree for the case to end',
+    async () => {
+      const fixture = await createRepository();
+      const recordFile = path.join(fixture.parent, 'unstoppable.json');
+      // A frozen clock keeps the bound the harness hands over exact. The bound
+      // is wider than the read below needs, so the stop cannot arrive before the
+      // case has taken the utility away: what the bound proves is the report of
+      // a stop that could not be made, not a race with the stand-in's startup.
+      const clock = new Date();
+
+      const { record, result } = await withStandInGit(recordFile, processes, async () => {
+        const pending = runGit(['status'], fixture.repo, {
+          deadlineMs: clock.getTime() + 5000,
+          now: () => clock,
+        });
+        const record = await readStandInRecord(recordFile);
+        // The invocation is running, so the stop that follows really has a tree
+        // to end. The utility this host ends one with is resolved through the
+        // path the harness itself runs with; naming nothing on that path takes
+        // the utility away, so the stop reaches nothing and the invocation keeps
+        // running. The path is put back before the case ends, so the case's own
+        // teardown can end and confirm what the failed stop could not.
+        const savedPath = process.env.PATH;
+        process.env.PATH = '';
+        try {
+          return { record, result: await pending };
+        } finally {
+          if (savedPath === undefined) {
+            delete process.env.PATH;
+          } else {
+            process.env.PATH = savedPath;
+          }
+        }
+      });
+
+      // The invocation was stopped at its bound, but nothing was ended: a stop
+      // that could not be made has to be said, never rounded down to a clean end
+      // a run could treat as safely finished.
+      expect(record.argv).toEqual(['status']);
+      expect(record.cwd).toBe(fixture.repo);
+      const child = Number(record.child);
+      expect(Number.isInteger(child)).toBe(true);
+      expect(child).toBeGreaterThan(0);
+      expect(result.outcome).toBe('timed-out');
+      expect(result.code).not.toBe(0);
+      expect(result.timeoutMs).toBe(5000);
+      expect(result.termination).toBe('unconfirmed');
+      // What could not be confirmed is the host utility's own failure to run.
+      expect(result.terminationProblem).toContain('taskkill');
+      expect(gitStopOf(result)).toEqual({
+        termination: 'unconfirmed',
+        problem: result.terminationProblem,
+      });
+      expect(gitProblem(result)).toContain('did not finish within the 5000 ms it was given');
+      expect(gitProblem(result)).toContain('that stop could not be confirmed');
+      // A step that fails this way carries the same stop, so a caller that
+      // reports why a run ended can keep the working copy out of reuse.
+      const error = gitFailure(`the status of "${fixture.repo}" could not be read`, result);
+      expect(error).toBeInstanceOf(WorkspaceError);
+      expect(error.message).toContain('that stop could not be confirmed');
+      expect(error.stop).toEqual({
+        termination: 'unconfirmed',
+        problem: result.terminationProblem,
+        kind: 'timeout',
+        timeoutMs: 5000,
+      });
+
+      // What the failed stop left is really still running — this result is a
+      // report of a stop attempt, never of a stop that happened. The stand-in
+      // named both processes in the case's ledger, so the teardown ends this
+      // tree and confirms both are gone before the temporary directories are
+      // removed.
+      expect(stillRunning(record.pid)).toBe(true);
+      expect(stillRunning(child)).toBe(true);
+    },
+    90_000,
+  );
 });
 
 describe('a workspace step that has to be stopped', () => {
