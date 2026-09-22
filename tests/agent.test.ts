@@ -23,7 +23,8 @@ import { existsSync, realpathSync } from 'node:fs';
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { AgentError, runCodexPrompt, runCodexTurn } from '../src/agents/codex/adapter.js';
+import { AgentError } from '../src/agents/codex/adapter.js';
+import { runCodexPrompt, runCodexTurn } from './fixtures/boundary-operations.js';
 import {
   CODEX_EXECUTABLE,
   CODEX_EXEC_ARGUMENTS,
@@ -57,7 +58,12 @@ import {
   fixtureProcessGone,
   waitFor,
 } from './fixtures/local-target.js';
-import { disposeFixtures, runProcess, useFixtureLifecycle } from './fixtures/lifecycle.js';
+import {
+  disposeFixtures,
+  ownFixtureOperation,
+  runProcess,
+  useFixtureLifecycle,
+} from './fixtures/lifecycle.js';
 import type { ProcessResult } from './fixtures/lifecycle.js';
 import { createTempDir } from './support.js';
 
@@ -481,6 +487,10 @@ async function writeStandInRuntime(directory: string): Promise<string> {
 
 /** A temporary target repository, a stand-in runtime, and a place to work in. */
 async function createFixture(parts: { readonly instructionFile?: boolean } = {}): Promise<Fixture> {
+  return ownFixtureOperation('the adapter fixture setup', () => prepareFixture(parts));
+}
+
+async function prepareFixture(parts: { readonly instructionFile?: boolean }): Promise<Fixture> {
   const parent = await createTempDir();
   const repo = path.join(parent, 'repo');
   const workspace = path.join(parent, 'workspace');
@@ -636,6 +646,10 @@ async function openTurn(
   fixture: Fixture,
   parts: Partial<AgentTurnRequest> = {},
 ): Promise<OpenTurn> {
+  return ownFixtureOperation('the adapter turn setup', () => prepareTurn(fixture, parts));
+}
+
+async function prepareTurn(fixture: Fixture, parts: Partial<AgentTurnRequest>): Promise<OpenTurn> {
   const log = await openAgentLog(fixture.logsDir, parts.turn ?? 1);
   return {
     request: {

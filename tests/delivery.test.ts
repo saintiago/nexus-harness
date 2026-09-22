@@ -14,12 +14,13 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { createGitHubDelivery, DeliveryError } from '../src/delivery/github.js';
+import { DeliveryError } from '../src/delivery/github.js';
+import { createGitHubDelivery, withFixtureEnvironment } from './fixtures/boundary-operations.js';
 import type { Delivery, DeliveryRequest } from '../src/delivery/github.js';
 import type { GitHubDeliveryConfig } from '../src/shared/types.js';
 import { fakeGhCalls, fakePullRequests, git, installFakeGh } from './fixtures/local-target.js';
 import type { FakeGhState } from './fixtures/local-target.js';
-import { useFixtureLifecycle } from './fixtures/lifecycle.js';
+import { ownFixtureOperation, useFixtureLifecycle } from './fixtures/lifecycle.js';
 import { createTempDir } from './support.js';
 
 useFixtureLifecycle();
@@ -64,6 +65,10 @@ interface SeededPullRequest {
 
 /** One attempt's workspace: a clone-shaped repository on its own branch. */
 async function createFixture(options: FixtureOptions = {}): Promise<Fixture> {
+  return ownFixtureOperation('the delivery fixture setup', () => prepareFixture(options));
+}
+
+async function prepareFixture(options: FixtureOptions): Promise<Fixture> {
   const parent = await createTempDir();
   const remote = path.join(parent, 'origin.git');
   git(parent, 'init', '--quiet', '--bare', remote);
@@ -169,17 +174,7 @@ function fakeGhEnvironment(
  * put it there and take it away again.
  */
 async function withFakeGhOnPath<T>(bin: string, body: () => Promise<T>): Promise<T> {
-  const previous = process.env.PATH;
-  process.env.PATH = `${bin}${path.delimiter}${previous ?? ''}`;
-  try {
-    return await body();
-  } finally {
-    if (previous === undefined) {
-      delete process.env.PATH;
-    } else {
-      process.env.PATH = previous;
-    }
-  }
+  return withFixtureEnvironment({ PATH: `${bin}${path.delimiter}${process.env.PATH ?? ''}` }, body);
 }
 
 /** The attempt's delivery request, as the coordinator builds it. */

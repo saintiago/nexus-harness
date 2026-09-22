@@ -15,7 +15,7 @@ against the audit reference under [Performance](#performance).
 ## The two layers
 
 The suite is two Vitest projects with explicit concurrency policy
-(`vitest.config.ts`), not one pool of 51 files:
+(`vitest.config.ts`), not one pool of 52 files:
 
 - **policy** — configuration, parsing, the terminal model, reporting, the queue
   decisions, the history store, the review verdict/scan/watch decisions, the
@@ -351,6 +351,33 @@ No existing assertion or case was removed. Five new ordinary cases plus three
 nested failure-path cases extend the proof. Production behavior, test deadlines,
 worker settings and validation commands are unchanged. Earlier measurements at
 `f7b37b7` predate this repair and must not be used as final-code evidence.
+
+## Review repair: standalone boundary ownership
+
+The review of `6f1b3a8` found direct delivery, adapter and Git calls outside the
+registered task/command/CLI helpers. `tests/fixtures/boundary-operations.ts` now
+registers those entry points before calling production, combines fixture and
+caller cancellation, and awaits adapter log closure. Delivery and Git's scoped
+environment helper includes restoration in its owned promise. Their async setup
+builders are also owned, as are Git-suite preflight/preparation/comparison calls.
+The Windows unconfirmed-stop case still removes `taskkill` from its own `PATH`
+and retains the beacon-based cleanup; restoration now covers the whole operation.
+No production behavior, deadline, existing assertion or quarantine status changed.
+
+| Guarantee                                  | Active owner and observable proof                                                                                                                                                                                                              |
+| ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Standalone delivery cancellation           | Nested `boundaries.test.ts`: timeout and setup failure after real local revision checks/push reach a hanging fake `gh`; delivery rejects as stopped, environment is restored before directory removal, parent and child PIDs/beacons are gone. |
+| Standalone Git cancellation                | The same nested file: timeout and setup failure while production `runGit` is pending, without a post-result process registration; result is stopped and both processes/beacons are gone.                                                       |
+| Standalone adapter cancellation            | The same nested file: both `runCodexPrompt` and `runCodexTurn` are pending at timeout and setup failure; shutdown is confirmed, log closure precedes removal, runtime and child PIDs/beacons are gone.                                         |
+| Caller cancellation and delayed settlement | `fixture-boundary.test.ts`: four callers keep their supplied stop; two controlled log-flush barriers keep directories/environment until closure settles.                                                                                       |
+| Late boundary/environment entry            | `fixture-boundary.test.ts`: calls resume in a disposed scope while a new scope is active; all four entries and environment mutation are refused, no production call starts and the new scope owns no work.                                     |
+
+These are seven new top-level regression cases and eight nested failing cases
+verified by the existing lifecycle case, not eight omitted tests. The original
+delivery, adapter credential/process, Git preservation and HARN-41 assertions
+remain active. Existing late-allocation, repeated preservation, CLI teardown and
+POSIX process-group proofs remain unchanged. Final measurements below replace
+the previous implementation's evidence.
 
 ## Performance
 

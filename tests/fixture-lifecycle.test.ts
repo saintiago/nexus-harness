@@ -53,6 +53,13 @@ interface Started {
   readonly registered?: number;
   readonly released?: number;
   readonly problem?: string;
+  readonly environmentRestored?: boolean;
+  readonly closed?: boolean;
+  readonly callerAborted?: boolean;
+  readonly result?: {
+    readonly outcome?: string;
+    readonly shutdown?: { readonly termination: string };
+  };
 }
 
 /**
@@ -262,6 +269,12 @@ describe('the fixture lifecycle', () => {
       'in-process-cli-setup-settled',
       'cli-git-setup',
       'cli-git-setup-settled',
+      ...['delivery', 'git', 'prompt', 'turn'].flatMap((entry) =>
+        ['timeout', 'setup'].flatMap((ending) => [
+          `boundary-${entry}-${ending}`,
+          `boundary-${entry}-${ending}-settled`,
+        ]),
+      ),
     ];
     if (process.platform === 'win32') {
       // The unconfirmed stop needs a host utility the harness stops trees with,
@@ -283,6 +296,18 @@ describe('the fixture lifecycle', () => {
       }
       if (entry.case.endsWith('-settled')) {
         expect(entry.outcome).toBe('directory exists at settlement: true');
+        if (entry.case.startsWith('boundary-')) {
+          expect(entry.environmentRestored, entry.case).toBe(true);
+          expect(entry.closed, entry.case).toBe(true);
+          expect(entry.callerAborted, entry.case).toBe(false);
+          if (entry.case.startsWith('boundary-delivery-')) {
+            expect(entry.problem, entry.case).toContain('stopped');
+          } else if (entry.case.startsWith('boundary-git-')) {
+            expect(entry.result?.outcome, entry.case).toBe('stopped');
+          } else {
+            expect(entry.result?.shutdown?.termination, entry.case).toBe('confirmed');
+          }
+        }
         if (entry.case === 'cli-git-setup-settled') {
           expect(entry.problem).toContain('was stopped because the test ended');
         }
@@ -291,6 +316,12 @@ describe('the fixture lifecycle', () => {
           expect(entry.registered).toBe(1);
           expect(entry.released).toBe(1);
         }
+      }
+      if (entry.case.startsWith('boundary-') && !entry.case.endsWith('-settled')) {
+        expect(entry.pid, entry.case).toBeTypeOf('number');
+        expect(entry.grandchild, entry.case).toBeTypeOf('number');
+        expect(entry.token, entry.case).toBeTypeOf('string');
+        expect(entry.childToken, entry.case).toBeTypeOf('string');
       }
       if (entry.case === 'unconfirmed') {
         // A stop the host would not carry out: the directory is preserved and

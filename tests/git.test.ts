@@ -18,17 +18,25 @@ import { existsSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { inspectWorkspaceChanges } from '../src/workspace/changes.js';
 import { WorkspaceError } from '../src/workspace/errors.js';
-import { GIT_COMMAND_TIMEOUT_MS, gitProblem, gitStopOf, runGit } from '../src/workspace/git.js';
-import type { GitResult } from '../src/workspace/git.js';
-import { prepareWorkspace } from '../src/workspace/prepare.js';
+import { GIT_COMMAND_TIMEOUT_MS, gitProblem, gitStopOf } from '../src/workspace/git.js';
 import type { PreparedWorkspace } from '../src/workspace/prepare.js';
-import { preflightSource } from '../src/workspace/preflight.js';
+import {
+  inspectWorkspaceChanges,
+  prepareWorkspace,
+  preflightSource,
+  runGit,
+  withFixtureEnvironment,
+} from './fixtures/boundary-operations.js';
 import { allocateRunDirectory } from '../src/workspace/run-directory.js';
 import { installFakeGit } from './fixtures/local-target.js';
 import type { FakeGitState, FixtureProcessRecord } from './fixtures/local-target.js';
-import { ownFixtureProcess, runProcess, useFixtureLifecycle } from './fixtures/lifecycle.js';
+import {
+  ownFixtureOperation,
+  ownFixtureProcess,
+  runProcess,
+  useFixtureLifecycle,
+} from './fixtures/lifecycle.js';
 import { createTempDir } from './support.js';
 
 useFixtureLifecycle();
@@ -94,6 +102,10 @@ async function createSource(): Promise<{
   readonly repo: string;
   readonly workDir: string;
 }> {
+  return ownFixtureOperation('the Git source setup', prepareSource);
+}
+
+async function prepareSource(): ReturnType<typeof createSource> {
   const parent = await createTempDir();
   const repo = path.join(parent, 'repo');
   await mkdir(repo);
@@ -110,6 +122,10 @@ async function createPreparedWorkspace(): Promise<{
   readonly repo: string;
   readonly workspace: PreparedWorkspace;
 }> {
+  return ownFixtureOperation('the Git workspace setup', prepareFixtureWorkspace);
+}
+
+async function prepareFixtureWorkspace(): ReturnType<typeof createPreparedWorkspace> {
   const source = await createSource();
   const preflight = await preflightSource({ repoPath: source.repo, workDir: source.workDir });
   const run = await allocateRunDirectory(source.workDir);
@@ -152,25 +168,13 @@ async function withFakeGit<T>(
   call: FakeGitCall,
   work: () => Promise<T>,
 ): Promise<T> {
-  const previousPath = process.env.PATH;
-  const previousConfig = process.env.FAKE_GIT;
-  process.env.PATH = `${fake.bin}${path.delimiter}${previousPath ?? ''}`;
-  process.env.FAKE_GIT = JSON.stringify({ stateDir: fake.state.dir, mode: 'ok', ...call });
-  try {
-    return await work();
-  } finally {
-    putBack('PATH', previousPath);
-    putBack('FAKE_GIT', previousConfig);
-  }
-}
-
-/** Puts one environment variable back the way it was found. */
-function putBack(name: string, previous: string | undefined): void {
-  if (previous === undefined) {
-    delete process.env[name];
-  } else {
-    process.env[name] = previous;
-  }
+  return withFixtureEnvironment(
+    {
+      PATH: `${fake.bin}${path.delimiter}${process.env.PATH ?? ''}`,
+      FAKE_GIT: JSON.stringify({ stateDir: fake.state.dir, mode: 'ok', ...call }),
+    },
+    work,
+  );
 }
 
 /**
@@ -354,33 +358,20 @@ describe('a Git command under a bound', () => {
     async () => {
       const source = await createSource();
       const fake = await installFakeGit(source.parent);
-      const previousPath = process.env.PATH;
-      const previousConfig = process.env.FAKE_GIT;
       const clock = new Date();
-      process.env.PATH = `${fake.bin}${path.delimiter}${previousPath ?? ''}`;
-      process.env.FAKE_GIT = JSON.stringify({
-        stateDir: fake.state.dir,
-        mode: 'hang',
-        id: 'stubborn',
-      });
-      const pending = runGit(['status'], source.repo, {
-        deadlineMs: clock.getTime() + 3000,
-        now: () => clock,
-      });
-      const record = await readFakeGitRecord(fake.state, 'stubborn');
-      registerFixture(record);
-
-      // The stand-in is named and still starting; the harness cannot find the
-      // utility it stops a tree with, so the stop does not happen at all.
-      process.env.PATH = '';
-      let result: GitResult;
-      try {
-        result = await pending;
+      const result = await withFakeGit(fake, { mode: 'hang', id: 'stubborn' }, async () => {
+        const pending = runGit(['status'], source.repo, {
+          deadlineMs: clock.getTime() + 3000,
+          now: () => clock,
+        });
+        const record = await readFakeGitRecord(fake.state, 'stubborn');
+        registerFixture(record);
+        // Removing taskkill from PATH deliberately defeats the first stop.
+        process.env.PATH = '';
+        const result = await pending;
         expect(stillRunning(record.pid)).toBe(true);
-      } finally {
-        putBack('PATH', previousPath);
-        putBack('FAKE_GIT', previousConfig);
-      }
+        return result;
+      });
 
       expect(result.outcome).toBe('timed-out');
       expect(result.termination).toBe('unconfirmed');
