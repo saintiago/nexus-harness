@@ -21,6 +21,7 @@ import {
   PR_URL,
   REVIEWER_TOKEN,
   REVIEW_URL,
+  TWO_PASSES_TIMEOUT_MS,
   WORKSPACE_POINTER,
   WORKFLOW_URL,
   commentTexts,
@@ -479,51 +480,59 @@ describe('review-to-completion', () => {
     expect(commentTexts(fixture)[0]).toContain('no run yet');
   });
 
-  it('resumes a resolution comment whose Done move never arrived', async () => {
-    const fixture = await createFixture({ merged: true });
-    fixture.jira.transitionFailure = true;
+  it(
+    'resumes a resolution comment whose Done move never arrived',
+    async () => {
+      const fixture = await createFixture({ merged: true });
+      fixture.jira.transitionFailure = true;
 
-    // The merge and its workflow succeed, the comment lands, and the move does
-    // not: the item is still In Review with the resolution comment on it.
-    const first = only(await runPass(fixture));
-    expect(first.status).toBe('attention');
-    expect(fixture.jira.status).toBe('In Review');
-    expect(commentTexts(fixture)).toHaveLength(1);
+      // The merge and its workflow succeed, the comment lands, and the move does
+      // not: the item is still In Review with the resolution comment on it.
+      const first = only(await runPass(fixture));
+      expect(first.status).toBe('attention');
+      expect(fixture.jira.status).toBe('In Review');
+      expect(commentTexts(fixture)).toHaveLength(1);
 
-    fixture.jira.transitionFailure = false;
-    const second = only(await runPass(fixture));
+      fixture.jira.transitionFailure = false;
+      const second = only(await runPass(fixture));
 
-    expect(second.status).toBe('done');
-    expect(fixture.jira.status).toBe('Done');
-    expect(commentTexts(fixture)).toHaveLength(1);
-    const calls = await fakeCompletionCalls(fixture.gh);
-    expect(calls.filter((call) => call.op === 'merge')).toHaveLength(0);
-  });
+      expect(second.status).toBe('done');
+      expect(fixture.jira.status).toBe('Done');
+      expect(commentTexts(fixture)).toHaveLength(1);
+      const calls = await fakeCompletionCalls(fixture.gh);
+      expect(calls.filter((call) => call.op === 'merge')).toHaveLength(0);
+    },
+    TWO_PASSES_TIMEOUT_MS,
+  );
 
-  it('follows a merge GitHub makes after auto-merge was armed', async () => {
-    const fixture = await createFixture({ pulls: [ONE_PULL_REQUEST] });
+  it(
+    'follows a merge GitHub makes after auto-merge was armed',
+    async () => {
+      const fixture = await createFixture({ pulls: [ONE_PULL_REQUEST] });
 
-    const first = only(await runPass(fixture, { clockStepMs: 1_000 }));
-    expect(first.status).toBe('pending');
-    expect(fixture.jira.status).toBe('In Review');
-    expect(commentTexts(fixture)).toHaveLength(0);
+      const first = only(await runPass(fixture, { clockStepMs: 1_000 }));
+      expect(first.status).toBe('pending');
+      expect(fixture.jira.status).toBe('In Review');
+      expect(commentTexts(fixture)).toHaveLength(0);
 
-    // GitHub merges the armed pull request while nothing is polling.
-    await writeFile(
-      fixture.gh.pullRequestsFile,
-      `${JSON.stringify(mergedPullRequest())}\n`,
-      'utf8',
-    );
-    const calls = await fakeCompletionCalls(fixture.gh);
-    expect(calls.filter((call) => call.op === 'merge')).toHaveLength(1);
+      // GitHub merges the armed pull request while nothing is polling.
+      await writeFile(
+        fixture.gh.pullRequestsFile,
+        `${JSON.stringify(mergedPullRequest())}\n`,
+        'utf8',
+      );
+      const calls = await fakeCompletionCalls(fixture.gh);
+      expect(calls.filter((call) => call.op === 'merge')).toHaveLength(1);
 
-    const second = only(await runPass(fixture));
+      const second = only(await runPass(fixture));
 
-    expect(second.status).toBe('done');
-    expect(fixture.jira.status).toBe('Done');
-    expect(commentTexts(fixture)).toHaveLength(1);
-    expect(commentTexts(fixture)[0]).toContain('nexus-completion:resolution:');
-  });
+      expect(second.status).toBe('done');
+      expect(fixture.jira.status).toBe('Done');
+      expect(commentTexts(fixture)).toHaveLength(1);
+      expect(commentTexts(fixture)[0]).toContain('nexus-completion:resolution:');
+    },
+    TWO_PASSES_TIMEOUT_MS,
+  );
 
   it('stops without mutation when a person moved the ticket out of In Review', async () => {
     const fixture = await createFixture({ merged: true });
@@ -579,14 +588,20 @@ describe('review-to-completion', () => {
     expect(commentTexts(fixture)[0]).toContain('ownership race');
   });
 
-  it('does not arm twice across restart or an uncertain auto-merge response', async () => {
-    const fixture = await createFixture();
-    await runPass(fixture, { fail: 'merge-uncertain', clockStepMs: 1000 });
-    await runPass(fixture, { clockStepMs: 1000 });
-    expect((await fakeCompletionCalls(fixture.gh)).filter((c) => c.op === 'merge')).toHaveLength(1);
-    expect(fixture.jira.status).toBe('In Review');
-    expect(transitions(fixture)).toHaveLength(0);
-  });
+  it(
+    'does not arm twice across restart or an uncertain auto-merge response',
+    async () => {
+      const fixture = await createFixture();
+      await runPass(fixture, { fail: 'merge-uncertain', clockStepMs: 1000 });
+      await runPass(fixture, { clockStepMs: 1000 });
+      expect((await fakeCompletionCalls(fixture.gh)).filter((c) => c.op === 'merge')).toHaveLength(
+        1,
+      );
+      expect(fixture.jira.status).toBe('In Review');
+      expect(transitions(fixture)).toHaveLength(0);
+    },
+    TWO_PASSES_TIMEOUT_MS,
+  );
 
   it('returns a failed required check observed after arming to To Do', async () => {
     const fixture = await createFixture();
@@ -732,21 +747,25 @@ describe('review-to-completion', () => {
     expect(comments[0]?.split(/\s+/).length).toBeLessThan(120);
   });
 
-  it('requires workflow health again even when an old resolution comment exists', async () => {
-    const fixture = await createFixture({ merged: true });
-    fixture.jira.transitionFailure = true;
-    await runPass(fixture);
-    fixture.jira.transitionFailure = false;
-    await writeFile(
-      fixture.gh.runsFile,
-      JSON.stringify(workflowRun({ runAttempt: 2, status: 'queued', conclusion: null })) + '\n',
-    );
-    const before = transitions(fixture).length;
-    expect(only(await runPass(fixture, { clockStepMs: 1000 })).status).toBe('pending');
-    expect(transitions(fixture)).toHaveLength(before);
-    expect(fixture.jira.status).toBe('In Review');
-    expect(commentTexts(fixture)).toHaveLength(1);
-  });
+  it(
+    'requires workflow health again even when an old resolution comment exists',
+    async () => {
+      const fixture = await createFixture({ merged: true });
+      fixture.jira.transitionFailure = true;
+      await runPass(fixture);
+      fixture.jira.transitionFailure = false;
+      await writeFile(
+        fixture.gh.runsFile,
+        JSON.stringify(workflowRun({ runAttempt: 2, status: 'queued', conclusion: null })) + '\n',
+      );
+      const before = transitions(fixture).length;
+      expect(only(await runPass(fixture, { clockStepMs: 1000 })).status).toBe('pending');
+      expect(transitions(fixture)).toHaveLength(before);
+      expect(fixture.jira.status).toBe('In Review');
+      expect(commentTexts(fixture)).toHaveLength(1);
+    },
+    TWO_PASSES_TIMEOUT_MS,
+  );
 
   it('does not backfill a historical merged PR without an admission', async () => {
     const fixture = await createFixture({ pulls: [mergedPullRequest()] });
@@ -755,64 +774,38 @@ describe('review-to-completion', () => {
     expect(transitions(fixture)).toHaveLength(0);
   });
 
-  it('respects a human reopening the same resolved merge', async () => {
-    const fixture = await createFixture({ merged: true });
-    expect(only(await runPass(fixture)).status).toBe('done');
-    fixture.jira.status = 'In Review';
-    expect(only(await runPass(fixture)).status).toBe('observed');
-    expect(commentTexts(fixture)).toHaveLength(1);
-    expect(transitions(fixture)).toHaveLength(1);
-  });
+  it(
+    'respects a human reopening the same resolved merge',
+    async () => {
+      const fixture = await createFixture({ merged: true });
+      expect(only(await runPass(fixture)).status).toBe('done');
+      fixture.jira.status = 'In Review';
+      expect(only(await runPass(fixture)).status).toBe('observed');
+      expect(commentTexts(fixture)).toHaveLength(1);
+      expect(transitions(fixture)).toHaveLength(1);
+    },
+    TWO_PASSES_TIMEOUT_MS,
+  );
 
-  it('can resolve a reopened ticket only for a later different merged result', async () => {
-    const fixture = await createFixture({ merged: true });
-    await runPass(fixture);
-    fixture.jira.status = 'In Review';
-    await writeFile(
-      fixture.gh.pullRequestsFile,
-      JSON.stringify(mergedPullRequest({ mergeCommit: { oid: 'd'.repeat(40) } })) + '\n',
-    );
-    await writeFile(
-      fixture.gh.runsFile,
-      JSON.stringify(workflowRun({ headSha: 'd'.repeat(40) })) + '\n',
-    );
-    expect(only(await runPass(fixture)).status).toBe('done');
-    expect(commentTexts(fixture)).toHaveLength(2);
-  });
-
-  it('recovers a comment accepted by Jira whose response was lost', async () => {
-    const fixture = await createFixture({ merged: true });
-    const original = fixture.jira.fetch;
-    fixture.jira.transitionFailure = true;
-    fixture.jira.fetch = (async (input, init) => {
-      const result = await original(input, init);
-      return init?.method === 'POST' && String(input).endsWith('/comment')
-        ? new Response('{}', { status: 200 })
-        : result;
-    }) as typeof fetch;
-    expect(only(await runPass(fixture)).status).toBe('attention');
-    fixture.jira.fetch = original;
-    fixture.jira.transitionFailure = false;
-    expect(only(await runPass(fixture)).status).toBe('done');
-    expect(commentTexts(fixture)).toHaveLength(1);
-  });
-
-  it('does not repeat a transition that Jira accepted with a lost response', async () => {
-    const fixture = await createFixture({ merged: true });
-    const original = fixture.jira.fetch;
-    fixture.jira.fetch = (async (input, init) => {
-      const result = await original(input, init);
-      return init?.method === 'POST' && String(input).endsWith('/transitions')
-        ? new Response('{}', { status: 503 })
-        : result;
-    }) as typeof fetch;
-    await runPass(fixture);
-    fixture.jira.fetch = original;
-    await runPass(fixture);
-    expect(fixture.jira.status).toBe('Done');
-    expect(commentTexts(fixture)).toHaveLength(1);
-    expect(transitions(fixture)).toHaveLength(1);
-  });
+  it(
+    'can resolve a reopened ticket only for a later different merged result',
+    async () => {
+      const fixture = await createFixture({ merged: true });
+      await runPass(fixture);
+      fixture.jira.status = 'In Review';
+      await writeFile(
+        fixture.gh.pullRequestsFile,
+        JSON.stringify(mergedPullRequest({ mergeCommit: { oid: 'd'.repeat(40) } })) + '\n',
+      );
+      await writeFile(
+        fixture.gh.runsFile,
+        JSON.stringify(workflowRun({ headSha: 'd'.repeat(40) })) + '\n',
+      );
+      expect(only(await runPass(fixture)).status).toBe('done');
+      expect(commentTexts(fixture)).toHaveLength(2);
+    },
+    TWO_PASSES_TIMEOUT_MS,
+  );
 
   it.each(['comment', 'transition'])('respects a human status change before %s', async (stage) => {
     const fixture = await createFixture({ merged: true });

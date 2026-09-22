@@ -435,4 +435,52 @@ describe('repeating a pass', () => {
     expect(scenario.boundary.item.status).toBe('Done');
     expect(scenario.boundary.item.comments).toHaveLength(1);
   });
+
+  it('does not repeat a comment whose write landed without an answer', async () => {
+    const scenario = await scenarioFor({ merged: true });
+    // The comment arrived at Jira and its answer never did, and the status move
+    // that follows failed too: the item is In Review with the resolution comment
+    // on it, and the pass could not tell whether its write landed.
+    scenario.boundary.fail('postComment', {
+      lands: true,
+      times: 1,
+      message: 'the answer to the comment write was lost',
+    });
+    scenario.boundary.fail('moveTo', { times: 1, message: 'Jira refused the transition' });
+
+    const first = only(await scenario.pass().run(AbortSignal.timeout(30_000)));
+    expect(first.status, first.detail).toBe('attention');
+
+    const second = only(await scenario.pass().run(AbortSignal.timeout(30_000)));
+
+    expect(second.status, second.detail).toBe('done');
+    expect(scenario.boundary.item.status).toBe('Done');
+    // One comment and one move: the marker in the thread is what settled the
+    // uncertain write, so the next pass wrote nothing a second time.
+    expect(scenario.boundary.item.comments).toHaveLength(1);
+    expect(scenario.boundary.jiraCalls.filter((call) => call.startsWith('moveTo'))).toHaveLength(2);
+  });
+
+  it('does not repeat a transition Jira accepted without answering', async () => {
+    const scenario = await scenarioFor({ merged: true });
+    // The transition landed and its answer was a failure: the pass reports what
+    // it could not confirm, and the item is already Done.
+    scenario.boundary.fail('moveTo', {
+      lands: true,
+      times: 1,
+      message: 'the answer to the status move was lost',
+    });
+
+    const first = only(await scenario.pass().run(AbortSignal.timeout(30_000)));
+    expect(first.status, first.detail).toBe('attention');
+    expect(scenario.boundary.item.status).toBe('Done');
+
+    const second = await scenario.pass().run(AbortSignal.timeout(30_000));
+
+    // The item left In Review, so the next pass has nothing to do — and no
+    // second transition was ever asked for.
+    expect(second).toHaveLength(0);
+    expect(scenario.boundary.calls('moveTo')).toBe(1);
+    expect(scenario.boundary.item.comments).toHaveLength(1);
+  });
 });

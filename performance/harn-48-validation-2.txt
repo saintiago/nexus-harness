@@ -28,8 +28,8 @@ All matched files use Prettier code style!
  RUN  v5.0.0 E:/projects/nexus-jira-runs/workspaces/HARN-48
 
 
- Test Files  46 passed (46)
-      Tests  1341 passed | 2 skipped (1343)
-   Start at  12:06:19
-   Duration  206.44s (tests 99%, import 1%)
+ Test Files  49 passed (49)
+      Tests  1330 passed | 2 skipped (1332)
+   Start at  13:13:15
+   Duration  167.27s (tests 99%, import 1%)
 

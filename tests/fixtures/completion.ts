@@ -24,6 +24,17 @@ import type { FakeCompletionState } from './local-target.js';
 import { combineStop, ownFixtureOperation } from './lifecycle.js';
 import { createTempDir } from '../support.js';
 
+/**
+ * The bound one case states for itself when it makes two or more complete passes
+ * — or arm calls — over the real command boundary: two fixtures' own `gh`
+ * invocations, the polls between them, and the reads the pass makes on each
+ * side. It is that case's own work, not a layer-wide deadline: every case that
+ * makes a single pass keeps the default five seconds, and the layer's cap is a
+ * scheduling policy that no case asserts on. `notes/test-layers.md` records the
+ * rule and the budget it belongs to.
+ */
+export const TWO_PASSES_TIMEOUT_MS = 10_000;
+
 // ---------------------------------------------------------------------------
 // The configuration and the GitHub state the tests drive
 // ---------------------------------------------------------------------------

@@ -284,11 +284,14 @@ export function inMemoryCompletion(options: {
         return 'left-alone';
       }
       const failed = met('moveTo');
-      if (failed !== null) refuse('moveTo', failed);
+      // A write whose answer was lost may still have landed: `lands` says Jira
+      // performed the transition and the answer never arrived.
+      if (failed !== null && failed.lands !== true) refuse('moveTo', failed);
       if (item.status !== 'In Review') {
         return 'left-alone';
       }
       item.status = target;
+      if (failed !== null) refuse('moveTo', failed);
       return 'moved';
     },
   };
