@@ -6,6 +6,5 @@ export default defineConfig({
     exclude: ['tests_old/**', 'tests/fixtures/**'],
     environment: 'node',
     maxWorkers: 4,
-    passWithNoTests: true,
   },
 });

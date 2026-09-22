@@ -39,10 +39,14 @@ reference material, excluded from test discovery, type checking, linting and for
 not an alternate gate and should not be copied back wholesale. Recover their required behavior
 coverage at the appropriate layer; discard duplication and assertions tied only to implementation.
 
-While there are no rebuilt suites, validation explicitly has no active automated tests. Formatting,
-linting, type checking and build checks continue. This temporary state is not a regression-suite
-pass. Remove empty-suite acceptance when the first active suites are introduced, and keep new
-coverage enabled as it is rebuilt.
+The rebuilt unit layer lives under `tests/` and runs in normal validation: configuration and input
+validation, queue and run state transitions, repair and escalation decisions, review and completion
+decisions, and conversation-history rules are decided there with explicit inputs and supplied
+observations. Validation has no empty-suite acceptance — a validation run that discovers no test is
+a failure, not a pass — and the archived suites whose decisions that layer now carries were removed
+as their coverage was rebuilt. Coverage that still belongs to another layer — the service adapters,
+the process and repository contracts, and the assembled workflows — stays in `tests_old/` as
+reference material for the layer that will own it.
 
 Cache deterministic unit results only when all their inputs are declared. Checks of real process
 or host behavior run fresh. Maintain cache inputs and task selection as suite boundaries change.

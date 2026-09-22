@@ -23,7 +23,6 @@ import type {
   TimeoutEvidence,
   TimeoutLimit,
 } from '../shared/types.js';
-import { inspectWorkspaceChanges } from '../workspace/changes.js';
 import { workspaceStopOf } from '../workspace/errors.js';
 import { GIT_COMMAND_TIMEOUT_MS } from '../workspace/git.js';
 import type { PreparedWorkspace } from '../workspace/prepare.js';
@@ -170,7 +169,10 @@ export function createRunFinalizer(context: RunFinalizerContext) {
         baseCommit: workspace.baseCommit,
         // A run already cancelled still gets a bounded evidence reading. An
         // interrupt arriving during a fresh final reading stops that Git too.
-        paths: await inspectWorkspaceChanges(
+        // The final reading is a collaborator like every other effect of the
+        // run: the loop is composed with the Git-backed one, and a caller
+        // without a working copy to inspect hands its own.
+        paths: await dependencies.inspectWorkspaceChanges(
           workspace,
           callerStop === undefined || callerStop.aborted ? {} : { stop: callerStop },
         ),
