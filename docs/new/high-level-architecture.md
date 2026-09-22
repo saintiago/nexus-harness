@@ -34,6 +34,7 @@ Nexus
     ├── Jira
     ├── GitHub
     ├── Git
+    ├── Processes
     ├── Coding runtime
     └── Notifications
 ```
@@ -53,6 +54,10 @@ Components depend only on explicit public contracts. Each contract has one autho
 owned by its provider; consumers reference it. A component's internal changes must not require
 changes to its consumers while its public contract remains compatible. Routine changes that require
 coordinated redesign of several components indicate that their boundaries need correction.
+
+Each component architecture is independent. Its interface section is the only place that names
+other components, imports their contracts or defines interaction with them. Its internal design
+uses only its own responsibilities and state. System-wide composition and flows are defined here.
 
 OperatorInterface depends on Supervisor's public execution contract and does not need knowledge of
 TaskEngine. Supervisor manages TaskEngine through its own public contract without knowing its
@@ -87,7 +92,7 @@ AgentRuntime. A role's report does not replace the deterministic evidence requir
 
 | Caller or producer | Receiver | Contract boundary |
 | --- | --- | --- |
-| OperatorInterface | Supervisor | Start an execution with mode, target and configuration; request intentional cancellation |
+| OperatorInterface | Supervisor | Start an execution with mode and target against a configuration-bound provider; request intentional cancellation |
 | Supervisor | TaskEngine | Start the engine with execution intent or a verified continuation; request shutdown |
 | TaskEngine | Supervisor | Structured progress, terminal outcome and evidence of confirmed shutdown |
 | Supervisor | OperatorInterface | Execution progress, recovery progress, final outcome and requests for operator action |
@@ -104,6 +109,69 @@ Transport and serialization must preserve the same semantics. Terminal text is n
 protocol. Detailed signatures and record schemas must be prescribed before implementing each
 component boundary.
 
+### Shared interface vocabulary
+
+These are value types used at public boundaries, not a shared state store or business-service
+layer. A component owns the meaning of its domain records. Identifiers are opaque strings;
+timestamps are UTC ISO 8601; durations are nonnegative milliseconds; paths are absolute local
+paths. A task key is never used directly as a filesystem path.
+
+```ts
+type ArtifactRef = {
+  path: string;
+  sha256: string;
+};
+
+type Fault = {
+  code: 'invalid-input' | 'configuration' | 'unavailable' | 'permission'
+      | 'conflict' | 'invalid-data' | 'timeout' | 'cancelled'
+      | 'uncertain' | 'internal';
+  message: string;
+  effects: 'none' | 'possible';
+  evidence: readonly ArtifactRef[];
+};
+
+type Result<T> =
+  | { ok: true; value: T }
+  | { ok: false; fault: Fault };
+
+type Shutdown = {
+  state: 'confirmed' | 'unconfirmed';
+  evidence: readonly ArtifactRef[];
+};
+
+type Observer<E> = (event: E) => void;
+```
+
+ArtifactRef identifies an immutable, deliberately exported file. Its producer finishes and hashes
+the file before publishing the reference; the receiver verifies identity and content before use.
+It is not permission to traverse the producer's private storage. Missing or altered artifacts are
+explicit faults. Mutable workspace locations are separate values and are never ArtifactRefs.
+
+Expected failures are returned as data. An implementation exception at a component boundary becomes
+an internal fault with retained evidence; it does not imply that effects were rolled back. Fault
+messages and artifacts exclude credentials. An operation with a known ordinary negative result
+returns that domain result rather than a transport fault.
+
+Observers carry progress, never permission or authoritative completion evidence. Observer failure
+is isolated from execution. Delivery may be coalesced or interrupted; full reports remain durable
+and the returned result is authoritative. A component must not wait indefinitely for presentation.
+Cancellation is explicit through AbortSignal; it is not inferred from an observer disappearing.
+
+Shutdown describes the work a component actually owns. A process exit is not proof that its child
+writers have stopped. Unconfirmed shutdown prohibits a replacement writer, including recovery.
+Aborting an external write does not establish that the remote effect did not happen.
+
+Public contracts use newline-delimited JSON across process boundaries. Every envelope contains
+`version: 1`, `invocationId` and `kind`. The parent sends `kind: 'start'` with `request`, or
+`kind: 'cancel'` with `reason`; the child sends `kind: 'event'` with `event`, or `kind: 'result'`
+with `result`. A child accepts one start request. Progress and result records use stdout;
+diagnostics use stderr. A parent-side transport bridge provides the
+same interface as an in-process provider, validates messages and confirms process shutdown. It
+contains no recovery or task policy. A missing, malformed or mismatched result is a failed invocation,
+even when the child exited zero. The bridge also checks cancellation and exit evidence before
+accepting a reported success. There is no network service or message broker in this design.
+
 TaskEngine emits structured facts about its work. It does not choose colors, terminal layout or
 human-readable progress sentences. OperatorInterface renders Supervisor's execution view and sends explicit
 commands; it does not infer engine state from log wording. Changing presentation must not change
@@ -118,13 +186,14 @@ calls another component's internals or reads its private records to bypass the p
 Finite Run is a Nexus execution mode: process eligible work serially and finish when a fresh
 inspection establishes that no eligible work remains. It does not reserve a fixed batch at startup.
 
-1. OperatorInterface sends Supervisor a start command selecting Finite Run and its configuration.
+1. Application startup binds configuration and dependencies. OperatorInterface sends Supervisor
+   a start command selecting Finite Run.
 2. Supervisor starts one TaskEngine with that execution intent.
 3. TaskEngine selects one eligible task, carries it through implementation, ordinary repair,
    review, delivery and verified completion, then inspects the queue again.
 4. TaskEngine sends structured progress to Supervisor, which maps it into the execution view
    exposed to OperatorInterface.
-5. When the queue is confirmed empty, TaskEngine returns a completed outcome. Supervisor confirms
+5. When the queue is confirmed empty, TaskEngine returns a drained outcome. Supervisor confirms
    its shutdown and OperatorInterface presents the result.
 
 A source failure or an invalid task is not proof that the queue is empty. Ordinary failed checks

@@ -6,6 +6,11 @@ If code contradicts documentation, correct the code.
 ## Purpose and design
 
 - [Proposed high-level architecture](docs/new/high-level-architecture.md): target composition, component contracts and execution modes.
+- [Proposed OperatorInterface design](docs/new/operator-interface.md): commands, execution presentation and terminal ownership.
+- [Proposed Supervisor design](docs/new/supervisor.md): execution lifecycle, recovery and restart decisions.
+- [Proposed TaskEngine design](docs/new/task-engine.md): task lifecycle, ordinary repairs, history and completion evidence.
+- [Proposed AgentRuntime design](docs/new/agent-runtime.md): role interfaces, profiles, permissions and invocation lifecycle.
+- [Proposed Adapters design](docs/new/adapters.md): external operations, protocol translation and observed outcomes.
 - [Long-term vision](docs/LONG_TERM_VISION.md): future purpose and direction; not current behavior.
 - [Architecture](docs/architecture.md): design principles, ownership, testing and tech stack.
 - [Components](docs/components.md): responsibilities and required behavior.
