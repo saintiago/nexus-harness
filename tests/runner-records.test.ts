@@ -149,13 +149,14 @@ describe('the collaborators a run is given', () => {
     expect(result.reason).toBe('every configured check passed after the implementation turn');
     expect(result.reportPath).toBe(path.join(run.runDir, 'result.json'));
 
-    expect(preflights).toEqual([
-      {
-        repoPath,
-        workDir,
-        bounds: { deadlineMs: clock.getTime() + minutes(60), now: expect.any(Function) },
-      },
-    ]);
+    // The source check is bounded by the run's own deadline, read from the
+    // run's clock, and carries the fixture's live lifecycle stop beside it.
+    expect(preflights).toHaveLength(1);
+    expect(preflights[0]?.repoPath).toBe(repoPath);
+    expect(preflights[0]?.workDir).toBe(workDir);
+    expect(preflights[0]?.bounds?.deadlineMs).toBe(clock.getTime() + minutes(60));
+    expect(preflights[0]?.bounds?.now?.()).toEqual(clock);
+    expect(preflights[0]?.bounds?.stop?.aborted).toBe(false);
     expect(allocations).toEqual([workDir]);
     // The working copy was given its commit identity before the baseline ran.
     expect(identities).toEqual([workspace.workspacePath]);

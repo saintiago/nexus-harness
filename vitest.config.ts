@@ -21,6 +21,7 @@ import { configDefaults, defineConfig } from 'vitest/config';
  */
 const policyFiles = [
   'tests/activity.test.ts',
+  'tests/baseline-findings.test.ts',
   'tests/boundaries.test.ts',
   'tests/completion-cli.test.ts',
   'tests/completion-config.test.ts',
@@ -35,6 +36,8 @@ const policyFiles = [
   'tests/queue-recovery.test.ts',
   'tests/queue.test.ts',
   'tests/report.test.ts',
+  'tests/reviews.test.ts',
+  'tests/runner-policy.test.ts',
   'tests/stop.test.ts',
   'tests/support.test.ts',
 ];
