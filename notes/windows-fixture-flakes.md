@@ -454,8 +454,9 @@ reads a bare PID, which a recycled PID on this host can make read as running).
 
 ### The same evening: that open class fired once, on the repaired revision
 
-The first `npm run validate` after the repair (the cached run recorded in
-`performance/harn-49-deadline-repair-validate.txt`) replayed nine of its ten tasks and failed the
+The first `npm run validate` after the repair (kept as
+`performance/harn-49-deadline-repair-validate-flake.txt`; the same code's next cached run, in
+`...-validate.txt`, replays seven of ten and passes) replayed nine of its ten tasks and failed the
 fresh boundary layer on one case:
 
 ```

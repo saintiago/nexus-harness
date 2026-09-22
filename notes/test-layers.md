@@ -828,15 +828,19 @@ This round's runs, on the delivered revision and from a clean working tree: `npm
 — 10 tasks, 0 cached, exit 0, **1,385 passed and 2 skipped**, 4 m 45.6 s of Turborepo time, the
 boundary layer 802 passed and 2 skipped over 37 files in 261.9 s
 ([transcript](../performance/harn-49-deadline-repair-validate-fresh.txt)) — and then `npm run
-validate` unchanged — 10 tasks, **9 cached**, the boundary layer executing fresh
-([transcript](../performance/harn-49-deadline-repair-validate.txt)). That cached run failed one
-case, `fixture-lifecycle.test.ts > cleans up after the cases that must fail, time out or cancel`, on
-the bare-PID liveness reading this map's notes already keep open (a recycled PID answering for a
-process that had ended; the run left no `dist/cli.js` process behind and the file passed 4/4 on its
-own immediately afterwards in 78.56 s). It is recorded rather than smoothed over, and it is not a
-task-cache hit: the task it is in is the one the gate always executes. The policy layer is 581
-cases now: the configuration group's 144 carry the contract checks, and the other four groups are
-unchanged (160, 131, 24, 122).
+validate` on the committed revision — 10 tasks, **7 cached** (the record files this round edited
+are inputs of `format:check`, the configuration group and `test:boundary`), the boundary layer
+executing fresh: 802 passed and 2 skipped in 243.7 s
+([transcript](../performance/harn-49-deadline-repair-validate.txt)). An earlier cached run of the
+same code replayed 9 of 10 and failed one case, `fixture-lifecycle.test.ts > cleans up after the
+cases that must fail, time out or cancel`, on the bare-PID liveness reading this map's notes
+already keep open (a recycled PID answering for a process that had ended; the run left no
+`dist/cli.js` process behind and the file passed 4/4 on its own immediately afterwards in 78.56 s,
+kept as
+[harn-49-deadline-repair-validate-flake.txt](../performance/harn-49-deadline-repair-validate-flake.txt)).
+It is recorded rather than smoothed over, and it is not a task-cache hit: the task it is in is the
+one the gate always executes. The policy layer is 581 cases now: the configuration group's 144
+carry the contract checks, and the other four groups are unchanged (160, 131, 24, 122).
 
 The single-pool `test:four-workers` comparison was not re-measured for HARN-49: it is a measurement
 command, not part of the gate, and this ticket's claims rest on the two runs above.

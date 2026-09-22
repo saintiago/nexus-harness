@@ -430,15 +430,19 @@ round's runs are on the delivered revision: `npm run validate:fresh` with 0
 cached of 10, exit 0, in `4 m 45.6 s` (boundary 802 passed and 2 skipped in
 261.9 s) —
 [transcript](../performance/harn-49-deadline-repair-validate-fresh.txt) — and
-then `npm run validate` unchanged, with 9 cached of 10 and the boundary layer
-executing fresh —
-[transcript](../performance/harn-49-deadline-repair-validate.txt). The cached run
-failed one boundary case, `fixture-lifecycle.test.ts > cleans up after the cases
-that must fail, time out or cancel`, on the bare-PID liveness reading
-`notes/windows-fixture-flakes.md` records as open; the run left no leftover
-process, and that file passed 4/4 on its own immediately afterwards. It is the
-layer the gate always executes, so it is not a cached result that failed, and it
-is recorded rather than smoothed over. The withdrawn round's runs, which measured
+then `npm run validate` on the committed revision, with 7 cached of 10 (the
+evidence and record files this round edited are inputs of `format:check`, the
+configuration group and `test:boundary`) and the boundary layer executing fresh:
+802 passed and 2 skipped in 243.7 s, `4 m 9.8 s` of Turborepo time —
+[transcript](../performance/harn-49-deadline-repair-validate.txt). An earlier
+cached run on the same code replayed 9 of 10 tasks and failed one boundary case,
+`fixture-lifecycle.test.ts > cleans up after the cases that must fail, time out or
+cancel`, on the bare-PID liveness reading `notes/windows-fixture-flakes.md`
+records as open; that run left no leftover process, and the file passed 4/4 on
+its own immediately afterwards. It is the layer the gate always executes, so it
+was not a cached result that failed; its transcript is kept as
+[harn-49-deadline-repair-validate-flake.txt](../performance/harn-49-deadline-repair-validate-flake.txt)
+rather than smoothed over. The withdrawn round's runs, which measured
 the layer-wide 15 s default, stay in
 [harn-49-timeout-repair-validate.txt](../performance/harn-49-timeout-repair-validate.txt),
 [harn-49-timeout-repair-validate-fresh.txt](../performance/harn-49-timeout-repair-validate-fresh.txt)
