@@ -218,9 +218,19 @@ describe('what a refused answer is classified as', () => {
   }, 60_000);
 
   it('refuses a redirect instead of following the credential to another host', async () => {
+    // The destination is a real service on this host, not an address that
+    // cannot be dialled: it answers a request that reached it with a good
+    // answer, so following the redirect would be observable here — the call
+    // would succeed, and this service would have received the request — rather
+    // than failing the same way the refusal does.
+    const elsewhere = await startLocalService(() => ({
+      status: 200,
+      body: JSON.stringify({ key: 'HARN-1', summary: 'an answer from somewhere else' }),
+    }));
+    started.push(elsewhere);
     const { client, service } = await gateway(() => ({
       status: 302,
-      headers: { Location: 'http://127.0.0.1:1/elsewhere' },
+      headers: { Location: `${elsewhere.origin}/elsewhere` },
     }));
 
     const error = await failureOf(() =>
@@ -233,8 +243,11 @@ describe('what a refused answer is classified as', () => {
 
     expect(error.kind).toBe('retryable-read');
     expect(error.message).toContain('did not complete');
-    // The redirect was refused, not followed: nothing was sent anywhere else.
+    // The redirect was refused, not followed: the configured site answered
+    // once, and the other host was never asked — no request and no credential
+    // was carried to it.
     expect(service.requests).toHaveLength(1);
+    expect(elsewhere.requests).toHaveLength(0);
   }, 60_000);
 
   it('is a failure this connector will not guess about when the answer is not JSON', async () => {

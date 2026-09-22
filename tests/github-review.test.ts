@@ -217,17 +217,30 @@ describe('what a refused answer is classified as', () => {
   }, 60_000);
 
   it('refuses a redirect instead of following the App’s token to another host', async () => {
+    // The destination is a real service on this host, not an address that
+    // cannot be dialled: it answers a request that reached it with a valid
+    // installation token, so following the redirect would be observable here —
+    // the call would succeed with that token, and this service would have
+    // received the request — rather than failing the same way the refusal does.
+    const elsewhere = await startLocalService(() => ({
+      status: 201,
+      body: JSON.stringify({ token: 'a-token-from-somewhere-else', expires_at: EXPIRES_AT }),
+    }));
+    started.push(elsewhere);
     const { client, service } = await reviewing(() => ({
       status: 302,
-      headers: { Location: 'http://127.0.0.1:1/elsewhere' },
+      headers: { Location: `${elsewhere.origin}/elsewhere` },
     }));
 
     const error = await failureOf(() => client.installationToken(new AbortController().signal));
 
     expect(error.kind).toBe('api');
     expect(error.message).toContain('did not complete');
-    // The redirect was refused, not followed: nothing was sent anywhere else.
+    // The redirect was refused, not followed: the App's own installation
+    // endpoint answered once, and the other host was never asked — no request
+    // and nothing the App signed was carried to it.
     expect(service.requests).toHaveLength(1);
+    expect(elsewhere.requests).toHaveLength(0);
   }, 60_000);
 
   it('reports a stopped read as a stop, not as a statement about the repository', async () => {
