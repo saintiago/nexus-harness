@@ -179,6 +179,6 @@ committed file to work around an installation problem.
   project-owned file and [examples/jira-description.md](../examples/jira-description.md) for the
   issue format. This repository's own [nexus.project.json](../nexus.project.json) is a worked
   example.
-- Installation and operator setup: [README.md](../README.md). That document is maintainer
+- Installation and operator setup: [Operations](operations.md). That document is maintainer
   material for the person running the installation, including the installation-wide contract;
   its setup sections are not project connection steps.

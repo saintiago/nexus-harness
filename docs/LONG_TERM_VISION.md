@@ -59,7 +59,7 @@ It should escalate when human judgment is genuinely useful.
 
 **Simple.** Prefer the smallest design that solves a real problem. Do not build future infrastructure speculatively.
 
-**Deterministic where possible.** Use normal software for reliable orchestration; use models where reasoning is valuable.
+**Deterministic where simple and reliable.** Keep clear rules in ordinary software. Use AI for investigation and judgment when deterministic handling would become brittle or require an expanding collection of special cases. Keep execution and verification reliable.
 
 **Evidence-driven.** An interesting idea is not an improvement. Prefer hypotheses, experiments, baselines, and measurable outcomes.
 
@@ -89,7 +89,7 @@ Reason from **goal → problem → hypothesis → evidence → intervention** wh
 
 ## Experiment Before Infrastructure
 
-When uncertainty is meaningful, seek the cheapest evidence that could change the decision.
+When uncertainty is meaningful, seek the cheapest evidence that could change the decision. Match the investigation to the task: this principle does not require every implementation to include a benchmark campaign or new measurement tooling.
 
 Possible methods include historical replay, benchmarks, prototypes, temporary branches, simulations, shadow runs, or controlled rollout.
 

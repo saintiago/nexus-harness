@@ -110,19 +110,6 @@ Do not alter unrelated Jira work, use real application changes as a disposable f
 
 **Verify:** Report concrete commands, exit codes, issue keys, local run IDs/artifact paths, mapping evidence, observed Jira outcome, exact-byte/diff assertion results, and whether the later-issue/restart checks ran. Keep tokens and headers out. Do not claim T16 or the Jira live path passed based on mocks.
 
-**Status, 2026-09-17.** The read-only half has been exercised against the operator's own queue
-(`HARN`, on a site whose default language is not English): `source list` read the real queue through
-a service-account token, and — after the language fix this exercise surfaced — reported `HARN-1` as
-valid and unattempted. The first run reported it `stale`, because the queue's JQL matched the
-canonical names while the site answered with translated ones; that defect and its evidence are
-recorded in [README.md](../README.md). That read changed nothing. Since then, real Jira-driven runs
-have claimed HARN-2, commented on it, and moved it through its statuses, and one continued its
-retained workspace and left a local commit there; [README.md](../README.md) and
-[implement-workspace-continuation.md](implement-workspace-continuation.md) record that evidence and
-its limits. The supervised exercise above is still **not run as written**: it needs a disposable
-repository and an inspected queue, and its exact-byte assertion, restart check, and watch cycle have
-no live evidence.
-
 ## Definition of done
 
 The updated implementation preserves file-task behavior and implements source list, finite source run, and foreground source watch through one Jira adapter and the existing runner. Offline tests prove mapping, serial intake, duplicate prevention, API errors, secret handling, and cancellation. Docs/examples match real help and validation behavior. Live verification has either explicit evidence or an honest not-run explanation.

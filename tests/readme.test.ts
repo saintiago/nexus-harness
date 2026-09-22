@@ -1,8 +1,8 @@
 /**
  * The operating document, verified against the thing it documents.
  *
- * README.md is what a user follows, so it is checked the way a user finds out it
- * is wrong: the disposable example is read out of the README itself — its files,
+ * The operating guide is checked the way a reader finds out it
+ * is wrong: the disposable example is read out of the GUIDE itself — its files,
  * its commands, its printed outcome block — then written, committed, and run
  * through the built CLI. This suite holds no second copy of the example, so a
  * documented file that stops working, a documented command whose options the CLI
@@ -16,7 +16,7 @@
  * the layout the CLI really produces. Nothing here needs credentials, and nothing
  * here contacts a provider.
  *
- * Also checked, because each is a claim the README makes about this repository:
+ * Also checked, because each is a claim the GUIDE makes about this repository:
  * every command it names exists, the help and usage behaviour it describes is
  * what the CLI does, every local link and in-page anchor resolves, the checked-in
  * example inputs still load and are what the shown `check-config` block reports,
@@ -44,7 +44,7 @@ import {
 import type { FakePlan, FakeState } from './fixtures/local-target.js';
 import { cleanupTempDirectories, createTempDir, repoRoot } from './support.js';
 
-const README = path.join(repoRoot, 'README.md');
+const GUIDE = path.join(repoRoot, 'docs', 'operations.md');
 
 /** The disposable example's own root, as the document writes it. */
 const DOCUMENTED_ROOT = '/tmp/nexus-demo';
@@ -55,12 +55,12 @@ const DEMO_SECTION = 'Try it on a disposable project';
 /** How long the documented example may take to run. */
 const RUN_TIMEOUT_MS = 120_000;
 
-/** The README, read once: every test below reads the same document. */
-let readme = '';
+/** The GUIDE, read once: every test below reads the same document. */
+let guide = '';
 
 beforeAll(async () => {
   ensureBuiltCli();
-  readme = await readFile(README, 'utf8');
+  guide = await readFile(GUIDE, 'utf8');
 });
 
 afterAll(async () => {
@@ -71,11 +71,11 @@ afterAll(async () => {
 // Reading the document
 // ---------------------------------------------------------------------------
 
-/** The part of the README under its `## <heading>` line, up to the next `## `. */
+/** The part of the GUIDE under its `## <heading>` line, up to the next `## `. */
 function section(heading: string): string {
-  const lines = readme.split('\n');
+  const lines = guide.split('\n');
   const start = lines.findIndex((line) => line.trimEnd() === `## ${heading}`);
-  expect(start, `README.md has no "## ${heading}" section`).toBeGreaterThanOrEqual(0);
+  expect(start, `operations.md has no "## ${heading}" section`).toBeGreaterThanOrEqual(0);
 
   let end = lines.length;
   for (let index = start + 1; index < lines.length; index += 1) {
@@ -143,7 +143,7 @@ function documentedOutcomeBlock(text: string): string {
   const block = fencedBlocks(text).find((candidate) =>
     /^\d{2}:\d{2}:\d{2} run run-\S+: \S+$/m.test(candidate),
   );
-  expect(block, 'README.md shows no run outcome block').toBeDefined();
+  expect(block, 'operations.md shows no run outcome block').toBeDefined();
   return block ?? '';
 }
 
@@ -172,7 +172,7 @@ function documentedArguments(text: string, command: string): readonly string[] {
   const line = text
     .split('\n')
     .find((candidate) => candidate.startsWith(`npm start -- ${command}`));
-  expect(line, `README.md documents no \`npm start -- ${command}\` command`).toBeDefined();
+  expect(line, `operations.md documents no \`npm start -- ${command}\` command`).toBeDefined();
   return (line ?? '')
     .replace(/^npm start -- /, '')
     .trim()
@@ -472,14 +472,14 @@ describe('the documented disposable example', () => {
   );
 });
 
-describe('the claims the README makes about this repository', () => {
+describe('the claims the operating guide makes about this repository', () => {
   it('names only commands that exist', async () => {
     const pkg = JSON.parse(await readFile(path.join(repoRoot, 'package.json'), 'utf8')) as {
       scripts: Record<string, string>;
     };
 
     const named = new Set(
-      [...readme.matchAll(/npm run ([a-z][a-z0-9:-]*)/g)].map((match) => match[1] ?? ''),
+      [...guide.matchAll(/npm run ([a-z][a-z0-9:-]*)/g)].map((match) => match[1] ?? ''),
     );
     expect(named.size).toBeGreaterThan(5);
     for (const script of named) {
@@ -489,14 +489,14 @@ describe('the claims the README makes about this repository', () => {
     expect(pkg.scripts.start).toBeDefined();
     expect(pkg.scripts.test).toBeDefined();
     for (const command of ['npm start', 'npm test', 'npm ci']) {
-      expect(readme).toContain(command);
+      expect(guide).toContain(command);
     }
   });
 
   it('prints help and refuses a missing option exactly as it says', () => {
     // "`npm start -- --help` prints the full usage text, and `npm start -- run`
     // with a missing option prints a usage error and exits `2`."
-    expect(readme).toContain('`npm start -- --help` prints the full usage text');
+    expect(guide).toContain('`npm start -- --help` prints the full usage text');
 
     const help = spawnSync(process.execPath, [BUILT_CLI, '--help'], {
       cwd: repoRoot,
@@ -520,11 +520,11 @@ describe('the claims the README makes about this repository', () => {
   });
 
   it('links only to files and headings that exist', () => {
-    const links = [...readme.matchAll(/\]\(([^)\s]+)\)/g)].map((match) => match[1] ?? '');
+    const links = [...guide.matchAll(/\]\(([^)\s]+)\)/g)].map((match) => match[1] ?? '');
     expect(links.length).toBeGreaterThan(5);
 
     const headings = new Set(
-      readme
+      guide
         .split('\n')
         .filter((line) => /^#{1,6} /.test(line))
         .map((line) =>
@@ -539,16 +539,17 @@ describe('the claims the README makes about this repository', () => {
 
     for (const link of links) {
       if (link.startsWith('#')) {
-        expect(headings, `README.md has no heading for ${link}`).toContain(link.slice(1));
+        expect(headings, `operations.md has no heading for ${link}`).toContain(link.slice(1));
         continue;
       }
       if (/^[a-z][a-z0-9+.-]*:/i.test(link)) {
         continue; // An external URL: nothing local to check.
       }
       const [file = ''] = link.split('#');
-      expect(existsSync(path.join(repoRoot, file)), `README.md links to a missing ${file}`).toBe(
-        true,
-      );
+      expect(
+        existsSync(path.join(path.dirname(GUIDE), file)),
+        `operations.md links to a missing ${file}`,
+      ).toBe(true);
     }
   });
 
@@ -582,14 +583,14 @@ describe('the claims the README makes about this repository', () => {
     // Every line the CLI prints is a line the document shows.
     for (const line of printed.split('\n')) {
       if (line.trim() !== '') {
-        expect(shown, `the README does not show the CLI's line: ${line}`).toContain(line);
+        expect(shown, `the GUIDE does not show the CLI's line: ${line}`).toContain(line);
       }
     }
 
     // And every value the block shows is the value the inputs really carry.
     const shows = (label: string, value: string): void => {
       expect(outcomeLine(printed, label), `the CLI printed no "${label}" line`).toBe(value);
-      expect(shown, `the README does not show ${label} as ${value}`).toContain(value);
+      expect(shown, `the GUIDE does not show ${label} as ${value}`).toContain(value);
     };
     shows('workDir', `${asDocumentedOutput(resolved)} (resolved from this file)`);
     shows('maxRepairs', String(config.maxRepairs));
@@ -610,17 +611,17 @@ describe('the claims the README makes about this repository', () => {
     expect(workflow).toContain('npm ci');
     expect(workflow).toContain('npm run validate');
     expect(workflow).toContain('node-version-file: .nvmrc');
-    expect(readme).toContain('npm ci');
-    expect(readme).toContain('npm run validate');
-    expect(readme).toContain('.nvmrc');
-    // The version the README says everything was run on is the one .nvmrc pins.
-    expect(readme).toContain(nvmrc);
+    expect(guide).toContain('npm ci');
+    expect(guide).toContain('npm run validate');
+    expect(guide).toContain('.nvmrc');
+    // The version the GUIDE says everything was run on is the one .nvmrc pins.
+    expect(guide).toContain(nvmrc);
   });
 
   it('keeps offline evidence and live evidence apart', () => {
     const verified = section('What is verified, and what is not');
     expect(verified).toContain('Verified offline');
-    expect(verified).toContain('Not verified anywhere yet');
+    expect(verified).toContain('Live behavior requires evidence from actual provider execution');
     expect(verified).toContain('npm run test:live');
 
     const safety = section('Safety, limits, and what a run does to your machine');
@@ -638,10 +639,10 @@ function count(value: number, noun: string): string {
 
 /** The `check-config` command the document shows, as its arguments after `--`. */
 function documentedCheckConfig(): readonly string[] {
-  const line = readme
+  const line = guide
     .split('\n')
     .find((candidate) => candidate.startsWith('npm start -- check-config'));
-  expect(line, 'README.md documents no `npm start -- check-config` command').toBeDefined();
+  expect(line, 'operations.md documents no `npm start -- check-config` command').toBeDefined();
   return (line ?? '')
     .replace(/^npm start -- /, '')
     .trim()

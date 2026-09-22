@@ -1,17 +1,7 @@
 # Module structure
 
-**What this is.** The `src/` tree as it stands after the layout refactor of HARN-1: the folders a
-developer sees, what each one owns, and how to add the next task source or coding runtime without
-reading a thousand-line file first.
-
-**What this is not.** It defines no behaviour. [spec.md](spec.md) is the behaviour,
-[WORKFLOW.md](WORKFLOW.md) the JSON inputs, and [architecture.md](architecture.md) the ownership and
-extension rules; where this document and those disagree about behaviour, they win. This document
-describes where the code lives, and it is kept current with the tree.
-
-The refactor moved code and split files. It did not change the loop, the CLI, the Jira connector, the
-Codex adapter, or a single behaviour, and the whole suite (`npm run validate`) stayed the gate that
-decided it.
+This reference describes source ownership. The [spec](spec.md) defines behavior and the
+[architecture](architecture.md) defines design principles. File size is not a design rule.
 
 ## 1. Source tree
 
@@ -19,103 +9,103 @@ Line counts are indicative, not a rule: they are here to show where the substanc
 
 ```text
 src/
-  cli.ts                          (161)  entry point: dispatch, bootstrap, exit code
+  cli.ts  entry point: dispatch, bootstrap, exit code
   cli/
-    context.ts                    (125)  exit codes, CliIo, the terminal, interrupt signals, CliContext
-    help.ts                       (68)   the usage text and the hint that points at it
-    options.ts                    (105)   each command's option table and the argument parser
-    check-config.ts               (97)   `check-config` and what it prints
-    run-command.ts                (224)  `run`: load the inputs, install the stop, print the outcome
-    source-command.ts             (379)  `source list|run|watch`, the connector selection, abortable sleep
-    review-command.ts             (273)  `review scan|watch`: the App client, the reviewer, the scan
-    queue-command.ts              (816)  `queue run|watch`: the three credentials, the lock, the four phases
-    activity.ts                   (604)  the activity timeline: one bounded, timestamped pane per invocation
-    progress.ts                   (136)  what a run's own progress line reads as on an interactive terminal
-    dependencies.ts               (168)  the loop's real collaborators and the wrapped set a test gets
-    signals.ts                    (28)   host SIGINT/SIGTERM/SIGBREAK handling
+    context.ts  exit codes, CliIo, the terminal, interrupt signals, CliContext
+    help.ts   the usage text and the hint that points at it
+    options.ts   each command's option table and the argument parser
+    check-config.ts   `check-config` and what it prints
+    run-command.ts  `run`: load the inputs, install the stop, print the outcome
+    source-command.ts  `source list|run|watch`, the connector selection, abortable sleep
+    review-command.ts  `review scan|watch`: the App client, the reviewer, the scan
+    queue-command.ts  `queue run|watch`: the three credentials, the lock, the four phases
+    activity.ts  the activity timeline: one bounded, timestamped pane per invocation
+    progress.ts  what a run's own progress line reads as on an interactive terminal
+    dependencies.ts  the loop's real collaborators and the wrapped set a test gets
+    signals.ts   host SIGINT/SIGTERM/SIGBREAK handling
   config/
-    schema.ts                     (216)  zod schemas and the documented defaults
-    load.ts                       (156)  file reading, validation, workDir and agent-executable paths
+    schema.ts  zod schemas and the documented defaults
+    load.ts  file reading, validation, workDir and agent-executable paths
   shared/
-    types.ts                      (636)  the data contracts; data only, no imports, no runtime I/O
-    errors.ts                     (10)    `messageOf`: the one message helper
+    types.ts  the data contracts; data only, no imports, no runtime I/O
+    errors.ts    `messageOf`: the one message helper
   process/
-    launch.ts                     (167)  how one command is started (executable, args, Windows shims)
-    invocation.ts                 (291)  one bounded process invocation, its output, and its stop
-    command.ts                    (106)  one configured command: its two log files and its result
-    stop.ts                       (90)   stopping a process tree this harness started, and the grace
+    launch.ts  how one command is started (executable, args, Windows shims)
+    invocation.ts  one bounded process invocation, its output, and its stop
+    command.ts  one configured command: its two log files and its result
+    stop.ts   stopping a process tree this harness started, and the grace
   checks/
-    round.ts                      (295)  one setup/check round; what a command's result means
+    round.ts  one setup/check round; what a command's result means
   reporting/
-    errors.ts                     (8)    ReportError
-    logs.ts                       (371)  run.log, per-command logs, per-turn agent logs, bounded readings
-    report.ts                     (394)  result.json and source-task.json
-    changes.ts                    (80)   the final change summary and its review warnings
+    errors.ts    ReportError
+    logs.ts  run.log, per-command logs, per-turn agent logs, bounded readings
+    report.ts  result.json and source-task.json
+    changes.ts   the final change summary and its review warnings
   workspace/
-    errors.ts                     (8)    WorkspaceError
-    git.ts                        (296)  git invocation (never a shell), its bounds, path helpers
-    status.ts                     (56)   reading `git status --porcelain -z`
-    preflight.ts                  (153)  preflightSource: a usable source checkout, a safe output path
-    run-directory.ts              (166)  allocateRunDirectory and the run/workspace paths
-    prepare.ts                    (305)  prepareWorkspace: the clone, its branch, the ledger it writes
-    state.ts                      (129)  the workspace ledger: what a clone is, every attempt in it
-    reopen.ts                     (131)  resolveWorkspace/reopenWorkspace: the pointer, the checkout
-    branch.ts                     (267)  the checkout against its recorded branch: read, return, refuse
-    refresh.ts                    (376)  source readiness between tickets: fetch, verify, fast-forward only
-    changes.ts                    (288)  inspectWorkspaceChanges: what the copy differs from its base by
+    errors.ts    WorkspaceError
+    git.ts  git invocation (never a shell), its bounds, path helpers
+    status.ts   reading `git status --porcelain -z`
+    preflight.ts  preflightSource: a usable source checkout, a safe output path
+    run-directory.ts  allocateRunDirectory and the run/workspace paths
+    prepare.ts  prepareWorkspace: the clone, its branch, the ledger it writes
+    state.ts  the workspace ledger: what a clone is, every attempt in it
+    reopen.ts  resolveWorkspace/reopenWorkspace: the pointer, the checkout
+    branch.ts  the checkout against its recorded branch: read, return, refuse
+    refresh.ts  source readiness between tickets: fetch, verify, fast-forward only
+    changes.ts  inspectWorkspaceChanges: what the copy differs from its base by
   runs/
-    contracts.ts                  (430)  run and turn requests/results, the guidance prefix, the feedback deadline, the two errors
-    runner.ts                     (668)  runTask: the loop (prepare or continue -> baseline -> turns -> checks)
-    finalize.ts                   (462)  how a run ends: stop evidence, change summary, report
-    stops.ts                      (113)  the stop request one phase works under, and the stop cause
-    progress.ts                   (152)  timeline lines, reasons, and the counts they carry
-    feedback.ts                   (30)   the failed commands one repair turn is given
+    contracts.ts  run and turn requests/results, the guidance prefix, the feedback deadline, the two errors
+    runner.ts  runTask: the loop (prepare or continue -> baseline -> turns -> checks)
+    finalize.ts  how a run ends: stop evidence, change summary, report
+    stops.ts  the stop request one phase works under, and the stop cause
+    progress.ts  timeline lines, reasons, and the counts they carry
+    feedback.ts   the failed commands one repair turn is given
   sources/
-    contract.ts                   (775)  TaskSource, the ordinary source data and errors, pointer labels
-    receipts.ts                   (238)  the per-project intake lock and one receipt per attempted item
-    eligibility.ts                (81)   what an item is: a first attempt, a continuation, or a refusal
-    guidance.ts                   (104)  what an attempt is told, each bounded: the finding, the thread, attempts
-    baseline.ts                   (1405) the pre-delivery diagnosis: its evidence, one comment, one move
-    coordinator.ts                (1804) runSource and watchSource: discovery, the ladder, publication
-    list.ts                       (88)   the read-only `source list` preview
+    contract.ts  TaskSource, the ordinary source data and errors, pointer labels
+    receipts.ts  the per-project intake lock and one receipt per attempted item
+    eligibility.ts   what an item is: a first attempt, a continuation, or a refusal
+    guidance.ts  what an attempt is told, each bounded: the finding, the thread, attempts
+    baseline.ts the pre-delivery diagnosis: its evidence, one comment, one move
+    coordinator.ts runSource and watchSource: discovery, the ladder, publication
+    list.ts   the read-only `source list` preview
     jira/
-      connector.ts                (48)   createJiraSource: the wiring of the functions below
-      http.ts                     (230)  the gateway client: auth, timeouts, failure classification
-      search.ts                   (109)  the queue JQL and the paged search
-      issue.ts                    (131)  issue reads, eligibility, and the source reference
-      tasks.ts                    (96)   one issue mapped onto the existing four-field Task
-      transitions.ts              (142)  transition discovery, selection by target status, posting
-      comments.ts                 (469)  the thread read, the result, refusal and attention comments
-      baseline.ts                 (35)   the thread, one comment, one move, and whether it is still running
-      labels.ts                   (32)   the workspace pointer label, added once
-      json.ts                     (20)   the narrow readers every Jira answer goes through
-      adf.ts                      (243)  the supported ADF description parser
-      adf-text.ts                 (296)  rendering that description and extracting the criteria
+      connector.ts   createJiraSource: the wiring of the functions below
+      http.ts  the gateway client: auth, timeouts, failure classification
+      search.ts  the queue JQL and the paged search
+      issue.ts  issue reads, eligibility, and the source reference
+      tasks.ts   one issue mapped onto the existing four-field Task
+      transitions.ts  transition discovery, selection by target status, posting
+      comments.ts  the thread read, the result, refusal and attention comments
+      baseline.ts   the thread, one comment, one move, and whether it is still running
+      labels.ts   the workspace pointer label, added once
+      json.ts   the narrow readers every Jira answer goes through
+      adf.ts  the supported ADF description parser
+      adf-text.ts  rendering that description and extracting the criteria
   delivery/
-    github.ts                     (425)  the optional GitHub step: push, find, create or update a PR
+    github.ts  the optional GitHub step: push, find, create or update a PR
   reviews/
-    contract.ts                   (327)  the review data, failures, and the repository/queue boundary
-    github.ts                     (726)  the App JWT, the installation token, and the repository calls
-    diff.ts                       (134)  the pull request's diff, and where a finding is positioned
-    reviewer.ts                   (402)  the reviewer prompt, the one bounded turn, and the verdict file
-    baseline.ts                   (1189) the pre-delivery reviewer turn, its prompt, and its outcome record
-    scan.ts                       (790)  one scan or watch: eligibility, dedup, publishing, evidence
+    contract.ts  the review data, failures, and the repository/queue boundary
+    github.ts  the App JWT, the installation token, and the repository calls
+    diff.ts  the pull request's diff, and where a finding is positioned
+    reviewer.ts  the reviewer prompt, the one bounded turn, and the verdict file
+    baseline.ts the pre-delivery reviewer turn, its prompt, and its outcome record
+    scan.ts  one scan or watch: eligibility, dedup, publishing, evidence
   history/
-    contract.ts                   (420)  the entries, the brief, the snapshot, and the readers boundary
-    paths.ts                      (30)   where one ticket's history and its reports live
-    marker.ts                     (60)   the `nexus-history:` marker both renderings carry
-    store.ts                      (400)  the immutable snapshot store: content hash, files, current.json
-    reports.ts                    (1280) complete developer/reviewer report retention and local reads
-    sync.ts                       (880)  read, deduplicate, authenticate mirrors, brief, write one snapshot
-    prompt.ts                     (190)  the one history section both role prompts carry
+    contract.ts  the entries, the brief, the snapshot, and the readers boundary
+    paths.ts   where one ticket's history and its reports live
+    marker.ts   the `nexus-history:` marker both renderings carry
+    store.ts  the immutable snapshot store: content hash, files, current.json
+    reports.ts complete developer/reviewer report retention and local reads
+    sync.ts  read, deduplicate, authenticate mirrors, brief, write one snapshot
+    prompt.ts  the one history section both role prompts carry
   queue/
-    loop.ts                       (488)  the serial control loop: one current ticket, one phase at a time
+    loop.ts  the serial control loop: one current ticket, one phase at a time
   agents/
     codex/
-      runtime.ts                  (177)  the launch prefix, the two sandbox policies and their narrowing, the environment, the stop contract
-      adapter.ts                  (462)  runCodexTurn/runCodexPrompt: one turn, normalized for the runner
-      prompt.ts                   (178)  what one turn is told, the bounded guidance and the reviewed baseline finding included
-      events.ts                   (355)  the JSON event stream, and the activity lines read from it
+      runtime.ts  the launch prefix, the two sandbox policies and their narrowing, the environment, the stop contract
+      adapter.ts  runCodexTurn/runCodexPrompt: one turn, normalized for the runner
+      prompt.ts  what one turn is told, the bounded guidance and the reviewed baseline finding included
+      events.ts  the JSON event stream, and the activity lines read from it
 ```
 
 Every file is a module with one job. Three files stay deliberately large, because splitting them

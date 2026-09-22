@@ -404,13 +404,3 @@ handing a staged working copy to the next coding turn.
   the workspace cannot make the fast-forward report a reconciliation it did not perform — the
   recorded branch really takes the commit, the checkout ends clean on it, and the repair turn that
   follows starts there.
-- Live: **partly run, 2026-09-19.** A real Jira-driven continuation has happened: run
-  `run-20260919115244-4ff8eedf` claimed HARN-2, reopened workspace `run-20260919100148-e48a9ab0`
-  (same clone, same recorded base `36f62fd`, attempt 2), and the attempt's work is the local commit
-  `f835c33` on that retained branch. Still **not run:** the supervised adoption of HARN-1's existing
-  workspace — its first attempt recorded, the pointer label set, the issue moved back to the ready
-  status, and the next attempt continuing that workspace rather than cloning a new one — and any
-  live watch, restart, or failure scenario. The queue read recorded in [README.md](../README.md) is
-  not this exercise either. Nor has a live run claimed a ticket since the naming change: no real
-  Jira workspace has yet been created under a ticket key, and no live scenario has exercised a
-  held name or a changed key, so the offline coverage above is all the evidence there is for them.
