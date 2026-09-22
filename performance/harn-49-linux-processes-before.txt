@@ -1,30 +1,30 @@
     PID    PPID                  STARTED COMMAND         COMMAND
-      1       0 Tue Sep 22 20:48:04 2026 systemd         /sbin/init
-      2       1 Tue Sep 22 20:48:04 2026 init-systemd(Ne /init
-     42       1 Tue Sep 22 20:48:04 2026 systemd-journal /usr/lib/systemd/systemd-journald
-     88       1 Tue Sep 22 20:48:04 2026 systemd-udevd   /usr/lib/systemd/systemd-udevd
-    152       1 Tue Sep 22 20:48:04 2026 systemd-resolve /usr/lib/systemd/systemd-resolved
-    153       1 Tue Sep 22 20:48:04 2026 systemd-timesyn /usr/lib/systemd/systemd-timesyncd
-    159       1 Tue Sep 22 20:48:04 2026 cron            /usr/sbin/cron -f -P
-    160       1 Tue Sep 22 20:48:04 2026 dbus-daemon     @dbus-daemon --system --address=systemd: --nofork --nopidfile --systemd-activation --syslog-only
-    167       1 Tue Sep 22 20:48:04 2026 systemd-logind  /usr/lib/systemd/systemd-logind
-    182       1 Tue Sep 22 20:48:04 2026 rsyslogd        /usr/sbin/rsyslogd -n -iNONE
-    190       1 Tue Sep 22 20:48:04 2026 agetty          /sbin/agetty -o -p -- \u --noclear - linux
-    198       1 Tue Sep 22 20:48:04 2026 unattended-upgr /usr/bin/python3 /usr/share/unattended-upgrades/unattended-upgrade-shutdown --wait-for-signal
-    240       1 Tue Sep 22 20:48:04 2026 systemd         /usr/lib/systemd/systemd --user
-    241     240 Tue Sep 22 20:48:04 2026 (sd-pam)        (sd-pam)
-    304       2 Tue Sep 22 20:48:05 2026 login           /bin/login -f
-    348     304 Tue Sep 22 20:48:05 2026 bash            -bash
-    368       2 Tue Sep 22 20:48:11 2026 login           /bin/login -f
-    400       1 Tue Sep 22 20:48:11 2026 systemd         /usr/lib/systemd/systemd --user
-    401     400 Tue Sep 22 20:48:11 2026 (sd-pam)        (sd-pam)
-    423     368 Tue Sep 22 20:48:11 2026 bash            -bash
-   2258      88 Tue Sep 22 20:48:53 2026 (udev-worker)   (udev-worker)
-   2259      88 Tue Sep 22 20:48:53 2026 (udev-worker)   (udev-worker)
-   2260      88 Tue Sep 22 20:48:53 2026 (udev-worker)   (udev-worker)
-   2261       2 Tue Sep 22 20:48:56 2026 SessionLeader   /init
-   2262    2261 Tue Sep 22 20:48:56 2026 Relay(2263)     /init
-   2263    2262 Tue Sep 22 20:48:56 2026 runuser         runuser -u aiur -- bash -lc cd /mnt/e/projects/nexus-jira-runs/workspaces/HARN-49 && bash performance/validate-linux.sh > performance/harn-49-linux-validation.txt 2>&1; tail -8 performance/harn-49-linux-validation.txt
-   2273    2263 Tue Sep 22 20:48:56 2026 bash            bash -lc cd /mnt/e/projects/nexus-jira-runs/workspaces/HARN-49 && bash performance/validate-linux.sh > performance/harn-49-linux-validation.txt 2>&1; tail -8 performance/harn-49-linux-validation.txt
-   2279    2273 Tue Sep 22 20:48:56 2026 bash            bash performance/validate-linux.sh
-   2296    2279 Tue Sep 22 20:48:56 2026 ps              ps -eo pid,ppid,lstart,comm,args
+      1       0 Tue Sep 22 21:37:26 2026 systemd         /sbin/init
+      2       1 Tue Sep 22 21:37:26 2026 init-systemd(Ne /init
+     42       1 Tue Sep 22 21:37:26 2026 systemd-journal /usr/lib/systemd/systemd-journald
+     88       1 Tue Sep 22 21:37:26 2026 systemd-udevd   /usr/lib/systemd/systemd-udevd
+    143       1 Tue Sep 22 21:37:26 2026 systemd-resolve /usr/lib/systemd/systemd-resolved
+    144       1 Tue Sep 22 21:37:26 2026 systemd-timesyn /usr/lib/systemd/systemd-timesyncd
+    150       1 Tue Sep 22 21:37:26 2026 cron            /usr/sbin/cron -f -P
+    151       1 Tue Sep 22 21:37:26 2026 dbus-daemon     @dbus-daemon --system --address=systemd: --nofork --nopidfile --systemd-activation --syslog-only
+    158       1 Tue Sep 22 21:37:26 2026 systemd-logind  /usr/lib/systemd/systemd-logind
+    168       1 Tue Sep 22 21:37:26 2026 rsyslogd        /usr/sbin/rsyslogd -n -iNONE
+    175       1 Tue Sep 22 21:37:26 2026 agetty          /sbin/agetty -o -p -- \u --noclear - linux
+    189       1 Tue Sep 22 21:37:26 2026 unattended-upgr /usr/bin/python3 /usr/share/unattended-upgrades/unattended-upgrade-shutdown --wait-for-signal
+    224       1 Tue Sep 22 21:37:26 2026 systemd         /usr/lib/systemd/systemd --user
+    234     224 Tue Sep 22 21:37:26 2026 (sd-pam)        (sd-pam)
+    298       2 Tue Sep 22 21:37:27 2026 login           /bin/login -f
+    346     298 Tue Sep 22 21:37:27 2026 bash            -bash
+    383       2 Tue Sep 22 21:37:34 2026 login           /bin/login -f
+    415       1 Tue Sep 22 21:37:34 2026 systemd         /usr/lib/systemd/systemd --user
+    416     415 Tue Sep 22 21:37:34 2026 (sd-pam)        (sd-pam)
+    438     383 Tue Sep 22 21:37:34 2026 bash            -bash
+    510       2 Tue Sep 22 21:37:54 2026 SessionLeader   /init
+    511     510 Tue Sep 22 21:37:54 2026 Relay(516)      /init
+    512      88 Tue Sep 22 21:37:54 2026 (udev-worker)   (udev-worker)
+    513      88 Tue Sep 22 21:37:54 2026 (udev-worker)   (udev-worker)
+    514      88 Tue Sep 22 21:37:54 2026 (udev-worker)   (udev-worker)
+    515      88 Tue Sep 22 21:37:54 2026 (udev-worker)   (udev-worker)
+    516     511 Tue Sep 22 21:37:54 2026 bash            bash -lc cd /home/aiur/harn49-linux-check && npm ci --cache /home/aiur/.npm-harn49 2>&1 | tail -3 && bash performance/validate-linux.sh 2>&1
+    552     516 Tue Sep 22 21:37:58 2026 bash            bash performance/validate-linux.sh
+    569     552 Tue Sep 22 21:37:58 2026 ps              ps -eo pid,ppid,lstart,comm,args

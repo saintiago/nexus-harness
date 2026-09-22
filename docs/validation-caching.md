@@ -294,13 +294,14 @@ their raw transcripts are named in each row.
 | Another runtime cannot reuse an earlier result               | Same fixture through a PATH whose `node` reports a different version                     | `cache miss, executing`; the first runtime's result is still there afterwards |
 | An unobservable runtime stops the gate                       | Same fixture with a PATH that resolves no `node`                                         | Nonzero exit, the message names `node --version`, the task did not run  |
 | The manifest and the lockfile are inputs                     | Fixture: change `package.json`'s version, then the lockfile, rerun                        | Miss after each; the task executes                                       |
-| A relevant source edit invalidates the work it affects       | `--dry` hashes before and after an edit to `src/cli.ts`                                   | Every task's hash changes; the boundary layer runs in any case          |
-| A test-file edit invalidates one group, not all              | `--dry` hashes with one policy test file edited                                          | That group's hash changed; the other four kept theirs                   |
+| A relevant source edit invalidates the work it affects       | `--dry` hashes before and after an edit to `src/cli/options.ts`                          | Every one of the ten tasks changed its hash                             |
+| A test-file edit invalidates one group, not all              | `--dry` hashes with one comment added to `tests/queue.test.ts`                            | That group changed, plus the checks that read every file (format, lint, type check) and the boundary task; the other four groups kept their hashes |
 | A documentation edit invalidates the group that reads it     | `--dry` hashes with `docs/connect-a-project.md` edited                                   | The configuration group's hash changed; the other groups did not        |
 | A declared environment value invalidates the test tasks      | `--dry` hashes with `TZ` set                                                             | The five test tasks changed their hash; the other tasks did not         |
 | The native lint cache is invalidated by a configuration change | Add a rule to `eslint.config.js`, run `npm run lint`                                    | Every file re-linted; a comment in the same file did not invalidate anything |
-| The native lint cache survives unchanged files               | `npm run lint` twice                                                                     | Warm run re-checks only what changed                                    |
-| Incremental type checking works                              | `npm run typecheck` twice                                                                | 2.8 s cold, 1.1 s warm — the check-only program keeps its state          |
+| The native lint cache survives unchanged files               | `npm run lint` twice                                                                     | 3.35 s cold, 1.26 s warm                                                |
+| Incremental type checking works                              | `npm run typecheck` twice                                                                | 3.04 s cold, 1.15 s warm — the check-only program keeps its state        |
+| A full emit of `src/` is what a build costs                  | `npm run build`                                                                          | 1.81 s for 182 emitted files, no incremental state beside them           |
 | A module missing from a complete `dist/` comes back          | `tests/build-guard.test.ts` (real compiler, throwaway project)                            | Exit 0 and the module is emitted again                                  |
 | A module the sources no longer have does not survive         | Same test: delete a module and its import, build again                                   | The emitted module is gone; no `.tsbuildinfo` anywhere in the project    |
 | A behaviour change, then the earlier revision again          | Same test: `'one'` → `'two'` → `'one'`, building each time                                | Each build's output is the revision it compiled                          |
@@ -311,23 +312,60 @@ their raw transcripts are named in each row.
 
 The recorded measurement is in
 [performance/measure-windows.ps1](../performance/measure-windows.ps1) and its raw
-output:
+output. Both runs are of commit `212aee1` with a clean working tree on this
+host, in the same session, one after the other:
 
 | Run (same revision, same host) | Turborepo summary  | Command wall | Layer detail                                              |
 | ------------------------------ | ------------------ | ------------ | --------------------------------------------------------- |
-| `npm run validate:fresh`       | _(filled in below)_ | _(…)_        | every task executed                                       |
-| `npm run validate`             | _(filled in below)_ | _(…)_        | the eligible tasks replayed; the boundary layer executed   |
+| `npm run validate:fresh`       | 10 successful, 0 cached, 4 m 10.6 s | 251.81 s | every task executed; boundary 227.50 s over 37 files (802 passed, 2 skipped) |
+| `npm run validate`             | 10 successful, **9 cached**, 3 m 52.4 s | 232.96 s | every eligible task replayed; `test:boundary` executed fresh (231.85 s) |
+
+The gate is 1,381 passed and 2 skipped in that fresh run: the policy layer's 579
+cases over its five groups (122 display, 142 config, 24 loop, 160 intake, 131
+history, about 8.8 s of Vitest time together) and the boundary layer's 802 cases
+plus the two pre-existing platform skips over 37 files.
 
 Files: [fresh metadata](../performance/harn-49-validation-fresh.txt) and
 [transcript](../performance/harn-49-validation-fresh-detail.txt),
 [cached metadata](../performance/harn-49-validation-cached.txt) and
 [transcript](../performance/harn-49-validation-cached-detail.txt), and the
-[cleanup inventory](../performance/harn-49-validation-cached-cleanup.txt) — both
-runs started and ended with no new fixture directory and no new Node/Git/cmd/
-taskkill process identity. The invalidation comparisons are recorded in
-[performance/harn-49-invalidation.txt](../performance/harn-49-invalidation.txt),
-and the delivered revision was validated with `npm run validate:fresh` again
-([performance/harn-49-final-validation.txt](../performance/harn-49-final-validation.txt)).
+[cleanup inventory](../performance/harn-49-validation-cached-cleanup.txt) — the
+script fails if either run leaves a fixture directory or a Node/Git/cmd/taskkill
+process identity behind, and both runs passed that check.
+
+The invalidation comparisons are in
+[performance/harn-49-invalidation.txt](../performance/harn-49-invalidation.txt):
+the ten gate tasks' hashes from `--dry=json`, before and after one probe at a
+time, each probe reverted and the tree checked clean again. A documentation edit
+changed `test:policy:config` (and, through it, `test:boundary`, whose hash
+includes its dependencies) while the other four groups kept theirs; a test-file
+edit changed only its own group; a declared environment value changed the five
+groups and nothing else; a source edit and another executing runtime changed
+every task.
+
+The delivered revision was validated with `npm run validate:fresh` a final time
+after the last edit; the numbers above are the ones recorded above, and
+[performance/harn-49-final-validation.txt](../performance/harn-49-final-validation.txt)
+is that last run.
+
+Linux is a separate check, not a comparison. `bash performance/validate-linux.sh`
+ran `npm run validate:fresh` on a WSL2 **ext4** filesystem (Linux
+`6.18.33.2-microsoft-standard-WSL2`, Node `v24.14.1`, npm `11.11.0`, Git
+`2.43.0`, revision `212aee1` with this record's working changes) and passed: 10
+tasks, 0 cached, `1 m 44.2 s` of Turborepo time and 104.5 s of command wall, 37
+boundary files, 794 passed and 10 platform skips, no new fixture directory and
+no remaining Node or Git process. Its log is
+[harn-49-linux-validation.txt](../performance/harn-49-linux-validation.txt).
+
+An earlier attempt read the same checkout through the mounted Windows drive
+(`/mnt/e`) and failed on one pre-existing case: the first ESLint fixture run in
+`tests/boundaries.test.ts` took longer than its five-second default there — 346
+ms on ext4, 4.7 s on that mount in the first delivery's own Linux run, over five
+seconds now. A mounted drive is not what CI uses; that log is kept as
+[harn-49-linux-mounted-attempt.txt](../performance/harn-49-linux-mounted-attempt.txt)
+so the difference is on the record rather than smoothed over. Hosted
+`ubuntu-latest` CI remains the merge gate, and no Linux number here is compared
+with a Windows one.
 
 The comparable pre-change numbers are HARN-48's: 207–210 s test phase, 219–222 s
 wall. Those samples were taken at different times on a busy desktop host and are

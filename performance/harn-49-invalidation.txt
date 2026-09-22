@@ -1,0 +1,86 @@
+﻿HARN-49: which declared inputs invalidate which task.
+Recorded 2026-09-22 on Windows 10.0.26200 (24 logical CPUs), Node v24.14.1, npm 11.11.0,
+Turborepo 2.11.2, from commit 212aee1560ac7c9bffc60ec09d01fbc98d41d39d (clean tree).
+
+Each block is `node scripts/turbo.mjs run format:check lint typecheck build test:policy:display
+test:policy:config test:policy:loop test:policy:intake test:policy:history test:boundary
+--dry=json`, reduced to one line per task: `task = hash`. `--dry` predicts; nothing executes.
+A `*` marks a task whose hash differs from the baseline.
+
+Baseline: the committed revision, nothing edited
+    build                  36bdee892efdd27d
+    format:check           3bce058d01af0953
+    lint                   cd2885445676453b
+    test:boundary          0686eccc689563ad
+    test:policy:config     726971d718988c8f
+    test:policy:display    1f06ef7f579f038a
+    test:policy:history    70677a8bbf96a78a
+    test:policy:intake     03dbd4125c264094
+    test:policy:loop       888822e8f4fe257b
+    typecheck              13000a7741b08611
+  (baseline)
+
+Documentation edit: one line added to docs/connect-a-project.md, then removed
+    build                  36bdee892efdd27d
+  * format:check           ab710f5e1f594935
+    lint                   cd2885445676453b
+  * test:boundary          53ad5077f4a06819
+  * test:policy:config     4271607a873c0aaa
+    test:policy:display    1f06ef7f579f038a
+    test:policy:history    70677a8bbf96a78a
+    test:policy:intake     03dbd4125c264094
+    test:policy:loop       888822e8f4fe257b
+    typecheck              13000a7741b08611
+  changed since baseline: format:check, test:boundary, test:policy:config
+
+Test edit: one comment added to tests/queue.test.ts, then removed
+    build                  36bdee892efdd27d
+  * format:check           4085a1dfa58451e3
+  * lint                   25cf678931923f32
+  * test:boundary          93f6aafded406409
+    test:policy:config     726971d718988c8f
+    test:policy:display    1f06ef7f579f038a
+    test:policy:history    70677a8bbf96a78a
+  * test:policy:intake     5648080c63074e4a
+    test:policy:loop       888822e8f4fe257b
+  * typecheck              8070bf96b14c60dd
+  changed since baseline: format:check, lint, test:boundary, test:policy:intake, typecheck
+
+Source edit: one comment added to src/cli/options.ts, then removed
+  * build                  255afc32c457d854
+  * format:check           5b0a875db5250126
+  * lint                   98741d7cc4a003b0
+  * test:boundary          2e727adb038b58bd
+  * test:policy:config     c7e3c3da8d2abb66
+  * test:policy:display    2e4bf4920bdbb539
+  * test:policy:history    21a418dd9117419d
+  * test:policy:intake     1298351e2d82cb66
+  * test:policy:loop       3eb19751f4e3f7a6
+  * typecheck              9c9e5ca93c237499
+  changed since baseline: build, format:check, lint, test:boundary, test:policy:config, test:policy:display, test:policy:history, test:policy:intake, test:policy:loop, typecheck
+
+Declared environment value: TZ=UTC for the wrapper invocation
+    build                  36bdee892efdd27d
+    format:check           3bce058d01af0953
+    lint                   cd2885445676453b
+  * test:boundary          e863ef9cec895ea2
+  * test:policy:config     d6f04d146df4b593
+  * test:policy:display    a9888aa4546c6194
+  * test:policy:history    21f220f2c32069ee
+  * test:policy:intake     93439d8d7cd3740e
+  * test:policy:loop       9ac720163d129463
+    typecheck              13000a7741b08611
+  changed since baseline: test:boundary, test:policy:config, test:policy:display, test:policy:history, test:policy:intake, test:policy:loop
+
+Executing runtime: PATH resolves a node that reports v0.0.0-shadow
+  * build                  c262691422c07f07
+  * format:check           2d5ba6eefb05064c
+  * lint                   edb8a512edb0df6c
+  * test:boundary          e0e85893f4869d87
+  * test:policy:config     e5fe9ce5c8bd385a
+  * test:policy:display    98a1d4df2006e12f
+  * test:policy:history    c54ce14232746215
+  * test:policy:intake     aad9c08129f958fc
+  * test:policy:loop       2c65074c7142bd12
+  * typecheck              7009e04b03b28e83
+  changed since baseline: build, format:check, lint, test:boundary, test:policy:config, test:policy:display, test:policy:history, test:policy:intake, test:policy:loop, typecheck

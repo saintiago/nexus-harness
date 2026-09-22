@@ -143,8 +143,8 @@
                                 "CommandLine":  "\"C:\\Program Files\\nodejs\\node.exe\" E:/projects/nexus-jira-runs/finite-HARN-49-restart-20260922/run.mjs"
                             },
                             {
-                                "Identity":  "53492/2026-09-22T17:47:47.0889380Z",
-                                "Parent":  6108,
+                                "Identity":  "67040/2026-09-22T19:10:27.6266270Z",
+                                "Parent":  38048,
                                 "Name":  "node.exe",
                                 "CommandLine":  "\"C:\\Users\\User\\AppData\\Local\\OpenAI\\Codex\\runtimes\\cua_node\\df473e5367fa2b42\\bin\\node.exe\" C:\\Users\\User\\AppData\\Local\\OpenAI\\Codex\\runtimes\\cua_node\\df473e5367fa2b42\\bin\\node_modules\\@oai\\cua-repl\\bin\\cua-repl.mjs"
                             }
@@ -293,8 +293,8 @@
                                "CommandLine":  "\"C:\\Program Files\\nodejs\\node.exe\" E:/projects/nexus-jira-runs/finite-HARN-49-restart-20260922/run.mjs"
                            },
                            {
-                               "Identity":  "53492/2026-09-22T17:47:47.0889380Z",
-                               "Parent":  6108,
+                               "Identity":  "67040/2026-09-22T19:10:27.6266270Z",
+                               "Parent":  38048,
                                "Name":  "node.exe",
                                "CommandLine":  "\"C:\\Users\\User\\AppData\\Local\\OpenAI\\Codex\\runtimes\\cua_node\\df473e5367fa2b42\\bin\\node.exe\" C:\\Users\\User\\AppData\\Local\\OpenAI\\Codex\\runtimes\\cua_node\\df473e5367fa2b42\\bin\\node_modules\\@oai\\cua-repl\\bin\\cua-repl.mjs"
                            }

@@ -728,12 +728,13 @@ Recorded on the same Windows host as this map's earlier numbers (24 logical CPUs
 npm `11.11.0`, Vitest `5.0.0`, Turborepo `2.11.2`), with
 `powershell -NoProfile -File performance/measure-windows.ps1`, which runs the gate once with the
 cache cleared and once unchanged, and copies its transcripts into `performance/` only after both
-runs (a file added part-way through would change the formatting task's default file set).
+runs (a file added part-way through would change the formatting task's default file set). Both runs
+are of the repair, `212aee1`, with a clean working tree.
 
-| Run    | Command                  | Turbo summary                           | Command wall | Layer detail                                                            |
-| ------ | ------------------------ | --------------------------------------- | ------------ | ----------------------------------------------------------------------- |
-| Fresh  | `npm run validate:fresh` | 10 successful, 0 cached, 3 m 18.9 s     | 199.77 s     | policy 8.9 s over five groups; boundary 176.05 s over 34 files          |
-| Cached | `npm run validate`       | 10 successful, **9 cached**, 2 m 51.8 s | 172.13 s     | every eligible task replayed; `test:boundary` executed fresh (171.28 s) |
+| Run    | Command                  | Turbo summary                           | Command wall | Layer detail                                                                 |
+| ------ | ------------------------ | --------------------------------------- | ------------ | ---------------------------------------------------------------------------- |
+| Fresh  | `npm run validate:fresh` | 10 successful, 0 cached, 4 m 10.6 s     | 251.81 s     | every task executed; boundary 227.50 s over 37 files (802 passed, 2 skipped) |
+| Cached | `npm run validate`       | 10 successful, **9 cached**, 3 m 52.4 s | 232.96 s     | every eligible task replayed; `test:boundary` executed fresh (231.85 s)      |
 
 Raw evidence: [fresh metadata](../performance/harn-49-validation-fresh.txt),
 [fresh transcript](../performance/harn-49-validation-fresh-detail.txt),
@@ -742,13 +743,18 @@ Raw evidence: [fresh metadata](../performance/harn-49-validation-fresh.txt),
 [cleanup inventories](../performance/harn-49-validation-cached-cleanup.txt): both runs started and
 ended with no new fixture directory and no new Node/Git/cmd/taskkill process identity.
 
-The budget in this map is unchanged and still unmet by nothing: the policy phase is 8.9 s over its
-five processes (below 15 s; HARN-48 recorded 3.7 s for one process, so splitting the layer costs
-startup), the slowest suite remains under 110 s, and the fresh test phase — 8.9 s + 176.1 s — is
-below 212 s. The cached run is faster only by what it replays, and the boundary layer, which is the
-majority of it, is not eligible. These two samples are not a controlled comparison with HARN-48's
-207–210 s test phase: they were taken at different times on a busy desktop host, and no claim is
-made that the gate got faster beyond the reuse itself.
+The budget in this map is unchanged, and this session **reports an overrun rather than hiding one**:
+the five policy groups took 8.8 s of Vitest time together (122 display, 142 config, 24 loop, 160
+intake, 131 history — below the 15 s policy span; HARN-48 recorded 3.7 s for one process, so
+splitting the layer costs startup), but the fresh test phase — about 8.8 s plus the boundary
+layer's 227.5 s — is above HARN-48's 212 s diagnostic ceiling, as the first delivery's final
+validation was (9.4 s plus 248.9 s). The boundary layer is uncached and its spans on this host now
+read 176.1 s, 227.5 s, 231.9 s and 248.9 s for the same 34–37 files: that spread is host load on a
+busy desktop machine, and no case's own deadline was changed to accommodate it. The cached run is
+faster only by what it replays, and the boundary layer, which is the majority of it, is not
+eligible. These samples are not a controlled comparison with HARN-48's 207–210 s test phase: they
+were taken at different times on the same busy host, and no claim is made that the gate got faster
+beyond the reuse itself.
 
 The delivered revision was validated with `npm run validate:fresh`: 10 tasks, 0 cached, exit 0,
 1,371 passed and 2 skipped in 273.6 s wall (policy 602 in 9.4 s over five groups; boundary 769 + 2
@@ -762,11 +768,18 @@ The single-pool `test:four-workers` comparison was not re-measured for HARN-49: 
 command, not part of the gate, and this ticket's claims rest on the two runs above.
 
 Linux is a separate check, not a comparison: `bash performance/validate-linux.sh` ran
-`npm run validate:fresh` on WSL2 (this checkout read through `/mnt/e`) and passed — 10 tasks, 34
-boundary files, 1,363 passed, 10 platform skips, 157 s, no new fixture directory and no remaining
-Node or Git process. Its log is [harn-49-linux-validation.txt](../performance/harn-49-linux-validation.txt);
-hosted `ubuntu-latest` CI remains the merge gate. No Linux number here is compared with a Windows
-one.
+`npm run validate:fresh` on this repair in WSL2 — 10 tasks, 0 cached, 1 m 44.2 s of Turborepo time,
+104.5 s of wall, 37 boundary files, 794 passed and 10 platform skips, no new fixture directory and
+no remaining Node or Git process. Its log is
+[harn-49-linux-validation.txt](../performance/harn-49-linux-validation.txt). That run read a copy
+of the checkout on the distro's own **ext4** filesystem: an earlier attempt through the mounted
+Windows drive (`/mnt/e`) failed one pre-existing case, because the first ESLint fixture run in
+`boundaries.test.ts` needs more than its five-second default there (346 ms on ext4; 4.7 s on that
+mount in the first delivery's Linux run). That log is kept as
+[harn-49-linux-mounted-attempt.txt](../performance/harn-49-linux-mounted-attempt.txt), and the
+comparison is stated in [validation-caching.md](../docs/validation-caching.md) rather than
+smoothed over. Hosted `ubuntu-latest` CI remains the merge gate, and no Linux number here is
+compared with a Windows one.
 
 ## Remaining limits
 
