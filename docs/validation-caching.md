@@ -71,8 +71,12 @@ its version and the inherited Git configuration are host state no declaration
 here can bound — and were cache-eligible only because they sat in the fast
 layer. They are cases of the boundary layer now
 (`vitest.config.ts`, `policyFiles`), so they still run, and they still run on
-every validation. No case was deleted, skipped or weakened, and no deadline
-changed: the moved files keep their own per-case bounds.
+every validation. No case was deleted, skipped or weakened, and no case's own
+deadline changed by that repair: the moved files keep their own per-case bounds.
+The repair turn that followed the harness's own check changed exactly one bound —
+the boundary layer's *default*, from Vitest's five seconds to 15 s
+(`BOUNDARY_DEFAULT_TIMEOUT_MS`) — and no case's own bound; the failure and the
+measurements are in [windows-fixture-flakes.md](../notes/windows-fixture-flakes.md).
 
 ### Why the boundary layer is never cached
 
@@ -85,7 +89,10 @@ released — and HARN-48's audit is the record of how contention changes what th
 observe. A replayed result would describe a machine that no longer exists, so
 the task declares `"cache": false` and runs on every validation, before nothing
 and after all five policy groups (`dependsOn`). `tests/validation-cache.test.ts`
-fails if that ever stops being true.
+fails if that ever stops being true. The layer also states a default deadline of
+its own (15 s, `BOUNDARY_DEFAULT_TIMEOUT_MS`): a case here waits on real
+processes, so Vitest's five-second unit default reported host load as a failure
+of the revision, and a case that states a bound of its own still overrides it.
 
 Nothing else is eligible either, and nothing outside this repository is:
 

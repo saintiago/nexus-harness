@@ -382,3 +382,47 @@ conflicting `FORCE_COLOR` override before invoking the commands. This does not c
 configured gate. The commands above are wrapped across lines for readability; each was run as
 one command. No live Jira, GitHub, or coding-agent exercise was run. This is a record of an
 unresolved repair, not a claim that the timeouts were fixed or that the task passed.
+
+## The 2026-09-22 HARN-49 gate failure: two cases at the five-second default
+
+The harness ran `npm run validate` after HARN-49's repair delivery (`f6b1766`), and the boundary
+layer failed two cases on Vitest's five-second default while the other 800 of its 802 cases passed
+(the two platform skips unchanged):
+
+- `tests/completion-arm.test.ts > reconciling terminal states across an auto-merge race > finishes
+an already-merged admission without arming or asking for a person` — `Error: Test timed out in
+5000ms`, 5,203 ms.
+- `tests/completion-github.test.ts > review-to-completion > creates the per-issue evidence directory
+before its first GitHub command` — the same, 5,246 ms.
+
+Both are real-command cases: each drives a completion pass against a stand-in `gh` on disk, so each
+is a sequence of `cmd.exe`/Node child processes, and the two make two complete passes and one
+complete pass respectively. The harness's run had other work on the host. The same two cases pass in
+the recorded full runs — HARN-48's four-worker timings have them at 3,929 ms (and 3,662 / 3,628 ms
+in the two final runs) and 2,824 ms (2,587 / 2,533 ms) — and this host measured the first at
+5,188 ms in isolation, then saw the whole boundary layer green with the same two cases at 4,280 ms
+and 2,079 ms a few minutes later, in a quieter window.
+
+**What changed, in `vitest.config.ts`:** the boundary project now states
+`testTimeout: BOUNDARY_DEFAULT_TIMEOUT_MS` (15 s). Vitest's five-second default is a unit-test
+convention, and this layer is not unit tests: a deadline that reports host load as a failure of the
+revision under test is the wrong instrument, and every runner's own record of it — this file — is a
+list of exactly that. The bound is still bounded, so a case that really hangs fails, and every bound
+a case or block states for itself is unchanged (10 s for two passes, 15 s for the three-call
+recovery case, 20–180 s for the heavier files). The policy layer keeps Vitest's default, because
+nothing there starts a process.
+
+**Evidence.** A temporary probe case (removed again, not part of the suite) that sleeps 6.5 s passes
+in the boundary project and fails when the same run is given the unit default with
+`--testTimeout=5000`, so the project setting is the effective one. The two files that failed pass
+87/87 together under it, and the whole boundary layer passes 802 cases with 2 skips. The recordings
+are in `performance/harn-49-boundary-timeout-repair.txt`.
+
+**Honest limits.** This is a deadline change, and the only one in HARN-49: HARN-48's map said a
+single-pass case keeps the five-second default, and it now keeps the layer's 15 s default instead —
+the map records the change where it stated the rule. The number is a judgement, not a measured
+constant: 15 s is about three times the slowest case-owned work in the files that relied on the
+default, chosen to leave room for the contention this host has repeatedly shown. A bound cannot make
+a shared host deterministic, and if a case with seconds of real work crosses 15 s under contention
+again, the honest responses are a quieter host, a case-owned bound sized to that work, or a suite
+that starts fewer processes — never a retry or a skip that converts a timeout into a pass.
