@@ -15,7 +15,16 @@
  * or identity can change what these cases observe.
  */
 import { existsSync, realpathSync, statSync } from 'node:fs';
-import { mkdir, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import {
+  lstat,
+  mkdir,
+  readdir,
+  readFile,
+  readlink,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { WorkspaceError } from '../src/workspace/errors.js';
@@ -380,10 +389,68 @@ describe('an allocated run directory', () => {
     expect(error.message).toContain('already held');
     expect(error.message).toContain('never overwrites or adopts an existing workspace');
 
-    // Only a ledger beside the clone holds the name as well: nothing here is
-    // overwritten or renamed, and the held directory is untouched.
+    // Nothing here is overwritten or renamed: the held directory is untouched.
     expect(await readdir(run.workspacePath)).toEqual([]);
   }, 60_000);
+
+  it('refuses a name only a ledger holds, and keeps that record as it was', async () => {
+    const parent = await createTempDir();
+    const workDir = path.join(parent, 'runs');
+    const workspacesRoot = path.join(workDir, 'workspaces');
+    const ledgerPath = path.join(workspacesRoot, 'HARN-23.json');
+    await mkdir(workspacesRoot, { recursive: true });
+    await writeFile(ledgerPath, '{"version":1}\n', 'utf8');
+
+    // The clone is gone but the record beside its name is not, so the name is
+    // still held: allocation refuses it rather than replace a record that says
+    // a workspace belongs here.
+    const error = await failureOf(() =>
+      allocateRunDirectory(workDir, { kind: 'create', preferredWorkspaceId: 'HARN-23' }),
+    );
+
+    expect(error).toBeInstanceOf(WorkspaceError);
+    expect(error.message).toContain('already held');
+    expect(error.message).toContain(ledgerPath);
+    // The record keeps its bytes, and no workspace or run evidence was created
+    // for the refused run.
+    expect(await readFile(ledgerPath, 'utf8')).toBe('{"version":1}\n');
+    expect(await readdir(workspacesRoot)).toEqual(['HARN-23.json']);
+    expect(await readdir(path.join(workDir, 'runs'))).toEqual([]);
+  }, 60_000);
+
+  it.each(['HARN-23', 'HARN-23.json'])(
+    'refuses a name a dangling link holds at %s, leaving the link alone',
+    async (entry) => {
+      const parent = await createTempDir();
+      const workDir = path.join(parent, 'runs');
+      const workspacesRoot = path.join(workDir, 'workspaces');
+      await mkdir(workspacesRoot, { recursive: true });
+      const held = path.join(workspacesRoot, entry);
+      const target = path.join(workspacesRoot, 'missing-target');
+      // A junction needs no privilege on Windows, and is an ordinary symbolic
+      // link elsewhere; either way the link dangles. A link holds its name even
+      // when its target is gone, so allocation checks the name itself rather
+      // than what it points at.
+      await symlink(target, held, 'junction');
+      const linkTarget = await readlink(held);
+      expect(existsSync(held)).toBe(false);
+
+      const error = await failureOf(() =>
+        allocateRunDirectory(workDir, { kind: 'create', preferredWorkspaceId: 'HARN-23' }),
+      );
+
+      expect(error).toBeInstanceOf(WorkspaceError);
+      expect(error.message).toContain('already held');
+      // The link is untouched — still a link, still pointing where it did — and
+      // its missing target was not created to make room for a workspace.
+      expect((await lstat(held)).isSymbolicLink()).toBe(true);
+      expect(await readlink(held)).toBe(linkTarget);
+      expect(existsSync(target)).toBe(false);
+      expect(await readdir(workspacesRoot)).toEqual([entry]);
+      expect(await readdir(path.join(workDir, 'runs'))).toEqual([]);
+    },
+    60_000,
+  );
 
   it('creates no workspace for a run that continues one', async () => {
     const fixture = await createRepository();

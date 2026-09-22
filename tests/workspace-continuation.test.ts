@@ -14,7 +14,16 @@
  * Every case works in temporary repositories, and the Git environment is the
  * suite's own private one.
  */
-import { chmod, readFile, symlink, writeFile } from 'node:fs/promises';
+import {
+  chmod,
+  lstat,
+  mkdir,
+  readFile,
+  readlink,
+  rename,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { existsSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -332,6 +341,69 @@ describe('a workspace that outlives its run', () => {
     if (!resolution.ok) {
       expect(resolution.problem).toContain('not where this harness keeps workspaces');
     }
+    expect(await headOf(prepared.workspacePath)).toBe(prepared.baseCommit);
+  }, 90_000);
+
+  it('refuses a pointer whose ledger is a link out of the workspaces root', async (context) => {
+    const { fixture, prepared } = await preparedWorkspace();
+    // The clone is a real workspace where the layout puts it; the record beside
+    // it is the workspace's own ledger, which this case moves outside the
+    // workspaces root and links back to the name the layout gives it. The
+    // ledger half of the layout is checked on its resolved path exactly as the
+    // clone half is: a name that resolves to a record outside the root is
+    // refused before anything is read through it.
+    const ledgerPath = workspaceStatePath(fixture.workDir, prepared.workspaceId);
+    const outside = path.join(fixture.parent, 'outside-ledger');
+    await mkdir(outside);
+    const recordPath = path.join(outside, `${prepared.workspaceId}.json`);
+    await rename(ledgerPath, recordPath);
+    const record = await readFile(recordPath, 'utf8');
+
+    // An ordinary symbolic link to the moved record is what this looks like. A
+    // host whose account may not create one — Windows without the developer
+    // privilege — still allows a junction to the directory holding it, which
+    // the same check resolves out of the root; a host that allows neither is
+    // not this case's subject.
+    let linked = true;
+    try {
+      await symlink(recordPath, ledgerPath, 'file');
+    } catch {
+      try {
+        await symlink(outside, ledgerPath, 'junction');
+      } catch {
+        linked = false;
+      }
+    }
+    if (!linked) {
+      context.skip();
+      return;
+    }
+    const linkTarget = await readlink(ledgerPath);
+
+    const resolution = await resolveWorkspace(
+      fixture.workDir,
+      prepared.workspaceId,
+      expectation(fixture),
+    );
+
+    // A refusal, not an exception and not a continuation: the record is never
+    // read through the link, and the refusal says where it really resolves and
+    // what an operator can do about it.
+    expect(resolution.ok).toBe(false);
+    if (!resolution.ok) {
+      expect(resolution.problem).toContain('ledger');
+      expect(resolution.problem).toContain(ledgerPath);
+      expect(resolution.problem).toContain(realpathSync.native(outside));
+      expect(resolution.problem).toMatch(/junction or symbolic link/);
+      expect(resolution.problem).toMatch(/Put the workspace's own ledger back/);
+    }
+
+    // Nothing was read, written, or adopted through the link: the external
+    // record keeps its bytes and its name still points at it, and the clone
+    // beside it is where the earlier attempt left it.
+    expect(await readFile(recordPath, 'utf8')).toBe(record);
+    expect((await lstat(ledgerPath)).isSymbolicLink()).toBe(true);
+    expect(await readlink(ledgerPath)).toBe(linkTarget);
     expect(await headOf(prepared.workspacePath)).toBe(prepared.baseCommit);
   }, 90_000);
 
