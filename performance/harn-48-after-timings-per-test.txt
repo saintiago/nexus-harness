@@ -1,45 +1,48 @@
 HARN-48: per-suite and per-case timings of the refactored suite (Windows)
 
 Source: `npx vitest run --reporter=json --outputFile=performance/harn-48-after-timings-per-test.json`
-(the ordinary two-layer configuration: policy first, then boundary), one run of the final tree,
-no other Nexus run or test workload on the host. Vitest 5.0.0, node v24.14.1, Windows.
+(the ordinary two-layer configuration: policy first, then boundary), one run of the final tree.
+Vitest 5.0.0, node v24.14.1, npm 11.11.0, Windows, 24 logical CPUs. The bare test command was
+run without a preceding build, so a worker may have built `dist/` when the artifact was stale.
 
-Whole test span: 176343 ms
+Whole test span: 212677.77880859375 ms (from the first suite's start to the last suite's end)
 Active cases: 1330; skipped: 2; test files: 49
-policy: 20 files, span 3642 ms
-boundary: 29 files, span 172429 ms
+policy: 20 files, span 3641 ms
+boundary: 29 files, span 208768 ms
 
 Slowest suites (span from the suite's first start to its last end):
-   88158 ms  boundary completion-github.test.ts (63 cases)
-   67855 ms  boundary source-cli.integration.test.ts (26 cases)
-   52950 ms  boundary runner.test.ts (25 cases)
-   49379 ms  boundary completion-arm.test.ts (26 cases)
-   37479 ms  boundary workspace.test.ts (50 cases)
-   34965 ms  boundary workspace-branch.test.ts (24 cases)
-   26920 ms  boundary cli-run.integration.test.ts (24 cases)
-   24334 ms  boundary live-verifier.test.ts (19 cases)
-   24051 ms  boundary reviews-cli.integration.test.ts (34 cases)
-   23987 ms  boundary runner-repair.test.ts (24 cases)
+  100117 ms  boundary completion-github.test.ts (61 cases)
+   77806 ms  boundary source-cli.integration.test.ts (26 cases)
+   59537 ms  boundary runner.test.ts (25 cases)
+   58459 ms  boundary completion-arm.test.ts (26 cases)
+   48865 ms  boundary workspace.test.ts (50 cases)
+   47244 ms  boundary workspace-branch.test.ts (24 cases)
+   36137 ms  boundary cli-run.integration.test.ts (24 cases)
+   34674 ms  boundary reviews-cli.integration.test.ts (34 cases)
+   32844 ms  boundary runner-repair.test.ts (24 cases)
+   32498 ms  boundary baseline.test.ts (68 cases)
 
 Slowest cases:
-   11739 ms  fixture-lifecycle.test.ts :: the fixture lifecycle cleans up after the cases that must fail, time out or cancel
-   11104 ms  checks.test.ts :: a command that runs out of time reports a stop it could not confirm, and calls the copy unsafe to reuse
-   10762 ms  live-verifier.test.ts :: the entry point, as a process runs both exercises through the configured selection, against the fixture
-    8439 ms  git.test.ts :: a Git command under a bound reports a stop it could not confirm, which is what makes a copy unsafe to reuse
-    6915 ms  source-cli.integration.test.ts :: the source commands through the CLI watch picks up an issue made eligible later, then stops on interrupt
-    6576 ms  lifecycle.test.ts :: a run its caller stops, for real reports a stop it could not confirm, and never calls the copy safe to reuse
-    6139 ms  source-cli.integration.test.ts :: the source commands through the CLI returns a recorded branch a turn left behind, and delivers what the checks passed
-    6094 ms  local-run.integration.test.ts :: the offline local loop, end to end stops a real hanging check when the run's own deadline expires
-    6073 ms  source-cli.integration.test.ts :: the source commands through the CLI restarts a re-armed continuation at the first tier, keeping its workspace and its history
-    5962 ms  live-verifier.test.ts :: the repair fixture’s injected failure waits for the arm file it is given, injects once, and never repairs itself
-    5216 ms  baseline-queue.integration.test.ts :: the diagnosis through `source run` returns the same ticket to To Do and hands the finding to the next claim
-    4800 ms  completion-github.test.ts :: review-to-completion does not arm twice across restart or an uncertain auto-merge response
-    4629 ms  completion-arm.test.ts :: reconciling terminal states across an auto-merge race resumes post-merge verification after a restart without repeating any write
-    4623 ms  completion-arm.test.ts :: reconciling terminal states across an auto-merge race records a merge it discovers before arming so a restart finishes the failed move
-    4539 ms  completion-github.test.ts :: review-to-completion follows a merge GitHub makes after auto-merge was armed
+   12192 ms  live-verifier.test.ts :: the entry point, as a process runs both exercises through the configured selection, against the fixture
+   12008 ms  fixture-lifecycle.test.ts :: the fixture lifecycle cleans up after the cases that must fail, time out or cancel
+   11129 ms  checks.test.ts :: a command that runs out of time reports a stop it could not confirm, and calls the copy unsafe to reuse
+    8659 ms  git.test.ts :: a Git command under a bound reports a stop it could not confirm, which is what makes a copy unsafe to reuse
+    7814 ms  source-cli.integration.test.ts :: the source commands through the CLI watch picks up an issue made eligible later, then stops on interrupt
+    7041 ms  source-cli.integration.test.ts :: the source commands through the CLI restarts a re-armed continuation at the first tier, keeping its workspace and its history
+    6835 ms  lifecycle.test.ts :: a run its caller stops, for real reports a stop it could not confirm, and never calls the copy safe to reuse
+    6651 ms  live-verifier.test.ts :: the repair fixture’s injected failure waits for the arm file it is given, injects once, and never repairs itself
+    6434 ms  local-run.integration.test.ts :: the offline local loop, end to end stops a real hanging check when the run's own deadline expires
+    5668 ms  source-cli.integration.test.ts :: the source commands through the CLI returns a continued workspace to its recorded branch before the next coding turn
+    5594 ms  workspace.test.ts :: task IDs as labels cannot decide where a run writes or what its branch is called
+    5439 ms  baseline-queue.integration.test.ts :: the diagnosis through `source run` returns the same ticket to To Do and hands the finding to the next claim
+    5282 ms  local-run.integration.test.ts :: the offline local loop, end to end gives two runs of one task separate directories and separate clones
+    5217 ms  completion-arm.test.ts :: arming native auto-merge before the final gate recovers a native merge after merge-uncertain (repair: true)
+    5051 ms  completion-arm.test.ts :: arming native auto-merge before the final gate recovers a native merge after view-after-arm (repair: false)
 
 Every remaining slow case is a case whose subject is a real bound — a command that must be
 stopped, a process tree that must exit, a poll that must expire, an exercise that starts a
 real child — or one of the two cases the lifecycle proof runs against deliberately failing
-suites. The one stated per-case bound above the default is the completion-arm recovery case at
-15 s; every other case runs under the default 5 s.
+suites. The stated per-case bounds above the 5 s default are the 15 s completion-arm recovery
+case and the cases that make two or more complete passes over the real command boundary
+(`TWO_PASSES_TIMEOUT_MS` in tests/fixtures/completion.ts); every other case runs under the
+default 5 s.

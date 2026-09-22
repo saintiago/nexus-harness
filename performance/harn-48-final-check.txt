@@ -27,28 +27,9 @@ All matched files use Prettier code style!
 
  RUN  v5.0.0 E:/projects/nexus-jira-runs/workspaces/HARN-48
 
- ❯ |boundary| tests/completion-github.test.ts (63 tests | 1 failed) 110059ms
-   ❯ review-to-completion (63)
-     × recovers a comment accepted by Jira whose response was lost 5222ms
 
-⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
-
- FAIL  |boundary| tests/completion-github.test.ts > review-to-completion > recovers a comment accepted by Jira whose response was lost
-Error: Test timed out in 5000ms.
-If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".
- ❯ tests/completion-github.test.ts:783:3
-    781|   });
-    782|
-    783|   it('recovers a comment accepted by Jira whose response was lost', as…
-       |   ^
-    784|     const fixture = await createFixture({ merged: true });
-    785|     const original = fixture.jira.fetch;
-
-⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
-
-
- Test Files  1 failed | 48 passed (49)
-      Tests  1 failed | 1329 passed | 2 skipped (1332)
-   Start at  13:30:38
-   Duration  216.51s (tests 99%, import 1%)
+ Test Files  49 passed (49)
+      Tests  1330 passed | 2 skipped (1332)
+   Start at  13:56:34
+   Duration  166.70s (tests 99%, import 1%)
 

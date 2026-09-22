@@ -30,6 +30,6 @@ All matched files use Prettier code style!
 
  Test Files  49 passed (49)
       Tests  1330 passed | 2 skipped (1332)
-   Start at  13:13:15
-   Duration  167.27s (tests 99%, import 1%)
+   Start at  13:49:36
+   Duration  167.00s (tests 99%, import 1%)
 
