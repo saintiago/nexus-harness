@@ -1,0 +1,3 @@
+Archived test reference. These files are excluded from active validation.
+Their original imports and paths are intentionally preserved; they are not a runnable suite here.
+Rebuild required behavior coverage in tests/ using docs/testing.md.

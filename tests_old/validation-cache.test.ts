@@ -643,7 +643,7 @@ describe('the validation task cache contract', () => {
     // Neither layer states a deadline: a layer-wide `testTimeout` would relax
     // every case in it at once — the cases the last HARN-49 repair was
     // responding to, and every case that states nothing of its own beside them
-    // (vitest.config.ts, notes/windows-fixture-flakes.md). A case whose work is
+    // (vitest.config.ts). A case whose work is
     // bigger than one round of its own states its own bound, in the case, where
     // HARN-48's map names it; buying headroom for a shared host by moving the
     // layer's bound is exactly the change that is not allowed here.

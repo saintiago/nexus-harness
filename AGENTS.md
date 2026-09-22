@@ -1,53 +1,28 @@
-# AGENTS.md
+# Documentation reference
 
-## Start here
+Documentation is the law; code is not. Documentation states intent, and code is its embodiment.
+If code contradicts documentation, correct the code.
 
-Build and maintain a small, local-first coding harness. The documents in `docs/` are the source of truth; do not bring the earlier, more complex design back implicitly.
+## Purpose and design
 
-- [spec.md](docs/spec.md): what the harness does and its limits.
-- [architecture.md](docs/architecture.md): code ownership and extension points.
-- [WORKFLOW.md](docs/WORKFLOW.md): the loop, the JSON input contract, and the source CLI.
-- [implement-task-source-connectors.md](docs/implement-task-source-connectors.md): the Jira intake assignment, including the opt-in live exercise that has not been run.
-- [implement-workspace-continuation.md](docs/implement-workspace-continuation.md): the contract for
-  workspaces that outlive runs, the pointer label, and the escalation ladder. All three increments
-  are implemented; the defects it lists under "Known gaps" are separate tasks.
-- [implement-queue-run.md](docs/implement-queue-run.md): the serial queue assignment — `queue run`
-  and `queue watch`, one ticket at a time through delivery, review and completion, and the
-  source-readiness step between two workspaces. Implemented; its live exercise has not been run.
-- [LONG_TERM_VISION.md](docs/LONG_TERM_VISION.md): the direction the harness is meant to grow into.
-  It defines no behaviour: the spec stays authoritative, and every change to behaviour still needs a
-  task.
-- [GIT-WORKFLOW.md](docs/GIT-WORKFLOW.md): how changes to this repository are made.
-- [README.md](README.md): the operating document for the person running the harness.
+- [Long-term vision](docs/LONG_TERM_VISION.md): future purpose and direction; not current behavior.
+- [Architecture](docs/architecture.md): design principles, ownership, testing and tech stack.
+- [Components](docs/components.md): responsibilities and required behavior.
 
-Read what is relevant to the task. The spec defines behavior; the task defines what to implement now. Report a real conflict instead of rewriting requirements to fit the code.
+## Behavior and operation
 
-## Work on a branch
+- [Specification](docs/spec.md): required behavior and limits.
+- [Workflow](docs/WORKFLOW.md): configuration and command contracts.
+- [Operations](docs/operations.md): installation, commands and examples.
+- [Connect a project](docs/connect-a-project.md): project onboarding.
+- [Agent tools](docs/nexus-agent-tools.md): runtime profiles and tool setup.
+- [Harness configuration example](docs/nexus.config.example.json): installation settings.
+- [Project configuration example](docs/nexus.project.example.json): connected-project settings.
 
-`main` stays green. One task, one `task/<name>` branch, merged into `main` through a pull request: see [docs/GIT-WORKFLOW.md](docs/GIT-WORKFLOW.md). Never commit directly to `main`.
+## Development
 
-Working *in* a target repository is different. A run's coding turns may make small, meaningful local commits in the retained workspace, and the harness never checkpoints automatically. A coding turn never pushes, publishes, merges, opens a pull request, or changes Jira; by default the work stays local. Explicitly configured `delivery` lets the harness's own deterministic integration path push a passed attempt's branch and create or update its pull request ([docs/spec.md §7](docs/spec.md#7-optional-github-delivery), [docs/WORKFLOW.md §8](docs/WORKFLOW.md#8-delivery--optional-github-pull-requests)). Separately configured review-to-completion lets that path arm native GitHub auto-merge, verify the configured post-merge workflows, and transition Jira ([docs/spec.md §10](docs/spec.md#10-optional-review-to-completion), [docs/WORKFLOW.md §10](docs/WORKFLOW.md#10-review-to-completion--optional-across-both-files)). These operations never belong to the coding turn. That holds when the run targets this repository too: it works in its own retained clone and leaves its commits there for the configured path or the operator to integrate.
-
-CI is read-only. Nothing under `.github/` writes to this repository, opens a pull request, or merges one: the merge is made by the operator, or by an agent using the operator's credentials, once the gate is green. That is the harness's own process, and it has nothing to do with how a harness *run* treats a target repository.
-
-## Keep it small
-
-Use TypeScript, npm, ordinary functions, and a few focused modules. Add an abstraction when a real caller or test needs it, not because a future integration might.
-
-Do not add databases, queues, provider registries, a workflow engine, or services. Do not implement later features as part of an unrelated task. Keep runtime-specific code out of the task loop.
-
-## Verify changes
-
-Preserve user changes. Use `npm ci` unless intentionally changing dependencies. Run focused tests, then `npm run validate` before finishing.
-
-`npm run validate` reuses a local task cache for the checks whose inputs are unchanged — formatting, lint, type checking, the build and the five fast policy groups — and always executes the process-heavy boundary layer. A reused result is never a freshly executed check: run `npm run validate:fresh` when a claim has to rest on execution, and read [docs/validation-caching.md](docs/validation-caching.md) before changing a task's inputs or eligibility.
-
-A case belongs to the boundary layer, and to every-validation execution, as soon as it starts a real process: a real `git`, a real command tree, a clock. The cache holds only what a checked-in declaration fully describes — the files a task reads, the environment it declares, and the `node` and `npm` PATH resolves for it — and `tests/validation-cache.test.ts` fails when a cached group stops satisfying that.
-
-Add tests for meaningful behavior and failure cases. Do not disable checks, weaken assertions, or hide files from validation just to get a pass. Tests must not need a live coding agent, a Jira site, or credentials.
-
-## Finish honestly
-
-Do not publish, deploy, use provider accounts, or run a live Jira exercise without an explicit task. Use temporary directories for destructive tests.
-
-Report changes, exact checks and outcomes, and remaining gaps. Mocked tests are not evidence that a live path works, and passing local checks is not proof of production readiness.
+- [Development guide](docs/development.md): implementation, verification and role boundaries.
+- [Git workflow](docs/GIT-WORKFLOW.md): branches, pull requests and integration.
+- [Testing](docs/testing.md): test pyramid, boundaries and coverage restoration.
+- [Validation caching](docs/validation-caching.md): cache eligibility, invalidation and execution guarantees.
+- [Documentation guide](docs/documentation.md): document ownership and maintenance.

@@ -1,18 +1,5 @@
 # Long-Term Vision
 
-## Purpose
-
-This document is the north star for the harness. It is **not** an implementation plan and it defines
-no behaviour of its own.
-
-- Current specs and explicit tasks take precedence: `docs/spec.md` remains authoritative for what
-  the harness does today.
-- A change in behaviour still needs a task, implemented on a `task/...` branch with tests
-  ([docs/GIT-WORKFLOW.md](GIT-WORKFLOW.md)), with the spec updated where the behaviour it describes
-  changes.
-- Where this document and the spec disagree about current behaviour, the spec wins and this
-  document is amended.
-
 The harness should evolve from an autonomous coding executor into an **autonomous engineering system** while remaining simple, efficient, observable, and human-governed.
 
 ## End State
@@ -59,7 +46,7 @@ It should escalate when human judgment is genuinely useful.
 
 **Simple.** Prefer the smallest design that solves a real problem. Do not build future infrastructure speculatively.
 
-**Deterministic where possible.** Use normal software for reliable orchestration; use models where reasoning is valuable.
+**Deterministic where simple and reliable.** Keep clear rules in ordinary software. Use AI for investigation and judgment when deterministic handling would become brittle or require an expanding collection of special cases. Keep execution and verification reliable.
 
 **Evidence-driven.** An interesting idea is not an improvement. Prefer hypotheses, experiments, baselines, and measurable outcomes.
 
@@ -89,7 +76,7 @@ Reason from **goal → problem → hypothesis → evidence → intervention** wh
 
 ## Experiment Before Infrastructure
 
-When uncertainty is meaningful, seek the cheapest evidence that could change the decision.
+When uncertainty is meaningful, seek the cheapest evidence that could change the decision. Match the investigation to the task: this principle does not require every implementation to include a benchmark campaign or new measurement tooling.
 
 Possible methods include historical replay, benchmarks, prototypes, temporary branches, simulations, shadow runs, or controlled rollout.
 
