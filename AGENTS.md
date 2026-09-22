@@ -2,13 +2,13 @@
 
 ## Purpose and design
 
-- [Long-term vision](docs/LONG_TERM_VISION.md): purpose and direction.
+- [Long-term vision](docs/LONG_TERM_VISION.md): future purpose and direction; not current behavior.
 - [Architecture](docs/architecture.md): design principles, ownership, testing and tech stack.
 - [Module structure](docs/module-structure.md): source-file responsibilities and dependencies.
 
 ## Behavior and operation
 
-- [Specification](docs/spec.md): current behavior and limits.
+- [Specification](docs/spec.md): authoritative current behavior and limits.
 - [Workflow](docs/WORKFLOW.md): configuration and command contracts.
 - [Operations](docs/operations.md): installation, commands and examples.
 - [Connect a project](docs/connect-a-project.md): project onboarding.

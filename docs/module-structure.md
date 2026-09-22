@@ -1,11 +1,6 @@
 # Module structure
 
-This reference describes source ownership. The [spec](spec.md) defines behavior and the
-[architecture](architecture.md) defines design principles. File size is not a design rule.
-
 ## 1. Source tree
-
-Line counts are indicative, not a rule: they are here to show where the substance of the harness is.
 
 ```text
 src/

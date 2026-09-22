@@ -15,12 +15,6 @@ post-merge workflows, and move the Jira item to Done ([docs/spec.md](../docs/spe
 [docs/WORKFLOW.md](../docs/WORKFLOW.md) §8 and §10). A coding turn never performs any of it, and a
 configuration that enables neither step changes nothing.
 
-**This is the operating guide.** The supplied documents stay authoritative for the
-contracts they define: [docs/WORKFLOW.md](../docs/WORKFLOW.md) for the JSON inputs and the run
-procedure, [docs/spec.md](../docs/spec.md) for behaviour and limits, and
-[docs/architecture.md](../docs/architecture.md) for where code goes. This file says how to install it,
-how to run it, what it does to your machine, and what is not proven yet.
-
 ## Requirements and supported platforms
 
 - **Node.js 24 or newer.** `engines` requires `>=24.0.0`, and `.nvmrc` records `24.14.1`, which is
@@ -1343,7 +1337,7 @@ requires its own concrete adapter rather than being disguised as a Codex launche
 
 The harness does not change the user's global runtime configuration. The configured launch is
 reported as launch information, not proof of the upstream model that served the response.
-[The workflow](../docs/WORKFLOW.md) defines the current invocation and configuration contracts.
+See the [runtime invocation contract](../docs/WORKFLOW.md).
 
 ## Module ownership
 
@@ -1399,21 +1393,9 @@ choices. Versions are recorded in the package files and .nvmrc. Install with `np
 CI runs `npm run validate` on pull requests and pushes to main using the declared Node version
 on Ubuntu. It verifies the delivered revision and does not publish or merge changes.
 
-## Documentation
-
-- [AGENTS.md](../AGENTS.md): shared working guidance.
-- [Vision](../docs/LONG_TERM_VISION.md): purpose and direction.
-- [Architecture](../docs/architecture.md): design principles, responsibilities and tech stack.
-- [Spec](../docs/spec.md): current behavior and limits.
-- [Workflow](../docs/WORKFLOW.md): configuration and commands.
-- [Connecting a project](../docs/connect-a-project.md): operator setup.
-- [Git workflow](../docs/GIT-WORKFLOW.md): branches, PRs and integration gates.
-- [Documentation guide](../docs/documentation.md): keeping these documents current and concise.
-
 ## Future work
 
-Jira holds the current backlog. The [long-term vision](../docs/LONG_TERM_VISION.md) guides
-architecture decisions.
+Jira holds the current backlog.
 
 ## Optional review-to-completion
 

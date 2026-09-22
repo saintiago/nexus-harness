@@ -1,8 +1,6 @@
 # Architecture
 
 Nexus is a local-first TypeScript CLI for implementation, checks, repair, delivery and review.
-The [vision](LONG_TERM_VISION.md) explains its purpose; [spec.md](spec.md) defines current
-behavior; [WORKFLOW.md](WORKFLOW.md) defines configuration and commands.
 
 ## Design principles
 
@@ -69,9 +67,3 @@ simpler system. Thin integration glue is usually enough.
 
 Keep runtime-specific details in adapters. Add infrastructure only for a concrete need in the task,
 not merely because it appears in the long-term vision.
-
-## Documentation and tasks
-
-A ticket states the problem and desired outcome. Shared guidance belongs in repository documents;
-queue order belongs in Jira rank. Update the authoritative contract when behavior changes.
-Follow the [documentation guide](documentation.md); Git history retains past decisions and evidence.

@@ -1,18 +1,5 @@
 # Long-Term Vision
 
-## Purpose
-
-This document is the north star for the harness. It is **not** an implementation plan and it defines
-no behaviour of its own.
-
-- Current specs and explicit tasks take precedence: `docs/spec.md` remains authoritative for what
-  the harness does today.
-- A change in behaviour still needs a task, implemented on a `task/...` branch with tests
-  ([docs/GIT-WORKFLOW.md](GIT-WORKFLOW.md)), with the spec updated where the behaviour it describes
-  changes.
-- Where this document and the spec disagree about current behaviour, the spec wins and this
-  document is amended.
-
 The harness should evolve from an autonomous coding executor into an **autonomous engineering system** while remaining simple, efficient, observable, and human-governed.
 
 ## End State
