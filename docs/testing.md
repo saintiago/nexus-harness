@@ -34,6 +34,18 @@ repair, developer/reviewer handoff, delivery and verified completion, and interr
 continuation. Use controlled agent and service responses. Do not repeat lower-layer decision
 matrices through CLI wrappers or build a second copy of Nexus inside the fixtures.
 
+The rebuilt workflow layer lives in `tests/workflow/` and holds one suite per connection: a task
+runs and is repaired in the same retained working copy (`execution-repair.test.ts`), a delivered
+attempt is handed to the reviewer through a pinned view of its own workspace
+(`review-handoff.test.ts`), the pass is delivered and the ticket is finished only on the merge
+GitHub made at that revision (`delivery-completion.test.ts`), and an interrupted attempt's
+workspace is the one the next attempt continues (`continuation.test.ts`). Each case assembles the
+harness's own modules — the runner, the workspace, the configured commands, the review scan, the
+delivery step, the completion pass, the report and the ledger — and supplies only the two
+responses a workflow gets from outside: the agent turn, and the service answers of the configured
+integrations. Nothing in the layer re-tests a decision the unit layer owns or a protocol the
+boundary layer owns.
+
 ## Validation and restoration
 
 New suites live under `tests/` and run in normal validation. The old suites in `tests_old/` are
@@ -41,19 +53,26 @@ reference material, excluded from test discovery, type checking, linting and for
 not an alternate gate and should not be copied back wholesale. Recover their required behavior
 coverage at the appropriate layer; discard duplication and assertions tied only to implementation.
 
-The rebuilt unit layer lives under `tests/` and runs in normal validation: configuration and input
-validation, queue and run state transitions, repair and escalation decisions, review and completion
-decisions, and conversation-history rules are decided there with explicit inputs and supplied
-observations. The rebuilt boundary layer runs there too: this host's real processes for command
-execution, cancellation and output handling, real temporary Git repositories for the workspace and
-retention contracts, and controlled HTTP services and stand-in programs for the Jira and GitHub
-adapters. Validation has no empty-suite acceptance — a validation run that discovers no test is a
-failure, not a pass — and the archived suites whose coverage those layers now carry were removed as
-their coverage was rebuilt. Coverage that still belongs to another layer — the coding-runtime
-adapter, the configured setup/check round, the Jira connector's queue, claim and publication
-behavior, the review scan's GitHub reads, the completion path, reporting, and the assembled
-workflows — stays in `tests_old/` as reference material for the layer that will own it.
+The active suites live in the directory of the layer that owns their behavior, and
+`vitest.config.ts` runs each directory as its own project: `tests/unit/` decides behavior from
+explicit inputs and realizes no effect — configuration and input validation, queue and run state
+transitions, repair and escalation decisions, review and completion decisions, and
+conversation-history rules; `tests/boundary/` verifies this host's real contracts — processes,
+Git and filesystem behavior, and the Jira and GitHub adapters against controlled services and
+stand-in programs; and `tests/workflow/` proves the four assembled connections above. A suite
+outside every layer, and a layer with no suite, fail `tests/unit/layers.test.ts`: validation has
+no empty-suite acceptance, and a layer that stops being discovered stops being a failure rather
+than passing.
+
+The archived suites whose coverage those layers now carry were removed as their coverage was
+rebuilt. What stays in `tests_old/` is the reference for coverage that belongs to the coding
+runtime adapter, the configured setup/check round, the Jira connector's queue, claim, pointer and
+publication behavior, the review scan's GitHub reads, the completion path's GitHub commands,
+source readiness, reporting and terminal presentation, the source and queue consumer paths with
+their pre-delivery diagnosis, and the live provider exercises; `tests_old/REFERENCE.txt` names
+each file and what it holds.
 
 Cache deterministic unit results only when all their inputs are declared. Checks of real process
-or host behavior run fresh. Maintain cache inputs and task selection as suite boundaries change.
-Live provider exercises require explicit authorization and stay outside the ordinary gate.
+or host behavior run fresh — the boundary and workflow layers run on every validation. Maintain
+cache inputs and task selection as suite boundaries change. Live provider exercises require
+explicit authorization and stay outside the ordinary gate.

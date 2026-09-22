@@ -8,7 +8,7 @@
  * that keeps what it wrote and names it, and a comparison that is never reported
  * as one that found nothing. What a run does with the result is the fast
  * suites'; the branch a retained workspace is continued on is
- * `tests/workspace-continuation.test.ts`.
+ * `tests/boundary/workspace-continuation.test.ts`.
  *
  * Nothing is written outside the temporary directories a case owns, and the Git
  * environment is the suite's private one, so no developer configuration, hook,

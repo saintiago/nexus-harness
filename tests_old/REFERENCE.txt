@@ -1,19 +1,33 @@
 Archived test reference. These files are excluded from active validation.
 Their original imports and paths are intentionally preserved; they are not a runnable suite here.
 Rebuild required behavior coverage in tests/ using docs/testing.md.
-Suites whose decisions the rebuilt fast layer now carries were removed as that coverage was
+Suites whose coverage the rebuilt layers now carry were removed as that coverage was
 rebuilt; what remains is the coverage that still belongs to another layer.
 
-The rebuilt boundary layer now carries the process, Git, workspace and external-service adapter
-contracts in tests/process.test.ts, tests/git.test.ts, tests/workspace.test.ts,
-tests/workspace-continuation.test.ts, tests/jira-gateway.test.ts and tests/github-*.test.ts. The
-suites it replaced were removed with it: git.test.ts, workspace.test.ts, workspace-branch.test.ts,
-stop.test.ts and delivery.test.ts.
+The active suites live in the directory of the layer that owns their behavior. The rebuilt unit
+layer (tests/unit/) replaced config.test.ts, completion-config.test.ts, completion-gate.test.ts,
+completion-policy.test.ts, completion-summary.test.ts, runner-policy.test.ts, history-runner.test.ts
+and baseline-findings.test.ts. The rebuilt boundary layer (tests/boundary/) replaced git.test.ts,
+workspace.test.ts, workspace-branch.test.ts, stop.test.ts and delivery.test.ts. The rebuilt
+workflow layer (tests/workflow/) carries the assembled connections those suites below exercised
+only through whole-workflow fixtures: a task that runs and is repaired in the same working copy
+(execution-repair.test.ts), a delivered attempt handed to the reviewer through a pinned view of
+the workspace its pointer names (review-handoff.test.ts), a delivery finished only on the merge
+GitHub made at the revision it published (delivery-completion.test.ts), and an interrupted
+attempt continued, in the same clone, by the next attempt (continuation.test.ts).
 
-What stays here is the coverage those rebuilds did not carry: the coding-runtime adapter
-(agent.test.ts), the configured setup/check round (checks.test.ts), the Jira connector's queue,
-claim, pointer and publication behavior (jira.test.ts, queue-recovery.test.ts), the review scan's
-GitHub reads (review-github.test.ts), the completion path (completion-github.test.ts), source
-readiness (refresh.test.ts), reporting (report.test.ts), and the assembled CLI and queue
-workflows. The fixture modules these files share (fixtures/boundary-operations.ts, lifecycle.ts,
-local-target.ts, workspace.ts) stay with them as reference.
+What stays here is the coverage those rebuilds did not carry, grouped by the layer that still owes
+it: the coding-runtime adapter (agent.test.ts), the configured setup/check round (checks.test.ts),
+the Jira connector's queue, claim, pointer and publication behavior (jira.test.ts,
+queue-recovery.test.ts, source.test.ts), source readiness (refresh.test.ts), the review scan's
+GitHub reads (review-github.test.ts) and its remaining decisions (reviews.test.ts), the completion
+path's GitHub commands (completion-github.test.ts, completion-arm.test.ts, completion-cli.test.ts),
+reporting and terminal presentation (report.test.ts, activity.test.ts, cli.test.ts), the file-task
+command surface (cli.integration.test.ts, cli-run.integration.test.ts, local-run.integration.test.ts),
+the source and queue consumer paths with their pre-delivery diagnosis (source-cli.integration.test.ts,
+baseline.test.ts, baseline-queue.integration.test.ts, queue-cli.test.ts, queue.test.ts,
+lifecycle.test.ts), the records and repair history (runner-records.test.ts, runner-repair.test.ts,
+runner.test.ts, history.test.ts, history-source.test.ts), and the live provider exercises
+(live-verifier.test.ts, live/). The fixture modules these files share (fixtures/*.ts, support.ts,
+reviews-shared.ts) stay with them as reference; none of it is an alternate gate, and none of it
+should be copied back wholesale.

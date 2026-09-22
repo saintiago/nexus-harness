@@ -36,8 +36,9 @@
  * still asks what would run. A `--` passthrough is refused instead: Turborepo
  * appends everything after it to *every* task, which would hand command-line
  * flags meant for Vitest to `prettier` and `eslint`. Reporter flags for one
- * layer belong on that layer's own command (`npm run test:four-workers -- ` and
- * `npx vitest run --project boundary --reporter=verbose`).
+ * layer belong on that layer's own command
+ * (`npm run test:boundary -- --reporter=verbose`, or
+ * `npx vitest run --project workflow --reporter=verbose`).
  */
 
 import { spawn, spawnSync } from 'node:child_process';

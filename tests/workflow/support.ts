@@ -13,8 +13,14 @@
  */
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import type { CliIo } from '../../src/cli/context.js';
-import type { HarnessConfig } from '../../src/shared/types.js';
+import type { CliContext, CliIo } from '../../src/cli/context.js';
+import { composeDependencies } from '../../src/cli/dependencies.js';
+import { loadConfiguration, loadTask } from '../../src/config/load.js';
+import { projectConfigFile } from '../../src/config/paths.js';
+import type { AgentTurnRequest, AgentTurnResult, RunTaskResult } from '../../src/runs/contracts.js';
+import { runTask } from '../../src/runs/runner.js';
+import type { HarnessConfig, SourceRef } from '../../src/shared/types.js';
+import type { ContinuedWorkspace } from '../../src/workspace/reopen.js';
 import { createRepository, gitOrFail } from '../boundary/integration-support.js';
 
 /**
@@ -168,12 +174,68 @@ export async function readRunReport(
   if (runId === undefined) {
     throw new Error(`no run directory was allocated under ${runsRoot}`);
   }
-  const runDir = path.join(runsRoot, runId);
+  return await readReportFile(path.join(runsRoot, runId));
+}
+
+/** The report one run directory wrote, read back as the JSON it is. */
+export async function readReportFile(
+  runDir: string,
+): Promise<{ readonly runDir: string; readonly report: Record<string, unknown> }> {
   const report = JSON.parse(await readFile(path.join(runDir, 'result.json'), 'utf8')) as Record<
     string,
     unknown
   >;
   return { runDir, report };
+}
+
+/**
+ * Runs one ticket — a source-backed attempt, not a file task — in the workspace
+ * its preferred id names, and returns what the run left. The real loader, the
+ * real collaborators and the real report are used; only the coding turn is
+ * supplied, so the retained workspace, its ledger and its branch are what a
+ * later workflow would really find.
+ */
+export async function runTicket(input: {
+  readonly project: WorkflowProject;
+  readonly ref: SourceRef;
+  readonly workspaceId: string;
+  readonly turn: (request: AgentTurnRequest) => Promise<AgentTurnResult>;
+  /** Continue an existing workspace instead of naming the one to create. */
+  readonly continued?: ContinuedWorkspace;
+  /** The caller's own stop request, when a case has to interrupt the run. */
+  readonly stop?: AbortSignal;
+}): Promise<RunTaskResult> {
+  const { project, ref, workspaceId, turn, continued, stop } = input;
+  const context: CliContext = {
+    cwd: project.parent,
+    io: recordingIo().io,
+    dependencies: { runAgentTurn: turn },
+  };
+  const { config } = await loadConfiguration(project.configPath, projectConfigFile(project.repo));
+  const task = await loadTask(project.taskPath);
+  return await runTask(
+    {
+      task,
+      config,
+      repoPath: project.repo,
+      workDir: project.workDir,
+      sourceRef: ref,
+      preferredWorkspaceId: workspaceId,
+      ...(continued === undefined ? {} : { continuedWorkspace: continued }),
+      ...(stop === undefined ? {} : { stop }),
+    },
+    composeDependencies(context, context.io, () => undefined, {
+      runtime: 'codex',
+      command: ['codex'],
+    }),
+  );
+}
+
+/** The coding turn that implements the target's work and commits it. */
+export async function implementTurn(request: AgentTurnRequest): Promise<AgentTurnResult> {
+  await writeFile(path.join(request.workspacePath, TARGET_RESULT_FILE), TARGET_RESULT_DONE, 'utf8');
+  await commitEverything(request.workspacePath, 'implement the greeting');
+  return { summary: 'implemented the greeting' };
 }
 
 /** The entries of one directory, sorted, or an empty list when it is absent. */

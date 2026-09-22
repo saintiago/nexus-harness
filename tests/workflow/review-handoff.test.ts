@@ -10,13 +10,10 @@
  * another runtime. Only the Jira queue and the GitHub repository are controlled
  * responses: the two live services this layer never contacts.
  */
-import { readFile, readdir, writeFile } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { composeDependencies } from '../../src/cli/dependencies.js';
-import type { CliContext } from '../../src/cli/context.js';
-import { loadConfiguration, loadTask } from '../../src/config/load.js';
-import { projectConfigFile } from '../../src/config/paths.js';
+import { loadTask } from '../../src/config/load.js';
 import type {
   AppCheckRun,
   OpenPullRequest,
@@ -31,8 +28,6 @@ import type {
 import { createReviewerTurn } from '../../src/reviews/reviewer.js';
 import { scanReviews } from '../../src/reviews/scan.js';
 import { REVIEW_VIEW_DIRECTORY, reviewViews } from '../../src/reviews/view.js';
-import type { AgentTurnRequest, RunTaskResult } from '../../src/runs/contracts.js';
-import { runTask } from '../../src/runs/runner.js';
 import type { SourceTask } from '../../src/sources/contract.js';
 import type { SourceRef } from '../../src/shared/types.js';
 import { canonicalPath } from '../../src/workspace/git.js';
@@ -41,9 +36,10 @@ import {
   TARGET_RESULT_DONE,
   TARGET_RESULT_FILE,
   branchHead,
-  commitEverything,
   createTargetProject,
+  implementTurn,
   recordingIo,
+  runTicket,
 } from './support.js';
 
 useOwnedProcesses();
@@ -110,9 +106,7 @@ function standInGitHub(pullRequest: OpenPullRequest, evidence: ReviewEvidence): 
     readPullRequest: async (number) => (number === pullRequest.number ? pullRequest : null),
     listReviews: async (): Promise<readonly PullRequestReview[]> => [],
     readEvidence: async () => evidence,
-    publishReview: async (
-      request: PublishReviewRequest,
-    ): Promise<PublishedReview> => {
+    publishReview: async (request: PublishReviewRequest): Promise<PublishedReview> => {
       reviews.push(request);
       return {
         id: 9001,
@@ -133,48 +127,15 @@ function standInGitHub(pullRequest: OpenPullRequest, evidence: ReviewEvidence): 
   return { repository, reviews, checks };
 }
 
-/** One run of the ticket, passed, in the retained workspace its pointer names. */
-async function deliveredAttempt(
-  project: Awaited<ReturnType<typeof createTargetProject>>,
-): Promise<RunTaskResult> {
-  const recorded = recordingIo();
-  const context: CliContext = {
-    cwd: project.parent,
-    io: recorded.io,
-    dependencies: {
-      runAgentTurn: async (request: AgentTurnRequest) => {
-        await writeFile(
-          path.join(request.workspacePath, TARGET_RESULT_FILE),
-          TARGET_RESULT_DONE,
-          'utf8',
-        );
-        await commitEverything(request.workspacePath, 'implement the greeting');
-        return { summary: 'implemented the greeting' };
-      },
-    },
-  };
-  const { config } = await loadConfiguration(
-    project.configPath,
-    projectConfigFile(project.repo),
-  );
-  const task = await loadTask(project.taskPath);
-  return await runTask(
-    {
-      task,
-      config,
-      repoPath: project.repo,
-      workDir: project.workDir,
-      sourceRef: REF,
-      preferredWorkspaceId: WORKSPACE_ID,
-    },
-    composeDependencies(context, recorded.io, () => undefined, { runtime: 'codex', command: ['codex'] }),
-  );
-}
-
 describe('the review handoff', () => {
   it('hands the delivered revision to a reviewer and publishes its verdict against that head', async () => {
     const project = await createTargetProject();
-    const run = await deliveredAttempt(project);
+    const run = await runTicket({
+      project,
+      ref: REF,
+      workspaceId: WORKSPACE_ID,
+      turn: implementTurn,
+    });
     const workspace = run.workspace;
     expect(workspace).not.toBeNull();
     const workspacePath = workspace?.workspacePath ?? '';
@@ -216,25 +177,25 @@ describe('the review handoff', () => {
     const item: SourceTask = { ref: REF, task, pointers: [WORKSPACE_ID] };
     const recorded = recordingIo();
     const summary = await scanReviews({
-        queue: {
-          list: async () => [{ ref: REF, title: task.title }],
-          prepare: async () => item,
-        },
-        repository: github.repository,
-        reviewer: createReviewerTurn({
-          selection: { runtime: 'codex', command: [process.execPath, standIn.scriptPath] },
-          environment: process.env,
-        }),
-        views: reviewViews(),
-        workDir: project.workDir,
-        sourceRoot: canonicalPath(project.repo),
-        login: LOGIN,
-        checkName: CHECK_NAME,
-        reviewerTimeoutMs: 60_000,
-        io: recorded.io,
-        stop: new AbortController().signal,
-        now: () => new Date('2026-03-01T11:05:00.000Z'),
-        sleep: async () => undefined,
+      queue: {
+        list: async () => [{ ref: REF, title: task.title }],
+        prepare: async () => item,
+      },
+      repository: github.repository,
+      reviewer: createReviewerTurn({
+        selection: { runtime: 'codex', command: [process.execPath, standIn.scriptPath] },
+        environment: process.env,
+      }),
+      views: reviewViews(),
+      workDir: project.workDir,
+      sourceRoot: canonicalPath(project.repo),
+      login: LOGIN,
+      checkName: CHECK_NAME,
+      reviewerTimeoutMs: 60_000,
+      io: recorded.io,
+      stop: new AbortController().signal,
+      now: () => new Date('2026-03-01T11:05:00.000Z'),
+      sleep: async () => undefined,
     });
 
     expect(recorded.err).toEqual([]);
@@ -248,15 +209,13 @@ describe('the review handoff', () => {
     expect(github.reviews[0]?.head).toBe(head);
     expect(github.reviews[0]?.decision).toBe('approve');
     expect(github.reviews[0]?.body).toContain(REF.key);
-    expect(github.checks).toEqual([
-      expect.objectContaining({ head, decision: 'approve' }),
-    ]);
+    expect(github.checks).toEqual([expect.objectContaining({ head, decision: 'approve' })]);
 
     // The reviewer inspected a real clone of the retained workspace, pinned at
     // the reviewed head and holding the delivered change — not an assembled
     // patch, and not the workspace itself.
-    const [reviewId] = (await readdir(path.join(project.workDir, 'reviews'))).filter(
-      (entry) => entry.startsWith('review-'),
+    const [reviewId] = (await readdir(path.join(project.workDir, 'reviews'))).filter((entry) =>
+      entry.startsWith('review-'),
     );
     const reviewDir = path.join(project.workDir, 'reviews', reviewId ?? '');
     const viewPath = path.join(reviewDir, REVIEW_VIEW_DIRECTORY);
