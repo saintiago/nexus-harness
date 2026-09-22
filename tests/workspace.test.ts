@@ -576,6 +576,38 @@ describe('preparation that cannot finish', () => {
     );
   }, 90_000);
 
+  it('keeps the run directory and names it when the clone cannot reproduce the base', async () => {
+    const fixture = await createRepository();
+    const source = await preflight(fixture);
+    const run = await allocateRunDirectory(fixture.workDir);
+    // An incomplete source object store, damaged after preflight: the recorded
+    // commit and its tree still resolve, but the blob they name can no longer be
+    // written. This host's Git transfers it to the clone and then exits 0 from a
+    // checkout that materializes nothing at all, so what refuses the clone is the
+    // check of what the working copy really holds — a Git that notices the
+    // missing blob while transferring the clone refuses it there instead.
+    const blob = (await gitOrFail(['rev-parse', 'HEAD:README.md'], fixture.repo)).trim();
+    await rm(path.join(fixture.repo, '.git', 'objects', blob.slice(0, 2), blob.slice(2)));
+
+    const error = await failureOf(() => prepareWorkspace(run, source, generousBounds()));
+
+    expect(error).toBeInstanceOf(WorkspaceError);
+    expect(error.message).toMatch(
+      /does not reproduce the recorded base|could not be cloned|could not be created/,
+    );
+    // The refusal belongs to this run, and names the evidence it kept.
+    expect(error.message).toContain(run.runId);
+    expect(error.message).toContain(run.runDir);
+    expect(existsSync(run.runDir)).toBe(true);
+    expect(existsSync(run.logsDir)).toBe(true);
+    // The incomplete clone is not a working copy: the base's file is not in it,
+    // and no ledger adopts it as a workspace a later turn could continue.
+    expect(existsSync(path.join(run.workspacePath, 'README.md'))).toBe(false);
+    expect(existsSync(path.join(fixture.workDir, 'workspaces', `${run.workspaceId}.json`))).toBe(
+      false,
+    );
+  }, 90_000);
+
   it('refuses a source that moved after preflight, instead of rebasing onto it', async () => {
     const fixture = await createRepository();
     const source = await preflight(fixture);
