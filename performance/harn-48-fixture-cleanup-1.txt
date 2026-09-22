@@ -1,8 +1,0 @@
-HARN-48 fixture cleanup evidence, sequential validation run 1 (Windows).
-Total validation wall time: 185.87 s
-Fixture directories before: 459; after: 459; newly left behind: 0
-Removed by the run: 0
-Processes naming a fixture directory before: 0; after: 0
-After: 
-node v24.14.1 / npm 11.11.0 / vitest 5.0.0 / workers: policy 8 then boundary 4
-Raw: performance/harn-48-validation-1-detail.txt; json: performance/harn-48-validation-1.json
