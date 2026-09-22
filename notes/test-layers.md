@@ -15,7 +15,7 @@ against the audit reference under [Performance](#performance).
 ## The two layers
 
 The suite is two Vitest projects with explicit concurrency policy
-(`vitest.config.ts`), not one pool of 49 files:
+(`vitest.config.ts`), not one pool of 50 files:
 
 - **policy** — configuration, parsing, the terminal model, reporting, the queue
   decisions, the history store, the review verdict/scan/watch decisions, the
@@ -288,6 +288,37 @@ setup-failure cases both reach a holding runtime and assert that the CLI PID,
 runtime PID/token and runtime child PID/token ended before the target disappears.
 These cases execute on Windows and Linux. No production process or baseline
 lifecycle behavior changes in this repair.
+
+## Review repair: pending entry points and late allocations
+
+The review of `d44573b` identified two remaining ownership gaps. All direct
+command/check-round calls in `checks.test.ts` and `lifecycle.test.ts` now use
+`tests/fixtures/operations.ts`. The local-loop suite and shared runner fixture
+use its `runTask` wrapper. These wrappers register the promise before production
+code starts, combine the fixture stop with caller cancellation, and wait through
+the existing bounded disposal. Local-loop and lifecycle Git helpers also use
+the shared owned `runProcess`. Product behavior and HARN-46 baseline logic are
+unchanged; no existing assertions, skips, deadlines or check commands changed.
+
+The directory registry now stores the allocating scope alongside each path.
+An allocation that finishes after disposal is registered to that original scope
+and refused before returning to closed setup. Pending work in that scope keeps
+the directory across later cleanups, even when it did not exist in disposal's
+initial path snapshot. Settlement releases the hold; no broader removal retry
+or process-killing rule was added.
+
+| Guarantee                                                  | Active regression and observable assertions                                                                                                                                                                                                                                                                                                               |
+| ---------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Timeout during a real pending command, check round or task | `fixture-lifecycle.test.ts` invokes `fixtures/lifecycle/nested/operations.test.ts` through actual Vitest deadlines, using the same owned entry points as the affected suites. All three reach a real hanging child tree; each directory still exists when the production promise settles; afterwards both process generations and the directory are gone. |
+| Allocation finishes beyond bounded disposal                | `fixture-allocation.test.ts` controls allocation and the cleanup clock. The closed setup receives a refusal, the late directory survives two newer scope disposals while its original setup remains pending, and is removed only after setup settles.                                                                                                     |
+| Late allocation across actual later tests                  | The nested `allocation.test.ts` releases allocation from the next Vitest test, after timeout and disposal have returned. A following test observes the old directory preserved and the newer directory removed, then settles the old setup; the last test and parent proof observe removal.                                                               |
+
+No coverage was deleted. The allocation regression adds one active outer test;
+three real-operation timeouts and the four-step allocation proof extend the
+existing nested lifecycle proof and are not counted as ordinary gate skips or
+passing cases. The suite has 50 files and 1,331 active Windows cases, with the
+two pre-existing platform skips. Earlier successful measurements at `5ec1316`
+predate these fixes and are replaced below by final-code measurements.
 
 ## Performance
 

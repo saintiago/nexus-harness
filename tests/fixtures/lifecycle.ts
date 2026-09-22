@@ -442,8 +442,9 @@ function names(owners: readonly UnconfirmedOwner[], directory: string): boolean 
 
 /**
  * The holds to keep for owners whose directory the scope could not name: the
- * directories that existed when the owner was still unsettled, which are exactly
- * the ones the work could have been holding.
+ * directories visible to this cleanup. An allocation still in flight is also
+ * tied to its originating scope in support.ts; that ownership survives this
+ * snapshot and holds a late result until the scope's work settles.
  */
 function named(owners: readonly UnconfirmedOwner[], seen: readonly string[]): HeldDirectory[] {
   return owners.flatMap((one) =>

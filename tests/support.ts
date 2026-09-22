@@ -8,7 +8,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import stringWidth from 'string-width';
-import { fixtureContexts, ownWork } from './fixtures/scope.js';
+import { assertFixtureActive, fixtureContexts, ownWork } from './fixtures/scope.js';
+import type { FixtureScope } from './fixtures/scope.js';
 import type { CliIo } from '../src/cli/context.js';
 import { HARNESS_CONFIG_FILE_NAME, PROJECT_CONFIG_FILE_NAME } from '../src/config/paths.js';
 import { historyCurrentPath, workspaceHistoryRoot } from '../src/history/paths.js';
@@ -196,19 +197,24 @@ export const documentedTask = {
 /** A JSON document as tests build it before writing it to disk. */
 export type JsonObject = Record<string, unknown>;
 
-const temporaryDirectories: string[] = [];
+const temporaryDirectories = new Map<string, FixtureScope | undefined>();
 
 /**
  * Creates a temporary directory and registers it for removal by
  * {@link cleanupTempDirectories}.
  */
 export async function createTempDir(): Promise<string> {
+  // Capture before allocation starts: it may finish after disposal's bounded
+  // wait, or while a different test's cleanup is running.
+  const scope = fixtureContexts.getStore();
   const allocate = async (): Promise<string> => {
     const directory = await mkdtemp(path.join(os.tmpdir(), 'nexus-harness-'));
-    temporaryDirectories.push(directory);
+    temporaryDirectories.set(directory, scope);
+    // Register even a late result, but never hand it to a closed setup. Its
+    // original scope's pending work keeps it held across subsequent cleanups.
+    if (scope !== undefined) assertFixtureActive(scope, 'temporary directory allocation');
     return directory;
   };
-  const scope = fixtureContexts.getStore();
   return await (scope === undefined ? allocate() : ownWork(scope, 'temporary directory', allocate));
 }
 
@@ -319,7 +325,7 @@ export async function writeConfigPair(
 
 /** Every temporary directory this file's tests created and have not removed. */
 export function tempDirectories(): readonly string[] {
-  return [...temporaryDirectories];
+  return [...temporaryDirectories.keys()];
 }
 
 /**
@@ -330,21 +336,25 @@ export function tempDirectories(): readonly string[] {
  * directory through `preserve`: removing a tree something may still be writing
  * to destroys the evidence of the leak and can fail the hook with the platform's
  * `EBUSY` instead of reporting the stop that did not land. Kept directories are
- * left registered, so a later disposal can still remove them.
+ * left registered, so a later disposal can still remove them. The allocator also
+ * retains each directory's originating scope: pending work in that scope holds
+ * even a directory allocated after its disposal returned, across every later
+ * cleanup, until the work settles.
  */
 export async function cleanupTempDirectories(
   options: { readonly preserve?: (directory: string) => boolean } = {},
 ): Promise<readonly string[]> {
   const kept: string[] = [];
   const removing: string[] = [];
-  for (const directory of temporaryDirectories.splice(0)) {
-    if (options.preserve?.(directory) === true) {
+  for (const [directory, scope] of temporaryDirectories) {
+    const preserve = options.preserve?.(directory) === true;
+    if (preserve || (scope !== undefined && scope.work.size > 0)) {
       kept.push(directory);
     } else {
+      temporaryDirectories.delete(directory);
       removing.push(directory);
     }
   }
-  temporaryDirectories.push(...kept);
   await Promise.all(
     removing.map(async (directory) =>
       removeWithRetry(async () => rm(directory, { recursive: true, force: true })),

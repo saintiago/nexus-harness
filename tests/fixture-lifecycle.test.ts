@@ -241,10 +241,17 @@ describe('the fixture lifecycle', () => {
       'cli-timeout',
       'continuation',
       'late',
+      'late-allocation',
       'setup',
       'timeout',
       'unsettled',
       'unregistered',
+      'operation-command',
+      'operation-command-settled',
+      'operation-round',
+      'operation-round-settled',
+      'operation-task',
+      'operation-task-settled',
     ];
     if (process.platform === 'win32') {
       // The unconfirmed stop needs a host utility the harness stops trees with,
@@ -259,6 +266,14 @@ describe('the fixture lifecycle', () => {
     const first = new Map(started.map((entry) => [entry.case, entry]));
 
     for (const entry of started) {
+      if (entry.case === 'late-allocation') {
+        expect(entry.outcome).toBe(
+          'refused; directory survived the next test; newer directory removed',
+        );
+      }
+      if (entry.case.endsWith('-settled')) {
+        expect(entry.outcome).toBe('directory exists at settlement: true');
+      }
       if (entry.case === 'unconfirmed') {
         // A stop the host would not carry out: the directory is preserved and
         // reported, and the tree is still running, which is why it was preserved.

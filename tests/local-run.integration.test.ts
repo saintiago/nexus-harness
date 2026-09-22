@@ -81,7 +81,7 @@ import type {
   RunTaskRequest,
   RunTaskResult,
 } from '../src/runs/contracts.js';
-import { runTask } from '../src/runs/runner.js';
+import { runTask } from './fixtures/operations.js';
 import type {
   AttemptEvidence,
   CheckRoundResult,
@@ -99,7 +99,8 @@ import { allocateRunDirectory } from '../src/workspace/run-directory.js';
 import { recordWorkspaceAttempt } from '../src/workspace/state.js';
 import { beaconModuleUrl, endFixtureTree } from './fixtures/local-target.js';
 import type { FixtureProcessRecord } from './fixtures/local-target.js';
-import { ownFixtureProcess, useFixtureLifecycle } from './fixtures/lifecycle.js';
+import { ownFixtureProcess, runProcess, useFixtureLifecycle } from './fixtures/lifecycle.js';
+import type { ProcessResult } from './fixtures/lifecycle.js';
 import { createTempDir, writeJsonFile } from './support.js';
 
 useFixtureLifecycle();
@@ -365,41 +366,6 @@ const runtimeSource = (beaconModule: string): string =>
 // ---------------------------------------------------------------------------
 // Processes, files, and time
 // ---------------------------------------------------------------------------
-
-interface ProcessResult {
-  readonly code: number | null;
-  readonly stdout: string;
-  readonly stderr: string;
-}
-
-function runProcess(
-  command: string,
-  args: readonly string[],
-  options: { readonly cwd: string; readonly env?: NodeJS.ProcessEnv },
-): Promise<ProcessResult> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, [...args], {
-      cwd: options.cwd,
-      env: options.env ?? process.env,
-      windowsHide: true,
-      // As in the other lifecycle fixtures: its own process group on POSIX, so
-      // the test can stop the tree it started the way the harness stops one.
-      detached: process.platform !== 'win32',
-    });
-    let stdout = '';
-    let stderr = '';
-    child.stdout?.setEncoding('utf8');
-    child.stdout?.on('data', (chunk: string) => {
-      stdout += chunk;
-    });
-    child.stderr?.setEncoding('utf8');
-    child.stderr?.on('data', (chunk: string) => {
-      stderr += chunk;
-    });
-    child.on('error', reject);
-    child.on('close', (code) => resolve({ code, stdout, stderr }));
-  });
-}
 
 /** Runs `git` with literal arguments, in the fixture environment. */
 function git(args: readonly string[], cwd: string): Promise<ProcessResult> {

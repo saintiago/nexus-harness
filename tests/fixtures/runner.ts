@@ -35,7 +35,8 @@ import type {
   AgentTurnResult,
   RunnerDependencies,
 } from '../../src/runs/contracts.js';
-import { runTask as runTaskThrough } from '../../src/runs/runner.js';
+import { runTask } from './operations.js';
+export { runTask } from './operations.js';
 import type {
   CheckRoundResult,
   Command,
@@ -62,31 +63,9 @@ import { readWorkspaceState, recordWorkspaceAttempt } from '../../src/workspace/
 import { createTempDir } from '../support.js';
 import { gitFixtureEnvironment } from './git.js';
 import { runProcess, useFixtureLifecycle } from './lifecycle.js';
-import { combineStop, ownFixtureOperation } from './lifecycle.js';
 import type { ProcessResult } from './lifecycle.js';
 
 useFixtureLifecycle();
-
-/**
- * One task through the runner, owned by the test that asked for it.
- *
- * The run is registered work of the test's fixture scope and takes the test's
- * own stop alongside the one the request carries: a run whose test times out,
- * fails or is cancelled is stopped and awaited before any directory it was
- * writing into is removed, and a run asked for after disposal began is refused
- * rather than started behind the cleanup hook. Everything else about the call is
- * the production runner's own.
- */
-export function runTask(
-  request: Parameters<typeof runTaskThrough>[0],
-  dependencies: RunnerDependencies,
-): ReturnType<typeof runTaskThrough> {
-  return ownFixtureOperation(
-    'the run',
-    async (own) =>
-      await runTaskThrough({ ...request, stop: combineStop(own, request.stop) }, dependencies),
-  );
-}
 
 /**
  * A private Git environment for the fixtures: the developer's own hooks,

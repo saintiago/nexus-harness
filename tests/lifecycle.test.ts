@@ -25,13 +25,11 @@
  * (notes/windows-fixture-flakes.md). See docs/tasks.md T09.
  */
 
-import { spawn } from 'node:child_process';
 import { existsSync, statSync } from 'node:fs';
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { runCheckRound } from '../src/checks/round.js';
-import { runCommand } from '../src/process/command.js';
+import { runCheckRound, runCommand } from './fixtures/operations.js';
 import { appendRunLog, openAgentLog } from '../src/reporting/logs.js';
 import { writeRunReport } from '../src/reporting/report.js';
 import type { AgentTurnResult, RunnerDependencies } from '../src/runs/contracts.js';
@@ -45,7 +43,7 @@ import { allocateRunDirectory } from '../src/workspace/run-directory.js';
 import { recordWorkspaceAttempt } from '../src/workspace/state.js';
 import { beaconModuleUrl, endFixtureTree } from './fixtures/local-target.js';
 import type { FixtureProcessRecord } from './fixtures/local-target.js';
-import { ownFixtureProcess, useFixtureLifecycle } from './fixtures/lifecycle.js';
+import { ownFixtureProcess, runProcess, useFixtureLifecycle } from './fixtures/lifecycle.js';
 import { createTempDir } from './support.js';
 
 useFixtureLifecycle();
@@ -77,32 +75,6 @@ beforeEach(async () => {
     GIT_OPTIONAL_LOCKS: '0',
   };
 });
-
-function runProcess(
-  command: string,
-  args: readonly string[],
-  options: { readonly cwd: string; readonly env?: NodeJS.ProcessEnv },
-): Promise<{ readonly code: number | null; readonly stdout: string }> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, [...args], {
-      cwd: options.cwd,
-      env: options.env ?? process.env,
-      windowsHide: true,
-      // Each fixture process leads its own process group on POSIX, exactly as
-      // the harness's own commands do, so a test can stop the whole tree by
-      // addressing the negated PID. Without this the group does not exist and
-      // the stop in these tests would silently reach nothing.
-      detached: process.platform !== 'win32',
-    });
-    let stdout = '';
-    child.stdout?.setEncoding('utf8');
-    child.stdout?.on('data', (chunk: string) => {
-      stdout += chunk;
-    });
-    child.on('error', reject);
-    child.on('close', (code) => resolve({ code, stdout }));
-  });
-}
 
 /** Runs `git` with literal arguments, in the fixture environment. */
 function git(
