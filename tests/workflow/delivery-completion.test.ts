@@ -41,6 +41,7 @@ import {
   withPathPrefix,
 } from '../boundary/integration-support.js';
 import {
+  WORKFLOW_CASE_TIMEOUT_MS,
   branchHead,
   createTargetProject,
   implementTurn,
@@ -195,118 +196,124 @@ function standInMergedGitHub(head: string): StandInMerge {
 }
 
 describe('delivery and verified completion', () => {
-  it('delivers the revision the checks passed, then finishes the ticket on its verified merge', async () => {
-    const project = await createTargetProject();
-    const run = await runTicket({
-      project,
-      ref: REF,
-      workspaceId: WORKSPACE_ID,
-      turn: implementTurn,
-    });
-    const workspace = run.workspace;
-    expect(workspace).not.toBeNull();
-    const workspacePath = workspace?.workspacePath ?? '';
-    const branch = workspace?.branch ?? '';
-    const head = await branchHead(workspacePath, branch);
-    expect(run.status).toBe('passed');
+  it(
+    'delivers the revision the checks passed, then finishes the ticket on its verified merge',
+    { timeout: WORKFLOW_CASE_TIMEOUT_MS },
+    async () => {
+      const project = await createTargetProject();
+      const run = await runTicket({
+        project,
+        ref: REF,
+        workspaceId: WORKSPACE_ID,
+        turn: implementTurn,
+      });
+      const workspace = run.workspace;
+      expect(workspace).not.toBeNull();
+      const workspacePath = workspace?.workspacePath ?? '';
+      const branch = workspace?.branch ?? '';
+      const head = await branchHead(workspacePath, branch);
+      expect(run.status).toBe('passed');
 
-    // The delivery step is the real one: its `git` commands are this host's, and
-    // only `gh` is a stand-in. The destination is a disposable bare repository.
-    const destination = path.join(project.parent, 'target.git');
-    await gitOrFail(['init', '--quiet', '--bare', destination], project.parent);
-    const recordFile = path.join(project.parent, 'gh-record.jsonl');
-    const gh = await installStandIn('gh', STAND_IN_GH);
-    const delivery = createGitHubDelivery(
-      { type: 'github', repository: REPOSITORY, baseBranch: BASE_BRANCH },
-      { pushUrl: destination, env: { ...process.env, NEXUS_GH_RECORD: recordFile } },
-    );
-    const request: DeliveryRequest = {
-      workspacePath,
-      branch,
-      baseCommit: workspace?.baseCommit ?? '',
-      logsDir: run.run.logsDir,
-      runId: run.run.runId,
-      reportPath: run.reportPath,
-      task: { id: REF.key, title: 'Finish the greeting' },
-      checks: '1 of 1 configured checks exited 0 (round: passed)',
-      sourceRef: REF,
-    };
-    const delivered = await withPathPrefix(gh.bin, () =>
-      delivery.deliver(request, new AbortController().signal),
-    );
+      // The delivery step is the real one: its `git` commands are this host's, and
+      // only `gh` is a stand-in. The destination is a disposable bare repository.
+      const destination = path.join(project.parent, 'target.git');
+      await gitOrFail(['init', '--quiet', '--bare', destination], project.parent);
+      const recordFile = path.join(project.parent, 'gh-record.jsonl');
+      const gh = await installStandIn('gh', STAND_IN_GH);
+      const delivery = createGitHubDelivery(
+        { type: 'github', repository: REPOSITORY, baseBranch: BASE_BRANCH },
+        { pushUrl: destination, env: { ...process.env, NEXUS_GH_RECORD: recordFile } },
+      );
+      const request: DeliveryRequest = {
+        workspacePath,
+        branch,
+        baseCommit: workspace?.baseCommit ?? '',
+        logsDir: run.run.logsDir,
+        runId: run.run.runId,
+        reportPath: run.reportPath,
+        task: { id: REF.key, title: 'Finish the greeting' },
+        checks: '1 of 1 configured checks exited 0 (round: passed)',
+        sourceRef: REF,
+      };
+      const delivered = await withPathPrefix(gh.bin, () =>
+        delivery.deliver(request, new AbortController().signal),
+      );
 
-    expect(delivered).toMatchObject({ number: 42, head, created: true });
-    expect(
-      (
-        await gitOrFail(
-          ['--git-dir', destination, 'rev-parse', `refs/heads/${branch}`],
-          project.parent,
-        )
-      ).trim(),
-    ).toBe(head);
-    // The push, and only the push, is what the destination holds: the published
-    // branch is the revision the checks really judged.
-    expect(head).toBe(await branchHead(workspacePath, branch));
-    expect((await readFile(recordFile, 'utf8')).trim().split('\n')).toHaveLength(2);
+      expect(delivered).toMatchObject({ number: 42, head, created: true });
+      expect(
+        (
+          await gitOrFail(
+            ['--git-dir', destination, 'rev-parse', `refs/heads/${branch}`],
+            project.parent,
+          )
+        ).trim(),
+      ).toBe(head);
+      // The push, and only the push, is what the destination holds: the published
+      // branch is the revision the checks really judged.
+      expect(head).toBe(await branchHead(workspacePath, branch));
+      expect((await readFile(recordFile, 'utf8')).trim().split('\n')).toHaveLength(2);
 
-    // The completion pass is the real one, over the ticket's live state and
-    // GitHub's answers for exactly that delivered head.
-    const ticket = standInTicket({
-      ref: REF,
-      title: 'Finish the greeting',
-      statusName: 'In Review',
-      pointers: [WORKSPACE_ID],
-    });
-    const github = standInMergedGitHub(head);
-    const config: CompletionConfig = {
-      lensApp: LOGIN,
-      lensAppId: 42,
-      lensCheckName: CHECK_NAME,
-      reviewerTokenEnv: 'NEXUS_LENS_TOKEN',
-      postMergeWorkflows: ['ci.yml'],
-      toDoStatus: 'To Do',
-      doneStatus: 'Done',
-      pollIntervalSeconds: 30,
-      deadlineSeconds: 1800,
-    };
-    const recorded = recordingIo();
-    const pass = createCompletionPass({
-      config,
-      repository: REPOSITORY,
-      baseBranch: BASE_BRANCH,
-      source: ticket.source,
-      actions: github.actions,
-      workDir: project.workDir,
-      io: recorded.io,
-      now: () => new Date('2026-03-01T12:05:00.000Z'),
-      sleep: async () => undefined,
-    });
-    const outcomes = await pass.run(new AbortController().signal);
+      // The completion pass is the real one, over the ticket's live state and
+      // GitHub's answers for exactly that delivered head.
+      const ticket = standInTicket({
+        ref: REF,
+        title: 'Finish the greeting',
+        statusName: 'In Review',
+        pointers: [WORKSPACE_ID],
+      });
+      const github = standInMergedGitHub(head);
+      const config: CompletionConfig = {
+        lensApp: LOGIN,
+        lensAppId: 42,
+        lensCheckName: CHECK_NAME,
+        reviewerTokenEnv: 'NEXUS_LENS_TOKEN',
+        postMergeWorkflows: ['ci.yml'],
+        toDoStatus: 'To Do',
+        doneStatus: 'Done',
+        pollIntervalSeconds: 30,
+        deadlineSeconds: 1800,
+      };
+      const recorded = recordingIo();
+      const pass = createCompletionPass({
+        config,
+        repository: REPOSITORY,
+        baseBranch: BASE_BRANCH,
+        source: ticket.source,
+        actions: github.actions,
+        workDir: project.workDir,
+        io: recorded.io,
+        now: () => new Date('2026-03-01T12:05:00.000Z'),
+        sleep: async () => undefined,
+      });
+      const outcomes = await pass.run(new AbortController().signal);
 
-    expect(recorded.err).toEqual([]);
-    expect(github.verifiedHeads).toContain(head);
-    // The completion works on the workspace the delivery published from: the
-    // same clone, on the branch the delivered revision was pushed from.
-    expect(github.requests[0]).toMatchObject({ workspacePath, branch });
-    expect(await branchHead(github.requests[0]?.workspacePath ?? '', branch)).toBe(head);
-    expect(outcomes).toHaveLength(1);
-    expect(outcomes[0]).toMatchObject({ status: 'done', mergeCommit: MERGE_COMMIT });
+      expect(recorded.err).toEqual([]);
+      expect(github.verifiedHeads).toContain(head);
+      // The completion works on the workspace the delivery published from: the
+      // same clone, on the branch the delivered revision was pushed from.
+      expect(github.requests[0]).toMatchObject({ workspacePath, branch });
+      expect(await branchHead(github.requests[0]?.workspacePath ?? '', branch)).toBe(head);
+      expect(outcomes).toHaveLength(1);
+      expect(outcomes[0]).toMatchObject({ status: 'done', mergeCommit: MERGE_COMMIT });
 
-    // One comment and one move: the ticket is told which merge finished it and
-    // is moved to the configured Done status, once.
-    expect(ticket.comments).toHaveLength(1);
-    const comment = ticket.comments[0]?.join('\n') ?? '';
-    expect(comment).toContain(PULL_REQUEST_URL);
-    expect(comment).toContain(MERGE_COMMIT);
-    expect(comment).toContain('ci.yml');
-    expect(ticket.moves).toEqual(['Done']);
-    expect(ticket.status()).toBe('Done');
+      // One comment and one move: the ticket is told which merge finished it and
+      // is moved to the configured Done status, once.
+      expect(ticket.comments).toHaveLength(1);
+      const comment = ticket.comments[0]?.join('\n') ?? '';
+      expect(comment).toContain(PULL_REQUEST_URL);
+      expect(comment).toContain(MERGE_COMMIT);
+      expect(comment).toContain('ci.yml');
+      expect(ticket.moves).toEqual(['Done']);
+      expect(ticket.status()).toBe('Done');
 
-    // The run's own evidence stands beside the completion's: the report is the
-    // pass the delivery published, and the ticket's workspace still holds it.
-    const { report } = await readRunReport(project.workDir);
-    expect(report['status']).toBe('passed');
-    expect(await branchHead(workspacePath, branch)).toBe(head);
-    expect(await readdirEntries(path.join(project.workDir, 'completion-logs'))).not.toHaveLength(0);
-  });
+      // The run's own evidence stands beside the completion's: the report is the
+      // pass the delivery published, and the ticket's workspace still holds it.
+      const { report } = await readRunReport(project.workDir);
+      expect(report['status']).toBe('passed');
+      expect(await branchHead(workspacePath, branch)).toBe(head);
+      expect(await readdirEntries(path.join(project.workDir, 'completion-logs'))).not.toHaveLength(
+        0,
+      );
+    },
+  );
 });

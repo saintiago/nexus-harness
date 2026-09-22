@@ -40,6 +40,7 @@ import { gitOrFail, installStandIn, useOwnedProcesses } from '../boundary/integr
 import {
   TARGET_RESULT_DONE,
   TARGET_RESULT_FILE,
+  WORKFLOW_CASE_TIMEOUT_MS,
   branchHead,
   createTargetProject,
   implementTurn,
@@ -133,130 +134,136 @@ function standInGitHub(pullRequest: OpenPullRequest, evidence: ReviewEvidence): 
 }
 
 describe('the review handoff', () => {
-  it('hands the delivered revision to a reviewer and publishes its verdict against that head', async () => {
-    const project = await createTargetProject();
-    const run = await runTicket({
-      project,
-      ref: REF,
-      workspaceId: WORKSPACE_ID,
-      turn: implementTurn,
-    });
-    const workspace = run.workspace;
-    expect(workspace).not.toBeNull();
-    const workspacePath = workspace?.workspacePath ?? '';
-    const head = await branchHead(workspacePath, workspace?.branch ?? '');
-    expect(run.status).toBe('passed');
-    expect(run.reportPath.startsWith(project.workDir)).toBe(true);
+  it(
+    'hands the delivered revision to a reviewer and publishes its verdict against that head',
+    { timeout: WORKFLOW_CASE_TIMEOUT_MS },
+    async () => {
+      const project = await createTargetProject();
+      const run = await runTicket({
+        project,
+        ref: REF,
+        workspaceId: WORKSPACE_ID,
+        turn: implementTurn,
+      });
+      const workspace = run.workspace;
+      expect(workspace).not.toBeNull();
+      const workspacePath = workspace?.workspacePath ?? '';
+      const head = await branchHead(workspacePath, workspace?.branch ?? '');
+      expect(run.status).toBe('passed');
+      expect(run.reportPath.startsWith(project.workDir)).toBe(true);
 
-    const pullRequest: OpenPullRequest = {
-      number: 42,
-      url: 'https://github.com/example/target/pull/42',
-      title: 'HARN-77: Finish the greeting',
-      headSha: head,
-      headBranch: `harness/${WORKSPACE_ID}`,
-      baseBranch: BASE_BRANCH,
-      baseSha: workspace?.baseCommit ?? '',
-      draft: false,
-      author: 'nexus-agent',
-    };
-    const task = await loadTask(project.taskPath);
-    const github = standInGitHub(pullRequest, {
-      ref: REF,
-      task,
-      pullRequest,
-      files: [
-        {
-          path: TARGET_RESULT_FILE,
-          patch: `@@ -0,0 +1 @@\n+implemented\n`,
-          additions: 1,
-          deletions: 0,
+      const pullRequest: OpenPullRequest = {
+        number: 42,
+        url: 'https://github.com/example/target/pull/42',
+        title: 'HARN-77: Finish the greeting',
+        headSha: head,
+        headBranch: `harness/${WORKSPACE_ID}`,
+        baseBranch: BASE_BRANCH,
+        baseSha: workspace?.baseCommit ?? '',
+        draft: false,
+        author: 'nexus-agent',
+      };
+      const task = await loadTask(project.taskPath);
+      const github = standInGitHub(pullRequest, {
+        ref: REF,
+        task,
+        pullRequest,
+        files: [
+          {
+            path: TARGET_RESULT_FILE,
+            patch: `@@ -0,0 +1 @@\n+implemented\n`,
+            additions: 1,
+            deletions: 0,
+          },
+        ],
+        truncated: false,
+        checks: [],
+        combinedStatus: null,
+        fetchedAt: '2026-03-01T11:00:00.000Z',
+      });
+
+      const standIn = await installStandIn('reviewer-runtime', STAND_IN_REVIEWER);
+      const item: SourceTask = { ref: REF, task, pointers: [WORKSPACE_ID] };
+      const recorded = recordingIo();
+      const summary = await scanReviews({
+        queue: {
+          list: async () => [{ ref: REF, title: task.title }],
+          prepare: async () => item,
         },
-      ],
-      truncated: false,
-      checks: [],
-      combinedStatus: null,
-      fetchedAt: '2026-03-01T11:00:00.000Z',
-    });
+        repository: github.repository,
+        reviewer: createReviewerTurn({
+          selection: { runtime: 'codex', command: [process.execPath, standIn.scriptPath] },
+          environment: process.env,
+        }),
+        views: reviewViews(),
+        workDir: project.workDir,
+        sourceRoot: canonicalPath(project.repo),
+        login: LOGIN,
+        checkName: CHECK_NAME,
+        reviewerTimeoutMs: 60_000,
+        io: recorded.io,
+        stop: new AbortController().signal,
+        now: () => new Date('2026-03-01T11:05:00.000Z'),
+        sleep: async () => undefined,
+      });
 
-    const standIn = await installStandIn('reviewer-runtime', STAND_IN_REVIEWER);
-    const item: SourceTask = { ref: REF, task, pointers: [WORKSPACE_ID] };
-    const recorded = recordingIo();
-    const summary = await scanReviews({
-      queue: {
-        list: async () => [{ ref: REF, title: task.title }],
-        prepare: async () => item,
-      },
-      repository: github.repository,
-      reviewer: createReviewerTurn({
-        selection: { runtime: 'codex', command: [process.execPath, standIn.scriptPath] },
-        environment: process.env,
-      }),
-      views: reviewViews(),
-      workDir: project.workDir,
-      sourceRoot: canonicalPath(project.repo),
-      login: LOGIN,
-      checkName: CHECK_NAME,
-      reviewerTimeoutMs: 60_000,
-      io: recorded.io,
-      stop: new AbortController().signal,
-      now: () => new Date('2026-03-01T11:05:00.000Z'),
-      sleep: async () => undefined,
-    });
+      expect(recorded.err).toEqual([]);
+      expect(summary.outcome).toBe('completed');
+      expect(summary.items.map((entry) => entry.disposition)).toEqual(['reviewed']);
+      expect(summary.approved).toBe(1);
+      expect(summary.reviewerRuns).toBe(1);
 
-    expect(recorded.err).toEqual([]);
-    expect(summary.outcome).toBe('completed');
-    expect(summary.items.map((entry) => entry.disposition)).toEqual(['reviewed']);
-    expect(summary.approved).toBe(1);
-    expect(summary.reviewerRuns).toBe(1);
+      // The verdict was published against the delivered head and nothing else.
+      expect(github.reviews).toHaveLength(1);
+      expect(github.reviews[0]?.head).toBe(head);
+      expect(github.reviews[0]?.decision).toBe('approve');
+      expect(github.reviews[0]?.body).toContain(REF.key);
+      expect(github.checks).toEqual([expect.objectContaining({ head, decision: 'approve' })]);
 
-    // The verdict was published against the delivered head and nothing else.
-    expect(github.reviews).toHaveLength(1);
-    expect(github.reviews[0]?.head).toBe(head);
-    expect(github.reviews[0]?.decision).toBe('approve');
-    expect(github.reviews[0]?.body).toContain(REF.key);
-    expect(github.checks).toEqual([expect.objectContaining({ head, decision: 'approve' })]);
+      // The reviewer inspected a real clone of the retained workspace, pinned at
+      // the reviewed head and holding the delivered change — not an assembled
+      // patch, and not the workspace itself.
+      const [reviewId] = (await readdir(path.join(project.workDir, 'reviews'))).filter((entry) =>
+        entry.startsWith('review-'),
+      );
+      const reviewDir = path.join(project.workDir, 'reviews', reviewId ?? '');
+      const viewPath = path.join(reviewDir, REVIEW_VIEW_DIRECTORY);
+      expect((await gitOrFail(['rev-parse', 'HEAD'], viewPath)).trim()).toBe(head);
+      // Git materializes the committed content for this host, so the line ending
+      // the clone writes is the host's; the file's own text is what the view holds.
+      expect((await readFile(path.join(viewPath, TARGET_RESULT_FILE), 'utf8')).trim()).toBe(
+        TARGET_RESULT_DONE.trim(),
+      );
 
-    // The reviewer inspected a real clone of the retained workspace, pinned at
-    // the reviewed head and holding the delivered change — not an assembled
-    // patch, and not the workspace itself.
-    const [reviewId] = (await readdir(path.join(project.workDir, 'reviews'))).filter((entry) =>
-      entry.startsWith('review-'),
-    );
-    const reviewDir = path.join(project.workDir, 'reviews', reviewId ?? '');
-    const viewPath = path.join(reviewDir, REVIEW_VIEW_DIRECTORY);
-    expect((await gitOrFail(['rev-parse', 'HEAD'], viewPath)).trim()).toBe(head);
-    // Git materializes the committed content for this host, so the line ending
-    // the clone writes is the host's; the file's own text is what the view holds.
-    expect((await readFile(path.join(viewPath, TARGET_RESULT_FILE), 'utf8')).trim()).toBe(
-      TARGET_RESULT_DONE.trim(),
-    );
+      // The turn's own evidence is kept beside the view: the prompt it was given,
+      // the verdict it wrote, its log, and the scan's record of the attempt.
+      const prompt = await readFile(path.join(reviewDir, 'input.md'), 'utf8');
+      expect(prompt).toContain(REF.key);
+      expect(prompt).toContain(viewPath);
+      expect(
+        JSON.parse(await readFile(path.join(reviewDir, 'verdict.json'), 'utf8')),
+      ).toMatchObject({
+        verdict: 'approve',
+      });
+      expect(await readFile(path.join(reviewDir, 'reviewer.log'), 'utf8')).toContain(
+        '# completed: exit code 0',
+      );
+      const record = JSON.parse(await readFile(path.join(reviewDir, 'review.json'), 'utf8')) as {
+        readonly verdict: string;
+        readonly disposition: string;
+        readonly view: string;
+        readonly check: { readonly conclusion: string } | null;
+      };
+      expect(record).toMatchObject({
+        disposition: 'reviewed',
+        verdict: 'approve',
+        view: viewPath,
+        check: { conclusion: 'success' },
+      });
 
-    // The turn's own evidence is kept beside the view: the prompt it was given,
-    // the verdict it wrote, its log, and the scan's record of the attempt.
-    const prompt = await readFile(path.join(reviewDir, 'input.md'), 'utf8');
-    expect(prompt).toContain(REF.key);
-    expect(prompt).toContain(viewPath);
-    expect(JSON.parse(await readFile(path.join(reviewDir, 'verdict.json'), 'utf8'))).toMatchObject({
-      verdict: 'approve',
-    });
-    expect(await readFile(path.join(reviewDir, 'reviewer.log'), 'utf8')).toContain(
-      '# completed: exit code 0',
-    );
-    const record = JSON.parse(await readFile(path.join(reviewDir, 'review.json'), 'utf8')) as {
-      readonly verdict: string;
-      readonly disposition: string;
-      readonly view: string;
-      readonly check: { readonly conclusion: string } | null;
-    };
-    expect(record).toMatchObject({
-      disposition: 'reviewed',
-      verdict: 'approve',
-      view: viewPath,
-      check: { conclusion: 'success' },
-    });
-
-    // The workspace the ticket's pointer names is still the delivered revision:
-    // a review reads it through a clone and changes nothing.
-    expect(await branchHead(workspacePath, workspace?.branch ?? '')).toBe(head);
-  });
+      // The workspace the ticket's pointer names is still the delivered revision:
+      // a review reads it through a clone and changes nothing.
+      expect(await branchHead(workspacePath, workspace?.branch ?? '')).toBe(head);
+    },
+  );
 });

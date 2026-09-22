@@ -25,10 +25,11 @@ An edit to any relevant input must invalidate the result, including an uncommitt
 with unchanged content need not invalidate it. When a check inspects other tests or configurations,
 those inspected files are inputs to that check as well.
 
-Tests that start real processes or observe live machine state execute on every validation. They
-belong to the boundary layer, regardless of which feature they test. Live provider exercises,
-agent turns, external writes, approvals and completion evidence are never cacheable validation
-results. Do not add credentials to cache inputs, artifacts or logs.
+Tests that start real processes or observe live machine state execute on every validation,
+whichever layer owns their behavior: the boundary layer verifies such a contract directly, and an
+assembled workflow starts them too. Live provider exercises, agent turns, external writes,
+approvals and completion evidence are never cacheable validation results. Do not add credentials
+to cache inputs, artifacts or logs.
 
 When reorganizing tests, update their task membership and input declarations together. Each test
 must still execute in exactly one layer, and every required layer must remain in the validation

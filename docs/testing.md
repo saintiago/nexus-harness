@@ -43,8 +43,8 @@ workspace is the one the next attempt continues (`continuation.test.ts`). Each c
 harness's own modules — the runner, the workspace, the configured commands, the review scan, the
 delivery step, the completion pass, the report and the ledger — and supplies only the two
 responses a workflow gets from outside: the agent turn, and the service answers of the configured
-integrations. Nothing in the layer re-tests a decision the unit layer owns or a protocol the
-boundary layer owns.
+integrations. Nothing in the layer repeats a decision matrix the unit layer owns or re-verifies a
+protocol the boundary layer owns.
 
 ## Validation and restoration
 

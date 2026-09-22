@@ -51,6 +51,15 @@ export const TARGET_CHECK_SCRIPT = [
 export const TARGET_RESULT_FILE = 'result.txt';
 export const TARGET_RESULT_DONE = 'implemented\n';
 
+/**
+ * How long one workflow case may take, stated by each case rather than by the
+ * layer: these cases clone repositories, run the configured commands and start
+ * a stand-in runtime, so their wall time is this host's as much as the
+ * checkout's — and the bound is still a bound, so a case that really hangs
+ * fails (docs/testing.md).
+ */
+export const WORKFLOW_CASE_TIMEOUT_MS = 20_000;
+
 /** A recorder for what one CLI invocation printed, and the io it was given. */
 export interface RecordedOutput {
   readonly out: readonly string[];
