@@ -43,6 +43,27 @@ the TaskEngine process. AgentRuntime is invoked by TaskEngine for development an
 Supervisor for recovery. Adapters are modules used at external boundaries; there is no adapter
 registry or additional service implied by this grouping.
 
+## Low coupling and high cohesion
+
+Each component owns a focused responsibility, the state that belongs to it and the behavior needed
+to fulfill it. Closely related decisions stay within that boundary rather than being scattered
+across callers or shared utilities.
+
+Components depend only on explicit public contracts. Each contract has one authoritative definition,
+owned by its provider; consumers reference it. A component's internal changes must not require
+changes to its consumers while its public contract remains compatible. Routine changes that require
+coordinated redesign of several components indicate that their boundaries need correction.
+
+OperatorInterface depends on Supervisor's public execution contract and does not need knowledge of
+TaskEngine. Supervisor manages TaskEngine through its own public contract without knowing its
+internal task orchestration. Supervisor translates engine observations into its execution view,
+including recovery and lifecycle events, rather than exposing engine internals to the interface.
+
+Design and test each component against its contracts independently. Contract tests verify each
+boundary; integration and workflow tests verify cooperation across boundaries. Multi-component
+flows do not create a special shared contract or require the components' internal designs to be
+coupled.
+
 ## Component responsibilities
 
 | Component | Owns | Does not own |
@@ -84,7 +105,7 @@ protocol. Detailed signatures and record schemas must be prescribed before imple
 component boundary.
 
 TaskEngine emits structured facts about its work. It does not choose colors, terminal layout or
-human-readable progress sentences. OperatorInterface renders those facts and sends explicit
+human-readable progress sentences. OperatorInterface renders Supervisor's execution view and sends explicit
 commands; it does not infer engine state from log wording. Changing presentation must not change
 execution decisions. A presentation failure is distinct from an explicit cancellation request.
 
@@ -101,7 +122,8 @@ inspection establishes that no eligible work remains. It does not reserve a fixe
 2. Supervisor starts one TaskEngine with that execution intent.
 3. TaskEngine selects one eligible task, carries it through implementation, ordinary repair,
    review, delivery and verified completion, then inspects the queue again.
-4. TaskEngine sends structured progress to Supervisor, which forwards progress to OperatorInterface.
+4. TaskEngine sends structured progress to Supervisor, which maps it into the execution view
+   exposed to OperatorInterface.
 5. When the queue is confirmed empty, TaskEngine returns a completed outcome. Supervisor confirms
    its shutdown and OperatorInterface presents the result.
 
