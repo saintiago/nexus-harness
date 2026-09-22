@@ -1,0 +1,491 @@
+/**
+ * The Git boundary: the harness's own invocations, against the host's real Git
+ * and — where a step has to be stopped mid-flight — a stand-in `git` that hangs
+ * and records what it was handed.
+ *
+ * What is proved here is the contract every workspace module relies on: literal
+ * arguments and no shell, inherited Git variables dropped so a reading cannot be
+ * redirected at another repository, a failure that keeps Git's own diagnostic, a
+ * workspace identity that is written locally and nowhere else, and a bound or a
+ * caller's stop that ends the invocation and the whole tree it started — or a
+ * stop the host could not make, which the result reports as unconfirmed instead
+ * of as a clean end. Which workspace step runs is the workspace suite's; what a
+ * result means to a run is the fast suites'.
+ *
+ * The stand-in is only reached while a case puts it first on `PATH`, so the real
+ * Git is never mistaken for it. Every process a case starts is confirmed gone
+ * before the case ends: a hanging stand-in names the processes it starts in a
+ * pid ledger the moment they exist, and the case's teardown ends and confirms
+ * whatever is left before the temporary directories are removed, whatever the
+ * case asserted or failed to assert.
+ */
+import { existsSync } from 'node:fs';
+import { mkdir, writeFile } from 'node:fs/promises';
+import path from 'node:path';
+import { describe, expect, it } from 'vitest';
+import {
+  GIT_COMMAND_TIMEOUT_MS,
+  configureWorkspaceIdentity,
+  gitFailure,
+  gitProblem,
+  gitStopOf,
+  runGit,
+} from '../src/workspace/git.js';
+import type { GitResult } from '../src/workspace/git.js';
+import { WorkspaceError } from '../src/workspace/errors.js';
+import { allocateRunDirectory } from '../src/workspace/run-directory.js';
+import { prepareWorkspace } from '../src/workspace/prepare.js';
+import { preflightSource } from '../src/workspace/preflight.js';
+import {
+  createRepository,
+  createTempDir,
+  fixtureGit,
+  gitOrFail,
+  installStandIn,
+  readJsonWhenWritten,
+  stillRunning,
+  useOwnedProcesses,
+  useIsolatedGitEnvironment,
+  waitUntilGone,
+  withPathPrefix,
+} from './integration-support.js';
+import type { OwnedProcesses } from './integration-support.js';
+
+useIsolatedGitEnvironment();
+
+/**
+ * A stand-in `git`: it records the arguments, the working directory, its own
+ * PID, and the PID of a child it starts, and then keeps running until something
+ * ends the tree. Both PIDs are named in the case's pid ledger beside the record
+ * the moment each process exists — the ledger is how the case's teardown owns
+ * the tree — and the record is written only once the child exists, so a record
+ * that exists names two live processes.
+ */
+const STAND_IN_GIT = [
+  `const { spawn } = await import('node:child_process');`,
+  `const { appendFileSync, writeFileSync } = await import('node:fs');`,
+  `const ledger = process.env.NEXUS_GIT_RECORD + '.pids';`,
+  `writeFileSync(ledger, String(process.pid) + '\\n');`,
+  `const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {`,
+  `  stdio: 'ignore',`,
+  `  windowsHide: true,`,
+  `});`,
+  `appendFileSync(ledger, String(child.pid) + '\\n');`,
+  `writeFileSync(process.env.NEXUS_GIT_RECORD, JSON.stringify({`,
+  `  argv: process.argv.slice(2),`,
+  `  cwd: process.cwd(),`,
+  `  pid: process.pid,`,
+  `  child: child.pid,`,
+  `}));`,
+  `setInterval(() => {}, 1000);`,
+].join('\n');
+
+/**
+ * Runs `work` with a stand-in `git` first on `PATH`, and tells it where to write
+ * its record. Ownership of the stand-in's process tree is registered before it
+ * starts, by watching the pid ledger the stand-in writes beside its record.
+ * Both are put back afterwards, so the host's real Git is what every other case
+ * sees.
+ */
+async function withStandInGit<T>(
+  record: string,
+  processes: OwnedProcesses,
+  work: () => Promise<T>,
+): Promise<T> {
+  const standIn = await installStandIn('git', STAND_IN_GIT);
+  const saved = process.env.NEXUS_GIT_RECORD;
+  process.env.NEXUS_GIT_RECORD = record;
+  processes.watchPidFile(`${record}.pids`);
+  try {
+    return await withPathPrefix(standIn.bin, work);
+  } finally {
+    if (saved === undefined) {
+      delete process.env.NEXUS_GIT_RECORD;
+    } else {
+      process.env.NEXUS_GIT_RECORD = saved;
+    }
+  }
+}
+
+/** One stand-in invocation's record, as the stand-in wrote it. */
+interface StandInRecord {
+  readonly argv: readonly string[];
+  readonly cwd: string;
+  readonly pid: number;
+  readonly child: number | null;
+}
+
+async function readStandInRecord(file: string): Promise<StandInRecord> {
+  const record = await readJsonWhenWritten(file);
+  return {
+    argv: record.argv as readonly string[],
+    cwd: String(record.cwd),
+    pid: Number(record.pid),
+    child: record.child === null || record.child === undefined ? null : Number(record.child),
+  };
+}
+
+/** The error a call that was expected to fail rejected with. */
+async function failureOf(work: () => Promise<unknown>): Promise<Error> {
+  try {
+    await work();
+  } catch (cause) {
+    return cause as Error;
+  }
+  throw new Error('the call was expected to fail, and it did not');
+}
+
+describe('one Git invocation against the real Git', () => {
+  it('runs the literal arguments in the working directory it was given', async () => {
+    const fixture = await createRepository();
+    const head = (await gitOrFail(['rev-parse', '--verify', 'HEAD^{commit}'], fixture.repo)).trim();
+
+    const result = await runGit(['rev-parse', '--verify', 'HEAD^{commit}'], fixture.repo);
+
+    expect(result.outcome).toBe('exited');
+    expect(result.code).toBe(0);
+    expect(result.stdout.trim()).toBe(head);
+    expect(result.termination).toBeNull();
+    // A reading outside a run runs under the finite default bound, so a stalled
+    // one can never hold the harness indefinitely.
+    expect(result.timeoutMs).toBe(GIT_COMMAND_TIMEOUT_MS);
+  }, 60_000);
+
+  it('drops an inherited Git variable instead of letting it redirect the reading', async () => {
+    const first = await createRepository();
+    const second = await createRepository();
+    // The two repositories have to be distinguishable: commit SHAs of the same
+    // content made in the same second by the same fixture identity are equal.
+    await writeFile(path.join(second.repo, 'second.txt'), 'a second repository\n', 'utf8');
+    await gitOrFail(['add', '--all'], second.repo);
+    await gitOrFail(['commit', '--quiet', '--message', 'second'], second.repo);
+    const firstHead = (
+      await gitOrFail(['rev-parse', '--verify', 'HEAD^{commit}'], first.repo)
+    ).trim();
+    const secondHead = (
+      await gitOrFail(['rev-parse', '--verify', 'HEAD^{commit}'], second.repo)
+    ).trim();
+    expect(firstHead).not.toBe(secondHead);
+
+    const saved = process.env.GIT_DIR;
+    // A caller's own environment names another repository. The harness's own
+    // reading must still answer the repository it was given.
+    process.env.GIT_DIR = path.join(second.repo, '.git');
+    try {
+      const result = await runGit(['rev-parse', '--verify', 'HEAD^{commit}'], first.repo);
+
+      expect(result.code).toBe(0);
+      expect(result.stdout.trim()).toBe(firstHead);
+    } finally {
+      if (saved === undefined) {
+        delete process.env.GIT_DIR;
+      } else {
+        process.env.GIT_DIR = saved;
+      }
+    }
+  }, 60_000);
+
+  it('keeps Git’s own first error line, and never reports a failed reading as a success', async () => {
+    // A repository with no commit yet: the reading the workspace modules make
+    // before anything else is the one Git has to refuse.
+    const parent = await createTempDir();
+    const repository = path.join(parent, 'empty');
+    await mkdir(repository);
+    await gitOrFail(['init', '--quiet', '--initial-branch=main'], repository);
+
+    const result = await runGit(['rev-parse', '--verify', 'HEAD^{commit}'], repository);
+
+    expect(result.outcome).toBe('exited');
+    expect(result.code).not.toBe(0);
+    expect(gitProblem(result)).not.toBe('');
+    expect(gitProblem(result)).not.toBe('no diagnostic output');
+    expect(gitStopOf(result)).toBeNull();
+    const error = gitFailure(`the committed HEAD of "${repository}" could not be read`, result);
+    expect(error).toBeInstanceOf(WorkspaceError);
+    expect(error.message).toContain('could not be read');
+    expect(error.message).toContain(gitProblem(result));
+    expect(error.stop).toBeNull();
+  }, 60_000);
+});
+
+describe('the identity a working copy commits with', () => {
+  it('writes the working copy’s own settings, and no setting anywhere else', async () => {
+    const fixture = await createRepository();
+    const preflight = await preflightSource({
+      repoPath: fixture.repo,
+      workDir: fixture.workDir,
+    });
+    const run = await allocateRunDirectory(fixture.workDir);
+    const workspace = await prepareWorkspace(run, preflight, {
+      deadlineMs: Date.now() + 60_000,
+      now: () => new Date(),
+    });
+    // The fixture commits with an identity of its own; what a coding turn does
+    // is commit with none, exactly as a machine with no ambient identity would.
+    const noIdentity = { identity: false };
+    // A fresh clone carries no identity of its own, and the suite's own global
+    // configuration holds none either: without the harness's settings, a commit
+    // would depend on whatever this machine happens to guess.
+    const localBefore = await fixtureGit(['config', '--local', '--list'], workspace.workspacePath);
+    expect(localBefore.code).toBe(0);
+    expect(localBefore.stdout).not.toContain('user.name');
+    expect(await gitOrFail(['config', '--global', '--list'], fixture.repo)).toBe('');
+
+    await configureWorkspaceIdentity(workspace.workspacePath);
+    await writeFile(path.join(workspace.workspacePath, 'work.txt'), 'work\n', 'utf8');
+    await gitOrFail(['add', '--all'], workspace.workspacePath, noIdentity);
+    await gitOrFail(
+      ['commit', '--quiet', '--message', 'work'],
+      workspace.workspacePath,
+      noIdentity,
+    );
+
+    const message = (
+      await gitOrFail(['log', '-1', '--pretty=%an <%ae>'], workspace.workspacePath)
+    ).trim();
+    expect(message).toBe('Nexus Agent <nexus@local>');
+    const settings = await fixtureGit(['config', '--local', '--list'], workspace.workspacePath);
+    expect(settings.stdout).toContain('user.name=Nexus Agent');
+    expect(settings.stdout).toContain('user.email=nexus@local');
+    expect(settings.stdout).toContain('commit.gpgsign=false');
+    // The settings are that clone's own: the global file the suite runs with is
+    // untouched, so nothing on this machine was changed.
+    expect(await gitOrFail(['config', '--global', '--list'], fixture.repo)).toBe('');
+  }, 90_000);
+});
+
+describe('a Git invocation with a bound', () => {
+  const processes = useOwnedProcesses();
+
+  it('stops a stalled invocation and its child at the bound, and says the stop was confirmed', async () => {
+    const fixture = await createRepository();
+    const recordFile = path.join(fixture.parent, 'stalled.json');
+    // A frozen clock keeps the bound the harness hands over exact.
+    const clock = new Date();
+
+    const result = await withStandInGit(recordFile, processes, () =>
+      runGit(['status'], fixture.repo, {
+        deadlineMs: clock.getTime() + 3000,
+        now: () => clock,
+      }),
+    );
+    const record = await readStandInRecord(recordFile);
+
+    // What ran was the stand-in, in the working directory it was given, with the
+    // arguments as written and never through a shell.
+    expect(record.argv).toEqual(['status']);
+    expect(record.cwd).toBe(fixture.repo);
+    expect(record.child).toBeTypeOf('number');
+    expect(result.outcome).toBe('timed-out');
+    // Stopped, never a success, whatever exit code the host reports for the tree
+    // it ended.
+    expect(result.code).not.toBe(0);
+    expect(result.timeoutMs).toBe(3000);
+    expect(result.termination).toBe('confirmed');
+    expect(result.terminationProblem).toBeNull();
+    expect(gitStopOf(result)).toEqual({ termination: 'confirmed', problem: null });
+    expect(gitProblem(result)).toContain('did not finish within the 3000 ms it was given');
+    expect(gitProblem(result)).toContain('everything it started was stopped');
+
+    expect(await waitUntilGone(record.pid)).toBe(true);
+    expect(await waitUntilGone(record.child ?? 0)).toBe(true);
+  }, 90_000);
+
+  it('gives each reading what is left of the run, not the budget its step started with', async () => {
+    const fixture = await createRepository();
+    const clock = new Date();
+    const bounds = { deadlineMs: clock.getTime() + 2000, now: (): Date => clock };
+
+    const first = await withStandInGit(path.join(fixture.parent, 'first.json'), processes, () =>
+      runGit(['status'], fixture.repo, bounds),
+    );
+    const firstRecord = await readStandInRecord(path.join(fixture.parent, 'first.json'));
+    clock.setTime(clock.getTime() + 1500);
+    const second = await withStandInGit(path.join(fixture.parent, 'second.json'), processes, () =>
+      runGit(['status'], fixture.repo, bounds),
+    );
+    const secondRecord = await readStandInRecord(path.join(fixture.parent, 'second.json'));
+
+    expect(first.timeoutMs).toBe(2000);
+    expect(second.timeoutMs).toBe(500);
+    expect(first.outcome).toBe('timed-out');
+    expect(second.outcome).toBe('timed-out');
+    expect(await waitUntilGone(firstRecord.pid)).toBe(true);
+    expect(await waitUntilGone(firstRecord.child ?? 0)).toBe(true);
+    expect(await waitUntilGone(secondRecord.pid)).toBe(true);
+    expect(await waitUntilGone(secondRecord.child ?? 0)).toBe(true);
+  }, 90_000);
+
+  it('stops a stalled invocation when the run is stopped, and says which stop it was', async () => {
+    const fixture = await createRepository();
+    const recordFile = path.join(fixture.parent, 'cancelled.json');
+    const controller = new AbortController();
+    const clock = new Date();
+
+    const pending = withStandInGit(recordFile, processes, () =>
+      runGit(['status'], fixture.repo, {
+        deadlineMs: clock.getTime() + 60_000,
+        now: () => clock,
+        stop: controller.signal,
+      }),
+    );
+    let record: StandInRecord;
+    let result: GitResult;
+    try {
+      record = await readStandInRecord(recordFile);
+      controller.abort();
+      result = await pending;
+    } catch (cause) {
+      // Whatever happens, the invocation this case started is stopped and
+      // awaited before the case ends; the suite's teardown independently ends
+      // the tree if this stop did not.
+      controller.abort();
+      await pending.catch(() => undefined);
+      throw cause;
+    }
+
+    expect(result.outcome).toBe('stopped');
+    expect(result.termination).toBe('confirmed');
+    expect(result.terminationProblem).toBeNull();
+    expect(gitProblem(result)).toBe(
+      'it was stopped because the run was stopped by its caller, and everything it started was stopped',
+    );
+    expect(await waitUntilGone(record.pid)).toBe(true);
+    expect(await waitUntilGone(record.child ?? 0)).toBe(true);
+  }, 90_000);
+
+  // Windows-only by construction: this case defeats the stop by emptying PATH,
+  // so the harness cannot find `taskkill` — the utility this host ends a tree
+  // with. Elsewhere the harness signals the invocation's process group directly
+  // (`process.kill(-pid)`), which needs no utility to be found, so the stop
+  // succeeds and there is no unconfirmed stop to report.
+  it.skipIf(process.platform !== 'win32')(
+    'reports a stop it could not make as unconfirmed, and leaves the live tree for the case to end',
+    async () => {
+      const fixture = await createRepository();
+      const recordFile = path.join(fixture.parent, 'unstoppable.json');
+      // A frozen clock keeps the bound the harness hands over exact. The bound
+      // is wider than the read below needs, so the stop cannot arrive before the
+      // case has taken the utility away: what the bound proves is the report of
+      // a stop that could not be made, not a race with the stand-in's startup.
+      const clock = new Date();
+
+      const { record, result } = await withStandInGit(recordFile, processes, async () => {
+        const pending = runGit(['status'], fixture.repo, {
+          deadlineMs: clock.getTime() + 5000,
+          now: () => clock,
+        });
+        const record = await readStandInRecord(recordFile);
+        // The invocation is running, so the stop that follows really has a tree
+        // to end. The utility this host ends one with is resolved through the
+        // path the harness itself runs with; naming nothing on that path takes
+        // the utility away, so the stop reaches nothing and the invocation keeps
+        // running. The path is put back before the case ends, so the case's own
+        // teardown can end and confirm what the failed stop could not.
+        const savedPath = process.env.PATH;
+        process.env.PATH = '';
+        try {
+          return { record, result: await pending };
+        } finally {
+          if (savedPath === undefined) {
+            delete process.env.PATH;
+          } else {
+            process.env.PATH = savedPath;
+          }
+        }
+      });
+
+      // The invocation was stopped at its bound, but nothing was ended: a stop
+      // that could not be made has to be said, never rounded down to a clean end
+      // a run could treat as safely finished.
+      expect(record.argv).toEqual(['status']);
+      expect(record.cwd).toBe(fixture.repo);
+      const child = Number(record.child);
+      expect(Number.isInteger(child)).toBe(true);
+      expect(child).toBeGreaterThan(0);
+      expect(result.outcome).toBe('timed-out');
+      expect(result.code).not.toBe(0);
+      expect(result.timeoutMs).toBe(5000);
+      expect(result.termination).toBe('unconfirmed');
+      // What could not be confirmed is the host utility's own failure to run.
+      expect(result.terminationProblem).toContain('taskkill');
+      expect(gitStopOf(result)).toEqual({
+        termination: 'unconfirmed',
+        problem: result.terminationProblem,
+      });
+      expect(gitProblem(result)).toContain('did not finish within the 5000 ms it was given');
+      expect(gitProblem(result)).toContain('that stop could not be confirmed');
+      // A step that fails this way carries the same stop, so a caller that
+      // reports why a run ended can keep the working copy out of reuse.
+      const error = gitFailure(`the status of "${fixture.repo}" could not be read`, result);
+      expect(error).toBeInstanceOf(WorkspaceError);
+      expect(error.message).toContain('that stop could not be confirmed');
+      expect(error.stop).toEqual({
+        termination: 'unconfirmed',
+        problem: result.terminationProblem,
+        kind: 'timeout',
+        timeoutMs: 5000,
+      });
+
+      // What the failed stop left is really still running — this result is a
+      // report of a stop attempt, never of a stop that happened. The stand-in
+      // named both processes in the case's ledger, so the teardown ends this
+      // tree and confirms both are gone before the temporary directories are
+      // removed.
+      expect(stillRunning(record.pid)).toBe(true);
+      expect(stillRunning(child)).toBe(true);
+    },
+    90_000,
+  );
+});
+
+describe('a workspace step that has to be stopped', () => {
+  const processes = useOwnedProcesses();
+
+  it('keeps the run directory and carries the stop on the failure', async () => {
+    const fixture = await createRepository();
+    const preflight = await preflightSource({
+      repoPath: fixture.repo,
+      workDir: fixture.workDir,
+    });
+    const run = await allocateRunDirectory(fixture.workDir);
+    const recordFile = path.join(fixture.parent, 'prepare.json');
+    const clock = new Date();
+
+    const error = await withStandInGit(recordFile, processes, () =>
+      failureOf(() =>
+        prepareWorkspace(run, preflight, {
+          deadlineMs: clock.getTime() + 3000,
+          now: () => clock,
+        }),
+      ),
+    );
+    const record = await readStandInRecord(recordFile);
+
+    // The step was stopped at the run's own remaining time, and that stop is on
+    // the error: the runner that reads it can carry an unconfirmed stop into the
+    // run's evidence instead of reporting a clean end.
+    expect(error).toBeInstanceOf(WorkspaceError);
+    expect(error.message).toContain('did not finish within');
+    expect((error as WorkspaceError).stop).toEqual({
+      termination: 'confirmed',
+      problem: null,
+      kind: 'timeout',
+      timeoutMs: 3000,
+    });
+    expect(error.message).toContain(
+      `The incomplete run directory was kept for inspection: "${run.runDir}"`,
+    );
+
+    // What preparation wrote is kept, and none of it is a usable working copy.
+    expect(existsSync(run.runDir)).toBe(true);
+    expect(existsSync(run.logsDir)).toBe(true);
+    expect(existsSync(path.join(run.workspacePath, '.git'))).toBe(false);
+    // The source checkout is untouched: the step ran there and was stopped.
+    expect((await gitOrFail(['rev-parse', '--verify', 'HEAD^{commit}'], fixture.repo)).trim()).toBe(
+      preflight.baseCommit,
+    );
+    expect(await waitUntilGone(record.pid)).toBe(true);
+    expect(await waitUntilGone(record.child ?? 0)).toBe(true);
+  }, 90_000);
+});
