@@ -27,6 +27,10 @@ The suite is two Vitest projects with explicit concurrency policy
   this layer is capped (`maxWorkers: 4`), and it runs after the fast layer rather
   than beside it (`sequence.groupOrder`).
 
+The six cases in `cli.integration.test.ts` form the built-artifact smoke subset
+of the boundary layer. Run them alone with
+`npx vitest run tests/cli.integration.test.ts`; they share the boundary worker cap.
+
 Commands:
 
 | Command                     | What it runs                                                    |
@@ -238,217 +242,234 @@ to deep-compare the whole preflight request, which had no `stop`. They now
 assert the same facts field by field — the deadline, the clock, the paths — and
 that the stop is present and live. Nothing else about those cases changed.
 
+## HARN-41 guarantees retained from integrated main
+
+The starting commit is `0804d2d` (integrated HARN-41), not containment.
+`history.test.ts` and `history-source.test.ts` retain their assertions unchanged;
+`history-runner.test.ts` only changes its shared Git fixture import. The original
+finding fixes and later repairs retain these observable guarantees in active owners:
+
+| Guarantee                                             | Active cases and observations                                                                                                                                                                                                                                                                                         |
+| ----------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Authentic mirrors and preserved edits                 | `history.test.ts`: recorded publication identity/hash deduplicates actual renderings; quoted markers, legacy edits and timestamp-free review edits survive across roles, rounds and restarts.                                                                                                                         |
+| Unresolved review provenance and responses            | `history.test.ts`: newer native change requests survive older local approvals and unrelated reviews; offset/unknown timestamps and completion responses remain actionable. `review-github.test.ts` retains paginated native review reads.                                                                             |
+| Independent role consumption and fresh requirements   | `history.test.ts`: preparation consumes nothing; each role acknowledges its immutable input; edits and feedback during a turn appear next time; unreadable requirements refuse input.                                                                                                                                 |
+| Whole reports before publication and restart recovery | `history-source.test.ts`, `source.test.ts`: full report precedes rendering, records delivered commit/acknowledgment, and persistence failure stops publication. `history.test.ts`: interim/legacy reports reconcile with finished runs and missing evidence remains a named gap.                                      |
+| Developer repair input and shutdown evidence          | `history-runner.test.ts`, `runner-records.test.ts`: readable fresh history before each turn, whole preceding message before repair, exact consumed input, no turn on preparation failure, retained timeout/cancellation/report failures.                                                                              |
+| Reviewer and baseline wiring                          | `reviews-cli.integration.test.ts`, `baseline-queue.integration.test.ts`: real reviewer receives readable snapshot paths and whole feedback; durable review precedes publication; baseline return/restart guidance comes from the recorded snapshot. `baseline.test.ts` retains diagnosis evidence/refusal assertions. |
+| Bounded prompts with whole local overflow             | `history.test.ts`: both roles share organization; long findings, consumed responses and completion feedback retain whole local overflow. `history-runner.test.ts`: refreshed guidance replaces stale intake while keeping the validated baseline requirement.                                                         |
+
+`delivery.test.ts` retains the real revision regression: a recorded branch must
+exist and match the passed revision; uncommitted work is refused, while another
+checkout branch at the same revision is accepted. Git preservation and source
+refresh remain in `workspace-branch.test.ts`, `workspace.test.ts` and `refresh.test.ts`.
+
+## Review repair: context and CLI teardown
+
+Vitest's `aroundEach` enters an `AsyncLocalStorage` scope before setup, body or
+teardown starts. This replaces first-fixture-call binding: unregistered setup
+making its first fixture call after a subsequent test begins retains its closed
+original scope. Temporary allocation registers pending work before its first
+await; `createLocalTarget` owns its entire asynchronous setup. Nested lifecycle
+registrations reuse the outer scope.
+
+The nested proof resumes a registered continuation after disposal returned,
+and separately resumes an unregistered setup continuation during the next test.
+It asserts that command, operation, directory and CLI starts are refused while
+the new test can still start work. Unconfirmed-process and never-settling-work
+directories survive subsequent successful cleanup. A settled late operation
+releases its hold and its directory is then removed.
+
+The real built-CLI suite uses the bounded lifecycle after each test and retains
+its beacon assertions. POSIX launches lead their own process group; cleanup
+first gives the real interrupt handler a bounded chance to stop separately
+grouped runtime/checks, then retains the tree-stop fallback. Nested timeout and
+setup-failure cases both reach a holding runtime and assert that the CLI PID,
+runtime PID/token and runtime child PID/token ended before the target disappears.
+These cases execute on Windows and Linux. No production process or baseline
+lifecycle behavior changes in this repair.
+
 ## Performance
 
-**Before.** The reference is one successful audit run at commit `f44a859`:
-1,301 passing, two pre-existing skips, 192.50 s test-phase wall time with four
-workers in one pool over 34 files. It is a single four-worker observation, not a
-statistical average, and the containment measurement (57.52 s with 571 skips) is
-not a comparison point.
+Final-code measurements replace this recovery's interrupted and historical
+measurements. The reference remains `f44a859`: Windows, four workers in one pool,
+1,301 passing and two pre-existing skips, **192.50 seconds test-phase wall time**
+(one successful observation). Previous-attempt measurements do not describe
+this implementation. The budget remains test phase <= 212 s, policy < 15 s and
+no suite > 110 s. No deadline is widened to meet it.
 
-**After.** The measurements below are from this host — Windows, 24 logical CPUs,
-node `v24.14.1`, npm `11.11.0`, vitest `5.0.0` — on the final tree. Runs 1 and 2
-are the two sequential complete validations the ticket asks for, with nothing in
-between them; run 3 is the comparable four-worker measurement, run 4 is the same
-test command with the JSON reporter, and run 5 is the last validation of the
-same tree, taken after the measurements and before the commits that carry only
-this document and the raw output.
+Reproduce on Windows with
+`powershell -NoProfile -File performance/measure-windows.ps1`. This runs two
+complete validations sequentially, adding verbose and JSON reporters to the
+unchanged `npm run validate` command. `-Mode four-workers` runs the single-pool
+comparison separately. Each run saves its own raw case timings, wall time,
+settings, process identities and fixture-directory differences. Raw JSON uses a
+`.txt` suffix to preserve the reporter output without reformatting machine data.
+Verbose transcripts are transcoded from PowerShell UTF-16 to UTF-8 for review;
+their text and timing values are unchanged.
 
-The host also runs the queue that started this turn (one `node dist/cli.js queue
-run` process) and a normal Windows desktop set; that was true of every run here
-and of the reference, but the load it produces is not constant, and the spread
-below is that host's, not the suite's.
+### Final Windows measurements
 
-| Run | Command                          |    Test phase | Total validation | Outcome | Active / skipped | Files |
-| --- | -------------------------------- | ------------: | ---------------: | ------- | ---------------- | ----: |
-| 1   | `npm run validate`               |      200.99 s |         213.16 s | pass    | 1,330 / 2        |    49 |
-| 2   | `npm run validate`               |      167.00 s |         178.58 s | pass    | 1,330 / 2        |    49 |
-| 3   | `npm run test:four-workers`      |      164.31 s |         164.90 s | pass    | 1,330 / 2        |    49 |
-| 4   | `npx vitest run --reporter=json` | 212.68 s span |         213.85 s | pass    | 1,330 / 2        |    49 |
-| 5   | `npm run validate` (final)       |      169.35 s |         181.14 s | pass    | 1,330 / 2        |    49 |
+Implementation commit: `5ec131665bb9bfb91620934748d2c15306251a5c`. Subsequent
+changes contain documentation, measurement scripts and captured output only.
+This is the same Windows host as the reference: 24 logical CPUs, Windows
+10.0.26200, Node `v24.14.1`, npm `11.11.0`, Vitest `5.0.0`, Git
+`2.53.0.windows.2`. No other Nexus queue, coding run or test workload ran
+concurrently. The task supervisor and ordinary Codex/desktop processes remained;
+the process inventories record them. Reporter overhead and cache/host variation
+are not controlled away. Dependencies were installed with `npm ci`.
 
-Raw output: [validation 1](../performance/harn-48-validation-1.txt),
-[validation 2](../performance/harn-48-validation-2.txt),
-[the comparable four-worker run](../performance/harn-48-four-workers.txt),
-[the JSON detail run](../performance/harn-48-after-timings-per-test.json) and
-[the final check](../performance/harn-48-final-check.txt). Runs 1, 2, 3 and 5
-are the complete output of each command; run 4's per-suite and per-case
-durations are in [the timing detail](../performance/harn-48-after-timings-per-test.txt).
+| Run                 | Command and workers                          | Test-phase wall |     Total command wall | Passing / skipped | Files |
+| ------------------- | -------------------------------------------- | --------------: | ---------------------: | ----------------- | ----: |
+| Reference `f44a859` | Full suite, one pool / 4                     |        192.50 s |      Not recorded here | 1,301 / 2         |    34 |
+| Final 1             | `npm run validate`, policy 8 then boundary 4 |        145.21 s |              156.583 s | 1,330 / 2         |    49 |
+| Final 2             | Same command, immediately after Final 1      |        146.46 s |              157.850 s | 1,330 / 2         |    49 |
+| Comparable          | `npm run test:four-workers`, one pool / 4    |        151.60 s | 152.081 s (tests only) | 1,330 / 2         |    49 |
 
-### The comparison against 192.50 s
+All three exited 0. Detailed reporters were supplied as
+`npm run validate -- -- --reporter=verbose --reporter=json --outputFile.json=performance/harn-48-validation-N-timings.txt`;
+for the comparison, `npm run test:four-workers -- --reporter=verbose --reporter=json --outputFile.json=performance/harn-48-four-workers-timings.txt`.
+Test-phase wall times are the Vitest `Duration` lines. Total times use a
+stopwatch around the entire command; the four-worker command does not include
+format/lint/typecheck/build and is not a full validation.
 
-| Measurement                                   | Test phase | vs `f44a859`       |
-| --------------------------------------------- | ---------: | ------------------ |
-| `f44a859` reference, four workers, one pool   |   192.50 s | —                  |
-| Run 1, two layers (policy 8, then boundary 4) |   200.99 s | +8.49 s (+4.4 %)   |
-| Run 2, two layers (policy 8, then boundary 4) |   167.00 s | −25.50 s (−13.2 %) |
-| Run 3, four workers, one pool (comparable)    |   164.31 s | −28.19 s (−14.6 %) |
-| Run 4, two layers, JSON reporter              |   212.68 s | +20.18 s (+10.5 %) |
-| Run 5, final check, two layers                |   169.35 s | −23.15 s (−12.0 %) |
+| Comparison against 192.50 s          | Absolute change | Percentage change |
+| ------------------------------------ | --------------: | ----------------: |
+| Final 1, different layer scheduling  |        −47.29 s |           −24.57% |
+| Final 2, different layer scheduling  |        −46.04 s |           −23.92% |
+| Comparable single pool, four workers |    **−40.90 s** |       **−21.25%** |
 
-The comparable four-worker measurement is run 3: the layer policy differs from
-the reference's single pool, so a like-for-like number had to be taken
-deliberately, with `npm run test:four-workers`. It is the cleanest comparison
-there is: same pool shape, same worker count, same cases, 28.19 s faster than the
-reference. The two-layer runs are usually faster still (run 2), but run 1 and the
-detail run show the other end of the host's range — on a load spike the suite is
-_slower_ than the reference, by up to 10 %, and that is reported here rather than
-smoothed away.
+Only the last row matches the reference pool shape. The two normal validations
+observed 145.21–146.46 s; the comparable sample was 151.60 s. These are three
+observations on one host, against one historical observation, not evidence of a
+robust speedup or a latency distribution. No final-run timeout or regression
+was observed. Counts changed through the mapped restoration and policy coverage:
+29 net additional active cases; split files and nested lifecycle proofs are
+accounted for above. The reduced quarantine gate is not a performance baseline.
 
-Where the after time goes, from the detail run:
+### Per-run timing detail
 
-| Layer (span from first start to last end) | Files |     Span |
-| ----------------------------------------- | ----: | -------: |
-| `policy`, `maxWorkers: 8`                 |    20 |   3.64 s |
-| `boundary`, `maxWorkers: 4`               |    29 | 208.77 s |
+Suite durations below are JSON reporter execution spans (`endTime - startTime`),
+including suite hooks; case durations are each assertion result’s `duration`.
+Layer spans run from the first suite start to the last suite end. They exclude
+some Vitest startup and therefore do not replace its printed test-phase wall.
 
-The six slowest suites, and the slowest cases, from the same run:
+| Run     | Policy span (20 files) | Boundary span (29 files) | Slowest suite                         |
+| ------- | ---------------------: | -----------------------: | ------------------------------------- |
+| Final 1 |                3.632 s |                140.989 s | `completion-github.test.ts`, 67.286 s |
+| Final 2 |                3.573 s |                142.303 s | `completion-github.test.ts`, 65.352 s |
 
-| Suite                            | Duration |
-| -------------------------------- | -------: |
-| `completion-github.test.ts`      | 100.12 s |
-| `source-cli.integration.test.ts` |  77.81 s |
-| `runner.test.ts`                 |  59.54 s |
-| `completion-arm.test.ts`         |  58.46 s |
-| `workspace.test.ts`              |  48.87 s |
-| `workspace-branch.test.ts`       |  47.24 s |
+Six slowest suites in each required sequential validation:
 
-| Case (suite, then the case's own name)                                                                   | Duration |
-| -------------------------------------------------------------------------------------------------------- | -------: |
-| `live-verifier.test.ts`, "runs both exercises through the configured selection, against the fixture"     |  12.19 s |
-| `fixture-lifecycle.test.ts`, "cleans up after the cases that must fail, time out or cancel"              |  12.01 s |
-| `checks.test.ts`, "reports a stop it could not confirm, and calls the copy unsafe to reuse"              |  11.13 s |
-| `git.test.ts`, "reports a stop it could not confirm, which is what makes a copy unsafe to reuse"         |   8.66 s |
-| `source-cli.integration.test.ts`, "watch picks up an issue made eligible later, then stops on interrupt" |   7.81 s |
-| `source-cli.integration.test.ts`, "restarts a re-armed continuation at the first tier…"                  |   7.04 s |
+| Run | Suite                            | Duration |
+| --- | -------------------------------- | -------: |
+| 1   | `completion-github.test.ts`      | 67.286 s |
+| 1   | `source-cli.integration.test.ts` | 50.611 s |
+| 1   | `runner.test.ts`                 | 38.479 s |
+| 1   | `completion-arm.test.ts`         | 38.422 s |
+| 1   | `fixture-lifecycle.test.ts`      | 34.595 s |
+| 1   | `workspace.test.ts`              | 29.784 s |
+| 2   | `completion-github.test.ts`      | 65.352 s |
+| 2   | `source-cli.integration.test.ts` | 49.865 s |
+| 2   | `completion-arm.test.ts`         | 38.371 s |
+| 2   | `runner.test.ts`                 | 37.745 s |
+| 2   | `fixture-lifecycle.test.ts`      | 34.721 s |
+| 2   | `workspace.test.ts`              | 27.510 s |
 
-Every remaining slow case is a case whose subject is a real bound — a command
-that must be stopped, a process tree that must exit, a poll that must expire, an
-exercise that starts a real child — or one of the two cases the lifecycle proof
-runs against deliberately failing suites. The stated bounds above the 5 s default
-are the `completion-arm` recovery case at 15 s and the cases that make two or
-more complete passes over the real command boundary (10 s); every other case
-still runs under the default 5 s. The full per-case table is in the timing
-detail file.
+Six slowest cases in each required sequential validation:
 
-### The budget this establishes
+| Run | Suite: case                                                                                                                                | Duration |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------ | -------: |
+| 1   | `fixture-lifecycle.test.ts`: the fixture lifecycle cleans up after the cases that must fail, time out or cancel                            | 33.382 s |
+| 1   | `checks.test.ts`: a command that runs out of time reports a stop it could not confirm, and calls the copy unsafe to reuse                  | 11.072 s |
+| 1   | `live-verifier.test.ts`: the entry point, as a process runs both exercises through the configured selection, against the fixture           |  9.337 s |
+| 1   | `git.test.ts`: a Git command under a bound reports a stop it could not confirm, which is what makes a copy unsafe to reuse                 |  8.398 s |
+| 1   | `source-cli.integration.test.ts`: the source commands through the CLI watch picks up an issue made eligible later, then stops on interrupt |  6.668 s |
+| 1   | `lifecycle.test.ts`: a run its caller stops, for real reports a stop it could not confirm, and never calls the copy safe to reuse          |  6.204 s |
+| 2   | `fixture-lifecycle.test.ts`: the fixture lifecycle cleans up after the cases that must fail, time out or cancel                            | 33.521 s |
+| 2   | `checks.test.ts`: a command that runs out of time reports a stop it could not confirm, and calls the copy unsafe to reuse                  | 11.084 s |
+| 2   | `live-verifier.test.ts`: the entry point, as a process runs both exercises through the configured selection, against the fixture           |  9.810 s |
+| 2   | `git.test.ts`: a Git command under a bound reports a stop it could not confirm, which is what makes a copy unsafe to reuse                 |  8.398 s |
+| 2   | `source-cli.integration.test.ts`: the source commands through the CLI watch picks up an issue made eligible later, then stops on interrupt |  6.527 s |
+| 2   | `lifecycle.test.ts`: a run its caller stops, for real reports a stop it could not confirm, and never calls the copy safe to reuse          |  6.220 s |
 
-Measured on this host, at these worker settings: **test phase ≤ 212 s (the
-192.50 s reference plus 10 %), no single suite over 110 s, `policy` under 15 s,
-and no per-case bound widened except the stated ones below.** The budget is met
-by the three complete validations (200.99 s, 169.35 s, 167.00 s), by the
-comparable four-worker run (164.31 s) and by the slowest suite (`completion-github.test.ts`
-at 100.12 s, inside 110 s) and the policy layer (3.64 s, inside 15 s). It is
-_not_ met by the JSON detail run, which took 212.68 s and sits 0.7 s over the
-ceiling: that run is the bare test command, it was taken while the host was at
-its slowest, and a worker may have built `dist/` inside it. That overrun is
-recorded here rather than smoothed away.
+The ~33 s lifecycle case deliberately runs timeout, failure, late-continuation
+and unconfirmed-stop tests in a nested Vitest process, then checks their process
+and directory outcomes. The checks/Git/lifecycle stop cases exercise real stop
+grace periods. The source watch case exercises interruption between polls;
+live-verifier executes the configured built entry point’s two offline exercises.
+The remaining suite cost is real command/Git execution, not policy-clock sleeps.
 
-The stated per-case bounds are the `completion-arm` recovery case at 15 s — it
-makes three arm or pass calls over real `gh` commands — and `TWO_PASSES_TIMEOUT_MS`
-(10 s) for the ten cases that make two or more complete passes over the real
-boundary. There is no layer-wide deadline: every other case keeps the 5 s
-default, and no assertion was weakened to fit a bound.
+**Budget:** both final validations and the comparable run meet the unchanged
+212 s wall ceiling; both policy spans are below 15 s, and every suite is below
+110 s. No deadlines, assertions, skips or worker settings were changed to make
+a measurement fit.
 
-The budget is a ceiling to investigate against, not a settled result. A future
-change that cannot fit it has to explain itself here, and it does not get to fit
-by widening deadlines, skipping cases or running fewer workers. The known gaps
-below name the intended next reduction.
+### Raw evidence and cleanup
 
-### Cleanup after each run
+| Run          | Metadata / command wall                             | Complete verbose output                                  | Every suite/case (raw JSON)                                | Cleanup inventory                                                                |
+| ------------ | --------------------------------------------------- | -------------------------------------------------------- | ---------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| 1            | [metadata](../performance/harn-48-validation-1.txt) | [output](../performance/harn-48-validation-1-detail.txt) | [timings](../performance/harn-48-validation-1-timings.txt) | [processes/directories](../performance/harn-48-fixture-cleanup-1.txt)            |
+| 2            | [metadata](../performance/harn-48-validation-2.txt) | [output](../performance/harn-48-validation-2-detail.txt) | [timings](../performance/harn-48-validation-2-timings.txt) | [processes/directories](../performance/harn-48-fixture-cleanup-2.txt)            |
+| four-workers | [metadata](../performance/harn-48-four-workers.txt) | [output](../performance/harn-48-four-workers-detail.txt) | [timings](../performance/harn-48-four-workers-timings.txt) | [processes/directories](../performance/harn-48-fixture-cleanup-four-workers.txt) |
 
-Each run was wrapped in the same check: the fixture directories under `%TEMP%`
-matching `nexus-harness-*`, and the processes whose command line names one of
-them (`nexus-harness-<id>`, which excludes the check's own command line), were
-listed before and after the run and compared.
+Each final run started and ended with **1,873 pre-existing fixture directories**,
+**zero new directories**, and **zero new Node/Git/cmd/taskkill process identities**.
+Identity includes PID and creation time to avoid confusing reused PIDs. The
+inventories cover all such host processes, including generic child command lines;
+beacon/PID assertions within the suites separately prove the owned trees ended.
+No host process is killed by the measurement script.
 
-| Point in time              | `nexus-harness-*` directories | Matching processes |
-| -------------------------- | ----------------------------: | -----------------: |
-| Before run 1               |                           453 |                  0 |
-| After run 1                |                           453 |                  0 |
-| After run 2                |                           453 |                  0 |
-| After run 3 (four workers) |                           453 |                  0 |
-| After run 5 (final)        |                           453 |                  0 |
+An earlier recovery measurement at `6ac85ff` passed all tests in **235.85 s**
+(255.815 s total), exceeding the budget by 23.85 s, but its cleanup audit found
+**two new live-verifier directories and no new processes**. It is not one of
+the final validations. The offline entry-point test now gives its child a
+test-owned temp root and asserts that both retained exercise directories are
+captured and removed; the live tool’s operator-facing retention is unchanged.
+The focused regression passed all 19 live-verifier cases.
 
-Raw output: [fixture cleanup](../performance/harn-48-fixture-cleanup.txt). The
-453 directories are older leftovers from runs of earlier revisions and are not
-removed by the suite: it removes what it created, keeps what it cannot confirm is
-gone, and reports rather than deletes anything it did not create. The Linux run
-below left no fixture directory behind.
+That observation is preserved: [metadata](../performance/harn-48-pre-final.txt),
+[verbose output](../performance/harn-48-pre-final-detail.txt),
+[case timings](../performance/harn-48-pre-final-timings.txt), and
+[cleanup report with the two exact paths](../performance/harn-48-pre-final-cleanup.txt).
+Automatic approval review refused manual deletion of those two directories with
+“blocked by policy”; they remain as recorded evidence among the 1,873 pre-existing
+directories. Neither has a running process. Other historical directories were
+not touched. Final measurements neither hide that earlier leak nor count it as
+a clean validation. The large timing difference is not assigned a causal
+explanation from these few observations.
 
-### Coverage counts against the reference
+### Linux verification
 
-| Measure                        | `f44a859` (before) | Restored (after) |
-| ------------------------------ | -----------------: | ---------------: |
-| Active cases                   |              1,301 |            1,330 |
-| Pre-existing skips             |                  2 |                2 |
-| Test files                     |                 34 |               49 |
-| Test-phase wall time (Windows) |           192.50 s |    164.3–212.7 s |
+On the same implementation commit, `bash performance/validate-linux.sh` passed
+`npm run validate` with verbose reporting: **49 files, 1,322 passed, 10 skipped**,
+**83.47 s test phase**, **106.45 s total validation**. This was WSL2 Linux
+`6.18.33.2-microsoft-standard-WSL2`, Node `v24.14.1`, npm `11.11.0`, Vitest
+`5.0.0`, Git `2.43.0`, reading this checkout through the `/mnt/e` NTFS mount.
+It is separate platform evidence, not a Windows timing comparison.
 
-The 29 extra active cases are accounted for by the restoration itself: the nine
-quarantined suites are active again, `tests/fixture-lifecycle.test.ts` proves the
-shared lifecycle's end-of-test paths (`vitest.lifecycle.config.ts` runs the
-deliberately failing cases it checks) and now also proves the delayed
-continuation and the unconfirmed stop, and `completion-policy.test.ts` and
-`runner-policy.test.ts` decide the deadline, retry, idempotency, repair and
-allowance policy against an in-memory boundary. The file count rose because the
-mixed suites were split, not because the coverage was widened by changing what
-any file asserts. A count is still not the evidence: the maps above name the
-assertion that carries each moved case, and each deleted case's successor.
+The eight additional skips are Windows-specific process/launcher cases that
+passed on Windows. The nested real-CLI timeout/setup-failure proof ran on both
+platforms. No fixture directory existed before or after this final Linux run,
+and no Node/Git process remained. Snapshots were captured in the same invocation,
+before WSL could shut down.
 
-### Linux CI evidence
+Raw evidence: [complete validation and wall time](../performance/harn-48-linux-validation.txt),
+[processes before](../performance/harn-48-linux-processes-before.txt),
+[processes after](../performance/harn-48-linux-processes-after.txt),
+[directories before](../performance/harn-48-linux-directories-before.txt), and
+[directories after](../performance/harn-48-linux-directories-after.txt). Empty
+directory files are the actual zero-row inventory. Earlier focused checks also
+passed: [Windows lifecycle/CLI, 10 cases](../performance/lifecycle-focused.txt),
+[Linux lifecycle/CLI, 10 cases](../performance/lifecycle-linux-focused.txt), and
+[offline live-verifier, 19 cases](../performance/live-verifier-focused.txt).
+The GitHub-hosted `ubuntu-latest` job has not been observed from this coding turn;
+it remains an independent merge gate.
 
-Separate from the Windows comparison above, and not comparable to it: the same
-`npm run validate` was run on Linux (WSL2, `Linux 6.18.33.2-microsoft-standard-WSL2`
-x86_64, 24 CPUs, same node `v24.14.1` and vitest `5.0.0`) against the committed
-head, twice. It passed both times: **49 files, 1,322 passed, 10 skipped**,
-35.68 s and 33.63 s test phase, with no fixture directory left behind. A third
-run on the final tree — the one that moved two cases from the boundary to the
-policy layer and stated the multi-pass bounds — passed the same way in 34.52 s,
-leaving no fixture directory behind either. The eight
-extra skips are the cases that are explicitly bounded to Windows
-(`it.skipIf(process.platform !== 'win32')` in `agent`, `checks`, `git` and
-`lifecycle`), which run on Windows and are skipped on Linux; no case is skipped
-on both. Raw output: [Linux validation](../performance/harn-48-linux-validation.txt).
-The job GitHub runs is still `ubuntu-latest` through `.github/workflows/ci.yml`;
-this local run is evidence, not that job's result.
+## Remaining limits
 
-### Limitations
-
-- Five Windows runs on one host, all passing. The reference is a single
-  historical four-worker observation, and the runs above spread by 48 s
-  (164.3 s to 212.7 s) on identical content, so the percentages are an observed
-  range, not a measured distribution or a claim about the change. The host also
-  runs the queue that started this turn and the user's own desktop applications;
-  the slower runs correlate with that load, not with any change in the tree.
-- Runs 1, 2, 3 and 5 measure the test phase inside `npm run validate`, after the
-  format, lint, typecheck and build steps; run 4 measures the test command alone
-  with the JSON reporter, whose summary line is not printed, so its test phase is
-  the span from the first suite's start to the last suite's end.
-- The four-worker comparison is one run. It is comparable to the reference in
-  worker count and pool shape, not in statistical weight.
-- No coverage instrumentation or mutation testing was run, before or after. The
-  ownership map is the equivalence argument, and the real-boundary cases it names
-  as primary owners are the ones that still start processes.
-
-## Known gaps
-
-- `completion-github.test.ts` (100.1 s, 61 cases) is still the single slowest
-  suite. Its remaining cases each assert something only the command boundary can
-  — the exact `gh` invocation, the credential, the evidence file, the persisted
-  admission — but several of them start a process per reading, and the next
-  reduction is to share one fixture process across a case's readings rather than
-  one per command. It was not attempted here because it changes how the
-  credential-refresh assertions observe the reader token.
-- `source-cli.integration.test.ts` (77.8 s, 26 cases) is the second tail: every
-  case starts the CLI in-process with a fake Jira and a real stand-in runtime.
-  Nothing there is duplicated with another suite — it is the only place the
-  `source` commands run end to end — so it was left as it is.
-- `workspace.test.ts` and `workspace-branch.test.ts` (48.9 s and 47.2 s) still
-  create a repository per case. They are real-Git safety cases with distinct
-  fixtures, and merging their repositories would couple tests that exist to fail
-  independently.
-- The fixture lifecycle preserves a directory when a stop cannot be confirmed;
-  nothing removes those preserved directories automatically afterwards. That is
-  deliberate — the next person has to look at what leaked — and it is why the
-  proof ends its leftover tree by hand.
+GitHub-hosted Linux CI remains a delivery gate; local WSL validation cannot
+establish its result. Live provider exercises remain opt-in and have not run.
+Real Git and command suites retain independent fixtures and pay actual process
+startup costs. Held directories are released only after owners are confirmed
+gone; unresolved owners require inspection, not deletion.

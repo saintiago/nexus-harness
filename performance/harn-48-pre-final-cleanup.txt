@@ -1,5 +1,5 @@
 ﻿{
-    "BeforeDirectoryCount":  1873,
+    "BeforeDirectoryCount":  1871,
     "NewProcesses":  [
 
                      ],
@@ -79,7 +79,8 @@
                         ],
     "AfterDirectoryCount":  1873,
     "NewDirectories":  [
-
+                           "C:\\Users\\User\\AppData\\Local\\Temp\\nexus-live-check-kaIvXS",
+                           "C:\\Users\\User\\AppData\\Local\\Temp\\nexus-live-check-rDege4"
                        ],
     "AfterProcesses":  [
                            {

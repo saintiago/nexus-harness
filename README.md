@@ -84,12 +84,20 @@ owns, what moved and how the restored suite compares with the audit baseline is 
 [test layer and coverage map](notes/test-layers.md); the evidence behind the temporary quarantine
 is in the [test architecture audit](notes/test-architecture-audit.md).
 
-The gate's own time budget is stated in that map: the test phase stays under 212 s on the recorded
-Windows host, the `policy` layer under 15 s, and no single suite over 110 s. `npm run
+The measured budget is stated in that map: investigate a test phase above 212 s, a `policy`
+layer above 15 s, or a suite above 110 s on the recorded Windows host. `npm run
 test:four-workers` exists only to compare a run with the audit's reference, which put every file in
 one pool with four workers; it runs the same cases as `npm test` and is never part of the gate or of
 CI. A slower result is reported in the map rather than hidden by skipping cases or widening a
 deadline.
+
+For repeatable Windows timing and cleanup evidence, run
+`powershell -NoProfile -File performance/measure-windows.ps1` from this repository.
+It runs two complete validations sequentially with detailed reporters;
+`-Mode four-workers` measures the separate single-pool comparison. Run it without
+another test workload or Nexus queue. It inventories processes without killing
+them. Fixture teardown cancels and awaits owned work before removing directories;
+an unconfirmed owner keeps its directory for inspection.
 
 `npm start -- --help` prints the full usage text, and `npm start -- run` with a missing option
 prints a usage error and exits `2`.
