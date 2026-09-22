@@ -12,6 +12,11 @@
  * really published). What no lower layer can show is that join: the revision the
  * checks passed is the revision that was pushed, and the one the merge is tied
  * to before the ticket is moved to Done.
+ *
+ * The archived `source-cli.integration.test.ts` and `completion-cli.test.ts`
+ * proved delivery and the completion path through their whole-workflow
+ * fixtures; this case is what carries their required behavior now, at the layer
+ * that owns it (tests_old/REFERENCE.txt).
  */
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -130,6 +135,8 @@ function standInTicket(item: ReviewItem): StandInTicket {
 interface StandInMerge {
   readonly actions: CompletionActions;
   readonly verifiedHeads: readonly string[];
+  /** Every completion request the pass made, as the pass built it. */
+  readonly requests: readonly CompletionRequest[];
 }
 
 /**
@@ -139,6 +146,7 @@ interface StandInMerge {
  */
 function standInMergedGitHub(head: string): StandInMerge {
   const verifiedHeads: string[] = [];
+  const requests: CompletionRequest[] = [];
   const pull: PullRequestSnapshot = {
     number: 42,
     url: PULL_REQUEST_URL,
@@ -170,6 +178,7 @@ function standInMergedGitHub(head: string): StandInMerge {
   };
   const actions: CompletionActions = {
     findPullRequest: async (request: CompletionRequest) => {
+      requests.push(request);
       verifiedHeads.push(request.branch);
       return pull;
     },
@@ -182,7 +191,7 @@ function standInMergedGitHub(head: string): StandInMerge {
     },
     enableAutoMerge: async () => 'already-enabled',
   };
-  return { actions, verifiedHeads };
+  return { actions, verifiedHeads, requests };
 }
 
 describe('delivery and verified completion', () => {
@@ -276,6 +285,10 @@ describe('delivery and verified completion', () => {
 
     expect(recorded.err).toEqual([]);
     expect(github.verifiedHeads).toContain(head);
+    // The completion works on the workspace the delivery published from: the
+    // same clone, on the branch the delivered revision was pushed from.
+    expect(github.requests[0]).toMatchObject({ workspacePath, branch });
+    expect(await branchHead(github.requests[0]?.workspacePath ?? '', branch)).toBe(head);
     expect(outcomes).toHaveLength(1);
     expect(outcomes[0]).toMatchObject({ status: 'done', mergeCommit: MERGE_COMMIT });
 

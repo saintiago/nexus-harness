@@ -37,6 +37,7 @@
         "tests/**",
         "docs/nexus.config.example.json",
         "docs/nexus.project.example.json",
+        "turbo.json",
         "vitest.config.ts"
       ],
       "outputs": [],

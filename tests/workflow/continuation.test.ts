@@ -10,6 +10,11 @@
  * workspace ledger exactly as the source intake does, and its baseline is
  * allowed to be red because the interrupted attempt's own committed work is
  * what the next turn continues from.
+ *
+ * The archived `source-cli.integration.test.ts` continuation cases and
+ * `lifecycle.test.ts`'s stopped-run cases proved this through their
+ * whole-workflow fixtures; this case is what carries the connection now, at the
+ * layer that owns it (tests_old/REFERENCE.txt).
  */
 import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';

@@ -8,7 +8,7 @@
  * configuration and the real tree and fails when either happens
  * (docs/testing.md, docs/validation-caching.md).
  */
-import { readdir } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import config from '../../vitest.config.js';
@@ -16,6 +16,26 @@ import { repoRoot } from '../support.js';
 
 /** The three layers the pyramid documents, and the only ones it has. */
 const LAYERS = ['unit', 'boundary', 'workflow'] as const;
+
+/** One task of the validation manifest, as this case reads it. */
+interface ValidationTask {
+  readonly cache?: boolean;
+  readonly inputs?: readonly string[];
+}
+
+/** The Turbo manifest and the script that drives it, as the checkout holds them. */
+async function validationManifest(): Promise<{
+  readonly tasks: Readonly<Record<string, ValidationTask>>;
+  readonly validate: readonly string[];
+}> {
+  const turbo = JSON.parse(await readFile(path.join(repoRoot, 'turbo.json'), 'utf8')) as {
+    readonly tasks: Readonly<Record<string, ValidationTask>>;
+  };
+  const scripts = JSON.parse(await readFile(path.join(repoRoot, 'package.json'), 'utf8')) as {
+    readonly scripts: Readonly<Record<string, string>>;
+  };
+  return { tasks: turbo.tasks, validate: (scripts.scripts['validate'] ?? '').split(' ') };
+}
 
 /** One layer's project, as `vitest.config.ts` declares it. */
 interface LayerProject {
@@ -90,5 +110,32 @@ describe('the layers of the test pyramid', () => {
       (suite) => !LAYERS.some((layer) => suite.startsWith(`tests/${layer}/`)),
     );
     expect(unplaced, 'every suite is run by exactly one layer').toEqual([]);
+  });
+
+  it('keeps every layer in the gate, and only the deterministic one reusable', async () => {
+    const { tasks, validate } = await validationManifest();
+
+    // Every layer is a task of the gate, and the gate names no task the
+    // manifest does not define.
+    const runAt = validate.indexOf('run');
+    expect(runAt).toBeGreaterThan(-1);
+    const named = validate.slice(runAt + 1);
+    for (const layer of LAYERS) {
+      expect(named, `the gate does not run the ${layer} layer`).toContain(`test:${layer}`);
+    }
+    for (const task of named) {
+      expect(tasks[task], `the gate names an undefined task "${task}"`).toBeDefined();
+    }
+
+    // A suite that starts processes or observes this host is never a reusable
+    // result; the deterministic layer declares the files it reads, so an edit
+    // to any of them invalidates its result.
+    for (const observing of ['boundary', 'workflow'] as const) {
+      expect(tasks[`test:${observing}`]?.cache, `${observing} must execute every time`).toBe(false);
+    }
+    expect(tasks['test:unit']?.cache).not.toBe(false);
+    expect(tasks['test:unit']?.inputs ?? []).toEqual(
+      expect.arrayContaining(['src/**', 'tests/**']),
+    );
   });
 });

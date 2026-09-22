@@ -9,6 +9,11 @@
  * adapter launching a stand-in runtime — the substitution `runtime.ts` names for
  * another runtime. Only the Jira queue and the GitHub repository are controlled
  * responses: the two live services this layer never contacts.
+ *
+ * The archived `reviews-cli.integration.test.ts` proved the handoff from the
+ * ticket's own retained workspace through the CLI; this case is what carries
+ * its required behavior now, at the layer that owns it
+ * (tests_old/REFERENCE.txt).
  */
 import { readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';

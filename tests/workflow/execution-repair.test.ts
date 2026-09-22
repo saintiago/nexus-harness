@@ -10,6 +10,11 @@
  * layer can: those pieces agree end to end, the repair turn is handed the
  * failure the round observed with its output, and the run's own report names
  * the revision that passed.
+ *
+ * The archived `cli-run.integration.test.ts` and `local-run.integration.test.ts`
+ * proved this connection through their whole-workflow fixtures; this case is
+ * what carries its required behavior now, at the layer that owns it
+ * (tests_old/REFERENCE.txt).
  */
 import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
