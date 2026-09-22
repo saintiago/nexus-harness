@@ -27,9 +27,7 @@ its coding turn commits locally at most, and whatever the configured integration
 governed by the sections above, not by the loop below. The loop below is still how changes to this
 repository's `main` are landed: one `task/<name>` branch, a pull request, green checks, and a merge
 made by the operator, or by an agent using the operator's own credentials. Nothing in this document
-configures or governs a harness run, and nothing about a run shapes this loop. They are separate on
-purpose; an earlier iteration of this file blurred them and produced a workflow that merged its own
-pull requests.
+configures or governs a harness run, and nothing about a run shapes this loop.
 
 ## The rule
 
@@ -88,8 +86,7 @@ run again on the result. There is no automation here to rebase or to guess.
   for a branch no ticket points at. A workflow token never publishes it — that identity is the
   whole point of the rule — and the rule is not disabled or bypassed to merge a pull request.
 - **A description a reviewer can act on:** what changed, why, what you ran, and what you could not
-  verify. `notes/` and `README.md` record the honest gaps; the PR should point at them rather than
-  restate them.
+  verify. Keep change-specific evidence in the PR and Git history.
 - **No human reviewer is required.** This is a one-person project: you may open a PR with nobody
   requested and merge it yourself once both checks are green. The point of the PR in this
   repository is a place where the checks run and where the change and its evidence are written
