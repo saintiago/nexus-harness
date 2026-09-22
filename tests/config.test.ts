@@ -33,7 +33,7 @@ import {
   taskSchema,
 } from '../src/config/schema.js';
 import type { CompletionConfig, HarnessConfig } from '../src/shared/types.js';
-import { createTempDir, writeJsonFile } from './support.js';
+import { createTempDir, repoRoot, writeJsonFile } from './support.js';
 
 /** The documented Nexus-wide harness configuration. */
 const HARNESS = {
@@ -164,6 +164,27 @@ describe('the harness configuration document', () => {
       }).success,
     ).toBe(false);
   });
+
+  it('reports every problem of one document at once instead of the first', async () => {
+    const directory = await createTempDir();
+    const file = await writeJsonFile(directory, 'nexus.config.json', {
+      ...HARNESS,
+      workDir: '  ',
+      maxRepairs: -1,
+      taskTimeoutMinutes: 0,
+    });
+
+    try {
+      await loadHarnessFile(file);
+      expect.unreachable('the document should have been refused');
+    } catch (cause) {
+      expect(problemsOf(cause)).toEqual([
+        'workDir: workDir must not be blank',
+        'maxRepairs: maxRepairs must be a nonnegative integer',
+        'taskTimeoutMinutes: taskTimeoutMinutes must be a positive integer',
+      ]);
+    }
+  });
 });
 
 describe('the project configuration document', () => {
@@ -173,6 +194,15 @@ describe('the project configuration document', () => {
     expect(projectConfigSchema.safeParse({ ...PROJECT, setup: [[]] }).success).toBe(false);
     expect(projectConfigSchema.safeParse({ ...PROJECT, checks: [['npm', 1]] }).success).toBe(false);
     expect(projectConfigSchema.safeParse({ ...PROJECT, projectKey: 'SAM1' }).success).toBe(false);
+  });
+
+  it('keeps an empty setup list and literal empty arguments exactly as written', () => {
+    const parsed = projectConfigSchema.parse({
+      setup: [],
+      checks: [['npm', 'run', 'validate', '']],
+    });
+    expect(parsed.setup).toEqual([]);
+    expect(parsed.checks).toEqual([['npm', 'run', 'validate', '']]);
   });
 
   it('normalizes the Jira site and fills the documented source defaults', () => {
@@ -397,6 +427,27 @@ describe('the launch and path rules applied once', () => {
 });
 
 describe('composing the two configuration files', () => {
+  it('composes the two checked-in examples this repository carries', async () => {
+    const { config } = await loadConfiguration(
+      path.join(repoRoot, 'docs', 'nexus.config.example.json'),
+      path.join(repoRoot, 'docs', 'nexus.project.example.json'),
+    );
+
+    expect(config.workDir).toBe('../.harness');
+    // The documented launch and every ladder rung are kept with their prefixes.
+    expect(config.agent.command).toEqual([
+      'codex',
+      '--profile',
+      'nexus-flash',
+      '--model',
+      'deepseek-flash',
+    ]);
+    expect(escalationTiers(config).map((tier) => tier.name)).toEqual(['flash', 'astra']);
+    expect(escalationTiers(config).map((tier) => tier.maxRepairs)).toEqual([2, 2]);
+    expect(config.review?.repository).toBe('owner/name');
+    expect(config.delivery?.completion?.postMergeWorkflows).toEqual(['ci.yml']);
+  });
+
   it('loads the documented pair and composes both sides', async () => {
     const directory = await createTempDir();
     const harnessPath = await writeJsonFile(directory, 'nexus.config.json', HARNESS);
@@ -578,6 +629,89 @@ describe('composing the two configuration files', () => {
     } catch (cause) {
       expect(problemsOf(cause).join('\n')).toMatch(/must differ from the source's reviewStatus/);
     }
+  });
+
+  it('applies the completion policy defaults, keeps declared bounds, and needs no source', async () => {
+    const directory = await createTempDir();
+    const harnessPath = await writeJsonFile(directory, 'nexus.config.json', {
+      ...HARNESS,
+      reviewer: {
+        app: {
+          appId: 7,
+          installationId: 8,
+          privateKeyPathEnv: 'NEXUS_LENS_KEY_PATH',
+          login: 'nexus-lens[bot]',
+        },
+        reviewer: { runtime: 'codex', command: ['codex'] },
+      },
+      completion: {
+        lensApp: 'nexus-lens[bot]',
+        lensAppId: 7,
+        lensCheckName: 'Nexus Lens review',
+        reviewerTokenEnv: 'NEXUS_LENS_TOKEN',
+      },
+    });
+    const projectPath = await writeJsonFile(directory, 'nexus.project.json', {
+      ...PROJECT,
+      delivery: {
+        type: 'github',
+        repository: 'owner/name',
+        baseBranch: 'main',
+        completion: {
+          postMergeWorkflows: ['1234'],
+          toDoStatus: 'To Do',
+          doneStatus: 'Done',
+        },
+      },
+    });
+
+    const { config } = await loadConfiguration(harnessPath, projectPath);
+
+    // The harness-wide policy defaults are applied where the file says nothing.
+    expect(config.delivery?.completion).toMatchObject({
+      pollIntervalSeconds: COMPLETION_DEFAULTS.pollIntervalSeconds,
+      deadlineSeconds: COMPLETION_DEFAULTS.deadlineSeconds,
+      postMergeWorkflows: ['1234'],
+      toDoStatus: 'To Do',
+      doneStatus: 'Done',
+    });
+    // A project with no source still composes its completion; the statuses are
+    // then checked against each other alone.
+    expect(config.source).toBeUndefined();
+    expect(config.delivery?.completion?.lensApp).toBe('nexus-lens[bot]');
+  });
+
+  it('takes the declared completion polling bounds rather than the defaults', async () => {
+    const directory = await createTempDir();
+    const harnessPath = await writeJsonFile(directory, 'nexus.config.json', {
+      ...HARNESS,
+      completion: {
+        lensApp: 'nexus-lens[bot]',
+        lensAppId: 7,
+        lensCheckName: 'Nexus Lens review',
+        reviewerTokenEnv: 'NEXUS_LENS_TOKEN',
+        pollIntervalSeconds: 11,
+        deadlineSeconds: 120,
+      },
+    });
+    const projectPath = await writeJsonFile(directory, 'nexus.project.json', {
+      ...PROJECT,
+      delivery: {
+        type: 'github',
+        repository: 'owner/name',
+        baseBranch: 'main',
+        completion: {
+          postMergeWorkflows: ['ci.yml'],
+          toDoStatus: 'To Do',
+          doneStatus: 'Done',
+        },
+      },
+    });
+
+    const { config } = await loadConfiguration(harnessPath, projectPath);
+
+    expect(config.delivery?.completion?.pollIntervalSeconds).toBe(11);
+    expect(config.delivery?.completion?.deadlineSeconds).toBe(120);
   });
 
   it('reports a configuration file that is missing or not valid JSON under its own path', async () => {

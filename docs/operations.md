@@ -63,7 +63,10 @@ CLI from TypeScript sources through `tsx` if you would rather not build.
 | `npm run validate:fresh`    | Clear local caches and execute every validation task. |
 | `npm run cache:clear`       | Clear this checkout's local validation caches. |
 
-Active suites belong in `tests/`. The suites in `tests_old/` are disabled reference material. Until replacement suites exist, validation runs formatting, lint, type checking and build checks without regression-test coverage.
+Active suites belong in `tests/` and run in `npm test` and `npm run validate`; `npm run validate`
+discovers none and fails rather than passing an empty suite. The suites in `tests_old/` are
+disabled reference material for the coverage still to be rebuilt at its own layer
+(docs/testing.md).
 
 `npm start -- --help` prints the full usage text, and `npm start -- run` with a missing option
 prints a usage error and exits `2`.

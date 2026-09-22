@@ -11,7 +11,7 @@
 import { describe, expect, it } from 'vitest';
 import type { CheckRoundRequest } from '../src/checks/round.js';
 import { HistoryError } from '../src/history/contract.js';
-import type { HistorySnapshot } from '../src/history/contract.js';
+import type { DeveloperReportRequest, HistorySnapshot } from '../src/history/contract.js';
 import type { AgentTurnResult, RunTaskResult } from '../src/runs/contracts.js';
 import { BASELINE_GUIDANCE_PREFIX } from '../src/runs/contracts.js';
 import type { CheckRoundResult, CommandResult, SourceRef } from '../src/shared/types.js';
@@ -451,5 +451,103 @@ describe('the ticket history a turn is given', () => {
     await runMemoryTask(run);
 
     expect(run.turns.requests[0]?.guidance).toEqual(['attempt 1 failed: the baseline is red']);
+  });
+
+  it('prepares a fresh snapshot before every repair turn, and never replays old excerpts', async () => {
+    const prepared: { readonly role: string; readonly round: number | null }[] = [];
+    const run = await memoryRun({
+      sourceRef: SOURCE_REF,
+      config: { maxRepairs: 1 },
+      guidance: [
+        `${BASELINE_GUIDANCE_PREFIX}repair the baseline before the original task continues.`,
+        'an intake excerpt the snapshot has replaced',
+      ],
+      history: {
+        prepare: async (request) => {
+          prepared.push({ role: request.role, round: request.round });
+          return {
+            ...snapshotFor(SOURCE_REF),
+            id: prepared.length.toString(16).padStart(32, '0'),
+            round: request.round,
+          };
+        },
+      },
+      rounds: (asked) => (asked.name === 'attempt-1' ? redAfter(asked) : passedRound()),
+      turns: () => ({ summary: 'did the work' }),
+    });
+
+    const result = await runMemoryTask(run);
+
+    expect(result.status).toBe('passed');
+    expect(run.turns.requests).toHaveLength(2);
+    expect(prepared).toEqual([
+      { role: 'developer', round: 1 },
+      { role: 'developer', round: 1 },
+    ]);
+    for (const [index, asked] of run.turns.requests.entries()) {
+      // Every turn — the implementation and the repair alike — is handed its own
+      // refreshed snapshot and only the separately validated baseline guidance.
+      expect(asked.history).not.toBeUndefined();
+      expect(asked.history?.id).toBe((index + 1).toString(16).padStart(32, '0'));
+      expect(asked.guidance).toEqual([
+        `${BASELINE_GUIDANCE_PREFIX}repair the baseline before the original task continues.`,
+      ]);
+    }
+  });
+
+  it('retains the complete developer report of every turn before publication', async () => {
+    const recorded: DeveloperReportRequest[] = [];
+    let consumed = 0;
+    const run = await memoryRun({
+      sourceRef: SOURCE_REF,
+      history: {
+        prepare: async () => snapshotFor(SOURCE_REF),
+        recordDeveloperReport: async (request) => {
+          recorded.push(request);
+          return { file: 'digest.json', completeFile: 'report.md', round: request.round };
+        },
+        consumed: async () => {
+          consumed += 1;
+        },
+      },
+      rounds: () => passedRound(),
+      turns: () => ({ summary: 'the implementation is done' }),
+    });
+
+    const result = await runMemoryTask(run);
+
+    expect(result.status).toBe('passed');
+    expect(recorded).toHaveLength(1);
+    // The interim report is saved while the run is still going: the turn's own
+    // summary is retained whole, and its round has not been observed yet.
+    expect(recorded[0]?.status).toBe('in-progress');
+    expect(recorded[0]?.runId).toBe(result.run.runId);
+    expect(recorded[0]?.attempts).toEqual([
+      { turn: 1, kind: 'implementation', agentSummary: 'the implementation is done', checks: null },
+    ]);
+    // The snapshot is consumed only after the turn returned usable output.
+    expect(consumed).toBe(1);
+  });
+
+  it('ends the run before the check round when the complete report cannot be retained', async () => {
+    const run = await memoryRun({
+      sourceRef: SOURCE_REF,
+      history: {
+        prepare: async () => snapshotFor(SOURCE_REF),
+        recordDeveloperReport: async () => {
+          throw new HistoryError('write', 'the reports directory is not writable');
+        },
+      },
+      rounds: () => passedRound(),
+      turns: () => ({ summary: 'the implementation is done' }),
+    });
+
+    const result = await runMemoryTask(run);
+
+    expect(result.status).toBe('failed');
+    expect(result.reason).toMatch(/complete developer turn report could not be retained/);
+    // Only the baseline ran: a turn whose report was lost is not judged by a
+    // check round, and no repair is spent on it.
+    expect(run.rounds.requests.map((round) => round.name)).toEqual(['baseline']);
   });
 });

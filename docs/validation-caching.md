@@ -46,7 +46,10 @@ gate. Cache eligibility follows a test's behavior, not its name.
   fresh evidence.
 - Cache cleanup affects only the selected checkout and does not change user or global settings.
 
-The active test task currently executes without result reuse while the pyramid is rebuilt. The archived suites are excluded from all validation tasks.
+The active test task executes without result reuse: `turbo.json` runs it uncached, so every rebuilt
+fast suite and every boundary suite executes on each validation. Split cache-eligible deterministic
+suites into their own task, with their inputs declared, as the pyramid's boundaries settle. The
+archived suites are excluded from all validation tasks.
 
 ## Commands
 
