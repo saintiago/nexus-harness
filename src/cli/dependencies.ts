@@ -17,6 +17,7 @@ import { nameTurn } from '../runs/progress.js';
 import type { RunnerDependencies } from '../runs/contracts.js';
 import type { AgentSelection } from '../shared/types.js';
 import { returnToRecordedBranch } from '../workspace/branch.js';
+import { inspectWorkspaceChanges } from '../workspace/changes.js';
 import { configureWorkspaceIdentity } from '../workspace/git.js';
 import { prepareWorkspace } from '../workspace/prepare.js';
 import { preflightSource } from '../workspace/preflight.js';
@@ -57,6 +58,7 @@ function realDependencies(
     appendRunLog,
     writeRunReport,
     recordWorkspaceAttempt,
+    inspectWorkspaceChanges,
     now: () => new Date(),
   };
 }
@@ -145,6 +147,7 @@ export function composeDependencies(
     },
     writeRunReport: replaced.writeRunReport ?? real.writeRunReport,
     recordWorkspaceAttempt: replaced.recordWorkspaceAttempt ?? real.recordWorkspaceAttempt,
+    inspectWorkspaceChanges: replaced.inspectWorkspaceChanges ?? real.inspectWorkspaceChanges,
     now: replaced.now ?? real.now,
   };
 }

@@ -16,6 +16,7 @@ import type {
   AttemptKind,
   CancellationEvidence,
   ChangeSummary,
+  ChangedPath,
   CheckRoundResult,
   HarnessConfig,
   RepairFeedback,
@@ -385,6 +386,19 @@ export interface RunnerDependencies {
     workspaceId: string,
     attempt: WorkspaceAttempt,
   ) => Promise<void>;
+  /**
+   * The last reading a run makes of its working copy: every path it differs from
+   * its recorded base by, committed, staged, or only written
+   * (`inspectWorkspaceChanges`, `src/workspace/changes.ts`). It is what the
+   * report's change summary is built from, and it is a Git reading like the
+   * others: bounded by what is left of the run's task time and stopped with the
+   * run. A reading that fails is reported as a comparison that could not be made,
+   * never as a copy that matches its base; the run has already ended either way.
+   */
+  readonly inspectWorkspaceChanges: (
+    workspace: PreparedWorkspace,
+    bounds?: GitRunBounds,
+  ) => Promise<readonly ChangedPath[]>;
   /** The current time, as the report's start and end of run. */
   readonly now: () => Date;
 }
