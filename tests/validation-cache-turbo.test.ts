@@ -31,12 +31,16 @@ const WRAPPER = path.join(repoRoot, 'scripts', 'turbo.mjs');
 const FIXTURE_BOUND_MS = 60_000;
 
 /**
- * How long the interrupted case may take: a run stopped inside the fixture's
- * five-second task, and then a second run that completes it. Like the
- * completion cases that make more than one pass, this case states its own bound
- * instead of pretending its work fits the default five seconds.
+ * Every case here makes several real Turborepo runs — a framework, a package
+ * manager, a Node process and the task itself per invocation — so like the
+ * completion cases that make more than one pass, each states its own bound
+ * instead of pretending its work fits the default five seconds. A single
+ * command's own bound is `FIXTURE_BOUND_MS`.
  */
-const INTERRUPTED_CASE_BOUND_MS = 30_000;
+const FIXTURE_CASE_BOUND_MS = 60_000;
+
+/** The interrupted case adds a five-second task that has to finish, too. */
+const INTERRUPTED_CASE_BOUND_MS = FIXTURE_CASE_BOUND_MS;
 
 /** One fixture task's work: what it did, when it did it. */
 interface FixtureRun {
@@ -179,84 +183,100 @@ async function cacheEntries(directory: string): Promise<readonly string[]> {
 }
 
 describe('the local task cache', () => {
-  it('replays a task instead of running it again, out of a cache of this platform', async () => {
-    const fixture = await createCacheFixture();
+  it(
+    'replays a task instead of running it again, out of a cache of this platform',
+    async () => {
+      const fixture = await createCacheFixture();
 
-    const first = await turboTask(fixture, 'work');
-    expect(first.code).toBe(0);
-    expect(first.stdout).toContain('cache miss, executing');
-    expect(await executions(fixture)).toBe(1);
+      const first = await turboTask(fixture, 'work');
+      expect(first.code).toBe(0);
+      expect(first.stdout).toContain('cache miss, executing');
+      expect(await executions(fixture)).toBe(1);
 
-    const second = await turboTask(fixture, 'work');
-    expect(second.code).toBe(0);
-    // The result is reused, and the task is not claimed to have run: the log
-    // line says what happened, and the marker file proves what did not.
-    expect(second.stdout).toContain('cache hit, replaying logs');
-    expect(await executions(fixture)).toBe(1);
-    expect(existsSync(path.join(fixture, 'out', 'result.txt'))).toBe(true);
+      const second = await turboTask(fixture, 'work');
+      expect(second.code).toBe(0);
+      // The result is reused, and the task is not claimed to have run: the log
+      // line says what happened, and the marker file proves what did not.
+      expect(second.stdout).toContain('cache hit, replaying logs');
+      expect(await executions(fixture)).toBe(1);
+      expect(existsSync(path.join(fixture, 'out', 'result.txt'))).toBe(true);
 
-    // The wrapper keeps every platform's cache apart, so a checkout read from
-    // two systems never replays the other system's result.
-    const platformCache = path.join(
-      fixture,
-      '.turbo',
-      'cache',
-      `${process.platform}-${process.arch}`,
-    );
-    expect(existsSync(platformCache)).toBe(true);
-    expect(await cacheEntries(fixture)).not.toEqual([]);
-  });
+      // The wrapper keeps every platform's cache apart, so a checkout read from
+      // two systems never replays the other system's result.
+      const platformCache = path.join(
+        fixture,
+        '.turbo',
+        'cache',
+        `${process.platform}-${process.arch}`,
+      );
+      expect(existsSync(platformCache)).toBe(true);
+      expect(await cacheEntries(fixture)).not.toEqual([]);
+    },
+    FIXTURE_CASE_BOUND_MS,
+  );
 
-  it('invalidates on a declared input, and not on a file the task never reads', async () => {
-    const fixture = await createCacheFixture();
-    await turboTask(fixture, 'work');
-    await turboTask(fixture, 'work');
-    expect(await executions(fixture)).toBe(1);
+  it(
+    'invalidates on a declared input, and not on a file the task never reads',
+    async () => {
+      const fixture = await createCacheFixture();
+      await turboTask(fixture, 'work');
+      await turboTask(fixture, 'work');
+      expect(await executions(fixture)).toBe(1);
 
-    // A declared input: the next run has to execute the task again.
-    await writeFile(path.join(fixture, 'src', 'input.txt'), 'two\n', 'utf8');
-    const afterEdit = await turboTask(fixture, 'work');
-    expect(afterEdit.stdout).toContain('cache miss, executing');
-    expect(await executions(fixture)).toBe(2);
+      // A declared input: the next run has to execute the task again.
+      await writeFile(path.join(fixture, 'src', 'input.txt'), 'two\n', 'utf8');
+      const afterEdit = await turboTask(fixture, 'work');
+      expect(afterEdit.stdout).toContain('cache miss, executing');
+      expect(await executions(fixture)).toBe(2);
 
-    // An unrelated file, which no task declares: the result still stands.
-    await writeFile(path.join(fixture, 'notes.md'), 'unrelated\n', 'utf8');
-    const afterUnrelatedEdit = await turboTask(fixture, 'work');
-    expect(afterUnrelatedEdit.stdout).toContain('cache hit, replaying logs');
-    expect(await executions(fixture)).toBe(2);
+      // An unrelated file, which no task declares: the result still stands.
+      await writeFile(path.join(fixture, 'notes.md'), 'unrelated\n', 'utf8');
+      const afterUnrelatedEdit = await turboTask(fixture, 'work');
+      expect(afterUnrelatedEdit.stdout).toContain('cache hit, replaying logs');
+      expect(await executions(fixture)).toBe(2);
 
-    // A new file that *is* covered by a declared glob counts like an edit.
-    await writeFile(path.join(fixture, 'src', 'added.txt'), 'added\n', 'utf8');
-    const afterAddedFile = await turboTask(fixture, 'work');
-    expect(afterAddedFile.stdout).toContain('cache miss, executing');
-    expect(await executions(fixture)).toBe(3);
-  });
+      // A new file that *is* covered by a declared glob counts like an edit.
+      await writeFile(path.join(fixture, 'src', 'added.txt'), 'added\n', 'utf8');
+      const afterAddedFile = await turboTask(fixture, 'work');
+      expect(afterAddedFile.stdout).toContain('cache miss, executing');
+      expect(await executions(fixture)).toBe(3);
+    },
+    FIXTURE_CASE_BOUND_MS,
+  );
 
-  it('restores a declared output that was removed, without running the task', async () => {
-    const fixture = await createCacheFixture();
-    await turboTask(fixture, 'work');
-    await rm(path.join(fixture, 'out'), { recursive: true, force: true });
-    expect(existsSync(path.join(fixture, 'out', 'result.txt'))).toBe(false);
+  it(
+    'restores a declared output that was removed, without running the task',
+    async () => {
+      const fixture = await createCacheFixture();
+      await turboTask(fixture, 'work');
+      await rm(path.join(fixture, 'out'), { recursive: true, force: true });
+      expect(existsSync(path.join(fixture, 'out', 'result.txt'))).toBe(false);
 
-    const restored = await turboTask(fixture, 'work');
-    expect(restored.code).toBe(0);
-    expect(restored.stdout).toContain('cache hit, replaying logs');
-    expect(await executions(fixture)).toBe(1);
-    expect(existsSync(path.join(fixture, 'out', 'result.txt'))).toBe(true);
-  });
+      const restored = await turboTask(fixture, 'work');
+      expect(restored.code).toBe(0);
+      expect(restored.stdout).toContain('cache hit, replaying logs');
+      expect(await executions(fixture)).toBe(1);
+      expect(existsSync(path.join(fixture, 'out', 'result.txt'))).toBe(true);
+    },
+    FIXTURE_CASE_BOUND_MS,
+  );
 
-  it('never stores a failed task as a success', async () => {
-    const fixture = await createCacheFixture();
+  it(
+    'never stores a failed task as a success',
+    async () => {
+      const fixture = await createCacheFixture();
 
-    const first = await turboTask(fixture, 'fail');
-    expect(first.code).not.toBe(0);
+      const first = await turboTask(fixture, 'fail');
+      expect(first.code).not.toBe(0);
 
-    const second = await turboTask(fixture, 'fail');
-    expect(second.code).not.toBe(0);
-    // Executed again rather than replayed from a stored failure.
-    expect(second.stdout).toContain('cache miss, executing');
-    expect(await executions(fixture, 'fails.txt')).toBe(2);
-  });
+      const second = await turboTask(fixture, 'fail');
+      expect(second.code).not.toBe(0);
+      // Executed again rather than replayed from a stored failure.
+      expect(second.stdout).toContain('cache miss, executing');
+      expect(await executions(fixture, 'fails.txt')).toBe(2);
+    },
+    FIXTURE_CASE_BOUND_MS,
+  );
 
   it(
     'never replays work that was interrupted before it finished',
@@ -279,35 +299,67 @@ describe('the local task cache', () => {
     INTERRUPTED_CASE_BOUND_MS,
   );
 
-  it('falls back to executing when the cached artefact is damaged', async () => {
-    const fixture = await createCacheFixture();
-    await turboTask(fixture, 'work');
-    expect(await executions(fixture)).toBe(1);
+  it(
+    'falls back to executing when the cached artefact is damaged',
+    async () => {
+      const fixture = await createCacheFixture();
+      await turboTask(fixture, 'work');
+      expect(await executions(fixture)).toBe(1);
 
-    // Damage every stored artefact and remove what the hit would restore: a
-    // result that cannot be restored must not be reported as one.
-    for (const entry of await cacheEntries(fixture)) {
-      if (entry.endsWith('.tar.zst')) await writeFile(entry, 'not a stored result', 'utf8');
-    }
-    await rm(path.join(fixture, 'out'), { recursive: true, force: true });
+      // Damage every stored artefact and remove what the hit would restore: a
+      // result that cannot be restored must not be reported as one.
+      for (const entry of await cacheEntries(fixture)) {
+        if (entry.endsWith('.tar.zst')) await writeFile(entry, 'not a stored result', 'utf8');
+      }
+      await rm(path.join(fixture, 'out'), { recursive: true, force: true });
 
-    const damaged = await turboTask(fixture, 'work');
-    expect(damaged.code).toBe(0);
-    expect(damaged.stdout).toContain('cache miss, executing');
-    expect(await executions(fixture)).toBe(2);
-    expect(existsSync(path.join(fixture, 'out', 'result.txt'))).toBe(true);
-  });
+      const damaged = await turboTask(fixture, 'work');
+      expect(damaged.code).toBe(0);
+      expect(damaged.stdout).toContain('cache miss, executing');
+      expect(await executions(fixture)).toBe(2);
+      expect(existsSync(path.join(fixture, 'out', 'result.txt'))).toBe(true);
+    },
+    FIXTURE_CASE_BOUND_MS,
+  );
 
-  it('reports what it reused, and what it executed, for one whole run', async () => {
-    const fixture = await createCacheFixture();
-    await turboTask(fixture, 'work');
-    await appendFile(path.join(fixture, 'src', 'input.txt'), 'more\n', 'utf8');
+  it(
+    'reports what it reused, and what it executed, for one whole run',
+    async () => {
+      const fixture = await createCacheFixture();
+      await turboTask(fixture, 'work');
+      await appendFile(path.join(fixture, 'src', 'input.txt'), 'more\n', 'utf8');
 
-    const mixed = await turboTask(fixture, 'work');
-    expect(mixed.code).toBe(0);
-    // The summary distinguishes the two outcomes: an operator reading a gate
-    // log can see which tasks executed and which were replayed.
-    expect(mixed.stdout).toMatch(/Tasks:\s+1 successful, 1 total/u);
-    expect(mixed.stdout).toMatch(/Cached:\s+0 cached, 1 total/u);
-  });
+      const mixed = await turboTask(fixture, 'work');
+      expect(mixed.code).toBe(0);
+      // The summary distinguishes the two outcomes: an operator reading a gate
+      // log can see which tasks executed and which were replayed.
+      expect(mixed.stdout).toMatch(/Tasks:\s+1 successful, 1 total/u);
+      expect(mixed.stdout).toMatch(/Cached:\s+0 cached, 1 total/u);
+    },
+    FIXTURE_CASE_BOUND_MS,
+  );
+
+  it(
+    'refuses arguments that Turborepo would append to every task',
+    async () => {
+      const fixture = await createCacheFixture();
+
+      // `turbo run <tasks> -- <args>` hands the arguments to *every* task, so
+      // reporter flags meant for Vitest would reach Prettier and ESLint. The
+      // refusal names what to run instead.
+      const refused = await runProcess(
+        process.execPath,
+        [WRAPPER, 'run', 'work', '--', '--reporter=verbose'],
+        {
+          cwd: fixture,
+          env: { ...process.env, TURBO_TELEMETRY_DISABLED: '1' },
+          timeoutMs: FIXTURE_BOUND_MS,
+        },
+      );
+      expect(refused.code).not.toBe(0);
+      expect(refused.stderr).toContain('does not pass arguments through');
+      expect(await executions(fixture)).toBe(0);
+    },
+    FIXTURE_CASE_BOUND_MS,
+  );
 });

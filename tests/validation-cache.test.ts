@@ -12,7 +12,7 @@
  * commands are in docs/validation-caching.md.
  */
 
-import { existsSync, readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
@@ -49,7 +49,6 @@ const TEST_ENV_INPUTS = [
   'TEMP',
   'TMP',
   'VITEST_*',
-  'NEXUS_VALIDATE_TIMINGS',
 ] as const;
 
 /** What one `turbo.json` task declares about itself. */
@@ -68,12 +67,18 @@ interface TurboConfig {
   readonly tasks: Record<string, TurboTask>;
 }
 
-function readJson<T>(file: string): T {
-  return JSON.parse(readFileSync(path.join(repoRoot, file), 'utf8')) as T;
-}
+const textCache = new Map<string, string>();
 
 function readText(file: string): string {
-  return readFileSync(path.join(repoRoot, file), 'utf8');
+  const cached = textCache.get(file);
+  if (cached !== undefined) return cached;
+  const text = readFileSync(path.join(repoRoot, file), 'utf8');
+  textCache.set(file, text);
+  return text;
+}
+
+function readJson<T>(file: string): T {
+  return JSON.parse(readText(file)) as T;
 }
 
 function turboConfig(): TurboConfig {
@@ -125,6 +130,73 @@ function matchesInput(file: string, pattern: string): boolean {
   return file === pattern;
 }
 
+/** Every module this check may resolve, indexed once. */
+const moduleIndex = new Set<string>();
+
+/** What one module imports, and what one test file reaches, each read once. */
+const importCache = new Map<string, readonly string[]>();
+const walkCache = new Map<string, readonly string[]>();
+
+/**
+ * Every file an import could resolve to, listed once. The candidate list below
+ * would otherwise be a stat per extension per import, which is slow enough to
+ * matter on a mounted drive — and this check runs beside the tests it describes.
+ */
+function indexModules(): void {
+  if (moduleIndex.size > 0) return;
+  for (const root of ['src', 'tests']) {
+    for (const found of readdirSync(path.join(repoRoot, root), {
+      recursive: true,
+      withFileTypes: true,
+    })) {
+      if (!found.isFile()) continue;
+      const relative = path
+        .relative(repoRoot, path.join(found.parentPath, found.name))
+        .split(path.sep)
+        .join('/');
+      moduleIndex.add(relative);
+    }
+  }
+  for (const found of readdirSync(repoRoot, { withFileTypes: true })) {
+    if (found.isFile()) moduleIndex.add(found.name);
+  }
+}
+
+/**
+ * The relative specifiers one module imports, read with the compiler's own
+ * pre-processor so that an `import` line inside a fixture's generated source
+ * text is not mistaken for a module this repository reads.
+ */
+function relativeImports(file: string): readonly string[] {
+  const cached = importCache.get(file);
+  if (cached !== undefined) return cached;
+  const specifiers = ts
+    .preProcessFile(readText(file), true, true)
+    .importedFiles.map((imported) => imported.fileName)
+    .filter((specifier) => specifier.startsWith('.'));
+  importCache.set(file, specifiers);
+  return specifiers;
+}
+
+function resolveLocalModule(fromFile: string, specifier: string): string {
+  indexModules();
+  const base = path.posix.join(path.posix.dirname(fromFile), specifier);
+  const withoutExtension = base.endsWith('.js') ? base.slice(0, -3) : base;
+  for (const candidate of [
+    `${withoutExtension}.ts`,
+    `${withoutExtension}.tsx`,
+    `${withoutExtension}.mjs`,
+    `${withoutExtension}.js`,
+    `${base}.ts`,
+    `${base}.mjs`,
+    `${base}/index.ts`,
+    base,
+  ]) {
+    if (moduleIndex.has(candidate)) return candidate;
+  }
+  throw new Error(`${fromFile} imports "${specifier}", which this check cannot resolve`);
+}
+
 /**
  * Every repository file one test file reaches through relative imports.
  *
@@ -134,6 +206,8 @@ function matchesInput(file: string, pattern: string): boolean {
  * declared input.
  */
 function localDependencies(entry: string): readonly string[] {
+  const cached = walkCache.get(entry);
+  if (cached !== undefined) return cached;
   const reached = new Set<string>();
   const pending = [entry];
   while (pending.length > 0) {
@@ -141,42 +215,12 @@ function localDependencies(entry: string): readonly string[] {
     if (file === '' || reached.has(file)) continue;
     reached.add(file);
     for (const specifier of relativeImports(file)) {
-      const target = resolveLocalModule(file, specifier);
-      if (target !== null) pending.push(target);
+      pending.push(resolveLocalModule(file, specifier));
     }
   }
-  return [...reached].sort();
-}
-
-/**
- * The relative specifiers one module imports, read with the compiler's own
- * pre-processor so that an `import` line inside a fixture's generated source
- * text is not mistaken for a module this repository reads.
- */
-function relativeImports(file: string): readonly string[] {
-  const scanned = ts.preProcessFile(readText(file), true, true);
-  return scanned.importedFiles
-    .map((imported) => imported.fileName)
-    .filter((specifier) => specifier.startsWith('.'));
-}
-
-function resolveLocalModule(fromFile: string, specifier: string): string | null {
-  const base = path.posix.join(path.posix.dirname(fromFile), specifier);
-  const withoutExtension = base.endsWith('.js') ? base.slice(0, -3) : base;
-  const candidates = [
-    `${withoutExtension}.ts`,
-    `${withoutExtension}.tsx`,
-    `${withoutExtension}.mjs`,
-    `${withoutExtension}.js`,
-    `${base}.ts`,
-    `${base}.mjs`,
-    `${base}/index.ts`,
-    base,
-  ];
-  for (const candidate of candidates) {
-    if (existsSync(path.join(repoRoot, candidate))) return candidate;
-  }
-  throw new Error(`${fromFile} imports "${specifier}", which this check cannot resolve`);
+  const walked = [...reached].sort();
+  walkCache.set(entry, walked);
+  return walked;
 }
 
 describe('the validation task cache contract', () => {
@@ -284,10 +328,12 @@ describe('the validation task cache contract', () => {
     // checks sources and tests without emitting, `tsconfig.build.json` emits
     // `dist/`. Sharing one file would let one program's state describe the
     // other's files.
-    const check = readJson<{ compilerOptions: Record<string, unknown> }>('tsconfig.json')
-      .compilerOptions;
-    const build = readJson<{ compilerOptions: Record<string, unknown> }>('tsconfig.build.json')
-      .compilerOptions;
+    const check = readJson<{ compilerOptions: Record<string, unknown> }>(
+      'tsconfig.json',
+    ).compilerOptions;
+    const build = readJson<{ compilerOptions: Record<string, unknown> }>(
+      'tsconfig.build.json',
+    ).compilerOptions;
     expect(check.incremental).toBe(true);
     expect(String(check.tsBuildInfoFile)).toMatch(/^\.turbo\//);
     expect(String(build.tsBuildInfoFile)).toMatch(/^\.turbo\//);
@@ -300,8 +346,9 @@ describe('the validation task cache contract', () => {
     // The guard has to know the same two paths these checks rest on: the
     // incremental state the build writes, and the artefact `npm start` runs.
     const guard = readText('scripts/build.mjs');
-    const build = readJson<{ compilerOptions: Record<string, unknown> }>('tsconfig.build.json')
-      .compilerOptions;
+    const build = readJson<{ compilerOptions: Record<string, unknown> }>(
+      'tsconfig.build.json',
+    ).compilerOptions;
     expect(guard).toContain(String(build.tsBuildInfoFile));
     expect(guard).toContain("'dist'");
     expect(guard).toContain("'cli.js'");

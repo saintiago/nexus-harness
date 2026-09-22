@@ -96,8 +96,8 @@ global inputs:
   input does. Verified with a probe task: amending a commit without changing the
   tree kept the same task hash.
 - **Environment.** Every cached test task declares `TZ`, `LANG`, `LC_ALL`,
-  `LC_CTYPE`, `TMPDIR`, `TEMP`, `TMP`, `VITEST_*` and `NEXUS_VALIDATE_TIMINGS`;
-  every task declares `CI`, `NODE_ENV` and `NODE_OPTIONS` globally. The rule for
+  `LC_CTYPE`, `TMPDIR`, `TEMP`, `TMP` and `VITEST_*`; every task declares `CI`,
+  `NODE_ENV` and `NODE_OPTIONS` globally. The rule for
   adding one is in [Troubleshooting](#troubleshooting): if a result can depend on
   a value, it is declared; if it cannot be declared, the task does not belong in
   the cache. No credential-shaped name is declared, and the contract test fails
@@ -219,19 +219,24 @@ the package graph and the lockfile hash; `.nvmrc` continues to pin Node.
 Everything below was run in this checkout on Windows 10.0.26200 (24 logical
 CPUs), Node `v24.14.1`, npm `11.11.0`, Turborepo `2.11.2`, TypeScript `6.0.3`,
 ESLint `10.10.0`, Vitest `5.0.0`, Git `2.53.0.windows.2`. Linux is a separate
-check (CI runs the same gate on `ubuntu-latest`); no timing here is compared with
-a Linux number.
+check: `bash performance/validate-linux.sh` ran the same gate with the caches
+cleared on WSL2 (Linux `6.18.33.2-microsoft-standard-WSL2`, Node `v24.14.1`, npm
+`11.11.0`, Git `2.43.0`, this checkout read through `/mnt/e`) and passed — 10
+tasks, 34 boundary files, 1,363 passed and 10 platform skips in 157.65 s, with no
+new fixture directory and no remaining Node or Git process. Its log is
+[performance/harn-49-linux-validation.txt](../performance/harn-49-linux-validation.txt). No timing
+here is compared with a Linux number, and hosted `ubuntu-latest` CI remains the merge gate.
 
 | What                                                       | How                                                                     | Result                                                                 |
 | ---------------------------------------------------------- | ----------------------------------------------------------------------- | ---------------------------------------------------------------------- |
-| An unchanged rerun hits every eligible task                 | `npm run validate` twice, same revision                                  | Second run: `Cached: 9 cached, 10 total`; `test:boundary` executed fresh |
+| An unchanged rerun hits every eligible task                 | `performance/measure-windows.ps1`: the gate with the cache cleared, then unchanged | Second run: `Cached: 9 cached, 10 total`, every eligible task replayed; `test:boundary` executed fresh |
 | A task really is not executed on a hit                      | `tests/validation-cache-turbo.test.ts` (fixture records its own execution) | Hit replays the logs; the fixture's marker file does not grow          |
 | Declared inputs invalidate, undeclared files do not         | Same fixture: edit `src/input.txt`, add `notes.md`, add a file under `src/**` | Miss after both declared changes; hit after the unrelated file      |
 | A declared output comes back when it is missing             | Remove `out/**`, rerun                                                  | Hit, output restored, task not executed                                 |
 | A failed task is never stored as a success                  | Run a failing fixture task twice                                        | Both runs exit nonzero, both execute                                    |
 | Interrupted work is never replayed                          | Stop a fixture task inside its work, rerun the same inputs               | The rerun executes and produces the output                              |
 | A damaged cache entry cannot become a success                | Overwrite the stored artefact, remove the output, rerun                  | Treated as a miss and executed; exit 0 only with the output present     |
-| A relevant source edit invalidates the work it affects      | Edit a source file, run the gate, revert it                             | `format:check`, `lint`, `typecheck`, `build` and all five groups missed and re-ran |
+| A relevant source edit invalidates the work it affects      | Edit `src/cli.ts`, run the gate, revert it                              | After the edit: **0 cached**, all ten tasks executed. After the revert: the earlier results came back (8 cached — the formatting task had no stored success for that exact content and ran again) and the boundary layer ran, as always |
 | A test-file edit invalidates one group, not all             | `npm run validate -- --dry` with one test file edited                   | That group's hash changed; the other four kept theirs                   |
 | A declared environment value invalidates the test tasks     | `npm run validate -- --dry` with `TZ` set                               | The five test tasks changed their hash; the other tasks did not         |
 | The native lint cache is invalidated by a configuration change | Add a rule to `eslint.config.js`, run `npm run lint`                 | Every file re-linted (159 problems reported); a comment in the same file did not invalidate anything |
@@ -242,15 +247,29 @@ a Linux number.
 | A commit of unchanged content does not invalidate            | Compare `--dry` hashes before and after committing the same tree         | Identical hashes and hit predictions                                     |
 | The repository's declarations stay complete                  | `tests/validation-cache.test.ts`                                         | Fails if a group stops declaring a file it reads, if the boundary layer becomes cacheable, or if the caches stop being ignored |
 
-The one changed measurement is the gate itself: on this host the first full run
-after the change took **177.1 s** wall (Turborepo: 10 tasks, 2 m 56.8 s) and the
-unchanged rerun **154.7 s** wall (9 replayed, `test:boundary` fresh). The
-comparable pre-change numbers are HARN-48's: 207–210 s test phase and 219–222 s
+The recorded measurement is in [performance/measure-windows.ps1](../performance/measure-windows.ps1)
+and its raw output:
+
+| Run (same revision, same host) | Turborepo summary             | Command wall | Layer detail                                                    |
+| ------------------------------ | ----------------------------- | ------------ | --------------------------------------------------------------- |
+| `npm run validate:fresh`       | 10 successful, 0 cached, 3 m 18.9 s | 199.77 s | policy 8.9 s over five groups; boundary 176.05 s over 34 files   |
+| `npm run validate`             | 10 successful, **9 cached**, 2 m 51.8 s | 172.13 s | the five groups, lint, type check, build and formatting replayed; the boundary layer executed (171.28 s) |
+
+Files: [fresh metadata](../performance/harn-49-validation-fresh.txt) and
+[transcript](../performance/harn-49-validation-fresh-detail.txt),
+[cached metadata](../performance/harn-49-validation-cached.txt) and
+[transcript](../performance/harn-49-validation-cached-detail.txt), and the
+[cleanup inventory](../performance/harn-49-validation-cached-cleanup.txt) — both runs started and
+ended with no new fixture directory and no new Node/Git/cmd/taskkill process identity. The repair
+cycle above is recorded the same way in
+[performance/harn-49-repair-cycle.txt](../performance/harn-49-repair-cycle.txt).
+
+The comparable pre-change numbers are HARN-48's: 207–210 s test phase, 219–222 s
 wall. Those samples were taken at different times on a busy desktop host and are
 not a controlled comparison; the honest reading is that the boundary layer still
-dominates and that the reusable part — policy, lint, type check and build — now
-costs a cache lookup when nothing changed. `notes/test-layers.md` records the
-run and the count change.
+dominates — it is what is left in the cached run — and that the reusable part
+(policy, lint, type check and build) costs a cache lookup when nothing changed.
+`notes/test-layers.md` records the runs and the count change.
 
 ## Missing build output
 

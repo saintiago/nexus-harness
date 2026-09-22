@@ -25,8 +25,9 @@
  * Arguments are handed to `turbo` unchanged, so `npm run validate -- --dry`
  * still asks what would run. A `--` passthrough is refused instead: Turborepo
  * appends everything after it to *every* task, which would hand command-line
- * flags meant for Vitest to `prettier` and `eslint`. Measured runs set
- * `NEXUS_VALIDATE_TIMINGS` instead (performance/measure-windows.ps1).
+ * flags meant for Vitest to `prettier` and `eslint`. Reporter flags for one
+ * layer belong on that layer's own command (`npm run test:four-workers -- ` and
+ * `npx vitest run --project boundary --reporter=verbose`).
  */
 
 import { spawn } from 'node:child_process';
@@ -47,8 +48,8 @@ function turboArguments(argv) {
   if (argv.includes('--')) {
     throw new Error(
       'this command does not pass arguments through to the tasks: Turborepo would append them to ' +
-        'every task, including `prettier` and `eslint`. For a measured run set ' +
-        'NEXUS_VALIDATE_TIMINGS to the report path (see docs/validation-caching.md).',
+        'every task, including `prettier` and `eslint`. Run the layer itself for its own flags ' +
+        '(for example `npx vitest run --project boundary --reporter=verbose`).',
     );
   }
   const given = argv.some((arg) => arg === '--cache-dir' || arg.startsWith('--cache-dir='));

@@ -631,6 +631,86 @@ Raw evidence: [validation and wall time](../performance/harn-48-linux-validation
 directory files are actual zero-row inventories. Hosted `ubuntu-latest` CI has
 not been observed from this coding turn and remains an independent merge gate.
 
+## HARN-49: the gate as cached tasks
+
+HARN-49 kept this map's behaviour and changed how the gate runs it. `npm run validate` is now one
+Turborepo task per check: `format:check`, `lint`, `typecheck`, `build`, the **policy** layer split
+into five cache-eligible groups, and `test:boundary` — uncached, so the process-heavy layer still
+executes on every validation, after the fast layer. `npm run test:policy`, `npm run test:boundary`,
+`npm test` and `npm run test:four-workers` are unchanged and execute directly. The task boundaries,
+the declared inputs, the tooling decision and the operating commands are in
+[validation-caching.md](../docs/validation-caching.md).
+
+The five groups partition this map's policy list exactly once — `display` (activity, report),
+`config` (configuration, completion configuration and gate, dependency boundaries, connect guide),
+`loop` (run-loop policy, stop, support, completion policy and CLI), `intake` (queue, queue
+recovery, Jira, baseline findings) and `history` (history, history runner/source, reviews). No case
+moved between files, no case was deleted, no deadline changed, and the boundary layer's concurrency
+policy is what it was: the cap and the group order still describe this suite. What is new is that a
+change to one group's files no longer invalidates the other four.
+
+### Counts
+
+| Revision                                   | Files | Tests | Passed | Skipped |
+| ------------------------------------------ | ----- | ----- | ------ | ------- |
+| HARN-48 final (53 files)                   | 53    | 1,358 | 1,356  | 2       |
+| HARN-49 (55 files): policy 21, boundary 34 | 55    | 1,373 | 1,371  | 2       |
+
+The 15 added cases are the cache contract and nothing else:
+
+- `tests/validation-cache.test.ts` (policy, 7 cases) reads back the declarations this map now
+  depends on: the gate's task list, that exactly one of those tasks is ineligible and it is the
+  boundary layer, that every cache-eligible group declares the files its tests reach through
+  relative imports, that the groups cover the policy list exactly once, that the caches live in an
+  ignored directory the checks themselves ignore, that the build is guarded against a missing
+  `dist/`, and that no credential-shaped name is a cache input.
+- `tests/validation-cache-turbo.test.ts` (boundary, 8 cases) runs the installed Turborepo through
+  `scripts/turbo.mjs` against a throwaway single-package fixture: a hit replays without executing
+  the task, a declared input invalidates while an undeclared file does not, a removed output is
+  restored, a failed or interrupted task is never replayed as a success, a damaged cache artefact
+  cannot become one, the summary distinguishes reuse from execution, and a `--` passthrough that
+  Turborepo would append to every task is refused.
+
+The two pre-existing skips are unchanged; they are not hidden regressions.
+
+### Measurements
+
+Recorded on the same Windows host as this map's earlier numbers (24 logical CPUs, Node `v24.14.1`,
+npm `11.11.0`, Vitest `5.0.0`, Turborepo `2.11.2`), with
+`powershell -NoProfile -File performance/measure-windows.ps1`, which runs the gate once with the
+cache cleared and once unchanged, and copies its transcripts into `performance/` only after both
+runs (a file added part-way through would change the formatting task's default file set).
+
+| Run    | Command                  | Turbo summary                           | Command wall | Layer detail                                                            |
+| ------ | ------------------------ | --------------------------------------- | ------------ | ----------------------------------------------------------------------- |
+| Fresh  | `npm run validate:fresh` | 10 successful, 0 cached, 3 m 18.9 s     | 199.77 s     | policy 8.9 s over five groups; boundary 176.05 s over 34 files          |
+| Cached | `npm run validate`       | 10 successful, **9 cached**, 2 m 51.8 s | 172.13 s     | every eligible task replayed; `test:boundary` executed fresh (171.28 s) |
+
+Raw evidence: [fresh metadata](../performance/harn-49-validation-fresh.txt),
+[fresh transcript](../performance/harn-49-validation-fresh-detail.txt),
+[cached metadata](../performance/harn-49-validation-cached.txt),
+[cached transcript](../performance/harn-49-validation-cached-detail.txt),
+[cleanup inventories](../performance/harn-49-validation-cached-cleanup.txt): both runs started and
+ended with no new fixture directory and no new Node/Git/cmd/taskkill process identity.
+
+The budget in this map is unchanged and still unmet by nothing: the policy phase is 8.9 s over its
+five processes (below 15 s; HARN-48 recorded 3.7 s for one process, so splitting the layer costs
+startup), the slowest suite remains under 110 s, and the fresh test phase — 8.9 s + 176.1 s — is
+below 212 s. The cached run is faster only by what it replays, and the boundary layer, which is the
+majority of it, is not eligible. These two samples are not a controlled comparison with HARN-48's
+207–210 s test phase: they were taken at different times on a busy desktop host, and no claim is
+made that the gate got faster beyond the reuse itself.
+
+The single-pool `test:four-workers` comparison was not re-measured for HARN-49: it is a measurement
+command, not part of the gate, and this ticket's claims rest on the two runs above.
+
+Linux is a separate check, not a comparison: `bash performance/validate-linux.sh` ran
+`npm run validate:fresh` on WSL2 (this checkout read through `/mnt/e`) and passed — 10 tasks, 34
+boundary files, 1,363 passed, 10 platform skips, 157 s, no new fixture directory and no remaining
+Node or Git process. Its log is [harn-49-linux-validation.txt](../performance/harn-49-linux-validation.txt);
+hosted `ubuntu-latest` CI remains the merge gate. No Linux number here is compared with a Windows
+one.
+
 ## Remaining limits
 
 GitHub-hosted Linux CI remains a delivery gate; local WSL validation cannot

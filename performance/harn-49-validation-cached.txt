@@ -1,0 +1,23 @@
+﻿Started UTC: 2026-09-22T18:30:11.8961914Z
+Commit: 8790f0690c91dd32109716e8a79f7f0214f82ca4
+Node: v24.14.1; npm: 11.11.0
+Vitest: 5.0.0
+Turborepo: 2.11.2
+OS: Microsoft Windows NT 10.0.26200.0; logical CPUs: 24
+Workers: policy 8, then boundary 4
+Cache: the normal gate: unchanged eligible tasks are replayed
+Working changes:  AGENTS.md                            |  2 ++
+ README.md                            | 69 ++++++++++++++++++++++++++----------
+ docs/validation-caching.md           |  4 +--
+ performance/measure-windows.ps1      | 50 +++++++++++++++++++-------
+ performance/validate-linux.sh        | 13 ++++---
+ scripts/turbo.mjs                    |  9 ++---
+ tests/validation-cache-turbo.test.ts | 20 +++++++++++
+ tests/validation-cache.test.ts       | 16 +++++----
+ turbo.json                           | 60 +++----------------------------
+ vitest.config.ts                     | 13 -------
+ 10 files changed, 140 insertions(+), 116 deletions(-)
+
+Ended UTC: 2026-09-22T18:33:04.7423781Z
+Exit code: 0
+Total command wall seconds: 172.132

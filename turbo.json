@@ -32,17 +32,7 @@
       "outputLogs": "new-only"
     },
     "test:policy:display": {
-      "env": [
-        "TZ",
-        "LANG",
-        "LC_ALL",
-        "LC_CTYPE",
-        "TMPDIR",
-        "TEMP",
-        "TMP",
-        "VITEST_*",
-        "NEXUS_VALIDATE_TIMINGS"
-      ],
+      "env": ["TZ", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "TEMP", "TMP", "VITEST_*"],
       "inputs": [
         "src/**",
         "tests/activity.test.ts",
@@ -56,17 +46,7 @@
       "dependsOn": ["build"]
     },
     "test:policy:config": {
-      "env": [
-        "TZ",
-        "LANG",
-        "LC_ALL",
-        "LC_CTYPE",
-        "TMPDIR",
-        "TEMP",
-        "TMP",
-        "VITEST_*",
-        "NEXUS_VALIDATE_TIMINGS"
-      ],
+      "env": ["TZ", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "TEMP", "TMP", "VITEST_*"],
       "inputs": [
         "eslint.config.js",
         "src/**",
@@ -85,17 +65,7 @@
       "dependsOn": ["build"]
     },
     "test:policy:loop": {
-      "env": [
-        "TZ",
-        "LANG",
-        "LC_ALL",
-        "LC_CTYPE",
-        "TMPDIR",
-        "TEMP",
-        "TMP",
-        "VITEST_*",
-        "NEXUS_VALIDATE_TIMINGS"
-      ],
+      "env": ["TZ", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "TEMP", "TMP", "VITEST_*"],
       "inputs": [
         "src/**",
         "tests/completion-cli.test.ts",
@@ -112,17 +82,7 @@
       "dependsOn": ["build"]
     },
     "test:policy:intake": {
-      "env": [
-        "TZ",
-        "LANG",
-        "LC_ALL",
-        "LC_CTYPE",
-        "TMPDIR",
-        "TEMP",
-        "TMP",
-        "VITEST_*",
-        "NEXUS_VALIDATE_TIMINGS"
-      ],
+      "env": ["TZ", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "TEMP", "TMP", "VITEST_*"],
       "inputs": [
         "src/**",
         "tests/baseline-findings.test.ts",
@@ -138,17 +98,7 @@
       "dependsOn": ["build"]
     },
     "test:policy:history": {
-      "env": [
-        "TZ",
-        "LANG",
-        "LC_ALL",
-        "LC_CTYPE",
-        "TMPDIR",
-        "TEMP",
-        "TMP",
-        "VITEST_*",
-        "NEXUS_VALIDATE_TIMINGS"
-      ],
+      "env": ["TZ", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "TEMP", "TMP", "VITEST_*"],
       "inputs": [
         "src/**",
         "tests/history-runner.test.ts",

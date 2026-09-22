@@ -58,21 +58,23 @@ CLI from TypeScript sources through `tsx` if you would rather not build.
 
 ## Commands
 
-| Script                      | What it does                                                      |
-| --------------------------- | ----------------------------------------------------------------- |
-| `npm start`                 | Run the built CLI (`dist/cli.js`).                                |
-| `npm run dev`               | Run the CLI from TypeScript sources via `tsx`.                    |
-| `npm run build`             | Compile `src/` to `dist/`.                                        |
-| `npm run typecheck`         | Type-check sources and tests without emitting.                    |
-| `npm run lint`              | ESLint, including the dependency boundaries below.                |
-| `npm test`                  | Run the offline suite once. Needs no credentials.                 |
-| `npm run test:policy`       | Run the fast policy layer alone.                                  |
-| `npm run test:boundary`     | Run the process-heavy boundary layer alone.                       |
-| `npm run test:four-workers` | The comparable measurement: every file in one pool, four workers. |
-| `npm run test:watch`        | Run the offline suite in watch mode.                              |
-| `npm run format:check`      | Check formatting without writing.                                 |
-| `npm run validate`          | Format, lint, typecheck, build, test — the gate CI runs.          |
-| `npm run test:live`         | The opt-in **live** check: builds, then drives a real Codex CLI.  |
+| Script                      | What it does                                                                                                                        |
+| --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `npm start`                 | Run the built CLI (`dist/cli.js`).                                                                                                  |
+| `npm run dev`               | Run the CLI from TypeScript sources via `tsx`.                                                                                      |
+| `npm run build`             | Compile `src/` to `dist/`.                                                                                                          |
+| `npm run typecheck`         | Type-check sources and tests without emitting.                                                                                      |
+| `npm run lint`              | ESLint, including the dependency boundaries below.                                                                                  |
+| `npm test`                  | Run the offline suite once. Needs no credentials.                                                                                   |
+| `npm run test:policy`       | Run the fast policy layer alone.                                                                                                    |
+| `npm run test:boundary`     | Run the process-heavy boundary layer alone.                                                                                         |
+| `npm run test:four-workers` | The comparable measurement: every file in one pool, four workers.                                                                   |
+| `npm run test:watch`        | Run the offline suite in watch mode.                                                                                                |
+| `npm run format:check`      | Check formatting without writing.                                                                                                   |
+| `npm run validate`          | The gate CI runs: format, lint, typecheck, build and both test layers, reusing the local task cache where the inputs are unchanged. |
+| `npm run validate:fresh`    | The same gate with the local caches cleared first: every task executes.                                                             |
+| `npm run cache:clear`       | Remove this checkout's local validation caches (`.turbo/`).                                                                         |
+| `npm run test:live`         | The opt-in **live** check: builds, then drives a real Codex CLI.                                                                    |
 
 The suite is two layers with their own concurrency policy (`vitest.config.ts`): a fast **policy**
 layer of configuration, parsing, terminal, reporting, queue and history tests with no child
@@ -91,10 +93,23 @@ one pool with four workers; it runs the same cases as `npm test` and is never pa
 CI. A slower result is reported in the map rather than hidden by skipping cases or widening a
 deadline.
 
+`npm run validate` runs those layers as Turborepo tasks (`turbo.json`). Formatting, lint, type
+checking, the build and the five fast policy groups are cache-eligible: each names the files it
+reads, so an unchanged rerun replays them and an edited test file invalidates the group that reads
+it rather than all of them. The process-heavy boundary layer is **never** cached — real Git, real
+command trees, the fixture-lifecycle proof and the built CLI run on every validation, after the
+fast layer — and neither is anything outside this repository's own checks (the live provider
+exercise, agent turns, Jira or GitHub writes, approvals, completion evidence). The caches are local
+and disposable, in the git-ignored `.turbo/`; `npm run validate:fresh` clears them and executes
+every task, `npm run cache:clear` only clears, and `npm run validate -- --dry` shows what would run.
+The task boundaries, the declared inputs, the tooling decision and the measurements are in
+[docs/validation-caching.md](docs/validation-caching.md).
+
 For repeatable Windows timing and cleanup evidence, run
 `powershell -NoProfile -File performance/measure-windows.ps1` from this repository.
-It runs two complete validations sequentially with detailed reporters;
-`-Mode four-workers` measures the separate single-pool comparison. Run it without
+It runs the gate twice: `npm run validate:fresh` with the detailed per-case reporters, then the
+normal `npm run validate`, whose own output shows which tasks an unchanged rerun replayed and which
+it executed; `-Mode four-workers` measures the separate single-pool comparison. Run it without
 another test workload or Nexus queue. It inventories processes without killing
 them. Fixture teardown cancels and awaits owned work before removing directories;
 an unconfirmed owner keeps its directory for inspection. In-process CLI fixtures
@@ -1360,6 +1375,15 @@ Read this before pointing a run at anything you care about.
   stand-in exists, and no flag reaches it.
 - real OS interrupt delivery to a running `run` (Ctrl+Break via a console control event on Windows,
   `SIGINT` elsewhere), with the run's own records read back afterwards.
+- the validation gate's own task cache: which check may be replayed and which always executes, the
+  files each cache-eligible group declares as input (checked against the imports its tests really
+  make), that a changed input misses while an undeclared file does not, that a damaged, failed or
+  interrupted result is never replayed as a success, and that a missing `dist/` is rebuilt rather
+  than reported as built (`tests/validation-cache.test.ts`,
+  `tests/validation-cache-turbo.test.ts`). The same gate also passed on Linux from this checkout —
+  a WSL2 run of `npm run validate:fresh` (10 tasks, 1,363 passed, 10 platform skips, 157.65 s) with
+  its processes and fixture directories inventoried before and after. Hosted CI on `ubuntu-latest`
+  is still the merge gate and was not observed from here.
 - the input contract, the module boundaries, the check rounds, the process-tree stop, the reporting,
   and the runtime adapter's own contract — including that a repair turn is handed the failures the
   harness observed.
@@ -1858,11 +1882,18 @@ byte-for-byte as written.
 
 ## Toolchain
 
-Node 24.14.1, TypeScript 6.0.3, ESLint 10, Prettier 3, Vitest 5, Zod 4, and tsx.
+Node 24.14.1, TypeScript 6.0.3, ESLint 10, Prettier 3, Vitest 5, Zod 4, tsx, and Turborepo 2.11.2
+for the validation task cache.
 
 TypeScript is pinned to the 6.0 line on purpose: TypeScript 7 is newer, but `typescript-eslint`
 8.70 still declares `typescript >=4.8.4 <6.1.0`, so 6.0.3 is the newest release the whole
 toolchain supports. Dependencies are pinned by `package-lock.json`; use `npm ci`.
+
+`npm run validate` reuses the result of a cache-eligible task only when the inputs that task
+declares are unchanged; see [docs/validation-caching.md](docs/validation-caching.md) for what that
+covers, where the cache lives, and why the process-heavy layer is never cached. `npm ci` leaves the
+cache alone because it lives outside `node_modules/`, and a fresh checkout simply starts without
+one.
 
 CI (`.github/workflows/ci.yml`) runs on every pull request and on every push to `main`, on
 `ubuntu-latest`, with the Node version `.nvmrc` records: it installs with `npm ci` and runs
@@ -1913,6 +1944,10 @@ operator's own `gh` credentials, once the check is green —
   path — never a coding turn — pushes the passed branch, opens or updates its pull request, arms
   native auto-merge, verifies the configured post-merge workflows, and transitions Jira, as
   [docs/spec.md](docs/spec.md) §7 and §10 define.
+- [docs/validation-caching.md](docs/validation-caching.md) — the validation gate's task cache:
+  which task may be replayed, what each one declares as its inputs, that the process-heavy boundary
+  layer and everything outside this repository always executes, where the caches live, how to clear
+  them, and what was measured.
 
 ## Next task
 

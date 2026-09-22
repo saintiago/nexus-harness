@@ -48,21 +48,8 @@ export const policyFiles = [
   'tests/validation-cache.test.ts',
 ];
 
-/**
- * `performance/measure-windows.ps1` and `performance/validate-linux.sh` record
- * per-case timings without giving the gate a second command: when
- * `NEXUS_VALIDATE_TIMINGS` names a file, the same run also writes Vitest's
- * verbose output and its JSON report there. Every test task declares the
- * variable in `turbo.json`, so a measured run cannot reuse a cached result that
- * carries no report, and no test's own result depends on it.
- */
-const timingsFile = process.env.NEXUS_VALIDATE_TIMINGS ?? '';
-
 export default defineConfig({
   test: {
-    ...(timingsFile === ''
-      ? {}
-      : { outputFile: { json: timingsFile }, reporters: ['default', 'verbose', 'json'] }),
     projects: [
       {
         test: {
