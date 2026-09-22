@@ -488,7 +488,11 @@ export function passFor(
   const source = parts.source ?? SOURCE;
   const http = createHttpClient(source, JIRA_TOKEN, { fetch: fixture.jira.fetch });
   const actions = createGitHubCompletion(fixture.config, parts.reader ?? REVIEWER_TOKEN, {
-    command: fixture.gh.command,
+    // The stand-in as one process: the same executable shape a real `gh` has.
+    // Every case of this file drives the pass through a bounded command runner,
+    // and a shell launched in front of each of those commands is host overhead
+    // the case is not about (notes/windows-fixture-flakes.md, HARN-49).
+    command: fixture.gh.launch,
     env,
     ...(parts.commandTimeoutMs === undefined ? {} : { commandTimeoutMs: parts.commandTimeoutMs }),
   });

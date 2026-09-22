@@ -18,19 +18,10 @@ import path from 'node:path';
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 import { repoRoot } from './support.js';
-import config, { BOUNDARY_DEFAULT_TIMEOUT_MS, policyFiles } from '../vitest.config.js';
+import config, { policyFiles } from '../vitest.config.js';
 
 /** One project entry of this repository's Vitest configuration. */
 type VitestProject = { test: { name?: string; testTimeout?: number } };
-
-/**
- * Vitest's own default deadline for a case that states none — the five seconds
- * HARN-48's map calls "the default", and the bound the boundary layer's cases
- * carried before the HARN-49 repair. Vitest 5 does not export it through
- * `configDefaults`; it is the documented default and is restated here so the
- * comparison below says what it means.
- */
-const VITEST_DEFAULT_TEST_TIMEOUT_MS = 5_000;
 
 /** The named project of `vitest.config.ts`, as the configuration resolves it. */
 function vitestProject(name: string): VitestProject {
@@ -648,22 +639,67 @@ describe('the validation task cache contract', () => {
     }
   });
 
-  it('gives the process-heavy layer a bounded deadline of its own', () => {
-    // Vitest's five-second default is sized for in-process unit cases. Every
-    // case in the boundary layer starts real Git, command shells or Node
-    // children, and its wall time is the host's as much as the checkout's: the
-    // runs recorded in notes/windows-fixture-flakes.md show three-to-four
-    // second cases crossing five seconds under the contention this layer is
-    // meant to tolerate, and HARN-49's gate stopped on two of them. The layer
-    // therefore states its own bounded default; a case may still state a bound
-    // of its own, which overrides it.
-    const boundary = vitestProject('boundary');
-    expect(boundary.test.testTimeout).toBe(BOUNDARY_DEFAULT_TIMEOUT_MS);
-    expect(BOUNDARY_DEFAULT_TIMEOUT_MS).toBeGreaterThan(VITEST_DEFAULT_TEST_TIMEOUT_MS);
+  it("keeps every layer on Vitest's own deadline", () => {
+    // Neither layer states a deadline: a layer-wide `testTimeout` would relax
+    // every case in it at once — the cases the last HARN-49 repair was
+    // responding to, and every case that states nothing of its own beside them
+    // (vitest.config.ts, notes/windows-fixture-flakes.md). A case whose work is
+    // bigger than one round of its own states its own bound, in the case, where
+    // HARN-48's map names it; buying headroom for a shared host by moving the
+    // layer's bound is exactly the change that is not allowed here.
+    const configuration = config as {
+      test?: { testTimeout?: number; projects?: VitestProject[] };
+    };
+    expect(configuration.test?.testTimeout, 'the configuration states a shared deadline').toBe(
+      undefined,
+    );
+    for (const layer of ['policy', 'boundary']) {
+      expect(
+        vitestProject(layer).test.testTimeout,
+        `the ${layer} layer states a deadline of its own`,
+      ).toBeUndefined();
+    }
+  });
 
-    // The fast layer stays on Vitest's default: its cases start no process, so
-    // a case there that outlives five seconds is a finding rather than host
-    // load, and nothing may lift that bound for the layer.
-    expect(vitestProject('policy').test.testTimeout).toBeUndefined();
+  it('declares every file the contract task itself inspects', () => {
+    // This file is not only the tooling check's own group: it parses every
+    // policy group's files (their imports, the paths they read, the processes
+    // they start) and inventories the test tree. Turborepo hashes what a task
+    // declares, so the task that runs it has to declare that whole inspected
+    // set. Otherwise an edit to another group's file would execute and cache
+    // *that* group while this task replayed a contract result the edit
+    // invalidates — the check that rejects caching a process-starting case
+    // could be bypassed by the very edit that makes it fail.
+    const task = 'test:policy:config';
+    for (const file of testFilesOnDisk()) {
+      expect(
+        isDeclared(task, file),
+        `${task} declares no input matching ${file}, which this contract inventories`,
+      ).toBe(true);
+    }
+    for (const group of POLICY_GROUPS) {
+      for (const file of groupFiles(group)) {
+        for (const reached of localDependencies(file)) {
+          expect(
+            isDeclared(task, reached),
+            `${task} declares no input matching ${reached}, which this contract parses via ${file}`,
+          ).toBe(true);
+        }
+        for (const candidate of literalReads(file)) {
+          const read = existingFile(candidate);
+          if (read === undefined) continue;
+          expect(
+            isDeclared(task, read),
+            `${task} declares no input matching ${read}, which this contract parses via ${file}`,
+          ).toBe(true);
+        }
+      }
+      for (const read of READS_A_WALK_CANNOT_SEE[group] ?? []) {
+        expect(
+          isDeclared(task, read),
+          `${task} declares no input matching ${read}, which this contract parses`,
+        ).toBe(true);
+      }
+    }
   });
 });
