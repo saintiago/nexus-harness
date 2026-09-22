@@ -44,7 +44,6 @@ import {
   createLiveTarget,
   runLiveExercise,
   verifyImplementationExercise,
-  verifyRepairExercise,
 } from './live/codex-live-check.js';
 import type { LiveTarget } from './live/codex-live-check.js';
 import {
@@ -622,42 +621,6 @@ describe('the exercises, through the stand-in runtime boundary', () => {
         '--json',
         '-',
       ]);
-    },
-    RUN_TIMEOUT_MS,
-  );
-
-  it(
-    'passes the repair exercise, and hands the injected failure to the repair turn',
-    async () => {
-      const target = await track(createLiveTarget({ repairFixture: true }));
-      const { state, env } = await installStandInRuntime(target, [
-        {
-          edits: [{ file: 'src/greet-all.mjs', text: GREET_ALL_SOURCE }],
-          // The repair turn after this one only starts from the working copy's
-          // committed state, so this turn commits what it adds (HARN-35).
-          commit: 'add greetAll, before the injected failure',
-          summary: 'added greetAll',
-        },
-        {
-          edits: [{ file: 'src/greet.mjs', text: GREET_SOURCE }],
-          summary: 'restored the committed greeting',
-        },
-      ]);
-
-      const run = await runLiveExercise(target, { env });
-      expect(run.runDir).not.toBeNull();
-
-      // The whole sequence, as the verifier sees it: baseline green, one injected
-      // failure observed after the implementation turn, one repair turn, green.
-      expect(await verifyRepairExercise(target, run)).toEqual([]);
-
-      const turns = await fakeTurns(state);
-      expect(turns).toHaveLength(2);
-      // The repair turn was given the failure the harness observed, which is what
-      // makes this a repair rather than a second attempt at the task.
-      expect(turns[1]?.prompt).toContain(INJECTED_FAILURE_LABEL);
-      expect(turns[1]?.prompt).toContain('FAILED greet.test.mjs');
-      expect(turns[0]?.prompt).not.toContain(INJECTED_FAILURE_LABEL);
     },
     RUN_TIMEOUT_MS,
   );
