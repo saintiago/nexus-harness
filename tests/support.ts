@@ -8,6 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import stringWidth from 'string-width';
+import { fixtureContexts, ownWork } from './fixtures/scope.js';
 import type { CliIo } from '../src/cli/context.js';
 import { HARNESS_CONFIG_FILE_NAME, PROJECT_CONFIG_FILE_NAME } from '../src/config/paths.js';
 import { historyCurrentPath, workspaceHistoryRoot } from '../src/history/paths.js';
@@ -202,9 +203,13 @@ const temporaryDirectories: string[] = [];
  * {@link cleanupTempDirectories}.
  */
 export async function createTempDir(): Promise<string> {
-  const directory = await mkdtemp(path.join(os.tmpdir(), 'nexus-harness-'));
-  temporaryDirectories.push(directory);
-  return directory;
+  const allocate = async (): Promise<string> => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), 'nexus-harness-'));
+    temporaryDirectories.push(directory);
+    return directory;
+  };
+  const scope = fixtureContexts.getStore();
+  return await (scope === undefined ? allocate() : ownWork(scope, 'temporary directory', allocate));
 }
 
 /** Writes `value` as JSON to `directory/name` and returns the file path. */

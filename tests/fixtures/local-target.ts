@@ -34,6 +34,8 @@ import { pathToFileURL } from 'node:url';
 import { createTempDir, removeWithRetry, repoRoot, writeJsonFile } from '../support.js';
 import { HARNESS_CONFIG_FILE_NAME, PROJECT_CONFIG_FILE_NAME } from '../../src/config/paths.js';
 import { ownChildProcess, ownFixtureOperation } from './lifecycle.js';
+import { assertFixtureActive, fixtureContexts } from './scope.js';
+import { requestTreeStop, STOP_GRACE_MS, within } from '../../src/process/stop.js';
 
 /**
  * The shared fixture beacon module, as a URL a fixture program written into a
@@ -563,6 +565,13 @@ export interface LocalTargetOptions {
  * repository: the CLI's own Git code clones it and inspects the clone.
  */
 export async function createLocalTarget(options: LocalTargetOptions = {}): Promise<LocalTarget> {
+  return await ownFixtureOperation(
+    'local target setup',
+    async () => await prepareLocalTarget(options),
+  );
+}
+
+async function prepareLocalTarget(options: LocalTargetOptions): Promise<LocalTarget> {
   const parent = await createTempDir();
   const repo = path.join(parent, options.repoName ?? 'tiny-target');
   await mkdir(repo, { recursive: true });
@@ -862,6 +871,8 @@ export function startCli(invocation: CliInvocation): {
   readonly child: ChildProcess;
   readonly done: Promise<CliRunResult>;
 } {
+  const scope = fixtureContexts.getStore();
+  if (scope !== undefined) assertFixtureActive(scope, 'the built CLI');
   const child = spawn(process.execPath, [BUILT_CLI, ...invocation.argv], {
     cwd: invocation.cwd ?? invocation.target.parent,
     env: cliEnvironment(invocation),
@@ -896,7 +907,30 @@ export function startCli(invocation: CliInvocation): {
   // its tree and waits for this same promise before any directory it wrote into
   // is removed, so a test that times out, fails or is cancelled cannot leave a
   // half-run CLI holding its target.
-  void ownChildProcess('the built CLI', child, invocation.cwd ?? invocation.target.parent);
+  void ownChildProcess(
+    'the built CLI',
+    child,
+    invocation.cwd ?? invocation.target.parent,
+    async () => {
+      if (process.platform !== 'win32') {
+        // The CLI's runtime/checks lead separate process groups. Give its real
+        // interrupt handler the bounded chance to stop and await those owners
+        // before falling back to killing the CLI's own group.
+        child.kill('SIGTERM');
+        if (
+          await within(
+            done.then(
+              () => undefined,
+              () => undefined,
+            ),
+            STOP_GRACE_MS,
+          )
+        )
+          return null;
+      }
+      return child.pid === undefined ? null : await requestTreeStop(child.pid);
+    },
+  );
   return { child, done };
 }
 

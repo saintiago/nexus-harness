@@ -19,12 +19,9 @@
  *   unconfirmed owner might still hold: a stop that could not be confirmed keeps
  *   its directory and is reported as a problem, so a leaked process fails the
  *   test that leaked it instead of being quietly removed with its tree.
- * - A fixture call belongs to the *context it is first made from*: the first call
- *   from a test body binds that body's context to the test's scope, and every
- *   continuation the body creates afterwards carries the same binding. Work that
- *   outlives its test therefore resumes holding the closed scope it started in
- *   and is refused, rather than finding whatever test is running by then and
- *   registering itself as that test's.
+ * - Vitest's aroundEach binds setup, the body and teardown to one async
+ *   context before any fixture call. Even an unregistered continuation making
+ *   its first fixture call after the next test starts retains its closed scope.
  *
  * The wait is bounded and proven: a fixture process is asked through its own
  * beacon, so a PID this host has already handed to another process is never
@@ -34,10 +31,11 @@
  * because the directory could be removed.
  */
 
-import { AsyncLocalStorage } from 'node:async_hooks';
 import { spawn, type ChildProcess } from 'node:child_process';
 import path from 'node:path';
-import { afterEach } from 'vitest';
+import { aroundEach } from 'vitest';
+import { fixtureContexts as contexts, newScope, ownWork } from './scope.js';
+import type { FixtureScope, OwnedProcess, OwnedWork } from './scope.js';
 import { STOP_GRACE_MS, requestTreeStop, within } from '../../src/process/stop.js';
 import { messageOf } from '../../src/shared/errors.js';
 import { cleanupTempDirectories } from '../support.js';
@@ -66,30 +64,6 @@ export interface ProcessOptions {
 }
 
 /**
- * One process this suite started and has not seen end, with the directory it
- * runs in: the directory is what is preserved when its stop cannot be confirmed.
- */
-interface OwnedProcess {
-  /** What started it, as a failure message names it. */
-  readonly what: string;
-  readonly pid: number | undefined;
-  readonly cwd: string;
-  /** Resolves when the process is really gone, never before. */
-  readonly ended: Promise<void>;
-  /** Whether the host has already reported this process ending. */
-  hasEnded(): boolean;
-}
-
-/** One asynchronous operation a test started and the scope is waiting for. */
-interface OwnedWork {
-  readonly what: string;
-  /** Resolves when the operation settles, either way. */
-  readonly settled: Promise<void>;
-  /** Whether it has settled. A settled operation holds no directory any more. */
-  hasSettled(): boolean;
-}
-
-/**
  * One registered fixture process: the PID, the token the process itself
  * recorded, and the directory its beacon answers from. A fixture that started a
  * child of its own registers that child on the child's own token, because the
@@ -100,47 +74,8 @@ export interface OwnedFixture extends FixtureProcessRecord {
   readonly childToken?: string | null;
 }
 
-/** One test's fixture scope: its own stop, its processes and its work. */
-interface FixtureScope {
-  readonly stop: AbortController;
-  readonly processes: Set<OwnedProcess>;
-  readonly fixtures: FixtureProcessRecord[];
-  readonly work: Set<OwnedWork>;
-  disposing: boolean;
-  disposed: boolean;
-}
-
-function newScope(): FixtureScope {
-  return {
-    stop: new AbortController(),
-    processes: new Set(),
-    fixtures: [],
-    work: new Set(),
-    disposing: false,
-    disposed: false,
-  };
-}
-
-/**
- * The scope of the test that is running. It is replaced as soon as one test's
- * disposal finishes.
- */
-let scope: FixtureScope = newScope();
-
-/**
- * The scope each async context's fixture calls belong to. A context is bound the
- * first time it asks for one, and never rebound: the test body's context is
- * bound to the test's scope, and every continuation that context creates — the
- * operation a fixture registered, the command it started — carries the binding,
- * so a continuation that resumes after its test ended still sees the *closed*
- * scope it started in instead of whatever test is running by then.
- *
- * A hook cannot make that binding for the body. Its own async context is not the
- * one a test body runs in (measured on vitest 5: a store entered by a
- * `beforeEach` is not visible in the body), so binding where the first call is
- * made is the only place the body and its continuations are both reachable.
- */
-const contexts = new AsyncLocalStorage<FixtureScope>();
+/** Suite-level helpers may run before aroundEach (for example beforeAll). */
+const suiteScope = newScope();
 
 /**
  * One owner a finished test could not confirm ended, and how it is confirmed.
@@ -167,18 +102,9 @@ interface HeldDirectory extends UnconfirmedOwner {
 /** The holds earlier tests left behind, still keeping their directories. */
 const heldDirectories: HeldDirectory[] = [];
 
-/**
- * The scope a fixture call belongs to: the one its context was bound to, or —
- * for the first call a context makes — the scope of the test running now, which
- * that context is then bound to for good.
- */
+/** The original test context, including continuations resuming after teardown. */
 function currentScope(): FixtureScope {
-  const bound = contexts.getStore();
-  if (bound !== undefined) {
-    return bound;
-  }
-  contexts.enterWith(scope);
-  return scope;
+  return contexts.getStore() ?? suiteScope;
 }
 
 /** The stop of the test that is running, for a fixture that runs the thing itself. */
@@ -203,32 +129,7 @@ export function ownFixtureOperation<T>(
   run: (stop: AbortSignal) => Promise<T>,
 ): Promise<T> {
   const running = currentScope();
-  if (running.disposing) {
-    return Promise.reject(
-      new Error(`${what} was refused: the test's fixtures are already being disposed`),
-    );
-  }
-  let work: Promise<T>;
-  try {
-    work = run(running.stop.signal);
-  } catch (cause) {
-    work = Promise.reject(cause);
-  }
-  let settled = false;
-  const owned: OwnedWork = {
-    what,
-    settled: work.then(
-      () => undefined,
-      () => undefined,
-    ),
-    hasSettled: () => settled,
-  };
-  running.work.add(owned);
-  void owned.settled.then(() => {
-    settled = true;
-    running.work.delete(owned);
-  });
-  return work;
+  return ownWork(running, what, () => run(running.stop.signal));
 }
 
 /**
@@ -236,7 +137,12 @@ export function ownFixtureOperation<T>(
  * stand-in runtime — so disposal stops its tree and waits for it to end. The
  * caller keeps its own promise over the same exit.
  */
-export function ownChildProcess(what: string, child: ChildProcess, cwd: string): Promise<void> {
+export function ownChildProcess(
+  what: string,
+  child: ChildProcess,
+  cwd: string,
+  requestStop?: () => Promise<string | null>,
+): Promise<void> {
   const ended = new Promise<void>((resolve) => {
     child.on('close', () => resolve());
     child.on('error', () => resolve());
@@ -246,6 +152,7 @@ export function ownChildProcess(what: string, child: ChildProcess, cwd: string):
     pid: child.pid,
     cwd,
     ended,
+    ...(requestStop === undefined ? {} : { requestStop }),
     hasEnded: () => child.exitCode !== null || child.signalCode !== null,
   };
   const running = currentScope();
@@ -377,6 +284,9 @@ async function stopProcess(owned: OwnedProcess): Promise<string | null> {
   const { pid } = owned;
   if (pid === undefined || owned.hasEnded()) {
     return null;
+  }
+  if (owned.requestStop !== undefined) {
+    return await owned.requestStop();
   }
   return await requestTreeStop(pid);
 }
@@ -549,20 +459,24 @@ function holds(directory: string, held: string): boolean {
   return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
 }
 
-/**
- * Registers the one cleanup hook a fixture suite uses, and resets the scope for
- * the next test once the hook finishes. The hook disposes the scope it started
- * with; a continuation that outlives its test still holds the closed scope it
- * was bound to, so it cannot start anything new.
- */
+/** Wrap setup, the body and teardown in the same immutable async context. */
 export function useFixtureLifecycle(): void {
-  afterEach(async () => {
-    const running = scope;
-    try {
-      await disposeFixtures(running);
-    } finally {
-      scope = newScope();
+  aroundEach(async (runTest) => {
+    // Some suites and their imported fixture module both request the lifecycle.
+    // The outer wrapper owns disposal; nested registration must not create a
+    // second scope or shorten the first one's lifetime.
+    if (contexts.getStore() !== undefined) {
+      await runTest();
+      return;
     }
+    const running = newScope();
+    await contexts.run(running, async () => {
+      try {
+        await runTest();
+      } finally {
+        await disposeFixtures(running);
+      }
+    });
   });
 }
 

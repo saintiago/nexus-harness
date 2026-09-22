@@ -53,6 +53,7 @@ interface Started {
   readonly beaconDirectory?: string;
   /** The beacon token of the recorded child, when it recorded one. */
   readonly childToken?: string | null;
+  readonly cliPid?: number;
   /** What the case itself reported about what happened to it afterwards. */
   readonly outcome?: string;
 }
@@ -192,6 +193,7 @@ describe('the built CLI a test had to stop', () => {
     const [turn] = await fakeTurns(target.state);
     await record({
       case: 'cli-timeout',
+      cliPid: started.child.pid,
       directory: target.parent,
       beaconDirectory: target.state.dir,
       pid: turn?.pid ?? null,
@@ -220,13 +222,20 @@ describe('the built CLI a test had to stop', () => {
         plans: [{ holdMs: 60_000, summary: 'still working on the implementation' }],
       });
       void started.done.catch(() => undefined);
+      await waitFor(
+        async () => (await fakeEvents(target.state)).some((event) => event.event === 'holding'),
+        'the setup CLI to hold a real coding turn',
+      );
+      const [turn] = await fakeTurns(target.state);
       await record({
         case: 'cli-setup',
+        cliPid: started.child.pid,
         directory: target.parent,
         beaconDirectory: target.state.dir,
-        pid: started.child.pid ?? null,
-        token: null,
-        grandchild: null,
+        pid: turn?.pid ?? null,
+        token: turn?.pidToken ?? null,
+        grandchild: turn?.child ?? null,
+        childToken: turn?.childToken ?? null,
       });
       throw new Error('the setup failed while the built CLI was still running');
     });
@@ -235,6 +244,56 @@ describe('the built CLI a test had to stop', () => {
       throw new Error('the body of a test whose setup failed must not run');
     });
   });
+});
+
+// No fixture API runs before the setup fails. The continuation's *first* calls
+// arrive in the next test, and must still belong to the failed setup's scope.
+let releaseUnregistered: (() => void) | undefined;
+let unregisteredDone: Promise<void> | undefined;
+describe('an unregistered setup continuation', () => {
+  beforeEach(() => {
+    const resume = new Promise<void>((resolve) => {
+      releaseUnregistered = resolve;
+    });
+    unregisteredDone = (async () => {
+      await resume;
+      const outcomes: string[] = [];
+      for (const operation of [
+        () => createTempDir(),
+        () => ownFixtureOperation('late setup', async () => 'incorrectly started'),
+        () => runProcess(process.execPath, ['-e', 'process.exit(0)'], { cwd: PIDS }),
+        () => startCli({ target: {} as LocalTarget, argv: [] }).done,
+      ]) {
+        try {
+          await operation();
+          outcomes.push('incorrectly started');
+        } catch (cause) {
+          outcomes.push(String(cause));
+        }
+      }
+      await record({
+        case: 'unregistered',
+        directory: '',
+        pid: null,
+        token: null,
+        grandchild: null,
+        outcome: JSON.stringify(outcomes),
+      });
+    })();
+    throw new Error('setup failed before its first fixture call');
+  });
+  it('does not run the body', () => {
+    throw new Error('unexpected body');
+  });
+});
+
+it('releases the unregistered setup only after the next test begins', async () => {
+  // Prove the current test has a live, independent scope too.
+  const directory = await createTempDir();
+  const result = await runProcess(process.execPath, ['-e', 'process.exit(0)'], { cwd: directory });
+  expect(result.code).toBe(0);
+  releaseUnregistered?.();
+  await unregisteredDone;
 });
 
 describe('the failing cases the proof runs', () => {

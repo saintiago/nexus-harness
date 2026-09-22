@@ -46,6 +46,7 @@ interface Started {
   readonly beaconDirectory?: string;
   /** The beacon token of the recorded child, when it recorded one. */
   readonly childToken?: string | null;
+  readonly cliPid?: number;
   /** What the case itself reported about what happened to it afterwards. */
   readonly outcome?: string;
 }
@@ -243,6 +244,7 @@ describe('the fixture lifecycle', () => {
       'setup',
       'timeout',
       'unsettled',
+      'unregistered',
     ];
     if (process.platform === 'win32') {
       // The unconfirmed stop needs a host utility the harness stops trees with,
@@ -296,6 +298,12 @@ describe('the fixture lifecycle', () => {
       // Every process the case started is gone, including a child of a child.
       expect(await gone(entry.pid), `${entry.case}: process`).toBe(true);
       expect(await gone(entry.grandchild), `${entry.case}: grandchild`).toBe(true);
+      if (entry.cliPid !== undefined) {
+        expect(await gone(entry.cliPid), `${entry.case}: built CLI`).toBe(true);
+        expect(entry.pid, `${entry.case}: runtime was reached`).not.toBeNull();
+        expect(entry.token, `${entry.case}: runtime beacon was recorded`).not.toBeNull();
+        expect(entry.grandchild, `${entry.case}: runtime child was reached`).not.toBeNull();
+      }
       if (entry.token !== null) {
         // A fixture process is proved gone through its own beacon: a PID this
         // host may already have handed on is never signalled, and never trusted.
@@ -338,5 +346,9 @@ describe('the fixture lifecycle', () => {
     expect(late?.outcome).toContain('the command ran: false');
     expect(existsSync(late?.directory ?? ''), 'late: directory').toBe(false);
     expect(existsSync(first.get('late')?.directory ?? ''), 'late: kept directory').toBe(false);
+    const unregistered = started.find((entry) => entry.case === 'unregistered');
+    const outcomes = JSON.parse(unregistered?.outcome ?? '[]') as string[];
+    expect(outcomes).toHaveLength(4);
+    for (const outcome of outcomes) expect(outcome).toContain('refused');
   }, 180_000);
 });
