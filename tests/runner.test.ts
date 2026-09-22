@@ -203,6 +203,74 @@ describe('the repair decision', () => {
     expect(run.timeline).toContain('repair allowance exhausted: 0 of 0 repair turns used');
   });
 
+  it('spends a positive allowance exactly to its end, then reports it exhausted', async () => {
+    // A green baseline and a round that never goes green: what ends the run is
+    // the allowance, not the baseline and not an execution failure.
+    const run = await memoryRun({
+      config: { maxRepairs: 2 },
+      rounds: (asked) => (asked.name === 'baseline' ? passedRound() : redAfter(asked)),
+      turns: (asked) => ({ summary: `turn ${String(asked.turn)} is still red` }),
+    });
+
+    const result = await runMemoryTask(run);
+
+    expect(result.status).toBe('failed');
+    expect(result.repairsUsed).toBe(2);
+    expect(result.reason).toMatch(/repair allowance is exhausted \(2 of 2 repair turns used\)/);
+    // Three coding turns in total — one implementation and two repairs — and no
+    // fourth attempt once the allowance is gone.
+    expect(run.turns.requests.map((turn) => `${turn.kind} ${String(turn.turn)}`)).toEqual([
+      'implementation 1',
+      'repair 2',
+      'repair 3',
+    ]);
+    // Four rounds in all: the baseline and one after each turn, and none after
+    // the allowance ran out.
+    expect(run.rounds.requests.map((round) => round.name)).toEqual([
+      'baseline',
+      'attempt-1',
+      'attempt-2',
+      'attempt-3',
+    ]);
+    // Each repair was handed the round that failed immediately before it, whole:
+    // its invocation, its exit code, where it wrote, and what it wrote.
+    const [, firstRepair, secondRepair] = run.turns.requests;
+    expect(firstRepair?.kind).toBe('repair');
+    expect(firstRepair?.repair?.repairedTurn).toBe(1);
+    expect(firstRepair?.repair?.failures.map((failure) => failure.result.command)).toEqual([
+      ['a-stand-in-command', 'attempt-1-check-1'],
+    ]);
+    expect(firstRepair?.repair?.failures[0]?.result.exitCode).toBe(3);
+    expect(secondRepair?.repair?.repairedTurn).toBe(2);
+    expect(secondRepair?.repair?.failures.map((failure) => failure.result.command)).toEqual([
+      ['a-stand-in-command', 'attempt-2-check-1'],
+    ]);
+    expect(secondRepair?.repair?.failures[0]?.result.stdoutPath).toContain(
+      'attempt-2-check-1.stdout.log',
+    );
+    expect(secondRepair?.repair?.failures[0]?.output).toContain('attempt-2-check-1 wrote this');
+
+    // The report and the ledger keep every turn and every red round, and the
+    // timeline says which limit ended the run.
+    const report = run.reports.at(-1);
+    expect(report?.status).toBe('failed');
+    expect(report?.attempts.map((attempt) => attempt.kind)).toEqual([
+      'implementation',
+      'repair',
+      'repair',
+    ]);
+    expect(report?.attempts.map((attempt) => attempt.checks?.outcome)).toEqual([
+      'failed',
+      'failed',
+      'failed',
+    ]);
+    // The workspace's ledger records this one attempt and how it ended.
+    expect(run.ledger.map((attempt) => attempt.outcome)).toEqual(['failed']);
+    expect(run.ledger[0]?.reason).toMatch(/the repair allowance is exhausted \(2 of 2/);
+    expect(run.timeline).toContain('repair allowance exhausted: 2 of 2 repair turns used');
+    expect(run.timeline.at(-1)).toMatch(/^final status: failed, /);
+  });
+
   it('sends a completed red round to the next turn as its repair feedback', async () => {
     const run = await memoryRun({
       config: { maxRepairs: 1 },
