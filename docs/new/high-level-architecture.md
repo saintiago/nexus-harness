@@ -19,13 +19,16 @@ Nexus
 │   ├── TaskEngine process lifecycle
 │   └── Recovery coordination
 ├── TaskEngine
-│   ├── QueueCoordinator
-│   ├── TaskIntake
-│   ├── WorkspaceManager
 │   ├── ExecutionRunner
-│   ├── ReviewCoordinator
-│   ├── DeliveryAndCompletion
-│   └── ConversationHistory
+│   └── Actions
+│       ├── SelectTask
+│       ├── PrepareWorkspace
+│       ├── Develop
+│       ├── Verify
+│       ├── Review
+│       ├── SelectRepair
+│       ├── Deliver
+│       └── CompleteTask
 ├── AgentRuntime
 │   ├── DeveloperRole
 │   ├── ReviewerRole
@@ -79,10 +82,11 @@ coupled.
 | AgentRuntime | Role profiles, role-specific input/output contracts, permissions, agent invocation and cancellation | Queue selection or authority to declare delivery complete |
 | Adapters | External protocol translation, authentication and faithful operation results | Business lifecycle decisions or inferred success |
 
-QueueCoordinator composes the TaskEngine's internal components. TaskIntake discovers and claims
-work; WorkspaceManager prepares and retains working copies; ExecutionRunner coordinates developer
-turns and checks; ReviewCoordinator coordinates assessment; DeliveryAndCompletion publishes work
-and verifies integration; ConversationHistory supplies complete, attributed context.
+TaskEngine's ExecutionRunner follows an executable YAML workflow and persists the next state after
+each action completes. The workflow supplies queue, review and repair sequencing. Actions perform
+task-specific operations and exchange persistent artifacts through their own contracts. Application
+startup binds their dependencies and storage. The runner has no knowledge of artifacts or task semantics;
+after a crash it resumes at the persisted state and starts that action anew.
 
 Role permissions are distinct. RecoveryRole may investigate and repair operational state through
 its authorized tools. DeveloperRole and ReviewerRole do not acquire those permissions by sharing

@@ -4,12 +4,30 @@ Status: proposed component design.
 
 ## Responsibility
 
-Carry selected work through its normal lifecycle: intake, workspace preparation, development,
-checks, review and configured completion. Own task ordering, ordinary repairs, escalation between
-configured role profiles, task evidence and retained conversation. Process one task at a time.
+Execute a task workflow supplied as YAML. The workflow defines sequencing, ordinary functions perform
+the actions, and persistent artifacts carry data between actions. Process one action at a time.
 
-The public module is `src/task-engine/index.ts`. One instance is bound to a connected project and
-validated, immutable settings. Its internal units are ordinary modules in the same process.
+The public module is `src/task-engine/index.ts`. Application startup binds the workflow, action
+implementations, their dependencies and storage locations before execution.
+
+## Composition
+
+```text
+TaskEngine
+├── ExecutionRunner
+└── Actions
+    ├── SelectTask
+    ├── PrepareWorkspace
+    ├── Develop
+    ├── Verify
+    ├── Review
+    ├── SelectRepair
+    ├── Deliver
+    └── CompleteTask
+```
+
+ExecutionRunner is the core: a domain-independent state machine that follows the supplied workflow.
+Actions own task-specific behavior. Workflow definitions are executable input, not another coordinator.
 
 ## Interface
 
@@ -82,11 +100,15 @@ type EngineInspection = {
 };
 ```
 
+These types describe the outer TaskEngine interface. Task selection, task reports and artifact
+references do not become ExecutionRunner concepts. Construction binds the request to the configured
+workflow and actions. Task-specific events and reports come from actions and their persisted data;
+the runner supplies state transitions and its terminal result.
+
 `run` admits at most one invocation per instance and one writer per task/workspace. An invocation
-ID cannot describe different input. A completed invocation returns its recorded result without
-repeating effects. An existing active or interrupted invocation is not silently replayed; continuation
-uses a new ID and an exported continuation. Invalid input returns blocked with an input fault and
-no new task effects.
+ID cannot describe different input. Resume an interrupted workflow at its last persisted state;
+the action for that state starts anew. A persisted terminal state returns its result without running
+another action. Invalid input returns blocked with an input fault and no new task effects.
 
 `drained` is valid only for queue selection after a successful fresh empty read. Watch waits on an
 empty read and exits through cancellation or a fault. `target-completed` is valid only for the exact
@@ -107,10 +129,10 @@ Interrupted means process death was established; otherwise an unfinished record 
 Absent records return unknown with empty evidence, never invented success. Corrupt records return
 a fault. Inspection is a snapshot, not permission to write or proof that every descendant stopped.
 
-A continuation is opaque to callers. It identifies the connected project, original scope,
-interrupted task, workspace and evidence. Validate these identities before use. Resume that task
-before selecting fresh queue work. A caller temporarily running a different target supplies no
-continuation for that invocation and retains the original continuation for return.
+A continuation is an opaque reference to retained execution storage, including the workflow checkpoint
+and action artifacts. Construction reconnects these locations; the runner reads only its checkpoint.
+A caller temporarily running a different target uses separate storage and retains the original
+continuation for return. It does not rewrite the original workflow state.
 
 ### Required interfaces
 
@@ -122,109 +144,132 @@ continuation for that invocation and retains the original continuation for retur
 | Delivery | [GitHub](adapters.md#github) | Publish and observe pull requests, review, checks and integration |
 | Commands | [Processes](adapters.md#processes) | Run configured setup/check commands with owned shutdown and captured evidence |
 
-Dependencies are injected at construction. Local task files are an owned input format, not a Jira
-emulation. Source documents are normalized into the owned Task record below. Public role requests
-are built from that record and exported context; returned role outputs are recorded, then checked
-against observed repository and delivery evidence. A report claiming success cannot substitute for
-any required adapter observation. No presentation or supervisor dependency is required.
+Dependencies are supplied to actions at construction; ExecutionRunner receives none of these ports.
+Local task files are an owned input format. Actions normalize source documents, construct role inputs
+and verify role claims against observed evidence. No presentation or supervisor dependency is required.
 
-## Internal composition
+## ExecutionRunner
 
-QueueCoordinator owns sequencing. The other units each own one part of the task lifecycle and
-return facts or decisions to that coordinator; they do not call one another's private helpers.
+The runner understands state names, action names, outcomes and transitions. Its execution loop is:
 
-| Unit | Owns | Result supplied to the coordinator |
-| --- | --- | --- |
-| TaskIntake | Source interpretation, eligibility, stable identity, rank and exclusive claim | Validated Task and claim, empty selection, or intake failure |
-| WorkspaceManager | Task-to-workspace identity, base revision, writer ownership and retained changes | Prepared Workspace or preparation failure |
-| ExecutionRunner | Baseline, developer turns, configured checks and repair allowance | Verified revision and check evidence, or exhausted/blocked execution |
-| ReviewCoordinator | Review input, findings, finding dispositions and review escalation | Approval for a revision, requested repair, or inconclusive review |
-| DeliveryAndCompletion | Publication intent, receipts and exact-revision completion gates | Verified completion or unresolved delivery |
-| ConversationHistory | Attributed, ordered conversation and complete context exports | Immutable role input and retained role output |
+1. Read the persisted state, or persist the workflow's initial state for a new execution.
+2. If the state is terminal, return its declared result.
+3. Invoke the action bound to that state.
+4. Select the next state using the action's returned outcome and the YAML transition table.
+5. Atomically persist the next state, then continue.
 
-The owned Task record contains stable identity, title, description, acceptance criteria and the
-source revision used for admission. Requirements come from this record; execution policy comes
-from configuration. Workspace contains task identity, canonical directory, branch, observed base
-and writer ownership. Neither record carries credentials or executable instructions for the host.
+The checkpoint records the state to execute next. If execution crashes before the checkpoint advances,
+the same action starts again. If it crashes after the checkpoint advances, the next action starts.
+This is at-least-once action execution. There is no separate uncertain-action reconciliation phase
+inside the runner.
 
-## Lifecycle and decisions
+The runner owns only its workflow checkpoint. It does not inspect, validate, route or copy action
+artifacts; allocate their storage; decide repair policy; or discover and reconcile external effects.
+It does not provide an execution identity or storage scope to actions. Application startup configures
+the actions with their shared persistent storage and dependencies independently of the runner.
 
-```text
-select → claim → prepare → baseline → develop → check → publish → review → complete
-                                      ↑         │                 │
-                                      └─ repair ┘                 │
-                                      └──── review repair ────────┘
+Before starting, validate the YAML structure, initial state, referenced transitions and action bindings.
+An undeclared outcome, action exception or checkpoint failure stops execution with a fault. The runner
+does not invent a transition or retry policy. Cancellation is forwarded to the active action and stops
+further dispatch; completed outcomes are checkpointed before returning. An action that exits without
+a completed outcome leaves the checkpoint unchanged. Actions own stopping their work and reporting it.
+
+## Workflow definition
+
+A workflow declares named states, one action per nonterminal state, transitions selected by outcomes,
+and terminal results. Loops and branches are explicit transitions. Business decisions are typed actions;
+YAML does not contain scripts, arbitrary expressions or artifact input/output mappings.
+
+For example, a finite workflow with pull-request review can be expressed as:
+
+```yaml
+name: finite-delivery
+initial: select
+
+states:
+  select:
+    action: SelectTask
+    on: { selected: prepare, empty: finished, failed: blocked }
+  prepare:
+    action: PrepareWorkspace
+    on: { prepared: develop, failed: blocked }
+  develop:
+    action: Develop
+    on: { completed: verify, failed: blocked }
+  verify:
+    action: Verify
+    on: { passed: deliver, failed: repair }
+  deliver:
+    action: Deliver
+    on: { published: review, failed: blocked }
+  review:
+    action: Review
+    on: { approved: complete, changesRequested: repair, inconclusive: blocked }
+  repair:
+    action: SelectRepair
+    on: { selected: develop, exhausted: blocked }
+  complete:
+    action: CompleteTask
+    on: { completed: select, failed: blocked }
+  finished:
+    terminal: drained
+  blocked:
+    terminal: blocked
 ```
 
-Publication and external review/completion are conditional on configured capabilities. A local
-execution can finish after successful checks. An execution with review enabled must obtain a review
-of the exact candidate revision. When review is attached to a pull request, publication precedes
-that review. Configuration validation rejects impossible combinations before claiming work.
+After completion, the transition back to select supplies queue coordination. The repair transitions
+supply review/check coordination. There are no additional coordinators choosing the next action.
+Other workflows can reuse these actions: single-task execution ends after completion, while watch
+adds waiting and another selection when the source is empty. Waiting is an action, not runner policy.
 
-Intake reads the configured ordering without reserving the whole queue. Validate requirements and
-eligibility, acquire a local claim, then request the source transition against the observed revision.
-Re-read a conflict instead of overwriting an observed human change. The source port defines the
-strength of its concurrency guard; a local claim does not make remote writes atomic. A source error is a failure,
-not an empty selection. Local ownership cannot provide cross-machine exclusion; that deployment
-requires an external claim mechanism with the same exclusivity guarantee.
+Workflow definitions are retained with their checkpoints so a restart uses the same definition.
+Adopting a changed definition for retained state is an explicit operation, never an implicit reinterpretation
+of a checkpoint. Required task checks and completion evidence remain action contracts.
 
-Preparation verifies workspace identity and prior ownership. Preserve committed and uncommitted
-work. Dirty work alone is not grounds to refuse continuation: include its status and provenance
-in the developer's context. Do not automatically reset, stash or create a checkpoint commit.
-Uncertain ownership or an incompatible workspace is blocked before a writer starts.
+## Actions
 
-Run configured preparation and baseline checks before development. A pre-existing baseline failure
-is distinct from a candidate regression. Record it and return blocked for operational recovery;
-do not spend ordinary implementation repairs on an unrelated environment failure. Requirements
-that explicitly ask to repair that baseline can make it part of the task, with the evidence retained.
+An action is an ordinary typed function. Construction supplies its configuration, dependencies and
+artifact readers/writers. The runner calls the bound function and receives only its named outcome.
+For example, the runner-facing Verify function returns `passed` or `failed`; detailed check evidence
+is persisted by that action, not returned through the runner as a data-routing mechanism.
 
-Failed candidate checks enter the configured repair allowance. Requested review changes enter
-review repair. Both keep complete findings and prior responses in context. Explicit configuration
-sets per-profile repair allowance, review rejection allowance and the ordered escalation profiles.
-Exhaustion advances to the next configured profile; exhaustion of the last profile returns blocked.
-Counters belong to the task and survive process restarts; a new invocation does not reset them.
-Inconclusive review returns blocked with its limitation; it is neither approval nor a substantive
-rejection and cannot create an unbounded review retry loop.
+| Action | Owns |
+| --- | --- |
+| SelectTask | Read source ordering, validate eligibility and requirements, claim one task and persist its identity/input |
+| PrepareWorkspace | Prepare or reuse the task's working copy, preserve local changes and record preparation/baseline observations |
+| Develop | Read the task and prior feedback, invoke implementation and persist the candidate and developer response |
+| Verify | Run configured candidate checks and persist their results for the identified candidate |
+| Review | Assess the identified candidate, preserve complete findings and return the review decision |
+| SelectRepair | Apply configured repair/escalation policy to retained attempts and persist the selected profile or exhaustion |
+| Deliver | Publish the verified candidate and retain its delivery identity and evidence |
+| CompleteTask | Verify required approval, integration and post-merge checks; perform the permitted source transition and persist completion |
 
-Checks execute against an identified workspace revision and working-tree state. Approval identifies
-the exact reviewed head and base. A change invalidates evidence affected by that change; never
-reuse approval for another revision. Before integration, observe required check/review results
-and current pull-request identity. Completion requires observed merge, configured post-merge
-workflows for that merge revision, then the permitted source transition. Retain receipts between
-these steps so an interrupted transition cannot cause duplicate publication or an inferred merge.
+Actions do not call the next action or select its state. They may have substantial internal implementation,
+but return outcomes for sequencing. Existing-artifact checks, reuse, receipts and the consequences of
+repetition belong to the action that needs them. The runner imposes no universal deduplication or
+transaction protocol. For example, Deliver may reuse an existing pull request for its branch.
 
-After each completion, select again. Do not continue to unrelated tasks after an unresolved ownership,
-delivery or execution failure. Deadlines and check commands are configuration, not task prose; an
-internal repair does not silently extend the configured deadline.
+Task identity, candidate revision and completion evidence remain explicit domain contracts. Preserving
+dirty work, keeping full review findings and applying configured completion gates are action responsibilities.
+An agent's narrative alone cannot establish that checks or integration succeeded.
 
-## Conversation and records
+## Persistent artifacts
 
-Keep a task ledger, workspace identity, repair counters, check evidence, review findings and
-external-effect receipts. Each unit owns its record format; the coordinator records transitions
-only after required facts exist. Use atomic local writes and stable task identity. Record mutation
-intent before an external write and its receipt afterwards. An unknown outcome remains unknown
-until an authoritative observation resolves it.
+Artifacts are the durable inputs and outputs of actions. Producers and consumers agree on location,
+format and meaning through their data contracts. Application startup supplies their shared storage
+location. The workflow definition and ExecutionRunner do not need to know those artifact contracts.
 
-Conversation is append-only, attributed and ordered. Preserve full task requirements, human comments,
-developer reports, reviewer findings and recovery reports admitted from the source. Retain original
-finding bodies and stable finding IDs across revisions; a summary is not the finding. Refresh source
-conversation before each role invocation and export an immutable snapshot plus an ordered artifact
-index for the complete history. Track what was supplied to each role independently.
+For example, Develop persists a candidate record that Verify, Deliver and Review know how to read.
+Review persists findings that SelectRepair and Develop know how to read. A queue execution stores each
+task's artifacts under its identity; the selected-task record identifies the current task to actions.
+Actions prevent stale task or candidate data from being mistaken for the current input.
 
-Current requirements and unresolved findings must be complete in the active input. Older history may
-be accessed through indexed artifacts rather than repeated inline. An input limit must never silently
-truncate either. If complete required material cannot be supplied, return an explicit context failure.
-Neither role needs to reread Jira to reconstruct a conversation already captured here.
+An action finishes writing its output artifacts before returning its outcome. Only then does the runner
+persist the next state. A crash can leave outputs without an advanced checkpoint; the action starts
+anew and decides whether to reuse those outputs. Atomic checkpoint replacement does not imply an
+atomic transaction over the action's files or external effects.
 
-Export EngineInspection after durable transitions. Its artifacts are the public recovery boundary;
-private ledger files are not an integration API. A continuation re-observes mutable workspace/source/
-delivery state before deciding the next step. It does not trust a stored phase as permission to skip
-a gate or overwrite a newer human decision.
-
-## Cancellation
-
-Stop selecting new work immediately. Cancel the active role or command, wait for owned shutdown,
-persist available evidence and preserve the workspace. A remote operation interrupted after dispatch
-has an uncertain outcome until observed; cancellation cannot erase its effect. Release a claim only
-when its writers have stopped and its source disposition is known. Return blocked when either cannot
-be established. No exceptional recovery agent is launched inside this component.
+Conversation history is persistent, attributed data used by actions, not another orchestration component.
+Its readers/writers retain complete requirements, findings, responses and human/recovery comments and
+provide the context needed for each invocation. Artifact schemas and their readers/writers are owned
+by the actions that exchange them.
