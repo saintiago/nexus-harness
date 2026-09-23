@@ -556,6 +556,48 @@ describe('the supervisor’s own ownership', () => {
     expect(await heldClaims(root)).toEqual([]);
   }, 30_000);
 
+  it('owns the queue only while the claim it published is really there', async () => {
+    const root = await tempDir();
+    const now = (): Date => new Date('2026-09-23T00:00:00Z');
+    const isAlive = (pid: number): boolean => pid === process.pid;
+    // The invocation publishes its claim and is held before its own decision:
+    // the window in which that claim can be cleared away under it — by the
+    // cleanup of another contender, or by a person.
+    let releaseDecision: () => void = () => undefined;
+    const decisionHeld = new Promise<void>((resolve) => {
+      releaseDecision = resolve;
+    });
+    let published: (file: string) => void = () => undefined;
+    const atPublication = new Promise<string>((resolve) => {
+      published = resolve;
+    });
+    const take = acquireSupervisorOwnership({
+      root,
+      intent: 'run',
+      repoPath: 'C:/target',
+      now,
+      isAlive,
+      onClaimPublished: async (claim) => {
+        published(claim.file);
+        await decisionHeld;
+      },
+    });
+    const file = await atPublication;
+    await rm(file, { force: true });
+    releaseDecision();
+
+    // Ownership is never decided from a listing: the claim has to be really
+    // there, so the invocation publishes again and owns what it really holds.
+    const result = await take;
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw new Error('the invocation did not own the queue it claimed');
+    }
+    expect(await heldClaims(root)).toEqual([path.basename(result.ownership.file)]);
+    await result.ownership.release();
+    expect(await heldClaims(root)).toEqual([]);
+  }, 30_000);
+
   it('refuses a live owner and adopts one whose process is gone', async () => {
     const root = await tempDir();
     const now = (): Date => new Date('2026-09-23T00:00:00Z');
