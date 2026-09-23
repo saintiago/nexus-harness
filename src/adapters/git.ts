@@ -1,9 +1,5 @@
 import type { ProcessOutputObserver, ProcessResult } from './processes.js';
-
-/** Adapter result and fault, following the shared interface vocabulary. */
-type Result<Value> =
-  | { readonly ok: true; readonly value: Value }
-  | { readonly ok: false; readonly fault: { readonly message: string } };
+import type { Result } from '../result.js';
 
 /**
  * Run one git command. The caller supplies the executable, environment and process handling;

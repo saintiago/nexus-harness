@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
+import type { Result } from '../result.js';
 
 /** A supplied command with its working directory, environment and optional time limit. */
 export type ProcessCommand = {
@@ -18,9 +19,7 @@ export type ProcessOutput = {
 export type ProcessOutputObserver = (output: ProcessOutput) => void;
 
 /** Command data: the exit code of a completed command. */
-export type ProcessResult =
-  | { readonly ok: true; readonly value: { readonly exitCode: number } }
-  | { readonly ok: false; readonly fault: { readonly message: string } };
+export type ProcessResult = Result<{ readonly exitCode: number }>;
 
 /** Render a thrown value as a message. */
 function messageOf(error: unknown): string {
