@@ -116,9 +116,9 @@ export interface HistoryOccurrence {
  * (`findingIdOf`, `findings.ts`) — or, for a native review the harness kept no
  * report for, from the review and the inline comment's own source identity
  * (`nativeFindingIdOf`), so a deleted sibling cannot rename it. Both roles name
- * the finding by that identity — the
- * developer answers it, and a later reviewer verifies that answer or groups a
- * related occurrence under it (docs/WORKFLOW.md §9).
+ * the finding by that identity — the developer answers it, and a later reviewer
+ * verifies that answer or groups a related occurrence under it
+ * (docs/WORKFLOW.md §9).
  */
 export interface HistoryFinding {
   /** Stable identity within the ticket, for example `R2-F3`. */

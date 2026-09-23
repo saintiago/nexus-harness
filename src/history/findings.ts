@@ -8,9 +8,9 @@
  * way without storing a second name anywhere. A finding a native review stated
  * as one of its own inline comments has no retained report to be identified
  * from, and is named by the review that stated it and the comment's own source
- * identity, so deleting a sibling comment cannot rename the defects that remain.
- * A later review that finds the same
- * defect again classifies its own finding as `unresolved` or `regression` and
+ * identity, so deleting a sibling comment cannot rename the defects that
+ * remain. A later review that finds the same defect again classifies its own
+ * finding as `unresolved` or `regression` and
  * names the earlier identity it continues; that earlier identity is the one the
  * defect keeps, and the later review's own occurrence is recorded beside it, so
  * one defect is followed across rounds instead of being renamed or raised as an

@@ -2129,6 +2129,91 @@ describe('one ticket history', () => {
     expect(partialResponse?.uncertainty).toBeNull();
   });
 
+  it('reads the newest turn of a report rebuilt from a run’s own record', async () => {
+    const workDir = await createTempDir();
+    const ticketHistory = history(workDir);
+    await ticketHistory.recordReviewerReport?.({
+      ref: REF,
+      workspaceId: 'HARN-11',
+      task: TASK,
+      reviewId: 'review-1',
+      round: 1,
+      head: HEAD,
+      decision: 'request_changes',
+      summary: 'the greeting ignores the argument it is given',
+      findings: [{ path: 'src/greeting.ts', line: 2, body: 'the argument is ignored' }],
+      now: new Date('2026-09-16T10:00:00.000Z'),
+    });
+    // An attempt whose complete report this machine recorded before complete
+    // history retention: it is read back from the run's own `result.json`, and
+    // rendered from the turns that record holds.
+    const reportPath = path.join(workDir, 'runs', 'run-6', 'result.json');
+    await mkdir(path.dirname(reportPath), { recursive: true });
+    await writeFile(
+      reportPath,
+      JSON.stringify({
+        status: 'passed',
+        reason: 'every configured check passed after repair turn 2',
+        endedAt: '2026-09-16T11:00:00.000Z',
+        attempts: [
+          {
+            turn: 1,
+            kind: 'repair',
+            agentSummary: [
+              'I repaired the greeting.',
+              '',
+              '### Finding R1-F1',
+              '- Cause: the shared helper ignored the argument it was given.',
+              '- Affected scope: src/greeting.ts.',
+              '- Repair: the helper now returns the greeting it was given.',
+              '- Verification: exercised it through the exported function.',
+              '- Remaining uncertainty: none.',
+            ].join('\n'),
+            checks: { outcome: 'failed' },
+          },
+          {
+            turn: 2,
+            kind: 'repair',
+            agentSummary: 'I reverted that repair; the helper ignores the argument again.',
+            checks: { outcome: 'passed' },
+          },
+        ],
+      }),
+      'utf8',
+    );
+    await writeWorkspaceState(workDir, {
+      version: 1,
+      workspaceId: 'HARN-11',
+      sourceRoot: workDir,
+      baseCommit: HEAD,
+      branch: 'harness/HARN-11',
+      createdAt: '2026-09-16T10:00:00.000Z',
+      sourceItem: sourceItemFor(REF),
+      attempts: [
+        {
+          runId: 'run-6',
+          reportPath,
+          outcome: 'passed',
+          reason: 'every configured check passed',
+          endedAt: '2026-09-16T11:00:00.000Z',
+        },
+      ],
+    });
+
+    const rebuilt = await prepare(history(workDir), 'reviewer', 2);
+    const report = rebuilt.entries.find((entry) => entry.sourceId === 'run-6');
+    expect(report?.kind).toBe('developer-report');
+    // The complete rendering keeps both turns, and the answer is read from the
+    // newest one alone: turn 1's complete answer is history, not a claim turn 2
+    // made when it reverted the repair.
+    expect(report?.text).toContain('the helper now returns the greeting it was given.');
+    const [response] = rebuilt.brief.unresolvedReviews?.[0]?.responses ?? [];
+    expect(response?.finding).toBe('R1-F1');
+    expect(response?.complete).toBe(false);
+    expect(response?.problem).toMatch(/no answer to this finding is recorded/);
+    expect(response?.repair).toBeNull();
+  });
+
   it('gives two baseline diagnoses under one project different identities', async () => {
     const workDir = await createTempDir();
     // The project namespace is the lock identity this harness derives for one
