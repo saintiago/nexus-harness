@@ -39,7 +39,9 @@ it was given, and keep a developer's claim apart from a reviewer's verification:
 complete answer — or one whose latest report is missing or incomplete — and a finding whose repair
 was never verified are never presented as resolved. A finding a later review raises again keeps the
 identity it continues and records its own occurrence beside it, and a new change request adds the
-findings it raises without clearing the ones already outstanding.
+findings it raises without clearing the ones already outstanding. A continuation is resolved
+against every identity the history retained, so a defect an earlier review already settled keeps
+the identity it was raised with when a later revision brings it back.
 
 ## Review
 
@@ -49,7 +51,9 @@ publication. Verify each outstanding disposition in the reviewed revision itself
 verification with the verdict — only a `verified` reading settles one, while `unverified` and
 `regressed` leave it outstanding for the next round; classify and group confirmed related
 occurrences rather than reporting one example at a time; and keep reviewing the whole change against
-the requested outcome. Approval applies to the reviewed revision, not to later changes.
+the requested outcome. Approval applies to the reviewed revision, not to later changes. Only a
+review the pull request itself carries settles an earlier disposition: an approval clears one only
+at the head it was made on, and a verdict refused publication is conversation, not a settlement.
 
 ## Delivery and completion
 

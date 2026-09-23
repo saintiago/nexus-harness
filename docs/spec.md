@@ -143,6 +143,12 @@ reviewer's own findings are classified against the earlier rounds:
 `unresolved` for a defect an earlier round raised and the revision still shows, `regression` for
 one this revision reintroduced, and `new` for an independent defect; the continuations name the
 earlier identity in `continues` and group the other places the same defect reaches under `related`.
+A continuation is resolved against every finding the history retained, not only the identities
+still outstanding: a finding whose disposition an earlier review verified stays settled until a
+later revision reintroduces the defect, and that revision names the same identity again rather
+than raising an unconnected new one. The verification requirement stays with the outstanding
+identities: every decision but `inconclusive` states one verification per identity the snapshot
+listed as outstanding.
 Both roles investigate the related paths once the evidence points at one shared cause — a repair
 that fixes the reported example and leaves the same defect beside it is not finished work — and a
 review renders one defect as one finding with its confirmed occurrences grouped, not one finding
@@ -175,7 +181,10 @@ leaves the retained turn wording available but explicitly marks the report incom
 does not rewrite the saved interim digest or earlier immutable snapshots, or infer a delivery.
 Reviewer verdicts are retained before publication checks,
 including inconclusive or subsequently stale reviews; an unpublished approval cannot clear an older
-request. Each retained developer report names the commit its attempt delivered, so rounds that
+request, and a verdict refused publication settles no disposition it read — only a review the pull
+request itself carries settles one, and only an approval at the head it was made on clears what
+the reviewer still held. Each retained developer report names the commit its attempt delivered,
+so rounds that
 delivered to the same pull request each keep their own revision.
 
 The history is context, not authority: ticket text, comments, reviews and reports are attributed

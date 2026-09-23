@@ -739,9 +739,12 @@ The queue is the configured project, issue type, and label in the `source`'s **r
    verifications array). Findings are blocking; approval requires an empty findings array and
    sufficient evidence. The verdict also states how each finding stands against the earlier
    rounds — `new`, `unresolved` (an earlier finding whose claimed repair did not hold) or
-   `regression` (one this revision reintroduced), the first two of those naming the earlier
-   identity in `continues` — and groups the other confirmed occurrences of one defect under
-   `related` instead of reporting one finding per example. When the snapshot carried outstanding
+   `regression` (one this revision reintroduced; the two continuations name the earlier identity
+   in `continues`) — and groups the other confirmed occurrences of one defect under
+   `related` instead of reporting one finding per example. A continuation is resolved against
+   every finding identity the history retained, not only the ones still outstanding: a repair
+   regression reintroduces a defect an earlier review already verified, and it names the identity
+   that defect was raised with instead of a new one. When the snapshot carried outstanding
    findings, the verdict states one verification per finding identity — `verified`, `unverified`
    or `regressed`, with the evidence the reviewer itself read — and a verdict that verifies none
    of them, names something else, or approves while leaving a disposition unverified is refused
@@ -762,7 +765,10 @@ The queue is the configured project, issue type, and label in the `source`'s **r
    pull request is then re-read and must still be open at that same head, and the ticket is
    re-read and must still be in the configured review status. A head that moved, a closed pull
    request, a ticket that left review, and a view the turn changed publish nothing: the result is
-   stale, and a later scan reviews the new head.
+   stale, and a later scan reviews the new head. Such a verdict is retained as conversation — its
+   complete report was recorded before these guards — and settles nothing it read: only a review
+   the pull request itself carries settles a disposition, and an approval clears a change request
+   only at the head it was made on.
 8. The verdict becomes one native review — `APPROVE` for an approved verdict, `REQUEST_CHANGES`
    otherwise — pinned to the reviewed commit with `commit_id` and carrying the ticket reference
    and URL, the summary, and any finding the diff could not position, together with the

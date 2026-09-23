@@ -22,7 +22,11 @@ import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { runCodexPrompt } from '../agents/codex/adapter.js';
 import { selectedCodexRuntime } from '../agents/codex/runtime.js';
-import { outstandingFindingIds, unresolvedRounds } from '../history/findings.js';
+import {
+  outstandingFindingIds,
+  retainedFindingIds,
+  unresolvedRounds,
+} from '../history/findings.js';
 import { renderHistorySection } from '../history/prompt.js';
 import { openEvidenceLog } from '../reporting/logs.js';
 import type { AgentLog } from '../reporting/logs.js';
@@ -296,7 +300,8 @@ export function reviewPrompt(
         '  the evidence in your findings.',
         '- A defect you confirm again is one finding that continues the earlier identity, classified',
         '  `unresolved` (the claimed repair did not hold) or `regression` (a later change in this',
-        '  revision reintroduced it). A defect you find for the first time is `new`.',
+        '  revision reintroduced it) — the identity the history named for it, even when an earlier',
+        '  review settled that disposition. A defect you find for the first time is `new`.',
         '- When one defect reaches several places, report it once and group the other confirmed',
         '  occurrences under it in `related`; do not raise one finding per example, and do not leave',
         '  a related path unread once the evidence points at one shared cause.',
@@ -348,7 +353,9 @@ export function reviewPrompt(
       '  finding is about the change as a whole.',
       '- "kind" is "new" unless the finding continues an earlier one: "unresolved" for a defect an',
       '  earlier round raised and the revision still shows, "regression" for one an earlier round',
-      '  raised and this revision reintroduced. Both name the earlier identity in "continues".',
+      '  raised and this revision reintroduced. Both name the earlier identity in "continues" —',
+      '  including an identity an earlier review already settled, which is exactly what a repair',
+      '  regression reintroduces; never rename such a defect a new finding.',
       '- "related" lists the other places the same defect confirmed, each with its file and the',
       '  line in the new version of the file when it has one. Group occurrences; do not repeat the',
       '  same defect as several findings.',
@@ -454,11 +461,7 @@ function verdictRelated(value: unknown, index: number): readonly ReviewOccurrenc
 }
 
 /** One finding of the verdict file, or a refusal naming what is wrong. */
-function verdictFinding(
-  value: unknown,
-  index: number,
-  outstanding: readonly string[],
-): ReviewFinding {
+function verdictFinding(value: unknown, index: number, retained: readonly string[]): ReviewFinding {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     throw new ReviewError(
       'inconclusive',
@@ -487,14 +490,19 @@ function verdictFinding(
     }
     const named = rawContinues.trim();
     // The identity is the one the history named, whatever case the reviewer
-    // wrote it in: the defect keeps the identity it was raised with.
-    const canonical = outstanding.find((id) => id.toUpperCase() === named.toUpperCase());
+    // wrote it in: the defect keeps the identity it was raised with. A
+    // continuation resolves against every finding the history retained, not
+    // only the ones still outstanding: a repair regression reintroduces a
+    // defect an earlier review already verified, and reconciliation settled
+    // that identity, so it is no longer in the outstanding list
+    // (docs/WORKFLOW.md §9).
+    const canonical = retained.find((id) => id.toUpperCase() === named.toUpperCase());
     if (canonical === undefined) {
       throw new ReviewError(
         'inconclusive',
         `finding ${String(index + 1)} of the reviewer's ${REVIEW_VERDICT_FILE} continues ` +
-          `"${named}", which is not one of the outstanding findings the history named ` +
-          `(${outstanding.length === 0 ? 'there were none' : outstanding.join(', ')}).`,
+          `"${named}", which is not one of the findings the history retained ` +
+          `(${retained.length === 0 ? 'there were none' : retained.join(', ')}).`,
       );
     }
     continues = canonical;
@@ -571,11 +579,18 @@ function verdictVerification(
  * them, verifies something else, or quietly approves while leaving a claimed
  * fix unverified is refused rather than published: a claimed fix is not a
  * verified one, and the difference has to survive into the record.
+ *
+ * `retained` is every finding identity the same snapshot kept, settled rounds
+ * included. A finding that continues an earlier one — an unresolved defect or
+ * a repair regression — names its identity from there: a regression of a
+ * disposition a review already verified keeps the identity the defect was
+ * raised with, and verification requirements stay with `outstanding` alone.
  */
 export function parseVerdict(
   text: string,
   where: string,
   outstanding: readonly string[] = [],
+  retained: readonly string[] = outstanding,
 ): ReviewerVerdict {
   let value: unknown;
   try {
@@ -617,7 +632,7 @@ export function parseVerdict(
       'the verdict has too many findings; none may be dropped.',
     );
   }
-  const findings = rawFindings.map((finding, index) => verdictFinding(finding, index, outstanding));
+  const findings = rawFindings.map((finding, index) => verdictFinding(finding, index, retained));
   const rawVerifications = record['verifications'];
   if (rawVerifications !== undefined && !Array.isArray(rawVerifications)) {
     throw new ReviewError(
@@ -760,6 +775,10 @@ async function reviewTurn(
     request.history === undefined
       ? []
       : outstandingFindingIds(unresolvedRounds(request.history.brief));
+  // Every identity the same snapshot retained: a continuation — an unresolved
+  // defect or a repair regression — names one of these, including an identity
+  // an earlier review already settled (docs/WORKFLOW.md §9).
+  const retained = request.history === undefined ? [] : retainedFindingIds(request.history);
 
   let log: AgentLog;
   try {
@@ -826,7 +845,7 @@ async function reviewTurn(
   try {
     return {
       summary,
-      verdict: parseVerdict(text, REVIEW_VERDICT_FILE, outstanding),
+      verdict: parseVerdict(text, REVIEW_VERDICT_FILE, outstanding, retained),
       problem: null,
       logPath,
     };

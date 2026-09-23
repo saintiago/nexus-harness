@@ -33,7 +33,11 @@ import type { SnapshotContent } from '../../src/history/store.js';
 import { createTicketHistory } from '../../src/history/sync.js';
 import { notePublishedReview, textSha256 } from '../../src/history/reports.js';
 import { renderHistorySection } from '../../src/history/prompt.js';
-import { outstandingFindingIds, unresolvedRounds } from '../../src/history/findings.js';
+import {
+  outstandingFindingIds,
+  retainedFindingIds,
+  unresolvedRounds,
+} from '../../src/history/findings.js';
 import { parseVerdict } from '../../src/reviews/reviewer.js';
 import { baselineEvidenceId } from '../../src/sources/baseline.js';
 import {
@@ -910,6 +914,268 @@ describe('one ticket history', () => {
     const settled = await prepare(history(workDir), 'reviewer', 4);
     expect(settled.brief.unresolved).toBeNull();
     expect(settled.brief.unresolvedReviews).toEqual([]);
+  });
+
+  it('keeps a disposition a stale approval could not settle, and still requires it', async () => {
+    const workDir = await createTempDir();
+    const ticketHistory = history(workDir);
+    const root = workspaceHistoryRoot(workDir, 'HARN-11');
+    // The reviewed head, the head the approving review was made on, and the
+    // head the pull request carries now: an approval of an older revision is
+    // not an approval of this one.
+    const approvedHead = 'c'.repeat(40);
+    const currentHead = 'd'.repeat(40);
+    await ticketHistory.recordReviewerReport?.({
+      ref: REF,
+      workspaceId: 'HARN-11',
+      task: TASK,
+      reviewId: 'review-1',
+      round: 1,
+      head: HEAD,
+      decision: 'request_changes',
+      summary: 'the greeting ignores the argument it is given',
+      findings: [{ path: 'src/greeting.ts', line: 2, body: 'the argument is ignored' }],
+      now: new Date('2026-09-16T10:00:00.000Z'),
+    });
+    await ticketHistory.recordReviewerReport?.({
+      ref: REF,
+      workspaceId: 'HARN-11',
+      task: TASK,
+      reviewId: 'review-2',
+      round: 2,
+      head: approvedHead,
+      decision: 'approve',
+      summary: 'the repair holds at this revision',
+      findings: [],
+      verifications: [{ finding: 'R1-F1', state: 'verified', evidence: 'read src/greeting.ts:2' }],
+      now: new Date('2026-09-16T10:30:00.000Z'),
+    });
+    // The approval really was published — at the head it was made on. A later
+    // revision is a new head, and the disposition is not settled for it.
+    await notePublishedReview(root, 'review-2', {
+      id: 82,
+      url: 'https://github.com/owner/name/pull/7#pullrequestreview-82',
+      body: 'Nexus Lens review — HARN-11: the repair holds at this revision',
+    });
+
+    const snapshot = await prepare(
+      history(workDir, {
+        pull: async () => ({
+          pullRequest: {
+            number: 7,
+            url: 'https://github.com/owner/name/pull/7',
+            title: 'HARN-11: add a greeting function',
+            headBranch: 'harness/HARN-11',
+            baseBranch: 'main',
+            headSha: currentHead,
+            observedAt: '2026-09-16T11:00:00.000Z',
+          },
+          comments: [],
+          truncated: false,
+        }),
+      }),
+      'reviewer',
+      3,
+    );
+
+    // The request survives, with the identity it still holds, and the next
+    // verdict has to verify that disposition rather than read the request as
+    // an empty one.
+    expect(
+      unresolvedRounds(snapshot.brief).map((one) => one.findings.map((finding) => finding.id)),
+    ).toEqual([['R1-F1']]);
+    const outstanding = outstandingFindingIds(unresolvedRounds(snapshot.brief));
+    expect(outstanding).toEqual(['R1-F1']);
+    expect(() =>
+      parseVerdict(
+        JSON.stringify({ verdict: 'approve', summary: 'the repair holds', findings: [] }),
+        'verdict.json',
+        outstanding,
+        retainedFindingIds(snapshot),
+      ),
+    ).toThrow(/does not verify R1-F1/);
+  });
+
+  it('does not let a request refused publication settle what it verified', async () => {
+    const workDir = await createTempDir();
+    const ticketHistory = history(workDir);
+    const root = workspaceHistoryRoot(workDir, 'HARN-11');
+    await ticketHistory.recordReviewerReport?.({
+      ref: REF,
+      workspaceId: 'HARN-11',
+      task: TASK,
+      reviewId: 'review-1',
+      round: 1,
+      head: HEAD,
+      decision: 'request_changes',
+      summary: 'the greeting ignores the argument it is given',
+      findings: [{ path: 'src/greeting.ts', line: 2, body: 'the argument is ignored' }],
+      now: new Date('2026-09-16T10:00:00.000Z'),
+    });
+    await notePublishedReview(root, 'review-1', {
+      id: 71,
+      url: 'https://github.com/owner/name/pull/7#pullrequestreview-71',
+      body: 'Nexus Lens review — HARN-11: the greeting ignores the argument',
+    });
+    // Recorded after the turn and retained before the publication guards, but
+    // refused publication: no native review carries this verdict, so nothing
+    // it read is settled and its own finding still stands beside the earlier
+    // request.
+    await ticketHistory.recordReviewerReport?.({
+      ref: REF,
+      workspaceId: 'HARN-11',
+      task: TASK,
+      reviewId: 'review-2',
+      round: 2,
+      head: HEAD,
+      decision: 'request_changes',
+      summary: 'one repair is verified and another defect is new',
+      findings: [{ path: 'src/salutation.ts', line: 3, body: 'the salutation is wrong' }],
+      verifications: [{ finding: 'R1-F1', state: 'verified', evidence: 'read src/greeting.ts:2' }],
+      now: new Date('2026-09-16T10:40:00.000Z'),
+    });
+
+    const snapshot = await prepare(history(workDir), 'reviewer', 3);
+    const rounds = unresolvedRounds(snapshot.brief);
+    expect(rounds.map((round) => round.findings.map((finding) => finding.id))).toEqual([
+      ['R1-F1'],
+      ['R2-F1'],
+    ]);
+    // The reading is kept as what it was, and the identity it read is the next
+    // verdict's to verify.
+    expect(rounds[1]?.verifications).toEqual([
+      { finding: 'R1-F1', state: 'verified', evidence: 'read src/greeting.ts:2' },
+    ]);
+    const outstanding = outstandingFindingIds(rounds);
+    expect(outstanding).toEqual(['R1-F1', 'R2-F1']);
+    expect(() =>
+      parseVerdict(
+        JSON.stringify({
+          verdict: 'approve',
+          summary: 'both defects are gone',
+          findings: [],
+          verifications: [
+            { finding: 'R2-F1', state: 'verified', evidence: 'read src/salutation.ts:3' },
+          ],
+        }),
+        'verdict.json',
+        outstanding,
+        retainedFindingIds(snapshot),
+      ),
+    ).toThrow(/does not verify R1-F1/);
+  });
+
+  it('keeps a repair regression under the identity an earlier review settled', async () => {
+    const workDir = await createTempDir();
+    const ticketHistory = history(workDir);
+    const root = workspaceHistoryRoot(workDir, 'HARN-11');
+    const repairedHead = 'c'.repeat(40);
+    await ticketHistory.recordReviewerReport?.({
+      ref: REF,
+      workspaceId: 'HARN-11',
+      task: TASK,
+      reviewId: 'review-1',
+      round: 1,
+      head: HEAD,
+      decision: 'request_changes',
+      summary: 'the greeting ignores the argument it is given',
+      findings: [{ path: 'src/greeting.ts', line: 2, body: 'the argument is ignored' }],
+      now: new Date('2026-09-16T10:00:00.000Z'),
+    });
+    await notePublishedReview(root, 'review-1', {
+      id: 71,
+      url: 'https://github.com/owner/name/pull/7#pullrequestreview-71',
+      body: 'Nexus Lens review — HARN-11: the greeting ignores the argument',
+    });
+    // Round 2 verified R1-F1 at the repaired revision and requested changes for
+    // an independent defect: reconciliation settles R1-F1, so it is no longer
+    // one of the outstanding identities.
+    await ticketHistory.recordReviewerReport?.({
+      ref: REF,
+      workspaceId: 'HARN-11',
+      task: TASK,
+      reviewId: 'review-2',
+      round: 2,
+      head: repairedHead,
+      decision: 'request_changes',
+      summary: 'one repair holds and another defect is new',
+      findings: [{ path: 'src/salutation.ts', line: 3, body: 'the salutation is wrong' }],
+      verifications: [{ finding: 'R1-F1', state: 'verified', evidence: 'read src/greeting.ts:2' }],
+      now: new Date('2026-09-16T10:40:00.000Z'),
+    });
+    await notePublishedReview(root, 'review-2', {
+      id: 72,
+      url: 'https://github.com/owner/name/pull/7#pullrequestreview-72',
+      body: 'Nexus Lens review — HARN-11: one repair holds and another defect is new',
+    });
+
+    const snapshot = await prepare(history(workDir), 'reviewer', 3);
+    const outstanding = outstandingFindingIds(unresolvedRounds(snapshot.brief));
+    expect(outstanding).toEqual(['R2-F1']);
+    // The verified identity is not outstanding any more, but it is retained,
+    // and that is what the repair regression of the third revision names.
+    const retained = retainedFindingIds(snapshot);
+    expect(retained).toEqual(['R2-F1', 'R1-F1']);
+    const regression = parseVerdict(
+      JSON.stringify({
+        verdict: 'request_changes',
+        summary: 'repairing the salutation reintroduced the greeting defect',
+        findings: [
+          {
+            path: 'src/greeting.ts',
+            line: 2,
+            body: 'the argument is ignored again',
+            kind: 'regression',
+            continues: 'R1-F1',
+          },
+        ],
+        verifications: [
+          { finding: 'R2-F1', state: 'verified', evidence: 'read src/salutation.ts:3' },
+        ],
+      }),
+      'verdict.json',
+      outstanding,
+      retained,
+    );
+    expect(regression.findings).toEqual([
+      {
+        path: 'src/greeting.ts',
+        line: 2,
+        body: 'the argument is ignored again',
+        kind: 'regression',
+        continues: 'R1-F1',
+      },
+    ]);
+
+    // Recording that verdict brings the identity back under the round that
+    // raised it again, so the next verdict must verify it.
+    await ticketHistory.recordReviewerReport?.({
+      ref: REF,
+      workspaceId: 'HARN-11',
+      task: TASK,
+      reviewId: 'review-3',
+      round: 3,
+      head: repairedHead,
+      decision: regression.decision,
+      summary: regression.summary,
+      findings: regression.findings,
+      ...(regression.verifications === undefined
+        ? {}
+        : { verifications: regression.verifications }),
+      now: new Date('2026-09-16T11:00:00.000Z'),
+    });
+    await notePublishedReview(root, 'review-3', {
+      id: 73,
+      url: 'https://github.com/owner/name/pull/7#pullrequestreview-73',
+      body: 'Nexus Lens review — HARN-11: repairing the salutation reintroduced the greeting defect',
+    });
+    const after = await prepare(history(workDir), 'reviewer', 4);
+    const [round] = unresolvedRounds(after.brief);
+    expect(round?.findings.map((finding) => [finding.id, finding.recordedAs])).toEqual([
+      ['R1-F1', 'R3-F1'],
+    ]);
+    expect(round?.findings.map((finding) => finding.continues)).toEqual(['R1-F1']);
+    expect(outstandingFindingIds(unresolvedRounds(after.brief))).toEqual(['R1-F1']);
   });
 
   it('keeps a continued defect’s identity through recording and the next prompt', async () => {

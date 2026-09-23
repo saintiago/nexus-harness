@@ -449,6 +449,15 @@ interface ReviewRoundCandidate {
   readonly summary: HistoryReportSummary;
   /** The round's own entries: its review, and the findings it published. */
   readonly ownEntryIds: readonly string[];
+  /**
+   * Whether the review the round states really reached the pull request: a
+   * native review this machine recorded as published for the report, or a
+   * native review read back from the pull request itself. A verdict retained
+   * before the publication guards that was refused publication — a view the
+   * turn changed, a head that moved, a ticket that left review — is
+   * conversation only, and settles nothing (docs/spec.md §9).
+   */
+  readonly published: boolean;
 }
 
 /**
@@ -477,9 +486,11 @@ interface OutstandingReview {
  * A round that requests changes adds its own findings and clears nothing: a new
  * change request never silently resolves an earlier defect. A round's own
  * verifications settle exactly the identities they name — `verified` clears one
- * finding, `unverified` and `regressed` leave it outstanding — and only an
- * approval by that reviewer at the current head clears what they still hold.
- * Comment-only and inconclusive rounds decide nothing. The reviewer's latest
+ * finding, `unverified` and `regressed` leave it outstanding — but only when
+ * the round is a review the pull request itself carries: a verdict refused
+ * publication settles nothing it read, and only an approval by that reviewer at
+ * the current head clears what they still hold. Comment-only and inconclusive
+ * rounds decide nothing. The reviewer's latest
  * change request stands as a round of its own as well, so a native review that
  * states no finding — only its decision and its body — is still an outstanding
  * request and never reads as resolved by the round that came after it.
@@ -488,12 +499,15 @@ interface OutstandingReview {
  * renders the finding with its latest wording and, in a continuation, the
  * occurrence that round recorded beside the identity the defect keeps.
  */
-function unresolvedRound(
-  reports: readonly HistoryReportSummary[],
-  candidates: readonly Candidate[],
-  harnessAuthors: readonly string[],
-  currentHead: string | null,
-): readonly ReviewRoundCandidate[] {
+function unresolvedRound(parts: {
+  readonly reports: readonly HistoryReportSummary[];
+  readonly candidates: readonly Candidate[];
+  readonly harnessAuthors: readonly string[];
+  readonly currentHead: string | null;
+  /** The review ids whose recorded native review was published (docs/spec.md §9). */
+  readonly publishedReviews: ReadonlySet<string>;
+}): readonly ReviewRoundCandidate[] {
+  const { reports, candidates, harnessAuthors, currentHead, publishedReviews } = parts;
   const rounds: ReviewRoundCandidate[] = [];
   const coveredReviews = new Set<string>();
 
@@ -527,7 +541,13 @@ function unresolvedRound(
         candidate.entry.sourceId === String(report.nativeReviewId),
     );
     const decision = native?.entry.state?.toLowerCase() ?? (report.decision ?? '').toLowerCase();
-    if (decision === 'approve' && report.nativeReviewId === null) {
+    // Whether this verdict became a review GitHub published: the report's own
+    // digest records the publication identity once the scan noted it, and the
+    // attempt's review record names the review it published even when that note
+    // was lost. A verdict refused publication reached the pull request as
+    // nothing at all.
+    const published = report.nativeReviewId !== null || publishedReviews.has(report.sourceId);
+    if (decision === 'approve' && !published) {
       // Retain the report, but an approval refused by publication guards is
       // not evidence that earlier change requests were resolved.
       continue;
@@ -550,6 +570,7 @@ function unresolvedRound(
       decision,
       summary: report,
       ownEntryIds: own,
+      published,
     });
   }
 
@@ -601,6 +622,9 @@ function unresolvedRound(
         pullRequest: null,
       },
       ownEntryIds: own,
+      // This round is a native review the pull request carries: it was read
+      // back from its own conversation, so it was published to exist.
+      published: true,
     });
   }
 
@@ -610,12 +634,19 @@ function unresolvedRound(
   const held = new Map<string, OutstandingReview>();
   for (const round of rounds) {
     const owner = held.get(round.owner) ?? { request: null, findings: new Map(), head: null };
-    // What this round itself read of the dispositions before it. Only a
+    const approving = round.decision === 'approve' || round.decision === 'approved';
+    // A round settles what it read only when it is a review the pull request
+    // itself carries: an approval decides at the head it was made on, and a
+    // verdict refused publication decides nothing at all. Then only a
     // `verified` reading settles an identity; `unverified` and `regressed` are
     // a reviewer's own statement that the defect is still there.
-    for (const verification of round.summary.verifications ?? []) {
-      if (verification.state === 'verified') {
-        owner.findings.delete(verification.finding);
+    const settles =
+      round.published && (!approving || round.summary.head === (currentHead ?? owner.head));
+    if (settles) {
+      for (const verification of round.summary.verifications ?? []) {
+        if (verification.state === 'verified') {
+          owner.findings.delete(verification.finding);
+        }
       }
     }
     if (requestsChanges(round.decision)) {
@@ -625,10 +656,7 @@ function unresolvedRound(
       }
       owner.request = round;
       owner.head = round.summary.head ?? owner.head;
-    } else if (
-      (round.decision === 'approve' || round.decision === 'approved') &&
-      round.summary.head === (currentHead ?? owner.head)
-    ) {
+    } else if (approving && settles) {
       owner.findings.clear();
       owner.request = null;
       owner.head = null;
@@ -1048,12 +1076,13 @@ export function createTicketHistory(parts: TicketHistoryParts): TicketHistory {
         );
       }
 
-      const unresolved = unresolvedRound(
+      const unresolved = unresolvedRound({
         reports,
-        reviewCandidates,
+        candidates: reviewCandidates,
         harnessAuthors,
-        pullRequest?.pullRequest?.headSha ?? null,
-      );
+        currentHead: pullRequest?.pullRequest?.headSha ?? null,
+        publishedReviews: new Set(local.publishedReviews),
+      });
       const reconstructedGap = unresolved.some((round) => !round.summary.complete)
         ? 'the latest review that requested changes has no complete local report; its findings ' +
           'are the published text, which may have been bounded for the destination it was ' +

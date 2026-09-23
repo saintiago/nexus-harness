@@ -846,6 +846,14 @@ export async function readLocalReports(parts: {
   readonly now: Date;
 }): Promise<{
   readonly reports: readonly LocalReport[];
+  /**
+   * The reviewer attempts whose own record names a native review GitHub
+   * published, by the attempt's review id: the evidence that the verdict
+   * reached the pull request. An attempt refused publication, and one whose
+   * record was never written, are absent — nothing published either
+   * (docs/spec.md §9).
+   */
+  readonly publishedReviews: readonly string[];
   readonly problems: readonly string[];
 }> {
   const { workDir, root, ref, workspaceId } = parts;
@@ -1140,6 +1148,14 @@ export async function readLocalReports(parts: {
   records.sort(
     (a, b) => compareHistoryTime(a.startedAt, b.startedAt) || a.reviewId.localeCompare(b.reviewId),
   );
+  // The attempts a native review was really published for: the report digest
+  // carries the publication identity once the scan recorded it, while the
+  // attempt's own record names the review it published even when that note was
+  // lost. Either is evidence a verdict became a review; neither is present for
+  // a verdict the publication guards refused.
+  const publishedReviews = records
+    .filter((record) => record.published !== null)
+    .map((record) => record.reviewId);
   for (const [index, record] of records.entries()) {
     if (knownReviews.has(record.reviewId)) {
       continue;
@@ -1190,7 +1206,7 @@ export async function readLocalReports(parts: {
   const baseline = await readBaselineReports({ workDir, ref, workspaceId });
   reports.push(...baseline.reports);
   problems.push(...baseline.problems);
-  return { reports, problems };
+  return { reports, publishedReviews, problems };
 }
 
 /** One review record's identity, as the recovery of its verdict reads it. */

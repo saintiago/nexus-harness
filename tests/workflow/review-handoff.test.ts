@@ -33,6 +33,7 @@ import type {
 import { createReviewerTurn } from '../../src/reviews/reviewer.js';
 import { scanReviews } from '../../src/reviews/scan.js';
 import type { HistorySnapshot, TicketHistory } from '../../src/history/contract.js';
+import { workspaceHistoryRoot } from '../../src/history/paths.js';
 import { createTicketHistory } from '../../src/history/sync.js';
 import { REVIEW_VIEW_DIRECTORY, reviewViews } from '../../src/reviews/view.js';
 import type { SourceTask } from '../../src/sources/contract.js';
@@ -660,6 +661,226 @@ describe('the review handoff', () => {
       expect(prompt).toContain(
         'The ticket history above lists every review round whose change request is still',
       );
+    },
+  );
+
+  it(
+    'keeps a finding a refused review read as verified, and still requires the next verdict',
+    { timeout: WORKFLOW_CASE_TIMEOUT_MS },
+    async () => {
+      const project = await createTargetProject();
+      const run = await runTicket({
+        project,
+        ref: REF,
+        workspaceId: WORKSPACE_ID,
+        turn: implementTurn,
+      });
+      const workspace = run.workspace;
+      const head = await branchHead(workspace?.workspacePath ?? '', workspace?.branch ?? '');
+      expect(run.status).toBe('passed');
+
+      const pullRequest: OpenPullRequest = {
+        number: 42,
+        url: 'https://github.com/example/target/pull/42',
+        title: 'HARN-77: Finish the greeting',
+        headSha: head,
+        headBranch: `harness/${WORKSPACE_ID}`,
+        baseBranch: BASE_BRANCH,
+        baseSha: workspace?.baseCommit ?? '',
+        draft: false,
+        author: 'nexus-agent',
+      };
+      const task = await loadTask(project.taskPath);
+      const github = standInGitHub(pullRequest, {
+        ref: REF,
+        task,
+        pullRequest,
+        files: [
+          {
+            path: TARGET_RESULT_FILE,
+            patch: `@@ -0,0 +1 @@\n+implemented\n`,
+            additions: 1,
+            deletions: 0,
+          },
+        ],
+        truncated: false,
+        checks: [],
+        combinedStatus: null,
+        fetchedAt: '2026-03-01T11:00:00.000Z',
+      });
+      // The ticket's retained history: round 1 raised R1-F1 and its change
+      // request is outstanding.
+      const history = createTicketHistory({
+        workDir: project.workDir,
+        harnessAuthors: [LOGIN],
+        now: () => new Date('2026-03-01T10:00:00.000Z'),
+        readers: {
+          jiraThread: async () => ({ comments: [], truncated: false }),
+          pullRequestConversation: async () => null,
+        },
+      });
+      await history.recordReviewerReport?.({
+        ref: REF,
+        workspaceId: WORKSPACE_ID,
+        task,
+        reviewId: 'review-1',
+        round: 1,
+        head,
+        decision: 'request_changes',
+        summary: 'the greeting ignores the argument it is given',
+        findings: [
+          {
+            path: TARGET_RESULT_FILE,
+            line: 1,
+            body: 'the greeting ignores the argument it is given',
+          },
+        ],
+        now: new Date('2026-03-01T09:00:00.000Z'),
+      });
+
+      // The first review reads R1-F1 as verified and asks for changes over a
+      // second defect, but the ticket changed while the turn ran: the verdict is
+      // refused publication. Its complete report was recorded before that
+      // guard, and a verdict GitHub never carried settles nothing.
+      const refused = await installStandIn('reviewer-runtime-refused', STAND_IN_REVIEWER);
+      const first = recordingIo();
+      let prepares = 0;
+      const firstSummary = await scanReviews({
+        queue: {
+          list: async () => [{ ref: REF, title: task.title }],
+          prepare: async () => {
+            prepares += 1;
+            return prepares === 1
+              ? { ref: REF, task, pointers: [WORKSPACE_ID] }
+              : {
+                  ref: { ...REF, updatedAt: '2026-03-01T10:30:00.000Z' },
+                  task,
+                  pointers: [WORKSPACE_ID],
+                };
+          },
+        },
+        repository: github.repository,
+        reviewer: createReviewerTurn({
+          selection: { runtime: 'codex', command: [process.execPath, refused.scriptPath] },
+          environment: {
+            ...process.env,
+            NEXUS_STAND_IN_VERDICT: JSON.stringify({
+              verdict: 'request_changes',
+              summary: 'one repair is verified and another defect is new',
+              findings: [{ path: TARGET_RESULT_FILE, line: 1, body: 'the salutation is wrong' }],
+              verifications: [
+                {
+                  finding: 'R1-F1',
+                  state: 'verified',
+                  evidence: `read ${TARGET_RESULT_FILE} at the reviewed head`,
+                },
+              ],
+            }),
+          },
+        }),
+        history,
+        views: reviewViews(),
+        workDir: project.workDir,
+        sourceRoot: canonicalPath(project.repo),
+        login: LOGIN,
+        checkName: CHECK_NAME,
+        reviewerTimeoutMs: 60_000,
+        io: first.io,
+        stop: new AbortController().signal,
+        now: () => new Date('2026-03-01T11:05:00.000Z'),
+        sleep: async () => undefined,
+      });
+
+      expect(firstSummary.items.map((entry) => entry.disposition)).toEqual(['attention']);
+      expect(first.text()).toMatch(/changed or is no longer in the configured review status/);
+      expect(github.reviews).toEqual([]);
+      expect(github.checks).toEqual([]);
+      // The refused verdict is kept whole beside the ticket, with its reading of
+      // R1-F1, and the review record says nothing was published for it.
+      const reportsDir = path.join(workspaceHistoryRoot(project.workDir, WORKSPACE_ID), 'reports');
+      const refusedDigests: {
+        readonly round?: number;
+        readonly findings: readonly { readonly id: string }[];
+        readonly verifications: readonly { readonly finding: string; readonly state: string }[];
+        readonly published: unknown;
+      }[] = [];
+      for (const name of await readdir(reportsDir)) {
+        if (/^reviewer-.*\.json$/.test(name)) {
+          refusedDigests.push(JSON.parse(await readFile(path.join(reportsDir, name), 'utf8')));
+        }
+      }
+      const refusedDigest = refusedDigests.find((digest) => digest.round === 2);
+      if (refusedDigest === undefined) {
+        throw new Error('the refused verdict of round 2 was retained beside the ticket');
+      }
+      expect(refusedDigest.findings.map((finding) => finding.id)).toEqual(['R2-F1']);
+      expect(refusedDigest.verifications).toEqual([
+        {
+          finding: 'R1-F1',
+          state: 'verified',
+          evidence: `read ${TARGET_RESULT_FILE} at the reviewed head`,
+        },
+      ]);
+      expect(refusedDigest.published).toBeNull();
+
+      // The next scan reviews the same head again. Its verdict verifies only the
+      // identity the refused review raised, so the disposition it never settled
+      // would be published unverified: nothing is published instead.
+      const before = new Set(
+        (await readdir(path.join(project.workDir, 'reviews'))).filter((entry) =>
+          entry.startsWith('review-'),
+        ),
+      );
+      const approving = await installStandIn('reviewer-runtime-partial', STAND_IN_REVIEWER);
+      const second = recordingIo();
+      const secondSummary = await scanReviews({
+        queue: {
+          list: async () => [{ ref: REF, title: task.title }],
+          prepare: async () => ({ ref: REF, task, pointers: [WORKSPACE_ID] }),
+        },
+        repository: github.repository,
+        reviewer: createReviewerTurn({
+          selection: { runtime: 'codex', command: [process.execPath, approving.scriptPath] },
+          environment: {
+            ...process.env,
+            NEXUS_STAND_IN_VERDICT: JSON.stringify({
+              verdict: 'approve',
+              summary: 'the newer defect is gone',
+              findings: [],
+              verifications: [
+                {
+                  finding: 'R2-F1',
+                  state: 'verified',
+                  evidence: `read ${TARGET_RESULT_FILE} at the reviewed head`,
+                },
+              ],
+            }),
+          },
+        }),
+        history,
+        views: reviewViews(),
+        workDir: project.workDir,
+        sourceRoot: canonicalPath(project.repo),
+        login: LOGIN,
+        checkName: CHECK_NAME,
+        reviewerTimeoutMs: 60_000,
+        io: second.io,
+        stop: new AbortController().signal,
+        now: () => new Date('2026-03-01T11:20:00.000Z'),
+        sleep: async () => undefined,
+      });
+
+      expect(secondSummary.items.map((entry) => entry.disposition)).toEqual(['attention']);
+      expect(github.reviews).toEqual([]);
+      expect(second.text()).toMatch(/does not verify R1-F1/);
+      const [nextReviewId] = (await readdir(path.join(project.workDir, 'reviews'))).filter(
+        (entry) => entry.startsWith('review-') && !before.has(entry),
+      );
+      const prompt = await readFile(
+        path.join(project.workDir, 'reviews', nextReviewId ?? '', 'input.md'),
+        'utf8',
+      );
+      expect(prompt).toContain('Outstanding identities you must verify: R1-F1, R2-F1.');
     },
   );
 });

@@ -349,7 +349,7 @@ describe('the dispositions and the verification of a verdict', () => {
         'verdict.json',
         ['R2-F1'],
       ),
-    ).toThrow(/which is not one of the outstanding findings/);
+    ).toThrow(/which is not one of the findings the history retained/);
     // A new finding continues nothing.
     expect(() =>
       parseVerdict(request({ path: 'a', line: 1, body: 'b', continues: 'R2-F1' }), 'verdict.json', [
@@ -428,6 +428,68 @@ describe('the dispositions and the verification of a verdict', () => {
       findings: [{ kind: 'unresolved', continues: 'R2-F1' }],
       verifications: [{ finding: 'R2-F1', state: 'unverified' }],
     });
+  });
+
+  it('resolves a repair regression against a finding the history already settled', () => {
+    // Round 1 raised R1-F1 and round 2 verified it while requesting changes for
+    // R2-F1: reconciliation settled R1-F1, so only R2-F1 is outstanding — but
+    // the defect keeps the identity it was raised with, and the repair
+    // regression that reintroduced it names that identity again.
+    const regression = JSON.stringify({
+      verdict: 'request_changes',
+      summary: 'repairing the second defect reintroduced the first',
+      findings: [
+        {
+          path: 'src/greeting.ts',
+          line: 2,
+          body: 'the argument is ignored again',
+          kind: 'regression',
+          continues: 'R1-F1',
+        },
+      ],
+      verifications: [
+        { finding: 'R2-F1', state: 'verified', evidence: 'read src/salutation.ts:3' },
+      ],
+    });
+    expect(parseVerdict(regression, 'verdict.json', ['R2-F1'], ['R1-F1', 'R2-F1'])).toMatchObject({
+      decision: 'request_changes',
+      findings: [{ kind: 'regression', continues: 'R1-F1' }],
+    });
+    // Writing it in any case is the same identity: the history's own spelling
+    // is what the finding keeps.
+    expect(
+      parseVerdict(
+        regression.replace('"R1-F1"', '"r1-f1"'),
+        'verdict.json',
+        ['R2-F1'],
+        ['R1-F1', 'R2-F1'],
+      ),
+    ).toMatchObject({
+      findings: [{ continues: 'R1-F1' }],
+    });
+    // A regression still has to name a finding the history really retained, and
+    // the verification requirement stays with the outstanding identities.
+    expect(() => parseVerdict(regression, 'verdict.json', ['R2-F1'], ['R2-F1'])).toThrow(
+      /which is not one of the findings the history retained \(R2-F1\)/,
+    );
+    // The verification requirement is the outstanding list's, unchanged by the
+    // retained one: the same verdict without its reading of R2-F1 is refused.
+    const withoutVerification = JSON.stringify({
+      verdict: 'request_changes',
+      summary: 'repairing the second defect reintroduced the first',
+      findings: [
+        {
+          path: 'src/greeting.ts',
+          line: 2,
+          body: 'the argument is ignored again',
+          kind: 'regression',
+          continues: 'R1-F1',
+        },
+      ],
+    });
+    expect(() =>
+      parseVerdict(withoutVerification, 'verdict.json', ['R2-F1'], ['R1-F1', 'R2-F1']),
+    ).toThrow(/does not verify R2-F1/);
   });
 });
 

@@ -27,6 +27,7 @@ import type {
   HistoryBrief,
   HistoryFinding,
   HistoryReportSummary,
+  HistorySnapshot,
   UnidentifiedFinding,
 } from './contract.js';
 
@@ -154,6 +155,45 @@ export function outstandingFindingIds(
  */
 export function unresolvedRounds(brief: HistoryBrief): readonly HistoryReportSummary[] {
   return brief.unresolvedReviews ?? (brief.unresolved === null ? [] : [brief.unresolved]);
+}
+
+/**
+ * Every finding identity the history can resolve a continuation against, in
+ * the order the reports state them: the findings of every reviewer report the
+ * snapshot kept, whether or not they are still outstanding.
+ *
+ * A continuation — `unresolved` or `regression` — names the identity a defect
+ * was raised with, and the outstanding identities above are what a verdict has
+ * to verify. The two are not the same set: reconciliation settles an identity
+ * as soon as a review verifies its disposition, so a repair regression of an
+ * already-verified finding resolves against this retained set while the
+ * verification requirement stays with the outstanding one (docs/WORKFLOW.md
+ * §9). A round reconstructed from a native review has no retained report of its
+ * own, so the outstanding identities are part of this set as well.
+ */
+export function retainedFindingIds(snapshot: HistorySnapshot): readonly string[] {
+  const ids: string[] = [];
+  const seen = new Set<string>();
+  const add = (id: string): void => {
+    if (!seen.has(id)) {
+      seen.add(id);
+      ids.push(id);
+    }
+  };
+  for (const round of unresolvedRounds(snapshot.brief)) {
+    for (const finding of round.findings) {
+      add(finding.id);
+    }
+  }
+  for (const report of snapshot.reports) {
+    if (report.kind !== 'reviewer-report') {
+      continue;
+    }
+    for (const finding of report.findings) {
+      add(finding.id);
+    }
+  }
+  return ids;
 }
 
 /** One `### Finding <id>` section a developer's report may open. */
