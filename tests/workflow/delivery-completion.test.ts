@@ -220,10 +220,6 @@ describe('delivery and verified completion', () => {
       await gitOrFail(['init', '--quiet', '--bare', destination], project.parent);
       const recordFile = path.join(project.parent, 'gh-record.jsonl');
       const gh = await installStandIn('gh', STAND_IN_GH);
-      const delivery = createGitHubDelivery(
-        { type: 'github', repository: REPOSITORY, baseBranch: BASE_BRANCH },
-        { pushUrl: destination, env: { ...process.env, NEXUS_GH_RECORD: recordFile } },
-      );
       const request: DeliveryRequest = {
         workspacePath,
         branch,
@@ -235,9 +231,15 @@ describe('delivery and verified completion', () => {
         checks: '1 of 1 configured checks exited 0 (round: passed)',
         sourceRef: REF,
       };
-      const delivered = await withPathPrefix(gh.bin, () =>
-        delivery.deliver(request, new AbortController().signal),
-      );
+      const delivered = await withPathPrefix(gh.bin, () => {
+        // Delivery captures its environment at construction, including the path
+        // to the stand-in. Construct it only after that path is installed.
+        const delivery = createGitHubDelivery(
+          { type: 'github', repository: REPOSITORY, baseBranch: BASE_BRANCH },
+          { pushUrl: destination, env: { ...process.env, NEXUS_GH_RECORD: recordFile } },
+        );
+        return delivery.deliver(request, new AbortController().signal);
+      });
 
       expect(delivered).toMatchObject({ number: 42, head, created: true });
       expect(
