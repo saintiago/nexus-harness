@@ -239,6 +239,32 @@ function developerReportText(
   return `${lines.join('\n').trimEnd()}\n`;
 }
 
+/** The heading one coding turn of a complete developer report opens. */
+const TURN_HEADING = /^#{2,6}\s+Turn\s+\d+\s*\(/i;
+
+/**
+ * The newest coding turn's own summary of one complete developer report: the
+ * text its last `Turn <n>` heading opens, and nothing above it.
+ *
+ * A run's report holds every coding turn it ran, in order, and each turn states
+ * its own answers — or states none. The newest turn is what the developer
+ * claims now, so an earlier turn's complete answer is history: it stays
+ * readable in the report it was recorded in and is not read as an answer the
+ * newest turn never gave (docs/WORKFLOW.md §9). A text that states no coding
+ * turn at all is read whole, so a report this harness did not render itself is
+ * still searched for the answers it holds.
+ */
+export function latestCodingTurnText(text: string): string {
+  const lines = text.split(/\r?\n/);
+  let start: number | null = null;
+  for (const [index, line] of lines.entries()) {
+    if (TURN_HEADING.test(line)) {
+      start = index + 1;
+    }
+  }
+  return start === null ? text : lines.slice(start).join('\n');
+}
+
 /**
  * The fields one complete reviewer report rendering is made of. A report this
  * harness recorded carries them directly; one recovered from a reviewer's own
@@ -1286,6 +1312,29 @@ interface RetainedVerdictRead {
 }
 
 /**
+ * The identity one verification of a retained verdict names, in the spelling
+ * the history uses.
+ *
+ * A verdict is written with the identities the snapshot named, and a reviewer
+ * may spell one in any case: `parseVerdict` accepts that by resolving the
+ * identity against the history, so `r1-f1` becomes `R1-F1` before anything is
+ * published. A verdict read back from disk is read without that history, so the
+ * same normalization is applied here — the report's own finding keeps its
+ * spelling, and any other identity is read as the one this harness names, which
+ * is upper case. Without it, a recovery would keep the reviewer's spelling
+ * verbatim and settle nothing the published verdict settled, so a valid
+ * verification would change meaning after a restart (docs/WORKFLOW.md §9).
+ */
+function recoveredVerificationIdentity(
+  stated: string,
+  findings: readonly HistoryFinding[],
+): string {
+  const named = stated.trim();
+  const own = findings.find((finding) => finding.id.toUpperCase() === named.toUpperCase());
+  return own?.id ?? named.toUpperCase();
+}
+
+/**
  * Reads back the complete reviewer report one review record left: the verdict
  * the reviewer turn wrote beside its own evidence. The retained verdict is the
  * reviewer's own wording, whole, and it is validated here before it is
@@ -1421,7 +1470,11 @@ async function readRetainedVerdict(parts: {
       ) {
         continue;
       }
-      verifications.push({ finding: finding.trim(), state, evidence: evidence.trim() });
+      verifications.push({
+        finding: recoveredVerificationIdentity(finding, findings),
+        state,
+        evidence: evidence.trim(),
+      });
     }
   }
   const head = parts.record.head ?? '(the review record names no reviewed head)';

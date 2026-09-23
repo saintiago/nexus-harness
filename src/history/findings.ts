@@ -5,7 +5,11 @@
  * A finding keeps the same identity for as long as it is outstanding: it is
  * derived from the round that raised it and its position in that round's
  * findings, so every snapshot, prompt and report names the same finding the same
- * way without storing a second name anywhere. A later review that finds the same
+ * way without storing a second name anywhere. A finding a native review stated
+ * as one of its own inline comments has no retained report to be identified
+ * from, and is named by the review that stated it and the comment's own source
+ * identity, so deleting a sibling comment cannot rename the defects that remain.
+ * A later review that finds the same
  * defect again classifies its own finding as `unresolved` or `regression` and
  * names the earlier identity it continues; that earlier identity is the one the
  * defect keeps, and the later review's own occurrence is recorded beside it, so
@@ -59,6 +63,25 @@ export function findingIdOf(round: number | null, index: number, scope?: string)
   }
   const token = scope === undefined ? '' : scopeToken(scope);
   return token === '' ? `F${String(index + 1)}` : `N${token}-F${String(index + 1)}`;
+}
+
+/**
+ * The stable identity of one finding a native review stated as one of its own
+ * inline comments: the review that stated it, and the comment's own source
+ * identity.
+ *
+ * A native review the harness kept no complete report for has no report to
+ * assign its findings' identities from; it is reconstructed from the review's
+ * own entry and the inline comments that carry it. A position among the
+ * comments GitHub returns in this snapshot cannot name one of them: deleting an
+ * earlier sibling moves every later comment, so the defects that remain would
+ * be renamed — an answer or a verification written against one identity would
+ * then settle a different finding. Deriving the identity from the comment's own
+ * source identity keeps it the same one for as long as the review holds that
+ * comment, whatever happens to its siblings (docs/WORKFLOW.md §9).
+ */
+export function nativeFindingIdOf(reviewScope: string, commentId: string): string {
+  return `N${scopeToken(reviewScope)}-C${scopeToken(commentId)}`;
 }
 
 /** How long a readable scope token may grow before it is shortened. */
@@ -217,8 +240,8 @@ export function retainedFindingIds(snapshot: HistorySnapshot): readonly string[]
     const inline = snapshot.entries.filter(
       (entry) => entry.kind === 'pr-review-comment' && entry.reviewId === Number(review.sourceId),
     );
-    for (const [index] of inline.entries()) {
-      add(findingIdOf(null, index, review.sourceId));
+    for (const comment of inline) {
+      add(nativeFindingIdOf(review.sourceId, comment.sourceId));
     }
   }
   return ids;

@@ -27,11 +27,12 @@ import {
   type ReviewerReportRequest,
   type ReadComment,
 } from './contract.js';
-import { findingIdOf, parseFindingAnswers } from './findings.js';
+import { nativeFindingIdOf, parseFindingAnswers } from './findings.js';
 import { historyMarkerOf } from './marker.js';
 import { compareHistoryTime } from './time.js';
 import { workspaceHistoryRoot } from './paths.js';
 import {
+  latestCodingTurnText,
   notePublishedDeveloperReport,
   readLocalReports,
   recordDeveloperReport,
@@ -546,9 +547,10 @@ function unresolvedRound(parts: {
         }
         return String(comment.reviewId) === reviewId;
       })
-      // A finding's identity is its position among the review's own comments.
-      // Ordering them the way the snapshot orders their entries keeps that
-      // identity reproducible from the snapshot alone, after the round that
+      // A finding's identity is the comment's own source identity, so a
+      // deleted sibling cannot rename the defects that remain; ordering them
+      // the way the snapshot orders their entries keeps the round's own
+      // rendering reproducible from the snapshot alone, after the round that
       // raised the finding was settled and no report states it any more.
       .toSorted(
         (a, b) =>
@@ -618,14 +620,14 @@ function unresolvedRound(parts: {
     }
     const own = [entry.id];
     const findings: HistoryFinding[] = [];
-    for (const [index, inline] of inlineOf(entry.sourceId).entries()) {
+    for (const inline of inlineOf(entry.sourceId)) {
       own.push(inline.entry.id);
       const comment = inline.comment;
       if (comment === null) {
         continue;
       }
       findings.push({
-        id: findingIdOf(null, index, entry.sourceId),
+        id: nativeFindingIdOf(entry.sourceId, inline.entry.sourceId),
         path: comment.path ?? '(inline review comment)',
         line: comment.line ?? null,
         body: comment.body ?? comment.text,
@@ -746,6 +748,13 @@ function unresolvedRound(parts: {
  * report that answers nothing, is kept as the incomplete response it is — never
  * rounded up to complete remediation (docs/WORKFLOW.md §9).
  *
+ * The report's own findings are answered per coding turn, and the newest turn
+ * is the claim: a turn that answers a finding again answers it, and a turn that
+ * answers nothing — or answers only part of it — states no complete response,
+ * however completely an earlier turn answered the same finding. Those earlier
+ * answers stay readable in the report they were recorded in; they are not read
+ * as the current claim.
+ *
  * The newest attempt is the current claim, whatever it holds: an earlier
  * attempt's answer stays in the snapshot as its own entry, but the work as it
  * now stands is what the latest attempt said about it, and a latest attempt
@@ -783,7 +792,7 @@ function responsesOf(
     ? null
     : `the newest developer report of this attempt (${newest.id}) is not complete — ` +
       `${newest.problem ?? 'the harness could not read it in full'}`;
-  return parseFindingAnswers(newest.text, findings).map((answer) => ({
+  return parseFindingAnswers(latestCodingTurnText(newest.text), findings).map((answer) => ({
     ...answer,
     complete: answer.complete && source === null,
     problem:

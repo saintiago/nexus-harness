@@ -13,6 +13,7 @@ import {
   FINDING_ANSWER_FIELDS,
   findingIdOf,
   identifyFindings,
+  nativeFindingIdOf,
   outstandingFindingIds,
   parseFindingAnswers,
   unresolvedRounds,
@@ -69,6 +70,22 @@ describe('the identity one finding keeps', () => {
     expect(identifyFindings([{ path: 'a', line: null, body: 'b' }], null, '77')).toEqual([
       { id: 'N77-F1', path: 'a', line: null, body: 'b' },
     ]);
+  });
+
+  it('names a native review’s inline finding by the comment’s own identity', () => {
+    // A native review the harness kept no report for is reconstructed from its
+    // own inline comments. A position among the comments GitHub returns in one
+    // snapshot cannot name them: deleting an earlier sibling would move every
+    // later comment, so an answer written for one finding would settle another.
+    expect(nativeFindingIdOf('91', '9001')).toBe('N91-C9001');
+    expect(nativeFindingIdOf('91', '9002')).toBe('N91-C9002');
+    // The identity is derived, not generated per snapshot: the same review and
+    // comment read back the same name.
+    expect(nativeFindingIdOf('91', '9001')).toBe(nativeFindingIdOf('91', '9001'));
+    // Two reviews this harness cannot number apart still name their comments
+    // apart, and a comment identity is bounded like any other token.
+    expect(nativeFindingIdOf('a / b', '7')).toBe('NA-B-C7');
+    expect(nativeFindingIdOf('91', 'x'.repeat(40))).toMatch(/^N91-CX{16}-[0-9A-F]{8}$/);
   });
 
   it('keeps two unnumbered reviews of one project apart, whatever their evidence', () => {
@@ -220,14 +237,15 @@ describe('the developer answers the harness reads', () => {
       '',
       answer('R3-F1', { Cause: 'the same helper ignored its argument' }),
       '',
-      '### Turn 2 (repair)',
-      '',
       answer('R3-F1', { Cause: 'still the shared helper' }),
     ].join('\n');
     const answers = parseFindingAnswers(text, ['R3-F1', 'R3-F2']);
     expect(answers.map((one) => one.finding)).toEqual(['R3-F1', 'R3-F2']);
     expect(answers.every((one) => one.complete)).toBe(true);
-    // The last answer recorded for one identity is the one that stands.
+    // Within one turn's own text, the last section recorded for one identity is
+    // the one that stands. Which turn's text is read is the caller's decision:
+    // a report's answers are read from its newest coding turn alone, so an
+    // earlier turn's answer never stands in for a later turn that gave none.
     expect(answers[0]?.cause).toBe('still the shared helper');
     expect(answers[1]?.verification).toBe('exercised greet("hi") through the exported function');
   });
