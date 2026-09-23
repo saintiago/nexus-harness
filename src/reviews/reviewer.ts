@@ -327,9 +327,14 @@ export function reviewPrompt(
       '```',
       '',
       'Every field above is a placeholder for its shape. Write your own summary, findings and',
-      'evidence; the example’s "new" finding and its "unverified" readings are placeholders, not',
-      'readings you may keep, and "verified" is only for a repair you read yourself at the place',
-      'the defect lived.',
+      'evidence, and "verified" is only for a repair you read yourself at the place the defect',
+      'lived.',
+      ...(outstanding.length === 0
+        ? ['The example’s "new" finding is a placeholder, not a finding you may keep.']
+        : [
+            'The example’s "new" finding is a placeholder, and so are its "unverified" readings:',
+            'write your own reading for each outstanding identity above.',
+          ]),
       '',
       '- Write "approve" only after completing the review with sufficient evidence and no',
       '  blocking findings. Findings are blocking: an approval must have an empty findings list.',
