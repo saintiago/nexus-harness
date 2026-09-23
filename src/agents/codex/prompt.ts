@@ -136,8 +136,9 @@ export function promptFor(request: AgentTurnRequest): string {
       [
         '## Answer every outstanding finding',
         'The ticket history above lists every review round whose change request is still',
-        'outstanding, each finding with the identity it keeps — the change you were asked to make.',
-        'End your summary with one section per finding, naming its identity exactly, in this shape:',
+        'outstanding, each finding with the identity it keeps. Those findings are the change you',
+        'were asked to make: end your summary with one section per finding, naming its identity',
+        'exactly, in this shape:',
         '',
         `### Finding ${outstanding[0] ?? 'R2-F1'}`,
         '- Cause: why the defect happened.',
@@ -157,7 +158,8 @@ export function promptFor(request: AgentTurnRequest): string {
         'The harness reads those sections from your own final summary. A finding you do not answer,',
         'or whose answer leaves out a field, is recorded as no complete response: the reviewer sees',
         'the gap and will not treat it as a repaired finding. Answer each finding for itself; one',
-        'answer never stands in for another.',
+        'answer never stands in for another, and a finding you answer must still be repaired in the',
+        'working copy — the reviewer verifies the revision, not the answer.',
       ].join('\n'),
     );
   }
