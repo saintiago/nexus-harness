@@ -206,7 +206,7 @@ function recordHarness(notes: readonly SourceNote[], running = true) {
       return 'moved';
     },
   };
-  return { record, posted, moves, reads, thread: () => thread };
+  return { record, posted, moves, reads };
 }
 
 /** One diagnosis over a temporary output directory, with a rejected-search-immune turn. */

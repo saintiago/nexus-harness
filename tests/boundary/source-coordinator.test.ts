@@ -270,6 +270,7 @@ describe('one item, one receipt, across invocations', () => {
     expect(again.calls.prepared).toEqual(['HARN-11-restated', 'HARN-11-restated']);
     expect(again.calls.claims).toEqual([]);
     expect(again.calls.runs).toEqual([]);
+    expect(again.calls.outputs.join('\n')).toContain('refused, and the issue is told why');
     expect(receiptFilePath(workDir, edited.ref)).toBe(receiptFilePath(workDir, REF));
     expect(receiptFilePath(workDir, { ...edited.ref, id: '10012' })).not.toBe(
       receiptFilePath(workDir, REF),
