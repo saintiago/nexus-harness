@@ -40,7 +40,10 @@ of a remaining or reintroduced defect, or change the acceptance standard between
 Apply the supplied verdict rules. Personal preferences and alternative implementations are not
 grounds for rejecting correct work. Identify missing evidence rather than inventing a defect.
 
-Inspect and test without changing implementation files or committing. Publication belongs to Nexus.
+You may install dependencies, build, run tests and create temporary tests or reproduction scripts.
+Caches, logs and generated output are normal parts of verification. Preserve the implementation
+being reviewed; do not implement fixes or commit. Remove your temporary test additions when finished,
+preserving pre-existing work. Publication belongs to Nexus.
 
 Return only the JSON object in the supplied response format, without Markdown fences.
 ```

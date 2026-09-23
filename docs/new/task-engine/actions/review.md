@@ -55,9 +55,10 @@ and developer responses, not shortened Jira summaries.
 Read the comparison diff for the recorded base/head and include that revision range in the review
 context. Agent claims do not change the revision this action is evaluating.
 
-Use the existing worktree with the reviewer profile. The reviewer may inspect code and run focused
-checks; it must not alter implementation files. The action verifies that the reviewed revision and
-implementation remain unchanged after the turn.
+Use the existing worktree with the reviewer profile. Dependency installation, builds, focused checks
+and temporary reproduction tests may write files. Verify that the reviewed revision and implementation
+remain unchanged after the turn; new caches, logs or generated verification output alone do not
+invalidate a review. Implementation fixes belong to a development turn.
 
 The reviewer evaluates correctness and missing behavior, explains prior finding dispositions and
 returns a verdict. Validate finding IDs, prior dispositions and the verdict under the shared contract.

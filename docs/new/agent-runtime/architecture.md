@@ -84,6 +84,18 @@ instead of silently truncating it.
 Profiles define model, effort and available tools. Invocation instructions do not change these
 settings. Resolve credentials for configured tools and keep their values out of prompts and reports.
 
+Developer and reviewer profiles expose the same tools:
+
+- Shell execution and file reading, creation and editing.
+- Tavily web search and page extraction.
+- Context7 library documentation.
+- OpenAI documentation MCP.
+
+Disable personal connectors and unrelated integrations, including the GitHub connector, for both
+profiles. Harness publication remains outside the agent tool set. Use the provider's native settings
+to configure these tools; do not impose a read-only filesystem policy on the reviewer. Its commands
+must be able to install dependencies, build and run tests, including their file writes.
+
 ## Invocation
 
 Resolve the profile, assemble the prompt, invoke the provider, collect output and return the result.
