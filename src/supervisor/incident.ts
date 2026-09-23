@@ -261,6 +261,19 @@ export interface IncidentReport {
     readonly email: string;
     readonly state: 'pending' | 'sent' | 'failed' | 'interrupted';
     readonly messageId: string | null;
+    /**
+     * The label of this publication attempt's own log files, or `null` when the
+     * record names none.
+     *
+     * One incident publishes a summary for each conclusion it reaches, and each
+     * attempt writes its own output under its own label. The label is therefore
+     * part of the state rather than something read back from the directory: a
+     * `pending` publication is reconciled against the output of the attempt it
+     * *is* — the log it names — and never against an earlier conclusion's
+     * acknowledgement, which would mark this one delivered when nothing of it
+     * was ever sent.
+     */
+    readonly log: string | null;
     readonly problem: string | null;
   } | null;
   /** What a person must fix about the report itself, when anything. */
@@ -474,6 +487,22 @@ export function publishedConclusionOf(value: unknown): PublishedConclusion | nul
 }
 
 /**
+ * One recorded email-publication state, as it was written down. A record
+ * written before the attempt's own log identity was kept names none, which is
+ * how a restart reads it: an in-flight publication with no evidence of its own
+ * to reconcile against.
+ */
+function notificationStateOf(value: unknown): IncidentReport['notification'] {
+  if (!isRecord(value)) {
+    return null;
+  }
+  return {
+    ...(value as unknown as NonNullable<IncidentReport['notification']>),
+    log: typeof value['log'] === 'string' ? value['log'] : null,
+  };
+}
+
+/**
  * The superseded publications one report carries, as they were written down. A
  * record written before the field existed carries none — it never concluded
  * twice — and an entry this harness did not write is dropped rather than
@@ -492,9 +521,7 @@ function supersededReportsOf(value: unknown): readonly SupersededReport[] {
     kept.push({
       conclusion: publishedConclusionOf(entry['conclusion']),
       commentId: typeof entry['commentId'] === 'string' ? entry['commentId'] : null,
-      notification: isRecord(notification)
-        ? (notification as unknown as IncidentReport['notification'])
-        : null,
+      notification: notificationStateOf(notification),
       problem: typeof entry['problem'] === 'string' ? entry['problem'] : null,
     });
   }
@@ -567,6 +594,7 @@ export async function readIncident(file: string): Promise<IncidentRecord | null>
         publishedConclusionOf(report.conclusion) ??
         publishedConclusionOf(value['conclusion']) ??
         null,
+      notification: notificationStateOf(report.notification),
       superseded: supersededReportsOf(report.superseded),
     },
     acknowledgement:

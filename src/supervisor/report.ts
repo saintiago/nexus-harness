@@ -186,6 +186,22 @@ export function incidentReportText(
 }
 
 /**
+ * One recorded publication state, as the incident's own history words it: how
+ * far the summary got, the identity the topic acknowledged when it did, and the
+ * log of the attempt that state belongs to — the evidence a person needs when
+ * the summary is the one thing still unconfirmed.
+ */
+function describeNotificationState(
+  state: NonNullable<IncidentReport['notification']>,
+): string {
+  return (
+    `email summary ${state.state} for ${state.email}` +
+    (state.messageId === null ? '' : ` (message ${state.messageId})`) +
+    (state.log === null ? '' : ` (attempt log ${state.log})`)
+  );
+}
+
+/**
  * The complete record of one incident, as the ticket's shared history keeps it.
  *
  * The concise report above is one publication of one incident; this is the
@@ -278,10 +294,7 @@ export function incidentHistoryText(incident: IncidentRecord): string {
       '; ' +
       (incident.report.notification === null
         ? 'no email summary was configured'
-        : `email summary ${incident.report.notification.state} for ${incident.report.notification.email}` +
-          (incident.report.notification.messageId === null
-            ? ''
-            : ` (message ${incident.report.notification.messageId})`)) +
+        : describeNotificationState(incident.report.notification)) +
       '.',
   );
   for (const earlier of incident.report.superseded) {
@@ -295,10 +308,7 @@ export function incidentHistoryText(incident: IncidentRecord): string {
         '; ' +
         (earlier.notification === null
           ? 'no email summary'
-          : `email summary ${earlier.notification.state}` +
-            (earlier.notification.messageId === null
-              ? ''
-              : ` (message ${earlier.notification.messageId})`)) +
+          : describeNotificationState(earlier.notification)) +
         (earlier.problem === null ? '' : `; reporting problem: ${earlier.problem}`) +
         '.',
     );
@@ -521,6 +531,7 @@ export function createIncidentReporter(parts: IncidentReporterParts): IncidentRe
     }
 
     if (parts.notification !== null) {
+      const policy = parts.notification;
       const previous = notification;
       if (previous?.state === 'sent') {
         // Already published: a restart never sends one incident's summary twice.
@@ -531,81 +542,100 @@ export function createIncidentReporter(parts: IncidentReporterParts): IncidentRe
         // check the topic.
       } else if (previous?.state === 'pending') {
         // An attempt was in flight when the invocation before this one stopped.
-        // Its own publisher's output says whether the topic acknowledged it.
+        // Its own publisher's output says whether the topic acknowledged it —
+        // the log the pending state names, and never the output of another
+        // conclusion's publication: an incident that concluded again publishes
+        // its own summary, and an earlier conclusion's acknowledgement is not
+        // evidence about this one.
         const acknowledged = await acknowledgedSummary(parts, incident);
         if (acknowledged !== null) {
           notification = {
-            topicArn: parts.notification.topicArn,
-            email: parts.notification.email,
+            topicArn: policy.topicArn,
+            email: policy.email,
             state: 'sent',
             messageId: acknowledged,
+            log: previous.log,
             problem: null,
           };
         } else {
-          const detail =
-            'the publication was interrupted and the publisher acknowledged nothing, so it may ' +
-            'or may not have reached the topic';
+          const detail = `the publication was interrupted and ${
+            previous.log === null
+              ? 'the attempt that was in flight names no log of its own'
+              : `its own publisher's output ("${previous.log}.stdout.log") acknowledged nothing`
+          }, so it may or may not have reached the topic`;
           notification = {
-            topicArn: parts.notification.topicArn,
-            email: parts.notification.email,
+            topicArn: policy.topicArn,
+            email: policy.email,
             state: 'interrupted',
             messageId: null,
+            log: previous.log,
             problem: detail,
           };
           problems.push(
-            `the email summary to ${parts.notification.email} was left in flight by an earlier ` +
+            `the email summary to ${policy.email} was left in flight by an earlier ` +
               `invocation (${detail}); it is not sent again automatically, because a second ` +
               `summary for one incident is worse than an unconfirmed one — check ` +
-              `${parts.notification.topicArn} before resending it by hand`,
+              `${policy.topicArn} before resending it by hand`,
           );
         }
       } else if (previous !== null && previous.state !== 'failed') {
         problems.push(
-          `the email summary to ${parts.notification.email} may or may not have been published ` +
+          `the email summary to ${policy.email} may or may not have been published ` +
             'before the supervisor stopped (the publication was interrupted), so it is not sent ' +
             'again automatically; check the topic before resending it by hand',
         );
       } else if (stop.aborted) {
         problems.push('the email summary was not sent: the supervisor was stopped first');
       } else {
-        // Written down as pending before the publisher starts: a restart reads
-        // this state as "an attempt was made", never as "nothing was tried".
-        notification = {
-          topicArn: parts.notification.topicArn,
-          email: parts.notification.email,
-          state: 'pending',
-          messageId: null,
-          problem: null,
-        };
-        await writeDown(reportSoFar());
+        // The publication's own attempt identity, filled in by the checkpoint
+        // that writes the attempt down before the publisher runs.
+        let attemptLog: string | null = null;
         const publication = await sendSummary(
           runNotification,
           parts,
           incident,
           text.subject,
           text.text,
+          // Written down as pending — with the label of the attempt's own log
+          // files — before the publisher starts: a restart reads this state as
+          // "an attempt was made", never as "nothing was tried", and it reads
+          // the acknowledgement of exactly this attempt and no other.
+          async (label) => {
+            attemptLog = label;
+            notification = {
+              topicArn: policy.topicArn,
+              email: policy.email,
+              state: 'pending',
+              messageId: null,
+              log: label,
+              problem: null,
+            };
+            await writeDown(reportSoFar());
+          },
         );
         if (publication.problem === null) {
           notification = {
-            topicArn: parts.notification.topicArn,
-            email: parts.notification.email,
+            topicArn: policy.topicArn,
+            email: policy.email,
             state: 'sent',
             messageId: publication.messageId,
+            log: attemptLog,
             problem: null,
           };
         } else if (publication.retryable) {
           // The publisher never ran, or it ran and refused: the summary
           // definitely was not sent, so a later invocation may try again.
           notification = {
-            topicArn: parts.notification.topicArn,
-            email: parts.notification.email,
+            topicArn: policy.topicArn,
+            email: policy.email,
             state: 'failed',
             messageId: null,
+            log: attemptLog,
             problem: publication.problem,
           };
           problems.push(
-            `the email summary to ${parts.notification.email} could not be published through ` +
-              `${parts.notification.topicArn}: ${publication.problem}`,
+            `the email summary to ${policy.email} could not be published through ` +
+              `${policy.topicArn}: ${publication.problem}`,
           );
         } else {
           // The publisher ran and its ending does not prove the topic refused
@@ -617,15 +647,16 @@ export function createIncidentReporter(parts: IncidentReporterParts): IncidentRe
             `${publication.problem}; it may or may not have reached the topic, so it is not ` +
             'sent again automatically — check the topic before resending it by hand';
           notification = {
-            topicArn: parts.notification.topicArn,
-            email: parts.notification.email,
+            topicArn: policy.topicArn,
+            email: policy.email,
             state: 'interrupted',
             messageId: null,
+            log: attemptLog,
             problem: detail,
           };
           problems.push(
-            `the email summary to ${parts.notification.email} was left in flight through ` +
-              `${parts.notification.topicArn}: ${detail}`,
+            `the email summary to ${policy.email} was left in flight through ` +
+              `${policy.topicArn}: ${detail}`,
           );
         }
       }
@@ -754,6 +785,12 @@ interface SummaryPublication {
  * nothing is uncertain whatever its exit code: an accepted publish whose answer
  * was lost, a refused one, and a summary that never left the machine all end
  * that way, and a duplicate email is worse than an unconfirmed one.
+ *
+ * The label the attempt's own log files carry is worked out here and handed to
+ * `pending` before the publisher is started: the attempt is written down as
+ * in flight together with the identity of the output that will say how it went,
+ * so a restart reconciles this attempt's own evidence rather than whatever else
+ * the incident's directory happens to hold.
  */
 async function sendSummary(
   runNotification: typeof runCommand,
@@ -761,6 +798,7 @@ async function sendSummary(
   incident: IncidentRecord,
   subject: string,
   text: string,
+  pending: (label: string) => Promise<void>,
 ): Promise<SummaryPublication> {
   const notification = parts.notification;
   if (notification === null) {
@@ -775,6 +813,7 @@ async function sendSummary(
   await mkdir(parts.logsDir(incident), { recursive: true });
   const logsDir = parts.logsDir(incident);
   const label = await notificationLabel(logsDir);
+  await pending(label);
   const result = await runNotification({
     command: [
       ...notification.publisher,
@@ -849,39 +888,35 @@ async function notificationLabel(logsDir: string): Promise<string> {
 }
 
 /**
- * The message identity a publisher acknowledged, read back from the output of
- * the attempts this incident already made. This is the only evidence a
- * publication that was in flight left behind: the topic itself is never
- * queried, and reading these files changes nothing.
+ * The message identity the in-flight publication's own publisher acknowledged,
+ * read back from the output of exactly the attempt the pending state names.
+ *
+ * This is the only evidence a publication that was in flight left behind: the
+ * topic itself is never queried, and reading that file changes nothing. It is
+ * deliberately not a search of the incident's directory: one incident publishes
+ * a summary for each conclusion it reaches, so an acknowledgement found under
+ * another label — the earlier conclusion's summary, chiefly — says nothing
+ * about this one, and adopting it would mark a summary delivered that was never
+ * sent. An attempt that names no log of its own leaves nothing this can adopt.
  */
 async function acknowledgedSummary(
   parts: IncidentReporterParts,
   incident: IncidentRecord,
 ): Promise<string | null> {
   const notification = parts.notification;
-  if (notification === null) {
+  const label = incident.report.notification?.log ?? null;
+  if (notification === null || label === null) {
     return null;
   }
   const dir = parts.logsDir(incident);
-  let names: readonly string[];
-  try {
-    names = await readdir(dir);
-  } catch {
+  const text = await readFile(path.join(dir, `${label}.stdout.log`), 'utf8').catch(() => '');
+  const topic = /"TopicArn"\s*:\s*"([^"]+)"/.exec(text);
+  if (topic !== null && topic[1] !== notification.topicArn) {
     return null;
   }
-  const logs = names
-    .filter((name) => /^recovery-notification(-[0-9]+)?\.stdout\.log$/.test(name))
-    .sort();
-  for (const name of logs) {
-    const text = await readFile(path.join(dir, name), 'utf8').catch(() => '');
-    const topic = /"TopicArn"\s*:\s*"([^"]+)"/.exec(text);
-    if (topic !== null && topic[1] !== notification.topicArn) {
-      continue;
-    }
-    const match = /"MessageId"\s*:\s*"([^"]+)"/.exec(text);
-    if (match?.[1] !== undefined) {
-      return match[1];
-    }
+  const match = /"MessageId"\s*:\s*"([^"]+)"/.exec(text);
+  if (match?.[1] !== undefined) {
+    return match[1];
   }
   return null;
 }

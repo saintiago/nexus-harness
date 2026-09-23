@@ -14,7 +14,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { RECOVERY_OUTCOME_FILE, parseRecoveryJudgment } from '../../src/supervisor/recovery.js';
-import { incidentReportText } from '../../src/supervisor/report.js';
+import { createIncidentReporter, incidentReportText } from '../../src/supervisor/report.js';
 import {
   publishedConclusionOf,
   incidentDir,
@@ -199,6 +199,7 @@ async function runSupervision(overrides: {
               email: NOTIFICATION.email,
               state: 'sent' as const,
               messageId: 'message-1',
+              log: 'recovery-notification',
               problem: null,
             },
             problem: null,
@@ -1857,6 +1858,7 @@ describe('a supervised queue', () => {
           email: NOTIFICATION.email,
           state: 'failed',
           messageId: null,
+          log: 'recovery-notification',
           problem: 'the publisher was not found',
         },
         problem: 'the email summary could not be published',
@@ -1912,6 +1914,7 @@ describe('a supervised queue', () => {
           email: NOTIFICATION.email,
           state: 'sent',
           messageId: 'message-old',
+          log: 'recovery-notification',
           problem: null,
         },
         problem: null,
@@ -1953,6 +1956,88 @@ describe('a supervised queue', () => {
     expect(again.outcome).toBe('attention');
     expect(again.workerRuns).toBe(0);
     expect(nothing).toEqual([]);
+  }, 30_000);
+
+  it('reconciles a pending second publication against its own attempt, and never the earlier summary’s answer', async () => {
+    const { workDir, repoPath, configPath } = await workspace();
+    const root = supervisorRoot(workDir, 'namespace');
+    const incident = await seedIncident(root);
+    const seeded = await readIncident(incidentFilePath(root, incident.id));
+    if (seeded === null) {
+      throw new Error('the seeded incident is gone');
+    }
+    // The state an invocation that concluded again leaves: the incident holds
+    // the request for human help, its publication was written down as pending
+    // for the attempt it started, and the earlier blocked summary really was
+    // published — its own acknowledgement sits under the earlier attempt's log,
+    // with a message id of its own.
+    const logs = incidentDir(root, incident.id);
+    await mkdir(logs, { recursive: true });
+    await writeFile(
+      path.join(logs, 'recovery-notification.stdout.log'),
+      JSON.stringify({ MessageId: 'blocked-1', TopicArn: NOTIFICATION.topicArn }),
+      'utf8',
+    );
+    await writeIncident(incidentFilePath(root, incident.id), {
+      ...seeded,
+      stage: 'help',
+      sequence: null,
+      conclusion: {
+        outcome: 'help',
+        detail: 'restore the queue’s Jira credential and run the supervisor again',
+        at: '2026-09-23T00:10:00.000Z',
+      },
+      report: {
+        publishedAt: '2026-09-23T00:04:00.000Z',
+        commentId: '9999',
+        commentText: 'Harness recovery report (incident seeded, blocked at 00:03).',
+        conclusion: { outcome: 'help', at: '2026-09-23T00:10:00.000Z' },
+        superseded: [],
+        notification: {
+          topicArn: NOTIFICATION.topicArn,
+          email: NOTIFICATION.email,
+          state: 'pending',
+          messageId: null,
+          log: 'recovery-notification-2',
+          problem: null,
+        },
+        problem: null,
+      },
+    });
+    const runs: string[] = [];
+    const reporter = createIncidentReporter({
+      notification: NOTIFICATION,
+      logsDir: (entry) => incidentDir(root, entry.id),
+      cwd: workDir,
+      now: () => new Date('2026-09-23T00:11:00.000Z'),
+      runNotification: async () => {
+        throw new Error('the summary must not be published again by this case');
+      },
+    });
+    const recovery = scriptedRecovery([{ status: 'repaired', summary: 's', cause: 'c' }]);
+    const summary = await runSupervision({
+      workDir,
+      repoPath,
+      configPath,
+      isAlive: () => false,
+      worker: scriptedWorker([ended(0)]),
+      recoveryTurn: recovery,
+      reporter,
+    });
+
+    // The earlier acknowledgement is not this publication's: the request for a
+    // person stands, the summary is recorded as interrupted rather than sent,
+    // and nothing is published again automatically.
+    expect(runs).toEqual([]);
+    expect(recovery.calls).toBe(0);
+    expect(summary.outcome).toBe('attention');
+    expect(summary.problem).not.toBeNull();
+    const stored = await readIncident(incidentFilePath(root, incident.id));
+    expect(stored?.report.notification).toMatchObject({
+      state: 'interrupted',
+      messageId: null,
+      log: 'recovery-notification-2',
+    });
   }, 30_000);
 });
 

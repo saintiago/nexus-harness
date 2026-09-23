@@ -472,6 +472,7 @@ describe('the incident report', () => {
       email: notification.email,
       state: 'sent' as const,
       messageId: 'm-1',
+      log: 'recovery-notification',
       problem: null,
     };
     const ticket = { key: 'HARN-51', url: 'https://site.atlassian.net/browse/HARN-51' };
@@ -574,6 +575,7 @@ describe('the incident report', () => {
           email: notification.email,
           state: 'failed',
           messageId: null,
+          log: 'recovery-notification',
           problem: 'the publisher was not found',
         },
         problem: 'the summary could not be published',

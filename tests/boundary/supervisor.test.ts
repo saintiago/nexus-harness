@@ -1286,6 +1286,7 @@ describe('the incident report’s publication boundaries', () => {
             email: notification.email,
             state: 'pending',
             messageId: null,
+            log: 'recovery-notification',
             problem: null,
           },
         },
@@ -1489,6 +1490,104 @@ describe('the incident report’s publication boundaries', () => {
     expect(runs).toHaveLength(1);
   }, 30_000);
 
+  it('reconciles the attempt the pending state names, never an earlier conclusion’s publication', async () => {
+    const directory = await tempDir();
+    const logsDir = path.join(directory, 'incident-logs');
+    const topicArn = 'arn:aws:sns:eu-north-1:698643713254:nexus-recovery-notifications';
+    await mkdir(logsDir, { recursive: true });
+    // The earlier — blocked — conclusion's summary really was published, and
+    // its acknowledgement sits in the incident's own log directory under the
+    // label of that attempt.
+    await writeFile(
+      path.join(logsDir, 'recovery-notification.stdout.log'),
+      JSON.stringify({ MessageId: 'blocked-1', TopicArn: topicArn }),
+      'utf8',
+    );
+    // The second conclusion wrote its own attempt down as pending before its
+    // publisher ran, and the invocation then stopped: nothing of that attempt's
+    // own output acknowledges anything.
+    await writeFile(path.join(logsDir, 'recovery-notification-2.stdout.log'), '', 'utf8');
+    const notification = {
+      topicArn,
+      email: 'saint282@gmail.com',
+      publisher: ['aws', 'sns', 'publish'],
+    };
+    const runs: string[] = [];
+    const runNotification: typeof runCommand = async () => {
+      throw new Error('the summary must not be published again by this case');
+    };
+    const reporter = createIncidentReporter({
+      notification,
+      logsDir: () => logsDir,
+      cwd: directory,
+      now: () => new Date('2026-09-23T00:11:00.000Z'),
+      runNotification,
+    });
+    // The state an invocation that concluded again leaves: the incident holds
+    // the request for human help, and the publication that describes it is the
+    // one still in flight — its own attempt, not the earlier summary's.
+    const concluded: IncidentRecord = {
+      ...reportIncident('ns'),
+      stage: 'help',
+      sequence: null,
+      conclusion: {
+        outcome: 'help',
+        detail: 'restore the queue’s Jira credential',
+        at: '2026-09-23T00:10:00.000Z',
+      },
+      report: {
+        publishedAt: '2026-09-23T00:04:00.000Z',
+        commentId: '9999',
+        commentText: 'Harness recovery report (incident ns, blocked at 00:03).',
+        conclusion: { outcome: 'help', at: '2026-09-23T00:10:00.000Z' },
+        superseded: [],
+        notification: {
+          topicArn,
+          email: notification.email,
+          state: 'pending',
+          messageId: null,
+          log: 'recovery-notification-2',
+          problem: null,
+        },
+        problem: null,
+      },
+    };
+    const interrupted = await reporter({
+      incident: concluded,
+      stop: new AbortController().signal,
+      jira: { kind: 'none' },
+    });
+    // The earlier acknowledgement belongs to the earlier publication: it is not
+    // read as this summary's delivery, and the summary is not sent again.
+    expect(interrupted.report.notification).toMatchObject({
+      state: 'interrupted',
+      messageId: null,
+      log: 'recovery-notification-2',
+    });
+    expect(interrupted.report.notification?.problem).toContain(
+      'recovery-notification-2.stdout.log',
+    );
+    expect(interrupted.problem).toContain('not sent again automatically');
+    expect(runs).toEqual([]);
+
+    // The same attempt's own log acknowledging a message of its own is what the
+    // restart reads: this conclusion's summary really was published, under an
+    // identity the earlier one never carried.
+    await writeFile(
+      path.join(logsDir, 'recovery-notification-2.stdout.log'),
+      JSON.stringify({ MessageId: 'help-2', TopicArn: topicArn }),
+      'utf8',
+    );
+    const adopted = await reporter({
+      incident: concluded,
+      stop: new AbortController().signal,
+      jira: { kind: 'none' },
+    });
+    expect(adopted.report.notification).toMatchObject({ state: 'sent', messageId: 'help-2' });
+    expect(adopted.problem).toBeNull();
+    expect(runs).toEqual([]);
+  }, 30_000);
+
   it('never sends a second summary for an interrupted publication it cannot confirm', async () => {
     const directory = await tempDir();
     const logsDir = path.join(directory, 'incident-logs');
@@ -1520,6 +1619,7 @@ describe('the incident report’s publication boundaries', () => {
             email: notification.email,
             state: 'pending',
             messageId: null,
+            log: 'recovery-notification',
             problem: null,
           },
         },
