@@ -11,7 +11,7 @@ Construction supplies the provider connection or executable and its credentials.
 Inputs are the prompt, model, effort, tool settings, working directory and invocation time limit.
 
 Return the provider's final output and stream its available activity.
-[AgentRuntime](../agent-runtime/architecture.md#required-interface) selects profiles, assembles prompts, interprets
+[AgentRuntime](../agent-runtime/architecture.md#required-interface) resolves the supplied profile, assembles prompts, interprets
 invocation completion and returns output to its caller.
 
 ### Required capability

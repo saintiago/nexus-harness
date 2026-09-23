@@ -3,7 +3,7 @@
 ## Responsibility
 
 Run a configured agent profile in a supplied workspace with additional context prepared by the caller.
-Own profile selection, prompt assembly, agent invocation and collection of output.
+Resolve the caller-selected profile, assemble the prompt, invoke the agent and return its output.
 
 ## Interface
 
@@ -19,7 +19,7 @@ interface AgentRuntime {
   run(
     profile: ProfileId,
     workspaceRef: WorkspaceRef,
-    additionalContext: AdditionalContext,
+    additionalContext: string,
   ): Promise<AgentResult>;
 }
 
@@ -33,12 +33,6 @@ type AgentProfile = {
   toolSettings: Readonly<Record<string, unknown>>;
 };
 
-type AdditionalContext = {
-  instructions: string;
-  information: string;
-  artifacts: readonly ArtifactRef[];
-};
-
 type AgentEvent = { type: string; text: string };
 
 type AgentResult = Result<{
@@ -46,13 +40,13 @@ type AgentResult = Result<{
 }>;
 ```
 
-The profile ID selects an entry in the configured catalogue. Tool settings are the selected provider's
+The caller selects the profile ID; the runtime looks it up in the configured catalogue. Tool settings are the selected provider's
 configuration values. Unknown profiles or unsupported settings return a fault. Each call starts one
 invocation with the supplied context.
 
-AdditionalContext carries invocation instructions, information assembled by the caller and references
-to files the agent may inspect. The runtime includes those references in the prompt; it does not read
-workspace files to discover or construct the request.
+additionalContext is caller-prepared text containing the invocation instructions, information and any
+file paths the agent needs. Include it in the prompt as supplied; do not read workspace files to
+discover or construct the request.
 
 Success means the invocation finished and returned output. The caller defines the required output
 format, parses it and evaluates its claims. The runtime has no developer, reviewer or recovery output
@@ -77,8 +71,8 @@ Prompt assembly combines:
 
 1. Runtime base instructions.
 2. Selected profile instructions.
-3. Instructions and information from AdditionalContext.
-4. Workspace location and caller-supplied artifact references.
+3. Caller-supplied context.
+4. Workspace location.
 
 Preserve the supplied context completely. If provider limits prevent this, return an input failure
 instead of silently truncating it.
