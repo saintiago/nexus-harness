@@ -14,7 +14,7 @@ If code contradicts documentation, correct the code.
 - [Action design](docs/new/task-engine/actions/architecture.md): action structure, typed input/output artifacts and repeated-round handoffs.
 - [StartRound design](docs/new/task-engine/actions/start-round.md): round directories, current-round state and artifact-root selection.
 - [AgentRuntime design](docs/new/agent-runtime.md): profiles, supplied context and agent invocation.
-- [Adapters design](docs/new/adapters.md): external operations, protocol translation and observed outcomes.
+- [Adapters design](docs/new/adapters.md): thin external boundaries, consumer-driven contracts and provider translation.
 - [Workspace design](docs/new/workspace.md): directory layout and concrete workspace references.
 - [Configuration design](docs/new/configuration.md): project/Nexus setting ownership, file locations and value constraints.
 - [Long-term vision](docs/LONG_TERM_VISION.md): future purpose and direction; not current behavior.

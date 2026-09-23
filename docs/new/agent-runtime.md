@@ -64,12 +64,13 @@ invocation. Invocation failures and timeouts return a fault.
 
 ### Required interface
 
-Use [CodingRuntime.execute](adapters.md#coding-runtime) for provider communication. Supply the resolved
+Use the [coding runtime adapter](adapters.md#coding-runtime) for provider communication. Supply the resolved
 model, effort, tool settings, assembled prompt, configured time limit and working directory. The working
 directory is worktree/ within the supplied workspace root.
 
-Prompt and settings are values. The provider adapter may serialize them to files when its transport
-requires that. Artifact references are used for actual persisted inputs or outputs.
+Prompt and settings are values. Receive the provider's output and activity as data/streams and preserve
+the transcript here. The adapter may use temporary files when its transport requires them; it does not
+choose Nexus artifact locations or return saved transcript artifacts.
 
 ## Instructions and profiles
 

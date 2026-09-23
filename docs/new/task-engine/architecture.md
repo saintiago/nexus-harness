@@ -88,7 +88,7 @@ storage, then calls run again.
 | --- | --- | --- |
 | Agent execution | [AgentRuntime.run](../agent-runtime.md#provided-interface) | Profile ID, WorkspaceRef, AdditionalContext and AgentResult |
 | Task source | [Jira](../adapters.md#jira) | Read source documents and ordering; update task state, fields and reports |
-| Repository | [Git](../adapters.md#git) | Observe and prepare revisions/workspaces; publish an observed branch |
+| Repository | [Git](../adapters.md#git) | Read repository state and perform Git operations selected by actions |
 | Delivery | [GitHub](../adapters.md#github) | Publish and observe pull requests, review, checks and integration |
 | Commands | [Processes](../adapters.md#processes) | Run configured setup/check commands and return exit codes and output |
 

@@ -2,241 +2,90 @@
 
 ## Responsibility
 
-Translate explicit operations into external protocols and return observed results.
-Own authentication, provider serialization and protocol errors.
+Perform explicitly requested external operations. Own authentication, protocol translation and
+provider-specific errors. Return observed results.
 
-Adapters is a family of independent modules under `src/adapters/`. Each module has its own public
-entry point and configured connection or host capability.
+Each adapter is an independent module under src/adapters/. There is no shared adapter service.
 
 ## Interface
 
-Use the [shared value types](high-level-architecture.md#shared-interface-vocabulary).
-Operations return their useful result or a fault. A failed request does not imply that a remote write
-was rolled back. Decisions about repeating an operation or reusing an existing artifact belong to
-the caller.
+Use the [shared result and event types](high-level-architecture.md#shared-interface-vocabulary).
+Construction supplies the connection, credentials or host capability needed by that adapter.
 
-```ts
-type SourceDocument = { format: 'text' | 'adf'; value: string };
-type SourceComment = {
-  id: string;
-  author: string;
-  at: string;
-  body: SourceDocument;
-};
-```
+Actions decide what to do. Adapters perform the requested external operation. Consumers decide what
+to preserve as artifacts.
+
+Define each concrete adapter's typed operations from its consumers' requirements. An operation specifies
+its inputs, returned data and errors. Do not build an API catalogue in advance of those requirements.
+
+Provider-specific data stays provider-specific. Keep the information consumers need, including document
+structure, identities and revisions. Introduce a common representation only when a consumer needs one.
 
 ### Jira
 
-```ts
-type JiraIdentity = { site: string; issueId: string };
-type JiraTask = {
-  identity: JiraIdentity;
-  key: string;
-  title: string;
-  description: SourceDocument;
-  status: string;
-  labels: readonly string[];
-  fields: { workspaceRef: string | null; pullRequestUrl: string | null };
-  comments: readonly SourceComment[];
-};
+Perform requested issue reads, field changes, transitions, comments and ranking operations.
+Task reads and conversation retrieval are separate requests. Preserve full requested comment bodies,
+attribution and ordering.
 
-interface Jira {
-  list(): Promise<Result<readonly JiraIdentity[]>>;
-  read(target: JiraIdentity | { key: string }): Promise<Result<JiraTask>>;
-  update(
-    target: JiraIdentity,
-    change: {
-      title?: string;
-      description?: SourceDocument;
-      transitionId?: string;
-      workspaceRef?: string | null;
-      pullRequestUrl?: string | null;
-    },
-  ): Promise<Result<JiraTask>>;
-  comment(target: JiraIdentity, body: SourceDocument): Promise<Result<SourceComment>>;
-  create(input: { title: string; description: SourceDocument; issueType: string }):
-    Promise<Result<JiraTask>>;
-  rank(target: JiraIdentity, position: { before: JiraIdentity } | { after: JiraIdentity }):
-    Promise<Result<void>>;
-}
-```
-
-Construction binds site, project, selection query with explicit ordering, workflow mappings and
-field mappings. list reads all pages in provider order. read includes all comments with complete
-bodies, attribution and source order. ADF remains serialized JSON. Pagination failure returns a fault,
-not a partial queue or conversation.
-
-update applies the supplied fields/transition and returns the observed task. It does not implement
-a claim lease or a read-before-write locking protocol. Eligibility and desired lifecycle changes
-belong to the caller. rank changes provider rank, not priority.
+Field and workflow mappings translate the requested operation to the configured Jira project.
+Eligibility, claiming decisions and desired task status belong to actions. Do not implement a task
+lifecycle inside the adapter.
 
 ### GitHub
 
-```ts
-type PullRequest = { repository: string; number: number };
-type CheckObservation = {
-  name: string;
-  producer: string;
-  revision: string;
-  state: 'pending' | 'passed' | 'failed' | 'cancelled' | 'skipped';
-};
-type PullRequestState = {
-  identity: PullRequest;
-  url: string;
-  head: string;
-  base: string;
-  state: 'open' | 'closed' | 'merged';
-  mergeRevision: string | null;
-  checks: readonly CheckObservation[];
-  conversation: readonly SourceComment[];
-};
+Perform explicit pull-request, review, check and workflow operations. Read pull-request metadata,
+conversations and checks independently when requested.
 
-interface GitHub {
-  find(branch: string): Promise<Result<PullRequestState | null>>;
-  read(target: PullRequest): Promise<Result<PullRequestState>>;
-  ensurePullRequest(input: {
-    branch: string;
-    baseBranch: string;
-    expectedHead: string;
-    title: string;
-    body: string;
-  }): Promise<Result<PullRequestState>>;
-  publishReview(
-    target: PullRequest,
-    input: { head: string; body: string; verdict: 'approve' | 'request-changes' | 'comment' },
-  ): Promise<Result<{ reviewId: string; head: string }>>;
-  publishCheck(input: { head: string; name: string; outcome: 'passed' | 'failed'; report: string }):
-    Promise<Result<CheckObservation>>;
-  requestAutoMerge(target: PullRequest, expectedHead: string): Promise<Result<void>>;
-  workflows(revision: string): Promise<Result<readonly CheckObservation[]>>;
-}
-```
+Preserve revision and check-producer identity. Report actual merge state; acceptance of an auto-merge
+request is not a completed merge. Apply supported provider preconditions when requested.
 
-Construction binds the repository and authorized credentials. Preserve check producer and revision
-so a caller can identify the required gate. Return complete conversations and relevant check results.
-An ambiguous branch lookup returns a fault.
-
-ensurePullRequest updates a matching open pull request or creates one for the supplied branch and head.
-Publish reviews and checks for the explicit revision. Request auto-merge for the expected head using
-the provider's supported precondition. Acceptance of that request does not mean a merge occurred.
-
-read reports the actual merge revision. workflows reports checks for the supplied revision.
-Branch protection remains authoritative; these operations do not bypass gates.
+Deliver decides whether to find, create or update a pull request. The adapter does not make that
+decision through an ensurePullRequest operation.
 
 ### Git
 
-```ts
-type RepositoryState = {
-  path: string;
-  remote: string;
-  branch: string | null;
-  head: string;
-  dirty: boolean;
-  changes: string;
-};
+Perform requested repository reads and Git operations. Return repository state, command results or
+diff data as required by the caller.
 
-interface Git {
-  inspect(path: string): Promise<Result<RepositoryState>>;
-  prepare(input: { remote: string; path: string; branch: string; baseRevision: string }):
-    Promise<Result<RepositoryState>>;
-  diff(path: string, base: string, head: string): Promise<Result<string>>;
-  remoteRevision(path: string, branch: string): Promise<Result<string | null>>;
-  fastForward(path: string, expectedHead: string, target: string): Promise<Result<RepositoryState>>;
-  push(path: string, branch: string, expectedLocalHead: string): Promise<Result<{ remoteHead: string }>>;
-}
-```
-
-prepare creates a checkout or returns a matching retained checkout. Existing work is preserved;
-incompatible contents return a fault. changes includes tracked and untracked status.
-
-fastForward requires the expected local head and a fast-forward that preserves local work. push uses
-a normal non-forced update and reports the remote head. These operations do not automatically stash,
-reset, clean or rewrite commits.
+PrepareWorkspace decides whether to create or reuse a checkout and how to handle existing work.
+The adapter does not bundle those decisions into a prepare operation. Perform the requested operation
+without adding resets, cleanup or history rewriting.
 
 ### Processes
 
-```ts
-type ProcessRequest = {
-  executable: string;
-  args: readonly string[];
-  cwd: string;
-  environment: Readonly<Record<string, string>>;
-  stdin: string | null;
-  timeoutMs: number | null;
-};
-type ProcessEvent = { stream: 'stdout' | 'stderr'; text: string };
-type ProcessResult = Result<{
-  exitCode: number;
-  stdout: ArtifactRef;
-  stderr: ArtifactRef;
-}>;
+Run the supplied executable and argument array in the supplied directory and environment.
+Stream stdout and stderr to the consumer and return the exit code. Persisting those streams is the
+consumer's responsibility.
 
-interface Processes {
-  run(request: ProcessRequest, observe: Observer<ProcessEvent>): Promise<ProcessResult>;
-}
-```
-
-Pass executable and arguments separately. A shell command requires an explicit shell executable.
-Use the supplied environment plus necessary host settings; do not inherit unrelated credentials.
-
-Stream and retain output. Return the exit code after the command exits; nonzero is a command result,
-not a launch failure. Launch errors and timeouts return faults. On timeout, end the command's owned
-processes before returning. The caller decides what a command result means for its work.
+Nonzero exit is a command result. Launch failures and timeouts are execution errors. Apply a supplied
+time limit and end owned processes on timeout. Process handling does not determine whether a task
+passed its checks.
 
 ### Coding runtime
 
-```ts
-type RuntimeRequest = {
-  model: string;
-  effort: string | null;
-  cwd: string;
-  prompt: string;
-  toolSettings: Readonly<Record<string, unknown>>;
-  timeoutMs: number | null;
-};
-type RuntimeEvent = { type: string; text: string };
-type RuntimeResult = Result<{
-  output: string;
-  transcript: ArtifactRef | null;
-}>;
+Invoke the configured provider with the supplied prompt, model, effort and tool settings.
+Return its output and stream its activity. Unsupported settings and provider failures are errors.
 
-interface CodingRuntime {
-  execute(request: RuntimeRequest, observe: Observer<RuntimeEvent>): Promise<RuntimeResult>;
-}
-```
-
-Construction binds a provider and executable or endpoint. Apply the supplied model, effort and tool
-settings. Unsupported settings return a fault. Preserve the full prompt, output and available activity.
-
-Prompt and settings are passed as values; serialize to files only when required by the provider.
-Return final output without interpreting its business meaning. Profile substitution and extra repair
-turns are not adapter behavior.
+[AgentRuntime](agent-runtime.md#required-interface) selects profiles, assembles prompts, interprets
+invocation completion and preserves transcripts. The adapter translates the provider protocol;
+it does not select another model, add repair turns or persist Nexus artifacts.
 
 ### Notifications
 
-```ts
-type NotificationRequest = { subject: string; body: string };
+Send the supplied subject and body to the configured destination. Return the provider's publication
+result. The initial provider is SNS.
 
-interface Notifications {
-  publish(request: NotificationRequest): Promise<Result<{ acceptedMessageId: string }>>;
-}
-```
+Provider acceptance is not confirmation of inbox delivery. Report provider limits and failures
+without silently truncating content.
 
-Destination and credentials are configured. The initial provider is SNS.
-Success means provider acceptance, not inbox delivery. Reject oversized messages rather than silently
-truncating the report.
+## Implementation rules
 
-### Required capabilities
-
-Construction supplies HTTP transport, credential resolution and filesystem/process facilities where
-needed. Git and a local coding provider use Processes for command execution. No business-component
-internals are required.
-
-## Internal design
-
-Keep provider wire types, authentication and response translation within each module.
-Return useful provider errors without exposing credential values. Preserve identifiers, revision
-associations and complete paginated results.
-
-Each operation owns its local resources and releases them on completion. Adapters do not maintain a
-task ledger, decide recovery policy or add a shared transaction protocol.
+- Use existing provider libraries and process facilities where they meet the required contract.
+- Keep authentication and protocol details within the adapter; exclude secrets from returned diagnostics.
+- A collection read must return the complete requested collection or an error. Do not fetch unrelated
+  collections merely because they are available.
+- A failed request does not prove that a remote write had no effect. The caller decides whether to
+  retry or inspect the external state.
+- Return data or streams. Temporary files required by a provider's transport belong to that adapter;
+  Nexus artifact storage belongs to the consumer.
+- Release resources owned by the operation when it finishes.
