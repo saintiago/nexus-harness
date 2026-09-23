@@ -7,7 +7,7 @@
  * is waited for before the case ends. Nothing here uses a live service, an
  * agent, or a credential (docs/testing.md, docs/WORKFLOW.md §12).
  */
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -96,6 +96,62 @@ describe('the supervisor’s incident state', () => {
 });
 
 describe('the supervisor’s own ownership', () => {
+  it('lets exactly one of two starts own the queue, whoever creates the record first', async () => {
+    const root = await tempDir();
+    const now = (): Date => new Date('2026-09-23T00:00:00Z');
+    // The record is the lock: the exclusive creation itself decides, so two
+    // invocations that both read an absent record cannot both become owner.
+    const isAlive = (pid: number): boolean => pid === process.pid;
+    const [first, second] = await Promise.all([
+      acquireSupervisorOwnership({ root, intent: 'run', repoPath: 'C:/target', now, isAlive }),
+      acquireSupervisorOwnership({ root, intent: 'watch', repoPath: 'C:/target', now, isAlive }),
+    ]);
+    expect([first.ok, second.ok].filter(Boolean)).toHaveLength(1);
+    const refused = first.ok ? second : first;
+    if (!refused.ok) {
+      expect(refused.problem).toContain('another supervisor already runs');
+    }
+    for (const take of [first, second]) {
+      if (take.ok) {
+        await take.ownership.release();
+      }
+    }
+    expect(await readFile(path.join(root, 'owner.json'), 'utf8').catch(() => null)).toBeNull();
+  }, 30_000);
+
+  it('takes one stale record over exactly once when two invocations race for it', async () => {
+    const root = await tempDir();
+    const now = (): Date => new Date('2026-09-23T00:00:00Z');
+    // An earlier supervisor that is really gone: its PID is nobody's.
+    await writeFile(
+      path.join(root, 'owner.json'),
+      JSON.stringify({
+        version: 1,
+        pid: 4242,
+        token: 'stale',
+        startedAt: 't',
+        intent: 'run',
+        repoPath: 'C:/target',
+      }),
+      'utf8',
+    );
+    const isAlive = (pid: number): boolean => pid === process.pid;
+    const takes = await Promise.all([
+      acquireSupervisorOwnership({ root, intent: 'run', repoPath: 'C:/target', now, isAlive }),
+      acquireSupervisorOwnership({ root, intent: 'run', repoPath: 'C:/target', now, isAlive }),
+    ]);
+    expect(takes.filter((take) => take.ok)).toHaveLength(1);
+    const recorded = JSON.parse(await readFile(path.join(root, 'owner.json'), 'utf8')) as {
+      pid: number;
+    };
+    expect(recorded.pid).toBe(process.pid);
+    for (const take of takes) {
+      if (take.ok) {
+        await take.ownership.release();
+      }
+    }
+  }, 30_000);
+
   it('refuses a live owner and adopts one whose process is gone', async () => {
     const root = await tempDir();
     const now = (): Date => new Date('2026-09-23T00:00:00Z');
@@ -411,6 +467,108 @@ describe('the incident report’s publication boundaries', () => {
     // The summary's own failure is recorded, so a person can resend it without
     // the recovery being repeated.
     expect(failed.report.notification?.problem).toContain('did not publish the summary');
+  }, 30_000);
+
+  it('writes the summary down as pending before publishing, and reconciles an interrupted one from its own output', async () => {
+    const directory = await tempDir();
+    const logsDir = path.join(directory, 'incident-logs');
+    const publisher = path.join(directory, 'publish.mjs');
+    await writeFile(
+      publisher,
+      'process.stdout.write(JSON.stringify({ MessageId: "abc-123", TopicArn: "arn:aws:sns:eu-north-1:698643713254:nexus-recovery-notifications" }));\n',
+      'utf8',
+    );
+    const notification = {
+      topicArn: 'arn:aws:sns:eu-north-1:698643713254:nexus-recovery-notifications',
+      email: 'saint282@gmail.com',
+      publisher: [process.execPath, publisher],
+    };
+    const reporter = createIncidentReporter({
+      notification,
+      logsDir: () => logsDir,
+      cwd: directory,
+      now: () => new Date('2026-09-23T00:04:00.000Z'),
+    });
+    const incident = reportIncident('ns');
+    const written: string[] = [];
+    const sent = await reporter({
+      incident,
+      stop: new AbortController().signal,
+      checkpoint: async (report) => {
+        written.push(report.notification?.state ?? 'none');
+      },
+    });
+    // The attempt is durable before it crosses the network: a restart reads
+    // "pending" — an attempt was made — never "nothing was tried".
+    expect(written).toEqual(['pending']);
+    expect(sent.report.notification).toMatchObject({ state: 'sent', messageId: 'abc-123' });
+
+    // The invocation that sent it stopped before it recorded the answer. The
+    // next one reads the record and the publisher's own acknowledgement instead
+    // of sending a second summary for one incident.
+    const restart = await reporter({
+      incident: {
+        ...incident,
+        report: {
+          ...incident.report,
+          notification: {
+            topicArn: notification.topicArn,
+            email: notification.email,
+            state: 'pending',
+            messageId: null,
+            problem: null,
+          },
+        },
+      },
+      stop: new AbortController().signal,
+    });
+    expect(restart.report.notification).toMatchObject({ state: 'sent', messageId: 'abc-123' });
+    expect(restart.problem).toBeNull();
+    expect((await readdir(logsDir)).filter((name) => name.endsWith('.stdout.log'))).toHaveLength(1);
+  }, 30_000);
+
+  it('never sends a second summary for an interrupted publication it cannot confirm', async () => {
+    const directory = await tempDir();
+    const logsDir = path.join(directory, 'incident-logs');
+    // The publisher wrote its own log and died before it acknowledged
+    // anything: the summary may or may not have reached the topic.
+    await mkdir(logsDir, { recursive: true });
+    await writeFile(path.join(logsDir, 'recovery-notification.stdout.log'), '', 'utf8');
+    const publisher = path.join(directory, 'publish.mjs');
+    await writeFile(publisher, 'process.stdout.write("{}");\n', 'utf8');
+    const notification = {
+      topicArn: 'arn:aws:sns:eu-north-1:698643713254:nexus-recovery-notifications',
+      email: 'saint282@gmail.com',
+      publisher: [process.execPath, publisher],
+    };
+    const incident = reportIncident('ns');
+    const reporter = createIncidentReporter({
+      notification,
+      logsDir: () => logsDir,
+      cwd: directory,
+      now: () => new Date('2026-09-23T00:04:00.000Z'),
+    });
+    const outcome = await reporter({
+      incident: {
+        ...incident,
+        report: {
+          ...incident.report,
+          notification: {
+            topicArn: notification.topicArn,
+            email: notification.email,
+            state: 'pending',
+            messageId: null,
+            problem: null,
+          },
+        },
+      },
+      stop: new AbortController().signal,
+    });
+    expect(outcome.report.notification).toMatchObject({ state: 'interrupted', messageId: null });
+    expect(outcome.problem).toContain('not sent again automatically');
+    // No second attempt was made: the one log the first invocation wrote is
+    // still the only one.
+    expect((await readdir(logsDir)).filter((name) => name.endsWith('.stdout.log'))).toHaveLength(1);
   }, 30_000);
 });
 

@@ -16,6 +16,7 @@ import { describe, expect, it } from 'vitest';
 import { colorAllowed, runCli } from '../../src/cli.js';
 import { EXIT_INPUT_ERROR, EXIT_OK, EXIT_USAGE } from '../../src/cli/context.js';
 import { HELP } from '../../src/cli/help.js';
+import type { SupervisorParts } from '../../src/supervisor/supervise.js';
 import { createTempDir, writeJsonFile } from '../support.js';
 
 /** The documented harness and project configuration, as the loader reads them. */
@@ -38,7 +39,7 @@ interface Invocation {
 /** Runs one invocation with a recorded terminal, in `cwd` unless one is given. */
 async function invoke(
   argv: readonly string[],
-  options: { readonly cwd?: string } = {},
+  options: { readonly cwd?: string; readonly supervisorParts?: Partial<SupervisorParts> } = {},
 ): Promise<Invocation> {
   const out: string[] = [];
   const err: string[] = [];
@@ -48,6 +49,7 @@ async function invoke(
       out: (text) => out.push(text),
       err: (text) => err.push(text),
     },
+    ...(options.supervisorParts === undefined ? {} : { supervisorParts: options.supervisorParts }),
   });
   return { code, out, err, text: () => [...out, ...err].join('\n') };
 }
@@ -259,6 +261,104 @@ describe('the command line’s own surface', () => {
     expect(invocation.code).toBe(EXIT_INPUT_ERROR);
     expect(invocation.err.join('\n')).toContain('without "recovery.notifications"');
     expect(invocation.err.join('\n')).toContain('nexus.config.example.json');
+  }, 45_000);
+
+  it('supervises a checkout whose project configuration cannot be read, so recovery can repair it', async () => {
+    const root = await createTempDir();
+    const cwd = path.join(root, 'invocation');
+    const projectDir = path.join(root, 'target');
+    await mkdir(cwd, { recursive: true });
+    await mkdir(projectDir, { recursive: true });
+    // The supervisor's own policy is readable; the connected project's file is
+    // not. That is exactly the state a supervised run has to start in: the
+    // worker stops on it, and the recovery agent is asked to repair it.
+    const harnessPath = await writeJsonFile(root, 'harness.json', {
+      ...HARNESS,
+      recovery: {
+        maxAttempts: 2,
+        notifications: {
+          topicArn: 'arn:aws:sns:eu-north-1:698643713254:nexus-recovery-notifications',
+          email: 'saint282@gmail.com',
+        },
+      },
+    });
+    await writeJsonFile(projectDir, 'nexus.project.json', { broken: true });
+
+    let recoveries = 0;
+    let workers = 0;
+    const invocation = await invoke(
+      [
+        'supervise',
+        'run',
+        '--config',
+        path.relative(cwd, harnessPath),
+        '--repo',
+        path.relative(cwd, projectDir),
+      ],
+      {
+        cwd,
+        supervisorParts: {
+          entry: path.join(projectDir, 'cli.js'),
+          worker: async () => {
+            workers += 1;
+            return { exitCode: 0, signal: null, launchProblem: null, stopRequested: false };
+          },
+          recoveryTurn: async ({ dir }) => {
+            recoveries += 1;
+            return { judgment: null, problem: 'not reached', dir, logPath: null };
+          },
+          reporter: async ({ incident }) => ({
+            report: incident.report,
+            problem: null,
+          }),
+          isAlive: () => false,
+        },
+      },
+    );
+
+    // The supervision really ran — a worker was started — and the project's own
+    // problem was named rather than turned into a refusal before anything
+    // existed that a recovery agent could investigate.
+    expect(invocation.code).toBe(EXIT_OK);
+    expect(workers).toBe(1);
+    expect(recoveries).toBe(0);
+    expect(invocation.err.join('\n')).toContain('could not be read');
+    expect(invocation.out.join('\n')).toContain('supervise run: settled');
+  }, 45_000);
+
+  it('still refuses a readable configuration that could never compose a queue', async () => {
+    const root = await createTempDir();
+    const cwd = path.join(root, 'invocation');
+    const projectDir = path.join(root, 'target');
+    await mkdir(cwd, { recursive: true });
+    await mkdir(projectDir, { recursive: true });
+    const harnessPath = await writeJsonFile(root, 'harness.json', {
+      ...HARNESS,
+      recovery: {
+        maxAttempts: 2,
+        notifications: {
+          topicArn: 'arn:aws:sns:eu-north-1:698643713254:nexus-recovery-notifications',
+          email: 'saint282@gmail.com',
+        },
+      },
+    });
+    // A configuration that reads perfectly and still names no queue is not a
+    // supervised run: nothing would ever be supervised.
+    await writeJsonFile(projectDir, 'nexus.project.json', PROJECT);
+
+    const invocation = await invoke(
+      [
+        'supervise',
+        'run',
+        '--config',
+        path.relative(cwd, harnessPath),
+        '--repo',
+        path.relative(cwd, projectDir),
+      ],
+      { cwd },
+    );
+    expect(invocation.code).toBe(EXIT_INPUT_ERROR);
+    expect(invocation.err.join('\n')).toContain('has no "source" object');
   }, 45_000);
 
   it('reads only a set, non-empty NO_COLOR as a request for no color', () => {

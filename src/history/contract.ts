@@ -39,6 +39,12 @@ export type HistoryEntryKind =
   /** One complete reviewer report the harness kept. */
   | 'reviewer-report'
   /**
+   * One supervised recovery incident, whole: the stop, every recovery attempt,
+   * the conclusion, the resumption and the publication identities the
+   * supervisor kept for it. It reaches both roles' briefs as recovery context.
+   */
+  | 'recovery-report'
+  /**
    * A report the harness knows existed — a workspace attempt, or a review
    * record — whose complete content is no longer readable. It is kept as an
    * explicit marker, never as invented text.
@@ -167,6 +173,14 @@ export interface HistoryBrief {
   readonly responses: readonly HistoryEntry[];
   /** Human feedback new or edited since this role’s last consumed snapshot. */
   readonly newHumanFeedback: readonly HistoryEntry[];
+  /**
+   * Recovery context for both roles, whole: the complete incident records of
+   * this ticket's supervised recoveries, and the comments the same service
+   * account made while handling them. A recovery report says what stopped, what
+   * was investigated and repaired, and what resumes; it is context for the work
+   * and never an approval, a verification, or a finished state.
+   */
+  readonly recovery?: readonly HistoryEntry[];
 }
 
 /** One entry whose text is a published rendering of a local complete report. */

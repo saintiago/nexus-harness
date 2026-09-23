@@ -165,6 +165,101 @@ export function incidentReportText(
   };
 }
 
+/**
+ * The complete record of one incident, as the ticket's shared history keeps it.
+ *
+ * The concise report above is one publication of one incident; this is the
+ * whole thing — every stop, every attempt with the cause it investigated and
+ * the work it preserved, the conclusion, the resumption the queue was given,
+ * and the publication identities — so a developer or reviewer turn reads what
+ * really happened instead of a summary that says evidence exists elsewhere. It
+ * is written for both roles, and it is context like everything else: what
+ * decides whether work is done stays the configured checks, the Nexus Lens
+ * review and the completion path (docs/WORKFLOW.md §12).
+ */
+export function incidentHistoryText(incident: IncidentRecord): string {
+  const lines: string[] = [
+    `Harness recovery incident ${incident.id} (complete record).`,
+    '',
+    `State: ${incident.stage}` +
+      (incident.conclusion === null
+        ? ''
+        : ` — concluded ${incident.conclusion.outcome} at ${incident.conclusion.at}: ` +
+          incident.conclusion.detail),
+    `Ticket: ` +
+      (incident.ticket === null
+        ? 'the recovery did not identify one'
+        : `${incident.ticket.key}${incident.ticket.url === null ? '' : ` (${incident.ticket.url})`}`),
+    `Resumption: ` +
+      (incident.resumedAt === null
+        ? 'the interrupted work has not been started again yet'
+        : `the interrupted work was really started again at ${incident.resumedAt}`),
+  ];
+  if (incident.sequence?.blocker !== null && incident.sequence !== null) {
+    lines.push(
+      `Blocker ranked first: ${incident.sequence.blocker.key} — ${incident.sequence.blocker.reason}` +
+        (incident.sequence.blockerStartedAt === null
+          ? ' (not started yet)'
+          : ` (started ${incident.sequence.blockerStartedAt})`),
+    );
+  }
+  lines.push('', 'Stops observed:');
+  for (const stop of incident.stops) {
+    lines.push(
+      `- ${stop.at}: \`queue ${stop.intent === 'watch' ? 'watch' : 'run'}\`` +
+        `${stop.scope === null ? '' : ` scoped to ${stop.scope}`} ended ` +
+        (stop.signal === null
+          ? `with exit code ${String(stop.exitCode)}`
+          : `on signal ${stop.signal}`),
+    );
+  }
+  lines.push(
+    '',
+    `Recovery attempts: ${String(incident.attempts.length)} of at most ${String(incident.maxAttempts)}.`,
+  );
+  for (const attempt of incident.attempts) {
+    lines.push(
+      `- Attempt ${String(attempt.attempt)} (${attempt.startedAt} → ${attempt.endedAt}): ${attempt.outcome}`,
+    );
+    if (attempt.summary !== null) lines.push(`  Summary: ${attempt.summary}`);
+    if (attempt.cause !== null) lines.push(`  Cause: ${attempt.cause}`);
+    if (attempt.resolution !== null) lines.push(`  Resolution: ${attempt.resolution}`);
+    if (attempt.preserved.length > 0) lines.push(`  Preserved: ${attempt.preserved.join('; ')}`);
+    if (attempt.resume !== null) lines.push(`  Resumes: ${attempt.resume}`);
+    if (attempt.blocker !== null) {
+      lines.push(`  Blocker first: ${attempt.blocker.key} — ${attempt.blocker.reason}`);
+    }
+    if (attempt.help !== null) lines.push(`  Human help required: ${attempt.help}`);
+    if (attempt.problem !== null) lines.push(`  Problem: ${attempt.problem}`);
+    if (attempt.dir !== null) lines.push(`  Turn directory: ${attempt.dir}`);
+    if (attempt.logPath !== null) lines.push(`  Turn log: ${attempt.logPath}`);
+  }
+  lines.push(
+    '',
+    'Publication: ' +
+      (incident.report.commentId === null
+        ? 'no Jira comment is recorded'
+        : `Jira comment ${incident.report.commentId}${incident.report.publishedAt === null ? '' : ` at ${incident.report.publishedAt}`}`) +
+      '; ' +
+      (incident.report.notification === null
+        ? 'no email summary was configured'
+        : `email summary ${incident.report.notification.state} for ${incident.report.notification.email}` +
+          (incident.report.notification.messageId === null
+            ? ''
+            : ` (message ${incident.report.notification.messageId})`)) +
+      '.',
+  );
+  if (incident.report.problem !== null) {
+    lines.push(`Reporting problem: ${incident.report.problem}`);
+  }
+  lines.push(
+    '',
+    'This is recovery context for whatever turn reads it: it is never an approval, a verification,',
+    'or a substitute for a passed check, a review verdict, or the completion path.',
+  );
+  return `${lines.join('\n')}\n`;
+}
+
 /** What one incident report publication concluded. */
 export interface ReportOutcome {
   /** The report state to store on the incident, merged by the caller. */

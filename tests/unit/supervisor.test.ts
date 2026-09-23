@@ -25,6 +25,7 @@ import type { IncidentRecord } from '../../src/supervisor/incident.js';
 import { recoveryPrompt, parseRecoveryJudgment } from '../../src/supervisor/recovery.js';
 import type { RecoveryBrief } from '../../src/supervisor/recovery.js';
 import { incidentReportText } from '../../src/supervisor/report.js';
+import { reportNeedsPublication } from '../../src/supervisor/report.js';
 import { classifyWorkerStop, workerArguments } from '../../src/supervisor/worker.js';
 import type { WorkerOutcome } from '../../src/supervisor/worker.js';
 
@@ -318,6 +319,81 @@ describe('the incident report', () => {
     email: 'saint282@gmail.com',
     publisher: ['aws', 'sns', 'publish'],
   };
+
+  /** One concluded incident, with the report state a case is about. */
+  function concluded(
+    report: Partial<IncidentRecord['report']>,
+    ticket: IncidentRecord['ticket'],
+  ): IncidentRecord {
+    return {
+      ...incidentWith({ stops: [[1, null]], lastAttempt: 'repaired', scope: 'HARN-51' }),
+      ticket,
+      report: {
+        publishedAt: null,
+        commentId: null,
+        commentText: null,
+        notification: null,
+        problem: null,
+        ...report,
+      },
+    };
+  }
+
+  it('keeps a report reachable until both its publications are really finished', () => {
+    const sent = {
+      topicArn: notification.topicArn,
+      email: notification.email,
+      state: 'sent' as const,
+      messageId: 'm-1',
+      problem: null,
+    };
+    const ticket = { key: 'HARN-51', url: 'https://site.atlassian.net/browse/HARN-51' };
+    // A comment nobody acknowledged still has to be written; a summary the
+    // publisher reported failed still has to be sent.
+    expect(
+      reportNeedsPublication(concluded({ notification: sent }, ticket), {
+        jira: true,
+        notification,
+      }),
+    ).toBe(true);
+    expect(
+      reportNeedsPublication(
+        concluded({ commentId: '10042', notification: { ...sent, state: 'failed' } }, ticket),
+        { jira: true, notification },
+      ),
+    ).toBe(true);
+    // A publication that was in flight is reconciled, not repeated blindly.
+    expect(
+      reportNeedsPublication(
+        concluded({ commentId: '10042', notification: { ...sent, state: 'pending' } }, ticket),
+        { jira: true, notification },
+      ),
+    ).toBe(true);
+    // An interrupted summary that cannot be confirmed, and one already sent,
+    // are both finished: a second email for one incident is worse than none.
+    expect(
+      reportNeedsPublication(
+        concluded({ commentId: '10042', notification: { ...sent, state: 'interrupted' } }, ticket),
+        { jira: true, notification },
+      ),
+    ).toBe(false);
+    expect(
+      reportNeedsPublication(concluded({ commentId: '10042', notification: sent }, ticket), {
+        jira: true,
+        notification,
+      }),
+    ).toBe(false);
+    // No Jira thread to write into, and no notification policy: nothing left.
+    expect(
+      reportNeedsPublication(concluded({ notification: sent }, null), {
+        jira: true,
+        notification,
+      }),
+    ).toBe(false);
+    expect(reportNeedsPublication(concluded({}, ticket), { jira: false, notification: null })).toBe(
+      false,
+    );
+  });
 
   it('reports the cause, the preserved work, the resumption and the email', () => {
     const incident: IncidentRecord = {

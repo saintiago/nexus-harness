@@ -541,7 +541,11 @@ describe('a supervised queue', () => {
     const { workDir, repoPath, configPath } = await workspace();
     const root = supervisorRoot(workDir, 'namespace');
     const incident = await seedIncident(root);
-    await seedPending(root, incident.id, { attempt: 1, dir: path.join(root, 'attempt-1'), alive: true });
+    await seedPending(root, incident.id, {
+      attempt: 1,
+      dir: path.join(root, 'attempt-1'),
+      alive: true,
+    });
     const recovery = scriptedRecovery([{ status: 'repaired', summary: 's', cause: 'c' }]);
 
     const summary = await runSupervision({

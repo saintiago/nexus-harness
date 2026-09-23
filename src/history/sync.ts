@@ -38,6 +38,7 @@ import {
   textSha256,
 } from './reports.js';
 import type { LocalReport } from './reports.js';
+import { insideRecoveryWindow, readRecoveryHistory } from './recoveries.js';
 import {
   readConsumedEntries,
   readLatestEntries,
@@ -718,11 +719,20 @@ export function createTicketHistory(parts: TicketHistoryParts): TicketHistory {
         workspaceId: request.workspace.workspaceId,
         now: now(),
       });
+      // The supervisor's own incident records, whole: a recovery that happened
+      // between two deliveries of this ticket is part of what a turn has to
+      // read, and it is context like everything else (docs/WORKFLOW.md §12).
+      const recoveries = await readRecoveryHistory({
+        workDir: parts.workDir,
+        ticketKey: request.ref.key,
+      });
+      const harnessProblems = [...local.problems, ...recoveries.problems];
       sources.push({
         source: 'harness',
-        problem: local.problems.length === 0 ? null : local.problems.join('; '),
+        problem: harnessProblems.length === 0 ? null : harnessProblems.join('; '),
       });
       gaps.push(...local.problems);
+      gaps.push(...recoveries.problems.map((problem) => `recovery history: ${problem}`));
 
       const candidates: Candidate[] = [];
       for (const comment of jiraComments) {
@@ -759,6 +769,9 @@ export function createTicketHistory(parts: TicketHistoryParts): TicketHistory {
       }
       for (const report of local.reports) {
         candidates.push({ entry: entryOfReport(report), comment: null });
+      }
+      for (const entry of recoveries.entries) {
+        candidates.push({ entry, comment: null });
       }
 
       // Deduplicate by source identity: the newest read of one identity wins,
@@ -955,6 +968,24 @@ export function createTicketHistory(parts: TicketHistoryParts): TicketHistory {
         (entry) => entry.role === 'human' && unseenInPrevious(entry, consumed),
       );
 
+      // Recovery context, for both roles and independently of either role's
+      // cursor: the complete incident records of this ticket's supervised
+      // recoveries, and the comments the same service account (the harness's
+      // own author) made while those recoveries were being carried out. It is
+      // context like every other entry — never an approval, a verification, or
+      // a finished state of the work.
+      const recovery = entries
+        .filter(
+          (entry) =>
+            entry.kind === 'recovery-report' ||
+            (isHarnessAuthor(entry.author, harnessAuthors) &&
+              entry.source === 'jira' &&
+              insideRecoveryWindow(recoveries.windows, entry.createdAt)),
+        )
+        .toSorted(
+          (a, b) => compareHistoryTime(a.createdAt, b.createdAt) || a.id.localeCompare(b.id),
+        );
+
       const brief: HistoryBrief = {
         ref: current.ref,
         task: current.task,
@@ -963,6 +994,7 @@ export function createTicketHistory(parts: TicketHistoryParts): TicketHistory {
         unresolvedReviews: unresolved.map((round) => round.summary),
         responses,
         newHumanFeedback,
+        ...(recovery.length === 0 ? {} : { recovery }),
       };
       const content: SnapshotContent = {
         role: request.role,
