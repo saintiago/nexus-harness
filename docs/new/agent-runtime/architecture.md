@@ -44,8 +44,9 @@ type AgentResult = Result<{
 }>;
 ```
 
-The caller selects the profile ID; the runtime looks it up in the configured catalogue. Tool settings are the selected provider's
-configuration values. Unknown profiles or unsupported settings return a fault. Each call starts one
+The caller selects the profile ID; the runtime looks it up in the configured catalogue. Tool settings
+identify the provider's installed native tool configuration. Unknown profiles or unsupported settings
+return a fault. Each call starts one
 invocation with the supplied context.
 
 additionalContext is caller-prepared text containing the invocation instructions, information and any

@@ -23,6 +23,20 @@ in the prompt. The consumer interprets the report schema.
 Support the configured developer, reviewer and recovery profiles through the same capability.
 Apply their supplied tool permissions; do not derive permissions from the role name or prompt text.
 
+## Tool setup
+
+Use the provider's native configuration for built-in tools, MCP servers, connectors and permissions.
+Supplied tool settings identify the native configuration to select for the invocation. Operator setup
+installs that configuration; launch selects it without changing personal defaults.
+
+For the Codex provider, select an installed native profile with --profile. That profile configures
+the research MCP servers, enabled tools and connector exclusions. Pass model and effort using the
+provider's supported invocation settings.
+
+The provider connects to MCP servers, exposes their tools to the model and executes tool calls.
+The adapter launches and observes the invocation; it adds no tool registry, MCP client or tool-call
+dispatcher. A missing selected configuration is a launch error, not a fallback to personal settings.
+
 ## Behavior
 
 Apply the supplied settings. Unsupported settings and provider failures are errors.
