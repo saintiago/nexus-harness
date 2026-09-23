@@ -795,8 +795,10 @@ was in flight: the publisher's own output is read back, an acknowledgement found
 and an ending that does not prove the topic refused anything — a timeout, a signal, a log that
 could not be closed — is recorded as `interrupted` and never retried automatically, because a
 second email for one incident is worse than an unconfirmed one; only a publisher that could not be
-started, or one that ran and refused without acknowledging anything, is a failure a later
-invocation may retry. The Jira connection a comment is written through is read from the connected
+started at all is a failure a later invocation may retry: a publisher that ran and acknowledged
+nothing is uncertain whatever its exit code — an accepted publish whose answer was lost, a refused
+one, and a summary that never left the machine all end that way — and is recorded as `interrupted`
+for a person. The Jira connection a comment is written through is read from the connected
 project's configuration as it stands at that moment, so a report owed after a repair goes into the
 thread the repaired configuration names rather than being silently omitted. A publication that
 failed is

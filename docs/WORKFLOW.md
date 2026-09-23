@@ -1515,11 +1515,12 @@ Only a publication that really failed is retried, and retrying a publication nev
 recovery that came before it. What "really failed" means is read from the publisher's own output and
 its ending together: a publisher that prints the identity the topic gave it and *then* times out, is
 signalled, or fails to have its log closed has still published the summary, and that identity is
-adopted whether or not the process reported success. Only a publisher that could not be started, or
-one that ran and refused without acknowledging anything, proves nothing was sent — an attempt that
-ran and acknowledged nothing is recorded as `interrupted` and left to a person, exactly like one an
-earlier invocation left in flight. A publication problem is recorded on the incident and named to
-the operator; it never turns a successful recovery into a failed one.
+adopted whether or not the process reported success. Only a publisher that could not be started at
+all proves nothing was sent; one that ran and acknowledged nothing is recorded as `interrupted` and
+left to a person, exactly like one an earlier invocation left in flight, whatever exit code it wore
+— a transport failure after the topic accepted the request and one that was never made look the same
+from here, and a second email is worse than an unconfirmed one. A publication problem is recorded on
+the incident and named to the operator; it never turns a successful recovery into a failed one.
 
 ### When a failure is the same failure
 

@@ -102,7 +102,7 @@ interface HeldClaim {
 type ClaimRead =
   | { readonly kind: 'held'; readonly record: OwnerRecord }
   | { readonly kind: 'absent' }
-  | { readonly kind: 'unreadable' };
+  | { readonly kind: 'unreadable'; readonly problem: string };
 
 /**
  * One claim, as read back from its own file. A claim file that cannot be read
@@ -120,16 +120,19 @@ async function readClaim(file: string): Promise<ClaimRead> {
       // gone, which is not the same as unreadable.
       return { kind: 'absent' };
     }
-    throw new Error(`the supervisor's own claim "${file}" could not be read: ${messageOf(cause)}`, {
-      cause,
-    });
+    // A claim being published, or one being cleared away, is not readable for
+    // a moment — on Windows a name whose file is being deleted refuses the
+    // open outright. Nothing here guesses at a claim it could not read: the
+    // caller decides what it can still own, and nobody deletes what it could
+    // not read.
+    return { kind: 'unreadable', problem: messageOf(cause) };
   }
   let value: unknown;
   try {
     value = JSON.parse(text);
   } catch {
     // A claim that is being written is not readable yet.
-    return { kind: 'unreadable' };
+    return { kind: 'unreadable', problem: 'it is published but holds no record yet' };
   }
   if (
     !isRecord(value) ||
@@ -137,7 +140,7 @@ async function readClaim(file: string): Promise<ClaimRead> {
     typeof value['pid'] !== 'number' ||
     typeof value['token'] !== 'string'
   ) {
-    return { kind: 'unreadable' };
+    return { kind: 'unreadable', problem: 'it is published but is not a claim this harness wrote' };
   }
   return { kind: 'held', record: value as unknown as OwnerRecord };
 }
@@ -169,17 +172,18 @@ async function claimFiles(root: string): Promise<readonly { rank: number; file: 
 }
 
 /** Every claim the root holds, whole, oldest rank first. */
-async function readHeldClaims(
-  root: string,
-): Promise<{ readonly held: readonly HeldClaim[]; readonly unreadable: readonly string[] }> {
+async function readHeldClaims(root: string): Promise<{
+  readonly held: readonly HeldClaim[];
+  readonly unreadable: readonly { readonly file: string; readonly problem: string }[];
+}> {
   const held: HeldClaim[] = [];
-  const unreadable: string[] = [];
+  const unreadable: { file: string; problem: string }[] = [];
   for (const candidate of await claimFiles(root)) {
     const read = await readClaim(candidate.file);
     if (read.kind === 'held') {
       held.push({ rank: candidate.rank, file: candidate.file, record: read.record });
     } else if (read.kind === 'unreadable') {
-      unreadable.push(candidate.file);
+      unreadable.push({ file: candidate.file, problem: read.problem });
     }
   }
   return { held, unreadable };
@@ -247,11 +251,12 @@ function liveOwnerProblem(claim: HeldClaim): string {
  * and nothing here takes over a claim it could not read. Another invocation may
  * be publishing exactly that claim right now.
  */
-function unreadableClaimProblem(file: string): string {
+function unreadableClaimProblem(file: string, problem: string): string {
   return (
     `another invocation may be acquiring this supervision right now: its claim "${file}" is ` +
-    'published and could not be read as a whole, so nothing is taken over beside it. Run the ' +
-    'supervisor again in a moment; if the claim is still unreadable then, inspect it by hand.'
+    `published and could not be read as a whole (${problem}), so nothing is taken over beside ` +
+    'it. Run the supervisor again in a moment; if the claim is still unreadable then, inspect it ' +
+    'by hand.'
   );
 }
 
@@ -322,14 +327,17 @@ export async function acquireSupervisorOwnership(
   await request.onClaimPublished?.(claim);
 
   const claims = await readHeldClaims(root);
-  const unreadableOutranking = claims.unreadable.filter((file) => {
-    const rank = rankOfName(file);
+  const unreadableOutranking = claims.unreadable.filter((candidate) => {
+    const rank = rankOfName(candidate.file);
     return rank !== null && rank < claim.rank;
   });
   if (unreadableOutranking.length > 0) {
     await removeClaim(claim);
-    const file = unreadableOutranking[0] ?? '';
-    return { ok: false, problem: unreadableClaimProblem(file) };
+    const contender = unreadableOutranking[0];
+    if (contender === undefined) {
+      throw new Error('unreachable: an unreadable claim was picked from an empty list');
+    }
+    return { ok: false, problem: unreadableClaimProblem(contender.file, contender.problem) };
   }
   const live = claims.held.filter(
     (candidate) => candidate.rank < claim.rank && isAlive(candidate.record.pid),
@@ -371,11 +379,23 @@ export async function acquireSupervisorOwnership(
  * person to inspect, rather than removed from under whoever holds it.
  */
 async function removeClaim(claim: HeldClaim): Promise<void> {
-  const recorded = await readClaim(claim.file);
-  if (recorded.kind !== 'held' || recorded.record.token !== claim.record.token) {
-    return;
+  // A claim is never reused by another contender, so the record under this
+  // name is either this invocation's own or evidence left for a person. A read
+  // that fails for a moment — a name being cleared away, chiefly — is retried
+  // before the claim is left where it is rather than removed unverified.
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    const recorded = await readClaim(claim.file);
+    if (recorded.kind === 'absent') {
+      return;
+    }
+    if (recorded.kind === 'held') {
+      if (recorded.record.token === claim.record.token) {
+        await rm(claim.file, { force: true });
+      }
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25 * attempt));
   }
-  await rm(claim.file, { force: true });
 }
 
 /**

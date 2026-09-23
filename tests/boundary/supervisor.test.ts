@@ -828,7 +828,11 @@ describe('the incident report’s publication boundaries', () => {
       notification: {
         topicArn: 'arn:aws:sns:eu-north-1:698643713254:nexus-recovery-notifications',
         email: 'saint282@gmail.com',
-        publisher: [process.execPath, path.join(directory, 'not-there.mjs')],
+        // A publisher that could not be started at all: nothing of it ran, so
+        // the summary definitely did not leave the machine and a later
+        // invocation may send it. A publisher that *ran* and failed is
+        // uncertain whatever its exit code, and is recorded as such.
+        publisher: [path.join(directory, 'not-there-publisher')],
       },
       logsDir: (entry) => incidentDir(directory, entry.id),
       cwd: directory,
@@ -1025,6 +1029,70 @@ describe('the incident report’s publication boundaries', () => {
     expect(uncertain.problem).toContain('not sent again automatically');
 
     // It is never repeated automatically, however many invocations follow.
+    const restart = await reporter({
+      incident: { ...incident, report: uncertain.report },
+      stop: new AbortController().signal,
+      jira: { kind: 'none' },
+    });
+    expect(restart.report.notification?.state).toBe('interrupted');
+    expect(runs).toHaveLength(1);
+  }, 30_000);
+
+  it('records a publisher that exited nonzero without an acknowledgement as uncertain', async () => {
+    const directory = await tempDir();
+    const logsDir = path.join(directory, 'incident-logs');
+    const runs: string[] = [];
+    // A publisher that sent the summary and then failed on the way out — a
+    // response timeout, a connection dropped after the request was accepted —
+    // prints nothing an invocation can quote. Its exit code is a normal one,
+    // and a normal nonzero exit is no proof that the topic refused anything.
+    const runNotification: typeof runCommand = async (request) => {
+      runs.push(request.label);
+      await mkdir(request.logsDir, { recursive: true });
+      const stdoutPath = path.join(request.logsDir, `${request.label}.stdout.log`);
+      const stderrPath = path.join(request.logsDir, `${request.label}.stderr.log`);
+      await writeFile(stdoutPath, '', 'utf8');
+      await writeFile(stderrPath, 'Could not connect to the endpoint URL\n', 'utf8');
+      return {
+        command: [...request.command],
+        cwd: request.cwd,
+        startedAt: '2026-09-23T00:04:00.000Z',
+        endedAt: '2026-09-23T00:05:00.000Z',
+        outcome: 'exited',
+        exitCode: 255,
+        signal: null,
+        launchError: null,
+        timeoutMs: request.timeoutMs,
+        termination: null,
+        terminationProblem: null,
+        stdoutPath,
+        stderrPath,
+      };
+    };
+    const notification = {
+      topicArn: 'arn:aws:sns:eu-north-1:698643713254:nexus-recovery-notifications',
+      email: 'saint282@gmail.com',
+      publisher: ['aws', 'sns', 'publish'],
+    };
+    const reporter = createIncidentReporter({
+      notification,
+      logsDir: () => logsDir,
+      cwd: directory,
+      now: () => new Date('2026-09-23T00:04:00.000Z'),
+      runNotification,
+    });
+    const incident = reportIncident('ns');
+    const uncertain = await reporter({
+      incident,
+      stop: new AbortController().signal,
+      jira: { kind: 'none' },
+    });
+    expect(uncertain.report.notification?.state).toBe('interrupted');
+    expect(uncertain.report.notification?.problem).toContain('exit code 255');
+    expect(uncertain.problem).toContain('not sent again automatically');
+
+    // A restart leaves it alone rather than sending a second email: the first
+    // one may have been accepted before the connection failed.
     const restart = await reporter({
       incident: { ...incident, report: uncertain.report },
       stop: new AbortController().signal,

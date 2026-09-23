@@ -605,9 +605,11 @@ interface SummaryPublication {
   readonly messageId: string | null;
   /**
    * Whether a later invocation may send the summary again. Only a send that
-   * definitely never happened — a publisher that could not be started, or one
-   * that ran and refused — is retried; an attempt that may have reached the
-   * topic is never repeated automatically.
+   * definitely never happened is retried: a publisher that could not be started
+   * at all. Every attempt that ran is uncertain without an acknowledgement —
+   * including one that exited nonzero, because a transport failure can come
+   * after the topic accepted the message — and an attempt that may have reached
+   * the topic is never repeated automatically.
    */
   readonly retryable: boolean;
   /** Why the summary is not acknowledged as sent, or `null` when it is. */
@@ -622,9 +624,12 @@ interface SummaryPublication {
  * a publisher can send the summary, print the identity the topic gave it, and
  * then time out, be signalled, or fail to have its log closed — endings that say
  * nothing about whether the topic accepted the message. An acknowledgement
- * found there is adopted; a publisher that could not be started at all, or one
- * that ran and refused, is the only kind of attempt a later invocation may
- * repeat, because only those prove nothing was sent.
+ * found there is adopted; a publisher that could not be started at all is the
+ * only kind of attempt a later invocation may repeat, because it is the only
+ * one that proves nothing was sent. A publisher that ran and acknowledged
+ * nothing is uncertain whatever its exit code: an accepted publish whose answer
+ * was lost, a refused one, and a summary that never left the machine all end
+ * that way, and a duplicate email is worse than an unconfirmed one.
  */
 async function sendSummary(
   runNotification: typeof runCommand,
@@ -685,15 +690,6 @@ async function sendSummary(
       problem:
         `${how}: the publisher never ran, so nothing was sent; its output is kept beside ` +
         'the incident record',
-    };
-  }
-  if (result.outcome === 'exited') {
-    return {
-      messageId: null,
-      retryable: true,
-      problem:
-        `${how} and acknowledged no message identity, so nothing was sent; its output is ` +
-        'kept beside the incident record',
     };
   }
   return {
