@@ -355,7 +355,7 @@ export async function acquireSupervisorOwnership(
   // holds, so the next acquisition still publishes above every live one.
   for (const stale of claims.held) {
     if (stale.rank !== claim.rank && !isAlive(stale.record.pid)) {
-      await rm(stale.file, { force: true }).catch(() => undefined);
+      await removeStaleClaim(stale);
     }
   }
 
@@ -371,6 +371,20 @@ export async function acquireSupervisorOwnership(
       },
     },
   };
+}
+
+/**
+ * Clears one claim that was read as one whose process is gone. Only the record
+ * this invocation inspected is removed: the claim is read back first, and a
+ * record somebody else put under that rank is left where it is, exactly as it
+ * is when a takeover refuses a claim it could not read.
+ */
+async function removeStaleClaim(claim: HeldClaim): Promise<void> {
+  const recorded = await readClaim(claim.file);
+  if (recorded.kind !== 'held' || recorded.record.token !== claim.record.token) {
+    return;
+  }
+  await rm(claim.file, { force: true }).catch(() => undefined);
 }
 
 /**
