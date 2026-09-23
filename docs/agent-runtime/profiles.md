@@ -8,8 +8,10 @@ Repository templates:
 
 All configure OpenAI Docs, Context7 and Tavily. They disable connector apps by default,
 explicitly disable the existing GitHub connector, and exclude personal-service plugins.
-Shell and file permissions come from the runtime invocation; neither profile imposes read-only
-reviewer access. Role instructions are supplied separately.
+They also select non-interactive approval and the shell, filesystem and network access the roles'
+work needs: dependency installation, builds, tests, commits and recovery operations. Neither
+profile imposes read-only reviewer access, and selecting a profile leaves the operator's
+interactive defaults unchanged. Role instructions are supplied separately.
 
 ## Install on Linux
 

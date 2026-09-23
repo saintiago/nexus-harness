@@ -13,8 +13,8 @@ In progress means implementation or review is underway. Pending means work has n
 | [GitHub adapter](github-adapter.md) | Verified |
 | [Coding runtime adapter](coding-runtime-adapter.md) | Verified |
 | [Notifications adapter](notifications-adapter.md) | Verified |
-| [AgentRuntime and role prompts](agent-runtime.md) | In progress |
-| [Adapter simplification](adapter-simplification.md) | Pending |
+| [AgentRuntime and role prompts](agent-runtime.md) | Verified |
+| [Adapter simplification](adapter-simplification.md) | In progress |
 | [Configuration compatibility](configuration-integration.md) | Pending |
 | [TaskEngine and ExecutionRunner](execution-runner.md) | Pending |
 | [Action artifacts and findings](action-artifacts.md) | Pending |
