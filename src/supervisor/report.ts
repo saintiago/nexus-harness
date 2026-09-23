@@ -469,7 +469,11 @@ export function createIncidentReporter(parts: IncidentReporterParts): IncidentRe
         // The report may have been posted by an invocation that crashed before
         // recording its id: look for it in the ticket's own thread first, and
         // adopt the comment that already carries this report's own identity.
-        const marker = text.paragraphs[0] ?? '';
+        // The identity is the first line of the text that was written down
+        // before it was posted — what may really be in the thread — which is
+        // this report's own first line whenever this is the text being posted,
+        // and the report a record from before this was kept posted otherwise.
+        const marker = commentText.split('\n\n')[0] ?? '';
         const found = await alreadyPublished(jira, key, marker, stop).then(
           (id) => ({ id, problem: null }),
           (cause: unknown) => ({
