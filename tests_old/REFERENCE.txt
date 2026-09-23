@@ -1,19 +1,110 @@
 Archived test reference. These files are excluded from active validation.
 Their original imports and paths are intentionally preserved; they are not a runnable suite here.
-Rebuild required behavior coverage in tests/ using docs/testing.md.
-Suites whose decisions the rebuilt fast layer now carries were removed as that coverage was
-rebuilt; what remains is the coverage that still belongs to another layer.
+They are reference material, not an alternate gate, and none of it should be copied back
+wholesale; docs/testing.md is the contract the active layers follow.
 
-The rebuilt boundary layer now carries the process, Git, workspace and external-service adapter
-contracts in tests/process.test.ts, tests/git.test.ts, tests/workspace.test.ts,
-tests/workspace-continuation.test.ts, tests/jira-gateway.test.ts and tests/github-*.test.ts. The
-suites it replaced were removed with it: git.test.ts, workspace.test.ts, workspace-branch.test.ts,
-stop.test.ts and delivery.test.ts.
+The active suites live in the directory of the layer that owns their behavior. Each archived file
+below is kept for the behavior named beside the active suite that now carries it:
 
-What stays here is the coverage those rebuilds did not carry: the coding-runtime adapter
-(agent.test.ts), the configured setup/check round (checks.test.ts), the Jira connector's queue,
-claim, pointer and publication behavior (jira.test.ts, queue-recovery.test.ts), the review scan's
-GitHub reads (review-github.test.ts), the completion path (completion-github.test.ts), source
-readiness (refresh.test.ts), reporting (report.test.ts), and the assembled CLI and queue
-workflows. The fixture modules these files share (fixtures/boundary-operations.ts, lifecycle.ts,
-local-target.ts, workspace.ts) stay with them as reference.
+- agent.test.ts — the coding-runtime adapter: the launch every turn is given, the prefix a
+  diagnostic launch refuses, the prompt path into a real runtime, the completion streams that are
+  not a turn and stopping the runtime a turn started (tests/unit/codex-launch.test.ts,
+  tests/boundary/agent-runtime.test.ts), and the activity lines its stream produces
+  (tests/unit/runtime-events.test.ts).
+- checks.test.ts — what one configured command does with its output, its limit and a caller's stop
+  (tests/boundary/process.test.ts), the run timeline (tests/boundary/report.test.ts), and the
+  setup/check round's order and endings, from setup-then-checks to a red round kept for repair
+  (tests/boundary/check-round.test.ts).
+- jira.test.ts — the gateway route, credential and refusal classification
+  (tests/boundary/jira-gateway.test.ts); the configured queue's search, the map onto the four-field
+  task, the claim that refuses an issue whose revision or status changed, the workspace pointer,
+  the result publication and the ticket's own conversation
+  (tests/boundary/jira-connector.test.ts); the source configuration's defaults
+  (tests/unit/config.test.ts).
+- queue-recovery.test.ts — authoritative queue recovery before a fresh claim: the In Review
+  resume, the refusal of a still-running or ambiguously owned ticket, and the fresh read that
+  decides Done and a retained repair (tests/boundary/jira-connector.test.ts).
+- refresh.test.ts — source readiness between two queue tickets
+  (tests/boundary/source-readiness.test.ts).
+- review-github.test.ts — the review scan's GitHub reads (tests/boundary/github-review.test.ts).
+- reviews.test.ts — the scan's evidence and decisions — including the publication refusals a
+  changed repository view and a failed or cancelled reviewer turn are held to — and the watch's
+  poll interval, its server-directed wait and its backoff reset (tests/unit/reviews.test.ts),
+  assembled in tests/workflow/review-handoff.test.ts.
+- completion-github.test.ts, completion-arm.test.ts — the completion path's own GitHub commands:
+  every read with the reader credential, the one auto-merge mutation with the operator's, and the
+  refusal diagnostics (tests/boundary/completion-commands.test.ts); the gate, merge and Jira
+  decisions (tests/unit/completion.test.ts), assembled in
+  tests/workflow/delivery-completion.test.ts.
+- completion-cli.test.ts — the completion pass's run and the counts it reports
+  (tests/unit/completion.test.ts), assembled in tests/workflow/delivery-completion.test.ts.
+- report.test.ts — the final report, the timeline beside it, and what writing one leaves alone
+  (tests/boundary/report.test.ts), assembled in tests/workflow/execution-repair.test.ts.
+- cli.test.ts — the command line's help, refusals and exit codes, and the configuration command
+  that creates and starts nothing (tests/unit/cli.test.ts).
+- runner-records.test.ts, runner-repair.test.ts, runner.test.ts — the run's bounded repair loop,
+  its stop and timeout endings, its ledger record and its conversation history
+  (tests/unit/runner.test.ts, tests/unit/escalation.test.ts, tests/unit/history.test.ts,
+  tests/boundary/workspace-continuation.test.ts, tests/boundary/report.test.ts), assembled in
+  tests/workflow/execution-repair.test.ts and tests/workflow/continuation.test.ts.
+- history.test.ts, history-source.test.ts — the conversation snapshot, its store and the
+  developer-report publication policy (tests/unit/history.test.ts).
+- queue.test.ts — the serial queue's decisions, its phases, its watch mode and its recovery
+  (tests/unit/queue.test.ts), with intake continuation in tests/workflow/continuation.test.ts.
+- baseline.test.ts, baseline-queue.integration.test.ts — the baseline findings, the guidance they
+  produce and the outcomes they decide (tests/unit/escalation.test.ts); what one diagnosis
+  publishes, resumes and refuses — a reviewer stop it could not confirm included — and the
+  connected project one piece of evidence belongs to (tests/unit/baseline-diagnosis.test.ts); and
+  the one reviewer turn's record — the rejection a failed turn is recorded as, the restart that
+  reuses it, the finding it refuses to read from the turn's own file, and the incomplete evidence
+  it refuses to run past (tests/boundary/baseline-review.test.ts); the intake's own response to a
+  pending diagnosis — a reviewer stop it could not confirm stopping discovery and the watch's
+  polling alike while its lock is kept, and a diagnosis that stopped cleanly but needs a person
+  being reported and stepped past — the fresh diagnosis of a completed red baseline — the item,
+  the workspace and the red round handed to the configured diagnosis, the repair marker a serial
+  step returns so the same ticket is claimed for its repair with nothing else published or
+  delivered, and the stop a diagnosis with nothing actionable produces — and the required repair
+  finding a continuation is told: the complete recorded finding reaching the run when the item's
+  own thread cannot supply it, and no developer starting, the claimed ticket being told and the
+  problem being recorded when that finding cannot be read back
+  (tests/boundary/source-coordinator.test.ts) — with the retained workspace the next attempt
+  continues in tests/workflow/continuation.test.ts.
+- cli-run.integration.test.ts, local-run.integration.test.ts — a run through the built command,
+  its clone, its checks, its repair and its report (tests/workflow/execution-repair.test.ts), on
+  top of the real process, Git and filesystem contracts (tests/boundary/process.test.ts,
+  tests/boundary/git.test.ts, tests/boundary/workspace.test.ts).
+- source-cli.integration.test.ts, queue-cli.test.ts, lifecycle.test.ts — the source and queue
+  consumer paths (tests/unit/queue.test.ts, tests/workflow/continuation.test.ts) and the Jira
+  claim, pointer and publication contracts (tests/boundary/jira-connector.test.ts).
+- source.test.ts — the intake coordinator's own retained state: the receipt reserved before
+  anything remote or paid, the retention of an uncertain claim, the release of a claim that sent
+  no mutation, the local result a failed publication keeps, the run whose own stop could not be
+  confirmed — at the item's own preflight before any run result exists, wrapped by the run
+  preflight, at the verification of a retained workspace a continuation would reopen, and after
+  one alike — publishing nothing and keeping its receipt and lock while a confirmed stop still
+  gets its one bounded feedback, the published checks line of a stopped final turn naming the last
+  round that really ran rather than the baseline, the escalation ladder's handoff — one claim
+  climbing to the configured next tier in the same retained workspace, the intermediate rung's
+  comment published before the ladder's own result, and a ticket that came back to work starting
+  at the first tier again with its guidance — the delivery decisions — a passed attempt delivered
+  before its result is published, failed and cancelled attempts never delivered, and a delivery
+  failure published beside the passed outcome before intake stops — and the per-project lock that
+  is never broken or adopted; and the watch cadence over that state — the poll interval, the
+  server-directed retry delay, the backoff a read that reserved nothing gets, and the fatal
+  failure that stops the loop instead (tests/boundary/source-coordinator.test.ts) — with the
+  four-field task and claim contracts themselves in tests/boundary/jira-connector.test.ts.
+- activity.test.ts — the activity pane's presentation: the lines one invocation draws, the
+  message and latest-work bound, the boundary that opens a pane, and the control characters and
+  escape sequences a runtime's text may never carry into the terminal
+  (tests/unit/activity-display.test.ts), on top of the activity lines the runtime stream produces
+  (tests/unit/runtime-events.test.ts).
+
+Every required behavior this map names is now carried by an active suite, and each surface above
+is reached at the layer that owns it: no behavior here is left with the archive as its only
+record. What stays archived is the fixture structure itself — the whole-command surfaces those
+decisions are assembled into, and the shared fixtures beside them — which the active layers prove
+at their own layer instead of repeating.
+
+The live provider exercises (live-verifier.test.ts, live/) require explicit authorization and stay
+outside the ordinary gate (docs/validation-caching.md). The fixture modules these files share
+(fixtures/*.ts, support.ts, reviews-shared.ts) stay beside them as reference.

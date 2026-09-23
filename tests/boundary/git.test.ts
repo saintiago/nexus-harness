@@ -30,12 +30,12 @@ import {
   gitProblem,
   gitStopOf,
   runGit,
-} from '../src/workspace/git.js';
-import type { GitResult } from '../src/workspace/git.js';
-import { WorkspaceError } from '../src/workspace/errors.js';
-import { allocateRunDirectory } from '../src/workspace/run-directory.js';
-import { prepareWorkspace } from '../src/workspace/prepare.js';
-import { preflightSource } from '../src/workspace/preflight.js';
+} from '../../src/workspace/git.js';
+import type { GitResult } from '../../src/workspace/git.js';
+import { WorkspaceError } from '../../src/workspace/errors.js';
+import { allocateRunDirectory } from '../../src/workspace/run-directory.js';
+import { prepareWorkspace } from '../../src/workspace/prepare.js';
+import { preflightSource } from '../../src/workspace/preflight.js';
 import {
   createRepository,
   createTempDir,

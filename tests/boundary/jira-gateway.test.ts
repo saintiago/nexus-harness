@@ -11,10 +11,10 @@
  * request reaches is local).
  */
 import { afterEach, describe, expect, it } from 'vitest';
-import type { JiraSourceConfig } from '../src/shared/types.js';
-import { SourceError } from '../src/sources/contract.js';
-import { createHttpClient, resolveJiraToken } from '../src/sources/jira/http.js';
-import type { HttpClient } from '../src/sources/jira/http.js';
+import type { JiraSourceConfig } from '../../src/shared/types.js';
+import { SourceError } from '../../src/sources/contract.js';
+import { createHttpClient, resolveJiraToken } from '../../src/sources/jira/http.js';
+import type { HttpClient } from '../../src/sources/jira/http.js';
 import { startLocalService, serviceFetch } from './integration-support.js';
 import type { LocalService } from './integration-support.js';
 

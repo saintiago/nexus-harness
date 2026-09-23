@@ -12,34 +12,34 @@
  */
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { createGitHubCompletion } from '../src/delivery/completion.js';
-import type { CompletionConfig } from '../src/shared/types.js';
-import { DeliveryError } from '../src/delivery/github.js';
+import { createGitHubCompletion } from '../../src/delivery/completion.js';
+import type { CompletionConfig } from '../../src/shared/types.js';
+import { DeliveryError } from '../../src/delivery/github.js';
 import {
   checkFailed,
   checkPassed,
   checkPending,
   workflowMatches,
   workflowOutcomes,
-} from '../src/delivery/gate.js';
-import type { WorkflowRunSnapshot } from '../src/delivery/gate.js';
+} from '../../src/delivery/gate.js';
+import type { WorkflowRunSnapshot } from '../../src/delivery/gate.js';
 import {
   completionLogsDir,
   createCompletionPass,
   createCompletionRun,
   mergeWaitDeadline,
-} from '../src/sources/completion.js';
+} from '../../src/sources/completion.js';
 import type {
   CompletionActions,
   GateVerdict,
   MergeVerdict,
   PullRequestSnapshot,
-} from '../src/delivery/completion.js';
-import type { CompletionSource, IssueNote, ReviewItem } from '../src/sources/jira/completion.js';
-import { noteWithMarker, reviewQueueJql } from '../src/sources/jira/completion.js';
-import type { SourceCandidate } from '../src/sources/contract.js';
-import type { JiraSourceConfig, SourceRef } from '../src/shared/types.js';
-import { createTempDir, readText } from './support.js';
+} from '../../src/delivery/completion.js';
+import type { CompletionSource, IssueNote, ReviewItem } from '../../src/sources/jira/completion.js';
+import { noteWithMarker, reviewQueueJql } from '../../src/sources/jira/completion.js';
+import type { SourceCandidate } from '../../src/sources/contract.js';
+import type { JiraSourceConfig, SourceRef } from '../../src/shared/types.js';
+import { createTempDir, readText } from '../support.js';
 
 const HEAD = 'b'.repeat(40);
 const MERGE_COMMIT = 'e'.repeat(40);

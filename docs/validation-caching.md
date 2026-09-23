@@ -25,10 +25,11 @@ An edit to any relevant input must invalidate the result, including an uncommitt
 with unchanged content need not invalidate it. When a check inspects other tests or configurations,
 those inspected files are inputs to that check as well.
 
-Tests that start real processes or observe live machine state execute on every validation. They
-belong to the boundary layer, regardless of which feature they test. Live provider exercises,
-agent turns, external writes, approvals and completion evidence are never cacheable validation
-results. Do not add credentials to cache inputs, artifacts or logs.
+Tests that start real processes or observe live machine state execute on every validation,
+whichever layer owns their behavior: the boundary layer verifies such a contract directly, and an
+assembled workflow starts them too. Live provider exercises, agent turns, external writes,
+approvals and completion evidence are never cacheable validation results. Do not add credentials
+to cache inputs, artifacts or logs.
 
 When reorganizing tests, update their task membership and input declarations together. Each test
 must still execute in exactly one layer, and every required layer must remain in the validation
@@ -46,10 +47,15 @@ gate. Cache eligibility follows a test's behavior, not its name.
   fresh evidence.
 - Cache cleanup affects only the selected checkout and does not change user or global settings.
 
-The active test task executes without result reuse: `turbo.json` runs it uncached, so every rebuilt
-fast suite and every boundary suite executes on each validation. Split cache-eligible deterministic
-suites into their own task, with their inputs declared, as the pyramid's boundaries settle. The
-archived suites are excluded from all validation tasks.
+The pyramid is three validation tasks, split by what the suites do. `test:unit` is cache-eligible:
+the deterministic unit project declares the sources it imports, the test tree it reads (the layer
+contract inspects it) and the two documented example configurations it loads, so an edit to any of
+them invalidates its result and nothing else does. `test:boundary` and `test:workflow` execute on
+every validation without result reuse: the first starts real processes, Git and local services,
+and the second assembles the harness behind controlled agent and service responses — neither is a
+reusable observation of this host. All three are part of `npm run validate`, and a layer that
+discovers no suite fails instead of passing. The archived suites are excluded from all validation
+tasks.
 
 ## Commands
 
@@ -60,6 +66,9 @@ archived suites are excluded from all validation tasks.
 | `npm run cache:clear` | Clear this checkout's local validation caches. |
 | `npm run validate -- --dry` | Show task selection and cache decisions without executing checks. |
 | `npm test` | Execute active suites directly, without task-result reuse. |
+| `npm run test:unit` | Execute the deterministic unit project alone. |
+| `npm run test:boundary` | Execute the boundary project alone, against this host. |
+| `npm run test:workflow` | Execute the workflow project alone. |
 
 A retained workspace can reuse its own unchanged results. A new checkout starts cold. Reinstalling
 dependencies with an unchanged lockfile need not discard the cache; changing dependencies must

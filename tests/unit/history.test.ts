@@ -16,11 +16,11 @@ import type {
   PullRequestConversationRead,
   ReadComment,
   TicketHistory,
-} from '../src/history/contract.js';
-import { HistoryError } from '../src/history/contract.js';
-import { historyMarkerOf } from '../src/history/marker.js';
-import { workspaceHistoryRoot } from '../src/history/paths.js';
-import { compareHistoryTime } from '../src/history/time.js';
+} from '../../src/history/contract.js';
+import { HistoryError } from '../../src/history/contract.js';
+import { historyMarkerOf } from '../../src/history/marker.js';
+import { workspaceHistoryRoot } from '../../src/history/paths.js';
+import { compareHistoryTime } from '../../src/history/time.js';
 import {
   listSnapshots,
   readConsumedEntries,
@@ -28,12 +28,12 @@ import {
   recordConsumedSnapshot,
   snapshotIdOf,
   writeSnapshot,
-} from '../src/history/store.js';
-import type { SnapshotContent } from '../src/history/store.js';
-import { createTicketHistory } from '../src/history/sync.js';
-import { textSha256 } from '../src/history/reports.js';
-import type { SourceRef, Task } from '../src/shared/types.js';
-import { createTempDir } from './support.js';
+} from '../../src/history/store.js';
+import type { SnapshotContent } from '../../src/history/store.js';
+import { createTicketHistory } from '../../src/history/sync.js';
+import { textSha256 } from '../../src/history/reports.js';
+import type { SourceRef, Task } from '../../src/shared/types.js';
+import { createTempDir } from '../support.js';
 
 const REF: SourceRef = {
   type: 'jira',

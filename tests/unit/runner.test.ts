@@ -9,17 +9,17 @@
  * started here; the process and repository contracts stay the boundary layer's.
  */
 import { describe, expect, it } from 'vitest';
-import type { CheckRoundRequest } from '../src/checks/round.js';
-import { HistoryError } from '../src/history/contract.js';
+import type { CheckRoundRequest } from '../../src/checks/round.js';
+import { HistoryError } from '../../src/history/contract.js';
 import type {
   DeveloperReportRequest,
   HistorySnapshot,
   TicketHistory,
-} from '../src/history/contract.js';
-import type { AgentTurnResult, RunTaskResult } from '../src/runs/contracts.js';
-import { BASELINE_GUIDANCE_PREFIX } from '../src/runs/contracts.js';
-import type { CheckRoundResult, CommandResult, SourceRef } from '../src/shared/types.js';
-import type { ContinuedWorkspace } from '../src/workspace/reopen.js';
+} from '../../src/history/contract.js';
+import type { AgentTurnResult, RunTaskResult } from '../../src/runs/contracts.js';
+import { BASELINE_GUIDANCE_PREFIX } from '../../src/runs/contracts.js';
+import type { CheckRoundResult, CommandResult, SourceRef } from '../../src/shared/types.js';
+import type { ContinuedWorkspace } from '../../src/workspace/reopen.js';
 import {
   BASE_COMMIT,
   executionErrorRound,

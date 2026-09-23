@@ -15,13 +15,13 @@ import { existsSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { DeliveryError, createGitHubDelivery } from '../src/delivery/github.js';
-import type { DeliveryRequest } from '../src/delivery/github.js';
-import type { GitHubDeliveryConfig } from '../src/shared/types.js';
-import { prepareWorkspace } from '../src/workspace/prepare.js';
-import type { PreparedWorkspace } from '../src/workspace/prepare.js';
-import { preflightSource } from '../src/workspace/preflight.js';
-import { allocateRunDirectory } from '../src/workspace/run-directory.js';
+import { DeliveryError, createGitHubDelivery } from '../../src/delivery/github.js';
+import type { DeliveryRequest } from '../../src/delivery/github.js';
+import type { GitHubDeliveryConfig } from '../../src/shared/types.js';
+import { prepareWorkspace } from '../../src/workspace/prepare.js';
+import type { PreparedWorkspace } from '../../src/workspace/prepare.js';
+import { preflightSource } from '../../src/workspace/preflight.js';
+import { allocateRunDirectory } from '../../src/workspace/run-directory.js';
 import {
   createRepository,
   createTempDir,

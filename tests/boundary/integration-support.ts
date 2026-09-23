@@ -17,7 +17,7 @@ import { createServer } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, afterEach, beforeAll } from 'vitest';
-import { createTempDir, removeWithRetry } from './support.js';
+import { createTempDir, removeWithRetry } from '../support.js';
 
 /**
  * The temporary-directory helpers every boundary case uses, re-exported so a

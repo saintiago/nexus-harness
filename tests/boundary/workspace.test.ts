@@ -8,7 +8,7 @@
  * that keeps what it wrote and names it, and a comparison that is never reported
  * as one that found nothing. What a run does with the result is the fast
  * suites'; the branch a retained workspace is continued on is
- * `tests/workspace-continuation.test.ts`.
+ * `tests/boundary/workspace-continuation.test.ts`.
  *
  * Nothing is written outside the temporary directories a case owns, and the Git
  * environment is the suite's private one, so no developer configuration, hook,
@@ -27,14 +27,14 @@ import {
 } from 'node:fs/promises';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { WorkspaceError } from '../src/workspace/errors.js';
-import { inspectWorkspaceChanges } from '../src/workspace/changes.js';
-import { prepareWorkspace } from '../src/workspace/prepare.js';
-import type { PreparedWorkspace } from '../src/workspace/prepare.js';
-import { preflightSource } from '../src/workspace/preflight.js';
-import type { SourcePreflight } from '../src/workspace/preflight.js';
-import { allocateRunDirectory } from '../src/workspace/run-directory.js';
-import type { RunDirectory, WorkspacePlacement } from '../src/workspace/run-directory.js';
+import { WorkspaceError } from '../../src/workspace/errors.js';
+import { inspectWorkspaceChanges } from '../../src/workspace/changes.js';
+import { prepareWorkspace } from '../../src/workspace/prepare.js';
+import type { PreparedWorkspace } from '../../src/workspace/prepare.js';
+import { preflightSource } from '../../src/workspace/preflight.js';
+import type { SourcePreflight } from '../../src/workspace/preflight.js';
+import { allocateRunDirectory } from '../../src/workspace/run-directory.js';
+import type { RunDirectory, WorkspacePlacement } from '../../src/workspace/run-directory.js';
 import {
   createRepository,
   createTempDir,

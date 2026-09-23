@@ -19,11 +19,11 @@ import { existsSync } from 'node:fs';
 import { mkdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { runCommand } from '../src/process/command.js';
-import { runInvocation } from '../src/process/invocation.js';
-import type { InvocationResult } from '../src/process/invocation.js';
-import { collectHostUtilityWords } from '../src/process/stop.js';
-import { createTempDir } from './support.js';
+import { runCommand } from '../../src/process/command.js';
+import { runInvocation } from '../../src/process/invocation.js';
+import type { InvocationResult } from '../../src/process/invocation.js';
+import { collectHostUtilityWords } from '../../src/process/stop.js';
+import { createTempDir } from '../support.js';
 import {
   pause,
   readJsonWhenWritten,
