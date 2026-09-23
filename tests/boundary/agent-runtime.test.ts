@@ -15,19 +15,29 @@
  * put first on `PATH` for one case only, so a real runtime process crosses the
  * boundary and no live provider or credential is involved.
  */
+import { existsSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { AgentError, runCodexTurn } from '../../src/agents/codex/adapter.js';
+import { AgentError, runCodexPrompt, runCodexTurn } from '../../src/agents/codex/adapter.js';
 import { codexRuntime } from '../../src/agents/codex/runtime.js';
 import type { CodexRuntime } from '../../src/agents/codex/runtime.js';
 import { openAgentLog } from '../../src/reporting/logs.js';
 import type { AgentTurnRequest, AgentTurnResult } from '../../src/runs/contracts.js';
 import { createTempDir, readText } from '../support.js';
-import { installStandIn, withPathPrefix } from './integration-support.js';
+import {
+  installStandIn,
+  pause,
+  useOwnedProcesses,
+  waitUntilGone,
+  withPathPrefix,
+} from './integration-support.js';
+import type { StandIn } from './integration-support.js';
 
 /** One coding turn's request, the working tree it runs in, and its own log. */
-async function openTurn(): Promise<AgentTurnRequest> {
+async function openTurn(
+  stop: AbortSignal = new AbortController().signal,
+): Promise<AgentTurnRequest> {
   const root = await createTempDir();
   const workspacePath = path.join(root, 'workspace');
   const logsDir = path.join(root, 'logs');
@@ -47,8 +57,13 @@ async function openTurn(): Promise<AgentTurnRequest> {
     baseCommit: '0'.repeat(40),
     agentLog: await openAgentLog(logsDir, 1),
     repair: null,
-    stop: new AbortController().signal,
+    stop,
   };
+}
+
+/** The launcher one stand-in really is on this host. */
+function launcherPath(standIn: StandIn): string {
+  return path.join(standIn.bin, process.platform === 'win32' ? 'codex.cmd' : 'codex');
 }
 
 /**
@@ -89,6 +104,7 @@ const TURN_COMPLETED = event({ type: 'turn.completed' });
 
 /** What running the adapter against one stand-in runtime produced. */
 interface TurnOutcome {
+  readonly request: AgentTurnRequest;
   readonly result: AgentTurnResult | null;
   readonly failure: unknown;
   /** What the turn's own log holds, read back after the turn ended. */
@@ -104,19 +120,24 @@ async function runTurn(
   program: string | null,
   options: {
     readonly command?: readonly string[];
+    /** Arguments after the executable, as a configured launch prefix carries them. */
+    readonly prefix?: readonly string[];
   } = {},
 ): Promise<TurnOutcome> {
   const request = await openTurn();
-  const runtime: CodexRuntime =
-    options.command === undefined ? codexRuntime() : codexRuntime({ command: options.command });
+  const standIn = program === null ? null : await installStandIn('codex', program);
+  const command =
+    standIn !== null && options.prefix !== undefined
+      ? [launcherPath(standIn), ...options.prefix]
+      : options.command;
+  const runtime: CodexRuntime = codexRuntime(command === undefined ? {} : { command });
   const run = async (): Promise<AgentTurnResult> => await runCodexTurn(request, runtime);
   let result: AgentTurnResult | null = null;
   let failure: unknown = null;
   try {
-    if (program === null) {
+    if (standIn === null) {
       result = await run();
     } else {
-      const standIn = await installStandIn('codex', program);
       result = await withPathPrefix(standIn.bin, run);
     }
   } catch (cause) {
@@ -124,7 +145,7 @@ async function runTurn(
   } finally {
     await request.agentLog.close();
   }
-  return { result, failure, log: await readText(request.agentLog.path) };
+  return { request, result, failure, log: await readText(request.agentLog.path) };
 }
 
 /** The message of the one failure a case expected, as an `AgentError`. */
@@ -133,7 +154,67 @@ function agentFailure(failure: unknown): string {
   return (failure as Error).message;
 }
 
+/** Waits, bounded, for the runtime's own PID to appear in its ledger. */
+async function readPid(ledger: string): Promise<number> {
+  for (let attempt = 0; attempt < 400; attempt += 1) {
+    const text = (await readText(ledger).catch(() => '')).trim();
+    if (/^\d+$/.test(text)) {
+      return Number(text);
+    }
+    await pause(25);
+  }
+  throw new Error('the stand-in runtime never recorded its PID');
+}
+
 describe('how a coding turn ends', () => {
+  it('starts the configured launch in the working root, with the prompt on standard input', async () => {
+    const root = await createTempDir();
+    const record = path.join(root, 'launch.json');
+    // The program records what it was really started with, then completes.
+    const program = [
+      `import { writeFileSync } from 'node:fs';`,
+      `let prompt = '';`,
+      `process.stdin.setEncoding('utf8');`,
+      `process.stdin.on('data', (chunk) => { prompt += chunk; });`,
+      `process.stdin.on('end', () => {`,
+      `  writeFileSync(${JSON.stringify(record)}, JSON.stringify({`,
+      `    argv: process.argv.slice(2),`,
+      `    cwd: process.cwd(),`,
+      `    prompt,`,
+      `  }));`,
+      `  process.stdout.write(${JSON.stringify(event({ type: 'turn.completed' }))} + '\\n');`,
+      `});`,
+      ``,
+    ].join('\n');
+
+    const outcome = await runTurn(program, { prefix: ['--profile', 'native'] });
+
+    const launch = JSON.parse(await readText(record)) as {
+      readonly argv: readonly string[];
+      readonly cwd: string;
+      readonly prompt: string;
+    };
+    // The configured prefix comes first, exactly as configured, and the
+    // adapter's own fixed arguments follow it: a prefix selects a launch, it
+    // never replaces the interface the turn is read through.
+    expect(launch.argv).toEqual([
+      '--profile',
+      'native',
+      '--ask-for-approval',
+      'never',
+      'exec',
+      '--sandbox',
+      'danger-full-access',
+      '--json',
+      '-',
+    ]);
+    // The working root is the run's own working copy, and the prompt really
+    // arrived on standard input.
+    expect(launch.cwd).toBe(outcome.request.workspacePath);
+    expect(launch.prompt).toContain('## Task HARN-77: Finish the greeting');
+    expect(outcome.result).toEqual({ summary: null });
+  }, 45_000);
+
   it('reports a completed turn as the agent’s own summary, and keeps its stream', async () => {
     const outcome = await runTurn(
       runtimeProgram({
@@ -246,4 +327,114 @@ describe('how a coding turn ends', () => {
     expect(outcome.result).toBeNull();
     expect(outcome.log).toContain('could not be started');
   }, 45_000);
+});
+
+describe('a read-only diagnostic launch', () => {
+  it('is refused before anything starts when its prefix cannot be kept read-only', async () => {
+    const root = await createTempDir();
+    const marker = path.join(root, 'started.txt');
+    // The program marks the moment it exists, so a case can show that a refused
+    // launch really started nothing, and then answers a completed turn.
+    const program = [
+      `import { writeFileSync } from 'node:fs';`,
+      `writeFileSync(${JSON.stringify(marker)}, 'started');`,
+      `let prompt = '';`,
+      `process.stdin.setEncoding('utf8');`,
+      `process.stdin.on('data', (chunk) => { prompt += chunk; });`,
+      `process.stdin.on('end', () => {`,
+      `  process.stdout.write(${JSON.stringify(
+        event({
+          type: 'item.completed',
+          item: { type: 'agent_message', text: 'baseline looks fine' },
+        }),
+      )} + '\\n');`,
+      `  process.stdout.write(${JSON.stringify(event({ type: 'turn.completed' }))} + '\\n');`,
+      `});`,
+      ``,
+    ].join('\n');
+    const standIn = await installStandIn('codex', program);
+    const prefix = [launcherPath(standIn), '--add-dir', root];
+    const diagnostic = await openTurn();
+    const failure = await runCodexPrompt(
+      {
+        prompt: 'diagnose the baseline',
+        label: 'Nexus Lens baseline diagnosis for HARN-77',
+        workspacePath: diagnostic.workspacePath,
+        sandbox: 'workspace-write',
+        skipGitRepoCheck: true,
+        agentLog: diagnostic.agentLog,
+        stop: diagnostic.stop,
+      },
+      codexRuntime({ command: prefix }),
+    ).catch((cause: unknown) => cause);
+    await diagnostic.agentLog.close();
+
+    expect(failure).toBeInstanceOf(AgentError);
+    expect((failure as Error).message).toContain('--add-dir');
+    // No runtime was started at all: nothing received the grant, so there is
+    // no write outside the turn's own working root to undo.
+    expect(existsSync(marker)).toBe(false);
+    // The refusal is the turn's own evidence, where the turn's output goes.
+    expect(await readText(diagnostic.agentLog.path)).toContain(
+      'the diagnostic launch was refused',
+    );
+
+    // The same prefix is still configuration for a coding turn: that policy is
+    // unsandboxed by design, and only the diagnostic refuses what it cannot
+    // promise to keep out.
+    const coding = await openTurn();
+    const turn = await runCodexTurn(coding, codexRuntime({ command: prefix }));
+    await coding.agentLog.close();
+
+    expect(turn.summary).toBe('baseline looks fine');
+    expect(existsSync(marker)).toBe(true);
+  }, 45_000);
+});
+
+describe('stopping what a turn started', () => {
+  const processes = useOwnedProcesses();
+
+  it('stops the runtime it started when the run is stopped, and reports a confirmed stop', async () => {
+    const root = await createTempDir();
+    const ledger = path.join(root, 'runtime.pid');
+    // The stand-in names its own PID the moment it exists and then keeps
+    // running: what ends it is the harness's own stop, never its own exit.
+    const program = [
+      `import { writeFileSync } from 'node:fs';`,
+      `writeFileSync(${JSON.stringify(ledger)}, String(process.pid));`,
+      `setInterval(() => {}, 1000);`,
+      ``,
+    ].join('\n');
+    const controller = new AbortController();
+    const request = await openTurn(controller.signal);
+    const standIn = await installStandIn('codex', program);
+    processes.watchPidFile(ledger);
+
+    const running = withPathPrefix(
+      standIn.bin,
+      async () => await runCodexTurn(request, codexRuntime()),
+    );
+    try {
+      const pid = await readPid(ledger);
+      controller.abort();
+      const result = await running;
+
+      // A stopped turn resolves carrying the stop's own record, so the runner
+      // can read what was observed rather than a failure invented on the way
+      // out — and only a stop seen to end is confirmed.
+      expect(result.summary).toBeNull();
+      expect(result.shutdown).toEqual({ termination: 'confirmed', problem: null });
+      // The runtime really ended: the PID it recorded itself is gone.
+      expect(await waitUntilGone(pid)).toBe(true);
+    } catch (cause) {
+      // Whatever happens, the runtime this case started is stopped and awaited
+      // before the case ends; the suite's teardown independently ends the tree
+      // if this stop did not.
+      controller.abort();
+      await running.catch(() => undefined);
+      throw cause;
+    } finally {
+      await request.agentLog.close();
+    }
+  }, 60_000);
 });
