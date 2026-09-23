@@ -45,6 +45,20 @@ export interface WorkerStop {
   /** The signal that ended the worker, or `null` when it exited. */
   readonly signal: string | null;
   /**
+   * How the worker's ending was seen, which an exit code and a signal alone
+   * cannot say: a worker that never started a process and a worker whose ending
+   * no invocation ever observed both carry neither. `unobserved` is the ending
+   * a restart finds when it reads a launch whose worker is gone and no incident
+   * recorded its stop — the queue was interrupted, not completed.
+   */
+  readonly ending: 'exited' | 'signalled' | 'launch-failed' | 'unobserved';
+  /**
+   * The launch the worker was started under, when it was a supervised launch.
+   * It is what ties a stop to the launch it observed, so a restart can tell
+   * "this ending was recorded" from "this launch ended unobserved".
+   */
+  readonly launch: string | null;
+  /**
    * The failure's identity, for "the same failure again": the intent, the
    * scope, and the exit code or signal. Nothing about timing or a path takes
    * part, so an identical stop compares equal across restarts.
@@ -295,6 +309,31 @@ export function stopSignature(
     .digest('hex');
 }
 
+/**
+ * One worker ending, as every reader of the record words it: the report the
+ * incident publishes, the complete history it keeps, and the recovery prompt
+ * that answers it. An ending that was never observed is said so there rather
+ * than dressed as an exit code, and a worker that never started a process is
+ * not reported as one that ran.
+ */
+export function describeWorkerStop(stop: WorkerStop): string {
+  if (stop.ending === 'unobserved') {
+    return (
+      'without an observed ending: the invocation that started it stopped while it was still ' +
+      'running, so nothing here knows what it did'
+    );
+  }
+  if (stop.ending === 'launch-failed') {
+    return (
+      'without ever starting: the process could not be launched, so it produced no work and no ' +
+      'exit of its own'
+    );
+  }
+  return stop.signal === null
+    ? `with exit code ${String(stop.exitCode)}`
+    : `on signal ${stop.signal}`;
+}
+
 /** The directory one connected project's supervision state lives under. */
 export function supervisorRoot(workDir: string, namespace: string): string {
   return path.join(workDir, '.supervisor', namespace);
@@ -434,6 +473,22 @@ export async function readIncident(file: string): Promise<IncidentRecord | null>
           }
         : null,
     origin: isRecord(value['origin']) ? record.origin : null,
+    // A stop written before these fields existed keeps the wording it always
+    // had: an exit code says the worker exited, a signal says it was signalled,
+    // and neither is read as an ending nobody observed.
+    stops: record.stops.map((stop) => ({
+      ...stop,
+      ending:
+        stop.ending === 'exited' ||
+        stop.ending === 'signalled' ||
+        stop.ending === 'launch-failed' ||
+        stop.ending === 'unobserved'
+          ? stop.ending
+          : stop.signal === null
+            ? ('exited' as const)
+            : ('signalled' as const),
+      launch: typeof stop.launch === 'string' ? stop.launch : null,
+    })),
     pending:
       pending === null
         ? null
@@ -492,8 +547,20 @@ export interface CurrentIncident {
    * The token identifies one launch across its two writes; a restart reads it
    * back to tell "a worker is being started and cannot be reconciled" from
    * "no worker is running".
+   *
+   * It also carries the work the launch was started for, so a restart that
+   * finds a worker gone without any incident recording its ending knows what
+   * that worker was doing — the operator's own request, or the step of an
+   * incident's plan — and opens the incident that ending deserves.
    */
-  readonly launch: { readonly token: string; readonly at: string } | null;
+  readonly launch: {
+    readonly token: string;
+    readonly at: string;
+    /** The intent the worker ran under, or `null` for a pointer written before this was kept. */
+    readonly intent: SupervisorIntent | null;
+    /** The ticket that intent was scoped to, or `null`. */
+    readonly scope: string | null;
+  } | null;
 }
 
 /** Points the supervisor at the incident it is handling; `null` clears it. */
@@ -550,7 +617,17 @@ export async function readCurrentIncident(root: string): Promise<CurrentIncident
     workerPid: typeof workerPid === 'number' && Number.isInteger(workerPid) ? workerPid : null,
     launch:
       isRecord(launch) && typeof launch['token'] === 'string' && typeof launch['at'] === 'string'
-        ? { token: launch['token'], at: launch['at'] }
+        ? {
+            token: launch['token'],
+            at: launch['at'],
+            intent:
+              launch['intent'] === 'run' ||
+              launch['intent'] === 'watch' ||
+              launch['intent'] === 'ticket'
+                ? launch['intent']
+                : null,
+            scope: typeof launch['scope'] === 'string' ? launch['scope'] : null,
+          }
         : null,
   };
 }

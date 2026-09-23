@@ -803,14 +803,20 @@ made while handling it — its published report recognized by the identity the i
 its other comments by its configured author name and the window the incident covered — as context
 that is never an approval or a verification.
 
-**Restart and deduplication.** The supervisor's state is one owner record, one current-incident
+**Restart and deduplication.** The supervisor's state is one set of claims, one current-incident
 pointer, and one record per incident under the supervision's own id; nothing survives in a database
 or a service. A restart adopts the incident it finds, spends the attempts that record is missing,
 finishes its report if that is all that is left, carries out the resumption each conclusion still
 owes, and starts a worker again only where the records say the queue may resume. An incident record
 that cannot be read back is refused by name rather than treated as an absence, and the pointer
 names the worker that is running right now — a worker, or a recovery turn's own runtime, that is
-still alive is refused rather than duplicated.
+still alive is refused rather than duplicated. A pointer whose worker is gone and whose ending no
+incident recorded is not read as "no worker is running": the pointer's launch says what that worker
+was carrying out, and an ending nobody observed is an unexpected stop — the supervisor itself
+stopped while its worker ran — so an incident is opened for it and investigated before any fresh
+work starts. The one launch that needs no such incident is one carrying out a step an incident's
+plan still owes: that plan is the record of it, it does not advance on a start, and it carries the
+step out again.
 
 ## Jira API references
 

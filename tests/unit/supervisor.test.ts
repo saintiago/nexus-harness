@@ -85,6 +85,8 @@ function incidentWith(options: {
       scope,
       exitCode,
       signal,
+      ending: signal === null ? ('exited' as const) : ('signalled' as const),
+      launch: null,
       signature: stopSignature(scope === null ? 'run' : 'ticket', scope, exitCode, signal),
     })),
     attempts:
@@ -402,6 +404,8 @@ describe('what the recovery turn is told', () => {
       scope: 'HARN-51',
       exitCode: null,
       signal: 'SIGKILL',
+      ending: 'signalled',
+      launch: null,
       signature: 'signature',
     },
     earlier: [],

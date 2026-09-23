@@ -1399,7 +1399,8 @@ commands change no timeout.
 ```text
 <workDir>/.supervisor/<supervision-id>/     # a hash of the checkout and the harness configuration
   holders/holder-000001.json                # one claim per invocation: pid, token, intent, checkout
-  current.json                              # the incident being carried, and the worker's pid
+  current.json                              # the incident being carried, the worker's pid, and the
+                                            #   work its launch was started for
   incidents/<incident-id>/
   incident.json                           # stops, origin, attempts, pending attempt, resume plan,
                                           # conclusion, resumption, report ids and states
@@ -1466,6 +1467,13 @@ Before a restarted supervisor starts anything, it reads every incident record ba
   The Jira connection a comment is written through is read from the connected project's
   configuration at that moment, so a report owed after a repair goes into the thread the repaired
   configuration names.
+- **reconciles a launch nothing saw end.** The pointer names the worker that is running right now,
+  and it carries the work that worker was started for. A restart that finds such a worker gone,
+  with no incident recording how it ended, does not read that as "no worker is running": the
+  ending nobody observed is an unexpected stop — this supervisor stopped while its worker ran — so
+  an incident is opened for it, reported like any other, and investigated before fresh work starts.
+  A launch that was carrying out a step an incident's plan still owes is the one exception: the
+  plan is that record, it never advances on a start, and it carries the step out again.
 - **carries out the work the conclusions still owe.** A `repaired` conclusion owes the interrupted
   work; a `blocked` conclusion owes the blocker first, as its own scoped `queue run --ticket <KEY>`
   worker whatever intent the incident began with, and then the interrupted work. The resumption is

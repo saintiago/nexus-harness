@@ -201,6 +201,8 @@ describe('the supervised recoveries a ticket’s history carries', () => {
           scope: REF.key,
           exitCode: 1,
           signal: null,
+          ending: 'exited',
+          launch: null,
           signature: 'signature',
         },
       ],

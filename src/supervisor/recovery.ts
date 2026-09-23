@@ -33,6 +33,7 @@ import type {
   RecoveryDisposition,
   SupervisorIntent,
 } from './incident.js';
+import { describeWorkerStop } from './incident.js';
 
 /** The prompt the recovery turn is given, written beside its log. */
 export const RECOVERY_INPUT_FILE = 'input.md';
@@ -153,7 +154,7 @@ export function recoveryPrompt(brief: RecoveryBrief): string {
       `The worker was \`queue ${brief.intent === 'watch' ? 'watch' : 'run'}\`${
         brief.scope === null ? '' : `, scoped to ticket ${brief.scope}`
       }.`,
-      `It ended ${brief.stop.signal === null ? `with exit code ${String(brief.stop.exitCode)}` : `on signal ${brief.stop.signal}`} at ${brief.stop.at}.`,
+      `It ended ${describeWorkerStop(brief.stop)} at ${brief.stop.at}.`,
       'A stop with no exit report at all — a signal, a killed process, a crash out of memory — is',
       'exactly the case you are here for: nothing else will explain it.',
       '',

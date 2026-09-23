@@ -409,7 +409,12 @@ describe('a supervised queue', () => {
       version: 1,
       id: incident.id,
       workerPid: 4242,
-      launch: { token: 'the-blocker', at: '2026-09-23T00:04:00.000Z' },
+      launch: {
+        token: 'the-blocker',
+        at: '2026-09-23T00:04:00.000Z',
+        intent: 'ticket',
+        scope: 'HARN-77',
+      },
     });
     const requests: (string | null)[] = [];
     const recovery = scriptedRecovery([{ status: 'repaired', summary: 's', cause: 'c' }]);
@@ -793,6 +798,111 @@ describe('a supervised queue', () => {
     expect(recovery.calls).toBe(0);
   }, 30_000);
 
+  it('recovers a worker whose recorded ending no invocation ever observed', async () => {
+    const { workDir, repoPath, configPath } = await workspace();
+    const root = supervisorRoot(workDir, 'namespace');
+    // An invocation that died while its worker ran leaves the pointer naming
+    // that worker and no incident at all: the worker is gone now, and nothing
+    // recorded how it ended. A missing incident is not evidence that the worker
+    // completed, so the ending is investigated before anything else runs.
+    await writeCurrentIncident(root, {
+      version: 1,
+      id: null,
+      workerPid: 4242,
+      launch: {
+        token: 'lost-with-the-supervisor',
+        at: '2026-09-23T00:00:30.000Z',
+        intent: 'ticket',
+        scope: 'HARN-51',
+      },
+    });
+    const recovery = scriptedRecovery([
+      {
+        status: 'repaired',
+        summary: 'the interrupted worker was investigated',
+        cause: 'the supervisor was killed while its worker ran',
+        resolution: 'the workspace was returned to its recorded branch',
+        preserved: ['the commits the worker had made'],
+        resume: 'HARN-51 resumes from that workspace',
+      },
+    ]);
+    const requests: (string | null)[] = [];
+    const summary = await runSupervision({
+      workDir,
+      repoPath,
+      configPath,
+      isAlive: () => false,
+      worker: async (request) => {
+        requests.push(request.scope);
+        return ended(0);
+      },
+      recoveryTurn: recovery,
+    });
+
+    // The recovery agent investigated the unobserved ending, and the work it
+    // carried out resumed afterwards — the incident is kept and reported.
+    expect(recovery.calls).toBe(1);
+    expect(summary.outcome).toBe('settled');
+    expect(requests).toEqual(['HARN-51']);
+    const incident = await storedIncident(workDir);
+    expect(incident?.stops).toHaveLength(1);
+    expect(incident?.stops[0]?.ending).toBe('unobserved');
+    expect(incident?.stops[0]?.launch).toBe('lost-with-the-supervisor');
+    expect(incident?.stops[0]?.exitCode).toBeNull();
+    expect(incident?.stops[0]?.signal).toBeNull();
+    expect(incident?.ticket?.key).toBe('HARN-51');
+    expect(incident?.resumedAt).not.toBeNull();
+  }, 30_000);
+
+  it('does not read a recorded ending as missing, and does not treat an owed plan step as lost', async () => {
+    const { workDir, repoPath, configPath } = await workspace();
+    const root = supervisorRoot(workDir, 'namespace');
+    // The pointer names a worker the records already saw end: the incident that
+    // recorded that stop is the one a restart finishes, and no second incident
+    // is opened for an ending that was observed.
+    const incident = await seedIncident(root);
+    const seeded = await readIncident(incidentFilePath(root, incident.id));
+    if (seeded === null) {
+      throw new Error('the seeded incident is gone');
+    }
+    await writeIncident(incidentFilePath(root, incident.id), {
+      ...seeded,
+      stops: seeded.stops.map((stop) => ({ ...stop, launch: 'observed-launch' })),
+    });
+    await writeCurrentIncident(root, {
+      version: 1,
+      id: incident.id,
+      workerPid: 4242,
+      launch: {
+        token: 'observed-launch',
+        at: '2026-09-23T00:00:30.000Z',
+        intent: 'run',
+        scope: null,
+      },
+    });
+    const recovery = scriptedRecovery([
+      { status: 'repaired', summary: 'this turn should never run', cause: 'c' },
+    ]);
+    const summary = await runSupervision({
+      workDir,
+      repoPath,
+      configPath,
+      isAlive: () => false,
+      worker: scriptedWorker([ended(0)]),
+      recoveryTurn: recovery,
+    });
+
+    expect(recovery.calls).toBe(0);
+    expect(summary.outcome).toBe('settled');
+    expect(summary.recoveries).toBe(0);
+    // The incident that observed the ending is the one that was finished: its
+    // report went out, and no second incident exists beside it.
+    const stored = await readIncident(incidentFilePath(root, incident.id));
+    expect(stored?.report.commentId).toBe('10042');
+    const ids = await readdir(path.join(root, 'incidents'));
+    expect(ids).toEqual([incident.id]);
+  }, 30_000);
+
   it('refuses the crash window between spawning a worker and recording it', async () => {
     const { workDir, repoPath, configPath } = await workspace();
     const root = supervisorRoot(workDir, 'namespace');
@@ -804,7 +914,12 @@ describe('a supervised queue', () => {
       version: 1,
       id: null,
       workerPid: null,
-      launch: { token: 'never-registered', at: '2026-09-23T00:00:30.000Z' },
+      launch: {
+        token: 'never-registered',
+        at: '2026-09-23T00:00:30.000Z',
+        intent: 'run',
+        scope: null,
+      },
     });
     const recovery = scriptedRecovery([{ status: 'repaired', summary: 's', cause: 'c' }]);
     const summary = await runSupervision({
@@ -1219,6 +1334,8 @@ async function seedIncident(root: string): Promise<IncidentRecord> {
         scope: null,
         exitCode: 1,
         signal: null,
+        ending: 'exited',
+        launch: null,
         signature: 'signature',
       },
     ],

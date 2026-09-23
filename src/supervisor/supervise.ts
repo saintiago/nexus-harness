@@ -380,13 +380,18 @@ export async function supervise(request: SuperviseRequest): Promise<SuperviseSum
       // begins any work, so a supervisor that dies between spawning its
       // worker and recording it leaves a worker that did nothing at all, and
       // a restart refuses that launch instead of starting a second worker.
-      const launch = { token: randomUUID(), at: request.now().toISOString() };
+      const launch = {
+        token: randomUUID(),
+        at: request.now().toISOString(),
+        intent: step.intent,
+        scope: step.scope,
+      };
       try {
         await writeCurrentIncident(root, {
           version: 1,
           id: step.plan?.known.record.id ?? null,
           workerPid: null,
-          launch,
+          launch: { ...launch, intent: step.intent, scope: step.scope },
         });
       } catch (cause) {
         // The launch could not be written down, so no child may be started
@@ -534,6 +539,13 @@ export async function supervise(request: SuperviseRequest): Promise<SuperviseSum
             scope: step.scope,
             exitCode: outcome.exitCode,
             signal: outcome.signal,
+            ending:
+              outcome.launchProblem !== null
+                ? 'launch-failed'
+                : outcome.signal === null
+                  ? 'exited'
+                  : 'signalled',
+            launch: launch.token,
             signature: stopSignature(step.intent, step.scope, outcome.exitCode, outcome.signal),
           },
         ],
@@ -677,7 +689,12 @@ async function recordWorkerStarted(
   step: WorkerStep,
   pid: number | null,
   io: SuperviseIo,
-  launch: { readonly token: string; readonly at: string } | null,
+  launch: {
+    readonly token: string;
+    readonly at: string;
+    readonly intent: SupervisorIntent;
+    readonly scope: string | null;
+  } | null,
 ): Promise<void> {
   const pointer = (id: string | null): CurrentIncident => ({
     version: 1,
@@ -938,6 +955,110 @@ async function updateIncident(
 }
 
 /**
+ * The work one launch recorded in the pointer was carrying out, as a restart
+ * reads it: what the launch itself named, or — for a pointer written before
+ * that was kept — the plan of the incident it was carrying, and otherwise this
+ * invocation's own intent.
+ */
+function launchWork(
+  request: SuperviseRequest,
+  current: CurrentIncident | null,
+  incidents: readonly KnownIncident[],
+): { readonly intent: SupervisorIntent; readonly scope: string | null } {
+  const launch = current?.launch ?? null;
+  if (launch?.intent !== null && launch?.intent !== undefined) {
+    return { intent: launch.intent, scope: launch.scope };
+  }
+  if (current?.id !== null && current?.id !== undefined) {
+    const known = incidents.find((candidate) => candidate.record.id === current.id);
+    const plan = known?.record.sequence;
+    if (plan !== undefined && plan !== null) {
+      return { intent: plan.intent, scope: plan.scope };
+    }
+  }
+  return { intent: request.intent, scope: request.scope };
+}
+
+/**
+ * The incident a launch whose ending nobody recorded deserves, or `null` when
+ * there is no such launch.
+ *
+ * The pointer is the only record of a worker that is running right now, and a
+ * restart that finds its process gone has to answer one question before it
+ * starts anything: did some invocation observe how that worker ended? A stop
+ * records the launch it belongs to, so an ending that is nowhere recorded is
+ * one no invocation saw — the supervisor itself stopped while the worker was
+ * running — and the queue was interrupted rather than finished. That is an
+ * unexpected stop like any other, and it is one the recovery agent investigates
+ * rather than one a fresh worker may be started over.
+ *
+ * One case reconciles itself and needs no incident: a launch that was carrying
+ * out a step an incident's own plan still owes. The plan *is* that record — the
+ * step it names was started and never seen to settle, so the plan does not
+ * advance on it and carries it out again (docs/WORKFLOW.md §12) — and opening a
+ * second incident for the same step would only run it twice.
+ */
+async function unobservedLaunch(
+  request: SuperviseRequest,
+  current: CurrentIncident | null,
+  incidents: readonly KnownIncident[],
+): Promise<IncidentRecord | null> {
+  const launch = current?.launch ?? null;
+  if (launch === null || current?.workerPid === null || current?.workerPid === undefined) {
+    return null;
+  }
+  const observed = incidents.some((known) =>
+    known.record.stops.some((stop) => stop.launch === launch.token),
+  );
+  if (observed) {
+    return null;
+  }
+  const planOwes = incidents.some(
+    (known) =>
+      known.record.id === current?.id &&
+      known.record.stage === 'settled' &&
+      known.record.sequence !== null &&
+      known.record.resumedAt === null,
+  );
+  if (planOwes) {
+    return null;
+  }
+  const work = launchWork(request, current, incidents);
+  const at = request.now().toISOString();
+  const opened = openIncident(
+    request.namespace,
+    work.intent,
+    work.scope,
+    request.recovery.maxAttempts,
+    request.now,
+  );
+  return {
+    ...opened,
+    updatedAt: at,
+    // Nothing about that worker's run can be shown: its ending was never
+    // observed, so whatever it did is not evidence this supervisor holds, and
+    // the work it was carrying out is still owed.
+    origin:
+      current.id === null
+        ? { incident: null, progress: true }
+        : { incident: current.id, progress: false },
+    stops: [
+      {
+        at,
+        intent: work.intent,
+        scope: work.scope,
+        exitCode: null,
+        signal: null,
+        ending: 'unobserved',
+        launch: launch.token,
+        signature: stopSignature(work.intent, work.scope, null, null),
+      },
+    ],
+    ...(work.scope === null ? {} : { ticket: { key: work.scope, url: null } }),
+  };
+}
+
+/**
  * The incident an earlier supervisor left open, when one is really still being
  * handled. A record whose worker is genuinely still running is a refusal, not
  * an adoption: a restart must not put a second worker beside one that never
@@ -971,6 +1092,20 @@ async function adoptIncident(
         'invocation will not start a second one beside it. Wait for it, or stop it by hand, and ' +
         'run the supervisor again.',
     );
+  }
+  const unobserved = await unobservedLaunch(request, current, incidents);
+  if (unobserved !== null) {
+    // A worker the records name, whose process is gone, and whose ending no
+    // incident recorded: the queue was interrupted, never completed, and the
+    // ending it left behind is exactly what the recovery agent exists for. The
+    // incident is written down before anything else starts, so this ending is
+    // reconciled once and never overwritten by a fresh worker.
+    await persist(root, unobserved);
+    io.out(
+      `supervisor: the worker of launch ${current?.launch?.token ?? ''} is gone and no incident ` +
+        `recorded its ending, so incident ${unobserved.id} was opened for it.`,
+    );
+    return { record: unobserved, path: incidentFilePath(root, unobserved.id) };
   }
   const open = newestOpen(incidents);
   if (open === null) {

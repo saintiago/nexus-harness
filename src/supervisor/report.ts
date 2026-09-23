@@ -35,6 +35,7 @@ import type { HttpClient } from '../sources/jira/http.js';
 import { runCommand } from '../process/command.js';
 import { messageOf } from '../shared/errors.js';
 import type { RecoveryNotificationConfig } from '../shared/types.js';
+import { describeWorkerStop } from './incident.js';
 import type { IncidentRecord, IncidentReport, RecoveryAttempt } from './incident.js';
 
 /** How long one notification command may take: a command bound like any other. */
@@ -74,9 +75,7 @@ export function incidentReportText(
   const ended =
     stop === null
       ? 'the worker stopped without a recorded ending'
-      : stop.signal === null
-        ? `\`queue ${incident.intent === 'watch' ? 'watch' : 'run'}\` ended with exit code ${String(stop.exitCode)}`
-        : `\`queue ${incident.intent === 'watch' ? 'watch' : 'run'}\` ended on signal ${stop.signal}`;
+      : `\`queue ${stop.intent === 'watch' ? 'watch' : 'run'}\`${stop.scope === null ? '' : ` scoped to ${stop.scope}`} ended ${describeWorkerStop(stop)}`;
   const outcome =
     incident.conclusion?.outcome === 'repaired'
       ? 'repaired'
@@ -213,9 +212,7 @@ export function incidentHistoryText(incident: IncidentRecord): string {
     lines.push(
       `- ${stop.at}: \`queue ${stop.intent === 'watch' ? 'watch' : 'run'}\`` +
         `${stop.scope === null ? '' : ` scoped to ${stop.scope}`} ended ` +
-        (stop.signal === null
-          ? `with exit code ${String(stop.exitCode)}`
-          : `on signal ${stop.signal}`),
+        describeWorkerStop(stop),
     );
   }
   lines.push(
