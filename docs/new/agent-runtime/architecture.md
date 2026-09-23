@@ -43,7 +43,6 @@ type AgentEvent = { type: string; text: string };
 
 type AgentResult = Result<{
   output: string;
-  transcript: ArtifactRef | null;
 }>;
 ```
 
@@ -68,9 +67,9 @@ Use the [coding runtime adapter](../adapters/coding-runtime.md#interface) for pr
 model, effort, tool settings, assembled prompt, configured time limit and working directory. The working
 directory is worktree/ within the supplied workspace root.
 
-Prompt and settings are values. Receive the provider's output and activity as data/streams and preserve
-the transcript here. The adapter may use temporary files when its transport requires them; it does not
-choose Nexus artifact locations or return saved transcript artifacts.
+Prompt and settings are values. Receive the provider's output and activity as data/streams.
+The adapter may use temporary files when its transport requires them; it does not choose Nexus
+artifact locations.
 
 ## Instructions and profiles
 
@@ -90,8 +89,7 @@ settings. Resolve credentials for configured tools and keep their values out of 
 ## Invocation
 
 Resolve the profile, assemble the prompt, invoke the provider, collect output and return the result.
-Keep the assembled prompt and transcript in the artifact directory for inspection, using separate
-files for each invocation.
+AgentRuntime has no persistent storage. It streams activity and returns output to the caller.
 
 Wait for the invocation to finish before returning success. The runtime adds no repair turns,
 automatic profile escalation or reuse of an earlier result.
