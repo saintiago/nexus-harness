@@ -352,20 +352,23 @@ function unreadableClaimProblem(file: string, problem: string): string {
 
 /**
  * Takes the supervisor's own claim: refused while a live claim outranks this
- * invocation's, and owned once nothing live does. Publishing is the exclusive
- * creation of a rank file, so two simultaneous starts can never hold one rank,
- * and a rank is read again before every publication, so a claim published from
- * the directory as it stands is above every claim already there. That is not
- * enough on its own: a rank whose file was cleared away between an earlier
- * listing and this publication can be published *below* a claim published
- * afterwards, which may have decided the ownership before this claim existed.
- * A claim therefore never decides while one stands above it: the claims above
- * are awaited, the ones whose process is gone are cleared away as usual, and
- * what remains after the wait refuses this invocation — because a claim above
- * it was published later than its rank was read, so it may already own the
- * queue. That is what makes "the lowest live claim owns the queue" a decision
- * every contender reaches alike: a claim that decides is never below a claim
- * that may already have decided.
+ * invocation's, and owned once nothing live does. Publication is the exclusive
+ * creation of a name, so two simultaneous starts can never write one claim, and
+ * a rank is read again before every publication, so a claim published from the
+ * directory as it stands is above every claim already there. That is not enough
+ * on its own: a rank whose file was cleared away between an earlier listing and
+ * this publication can be published *below* a claim published afterwards, which
+ * may have decided the ownership before this claim existed. A claim therefore
+ * never decides while one stands above it: the claims above are awaited, the
+ * ones whose process is gone are cleared away as usual, and what remains after
+ * the wait refuses this invocation — because a claim above it was published
+ * later than its rank was read, so it may already own the queue. The claim this
+ * invocation published is read back before it decides, too, so an invocation
+ * whose claim was cleared away in the meantime owns nothing and publishes again
+ * above what it then reads. That is what makes "the lowest live claim owns the
+ * queue" a decision every contender reaches alike: a claim that decides is
+ * never below a claim that may already have decided, and it is really there
+ * while it decides.
  */
 export async function acquireSupervisorOwnership(
   request: OwnershipRequest,
