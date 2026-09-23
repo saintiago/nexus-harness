@@ -53,6 +53,7 @@ A multi-component flow does not create a special shared contract.
 - [SelectRepair design](docs/new/task-engine/actions/select-repair.md): shared repair allowance and profile escalation.
 - [CompleteTask design](docs/new/task-engine/actions/complete-task.md): merge/check evidence and task completion.
 - [AgentRuntime design](docs/new/agent-runtime/architecture.md): profiles, supplied context and agent invocation.
+- [Native Codex profiles](docs/new/agent-runtime/profiles.md): repository templates and Linux installation.
 - [DevelopmentRole design](docs/new/agent-runtime/development-role.md): constant developer instructions and task-specific input boundary.
 - [ReviewerRole design](docs/new/agent-runtime/reviewer-role.md): evidence-based review instructions and prior-finding evaluation.
 - [Findings contract](docs/new/task-engine/actions/findings.md): finding, response and disposition shapes shared across rounds.

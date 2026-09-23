@@ -1,0 +1,75 @@
+# Install and select as described in docs/new/agent-runtime/profiles.md.
+model = "gpt-6-astra"
+model_provider = "openai"
+model_reasoning_effort = "high"
+
+web_search = "disabled"
+mcp_optional_startup_grace_ms = 0
+
+[mcp_servers.openaiDeveloperDocs]
+enabled = true
+url = "https://developers.openai.com/mcp"
+
+[mcp_servers.context7]
+enabled = true
+url = "https://mcp.context7.com/mcp"
+# bearer_token_env_var = "CONTEXT7_API_KEY"
+
+[mcp_servers.tavily]
+enabled = true
+url = "https://mcp.tavily.com/mcp/"
+http_headers = { "X-Tavily-Access-Mode" = "keyless" }
+# bearer_token_env_var = "TAVILY_API_KEY"
+
+[apps._default]
+enabled = false
+
+# Override the GitHub connector enabled in existing operator configurations.
+[apps.connector_76869538009648d5b282a4bb21c3d157]
+enabled = false
+
+# Exclude personal-service plugins under both marketplace names.
+[plugins."gmail@openai-curated"]
+enabled = false
+
+[plugins."gmail@openai-curated-remote"]
+enabled = false
+
+[plugins."google-drive@openai-curated"]
+enabled = false
+
+[plugins."google-drive@openai-curated-remote"]
+enabled = false
+
+[plugins."google-calendar@openai-curated"]
+enabled = false
+
+[plugins."google-calendar@openai-curated-remote"]
+enabled = false
+
+[plugins."slack@openai-curated"]
+enabled = false
+
+[plugins."slack@openai-curated-remote"]
+enabled = false
+
+[plugins."github@openai-curated"]
+enabled = false
+
+[plugins."github@openai-curated-remote"]
+enabled = false
+
+[tool_suggest]
+disabled_tools = [
+  { type = "plugin", id = "gmail@openai-curated" },
+  { type = "plugin", id = "gmail@openai-curated-remote" },
+  { type = "plugin", id = "google-drive@openai-curated" },
+  { type = "plugin", id = "google-drive@openai-curated-remote" },
+  { type = "plugin", id = "google-calendar@openai-curated" },
+  { type = "plugin", id = "google-calendar@openai-curated-remote" },
+  { type = "plugin", id = "slack@openai-curated" },
+  { type = "plugin", id = "slack@openai-curated-remote" },
+  { type = "plugin", id = "github@openai-curated" },
+  { type = "plugin", id = "github@openai-curated-remote" },
+]
+
