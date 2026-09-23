@@ -536,6 +536,13 @@ export async function writeIncident(file: string, incident: IncidentRecord): Pro
  * launch and no PID is a launch whose child never did anything and whose
  * process cannot be reconciled: a restart refuses it rather than starting a
  * second worker beside it.
+ *
+ * The launch is kept until there is something durable to clear it: the worker's
+ * own ending, written down here by the invocation that watched it, and then the
+ * incident that ending owes — or the resumption the queue really owes — rather
+ * than the other way round. Clearing the launch first would let an invocation
+ * that stops in between erase the only record that a worker was ever
+ * interrupted.
  */
 export interface CurrentIncident {
   readonly version: 1;
@@ -561,6 +568,42 @@ export interface CurrentIncident {
     /** The ticket that intent was scoped to, or `null`. */
     readonly scope: string | null;
   } | null;
+  /**
+   * The ending of the launch above, once the invocation that watched it wrote
+   * it down, or `null` while the worker has not ended — or while nothing wrote
+   * its ending down at all.
+   *
+   * The launch is the only record of a worker that is running right now, so it
+   * is not cleared before the ending is durable: an invocation that stopped
+   * between a worker's ending and the incident that ending may owe would
+   * otherwise leave a restart with neither, and an interruption nothing
+   * investigates. What the ending was is therefore kept here, in the words of
+   * the invocation that watched it, until the record it owes (or the queue's
+   * own resumption) makes it superfluous.
+   */
+  readonly ending: RecordedEnding | null;
+}
+
+/**
+ * One ending of the launch a pointer registered, as the invocation that watched
+ * it wrote it down: everything a restart needs to decide about that worker
+ * exactly as the invocation itself would have decided.
+ */
+export interface RecordedEnding {
+  /** The launch this ending belongs to. An ending of another launch is stale. */
+  readonly launch: string;
+  readonly at: string;
+  readonly exitCode: number | null;
+  readonly signal: string | null;
+  /** How the worker ended, as the invocation that watched it saw it. */
+  readonly ending: 'exited' | 'signalled' | 'launch-failed';
+  /** Whether the operator had asked for this stop when the worker ended. */
+  readonly stopRequested: boolean;
+  /**
+   * Whether the queue left new run evidence behind between the launch and this
+   * ending, as the invocation that watched it computed it.
+   */
+  readonly progress: boolean;
 }
 
 /** Points the supervisor at the incident it is handling; `null` clears it. */
@@ -615,6 +658,7 @@ export async function readCurrentIncident(root: string): Promise<CurrentIncident
     version: 1,
     id: typeof value['id'] === 'string' ? value['id'] : null,
     workerPid: typeof workerPid === 'number' && Number.isInteger(workerPid) ? workerPid : null,
+    ending: recordedEndingOf(value['ending']),
     launch:
       isRecord(launch) && typeof launch['token'] === 'string' && typeof launch['at'] === 'string'
         ? {
@@ -629,6 +673,36 @@ export async function readCurrentIncident(root: string): Promise<CurrentIncident
             scope: typeof launch['scope'] === 'string' ? launch['scope'] : null,
           }
         : null,
+  };
+}
+
+/**
+ * One recorded ending, as it was written down, or `null`. A pointer written
+ * before endings were kept, and one whose worker has not ended, both carry
+ * none — and a record that is not an ending of a known shape is read as none
+ * too, so a restart never decides from half of one.
+ */
+function recordedEndingOf(value: unknown): RecordedEnding | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const ending = value['ending'];
+  if (
+    typeof value['launch'] !== 'string' ||
+    typeof value['at'] !== 'string' ||
+    (ending !== 'exited' && ending !== 'signalled' && ending !== 'launch-failed')
+  ) {
+    return null;
+  }
+  const exitCode = value['exitCode'];
+  return {
+    launch: value['launch'],
+    at: value['at'],
+    exitCode: typeof exitCode === 'number' && Number.isInteger(exitCode) ? exitCode : null,
+    signal: typeof value['signal'] === 'string' ? value['signal'] : null,
+    ending,
+    stopRequested: value['stopRequested'] === true,
+    progress: value['progress'] === true,
   };
 }
 

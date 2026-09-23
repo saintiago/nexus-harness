@@ -95,12 +95,14 @@ describe('the supervisor’s incident state', () => {
       id: incident.id,
       workerPid: null,
       launch: null,
+      ending: null,
     });
     expect(await readCurrentIncident(root)).toEqual({
       version: 1,
       id: incident.id,
       workerPid: null,
       launch: null,
+      ending: null,
     });
     await writeCurrentIncident(root, null);
     expect(await readCurrentIncident(root)).toBeNull();

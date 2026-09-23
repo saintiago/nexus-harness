@@ -42,6 +42,7 @@ import { messageOf } from '../shared/errors.js';
 import type { RecoveryConfig } from '../shared/types.js';
 import type { BlockerCompletionTake } from './completion.js';
 import {
+  describeWorkerStop,
   incidentDir,
   incidentFilePath,
   currentIncidentPath,
@@ -58,9 +59,11 @@ import type {
   CurrentIncident,
   IncidentRecord,
   PendingRecovery,
+  RecordedEnding,
   RecoveryAttempt,
   StopOrigin,
   SupervisorIntent,
+  WorkerStop,
 } from './incident.js';
 import { unreconciledLaunchProblem } from './launch.js';
 import { acquireSupervisorOwnership, intakeConsumerProblem, processIsAlive } from './owner.js';
@@ -75,7 +78,7 @@ import type {
 import { reportNeedsPublication } from './report.js';
 import type { IncidentJiraBoundary, IncidentReporter } from './report.js';
 import { classifyWorkerStop, runNexusWorker } from './worker.js';
-import type { WorkerOutcome, WorkerRequest } from './worker.js';
+import type { WorkerOutcome, WorkerRequest, WorkerVerdict } from './worker.js';
 
 /** Where the supervisor's own lines go. */
 export interface SuperviseIo {
@@ -413,6 +416,7 @@ export async function supervise(request: SuperviseRequest): Promise<SuperviseSum
           id: step.plan?.known.record.id ?? null,
           workerPid: null,
           launch,
+          ending: null,
         });
       } catch (cause) {
         // The launch could not be written down, so no child may be started
@@ -422,6 +426,7 @@ export async function supervise(request: SuperviseRequest): Promise<SuperviseSum
         return summary('attention', problem, carried?.record ?? null);
       }
       let started = false;
+      let workerPid: number | null = null;
       let outcome: WorkerOutcome;
       try {
         outcome = await runWorker({
@@ -443,6 +448,7 @@ export async function supervise(request: SuperviseRequest): Promise<SuperviseSum
           // than letting it run under a launch nothing recorded.
           onStarted: async (pid) => {
             started = true;
+            workerPid = pid;
             await recordWorkerStarted(request, root, step, pid, io, launch);
           },
         });
@@ -458,13 +464,19 @@ export async function supervise(request: SuperviseRequest): Promise<SuperviseSum
       // A worker substitute may report no PID at all. One that started without
       // reporting one is still work that ran, and the step it carries out — the
       // blocker's start, or the resumption of the interrupted work — is
-      // recorded the same way, never before it really started.
+      // recorded the same way, never before it really started. Its launch stays
+      // registered, exactly as a real worker's does, so its ending is what
+      // clears it rather than the absence of a process nobody could name.
       if (!started && outcome.launchProblem === null) {
-        await recordWorkerStarted(request, root, step, null, io, null).catch(() => undefined);
+        await recordWorkerStarted(request, root, step, null, io, launch).catch(() => undefined);
       }
       const after = await runEvidence(request);
       const progress = !before.ok || !after.ok || before.marker !== after.marker;
-      await settlePointer(root);
+      // The ending is written down before anything clears the launch it belongs
+      // to: a supervisor that stopped between the two writes would otherwise
+      // leave a restart with neither the worker's launch nor the incident its
+      // ending owes, and the interruption would be reconciled by nothing.
+      await recordWorkerEnding(request, root, step, launch, workerPid, outcome, progress, io);
 
       if (outcome.launchProblem !== null) {
         io.err(`supervisor: ${outcome.launchProblem}`);
@@ -525,6 +537,10 @@ export async function supervise(request: SuperviseRequest): Promise<SuperviseSum
           'supervisor: the operator stopped this supervision, and the worker stopped with it. ' +
             'Nothing is recovered from an intentional stop; the evidence stays where it is.',
         );
+        // The ending is the operator's own: the pointer is settled so a restart
+        // picks the queue up from its records rather than from a launch nobody
+        // is waiting for.
+        await settlePointer(root);
         return summary('cancelled', null, carried?.record ?? null);
       }
 
@@ -748,6 +764,7 @@ async function recordWorkerStarted(
     id,
     workerPid: pid,
     launch,
+    ending: null,
   });
   if (step.plan === null) {
     await writeCurrentIncident(root, pointer(null));
@@ -772,6 +789,70 @@ async function recordWorkerStarted(
     );
   } else {
     io.out(`supervisor: incident ${updated.id}: the queue resumes now.`);
+  }
+}
+
+/**
+ * Writes down how the worker of one launch ended, while the launch is still
+ * registered.
+ *
+ * The pointer is the only record of the worker that is running right now, and
+ * the launch in it is what lets a restart tell a worker it may not start beside
+ * from one that is gone. Clearing the launch and writing the incident it owes
+ * afterwards leaves a window in which an invocation that stops erases both: the
+ * restart then finds a pointer that names nothing and no incident, and runs
+ * fresh work over an interruption nothing investigated — a crash with no error
+ * report included. The ending is therefore written down in the launch's own
+ * record, kept there with the worker's PID, and only a durable ending (or the
+ * incident that ending owes) clears it.
+ *
+ * A pointer that cannot be written stops nothing: the launch record is still
+ * exactly what it was, so a restart reconciles this worker as one whose ending
+ * it did not see and investigates it — never as one that never ran.
+ */
+async function recordWorkerEnding(
+  request: SuperviseRequest,
+  root: string,
+  step: WorkerStep,
+  launch: {
+    readonly token: string;
+    readonly at: string;
+    readonly intent: SupervisorIntent;
+    readonly scope: string | null;
+  },
+  workerPid: number | null,
+  outcome: WorkerOutcome,
+  progress: boolean,
+  io: SuperviseIo,
+): Promise<void> {
+  const ending: RecordedEnding = {
+    launch: launch.token,
+    at: request.now().toISOString(),
+    exitCode: outcome.exitCode,
+    signal: outcome.signal,
+    ending:
+      outcome.launchProblem !== null
+        ? 'launch-failed'
+        : outcome.signal === null
+          ? 'exited'
+          : 'signalled',
+    stopRequested: outcome.stopRequested,
+    progress,
+  };
+  try {
+    await writeCurrentIncident(root, {
+      version: 1,
+      id: step.plan?.known.record.id ?? null,
+      workerPid,
+      launch,
+      ending,
+    });
+  } catch (cause) {
+    io.err(
+      `supervisor: the ending of the worker of launch ${launch.token} could not be written ` +
+        `down (${messageOf(cause)}); its launch stays registered, so a later invocation ` +
+        'reconciles it as an ending it did not see and investigates it.',
+    );
   }
 }
 
@@ -828,6 +909,7 @@ async function settlePointer(root: string): Promise<void> {
     id: next.record.id,
     workerPid: null,
     launch: null,
+    ending: null,
   }).catch(() => undefined);
 }
 
@@ -974,6 +1056,7 @@ async function persist(root: string, incident: IncidentRecord): Promise<void> {
     id: incident.id,
     workerPid: null,
     launch: null,
+    ending: null,
   });
 }
 
@@ -1027,9 +1110,20 @@ function launchWork(
   return { intent: request.intent, scope: request.scope };
 }
 
+/** What a restart makes of the launch the pointer left behind. */
+type LaunchReconciliation =
+  /** No launch is registered: nothing of the pointer needs reconciling. */
+  | { readonly kind: 'none' }
+  /** The launch owes nothing: the records say what the queue does next. */
+  | { readonly kind: 'settle'; readonly note: string | null }
+  /** The launch owes an incident, built from the evidence the restart holds. */
+  | { readonly kind: 'incident'; readonly record: IncidentRecord; readonly note: string }
+  /** The launch cannot be reconciled at all, and nothing may start beside it. */
+  | { readonly kind: 'refuse'; readonly problem: string };
+
 /**
- * The incident a launch whose ending nobody recorded deserves, or `null` when
- * there is no such launch.
+ * The launch a pointer left, as a restart reads it: the ending it owes, or
+ * nothing.
  *
  * The pointer is the only record of a worker that is running right now, and a
  * restart that finds its process gone has to answer one question before it
@@ -1040,36 +1134,97 @@ function launchWork(
  * unexpected stop like any other, and it is one the recovery agent investigates
  * rather than one a fresh worker may be started over.
  *
- * One case reconciles itself and needs no incident: a launch that was carrying
- * out a step an incident's own plan still owes. The plan *is* that record — the
- * step it names was started and never seen to settle, so the plan does not
- * advance on it and carries it out again (docs/WORKFLOW.md §12) — and opening a
- * second incident for the same step would only run it twice.
+ * An ending the invocation that watched it wrote down — in the pointer, before
+ * it could clear the launch — is evidence this restart holds, and it is decided
+ * on exactly as that invocation would have decided: a settled worker finished
+ * its work and the operator's own stop is not an incident for recovery, while
+ * every other ending is the incident the invocation was about to open, opened
+ * here from the ending it saw.
+ *
+ * Nothing here is excused by an incident's plan: a launch carrying out a step
+ * an incident still owes is investigated like any other, because that plan
+ * records the interruption the step began from, never what happened during it —
+ * the blocker may have crashed with uncommitted work, an unreconciled ticket
+ * claim or surviving tools — and the step is carried out again after its own
+ * interruption is reconciled (docs/WORKFLOW.md §12).
  */
-async function unobservedLaunch(
+async function reconcileLaunch(
   request: SuperviseRequest,
   current: CurrentIncident | null,
   incidents: readonly KnownIncident[],
-): Promise<IncidentRecord | null> {
+): Promise<LaunchReconciliation> {
   const launch = current?.launch ?? null;
-  if (launch === null || current?.workerPid === null || current?.workerPid === undefined) {
-    return null;
+  if (launch === null) {
+    return { kind: 'none' };
   }
-  const observed = incidents.some((known) =>
-    known.record.stops.some((stop) => stop.launch === launch.token),
-  );
-  if (observed) {
-    return null;
+  if (incidents.some((known) => known.record.stops.some((stop) => stop.launch === launch.token))) {
+    // An incident already recorded this launch's ending: the pointer is the
+    // residue of that stop, and what is left is decided from the records.
+    return { kind: 'settle', note: null };
   }
-  const planOwes = incidents.some(
-    (known) =>
-      known.record.id === current?.id &&
-      known.record.stage === 'settled' &&
-      known.record.sequence !== null &&
-      known.record.resumedAt === null,
-  );
-  if (planOwes) {
-    return null;
+  const ending = recordedEndingFor(current, launch.token);
+  if (ending !== null) {
+    const work = launchWork(request, current, incidents);
+    if (classifyRecordedEnding(ending) !== 'stopped') {
+      return {
+        kind: 'settle',
+        note:
+          `supervisor: the worker of launch ${launch.token} is gone and the ending written down ` +
+          `for it owes no incident (${endingWords(ending)}), so the queue goes on from its ` +
+          'records.',
+      };
+    }
+    const opened = openIncident(
+      request.namespace,
+      work.intent,
+      work.scope,
+      request.recovery.maxAttempts,
+      request.now,
+    );
+    const stop: WorkerStop = {
+      at: ending.at,
+      intent: work.intent,
+      scope: work.scope,
+      exitCode: ending.exitCode,
+      signal: ending.signal,
+      ending: ending.ending,
+      launch: launch.token,
+      signature: stopSignature(work.intent, work.scope, ending.exitCode, ending.signal),
+    };
+    const record: IncidentRecord = {
+      ...opened,
+      updatedAt: ending.at,
+      // Whether the queue moved on before that worker ended was watched by the
+      // invocation that wrote the ending down, and that is what is read here.
+      origin:
+        current?.id === null || current?.id === undefined
+          ? { incident: null, progress: true }
+          : { incident: current.id, progress: ending.progress },
+      stops: [stop],
+      ...(work.scope === null ? {} : { ticket: { key: work.scope, url: null } }),
+    };
+    return {
+      kind: 'incident',
+      record,
+      note:
+        `supervisor: the worker of launch ${launch.token} is gone and the ending written down ` +
+        `for it (${describeWorkerStop(stop)}) was never recorded as an incident, so incident ` +
+        `${record.id} was opened from it.`,
+    };
+  }
+  if (current?.workerPid === null || current?.workerPid === undefined) {
+    // A launch that names no process cannot be reconciled: the worker it
+    // started may be there or not, and only the record that never came could
+    // have told. The child is gated on exactly that record — it has begun no
+    // work — and this invocation refuses rather than starting a second one.
+    return {
+      kind: 'refuse',
+      problem: unreconciledLaunchProblem({
+        file: currentIncidentPath(supervisorRoot(request.workDir, request.namespace)),
+        token: launch.token,
+        at: launch.at,
+      }),
+    };
   }
   const work = launchWork(request, current, incidents);
   const at = request.now().toISOString();
@@ -1080,30 +1235,66 @@ async function unobservedLaunch(
     request.recovery.maxAttempts,
     request.now,
   );
-  return {
+  const stop: WorkerStop = {
+    at,
+    intent: work.intent,
+    scope: work.scope,
+    exitCode: null,
+    signal: null,
+    ending: 'unobserved',
+    launch: launch.token,
+    signature: stopSignature(work.intent, work.scope, null, null),
+  };
+  const record: IncidentRecord = {
     ...opened,
     updatedAt: at,
     // Nothing about that worker's run can be shown: its ending was never
     // observed, so whatever it did is not evidence this supervisor holds, and
     // the work it was carrying out is still owed.
     origin:
-      current.id === null
+      current?.id === null || current?.id === undefined
         ? { incident: null, progress: true }
         : { incident: current.id, progress: false },
-    stops: [
-      {
-        at,
-        intent: work.intent,
-        scope: work.scope,
-        exitCode: null,
-        signal: null,
-        ending: 'unobserved',
-        launch: launch.token,
-        signature: stopSignature(work.intent, work.scope, null, null),
-      },
-    ],
+    stops: [stop],
     ...(work.scope === null ? {} : { ticket: { key: work.scope, url: null } }),
   };
+  return {
+    kind: 'incident',
+    record,
+    note:
+      `supervisor: the worker of launch ${launch.token} is gone and no incident recorded its ` +
+      `ending (${describeWorkerStop(stop)}), so incident ${record.id} was opened for it.`,
+  };
+}
+
+/** The ending recorded in one pointer, when it belongs to the launch in it. */
+function recordedEndingFor(current: CurrentIncident | null, token: string): RecordedEnding | null {
+  const ending = current?.ending ?? null;
+  return ending !== null && ending.launch === token ? ending : null;
+}
+
+/** The verdict one recorded ending deserves, read as the invocation that saw it read it. */
+function classifyRecordedEnding(ending: RecordedEnding): WorkerVerdict {
+  return classifyWorkerStop({
+    exitCode: ending.exitCode,
+    signal: ending.signal,
+    launchProblem:
+      ending.ending === 'launch-failed'
+        ? 'the process could not be launched, as the invocation that watched it recorded'
+        : null,
+    stopRequested: ending.stopRequested,
+  });
+}
+
+/** One recorded ending, as the supervisor's own line words it. */
+function endingWords(ending: RecordedEnding): string {
+  const ended =
+    ending.ending === 'launch-failed'
+      ? 'the worker never started'
+      : ending.signal === null
+        ? `it exited with code ${String(ending.exitCode)}`
+        : `it was ended on signal ${ending.signal}`;
+  return ending.stopRequested ? `${ended}, under the operator's own stop` : ended;
 }
 
 /**
@@ -1121,19 +1312,6 @@ async function adoptIncident(
   const root = supervisorRoot(request.workDir, request.namespace);
   const current = await readCurrentIncident(root);
   const pid = current?.workerPid ?? null;
-  if (current?.launch !== null && current?.launch !== undefined && pid === null) {
-    // A launch that names no process cannot be reconciled: the worker it
-    // started may be there or not, and only the record that never came could
-    // have told. The child is gated on exactly that record — it has begun no
-    // work — and this invocation refuses rather than starting a second one.
-    throw new Error(
-      unreconciledLaunchProblem({
-        file: currentIncidentPath(root),
-        token: current.launch.token,
-        at: current.launch.at,
-      }),
-    );
-  }
   if (pid !== null && isAlive(pid)) {
     throw new Error(
       `a worker started by an earlier supervisor is still running (pid ${String(pid)}), so this ` +
@@ -1141,19 +1319,32 @@ async function adoptIncident(
         'run the supervisor again.',
     );
   }
-  const unobserved = await unobservedLaunch(request, current, incidents);
-  if (unobserved !== null) {
+  const reconciliation = await reconcileLaunch(request, current, incidents);
+  if (reconciliation.kind === 'refuse') {
+    throw new Error(reconciliation.problem);
+  }
+  if (reconciliation.kind === 'incident') {
     // A worker the records name, whose process is gone, and whose ending no
     // incident recorded: the queue was interrupted, never completed, and the
     // ending it left behind is exactly what the recovery agent exists for. The
     // incident is written down before anything else starts, so this ending is
     // reconciled once and never overwritten by a fresh worker.
-    await persist(root, unobserved);
-    io.out(
-      `supervisor: the worker of launch ${current?.launch?.token ?? ''} is gone and no incident ` +
-        `recorded its ending, so incident ${unobserved.id} was opened for it.`,
-    );
-    return { record: unobserved, path: incidentFilePath(root, unobserved.id) };
+    await persist(root, reconciliation.record);
+    io.out(reconciliation.note);
+    return {
+      record: reconciliation.record,
+      path: incidentFilePath(root, reconciliation.record.id),
+    };
+  }
+  if (reconciliation.kind === 'settle') {
+    // Nothing of that launch is owed: either an incident already holds its
+    // ending, or the ending that was written down owes none. The pointer is
+    // moved on to whatever the records leave before anything else runs, so a
+    // launch that ended is never read again as one that is still running.
+    await settlePointer(root);
+    if (reconciliation.note !== null) {
+      io.out(reconciliation.note);
+    }
   }
   const open = newestOpen(incidents);
   if (open === null) {

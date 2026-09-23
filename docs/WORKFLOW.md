@@ -1441,6 +1441,14 @@ work run under a launch nothing recorded. A restart that finds a launch naming n
 by name: the worker it started is gated on exactly that record, so it began no work and gives up by
 itself, and nothing here starts a second worker beside a process it cannot name.
 
+The launch is kept until there is something durable to clear it. The invocation that watched its
+worker end writes that ending down in the same record — the exit code or signal, whether the operator
+asked for the stop, and whether the queue left new run evidence behind — before anything else, and
+the launch and its PID stay in it until the incident that ending owes, or the queue's own
+resumption, makes them superfluous. A crash between the ending and the incident therefore leaves a
+restart the ending itself, never a pointer that names nothing and no record: erasing that evidence is
+exactly how an interruption would go unrecovered.
+
 ### What a restart reconciles
 
 The records above are the state; the pointer file only says which worker is running right now.
@@ -1473,11 +1481,17 @@ Before a restarted supervisor starts anything, it reads every incident record ba
   configuration names.
 - **reconciles a launch nothing saw end.** The pointer names the worker that is running right now,
   and it carries the work that worker was started for. A restart that finds such a worker gone,
-  with no incident recording how it ended, does not read that as "no worker is running": the
-  ending nobody observed is an unexpected stop — this supervisor stopped while its worker ran — so
-  an incident is opened for it, reported like any other, and investigated before fresh work starts.
-  A launch that was carrying out a step an incident's plan still owes is the one exception: the
-  plan is that record, it never advances on a start, and it carries the step out again.
+  with no incident recording how it ended, does not read that as "no worker is running". An ending
+  the invocation that watched it wrote down before it could clear the launch is decided on exactly
+  as that invocation would have decided: a settled worker finished its work and the operator's own
+  stop recovers nothing, so both leave the queue to its records, while every other ending — a crash
+  with no report at all included — is the incident that invocation was about to open, opened here
+  and reported like any other. An ending nobody recorded is an unexpected stop too: the supervisor
+  itself stopped while its worker ran, and an incident is opened and investigated before fresh work
+  starts. Nothing is excused by a plan: a launch that was carrying out a step an incident still owes
+  is investigated like any other, because that plan records the interruption the step began from,
+  never what happened during it, and the step is carried out again only after its own interruption
+  is reconciled.
 - **carries out the work the conclusions still owe.** A `repaired` conclusion owes the interrupted
   work; a `blocked` conclusion owes the blocker first, as its own scoped `queue run --ticket <KEY>`
   worker whatever intent the incident began with, and then the interrupted work. The resumption is

@@ -139,6 +139,8 @@ async function runSupervision(overrides: {
   readonly jiraBoundary?: SuperviseRequest['jiraBoundary'];
   readonly blockerCompletion?: SuperviseRequest['blockerCompletion'];
   readonly lines?: string[];
+  /** The clock this invocation reads, for a case whose incidents need an order. */
+  readonly now?: () => Date;
 }): Promise<SuperviseSummary> {
   const lines = overrides.lines ?? [];
   const reports: IncidentRecord[] = [];
@@ -166,7 +168,7 @@ async function runSupervision(overrides: {
       err: (text) => lines.push(text),
     },
     stop: overrides.stop ?? new AbortController().signal,
-    now: () => new Date('2026-09-23T00:00:00.000Z'),
+    now: overrides.now ?? (() => new Date('2026-09-23T00:00:00.000Z')),
     jiraBoundary:
       overrides.jiraBoundary ??
       (async () => ({ boundary: { kind: 'none' as const }, identity: null })),
@@ -472,7 +474,7 @@ describe('a supervised queue', () => {
     expect(incident?.resumedAt).toBeNull();
   }, 30_000);
 
-  it('carries an interrupted blocker to its confirmed result before resuming', async () => {
+  it('investigates a blocker whose ending nothing recorded before carrying it out again', async () => {
     const { workDir, repoPath, configPath } = await workspace();
     const root = supervisorRoot(workDir, 'namespace');
     // The state a crash *during the blocker* leaves: the incident is concluded
@@ -504,6 +506,7 @@ describe('a supervised queue', () => {
       version: 1,
       id: incident.id,
       workerPid: 4242,
+      ending: null,
       launch: {
         token: 'the-blocker',
         at: '2026-09-23T00:04:00.000Z',
@@ -519,6 +522,9 @@ describe('a supervised queue', () => {
       configPath,
       scope: 'HARN-51',
       isAlive: () => false,
+      // The investigated ending is a later episode than the plan it
+      // interrupted, so its incident is the innermost one carried first.
+      now: () => new Date('2026-09-23T00:30:00.000Z'),
       worker: async (request) => {
         requests.push(request.scope);
         return ended(0);
@@ -526,11 +532,30 @@ describe('a supervised queue', () => {
       recoveryTurn: recovery,
     });
 
-    // The blocker runs again: its start alone was never its result. Only after
-    // it really settles does the interrupted work run.
-    expect(requests).toEqual(['HARN-77', 'HARN-51']);
+    // The ending nobody observed is investigated first — the blocker may have
+    // crashed with uncommitted work, an unreconciled ticket claim or surviving
+    // tools — and the parent's plan is retained: the blocker then runs again
+    // (as its own incident's resumption), and its own ticket is read back in
+    // the parent's step before the interrupted work may resume.
+    expect(recovery.calls).toBe(1);
+    expect(requests).toEqual(['HARN-77', 'HARN-77', 'HARN-51']);
     expect(summary.outcome).toBe('settled');
-    expect(recovery.calls).toBe(0);
+    // The unknown ending is its own incident, recorded and reported, naming the
+    // plan it interrupted as its origin.
+    const ids = await readdir(path.join(root, 'incidents'));
+    expect(ids).toHaveLength(2);
+    const investigated = await readIncident(
+      incidentFilePath(root, ids.find((id) => id !== incident.id) ?? ''),
+    );
+    expect(investigated?.stops[0]).toMatchObject({
+      ending: 'unobserved',
+      launch: 'the-blocker',
+      scope: 'HARN-77',
+    });
+    expect(investigated?.origin?.incident).toBe(incident.id);
+    expect(investigated?.ticket?.key).toBe('HARN-77');
+    expect(investigated?.report.commentId).toBe('10042');
+    expect(investigated?.resumedAt).not.toBeNull();
     const stored = await readIncident(incidentFilePath(root, incident.id));
     expect(stored?.sequence?.blockerStartedAt).not.toBeNull();
     expect(stored?.sequence?.blockerSettledAt).not.toBeNull();
@@ -904,6 +929,7 @@ describe('a supervised queue', () => {
       version: 1,
       id: null,
       workerPid: 4242,
+      ending: null,
       launch: {
         token: 'lost-with-the-supervisor',
         at: '2026-09-23T00:00:30.000Z',
@@ -949,6 +975,120 @@ describe('a supervised queue', () => {
     expect(incident?.resumedAt).not.toBeNull();
   }, 30_000);
 
+  it('investigates an ending written down before the invocation could record it', async () => {
+    const { workDir, repoPath, configPath } = await workspace();
+    const root = supervisorRoot(workDir, 'namespace');
+    // The state an invocation that stopped between its two writes leaves: the
+    // pointer still names the launch and the worker's PID, and it carries the
+    // ending that invocation watched. Clearing the launch before the incident
+    // was durable would have left a restart with neither.
+    await writeCurrentIncident(root, {
+      version: 1,
+      id: null,
+      workerPid: 4242,
+      launch: {
+        token: 'ending-written-down',
+        at: '2026-09-23T00:00:30.000Z',
+        intent: 'ticket',
+        scope: 'HARN-51',
+      },
+      ending: {
+        launch: 'ending-written-down',
+        at: '2026-09-23T00:00:40.000Z',
+        exitCode: 1,
+        signal: null,
+        ending: 'exited',
+        stopRequested: false,
+        progress: false,
+      },
+    });
+    const recovery = scriptedRecovery([
+      {
+        status: 'repaired',
+        summary: 'the worker was investigated',
+        cause: 'a worker killed mid-run',
+        resolution: 'the workspace was returned to its recorded branch',
+        preserved: [],
+        resume: 'HARN-51 resumes from that workspace',
+      },
+    ]);
+    const requests: (string | null)[] = [];
+    const summary = await runSupervision({
+      workDir,
+      repoPath,
+      configPath,
+      isAlive: () => false,
+      worker: async (request) => {
+        requests.push(request.scope);
+        return ended(0);
+      },
+      recoveryTurn: recovery,
+    });
+
+    // The recorded ending is evidence this invocation holds: it is the incident
+    // that ending owes, opened with exactly what the invocation before it saw,
+    // and the work it interrupted resumes afterwards.
+    expect(recovery.calls).toBe(1);
+    expect(summary.outcome).toBe('settled');
+    expect(requests).toEqual(['HARN-51']);
+    const incident = await storedIncident(workDir);
+    expect(incident?.stops[0]).toMatchObject({
+      at: '2026-09-23T00:00:40.000Z',
+      ending: 'exited',
+      exitCode: 1,
+      signal: null,
+      launch: 'ending-written-down',
+      scope: 'HARN-51',
+    });
+    expect(incident?.resumedAt).not.toBeNull();
+  }, 30_000);
+
+  it('reads a settled ending written down before the launch was cleared as no interruption', async () => {
+    const { workDir, repoPath, configPath } = await workspace();
+    const root = supervisorRoot(workDir, 'namespace');
+    // The same boundary on the other side: the invocation before this one saw
+    // its worker settle cleanly, and only a crash stopped it from clearing the
+    // launch. That is not an ending recovery exists for.
+    await writeCurrentIncident(root, {
+      version: 1,
+      id: null,
+      workerPid: 4242,
+      launch: {
+        token: 'settled-ending',
+        at: '2026-09-23T00:00:30.000Z',
+        intent: 'run',
+        scope: null,
+      },
+      ending: {
+        launch: 'settled-ending',
+        at: '2026-09-23T00:00:40.000Z',
+        exitCode: 0,
+        signal: null,
+        ending: 'exited',
+        stopRequested: false,
+        progress: true,
+      },
+    });
+    const recovery = scriptedRecovery([
+      { status: 'repaired', summary: 'this turn should never run', cause: 'c' },
+    ]);
+    const summary = await runSupervision({
+      workDir,
+      repoPath,
+      configPath,
+      isAlive: () => false,
+      worker: scriptedWorker([ended(0)]),
+      recoveryTurn: recovery,
+    });
+
+    expect(recovery.calls).toBe(0);
+    expect(summary.recoveries).toBe(0);
+    expect(summary.outcome).toBe('settled');
+    expect(summary.workerRuns).toBe(1);
+    expect(await readdir(path.join(root, 'incidents')).catch(() => [])).toEqual([]);
+    expect(await readCurrentIncident(root)).toBeNull();
+  }, 30_000);
+
   it('does not read a recorded ending as missing, and does not treat an owed plan step as lost', async () => {
     const { workDir, repoPath, configPath } = await workspace();
     const root = supervisorRoot(workDir, 'namespace');
@@ -968,6 +1108,7 @@ describe('a supervised queue', () => {
       version: 1,
       id: incident.id,
       workerPid: 4242,
+      ending: null,
       launch: {
         token: 'observed-launch',
         at: '2026-09-23T00:00:30.000Z',
@@ -1009,6 +1150,7 @@ describe('a supervised queue', () => {
       version: 1,
       id: null,
       workerPid: null,
+      ending: null,
       launch: {
         token: 'never-registered',
         at: '2026-09-23T00:00:30.000Z',
@@ -1401,7 +1543,13 @@ async function seedPending(
             },
     },
   });
-  await writeCurrentIncident(root, { version: 1, id, workerPid: null, launch: null });
+  await writeCurrentIncident(root, {
+    version: 1,
+    id,
+    workerPid: null,
+    launch: null,
+    ending: null,
+  });
 }
 
 /** One concluded incident an earlier supervisor left behind, un-reported. */
@@ -1459,6 +1607,7 @@ async function seedIncident(root: string): Promise<IncidentRecord> {
     id: incident.id,
     workerPid: 4242,
     launch: null,
+    ending: null,
   });
   await mkdir(incidentDir(root, incident.id), { recursive: true });
   return incident;

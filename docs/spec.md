@@ -689,6 +689,13 @@ letting work run under a launch nothing recorded. A restart that finds a launch 
 refuses it by name: the child it started is gated on exactly that record, so it began no work and
 gives up by itself, and no second worker starts beside a process nobody can name.
 
+The launch is kept until its ending is durable. The invocation that watched the worker end writes
+the ending down beside the launch — the exit code or signal, whether the operator asked for the stop,
+and whether the queue left new run evidence behind — before the launch may be cleared or the incident
+that ending owes may be recorded, so an invocation that stops between them leaves the next one the
+ending itself rather than a pointer that names nothing and no incident. A crash with no error report
+is covered by exactly this: the interruption is never rounded into "no worker was running".
+
 The parent has an entry point of its own (`dist/cli/supervise.js`) that loads no ordinary
 command and no worker module, so a broken queue, run, review or source command does not stop the
 parent that has to repair it; a project configuration that cannot be read at all starts the
@@ -824,11 +831,14 @@ that cannot be read back is refused by name rather than treated as an absence, a
 names the worker that is running right now — a worker, or a recovery turn's own runtime, that is
 still alive is refused rather than duplicated. A pointer whose worker is gone and whose ending no
 incident recorded is not read as "no worker is running": the pointer's launch says what that worker
-was carrying out, and an ending nobody observed is an unexpected stop — the supervisor itself
-stopped while its worker ran — so an incident is opened for it and investigated before any fresh
-work starts. The one launch that needs no such incident is one carrying out a step an incident's
-plan still owes: that plan is the record of it, it does not advance on a start, and it carries the
-step out again.
+was carrying out, and an ending it records is decided on exactly as the invocation that watched it
+decided — a settled worker finished its work and the operator's own stop recovers nothing — while
+any other ending, an ending nobody observed and one written down before the invocation that watched
+it could record the incident included, is an unexpected stop: the supervisor itself stopped while
+its worker ran, so an incident is opened for it and investigated before any fresh work starts. A
+launch that was carrying out a step an incident's plan still owes is investigated like any other:
+that plan records the interruption the step began from, never what happened during it, and the step
+is carried out again only after its own interruption is reconciled.
 
 ## Jira API references
 
