@@ -13,13 +13,15 @@ import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { parseRecoveryJudgment } from '../../src/supervisor/recovery.js';
+import { RECOVERY_OUTCOME_FILE, parseRecoveryJudgment } from '../../src/supervisor/recovery.js';
 import {
   incidentDir,
   incidentFilePath,
   readCurrentIncident,
   readIncident,
   supervisorRoot,
+  writeCurrentIncident,
+  writeIncident,
 } from '../../src/supervisor/incident.js';
 import type { IncidentRecord } from '../../src/supervisor/incident.js';
 import { supervise } from '../../src/supervisor/supervise.js';
@@ -245,7 +247,7 @@ describe('a supervised queue', () => {
     expect(incident?.report.notification?.state).toBe('sent');
   }, 30_000);
 
-  it('ends an unchanged repeated failure in a request for human help', async () => {
+  it('ends an unchanged repeated scoped failure in a request for human help', async () => {
     const { workDir, repoPath, configPath } = await workspace();
     const recovery = scriptedRecovery([
       {
@@ -269,6 +271,9 @@ describe('a supervised queue', () => {
       workDir,
       repoPath,
       configPath,
+      // The ticket is what makes the repetition unambiguous: the same worker,
+      // for the same ticket, ending the same way, with nothing done in between.
+      scope: 'HARN-51',
       worker: scriptedWorker([ended(1)]),
       recoveryTurn: recovery,
     });
@@ -283,6 +288,80 @@ describe('a supervised queue', () => {
     expect(incident?.conclusion?.outcome).toBe('help');
     // The report of the human-help ending is published like any other.
     expect(incident?.report.commentId).toBe('10042');
+  }, 30_000);
+
+  it('investigates an unscoped repeat once, then asks for a person when nothing moves', async () => {
+    const { workDir, repoPath, configPath } = await workspace();
+    // An unscoped `run` failure could be a different ticket entirely, so the
+    // first repetition is investigated rather than assumed. A whole chain of
+    // stops that each did nothing at all, every one of them already
+    // investigated, is what ends in a person's hands.
+    const recovery = scriptedRecovery([
+      {
+        status: 'repaired',
+        summary: 'the queue was returned to work',
+        cause: 'a stale lock',
+        resolution: 'the lock was explained',
+        preserved: [],
+        resume: 'the queue resumes',
+      },
+    ]);
+    const summary = await runSupervision({
+      workDir,
+      repoPath,
+      configPath,
+      worker: scriptedWorker([ended(1)]),
+      recoveryTurn: recovery,
+      maxAttempts: 2,
+    });
+
+    expect(summary.outcome).toBe('attention');
+    expect(summary.problem).toContain('without doing any work');
+    // Two investigated incidents, then the third stop ends the supervision.
+    expect(summary.workerRuns).toBe(3);
+    expect(summary.recoveries).toBe(2);
+    const incident = await storedIncident(workDir);
+    expect(incident?.stage).toBe('help');
+    expect(incident?.origin?.incident).not.toBeNull();
+  }, 30_000);
+
+  it('runs the blocker a blocked judgment ranked first, and records the resumption after it', async () => {
+    const { workDir, repoPath, configPath } = await workspace();
+    const requests: { intent: string; scope: string | null }[] = [];
+    const recovery = scriptedRecovery([
+      {
+        status: 'blocked',
+        summary: 'the shared module is broken',
+        cause: 'HARN-77 has not landed',
+        resolution: 'HARN-77 was returned to its ready status',
+        preserved: ['committed work on harness/HARN-51'],
+        resume: 'HARN-51 resumes once HARN-77 is done',
+        blocker: { key: 'HARN-77', reason: 'it repairs the shared module' },
+      },
+    ]);
+    const endings = [ended(1), ended(0), ended(0)];
+    const summary = await runSupervision({
+      workDir,
+      repoPath,
+      configPath,
+      scope: 'HARN-51',
+      worker: async (request) => {
+        requests.push({ intent: request.intent, scope: request.scope });
+        return endings[requests.length - 1] ?? ended(0);
+      },
+      recoveryTurn: recovery,
+    });
+
+    expect(summary.outcome).toBe('settled');
+    expect(requests.map((request) => request.scope)).toEqual(['HARN-51', 'HARN-77', 'HARN-51']);
+    expect(requests[1]?.intent).toBe('ticket');
+    const incident = await storedIncident(workDir);
+    expect(incident?.conclusion?.outcome).toBe('blocked');
+    expect(incident?.sequence?.blocker?.key).toBe('HARN-77');
+    // The blocker really started, and the interrupted work really started
+    // again: both are recorded, and the resumption only after the blocker.
+    expect(incident?.sequence?.blockerStartedAt).not.toBeNull();
+    expect(incident?.resumedAt).not.toBeNull();
   }, 30_000);
 
   it('bounds the attempts one incident may spend', async () => {
@@ -376,12 +455,191 @@ describe('a supervised queue', () => {
     const stored = await readIncident(incidentFilePath(root, incident.id));
     expect(stored?.report.commentId).toBe('10042');
   }, 30_000);
+
+  it('adopts the judgment an interrupted attempt left behind instead of spending another', async () => {
+    const { workDir, repoPath, configPath } = await workspace();
+    const root = supervisorRoot(workDir, 'namespace');
+    const incident = await seedIncident(root);
+    // An earlier invocation wrote the attempt down and started its turn, then
+    // stopped. The turn itself finished and left its judgment in its own
+    // directory; the restart adopts exactly that, and counts it as spent.
+    const dir = path.join(incidentDir(root, incident.id), 'attempt-1');
+    await mkdir(dir, { recursive: true });
+    await writeFile(
+      path.join(dir, RECOVERY_OUTCOME_FILE),
+      JSON.stringify({
+        status: 'repaired',
+        summary: 'the retained judgment of an interrupted invocation',
+        cause: 'a half-written run',
+        resolution: 'the workspace was returned to its recorded branch',
+        preserved: [],
+        resume: 'the queue resumes',
+        ticket: { key: 'HARN-51', url: 'https://site.atlassian.net/browse/HARN-51' },
+      }),
+      'utf8',
+    );
+    await seedPending(root, incident.id, { attempt: 2, dir });
+
+    const recovery = scriptedRecovery([
+      { status: 'repaired', summary: 'this turn should never run', cause: 'c' },
+    ]);
+    const summary = await runSupervision({
+      workDir,
+      repoPath,
+      configPath,
+      isAlive: () => false,
+      worker: scriptedWorker([ended(0)]),
+      recoveryTurn: recovery,
+    });
+
+    expect(recovery.calls).toBe(0);
+    expect(summary.outcome).toBe('settled');
+    const stored = await readIncident(incidentFilePath(root, incident.id));
+    expect(stored?.pending).toBeNull();
+    expect(stored?.attempts).toHaveLength(2);
+    expect(stored?.attempts[1]).toMatchObject({
+      attempt: 2,
+      outcome: 'repaired',
+      cause: 'a half-written run',
+    });
+    // The ticket the adopted judgment named is what the report is written into.
+    expect(stored?.ticket?.key).toBe('HARN-51');
+    expect(stored?.report.commentId).toBe('10042');
+  }, 30_000);
+
+  it('counts an interrupted attempt toward the bound and asks for a person when it is spent', async () => {
+    const { workDir, repoPath, configPath } = await workspace();
+    const root = supervisorRoot(workDir, 'namespace');
+    const incident = await seedIncident(root);
+    const dir = path.join(incidentDir(root, incident.id), 'attempt-1');
+    await mkdir(dir, { recursive: true });
+    await seedPending(root, incident.id, { attempt: 2, dir });
+
+    const recovery = scriptedRecovery([
+      { status: 'repaired', summary: 'this turn should never run', cause: 'c' },
+    ]);
+    const summary = await runSupervision({
+      workDir,
+      repoPath,
+      configPath,
+      isAlive: () => false,
+      worker: scriptedWorker([ended(0)]),
+      recoveryTurn: recovery,
+      maxAttempts: 2,
+    });
+
+    // The interrupted attempt was really spent, so the bound is the bound: no
+    // recovery runs, and the incident ends where a person has to look.
+    expect(recovery.calls).toBe(0);
+    expect(summary.workerRuns).toBe(0);
+    const stored = await readIncident(incidentFilePath(root, incident.id));
+    expect(stored?.attempts).toHaveLength(2);
+    expect(stored?.attempts[1]?.problem).toContain('did not finish producing a judgment');
+  }, 30_000);
+
+  it('refuses to start a recovery turn while an earlier one is still running', async () => {
+    const { workDir, repoPath, configPath } = await workspace();
+    const root = supervisorRoot(workDir, 'namespace');
+    const incident = await seedIncident(root);
+    await seedPending(root, incident.id, { attempt: 1, dir: path.join(root, 'attempt-1'), alive: true });
+    const recovery = scriptedRecovery([{ status: 'repaired', summary: 's', cause: 'c' }]);
+
+    const summary = await runSupervision({
+      workDir,
+      repoPath,
+      configPath,
+      isAlive: () => true,
+      worker: scriptedWorker([ended(0)]),
+      recoveryTurn: recovery,
+    });
+
+    expect(summary.outcome).toBe('attention');
+    expect(summary.problem).toContain('recovery turn');
+    expect(summary.workerRuns).toBe(0);
+    expect(recovery.calls).toBe(0);
+  }, 30_000);
+
+  it('finishes a report an earlier invocation could not publish, without recovering again', async () => {
+    const { workDir, repoPath, configPath } = await workspace();
+    const root = supervisorRoot(workDir, 'namespace');
+    const incident = await seedIncident(root);
+    // The report failed in the earlier invocation: the summary never reached
+    // the topic, and the incident's own record says so. A restart finishes that
+    // publication — and never repeats the recovery that already succeeded.
+    const seeded = await readIncident(incidentFilePath(root, incident.id));
+    if (seeded === null) {
+      throw new Error('the seeded incident is gone');
+    }
+    await writeIncident(incidentFilePath(root, incident.id), {
+      ...seeded,
+      report: {
+        publishedAt: null,
+        commentId: null,
+        commentText: null,
+        notification: {
+          topicArn: NOTIFICATION.topicArn,
+          email: NOTIFICATION.email,
+          state: 'failed',
+          messageId: null,
+          problem: 'the publisher was not found',
+        },
+        problem: 'the email summary could not be published',
+      },
+    });
+
+    const recovery = scriptedRecovery([{ status: 'repaired', summary: 's', cause: 'c' }]);
+    const summary = await runSupervision({
+      workDir,
+      repoPath,
+      configPath,
+      isAlive: () => false,
+      worker: scriptedWorker([ended(0)]),
+      recoveryTurn: recovery,
+    });
+
+    expect(recovery.calls).toBe(0);
+    const stored = await readIncident(incidentFilePath(root, incident.id));
+    expect(stored?.report.notification?.state).toBe('sent');
+    expect(stored?.report.problem).toBeNull();
+    expect(stored?.report.commentId).toBe('10042');
+    expect(summary.recoveries).toBe(0);
+  }, 30_000);
 });
+
+/**
+ * Replaces the seeded incident with one whose attempt is still in flight, as an
+ * invocation that stopped mid-turn leaves it.
+ */
+async function seedPending(
+  root: string,
+  id: string,
+  pending: { readonly attempt: number; readonly dir: string; readonly alive?: boolean },
+): Promise<void> {
+  const file = incidentFilePath(root, id);
+  const incident = await readIncident(file);
+  if (incident === null) {
+    throw new Error('the seeded incident is gone');
+  }
+  await writeIncident(file, {
+    ...incident,
+    stage: 'open',
+    conclusion: null,
+    attempts: incident.attempts.slice(0, pending.attempt - 1),
+    pending: {
+      attempt: pending.attempt,
+      startedAt: '2026-09-23T00:02:00.000Z',
+      supervisorPid: 4242,
+      turnPid: pending.alive === true ? 5252 : null,
+      dir: pending.dir,
+      logPath: null,
+    },
+  });
+  await writeCurrentIncident(root, { version: 1, id, workerPid: null });
+}
 
 /** One concluded incident an earlier supervisor left behind, un-reported. */
 async function seedIncident(root: string): Promise<IncidentRecord> {
-  const { openIncident, writeCurrentIncident, writeIncident } =
-    await import('../../src/supervisor/incident.js');
+  const { openIncident } = await import('../../src/supervisor/incident.js');
   const incident = openIncident(
     'namespace',
     'run',

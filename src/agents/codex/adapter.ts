@@ -66,6 +66,13 @@ export interface CodexPromptRequest {
   readonly stop: AbortSignal;
   /** Where the runtime's own activity is reported, when a display is watching. */
   readonly onActivity?: (activity: AgentActivity) => void;
+  /**
+   * The runtime process itself, as soon as it exists. A caller that supervises
+   * the turn — the recovery turn's supervisor, for example — records this PID,
+   * so a restart can tell that the runtime is still running rather than start
+   * the same turn beside it.
+   */
+  readonly onStarted?: (pid: number) => void;
 }
 
 /**
@@ -293,6 +300,9 @@ export async function runCodexPrompt(
 
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
+    if (child.pid !== undefined) {
+      request.onStarted?.(child.pid);
+    }
     child.stdout.on('data', (chunk: string) => {
       log.write(chunk);
       buffered += chunk;

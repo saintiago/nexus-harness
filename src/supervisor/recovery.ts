@@ -18,7 +18,7 @@
  * writes nothing usable has no judgment, and the supervisor records that as a
  * failed attempt rather than inventing a repair.
  */
-import { readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { runCodexPrompt } from '../agents/codex/adapter.js';
 import { selectedCodexRuntime } from '../agents/codex/runtime.js';
@@ -77,6 +77,13 @@ export interface RecoveryBrief {
   readonly stop: IncidentRecord['stops'][number];
   /** Every earlier attempt of this same incident, whole. */
   readonly earlier: readonly RecoveryAttempt[];
+  /**
+   * The incident that stopped immediately before this one on the same work,
+   * when the supervisor has one to name. A repeated failure is judged against
+   * what that incident's recovery found and did, so the turn is told where to
+   * read it rather than left to guess why the queue stopped twice.
+   */
+  readonly previous: { readonly id: string; readonly path: string } | null;
   /** Where the ticket's own thread lives, when the project has a Jira source. */
   readonly jira: { readonly siteUrl: string; readonly projectKey: string } | null;
   /** Where the incident's email summary is published, when it is configured. */
@@ -170,6 +177,13 @@ export function recoveryPrompt(brief: RecoveryBrief): string {
         : `- Ticket thread: the Jira project \`${brief.jira.projectKey}\` on ${brief.jira.siteUrl}.`,
       "  Your environment carries the service account's credential, and the same service account's",
       '  own actions in the thread are what a later developer or reviewer turn reads.',
+      brief.previous === null
+        ? '- No earlier incident is recorded for this work, so nothing here follows a recovery.'
+        : [
+            `- The incident before this one is \`${brief.previous.path}\` (${brief.previous.id});`,
+            '  read it before you decide. What it found and repaired is the evidence for whether',
+            '  this stop is the same failure returned unchanged or a different one.',
+          ].join('\n'),
       brief.notification === null
         ? '- No email notification policy is configured; the supervisor reports in Jira only.'
         : `- Email summary: the supervisor publishes the incident summary to \`${brief.notification.topicArn}\`` +
@@ -201,6 +215,11 @@ export function recoveryPrompt(brief: RecoveryBrief): string {
       '   first — a blocker that would break the interrupted task again — put it ahead and record',
       '   the interrupted ticket as the resumption that follows it; the queue picks the blocker up',
       '   in its own order, and a later pass records that the interrupted work really restarted.',
+      '6. **Name the ticket.** Say which Jira item this stop belonged to in `"ticket"` further',
+      '   down. A scoped `queue run --ticket` stop is that ticket; an unscoped `queue run` or',
+      '   `queue watch` stop is not self-evident, and the incident report is written into the',
+      '   thread of the item you name here. Name the item you really investigated, and name none',
+      '   rather than guess: a wrong ticket gets a report nobody can use.',
     ].join('\n'),
   );
 
@@ -236,6 +255,7 @@ export function recoveryPrompt(brief: RecoveryBrief): string {
       '  "preserved": ["each piece of committed or uncommitted work you kept and where"],',
       '  "resume": "the work that resumes, and under what conditions",',
       '  "blocker": { "key": "OTHER-1", "reason": "why it must come first" },',
+      '  "ticket": { "key": "HARN-51", "url": "https://…/browse/HARN-51" },',
       '  "help": "what a person must do, when you could not repair this"',
       '}',
       '',
@@ -285,7 +305,7 @@ function boundedField(
   return text;
 }
 
-function isProblem(value: unknown): value is { readonly problem: string } {
+export function isProblem(value: unknown): value is { readonly problem: string } {
   return typeof value === 'object' && value !== null && 'problem' in value;
 }
 
@@ -298,6 +318,12 @@ export interface RecoveryJudgment {
   readonly preserved: readonly string[];
   readonly resume: string | null;
   readonly blocker: { readonly key: string; readonly reason: string } | null;
+  /**
+   * The ticket this stop belonged to, when the turn could identify it. An
+   * unscoped stop has no scope of its own, so this is how an ordinary
+   * `run`/`watch` incident gets a thread for its report at all.
+   */
+  readonly ticket: { readonly key: string; readonly url: string | null } | null;
   readonly help: string | null;
 }
 
@@ -388,7 +414,59 @@ export function parseRecoveryJudgment(
     };
   }
 
-  return { status, summary, cause, resolution, preserved, resume, blocker, help };
+  const ticket = ticketOf(record['ticket'], where);
+  if (isProblem(ticket)) {
+    return ticket;
+  }
+
+  return { status, summary, cause, resolution, preserved, resume, blocker, ticket, help };
+}
+
+/** One Jira issue key, as this harness accepts it: letters, digits, "-", "_". */
+const TICKET_KEY_PATTERN = /^[A-Za-z][A-Za-z0-9_]*-[0-9]+$/;
+
+/**
+ * The ticket a judgment names, or a refusal naming the field. A ticket the
+ * report would be written into has to be an issue key this harness can address
+ * and, when a link is given, an absolute `http(s)` one: a guess that cannot be
+ * addressed is exactly what the report must not be posted against.
+ */
+function ticketOf(
+  value: unknown,
+  where: string,
+): { readonly key: string; readonly url: string | null } | null | { readonly problem: string } {
+  if (value === undefined || value === null) {
+    return null;
+  }
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    return { problem: `the recovery turn's ${where} carries a "ticket" that is not an object.` };
+  }
+  const entry = value as Record<string, unknown>;
+  const key = entry['key'];
+  if (typeof key !== 'string' || !TICKET_KEY_PATTERN.test(key.trim())) {
+    return {
+      problem:
+        `the recovery turn's ${where} names no usable "ticket.key" ("${String(key)}" is not an ` +
+        'issue key like HARN-51), so this attempt produced no judgment rather than a report ' +
+        'against a ticket it cannot address.',
+    };
+  }
+  const rawUrl = entry['url'];
+  if (
+    rawUrl === undefined ||
+    rawUrl === null ||
+    (typeof rawUrl === 'string' && rawUrl.trim() === '')
+  ) {
+    return { key: key.trim(), url: null };
+  }
+  if (typeof rawUrl !== 'string' || !/^https?:\/\/\S+$/.test(rawUrl.trim())) {
+    return {
+      problem:
+        `the recovery turn's ${where} carries a "ticket.url" that is not an absolute http(s) ` +
+        `link ("${String(rawUrl)}"), so this attempt produced no judgment.`,
+    };
+  }
+  return { key: key.trim(), url: rawUrl.trim() };
 }
 
 /** A bounded string that may be omitted, `null`, or a refusal naming it. */
@@ -428,14 +506,24 @@ export interface RecoveryTurnResult {
   readonly logPath: string | null;
 }
 
-/** The recovery turn one incident uses: the configured launch, bounded like a turn. */
-export function createRecoveryTurn(
-  parts: RecoveryTurnParts,
-): (request: {
+/**
+ * One recovery turn, as its supervisor invokes it: the brief to answer, the
+ * directory the judgment goes into, the bound on the turn, and where the
+ * runtime process itself is reported as soon as it exists — the supervisor
+ * writes that PID down, so a restart can tell that a turn is still running
+ * rather than start the same attempt again.
+ */
+export interface RecoveryTurnRequest {
   readonly brief: RecoveryBrief;
   readonly dir: string;
   readonly stop: AbortSignal;
-}) => Promise<RecoveryTurnResult> {
+  readonly onStarted?: (pid: number) => void;
+}
+
+/** The recovery turn one incident uses: the configured launch, bounded like a turn. */
+export function createRecoveryTurn(
+  parts: RecoveryTurnParts,
+): (request: RecoveryTurnRequest) => Promise<RecoveryTurnResult> {
   return async (request) => {
     parts.onTurnStart?.(request.brief.scope);
     try {
@@ -452,7 +540,7 @@ export function createRecoveryTurn(
  * checkout it may repair — so its working root is the incident's.
  */
 async function recoveryTurn(
-  request: { readonly brief: RecoveryBrief; readonly dir: string; readonly stop: AbortSignal },
+  request: RecoveryTurnRequest,
   parts: RecoveryTurnParts,
 ): Promise<RecoveryTurnResult> {
   const prompt = recoveryPrompt(request.brief);
@@ -462,6 +550,10 @@ async function recoveryTurn(
 
   let log: AgentLog;
   try {
+    // The turn's own directory is created here, before anything is written into
+    // it: a fresh incident's attempt directory does not exist yet, and a turn
+    // whose input cannot be written never runs.
+    await mkdir(request.dir, { recursive: true });
     await writeFile(inputPath, prompt, 'utf8');
     log = await openEvidenceLog(logPath, "the recovery turn's output");
   } catch (cause) {
@@ -484,6 +576,7 @@ async function recoveryTurn(
         agentLog: log,
         stop: request.stop,
         ...(parts.onActivity === undefined ? {} : { onActivity: parts.onActivity }),
+        ...(request.onStarted === undefined ? {} : { onStarted: request.onStarted }),
       },
       selectedCodexRuntime(parts.selection, { env: parts.environment }),
     );

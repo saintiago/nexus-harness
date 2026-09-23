@@ -10,12 +10,25 @@
  * was interrupted is looked for in the ticket's thread before another is sent,
  * and a summary already handed to the topic is never published again.
  *
+ * The email summary is the harder half, because a topic has no thread to look
+ * in. Its publication is therefore written down in two steps: the summary is
+ * recorded as `pending` before the publisher is started, and its acknowledged
+ * `MessageId` (or its failure) afterwards. A restart that finds `pending` reads
+ * the publisher's own output before it would ever send anything again — an
+ * acknowledgement there is adopted, and the absence of one is recorded as an
+ * interrupted publication that is never repeated automatically, because a
+ * second email is worse than an unconfirmed one. Publication state and the
+ * sender's output are both checked through {@link reportNeedsPublication}, so a
+ * report that could not be finished stays reachable after the incident it
+ * belongs to has been resumed.
+ *
  * The report is context, not authority. It says what the recovery agent found
  * and did; the configured checks, the Nexus Lens review and the completion path
  * remain the only things that decide whether work is done
  * (docs/WORKFLOW.md §12).
  */
-import { mkdir, readFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir } from 'node:fs/promises';
+import path from 'node:path';
 import { buildCommentDocument } from '../sources/jira/adf-text.js';
 import { readCommentThread } from '../sources/jira/comments.js';
 import type { HttpClient } from '../sources/jira/http.js';
@@ -81,7 +94,8 @@ export function incidentReportText(
   ];
   paragraphs.push(
     `What happened: ${ended}${stop === null ? '' : ` at ${stop.at}`}.` +
-      (incident.scope === null ? '' : ` The worker was scoped to ${incident.scope}.`),
+      (incident.scope === null ? '' : ` The worker was scoped to ${incident.scope}.`) +
+      (incident.ticket === null ? '' : ` The recovery identified ${incident.ticket.key}.`),
   );
   paragraphs.push(
     `Recovery: ${String(incident.attempts.length)} of at most ${String(incident.maxAttempts)} ` +
@@ -180,7 +194,42 @@ export interface IncidentReporterParts {
 export type IncidentReporter = (request: {
   readonly incident: IncidentRecord;
   readonly stop: AbortSignal;
+  /**
+   * Persists what has been recorded so far, called before a publication is
+   * attempted and again once it is known to have been attempted. The caller
+   * writes it down durably; the reporter never assumes it happened.
+   */
+  readonly checkpoint?: ((report: IncidentReport) => Promise<void>) | undefined;
 }) => Promise<ReportOutcome>;
+
+/**
+ * Whether one concluded incident still needs its report published.
+ *
+ * A comment is outstanding while the ticket it belongs to is known and no
+ * comment id was acknowledged — a report written before an invocation stopped
+ * is looked for in the ticket's own thread, so this is about a publication that
+ * really has to be made, not about a comment that might already be there. An
+ * email summary is outstanding while it is `failed` (the publisher reported a
+ * failure and never sent it) or `pending` (an attempt was in flight and has to
+ * be reconciled against the publisher's own output). A summary that was sent,
+ * and one whose acknowledgement can no longer be found, are both finished:
+ * repeating either would publish a second email for one incident.
+ */
+export function reportNeedsPublication(
+  incident: IncidentRecord,
+  parts: {
+    /** Whether the connected project has a Jira thread the report is written into. */
+    readonly jira: boolean;
+    readonly notification: RecoveryNotificationConfig | null;
+  },
+): boolean {
+  const commentOutstanding =
+    parts.jira && incident.ticket !== null && incident.report.commentId === null;
+  const state = incident.report.notification?.state ?? null;
+  const emailOutstanding =
+    parts.notification !== null && (state === 'failed' || state === 'pending' || state === null);
+  return commentOutstanding || emailOutstanding;
+}
 
 /**
  * The reporter one supervisor invocation uses. Every publication is
@@ -190,17 +239,32 @@ export type IncidentReporter = (request: {
  */
 export function createIncidentReporter(parts: IncidentReporterParts): IncidentReporter {
   const runNotification = parts.runNotification ?? runCommand;
-  return async ({ incident, stop }) => {
+  return async ({ incident, stop, checkpoint }) => {
     const text = incidentReportText(incident, parts.notification);
     let commentId = incident.report.commentId;
     let publishedAt = incident.report.publishedAt;
     const commentText = incident.report.commentText ?? text.text;
     let notification = incident.report.notification;
     const problems: string[] = [];
+    const writeDown = async (report: IncidentReport): Promise<void> => {
+      await checkpoint?.(report);
+    };
+    const reportSoFar = (): IncidentReport => ({
+      publishedAt,
+      commentId,
+      commentText,
+      notification,
+      problem: problems.length === 0 ? null : problems.join(' '),
+    });
 
     if (incident.ticket !== null && parts.jira !== undefined) {
       const key = incident.ticket.key;
       if (commentId === null) {
+        // What will be posted is written down before it is posted, with the
+        // report's own first line as its identity: an invocation that stops
+        // between the post and its acknowledgement leaves the exact text behind
+        // for the next one to find in the ticket's thread.
+        await writeDown({ ...reportSoFar(), commentText: text.text });
         // The report may have been posted by an invocation that crashed before
         // recording its id: look for it in the ticket's own thread first, and
         // adopt the comment that already carries this report's own identity.
@@ -246,6 +310,41 @@ export function createIncidentReporter(parts: IncidentReporterParts): IncidentRe
       const previous = notification;
       if (previous?.state === 'sent') {
         // Already published: a restart never sends one incident's summary twice.
+      } else if (previous?.state === 'interrupted') {
+        // An interrupted publication that was never acknowledged is recorded
+        // once and never repeated automatically: a second email for one
+        // incident is worse than an unconfirmed one, and only a person can
+        // check the topic.
+      } else if (previous?.state === 'pending') {
+        // An attempt was in flight when the invocation before this one stopped.
+        // Its own publisher's output says whether the topic acknowledged it.
+        const acknowledged = await acknowledgedSummary(parts, incident);
+        if (acknowledged !== null) {
+          notification = {
+            topicArn: parts.notification.topicArn,
+            email: parts.notification.email,
+            state: 'sent',
+            messageId: acknowledged,
+            problem: null,
+          };
+        } else {
+          const detail =
+            'the publication was interrupted and the publisher acknowledged nothing, so it may ' +
+            'or may not have reached the topic';
+          notification = {
+            topicArn: parts.notification.topicArn,
+            email: parts.notification.email,
+            state: 'interrupted',
+            messageId: null,
+            problem: detail,
+          };
+          problems.push(
+            `the email summary to ${parts.notification.email} was left in flight by an earlier ` +
+              `invocation (${detail}); it is not sent again automatically, because a second ` +
+              `summary for one incident is worse than an unconfirmed one — check ` +
+              `${parts.notification.topicArn} before resending it by hand`,
+          );
+        }
       } else if (previous !== null && previous.state !== 'failed') {
         problems.push(
           `the email summary to ${parts.notification.email} may or may not have been published ` +
@@ -255,6 +354,16 @@ export function createIncidentReporter(parts: IncidentReporterParts): IncidentRe
       } else if (stop.aborted) {
         problems.push('the email summary was not sent: the supervisor was stopped first');
       } else {
+        // Written down as pending before the publisher starts: a restart reads
+        // this state as "an attempt was made", never as "nothing was tried".
+        notification = {
+          topicArn: parts.notification.topicArn,
+          email: parts.notification.email,
+          state: 'pending',
+          messageId: null,
+          problem: null,
+        };
+        await writeDown(reportSoFar());
         try {
           const messageId = await sendSummary(
             runNotification,
@@ -364,8 +473,13 @@ async function sendSummary(
   }
   // The publication's own evidence lives beside the incident; the directory is
   // created here so a report that runs before anything else wrote it still
-  // keeps the publisher's output.
+  // keeps the publisher's output. Each attempt gets its own label: the command
+  // log files are created exclusively, so a retry after a failure writes its
+  // own log rather than failing to write at all, and every attempt's output
+  // stays readable for the reconciliation that adopts an interrupted one.
   await mkdir(parts.logsDir(incident), { recursive: true });
+  const logsDir = parts.logsDir(incident);
+  const label = await notificationLabel(logsDir);
   const result = await runNotification({
     command: [
       ...notification.publisher,
@@ -377,8 +491,8 @@ async function sendSummary(
       text,
     ],
     cwd: parts.cwd,
-    logsDir: parts.logsDir(incident),
-    label: `recovery-notification`,
+    logsDir,
+    label,
     timeoutMs: NOTIFICATION_TIMEOUT_MS,
   });
   if (result.outcome !== 'exited' || result.exitCode !== 0) {
@@ -393,4 +507,67 @@ async function sendSummary(
   const stdout = await readFile(result.stdoutPath, 'utf8').catch(() => '');
   const match = /"MessageId"\s*:\s*"([^"]+)"/.exec(stdout);
   return match?.[1] ?? null;
+}
+
+/** How many publication attempts one incident's log directory may hold. */
+const MAX_NOTIFICATION_ATTEMPTS = 50;
+
+/** The label one publication attempt's own log files use. */
+async function notificationLabel(logsDir: string): Promise<string> {
+  const base = 'recovery-notification';
+  let names: readonly string[];
+  try {
+    names = await readdir(logsDir);
+  } catch {
+    names = [];
+  }
+  for (let index = 1; index <= MAX_NOTIFICATION_ATTEMPTS; index += 1) {
+    const label = index === 1 ? base : `${base}-${String(index)}`;
+    if (!names.includes(`${label}.stdout.log`) && !names.includes(`${label}.stderr.log`)) {
+      return label;
+    }
+  }
+  throw new Error(
+    `the incident's notification log directory "${logsDir}" already holds ` +
+      `${String(MAX_NOTIFICATION_ATTEMPTS)} publication attempts; inspect it by hand instead of ` +
+      'publishing another summary',
+  );
+}
+
+/**
+ * The message identity a publisher acknowledged, read back from the output of
+ * the attempts this incident already made. This is the only evidence a
+ * publication that was in flight left behind: the topic itself is never
+ * queried, and reading these files changes nothing.
+ */
+async function acknowledgedSummary(
+  parts: IncidentReporterParts,
+  incident: IncidentRecord,
+): Promise<string | null> {
+  const notification = parts.notification;
+  if (notification === null) {
+    return null;
+  }
+  const dir = parts.logsDir(incident);
+  let names: readonly string[];
+  try {
+    names = await readdir(dir);
+  } catch {
+    return null;
+  }
+  const logs = names
+    .filter((name) => /^recovery-notification(-[0-9]+)?\.stdout\.log$/.test(name))
+    .sort();
+  for (const name of logs) {
+    const text = await readFile(path.join(dir, name), 'utf8').catch(() => '');
+    const topic = /"TopicArn"\s*:\s*"([^"]+)"/.exec(text);
+    if (topic !== null && topic[1] !== notification.topicArn) {
+      continue;
+    }
+    const match = /"MessageId"\s*:\s*"([^"]+)"/.exec(text);
+    if (match?.[1] !== undefined) {
+      return match[1];
+    }
+  }
+  return null;
 }

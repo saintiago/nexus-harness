@@ -12,6 +12,14 @@
  *   running. Nothing here breaks a lock: the queue's own exclusivity rules are
  *   untouched, and an owner that is gone leaves the harness's own recovery
  *   judgment to the incident (docs/WORKFLOW.md §12).
+ *
+ * The owner record is the lock itself, and it is never written by replace: the
+ * file is created exclusively, so exactly one invocation can hold it, and
+ * "read an absent record, then rename one over it" can never let two starts
+ * both believe they own the queue. A record whose process is gone is taken
+ * over by renaming it away first — an atomic step only one contender can win —
+ * and then creating the record exclusively again, so two simultaneous
+ * takeovers still leave exactly one owner.
  */
 import { randomUUID } from 'node:crypto';
 import { readFile, mkdir, rename, rm, writeFile } from 'node:fs/promises';
@@ -97,10 +105,17 @@ export type OwnershipTake =
   | { readonly ok: true; readonly ownership: SupervisorOwnership }
   | { readonly ok: false; readonly problem: string };
 
+/** How many takeover races one acquisition loses before it gives up. */
+const MAX_TAKEOVER_ROUNDS = 8;
+
 /**
  * Takes the supervisor's own owner record: refused while a live supervisor
- * holds it, adopted when the recorded process is gone. The adopted record says
- * so, so a person reading it can see which invocation holds the queue now.
+ * holds it, adopted when the recorded process is gone. Acquisition is the
+ * exclusive creation of the record itself, so two starts can never both take
+ * it: whichever creates the file owns the queue, and the other reads the
+ * record it finds — a live owner, refused by name — instead of overwriting it.
+ * The adopted record names its own invocation, so a person reading it can see
+ * which one holds the queue now.
  */
 export async function acquireSupervisorOwnership(request: {
   readonly root: string;
@@ -114,56 +129,94 @@ export async function acquireSupervisorOwnership(request: {
   const file = ownerFilePath(root);
   await mkdir(root, { recursive: true });
 
-  const existing = await readOwner(file);
-  // A live owner is refused whether or not it is this process: a second
-  // invocation in one process is a second supervisor like any other.
-  if (existing !== null && isAlive(existing.pid)) {
-    return {
-      ok: false,
-      problem:
-        `another supervisor already runs this connected project (pid ${String(existing.pid)}, ` +
-        `started ${existing.startedAt}, record "${file}"). Only one supervisor may run a worker ` +
-        'for one project and workDir at a time. Stop that supervisor, or let it finish, before ' +
-        'starting another; a live owner is never taken over.',
+  for (let round = 0; round < MAX_TAKEOVER_ROUNDS; round += 1) {
+    const token = randomUUID();
+    const record: OwnerRecord = {
+      version: 1,
+      pid: process.pid,
+      token,
+      startedAt: now().toISOString(),
+      intent,
+      repoPath,
     };
-  }
+    // The exclusive create is the lock: the creation itself decides, so two
+    // invocations reading the same absent record cannot both become the owner.
+    try {
+      await writeFile(file, `${JSON.stringify(record, null, 2)}\n`, {
+        encoding: 'utf8',
+        flag: 'wx',
+      });
+    } catch (cause) {
+      if ((cause as NodeJS.ErrnoException).code !== 'EEXIST') {
+        return {
+          ok: false,
+          problem: `the supervisor's owner record "${file}" could not be written: ${messageOf(cause)}`,
+        };
+      }
+      let existing: OwnerRecord | null;
+      try {
+        existing = await readOwner(file);
+      } catch (cause0) {
+        return { ok: false, problem: messageOf(cause0) };
+      }
+      // A live owner is refused whether or not it is this process: a second
+      // invocation in one process is a second supervisor like any other.
+      if (existing !== null && isAlive(existing.pid)) {
+        return {
+          ok: false,
+          problem:
+            `another supervisor already runs this connected project (pid ${String(existing.pid)}, ` +
+            `started ${existing.startedAt}, record "${file}"). Only one supervisor may run a ` +
+            'worker for one project and workDir at a time. Stop that supervisor, or let it ' +
+            'finish, before starting another; a live owner is never taken over.',
+        };
+      }
+      // The recorded process is gone. The stale record is renamed away first —
+      // an atomic step exactly one contender wins — so the next round's
+      // exclusive create decides between simultaneous takeovers.
+      const stale = path.join(root, `owner.json.stale-${randomUUID()}`);
+      try {
+        await rename(file, stale);
+      } catch (cause0) {
+        if ((cause0 as NodeJS.ErrnoException).code === 'ENOENT') {
+          // Another contender took the stale record first: read what it left.
+          continue;
+        }
+        return {
+          ok: false,
+          problem:
+            `the supervisor's owner record "${file}" could not be taken over after its process ` +
+            `was gone: ${messageOf(cause0)}. Inspect it by hand.`,
+        };
+      }
+      await rm(stale, { force: true }).catch(() => undefined);
+      continue;
+    }
 
-  const token = randomUUID();
-  const record: OwnerRecord = {
-    version: 1,
-    pid: process.pid,
-    token,
-    startedAt: now().toISOString(),
-    intent,
-    repoPath,
-  };
-  const temporary = path.join(root, `owner.json.tmp-${randomUUID()}`);
-  try {
-    await writeFile(temporary, `${JSON.stringify(record, null, 2)}\n`, 'utf8');
-    await rename(temporary, file);
-  } catch (cause) {
-    await rm(temporary, { force: true });
     return {
-      ok: false,
-      problem: `the supervisor's owner record "${file}" could not be written: ${messageOf(cause)}`,
+      ok: true,
+      ownership: {
+        root,
+        file,
+        release: async () => {
+          const recorded = await readOwner(file).catch(() => null);
+          if (recorded === null || recorded.token !== token) {
+            // Not this invocation's record any more: it is left in place for a
+            // person rather than removed from under whoever holds it.
+            return;
+          }
+          await rm(file, { force: true });
+        },
+      },
     };
   }
 
   return {
-    ok: true,
-    ownership: {
-      root,
-      file,
-      release: async () => {
-        const recorded = await readOwner(file).catch(() => null);
-        if (recorded === null || recorded.token !== token) {
-          // Not this invocation's record any more: it is left in place for a
-          // person rather than removed from under whoever holds it.
-          return;
-        }
-        await rm(file, { force: true });
-      },
-    },
+    ok: false,
+    problem:
+      `the supervisor's owner record "${file}" could not be acquired: ${String(MAX_TAKEOVER_ROUNDS)} ` +
+      'attempts lost the takeover to another invocation. Only one supervisor runs one queue; ' +
+      'inspect the record by hand before trying again.',
   };
 }
 

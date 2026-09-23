@@ -43,8 +43,16 @@ function outcome(overrides: Partial<WorkerOutcome>): WorkerOutcome {
 function incidentWith(options: {
   readonly stops: readonly (readonly [number | null, string | null])[];
   readonly lastAttempt?: 'repaired' | 'blocked' | 'failed';
+  readonly scope?: string | null;
 }): IncidentRecord {
-  const base = openIncident('namespace', 'run', null, 2, () => new Date('2026-09-23T00:00:00Z'));
+  const scope = options.scope ?? null;
+  const base = openIncident(
+    'namespace',
+    scope === null ? 'run' : 'ticket',
+    scope,
+    2,
+    () => new Date('2026-09-23T00:00:00Z'),
+  );
   return {
     ...base,
     ...(options.lastAttempt === 'repaired' || options.lastAttempt === 'blocked'
@@ -55,15 +63,23 @@ function incidentWith(options: {
             detail: 'the recovery agent returned the queue to work',
             at: '2026-09-23T00:03:00.000Z',
           },
+          // A concluded incident that returned the queue to work owes the very
+          // work the stop interrupted: that is what a repeated stop repeats.
+          sequence: {
+            intent: scope === null ? ('run' as const) : ('ticket' as const),
+            scope,
+            blocker: null,
+            blockerStartedAt: null,
+          },
         }
       : {}),
     stops: options.stops.map(([exitCode, signal]) => ({
       at: '2026-09-23T00:01:00.000Z',
-      intent: 'run' as const,
-      scope: null,
+      intent: scope === null ? ('run' as const) : ('ticket' as const),
+      scope,
       exitCode,
       signal,
-      signature: stopSignature('run', null, exitCode, signal),
+      signature: stopSignature(scope === null ? 'run' : 'ticket', scope, exitCode, signal),
     })),
     attempts:
       options.lastAttempt === undefined
@@ -113,19 +129,45 @@ describe('how a worker ending is read', () => {
 });
 
 describe('when a resumed worker fails with the very failure that was repaired', () => {
-  const repaired = incidentWith({ stops: [[1, null]], lastAttempt: 'repaired' });
+  const repaired = incidentWith({ stops: [[1, null]], lastAttempt: 'repaired', scope: 'HARN-51' });
+  const same = {
+    intent: 'ticket' as const,
+    scope: 'HARN-51',
+    exitCode: 1,
+    signal: null,
+    progress: false,
+  };
 
-  it('sees the identical signature after a repair as unchanged', () => {
-    expect(unchangedAfterRecovery(repaired, stopSignature('run', null, 1, null))).toBe(true);
+  it('sees the identical scoped ending, with no progress between, as unchanged', () => {
+    expect(unchangedAfterRecovery(repaired, same)).toBe(true);
   });
 
-  it('does not see a different ending, an unrepaired attempt, or a help ending that way', () => {
-    expect(unchangedAfterRecovery(repaired, stopSignature('run', null, 2, null))).toBe(false);
+  it('never reads an unscoped ending as unchanged: only an investigation can say', () => {
+    // An exit code is conventional, so a `run` or `watch` failure could be a
+    // different ticket entirely — and only the recovery turn's own look at the
+    // workspace and the queue can say which. That stop opens its own incident.
+    const unscoped = incidentWith({ stops: [[1, null]], lastAttempt: 'repaired' });
+    expect(unchangedAfterRecovery(unscoped, { ...same, intent: 'run', scope: null })).toBe(false);
+  });
+
+  it('does not see a different ending, or one where the work moved on, that way', () => {
+    expect(unchangedAfterRecovery(repaired, { ...same, exitCode: 2 })).toBe(false);
+    expect(unchangedAfterRecovery(repaired, { ...same, signal: 'SIGKILL' })).toBe(false);
+    // Run evidence written since the resumption is progress: whatever failed
+    // this time, it is not the same unrepaired failure.
+    expect(unchangedAfterRecovery(repaired, { ...same, progress: true })).toBe(false);
+  });
+
+  it('does not see an unrepaired attempt, another ticket, or a help ending that way', () => {
     expect(
       unchangedAfterRecovery(
-        incidentWith({ stops: [[1, null]], lastAttempt: 'failed' }),
-        stopSignature('run', null, 1, null),
+        incidentWith({ stops: [[1, null]], lastAttempt: 'failed', scope: 'HARN-51' }),
+        same,
       ),
+    ).toBe(false);
+    expect(unchangedAfterRecovery(repaired, { ...same, scope: 'HARN-77' })).toBe(false);
+    expect(
+      unchangedAfterRecovery(incidentWith({ stops: [[1, null]], scope: 'HARN-51' }), same),
     ).toBe(false);
     // An incident that already ended in a request for human help is reported,
     // not recovered again.
@@ -136,7 +178,7 @@ describe('when a resumed worker fails with the very failure that was repaired', 
           stage: 'help',
           conclusion: { outcome: 'help', detail: 'a person is needed', at: 't' },
         },
-        stopSignature('run', null, 1, null),
+        same,
       ),
     ).toBe(false);
   });
@@ -242,6 +284,10 @@ describe('what the recovery turn is told', () => {
       signature: 'signature',
     },
     earlier: [],
+    previous: {
+      id: 'incident-0',
+      path: 'runs/.supervisor/namespace/incidents/incident-0/incident.json',
+    },
     jira: { siteUrl: 'https://site.atlassian.net', projectKey: 'HARN' },
     notification: { topicArn: 'arn:aws:sns:eu-north-1:1:topic', email: 'a@b.example' },
   };
@@ -255,6 +301,10 @@ describe('what the recovery turn is told', () => {
     expect(prompt).toContain('HARN-51');
     expect(prompt).toContain('outcome.json');
     expect(prompt).toContain('a@b.example');
+    // The previous incident is named, and the ticket the report belongs to is
+    // part of the judgment the turn has to write.
+    expect(prompt).toContain('incident-0');
+    expect(prompt).toContain('"ticket"');
     // The rules that stay with the ordinary harness, and the one authority a
     // recovery turn may not borrow.
     expect(prompt).toContain('never a substitute for a passed check');

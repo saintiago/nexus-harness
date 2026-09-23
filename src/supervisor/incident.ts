@@ -10,6 +10,15 @@
  * pointer, the receipts — stays where it already lives, and the recovery agent
  * reads it there (docs/WORKFLOW.md §12).
  *
+ * Two things the record keeps are what make a supervisor restart safe. An
+ * attempt is written down as `pending` before its turn is ever launched, so a
+ * replacement invocation sees that a turn is in flight, reconciles that
+ * process and any judgment it left behind, and counts the interrupted attempt
+ * toward the bound instead of starting the same work twice. And a concluded
+ * incident carries the {@link ResumePlan} it still owes the queue, so a blocker
+ * ranked ahead of the interrupted work really runs first and the resumption is
+ * recorded only when the interrupted work is really started again.
+ *
  * A record is written atomically through a same-directory temporary file, so a
  * reader never sees half of one, and a record that no longer parses is refused
  * rather than replaced: a corrupt incident is exactly the state a restart must
@@ -46,6 +55,46 @@ export interface WorkerStop {
 /** What one recovery turn concluded. */
 export type RecoveryDisposition = 'repaired' | 'blocked' | 'unrecoverable';
 
+/**
+ * Where one stop came from: the incident whose resumed work the worker that
+ * stopped was carrying out, and whether that work left any new run evidence
+ * behind before it ended. A fresh worker the operator asked for carries out
+ * nobody's plan, and an incident opened for its stop has no origin.
+ *
+ * This is the durable half of "the same failure again". A failure that ends a
+ * worker which was already resuming, without the queue having done anything at
+ * all in between, is a repetition whichever exit code it wears — and a chain of
+ * them, each of which a recovery turn really investigated, is what ends in an
+ * actionable request for human help rather than an unbounded series of turns.
+ */
+export interface StopOrigin {
+  /** The incident whose resumed work the stopped worker was carrying out. */
+  readonly incident: string | null;
+  /** Whether the queue left new run evidence behind before it stopped. */
+  readonly progress: boolean;
+}
+
+/**
+ * One recovery turn this supervisor started and has not finished recording.
+ *
+ * The attempt is written down before the turn is launched and cleared only
+ * once its result is recorded, so a restart can see that a turn was in flight.
+ * `supervisorPid` is the invocation that launched it; `turnPid` is the runtime
+ * process itself, once it was started, because that process — not the
+ * supervisor — is what may still be repairing a workspace.
+ */
+export interface PendingRecovery {
+  /** Counted from 1 within one incident. */
+  readonly attempt: number;
+  readonly startedAt: string;
+  readonly supervisorPid: number | null;
+  readonly turnPid: number | null;
+  /** The turn's own working directory under the incident's. */
+  readonly dir: string;
+  /** The turn's own log, once it was opened. */
+  readonly logPath: string | null;
+}
+
 /** One recovery attempt, as the agent's own outcome file describes it. */
 export interface RecoveryAttempt {
   /** Counted from 1 within one incident. */
@@ -76,6 +125,25 @@ export interface RecoveryAttempt {
   readonly logPath: string | null;
 }
 
+/**
+ * What one concluded incident still owes the queue.
+ *
+ * A `repaired` conclusion resumes the very work the stop interrupted. A
+ * `blocked` conclusion ranks another ticket ahead of it, and both steps are
+ * carried here so they are executed rather than promised: the blocker runs
+ * first — as its own scoped worker, whatever intent this incident began with —
+ * and only then does the interrupted work run again.
+ */
+export interface ResumePlan {
+  /** The interrupted work, as the worker runs it again. */
+  readonly intent: SupervisorIntent;
+  readonly scope: string | null;
+  /** The ticket ranked ahead of it, when the judgment named one. */
+  readonly blocker: { readonly key: string; readonly reason: string } | null;
+  /** When the blocker's own worker really started, or `null` while it has not. */
+  readonly blockerStartedAt: string | null;
+}
+
 /** Where one incident's concise report was published. */
 export interface IncidentReport {
   /** When the Jira report was acknowledged; `null` until it was. */
@@ -85,14 +153,19 @@ export interface IncidentReport {
   /** The exact text published, so a restart can see what was said. */
   readonly commentText: string | null;
   /**
-   * The email summary. `state` says whether it was sent, is still pending, or
-   * failed; a failed or pending notification is the only thing a restart
-   * retries, because a successful recovery is never repeated to send it.
+   * The email summary, and how far its publication got. `pending` is written
+   * down before the publisher runs and is never assumed either way: a restart
+   * reconciles it against the publisher's own output. `sent` and `interrupted`
+   * are terminal for this incident — an acknowledged summary is never published
+   * again, and one whose acknowledgement was never found is never repeated
+   * automatically either, because a duplicate email is worse than an
+   * unconfirmed one. Only a `failed` publication is retried, and retrying it
+   * never repeats the recovery that came before it.
    */
   readonly notification: {
     readonly topicArn: string;
     readonly email: string;
-    readonly state: 'pending' | 'sent' | 'failed';
+    readonly state: 'pending' | 'sent' | 'failed' | 'interrupted';
     readonly messageId: string | null;
     readonly problem: string | null;
   } | null;
@@ -131,8 +204,23 @@ export interface IncidentRecord {
   stage: 'open' | 'settled' | 'help';
   /** Every worker stop this incident observed, oldest first. */
   readonly stops: WorkerStop[];
+  /**
+   * The work the stopped worker was carrying out, when it was carrying out an
+   * incident's plan rather than the operator's own request.
+   */
+  origin: StopOrigin | null;
   /** Every recovery attempt this incident spent, oldest first. */
   readonly attempts: RecoveryAttempt[];
+  /**
+   * The attempt a supervisor started and has not finished recording, or `null`.
+   * A restart reconciles it before it would ever spend another attempt.
+   */
+  pending: PendingRecovery | null;
+  /**
+   * What the queue still owes this incident after its conclusion, or `null`
+   * while the incident is open or a person still has to act.
+   */
+  sequence: ResumePlan | null;
   /** The ticket the report names, when one is known. */
   ticket: { readonly key: string; readonly url: string | null } | null;
   report: IncidentReport;
@@ -198,7 +286,10 @@ export function openIncident(
     resumedAt: null,
     stage: 'open',
     stops: [],
+    origin: null,
     attempts: [],
+    pending: null,
+    sequence: null,
     ticket: scope === null ? null : { key: scope, url: null },
     report: {
       publishedAt: null,
@@ -257,7 +348,16 @@ export async function readIncident(file: string): Promise<IncidentRecord | null>
         'with stops, attempts and a report). Inspect it by hand.',
     );
   }
-  return value as unknown as IncidentRecord;
+  const record = value as unknown as IncidentRecord;
+  // A record written before these fields existed is one with nothing in
+  // flight and nothing owed: reading it as such keeps a restart's decisions
+  // explicit rather than leaving `undefined` to spread through them.
+  return {
+    ...record,
+    origin: isRecord(value['origin']) ? record.origin : null,
+    pending: isRecord(value['pending']) ? record.pending : null,
+    sequence: isRecord(value['sequence']) ? record.sequence : null,
+  };
 }
 
 /** Writes one incident record atomically, so a reader never sees half of one. */
@@ -344,13 +444,40 @@ export async function readCurrentIncident(root: string): Promise<CurrentIncident
 
 /**
  * Whether a resumed worker stopped again with the very failure the recovery it
- * followed reported repaired: the same signature, after an attempt whose own
- * judgment returned the queue to work. That is the one repetition the
- * supervisor does not spend another recovery on — it ends in an actionable
- * request for human help instead, and the earlier ending is what it names
- * (docs/WORKFLOW.md §12).
+ * followed reported repaired. That is the one repetition the supervisor does
+ * not spend another recovery on — it ends in an actionable request for human
+ * help instead, and the earlier ending is what it names (docs/WORKFLOW.md §12).
+ *
+ * The judgment is deliberately conservative, because "the same failure again"
+ * is not something an exit code can say. A nonzero exit is conventional: an
+ * unscoped `run` or `watch` failure could be a different ticket entirely, and
+ * even a different failure on the very same ticket leaves the same ending
+ * behind. So the repetition is only read as unchanged when all of it holds:
+ *
+ * - the incident before it concluded `repaired` or `blocked`, so the queue was
+ *   really returned to work by a recovery;
+ * - the interrupted work that recovery resumed is exactly the work that
+ *   stopped again — same intent, same ticket — and the ticket is one this
+ *   supervisor can name, which an unscoped worker cannot;
+ * - the worker that stopped again left no new run evidence behind, so nothing
+ *   progressed between the recovery and the repeated stop;
+ * - the ending itself is the same one (same exit code, or the same signal).
+ *
+ * Anything else is a fresh incident: only a recovery turn's own investigation
+ * can say what an unscoped failure was about, and spending one investigation
+ * is the conservative answer there.
  */
-export function unchangedAfterRecovery(previous: IncidentRecord, signature: string): boolean {
+export function unchangedAfterRecovery(
+  previous: IncidentRecord,
+  evidence: {
+    readonly intent: SupervisorIntent;
+    readonly scope: string | null;
+    readonly exitCode: number | null;
+    readonly signal: string | null;
+    /** Whether the worker that stopped again left any new run evidence behind. */
+    readonly progress: boolean;
+  },
+): boolean {
   const attempt = previous.attempts.at(-1);
   const stop = previous.stops.at(-1);
   if (previous.conclusion === null || previous.conclusion.outcome === 'help') {
@@ -359,5 +486,19 @@ export function unchangedAfterRecovery(previous: IncidentRecord, signature: stri
   if (attempt === undefined || (attempt.outcome !== 'repaired' && attempt.outcome !== 'blocked')) {
     return false;
   }
-  return stop !== undefined && stop.signature === signature;
+  if (stop === undefined || evidence.progress) {
+    return false;
+  }
+  // The ticket has to be one this supervisor can name: an unscoped failure is
+  // the ending alone, and the ending alone cannot tell two tickets apart.
+  const ticket = evidence.scope;
+  if (ticket === null || previous.ticket?.key !== ticket || stop.scope !== ticket) {
+    return false;
+  }
+  // The work that stopped again must be the work that recovery resumed.
+  const plan = previous.sequence;
+  if (plan === null || plan.intent !== evidence.intent || plan.scope !== evidence.scope) {
+    return false;
+  }
+  return stop.exitCode === evidence.exitCode && stop.signal === evidence.signal;
 }
