@@ -1,7 +1,5 @@
 # Adapters
 
-Status: proposed component design.
-
 ## Responsibility
 
 Translate explicit operations into external protocols and return observed results.

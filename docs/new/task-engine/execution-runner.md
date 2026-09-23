@@ -1,7 +1,5 @@
 # ExecutionRunner
 
-Status: proposed component design.
-
 ## Responsibility
 
 Execute a supplied XState workflow with bound operations. Own the running machine, its saved state

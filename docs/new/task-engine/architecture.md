@@ -1,7 +1,5 @@
 # TaskEngine
 
-Status: proposed component design.
-
 ## Responsibility
 
 Execute a task workflow supplied as an XState definition. The workflow defines sequencing, ordinary functions perform
@@ -137,7 +135,7 @@ invoke waits for the operation; onDone selects a transition from its returned ou
 are not XState fire-and-forget actions. Unexpected outcomes and rejected operations are execution faults.
 
 The definition can be opened in Stately's visual editor. Git stores the authoritative definition;
-visualization does not require a separately maintained workflow. This proposed definition is not yet
+visualization does not require a separately maintained workflow. This definition is not yet
 connected to the existing Nexus runtime. State persistence remains the runner's responsibility.
 
 Restart loads the supplied workflow and its saved state. A saved state absent from that workflow is

@@ -1,7 +1,5 @@
 # Configuration
 
-Status: proposed configuration data design.
-
 Project configuration defines the target project. Nexus configuration defines harness operation.
 Each setting has one owner.
 

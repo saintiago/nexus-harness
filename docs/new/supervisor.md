@@ -1,7 +1,5 @@
 # Supervisor
 
-Status: proposed component design.
-
 ## Responsibility
 
 Run a work process, retain the requested execution mode and coordinate recovery when work fails.

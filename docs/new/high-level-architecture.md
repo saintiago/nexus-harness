@@ -1,8 +1,5 @@
 # Nexus high-level architecture
 
-Status: proposed target architecture. This composition guides the new design; it does not claim
-that the existing implementation has these boundaries or authorize a runtime migration.
-
 ## Composition
 
 Nexus consists of five logical components: OperatorInterface, Supervisor, TaskEngine,

@@ -1,7 +1,5 @@
 # OperatorInterface
 
-Status: proposed component design.
-
 ## Responsibility
 
 Translate operator input into an execution request and present progress and results.

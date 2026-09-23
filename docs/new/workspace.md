@@ -1,7 +1,5 @@
 # Workspace
 
-Status: proposed data design.
-
 Workspace consists of a fixed directory layout and a reference to one instance.
 
 ## Layout and reference

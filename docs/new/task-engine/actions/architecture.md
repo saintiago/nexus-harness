@@ -1,7 +1,5 @@
 # Actions
 
-Status: proposed general action design.
-
 ## Responsibility
 
 An action performs one workflow operation. It reads declared input artifacts, carries out its work,

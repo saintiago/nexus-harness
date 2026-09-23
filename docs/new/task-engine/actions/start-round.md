@@ -1,7 +1,5 @@
 # StartRound
 
-Status: proposed action design.
-
 ## Responsibility
 
 Create the next round's artifact directory and persist its number as the current round.

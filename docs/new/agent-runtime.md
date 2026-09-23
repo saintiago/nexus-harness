@@ -1,7 +1,5 @@
 # AgentRuntime
 
-Status: proposed component design.
-
 ## Responsibility
 
 Run a configured agent profile in a supplied workspace with additional context prepared by the caller.
