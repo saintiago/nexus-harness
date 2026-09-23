@@ -668,6 +668,9 @@ async function reviewWithTurn(
         decision: verdict.decision,
         summary: verdict.summary,
         findings: verdict.findings,
+        ...(verdict.verifications === undefined || verdict.verifications.length === 0
+          ? {}
+          : { verifications: verdict.verifications }),
         now: context.now(),
       });
     } catch (cause) {

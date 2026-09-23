@@ -21,11 +21,13 @@ import {
   type HistoryDelivery,
   type HistoryEntry,
   type HistoryFinding,
+  type HistoryFindingResponse,
   type HistoryMirror,
   type HistoryReportSummary,
   type ReviewerReportRequest,
   type ReadComment,
 } from './contract.js';
+import { findingIdOf, parseFindingAnswers } from './findings.js';
 import { historyMarkerOf } from './marker.js';
 import { compareHistoryTime } from './time.js';
 import { workspaceHistoryRoot } from './paths.js';
@@ -524,20 +526,21 @@ function unresolvedRound(
     if (entry.kind !== 'pr-review' || coveredReviews.has(entry.sourceId)) {
       continue;
     }
-    const own = [entry.id];
-    const findings: HistoryFinding[] = [];
-    for (const inline of inlineOf(entry.sourceId)) {
-      own.push(inline.entry.id);
-      const comment = inline.comment;
-      if (comment === null) {
-        continue;
+      const own = [entry.id];
+      const findings: HistoryFinding[] = [];
+      for (const [index, inline] of inlineOf(entry.sourceId).entries()) {
+        own.push(inline.entry.id);
+        const comment = inline.comment;
+        if (comment === null) {
+          continue;
+        }
+        findings.push({
+          id: findingIdOf(null, index),
+          path: comment.path ?? '(inline review comment)',
+          line: comment.line ?? null,
+          body: comment.body ?? comment.text,
+        });
       }
-      findings.push({
-        path: comment.path ?? '(inline review comment)',
-        line: comment.line ?? null,
-        body: comment.body ?? comment.text,
-      });
-    }
     const requested = requestsChanges(entry.state);
     rounds.push({
       at: entry.createdAt,
@@ -586,6 +589,49 @@ function unresolvedRound(
     // DISMISSED reviews are not added as outstanding in the first place.
   }
   return [...outstanding.values()];
+}
+
+/**
+ * The developer's answers to one outstanding round's findings, read from the
+ * newest complete developer report recorded after that review. Identity ties an
+ * answer to a finding: the report has to name the finding by the same identity
+ * the brief renders, and an answer that leaves out a field, or a report that
+ * answers nothing, is kept as the incomplete response it is — never rounded up
+ * to complete remediation (docs/WORKFLOW.md §9).
+ *
+ * The newest report is the current claim: an earlier attempt's answer stays in
+ * the snapshot as its own entry, but the work as it now stands is what the
+ * latest attempt said about it. Deriving the answers from the retained reports
+ * each time is what makes a complete exchange survive further turns and
+ * restarts without a second store.
+ */
+function responsesOf(
+  round: ReviewRoundCandidate,
+  entries: readonly HistoryEntry[],
+): readonly HistoryFindingResponse[] {
+  const findings = round.summary.findings.map((finding) => finding.id);
+  if (findings.length === 0) {
+    return [];
+  }
+  const newest = entries
+    .filter(
+      (entry) =>
+        entry.kind === 'developer-report' &&
+        compareHistoryTime(entry.createdAt, round.at) >= 0,
+    )
+    .toSorted(
+      (a, b) => compareHistoryTime(b.createdAt, a.createdAt) || b.id.localeCompare(a.id),
+    )[0];
+  if (newest === undefined) {
+    return [];
+  }
+  return parseFindingAnswers(newest.text, findings).map((answer) => ({
+    ...answer,
+    entryId: newest.id,
+    runId: newest.sourceId,
+    round: newest.round,
+    createdAt: newest.createdAt,
+  }));
 }
 
 /** The latest delivery the snapshot can prove: the pull request now, or the last report's. */
@@ -929,7 +975,16 @@ export function createTicketHistory(parts: TicketHistoryParts): TicketHistory {
       if (reconstructedGap !== null) {
         gaps.push(reconstructedGap);
       }
-      const round = unresolved.at(-1)?.summary ?? null;
+      // The developer's answers to each outstanding round, read from the
+      // complete developer reports recorded after it. A finding with no
+      // complete answer is rendered as exactly that (docs/WORKFLOW.md §9).
+      const unresolvedReviews: HistoryReportSummary[] = unresolved.map((candidate) => {
+        const responses = responsesOf(candidate, entries);
+        return responses.length === 0
+          ? candidate.summary
+          : { ...candidate.summary, responses };
+      });
+      const round = unresolvedReviews.at(-1) ?? null;
       const ownEntryIds = new Set(unresolved.flatMap((round) => round.ownEntryIds));
       for (const { entry } of reviewCandidates) {
         if (
@@ -998,7 +1053,7 @@ export function createTicketHistory(parts: TicketHistoryParts): TicketHistory {
         task: current.task,
         latestDelivery: latestDelivery(pullRequest?.pullRequest ?? null, reports),
         unresolved: round,
-        unresolvedReviews: unresolved.map((round) => round.summary),
+        unresolvedReviews,
         responses,
         newHumanFeedback,
         ...(recovery.length === 0 ? {} : { recovery }),

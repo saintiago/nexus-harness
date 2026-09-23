@@ -18,15 +18,18 @@ import type { SourceRef } from '../shared/types.js';
 import { readWorkspaceState } from '../workspace/state.js';
 import type {
   DeveloperReportRequest,
-  HistoryDelivery,
   HistoryFinding,
+  HistoryDelivery,
+  HistoryFindingVerification,
   HistoryReportSummary,
+  HistoryOccurrence,
   PublishedDeveloperReport,
   RecordedReport,
   ReviewerReportRequest,
 } from './contract.js';
 import { HistoryError } from './contract.js';
 import { readBaselineReports } from './baseline.js';
+import { findingIdOf, identifyFindings } from './findings.js';
 import { historyReportsDir } from './paths.js';
 import { compareHistoryTime } from './time.js';
 
@@ -91,7 +94,14 @@ export interface ReviewerReportDigest {
   readonly head: string;
   readonly decision: string;
   readonly summary: string;
+  /**
+   * The findings this report raises, each with the stable identity it keeps. A
+   * record read back without identities is assigned them from the round and the
+   * finding's position (`findingIdOf`).
+   */
   readonly findings: readonly HistoryFinding[];
+  /** What this review verified about the dispositions earlier rounds raised. */
+  readonly verifications?: readonly HistoryFindingVerification[];
   readonly createdAt: string;
   readonly textFile: string;
   readonly recordFile: string | null;
@@ -233,15 +243,46 @@ function developerReportText(
  * harness recorded carries them directly; one recovered from a reviewer's own
  * retained verdict carries the same fields plus where it was recovered from.
  */
-type ReviewerReportFields = Pick<
-  ReviewerReportRequest,
-  'ref' | 'round' | 'reviewId' | 'head' | 'decision' | 'summary' | 'findings'
-> & {
+type ReviewerReportFields = {
+  readonly ref: SourceRef;
+  readonly round: number | null;
+  readonly reviewId: string;
+  readonly head: string;
+  readonly decision: string;
+  readonly summary: string;
+  /** The findings, each with the identity it keeps. */
+  readonly findings: readonly HistoryFinding[];
+  /** What this review verified about earlier dispositions, if anything. */
+  readonly verifications?: readonly HistoryFindingVerification[];
   /** Where the rendering was recovered from; `null` for a directly recorded report. */
   readonly recoveredFrom?: string | null;
   /** The published review URL, when the review record names one. */
   readonly publishedUrl?: string | null;
 };
+
+/** One place a grouped finding names, as the report rendering states it. */
+function occurrenceLine(occurrence: HistoryOccurrence): string {
+  return `  - also at ${occurrence.path}${
+    occurrence.line === null ? '' : `:${String(occurrence.line)}`
+  }`;
+}
+
+/** How one finding stands against the rounds before it, in the report's words. */
+function findingKindLine(finding: HistoryFinding): string | null {
+  const kind = finding.kind ?? 'new';
+  switch (kind) {
+    case 'new':
+      return null;
+    case 'unresolved':
+      return `- Classified: unresolved defect continuing ${
+        finding.continues ?? '(an earlier finding it does not name)'
+      }`;
+    case 'regression':
+      return `- Classified: repair regression against ${
+        finding.continues ?? '(an earlier finding it does not name)'
+      }`;
+  }
+}
 
 /** The complete reviewer report as Markdown: summary and every finding whole. */
 function reviewerReportText(request: ReviewerReportFields): string {
@@ -274,13 +315,42 @@ function reviewerReportText(request: ReviewerReportFields): string {
   if (request.findings.length === 0) {
     lines.push('(no findings)');
   }
-  for (const [index, finding] of request.findings.entries()) {
-    lines.push(
-      `### Finding ${String(index + 1)}: ${finding.path}${
+  for (const finding of request.findings) {
+    const entries = [
+      `### Finding ${finding.id}: ${finding.path}${
         finding.line === null ? '' : `:${String(finding.line)}`
       }`,
       '',
-      finding.body.trim(),
+      `- Identity: ${finding.id} — name it by this in a response or a verification.`,
+    ];
+    const classified = findingKindLine(finding);
+    if (classified !== null) {
+      entries.push(classified);
+    }
+    entries.push('', finding.body.trim());
+    if (finding.related !== undefined && finding.related.length > 0) {
+      entries.push(
+        '',
+        'Confirmed occurrences grouped under this finding:',
+        ...finding.related.map(occurrenceLine),
+      );
+    }
+    entries.push('');
+    lines.push(...entries);
+  }
+  const verifications = request.verifications ?? [];
+  if (verifications.length > 0) {
+    lines.push(
+      `## Verification of earlier dispositions (${String(verifications.length)})`,
+      '',
+      'These are the reviewer’s own readings of the reviewed revision, made at the place each',
+      'earlier defect lived. They are verification, not a developer claim: a disposition this',
+      'section does not name as `verified` is still not verified.',
+      '',
+      ...verifications.map(
+        (verification) =>
+          `- ${verification.finding} — ${verification.state}: ${verification.evidence.trim()}`,
+      ),
       '',
     );
   }
@@ -408,6 +478,11 @@ export async function recordReviewerReport(
   request: ReviewerReportRequest,
 ): Promise<RecordedReport> {
   const dir = historyReportsDir(root);
+  // The identity is fixed here, once: the round, its findings and every
+  // response and verification that follows name the finding by it
+  // (docs/WORKFLOW.md §9).
+  const findings = identifyFindings(request.findings, request.round);
+  const verifications = request.verifications ?? [];
   try {
     await mkdir(dir, { recursive: true });
   } catch (cause) {
@@ -432,7 +507,8 @@ export async function recordReviewerReport(
     head: request.head,
     decision: request.decision,
     summary: request.summary,
-    findings: request.findings,
+    findings,
+    ...(verifications.length === 0 ? {} : { verifications }),
     createdAt: request.now.toISOString(),
     textFile: textName,
     recordFile: recordName,
@@ -440,7 +516,10 @@ export async function recordReviewerReport(
     published: null,
   };
   try {
-    await atomicWrite(reportFile(root, textName), reviewerReportText(request));
+    await atomicWrite(
+      reportFile(root, textName),
+      reviewerReportText({ ...request, findings, verifications }),
+    );
     await atomicWrite(
       reportFile(root, recordName),
       `${JSON.stringify(
@@ -453,7 +532,8 @@ export async function recordReviewerReport(
           head: request.head,
           decision: request.decision,
           summary: request.summary,
-          findings: request.findings,
+          findings,
+          verifications,
           recordedAt: digest.createdAt,
         },
         null,
@@ -697,7 +777,10 @@ export function reportSummaryOf(report: LocalReport): HistoryReportSummary | nul
     nativeReviewId: digest.published?.id ?? null,
     decision: digest.decision,
     summary: digest.summary,
-    findings: digest.findings,
+    findings: identifyFindings(digest.findings, digest.round),
+    ...(digest.verifications === undefined || digest.verifications.length === 0
+      ? {}
+      : { verifications: digest.verifications }),
     pullRequest: null,
   };
 }
@@ -1220,10 +1303,40 @@ async function readRetainedVerdict(parts: {
       };
     }
     findings.push({
+      id: findingIdOf(parts.round, index),
       path: where.trim(),
       line: line === undefined || line === null ? null : line,
       body,
+      ...(finding['kind'] === 'unresolved' || finding['kind'] === 'regression'
+        ? {
+            kind: finding['kind'],
+            continues: typeof finding['continues'] === 'string' ? finding['continues'] : null,
+          }
+        : {}),
     });
+  }
+  const verifications: HistoryFindingVerification[] = [];
+  const rawVerifications = record['verifications'];
+  if (Array.isArray(rawVerifications)) {
+    for (const raw of rawVerifications) {
+      if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+        continue;
+      }
+      const verification = raw as Record<string, unknown>;
+      const finding = verification['finding'];
+      const state = verification['state'];
+      const evidence = verification['evidence'];
+      if (
+        typeof finding !== 'string' ||
+        finding.trim() === '' ||
+        (state !== 'verified' && state !== 'unverified' && state !== 'regressed') ||
+        typeof evidence !== 'string' ||
+        evidence.trim() === ''
+      ) {
+        continue;
+      }
+      verifications.push({ finding: finding.trim(), state, evidence: evidence.trim() });
+    }
   }
   const head = parts.record.head ?? '(the review record names no reviewed head)';
   const digest: ReviewerReportDigest = {
@@ -1238,6 +1351,7 @@ async function readRetainedVerdict(parts: {
     decision,
     summary: summary.trim(),
     findings,
+    ...(verifications.length === 0 ? {} : { verifications }),
     createdAt: parts.record.endedAt ?? parts.record.startedAt,
     textFile: '',
     recordFile: null,
@@ -1259,6 +1373,7 @@ async function readRetainedVerdict(parts: {
         decision,
         summary: summary.trim(),
         findings,
+        verifications,
         recoveredFrom: file,
         publishedUrl: parts.record.published?.url ?? null,
       }),

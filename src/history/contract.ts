@@ -16,7 +16,12 @@
  * connector. `sync.ts` reads the sources, `store.ts` writes the snapshot, and
  * `prompt.ts` renders the one section both role prompts carry.
  */
-import type { SourceRef, Task } from '../shared/types.js';
+import type {
+  FindingKind,
+  FindingVerificationState,
+  SourceRef,
+  Task,
+} from '../shared/types.js';
 
 /** Who produced one entry, as the index names it. */
 export type HistoryRole = 'human' | 'developer' | 'reviewer' | 'harness';
@@ -92,11 +97,88 @@ export interface HistoryEntry {
   readonly file: string | null;
 }
 
-/** One finding of a reviewer report, whole. */
+/** One place a grouped finding names: the file, and the line when it has one. */
+export interface HistoryOccurrence {
+  readonly path: string;
+  readonly line: number | null;
+}
+
+/**
+ * One finding of a reviewer report, whole, with the identity it keeps.
+ *
+ * The identity is stable for as long as the finding is outstanding: it is
+ * derived from the review round and the finding's position in it
+ * (`findingIdOf`, `findings.ts`), and both roles name the finding by it — the
+ * developer answers it, and a later reviewer verifies that answer or groups a
+ * related occurrence under it (docs/WORKFLOW.md §9).
+ */
 export interface HistoryFinding {
+  /** Stable identity within the ticket, for example `R2-F3`. */
+  readonly id: string;
   readonly path: string;
   readonly line: number | null;
   readonly body: string;
+  /**
+   * How this round classified the finding against the rounds before it. Absent
+   * on a report recorded before this classification existed, which is read as
+   * `new`.
+   */
+  readonly kind?: FindingKind;
+  /**
+   * The earlier finding identity this one continues, stated with `unresolved`
+   * and `regression`. A continuation never leaves the earlier identity implied:
+   * it is what ties the rounds together.
+   */
+  readonly continues?: string | null;
+  /**
+   * Other confirmed occurrences of the same defect this finding groups, so a
+   * reviewer reports one defect with every place it reached instead of one
+   * finding per example.
+   */
+  readonly related?: readonly HistoryOccurrence[];
+}
+
+/**
+ * One developer answer to one outstanding finding, as the harness read it from
+ * the developer's own complete report. It is a claim, never a verification: the
+ * reviewer is the one who verifies it, and the two are kept apart
+ * (docs/WORKFLOW.md §9).
+ */
+export interface FindingAnswer {
+  /** The finding identity the answer names. */
+  readonly finding: string;
+  /** Whether every one of the five fields was stated and nonblank. */
+  readonly complete: boolean;
+  /** Why the answer is not complete; `null` when it is. */
+  readonly problem: string | null;
+  readonly cause: string | null;
+  readonly scope: string | null;
+  readonly repair: string | null;
+  readonly verification: string | null;
+  readonly uncertainty: string | null;
+}
+
+/** One developer answer with the report it was recorded in. */
+export interface HistoryFindingResponse extends FindingAnswer {
+  /** The complete developer report entry the answer was read from. */
+  readonly entryId: string;
+  readonly runId: string;
+  /** The attempt round the report belongs to, when it has one. */
+  readonly round: number | null;
+  readonly createdAt: string;
+}
+
+/**
+ * One reviewer verification of an earlier finding's disposition: the reviewer's
+ * own reading of the repaired revision, which is what makes a claimed fix a
+ * verified one — or records that it is still not verified.
+ */
+export interface HistoryFindingVerification {
+  /** The earlier finding identity this verifies. */
+  readonly finding: string;
+  readonly state: FindingVerificationState;
+  /** What the reviewer itself observed, at the place the defect lived. */
+  readonly evidence: string;
 }
 
 /** One pull request as the history records the latest delivery. */
@@ -149,6 +231,18 @@ export interface HistoryReportSummary {
   readonly decision: string | null;
   readonly summary: string | null;
   readonly findings: readonly HistoryFinding[];
+  /**
+   * What this review verified about the dispositions earlier reviews raised:
+   * a claimed fix and a verified fix are different facts, and only this records
+   * the second (docs/WORKFLOW.md §9).
+   */
+  readonly verifications?: readonly HistoryFindingVerification[];
+  /**
+   * The developer's answers to this round's own findings, recorded after the
+   * round and read from the complete developer reports. A finding with no
+   * complete answer says so; it never appears as complete remediation.
+   */
+  readonly responses?: readonly HistoryFindingResponse[];
   readonly pullRequest: HistoryDelivery | null;
 }
 
@@ -356,9 +450,19 @@ export interface ReviewerReportRequest {
   readonly head: string;
   readonly decision: string;
   readonly summary: string;
-  readonly findings: readonly HistoryFinding[];
+  /**
+   * The findings this review raises. An identity the reviewer supplied is kept
+   * when it is one this harness assigned; otherwise the harness assigns the
+   * round's own identity from the finding's position (`findingIdOf`).
+   */
+  readonly findings: readonly UnidentifiedFinding[];
+  /** What this review verified about earlier dispositions, if any. */
+  readonly verifications?: readonly HistoryFindingVerification[];
   readonly now: Date;
 }
+
+/** One finding as a caller states it, before the harness fixes its identity. */
+export type UnidentifiedFinding = Omit<HistoryFinding, 'id'> & { readonly id?: string };
 
 /** What one recording wrote to the history root. */
 export interface RecordedReport {

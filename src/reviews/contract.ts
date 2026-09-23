@@ -11,7 +11,12 @@
  */
 import type { SourceCandidate, SourceOutcome, SourceTask } from '../sources/contract.js';
 import type { HistorySnapshot, TicketHistory } from '../history/contract.js';
-import type { SourceRef, Task } from '../shared/types.js';
+import type {
+  FindingKind,
+  FindingVerificationState,
+  SourceRef,
+  Task,
+} from '../shared/types.js';
 
 /**
  * How the review path failed, in the few categories the scan acts on.
@@ -130,12 +135,53 @@ export interface PullRequestConversation {
 /** The reviewer's decision. The two map to one native review event each. */
 export type ReviewDecision = 'approve' | 'request_changes';
 
-/** One finding the reviewer wrote: a path, an optional line, and the reason. */
+/** One other place one finding confirms the same defect. */
+export interface ReviewOccurrence {
+  readonly path: string;
+  /** Line in the new version of the file, or `null` when it has none. */
+  readonly line: number | null;
+}
+
+/**
+ * One finding the reviewer wrote: a path, an optional line, and the reason,
+ * with how it stands against the rounds before it.
+ */
 export interface ReviewFinding {
   readonly path: string;
   /** Line in the new version of the file, or `null` for a whole-change finding. */
   readonly line: number | null;
   readonly body: string;
+  /**
+   * `new` for an independent defect, `unresolved` for one an earlier round
+   * raised and the reviewed revision still has, `regression` for one an earlier
+   * round raised and this revision reintroduced. Absent means `new`.
+   */
+  readonly kind?: FindingKind;
+  /**
+   * The identity of the earlier finding this one continues, named for
+   * `unresolved` and `regression`. It is the same identity the brief rendered,
+   * so one defect keeps one name across rounds.
+   */
+  readonly continues?: string | null;
+  /**
+   * The other places this one defect reaches, grouped under this finding
+   * instead of reported as separate examples of it.
+   */
+  readonly related?: readonly ReviewOccurrence[];
+}
+
+/**
+ * What the reviewer verified about one outstanding finding's disposition: its
+ * own reading of the reviewed revision, made at the place the defect lived. A
+ * developer's claim is never a verification, and only `verified` says the
+ * repair really holds (docs/WORKFLOW.md §9).
+ */
+export interface ReviewVerification {
+  /** The identity the brief gave the outstanding finding. */
+  readonly finding: string;
+  readonly state: FindingVerificationState;
+  /** What the reviewer itself observed, in the reviewed revision. */
+  readonly evidence: string;
 }
 
 /** The verdict the reviewer turn must write, validated before anything is published. */
@@ -143,6 +189,13 @@ export interface ReviewVerdict {
   readonly decision: ReviewDecision;
   readonly summary: string;
   readonly findings: readonly ReviewFinding[];
+  /**
+   * One entry per outstanding finding the brief carried, each stating whether
+   * the reviewer verified the disposition. Required when the brief carries
+   * outstanding findings, so a claimed fix can never be published as a verified
+   * one by omission.
+   */
+  readonly verifications?: readonly ReviewVerification[];
 }
 
 /** A completed turn can still lack the evidence needed for a native verdict. */
@@ -151,6 +204,7 @@ export interface InconclusiveReview {
   /** The missing evidence and what the coordinator needs to provide. */
   readonly summary: string;
   readonly findings: readonly ReviewFinding[];
+  readonly verifications?: readonly ReviewVerification[];
 }
 
 export type ReviewerVerdict = ReviewVerdict | InconclusiveReview;

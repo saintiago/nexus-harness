@@ -85,7 +85,7 @@ export async function readBaselineReports(parts: {
           findings:
             finding === null
               ? []
-              : [{ path: file, line: null, body: JSON.stringify(finding, null, 2) }],
+              : [{ id: 'F1', path: file, line: null, body: JSON.stringify(finding, null, 2) }],
           createdAt,
           textFile: '',
           recordFile: file,

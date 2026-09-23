@@ -22,6 +22,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { runCodexPrompt } from '../agents/codex/adapter.js';
 import { selectedCodexRuntime } from '../agents/codex/runtime.js';
+import { outstandingFindingIds, unresolvedRounds } from '../history/findings.js';
 import { renderHistorySection } from '../history/prompt.js';
 import { openEvidenceLog } from '../reporting/logs.js';
 import type { AgentLog } from '../reporting/logs.js';
@@ -30,6 +31,9 @@ import type { AgentActivity, AgentSelection } from '../shared/types.js';
 import type { HistorySnapshot } from '../history/contract.js';
 import type {
   ReviewEvidence,
+  ReviewFinding,
+  ReviewOccurrence,
+  ReviewVerification,
   ReviewerTurn,
   ReviewerTurnRequest,
   ReviewerTurnResult,
@@ -49,6 +53,8 @@ export const REVIEWER_LOG_FILE = 'reviewer.log';
 const MAX_SUMMARY_CHARS = 4_000;
 const MAX_FINDING_CHARS = 2_000;
 const MAX_FINDINGS = 20;
+/** How many other occurrences one finding may group. */
+const MAX_RELATED_OCCURRENCES = 20;
 /** How much of the ticket's own description the reviewer's prompt carries. */
 const MAX_TASK_DESCRIPTION_CHARS = 8_000;
 
@@ -219,6 +225,13 @@ export function reviewPrompt(
       '  security problems, or missing pieces that the configured checks cannot catch?',
       '- Read the change itself, not only its description: the view holds every file, the diff',
       '  from the base, and the history that produced the head.',
+      '- A successful check is not the change’s completion: the configured commands passing says',
+      '  nothing about whether the ticket is done. Judge the behavior at the integration point the',
+      '  change affects — the callers that reach it and the evidence that exercises it — rather than',
+      '  re-running the project’s expensive test matrix the harness already runs for every attempt.',
+      '- A build or test change the ticket explicitly asks for is part of the change you review:',
+      '  check that it does what the ticket asks and does not weaken what the tests protect. Any',
+      '  other change to how the project is built or checked is a finding.',
       '- A blocking finding is something that must be fixed before this change should merge.',
       '  Style preferences, speculative improvements, and anything the configured checks already',
       '  enforce are not blocking.',
@@ -227,6 +240,39 @@ export function reviewPrompt(
       '  in the review body.',
     ].join('\n'),
   );
+
+  const outstanding =
+    history === undefined ? [] : outstandingFindingIds(unresolvedRounds(history.brief));
+  if (outstanding.length > 0) {
+    sections.push(
+      [
+        '## The outstanding findings and their answers',
+        'The ticket history above lists every review round whose change request is still',
+        'outstanding, each finding with the identity it keeps, the developer’s answer to it when one',
+        'is recorded, and what earlier rounds verified. Check that evidence yourself, in the',
+        'reviewed revision — never take an answer’s word for it:',
+        '',
+        '- Verify every outstanding finding’s disposition at the place the defect lived: read the',
+        '  code and the change there, and decide `verified`, `unverified` or `regressed`. A',
+        '  developer’s answer is a claim; only your own reading makes a repair verified, and a',
+        '  finding the brief shows without a complete answer is not verified.',
+        '- An `approve` verdict is possible only when every outstanding finding is `verified` and',
+        '  the whole change still implements the ticket. Anything else is `request_changes`, with',
+        '  the evidence in your findings.',
+        '- A defect you confirm again is one finding that continues the earlier identity, classified',
+        '  `unresolved` (the claimed repair did not hold) or `regression` (a later change in this',
+        '  revision reintroduced it). A defect you find for the first time is `new`.',
+        '- When one defect reaches several places, report it once and group the other confirmed',
+        '  occurrences under it in `related`; do not raise one finding per example, and do not leave',
+        '  a related path unread once the evidence points at one shared cause.',
+        '',
+        `Outstanding identities you must verify: ${outstanding.join(', ')}.`,
+        '',
+        'Whatever the findings above say, still review the whole change against the requested',
+        'outcome: a repaired defect says nothing about the rest of the diff.',
+      ].join('\n'),
+    );
+  }
 
   sections.push(
     [
@@ -238,7 +284,19 @@ export function reviewPrompt(
       '  "verdict": "approve" | "request_changes" | "inconclusive",',
       '  "summary": "one short paragraph for the pull request",',
       '  "findings": [',
-      '    { "path": "src/example.ts", "line": 42, "body": "what is wrong and why it matters" }',
+      '    {',
+      '      "path": "src/example.ts",',
+      '      "line": 42,',
+      '      "body": "what is wrong and why it matters",',
+      '      "kind": "new",',
+      '      "continues": "R2-F1",',
+      '      "related": [',
+      '        { "path": "src/other.ts", "line": 12 }',
+      '      ]',
+      '    }',
+      '  ],',
+      '  "verifications": [',
+      '    { "finding": "R2-F1", "state": "verified", "evidence": "what you read, and where" }',
       '  ]',
       '}',
       '',
@@ -252,6 +310,17 @@ export function reviewPrompt(
       '  is not missing review evidence: CI remains an independent merge requirement.',
       `- "line" is the line number in the new version of the file, and may be null when the`,
       '  finding is about the change as a whole.',
+      '- "kind" is "new" unless the finding continues an earlier one: "unresolved" for a defect an',
+      '  earlier round raised and the revision still shows, "regression" for one an earlier round',
+      '  raised and this revision reintroduced. Both name the earlier identity in "continues".',
+      '- "related" lists the other places the same defect confirmed, each with its file and the',
+      '  line in the new version of the file when it has one. Group occurrences; do not repeat the',
+      '  same defect as several findings.',
+      '- "verifications" states, for every identity the history above lists as outstanding, exactly',
+      '  once, what you yourself observed: "verified" only when you read the repair at the place',
+      '  the defect lived, "unverified" when the claim does not hold or your reading does not show',
+      '  it, "regressed" when the defect is back. An "approve" verdict must carry "verified" for',
+      '  every outstanding finding; a claim is never a verification.',
       `- At most ${String(MAX_FINDINGS)} findings, each body at most ${String(MAX_FINDING_CHARS)}`,
       `  characters, and a summary of at most ${String(MAX_SUMMARY_CHARS)} characters.`,
       '- The file is read by a program: valid JSON only, no comments and no text around it.',
@@ -290,15 +359,61 @@ function verdictString(value: unknown, field: string, max: number): string {
   return text;
 }
 
+/** One line number of the verdict file: a positive whole number, or `null`. */
+function verdictLine(value: unknown, what: string): number | null {
+  if (value === undefined || value === null) {
+    return null;
+  }
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 1) {
+    return value;
+  }
+  throw new ReviewError(
+    'inconclusive',
+    `${what} carries a "line" that is not a positive whole number.`,
+  );
+}
+
+/** The other occurrences one finding groups, or a refusal naming what is wrong. */
+function verdictRelated(value: unknown, index: number): readonly ReviewOccurrence[] | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!Array.isArray(value)) {
+    throw new ReviewError(
+      'inconclusive',
+      `finding ${String(index + 1)} of the reviewer's ${REVIEW_VERDICT_FILE} carries a "related" ` +
+        'that is not a list.',
+    );
+  }
+  if (value.length > MAX_RELATED_OCCURRENCES) {
+    throw new ReviewError(
+      'inconclusive',
+      `finding ${String(index + 1)} of the reviewer's ${REVIEW_VERDICT_FILE} groups more than ` +
+        `${String(MAX_RELATED_OCCURRENCES)} other occurrences; none may be dropped.`,
+    );
+  }
+  return value.map((raw, position) => {
+    const what = `occurrence ${String(position + 1)} of finding ${String(index + 1)}`;
+    if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+      throw new ReviewError(
+        'inconclusive',
+        `the ${what} of the reviewer's ${REVIEW_VERDICT_FILE} is not an object.`,
+      );
+    }
+    const occurrence = raw as Record<string, unknown>;
+    return {
+      path: verdictString(occurrence['path'], `${what} "path"`, 500),
+      line: verdictLine(occurrence['line'], what),
+    };
+  });
+}
+
 /** One finding of the verdict file, or a refusal naming what is wrong. */
 function verdictFinding(
   value: unknown,
   index: number,
-): {
-  readonly path: string;
-  readonly line: number | null;
-  readonly body: string;
-} {
+  outstanding: readonly string[],
+): ReviewFinding {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     throw new ReviewError(
       'inconclusive',
@@ -306,24 +421,82 @@ function verdictFinding(
     );
   }
   const finding = value as Record<string, unknown>;
-  const line = finding['line'];
-  const lineNumber =
-    line === undefined || line === null
-      ? null
-      : typeof line === 'number' && Number.isSafeInteger(line) && line >= 1
-        ? line
-        : 'invalid';
-  if (lineNumber === 'invalid') {
+  const kind = finding['kind'] ?? 'new';
+  if (kind !== 'new' && kind !== 'unresolved' && kind !== 'regression') {
     throw new ReviewError(
       'inconclusive',
-      `finding ${String(index + 1)} of the reviewer's ${REVIEW_VERDICT_FILE} carries a "line" that ` +
-        'is not a positive whole number.',
+      `finding ${String(index + 1)} of the reviewer's ${REVIEW_VERDICT_FILE} is classified ` +
+        `"${String(kind)}" instead of "new", "unresolved" or "regression".`,
+    );
+  }
+  const rawContinues = finding['continues'];
+  let continues: string | null = null;
+  if (kind === 'unresolved' || kind === 'regression') {
+    if (typeof rawContinues !== 'string' || rawContinues.trim() === '') {
+      throw new ReviewError(
+        'inconclusive',
+        `finding ${String(index + 1)} of the reviewer's ${REVIEW_VERDICT_FILE} is classified ` +
+          `"${kind}" without naming the earlier finding it continues in "continues", so this ` +
+          'scan will not publish a continuation nothing ties to an earlier finding.',
+      );
+    }
+    continues = rawContinues.trim();
+    if (!outstanding.includes(continues)) {
+      throw new ReviewError(
+        'inconclusive',
+        `finding ${String(index + 1)} of the reviewer's ${REVIEW_VERDICT_FILE} continues ` +
+          `"${continues}", which is not one of the outstanding findings the history named ` +
+          `(${outstanding.length === 0 ? 'there were none' : outstanding.join(', ')}).`,
+      );
+    }
+  } else if (rawContinues !== undefined && rawContinues !== null && rawContinues !== '') {
+    throw new ReviewError(
+      'inconclusive',
+      `finding ${String(index + 1)} of the reviewer's ${REVIEW_VERDICT_FILE} names an earlier ` +
+        'finding in "continues" while being classified "new"; a new finding continues nothing.',
+    );
+  }
+  const related = verdictRelated(finding['related'], index);
+  return {
+    path: verdictString(finding['path'], 'path', 500),
+    line: verdictLine(finding['line'], `finding ${String(index + 1)}`),
+    body: verdictString(finding['body'], 'body', MAX_FINDING_CHARS),
+    ...(kind === 'new' ? {} : { kind, continues }),
+    ...(related === undefined ? {} : { related }),
+  };
+}
+
+/** One verification of an earlier disposition, or a refusal naming what is wrong. */
+function verdictVerification(value: unknown, index: number, outstanding: readonly string[]): ReviewVerification {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new ReviewError(
+      'inconclusive',
+      `verification ${String(index + 1)} of the reviewer's ${REVIEW_VERDICT_FILE} is not an object.`,
+    );
+  }
+  const verification = value as Record<string, unknown>;
+  const finding = verdictString(verification['finding'], 'finding', 200);
+  if (!outstanding.includes(finding)) {
+    throw new ReviewError(
+      'inconclusive',
+      `verification ${String(index + 1)} of the reviewer's ${REVIEW_VERDICT_FILE} names ` +
+        `"${finding}", which is not one of the outstanding findings the history named ` +
+        `(${outstanding.length === 0 ? 'there were none' : outstanding.join(', ')}).`,
+    );
+  }
+  const state = verification['state'];
+  if (state !== 'verified' && state !== 'unverified' && state !== 'regressed') {
+    throw new ReviewError(
+      'inconclusive',
+      `verification ${String(index + 1)} of the reviewer's ${REVIEW_VERDICT_FILE} says ` +
+        `"${String(state)}" instead of "verified", "unverified" or "regressed", so this scan will ` +
+        'not guess whether the disposition was verified.',
     );
   }
   return {
-    path: verdictString(finding['path'], 'path', 500),
-    line: lineNumber,
-    body: verdictString(finding['body'], 'body', MAX_FINDING_CHARS),
+    finding,
+    state,
+    evidence: verdictString(verification['evidence'], 'evidence', MAX_FINDING_CHARS),
   };
 }
 
@@ -331,8 +504,18 @@ function verdictFinding(
  * Validates the reviewer's verdict file. Unknown extra fields are ignored, so a
  * stray key cannot turn a usable review into an unusable one; everything the
  * scan publishes is checked by name.
+ *
+ * `outstanding` is what the reviewer's own history snapshot listed as still
+ * outstanding, by their stable identities. A verdict that verifies none of
+ * them, verifies something else, or quietly approves while leaving a claimed
+ * fix unverified is refused rather than published: a claimed fix is not a
+ * verified one, and the difference has to survive into the record.
  */
-export function parseVerdict(text: string, where: string): ReviewerVerdict {
+export function parseVerdict(
+  text: string,
+  where: string,
+  outstanding: readonly string[] = [],
+): ReviewerVerdict {
   let value: unknown;
   try {
     value = JSON.parse(text) as unknown;
@@ -373,9 +556,55 @@ export function parseVerdict(text: string, where: string): ReviewerVerdict {
       'the verdict has too many findings; none may be dropped.',
     );
   }
-  const findings = rawFindings.map((finding, index) => verdictFinding(finding, index));
+  const findings = rawFindings.map((finding, index) =>
+    verdictFinding(finding, index, outstanding),
+  );
+  const rawVerifications = record['verifications'];
+  if (rawVerifications !== undefined && !Array.isArray(rawVerifications)) {
+    throw new ReviewError(
+      'inconclusive',
+      `the reviewer's ${where} carries a "verifications" that is not a list.`,
+    );
+  }
+  const verifications: readonly ReviewVerification[] = (rawVerifications ?? []).map(
+    (verification, index) => verdictVerification(verification, index, outstanding),
+  );
+  const named = new Set<string>();
+  for (const verification of verifications) {
+    if (named.has(verification.finding)) {
+      throw new ReviewError(
+        'inconclusive',
+        `the reviewer's ${where} verifies "${verification.finding}" more than once, so this scan ` +
+          'will not guess which reading stands.',
+      );
+    }
+    named.add(verification.finding);
+  }
+  const missing = outstanding.filter((finding) => !named.has(finding));
+  if (outstanding.length > 0 && missing.length > 0) {
+    throw new ReviewError(
+      'inconclusive',
+      `the reviewer's ${where} does not verify ${missing.join(', ')}, so the disposition of an ` +
+        'outstanding finding would be published unverified. Verify every outstanding finding by ' +
+        'the identity the history gave it and write the review again.',
+    );
+  }
+  if (outstanding.length === 0 && verifications.length > 0) {
+    throw new ReviewError(
+      'inconclusive',
+      `the reviewer's ${where} verifies findings although no change request was outstanding; a ` +
+        'verification nothing raised is not evidence.',
+    );
+  }
   if (decision === 'approve' && findings.length > 0) {
     throw new ReviewError('inconclusive', 'an approval cannot carry blocking findings.');
+  }
+  if (decision === 'approve' && verifications.some((one) => one.state !== 'verified')) {
+    throw new ReviewError(
+      'inconclusive',
+      'an approval cannot leave an outstanding finding unverified: only a verified disposition ' +
+        'clears a change request.',
+    );
   }
   if (decision === 'request_changes' && findings.length === 0) {
     throw new ReviewError(
@@ -384,7 +613,12 @@ export function parseVerdict(text: string, where: string): ReviewerVerdict {
         'publish an unexplained request.',
     );
   }
-  return { decision, summary, findings };
+  return {
+    decision,
+    summary,
+    findings,
+    ...(verifications.length === 0 ? {} : { verifications }),
+  };
 }
 
 /** What the reviewer turn is launched with. */
@@ -438,6 +672,12 @@ async function reviewTurn(
   const prompt = reviewPrompt(request.evidence, request.view, request.dir, request.history);
   const inputPath = path.join(request.dir, REVIEW_INPUT_FILE);
   const logPath = path.join(request.dir, REVIEWER_LOG_FILE);
+  // What the turn's own snapshot listed as outstanding: the identities a
+  // verdict has to verify before anything is published (docs/WORKFLOW.md §9).
+  const outstanding =
+    request.history === undefined
+      ? []
+      : outstandingFindingIds(unresolvedRounds(request.history.brief));
 
   let log: AgentLog;
   try {
@@ -504,7 +744,7 @@ async function reviewTurn(
   try {
     return {
       summary,
-      verdict: parseVerdict(text, REVIEW_VERDICT_FILE),
+      verdict: parseVerdict(text, REVIEW_VERDICT_FILE, outstanding),
       problem: null,
       logPath,
     };
