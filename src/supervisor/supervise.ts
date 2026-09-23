@@ -412,7 +412,7 @@ export async function supervise(request: SuperviseRequest): Promise<SuperviseSum
           version: 1,
           id: step.plan?.known.record.id ?? null,
           workerPid: null,
-          launch: { ...launch, intent: step.intent, scope: step.scope },
+          launch,
         });
       } catch (cause) {
         // The launch could not be written down, so no child may be started
@@ -478,7 +478,13 @@ export async function supervise(request: SuperviseRequest): Promise<SuperviseSum
           // advances. Only the configured done status advances it, and a
           // blocker that did not get there — or could not be read at all —
           // leaves the interrupted work where it is and asks for a person.
-          const completion = await blockerCompletion(request, step.scope, stop);
+          const completion = await verifyBlockerCompletion(request, step.scope, stop);
+          if (stop.aborted) {
+            // The operator asked the supervision to stop: nothing is concluded
+            // from a read their own stop cut short, and the plan is left where
+            // the records put it.
+            return summary('cancelled', null, carried?.record ?? null);
+          }
           if (completion.kind === 'completed') {
             await recordBlockerSettled(request, root, step.plan.known, io, completion.detail);
             continue;
@@ -1744,7 +1750,7 @@ async function finishOutstandingReports(
  * answer either way: a blocker that cannot be shown complete does not advance a
  * plan, and it is not read as an incomplete one either.
  */
-async function blockerCompletion(
+async function verifyBlockerCompletion(
   request: SuperviseRequest,
   key: string | null,
   stop: AbortSignal,
