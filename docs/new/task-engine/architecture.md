@@ -27,13 +27,14 @@ TaskEngine
     └── CompleteTask
 ```
 
-ExecutionRunner is the core: a domain-independent state machine that follows the supplied workflow.
+ExecutionRunner is the core: a thin XState integration that executes the supplied workflow.
 Actions own task-specific behavior. Workflow definitions are executable input, not another coordinator.
 
 ## Interface
 
 Use the [shared value types](../high-level-architecture.md#shared-interface-vocabulary).
 Action structure and artifact interfaces follow the [general action design](actions/architecture.md).
+Execution uses the [ExecutionRunner interface](execution-runner.md#interface).
 Actions use the [workspace data contract](../workspace.md#layout-and-reference). Workflow settings
 conform to [Nexus configuration](../configuration.md#nexus-configuration); repository and
 command settings conform to [project configuration](../configuration.md#project-configuration).
@@ -102,27 +103,9 @@ an action request from the workspace. Actions without agent work do not receive 
 
 ## ExecutionRunner
 
-The runner understands state names, action names, outcomes and transitions. Its execution loop is:
-
-1. Read the persisted state, or persist the workflow's initial state for a new execution.
-2. If the state is terminal, return its declared result.
-3. Invoke the action bound to that state.
-4. Select the next state using the action's returned outcome and the workflow transitions.
-5. Persist the next state, then continue.
-
-The persisted state names the action to execute next. On restart, load the last successfully saved
-state and start that action anew. An unreadable state is a storage failure; the runner does not guess
-where to resume.
-
-The runner owns only its workflow state. It does not inspect, validate, route or copy action
-artifacts; allocate their storage; decide repair policy; or discover and reconcile external effects.
-Its bound action functions require no execution identity or storage scope from the runner.
-An action completes its work before returning; the runner awaits it before invoking another.
-
-Before starting, validate the initial state, referenced transitions and action bindings.
-An undeclared outcome, action exception or state read/write failure stops execution with a fault. The runner
-does not invent a transition or retry policy. An action that fails without an outcome leaves the
-persisted state unchanged.
+XState executes the state machine. The runner binds operations, saves/restores execution state and
+publishes progress. Before each operation begins, its active state is saved; terminal state is saved
+before returning the result. Detailed behavior belongs to its own design.
 
 ## Workflow definition
 
