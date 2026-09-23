@@ -69,8 +69,10 @@ CLI from TypeScript sources through `tsx` if you would rather not build.
 Active suites live in the directory of the layer that owns their behavior — `tests/unit/`,
 `tests/boundary/` or `tests/workflow/` — and run in `npm test` and `npm run validate`; a layer
 that discovers none fails rather than passing an empty suite. The suites in `tests_old/` are
-disabled reference material for the coverage still to be rebuilt at its own layer
-(docs/testing.md, tests_old/REFERENCE.txt).
+disabled reference material for the whole-command surfaces the active layers' decisions are
+assembled into, and for the live provider exercises that stay outside the ordinary gate; each
+archived file's required behavior and the active suite that carries it are named in
+`tests_old/REFERENCE.txt` (docs/testing.md).
 
 `npm start -- --help` prints the full usage text, and `npm start -- run` with a missing option
 prints a usage error and exits `2`.

@@ -65,12 +65,16 @@ no empty-suite acceptance, and a layer that stops being discovered stops being a
 than passing.
 
 The archived suites whose coverage those layers now carry were removed as their coverage was
-rebuilt. What stays in `tests_old/` is the reference for coverage that belongs to the coding
-runtime adapter, the configured setup/check round, the Jira connector's queue, claim, pointer and
-publication behavior, the review scan's GitHub reads, the completion path's GitHub commands,
-source readiness, reporting and terminal presentation, the source and queue consumer paths with
-their pre-delivery diagnosis, and the live provider exercises; `tests_old/REFERENCE.txt` names
-each file and what it holds.
+rebuilt. What stays in `tests_old/` is reference material: the whole-command surfaces those
+decisions are assembled into, and the live provider exercises, which require explicit
+authorization and stay outside the ordinary gate. `tests_old/REFERENCE.txt` maps each archived file
+to the active suite that carries its required behavior — the coding-runtime adapter and its event
+stream, the configured setup/check round and the run timeline, the Jira connector's queue, claim,
+pointer, publication and recovery behavior, source readiness, the review scan's GitHub reads, the
+completion path's GitHub commands, the final report, the command line's own surface, the run's
+repair, records and history, and the serial queue's own decisions — and names the surfaces no
+active suite reaches yet: the terminal presentation, the source coordinator's receipts, claims and
+publication, the pre-delivery baseline diagnosis pass, and the review watch's timing.
 
 Cache deterministic unit results only when all their inputs are declared. Checks of real process
 or host behavior run fresh — the boundary and workflow layers run on every validation. Maintain
