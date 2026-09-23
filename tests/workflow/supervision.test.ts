@@ -1649,6 +1649,80 @@ describe('a supervised queue', () => {
     expect(stored?.report.commentId).toBe('10042');
     expect(summary.recoveries).toBe(0);
   }, 30_000);
+
+  it('finishes the publication of a conclusion an earlier invocation never reported', async () => {
+    const { workDir, repoPath, configPath } = await workspace();
+    const root = supervisorRoot(workDir, 'namespace');
+    const incident = await seedIncident(root);
+    const seeded = await readIncident(incidentFilePath(root, incident.id));
+    if (seeded === null) {
+      throw new Error('the seeded incident is gone');
+    }
+    // The state an invocation leaves when it concluded again and stopped before
+    // the new conclusion was published: the incident asks for a person, and its
+    // recorded publication describes the blocked conclusion it replaced.
+    await writeIncident(incidentFilePath(root, incident.id), {
+      ...seeded,
+      stage: 'help',
+      sequence: null,
+      conclusion: {
+        outcome: 'help',
+        detail: 'restore the queue’s Jira credential and run the supervisor again',
+        at: '2026-09-23T00:10:00.000Z',
+      },
+      report: {
+        publishedAt: '2026-09-23T00:04:00.000Z',
+        commentId: '9999',
+        commentText: 'Harness recovery report (incident seeded, blocked at 00:03).',
+        conclusion: { outcome: 'blocked', at: '2026-09-23T00:03:00.000Z' },
+        superseded: [],
+        notification: {
+          topicArn: NOTIFICATION.topicArn,
+          email: NOTIFICATION.email,
+          state: 'sent',
+          messageId: 'message-old',
+          problem: null,
+        },
+        problem: null,
+      },
+    });
+    const recovery = scriptedRecovery([{ status: 'repaired', summary: 's', cause: 'c' }]);
+    const reported: IncidentRecord[] = [];
+    const summary = await runSupervision({
+      workDir,
+      repoPath,
+      configPath,
+      isAlive: () => false,
+      worker: scriptedWorker([ended(0)]),
+      recoveryTurn: recovery,
+      reports: reported,
+    });
+
+    // The conclusion nobody reported is published by the restart, with the
+    // request it asks for, and the queue still stops for the person.
+    expect(recovery.calls).toBe(0);
+    expect(summary.outcome).toBe('attention');
+    expect(summary.workerRuns).toBe(0);
+    expect(reported.map((entry) => entry.conclusion?.outcome)).toEqual(['help']);
+    const stored = await readIncident(incidentFilePath(root, incident.id));
+    expect(stored?.report.commentId).toBe('10042');
+    expect(stored?.report.conclusion?.outcome).toBe('help');
+
+    // A further restart has nothing left to publish for it.
+    const nothing: IncidentRecord[] = [];
+    const again = await runSupervision({
+      workDir,
+      repoPath,
+      configPath,
+      isAlive: () => false,
+      worker: scriptedWorker([ended(0)]),
+      recoveryTurn: recovery,
+      reports: nothing,
+    });
+    expect(again.outcome).toBe('attention');
+    expect(again.workerRuns).toBe(0);
+    expect(nothing).toEqual([]);
+  }, 30_000);
 });
 
 /**
