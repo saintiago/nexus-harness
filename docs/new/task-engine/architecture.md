@@ -130,9 +130,8 @@ verify: {
 The complete finite workflow is defined in [finite-delivery.ts](../../../workflows/finite-delivery.ts).
 Queue loops, repair loops and waits are workflow choices; the runner only follows transitions.
 
-Bind named Nexus operations as XState promise actors using fromPromise and machine.provide.
-invoke waits for the operation; onDone selects a transition from its returned outcome. Nexus actions
-are not XState fire-and-forget actions. Unexpected outcomes and rejected operations are execution faults.
+Nexus registers its operations as promise actors. XState invokes them and follows the declared
+outcome transitions. Unexpected outcomes and rejected operations are execution faults.
 
 The definition can be opened in Stately's visual editor. Git stores the authoritative definition;
 visualization does not require a separately maintained workflow. This definition is not yet
