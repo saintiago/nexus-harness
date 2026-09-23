@@ -141,10 +141,7 @@ if (isEntryPoint()) {
  * A process a person started directly carries no launch in its environment and
  * runs the command unchanged — the handshake costs nothing when there is none.
  */
-async function runSupervisedLaunch(
-  context: CliContext,
-  argv: readonly string[],
-): Promise<number> {
+async function runSupervisedLaunch(context: CliContext, argv: readonly string[]): Promise<number> {
   const launch = launchFromEnvironment(process.env);
   if (launch !== null) {
     const problem = await awaitLaunchRegistration({ ...launch, pid: process.pid });

@@ -31,10 +31,11 @@ import { createIncidentReporter } from '../../src/supervisor/report.js';
 import { createRecoveryTurn } from '../../src/supervisor/recovery.js';
 import type { RecoveryBrief } from '../../src/supervisor/recovery.js';
 import { runNexusWorker, WORKER_STOP_GRACE_MS } from '../../src/supervisor/worker.js';
-import { EXIT_INPUT_ERROR } from '../../src/cli/context.js';
+import { EXIT_INPUT_ERROR, EXIT_OK } from '../../src/cli/context.js';
 import { superviseCli } from '../../src/cli/supervise.js';
 import { createHttpClient } from '../../src/sources/jira/http.js';
 import { intakeLockPath } from '../../src/sources/receipts.js';
+import { runCommand } from '../../src/process/command.js';
 import { repoRoot } from '../support.js';
 import {
   installStandIn,
@@ -162,88 +163,88 @@ describe('the supervisor’s own ownership', () => {
       pid: number;
     };
     expect(recorded.pid).toBe(process.pid);
-      for (const take of takes) {
-        if (take.ok) {
-          await take.ownership.release();
-        }
+    for (const take of takes) {
+      if (take.ok) {
+        await take.ownership.release();
       }
-    }, 30_000);
+    }
+  }, 30_000);
 
-    it('never removes the live record a second takeover created under a stale observation', async () => {
-      const root = await tempDir();
-      const now = (): Date => new Date('2026-09-23T00:00:00Z');
-      const file = path.join(root, 'owner.json');
-      // The record an earlier supervisor left behind: its process is gone, so
-      // both contenders below read it as stale.
-      await writeFile(
-        file,
-        JSON.stringify({
-          version: 1,
-          pid: 4242,
-          token: 'stale',
-          startedAt: 't',
-          intent: 'run',
-          repoPath: 'C:/target',
-        }),
-        'utf8',
-      );
-      const isAlive = (pid: number): boolean => pid === process.pid;
-
-      // B inspects the dead record and is held exactly there — the schedule the
-      // race turns on — while A takes the record over and creates its own, live
-      // one under the very name B inspected.
-      let releaseB: () => void = () => undefined;
-      const bHeld = new Promise<void>((resolve) => {
-        releaseB = resolve;
-      });
-      let bInspected: () => void = () => undefined;
-      const inspected = new Promise<void>((resolve) => {
-        bInspected = resolve;
-      });
-      const b = acquireSupervisorOwnership({
-        root,
+  it('never removes the live record a second takeover created under a stale observation', async () => {
+    const root = await tempDir();
+    const now = (): Date => new Date('2026-09-23T00:00:00Z');
+    const file = path.join(root, 'owner.json');
+    // The record an earlier supervisor left behind: its process is gone, so
+    // both contenders below read it as stale.
+    await writeFile(
+      file,
+      JSON.stringify({
+        version: 1,
+        pid: 4242,
+        token: 'stale',
+        startedAt: 't',
         intent: 'run',
         repoPath: 'C:/target',
-        now,
-        isAlive,
-        onStaleInspection: async (record) => {
-          expect(record.token).toBe('stale');
-          bInspected();
-          await bHeld;
-        },
-      });
-      await inspected;
+      }),
+      'utf8',
+    );
+    const isAlive = (pid: number): boolean => pid === process.pid;
 
-      const a = await acquireSupervisorOwnership({
-        root,
-        intent: 'watch',
-        repoPath: 'C:/target',
-        now,
-        isAlive,
-      });
-      expect(a.ok).toBe(true);
-      const aRecord = JSON.parse(await readFile(file, 'utf8')) as { token: string };
-      expect(aRecord.token).not.toBe('stale');
+    // B inspects the dead record and is held exactly there — the schedule the
+    // race turns on — while A takes the record over and creates its own, live
+    // one under the very name B inspected.
+    let releaseB: () => void = () => undefined;
+    const bHeld = new Promise<void>((resolve) => {
+      releaseB = resolve;
+    });
+    let bInspected: () => void = () => undefined;
+    const inspected = new Promise<void>((resolve) => {
+      bInspected = resolve;
+    });
+    const b = acquireSupervisorOwnership({
+      root,
+      intent: 'run',
+      repoPath: 'C:/target',
+      now,
+      isAlive,
+      onStaleInspection: async (record) => {
+        expect(record.token).toBe('stale');
+        bInspected();
+        await bHeld;
+      },
+    });
+    await inspected;
 
-      // B resumes with its stale observation. It must not remove the record A
-      // holds: what B renames away is not the record it inspected, so it goes
-      // back untouched and B is refused by name instead.
-      releaseB();
-      const bResult = await b;
-      expect(bResult.ok).toBe(false);
-      if (!bResult.ok) {
-        expect(bResult.problem).toContain('another supervisor already runs');
-      }
-      expect(JSON.parse(await readFile(file, 'utf8'))).toEqual(aRecord);
-      expect((await readdir(root)).filter((name) => name.includes('taken'))).toEqual([]);
+    const a = await acquireSupervisorOwnership({
+      root,
+      intent: 'watch',
+      repoPath: 'C:/target',
+      now,
+      isAlive,
+    });
+    expect(a.ok).toBe(true);
+    const aRecord = JSON.parse(await readFile(file, 'utf8')) as { token: string };
+    expect(aRecord.token).not.toBe('stale');
 
-      if (a.ok) {
-        await a.ownership.release();
-      }
-      expect(await readFile(file, 'utf8').catch(() => null)).toBeNull();
-    }, 30_000);
+    // B resumes with its stale observation. It must not remove the record A
+    // holds: what B renames away is not the record it inspected, so it goes
+    // back untouched and B is refused by name instead.
+    releaseB();
+    const bResult = await b;
+    expect(bResult.ok).toBe(false);
+    if (!bResult.ok) {
+      expect(bResult.problem).toContain('another supervisor already runs');
+    }
+    expect(JSON.parse(await readFile(file, 'utf8'))).toEqual(aRecord);
+    expect((await readdir(root)).filter((name) => name.includes('taken'))).toEqual([]);
 
-    it('refuses a live owner and adopts one whose process is gone', async () => {
+    if (a.ok) {
+      await a.ownership.release();
+    }
+    expect(await readFile(file, 'utf8').catch(() => null)).toBeNull();
+  }, 30_000);
+
+  it('refuses a live owner and adopts one whose process is gone', async () => {
     const root = await tempDir();
     const now = (): Date => new Date('2026-09-23T00:00:00Z');
     const first = await acquireSupervisorOwnership({
@@ -527,13 +528,17 @@ describe('the incident report’s publication boundaries', () => {
       const incident = reportIncident('ns');
       const http = createHttpClient(JIRA_CONFIG, 'token', { fetch: serviceFetch(service.origin) });
       const reporter = createIncidentReporter({
-        jira: { http, token: 'token' },
         notification: null,
         logsDir: () => path.join(directory, 'logs'),
         cwd: directory,
         now: () => new Date('2026-09-23T00:04:00.000Z'),
       });
-      const first = await reporter({ incident, stop: new AbortController().signal });
+      const jira = { kind: 'jira' as const, http, token: 'token' };
+      const first = await reporter({
+        incident,
+        stop: new AbortController().signal,
+        jira,
+      });
       expect(first.report.commentId).toBe('10042');
       expect(first.problem).toBeNull();
       const posted = service.requests.find((request) => request.method === 'POST');
@@ -567,7 +572,6 @@ describe('the incident report’s publication boundaries', () => {
           fetch: serviceFetch(serviceWithReport.origin),
         });
         const restartReporter = createIncidentReporter({
-          jira: { http: restartHttp, token: 'token' },
           notification: null,
           logsDir: () => path.join(directory, 'logs'),
           cwd: directory,
@@ -576,6 +580,7 @@ describe('the incident report’s publication boundaries', () => {
         const second = await restartReporter({
           incident: { ...incident, report: first.report },
           stop: new AbortController().signal,
+          jira: { kind: 'jira', http: restartHttp, token: 'token' },
         });
         expect(second.report.commentId).toBe('10042');
         expect(serviceWithReport.requests.filter((request) => request.method === 'POST')).toEqual(
@@ -608,7 +613,11 @@ describe('the incident report’s publication boundaries', () => {
       cwd: directory,
       now: () => new Date('2026-09-23T00:04:00.000Z'),
     });
-    const sent = await reporter({ incident, stop: new AbortController().signal });
+    const sent = await reporter({
+      incident,
+      stop: new AbortController().signal,
+      jira: { kind: 'none' },
+    });
     expect(sent.report.notification).toMatchObject({ state: 'sent', messageId: 'abc-123' });
     expect(sent.problem).toBeNull();
 
@@ -616,6 +625,7 @@ describe('the incident report’s publication boundaries', () => {
     const again = await reporter({
       incident: { ...incident, report: sent.report },
       stop: new AbortController().signal,
+      jira: { kind: 'none' },
     });
     expect(again.report.notification).toMatchObject({ state: 'sent', messageId: 'abc-123' });
   }, 30_000);
@@ -633,7 +643,11 @@ describe('the incident report’s publication boundaries', () => {
       cwd: directory,
       now: () => new Date('2026-09-23T00:04:00.000Z'),
     });
-    const failed = await reporter({ incident, stop: new AbortController().signal });
+    const failed = await reporter({
+      incident,
+      stop: new AbortController().signal,
+      jira: { kind: 'none' },
+    });
     expect(failed.report.notification?.state).toBe('failed');
     expect(failed.problem).toContain('could not be published');
     expect(failed.report.commentId).toBeNull();
@@ -667,6 +681,7 @@ describe('the incident report’s publication boundaries', () => {
     const sent = await reporter({
       incident,
       stop: new AbortController().signal,
+      jira: { kind: 'none' },
       checkpoint: async (report) => {
         written.push(report.notification?.state ?? 'none');
       },
@@ -694,10 +709,138 @@ describe('the incident report’s publication boundaries', () => {
         },
       },
       stop: new AbortController().signal,
+      jira: { kind: 'none' },
     });
     expect(restart.report.notification).toMatchObject({ state: 'sent', messageId: 'abc-123' });
     expect(restart.problem).toBeNull();
     expect((await readdir(logsDir)).filter((name) => name.endsWith('.stdout.log'))).toHaveLength(1);
+  }, 30_000);
+
+  it('adopts the acknowledgement of a publisher that ran and then reported an unsuccessful ending', async () => {
+    const directory = await tempDir();
+    const logsDir = path.join(directory, 'incident-logs');
+    const topicArn = 'arn:aws:sns:eu-north-1:698643713254:nexus-recovery-notifications';
+    const runs: string[] = [];
+    // A publisher that sent the summary, printed the identity the topic gave it,
+    // and then timed out. Its ending does not prove the topic refused anything,
+    // so the identity it wrote is what this reporter has to read back.
+    const runNotification: typeof runCommand = async (request) => {
+      runs.push(request.label);
+      await mkdir(request.logsDir, { recursive: true });
+      const stdoutPath = path.join(request.logsDir, `${request.label}.stdout.log`);
+      const stderrPath = path.join(request.logsDir, `${request.label}.stderr.log`);
+      await writeFile(
+        stdoutPath,
+        JSON.stringify({ MessageId: 'timed-1', TopicArn: topicArn }),
+        'utf8',
+      );
+      await writeFile(stderrPath, '', 'utf8');
+      return {
+        command: [...request.command],
+        cwd: request.cwd,
+        startedAt: '2026-09-23T00:04:00.000Z',
+        endedAt: '2026-09-23T00:06:00.000Z',
+        outcome: 'timed-out',
+        exitCode: null,
+        signal: null,
+        launchError: null,
+        timeoutMs: request.timeoutMs,
+        termination: 'unconfirmed',
+        terminationProblem: 'the publisher had not ended when its limit expired',
+        stdoutPath,
+        stderrPath,
+      };
+    };
+    const notification = {
+      topicArn,
+      email: 'saint282@gmail.com',
+      publisher: ['aws', 'sns', 'publish'],
+    };
+    const reporter = createIncidentReporter({
+      notification,
+      logsDir: () => logsDir,
+      cwd: directory,
+      now: () => new Date('2026-09-23T00:04:00.000Z'),
+      runNotification,
+    });
+    const incident = reportIncident('ns');
+    const published = await reporter({
+      incident,
+      stop: new AbortController().signal,
+      jira: { kind: 'none' },
+    });
+    expect(published.report.notification).toMatchObject({ state: 'sent', messageId: 'timed-1' });
+    expect(published.problem).toBeNull();
+
+    // A restart reads that acknowledgement: the summary is never sent twice.
+    const restart = await reporter({
+      incident: { ...incident, report: published.report },
+      stop: new AbortController().signal,
+      jira: { kind: 'none' },
+    });
+    expect(restart.report.notification).toMatchObject({ state: 'sent', messageId: 'timed-1' });
+    expect(runs).toHaveLength(1);
+  }, 30_000);
+
+  it('records an unacknowledged send that ran as uncertain rather than retryable', async () => {
+    const directory = await tempDir();
+    const logsDir = path.join(directory, 'incident-logs');
+    const runs: string[] = [];
+    // A publisher that was killed before it acknowledged anything: the summary
+    // may or may not have reached the topic, and nothing here may send it again.
+    const runNotification: typeof runCommand = async (request) => {
+      runs.push(request.label);
+      await mkdir(request.logsDir, { recursive: true });
+      const stdoutPath = path.join(request.logsDir, `${request.label}.stdout.log`);
+      const stderrPath = path.join(request.logsDir, `${request.label}.stderr.log`);
+      await writeFile(stdoutPath, '', 'utf8');
+      await writeFile(stderrPath, '', 'utf8');
+      return {
+        command: [...request.command],
+        cwd: request.cwd,
+        startedAt: '2026-09-23T00:04:00.000Z',
+        endedAt: '2026-09-23T00:05:00.000Z',
+        outcome: 'signalled',
+        exitCode: null,
+        signal: 'SIGKILL',
+        launchError: null,
+        timeoutMs: request.timeoutMs,
+        termination: 'confirmed',
+        terminationProblem: null,
+        stdoutPath,
+        stderrPath,
+      };
+    };
+    const notification = {
+      topicArn: 'arn:aws:sns:eu-north-1:698643713254:nexus-recovery-notifications',
+      email: 'saint282@gmail.com',
+      publisher: ['aws', 'sns', 'publish'],
+    };
+    const reporter = createIncidentReporter({
+      notification,
+      logsDir: () => logsDir,
+      cwd: directory,
+      now: () => new Date('2026-09-23T00:04:00.000Z'),
+      runNotification,
+    });
+    const incident = reportIncident('ns');
+    const uncertain = await reporter({
+      incident,
+      stop: new AbortController().signal,
+      jira: { kind: 'none' },
+    });
+    expect(uncertain.report.notification).toMatchObject({ state: 'interrupted', messageId: null });
+    expect(uncertain.report.notification?.problem).toContain('may or may not have reached');
+    expect(uncertain.problem).toContain('not sent again automatically');
+
+    // It is never repeated automatically, however many invocations follow.
+    const restart = await reporter({
+      incident: { ...incident, report: uncertain.report },
+      stop: new AbortController().signal,
+      jira: { kind: 'none' },
+    });
+    expect(restart.report.notification?.state).toBe('interrupted');
+    expect(runs).toHaveLength(1);
   }, 30_000);
 
   it('never sends a second summary for an interrupted publication it cannot confirm', async () => {
@@ -736,6 +879,7 @@ describe('the incident report’s publication boundaries', () => {
         },
       },
       stop: new AbortController().signal,
+      jira: { kind: 'none' },
     });
     expect(outcome.report.notification).toMatchObject({ state: 'interrupted', messageId: null });
     expect(outcome.problem).toContain('not sent again automatically');
@@ -773,6 +917,7 @@ describe('the recovery turn’s own launch', () => {
       earlier: [],
       previous: null,
       jira: { siteUrl: 'https://site.atlassian.com', projectKey: 'HARN' },
+      jiraProblem: null,
       notification: null,
     };
   }
@@ -933,7 +1078,150 @@ describe('the supervised command around a checkout it cannot read', () => {
   }, 60_000);
 });
 
-describe('a project configuration that names the supervisable queue', () => {
+  describe('a project configuration the recovery agent repairs', () => {
+    it('writes the incident’s Jira report through the connection the repair restored', async () => {
+      const root = await tempDir();
+      const bin = await tempDir();
+      const target = path.join(root, 'target');
+      await mkdir(target, { recursive: true });
+      const projectFile = path.join(target, 'nexus.project.json');
+      const marker = path.join(target, '.worker-ran');
+      const tokenEnv = 'NEXUS_TEST_JIRA_TOKEN';
+      // The connected project's configuration cannot be read at all: the
+      // recovery agent is invoked to repair it, and the report this incident
+      // owes has to be written through the connection the repair restored.
+      await writeFile(projectFile, '{ this is not json', 'utf8');
+      const repaired = {
+        setup: [],
+        checks: [['node', 'check.mjs']],
+        source: {
+          type: 'jira',
+          siteUrl: 'https://site.atlassian.net',
+          cloudId: '9337c4da-7d33-4c1d-b03c-db207e537f88',
+          projectKey: 'HARN',
+          ...JIRA_SOURCE_DEFAULTS,
+          tokenEnv,
+        },
+      };
+      const publisher = path.join(bin, 'publish.mjs');
+      await writeFile(
+        publisher,
+        'process.stdout.write(JSON.stringify({ MessageId: "smoke-1", TopicArn: "arn:aws:sns:eu-north-1:698643713254:nexus-recovery-notifications" }));\n',
+        'utf8',
+      );
+      const harnessPath = path.join(root, 'harness.json');
+      await writeFile(
+        harnessPath,
+        JSON.stringify({
+          workDir: 'runs',
+          maxRepairs: 1,
+          taskTimeoutMinutes: 1,
+          commandTimeoutMinutes: 1,
+          recovery: {
+            agent: { runtime: 'codex', command: ['codex'] },
+            maxAttempts: 1,
+            notifications: {
+              topicArn: 'arn:aws:sns:eu-north-1:698643713254:nexus-recovery-notifications',
+              email: 'saint282@gmail.com',
+              publisher: [process.execPath, publisher],
+            },
+          },
+        }),
+        'utf8',
+      );
+      // A stand-in recovery runtime that repairs exactly what stopped the
+      // worker — the project configuration — and names the ticket it belongs to.
+      const standIn = await installStandIn(
+        'codex',
+        [
+          "import { writeFileSync } from 'node:fs';",
+          "import path from 'node:path';",
+          "let prompt = '';",
+          "process.stdin.setEncoding('utf8');",
+          "process.stdin.on('data', (chunk) => { prompt += chunk; });",
+          "process.stdin.on('end', () => {",
+          `  writeFileSync(${JSON.stringify(projectFile)}, JSON.stringify(${JSON.stringify(repaired)}));`,
+          '  writeFileSync(',
+          "    path.join(process.cwd(), 'outcome.json'),",
+          '    JSON.stringify({',
+          "      status: 'repaired',",
+          "      summary: 'the project configuration was written again',",
+          "      cause: 'nexus.project.json was not valid JSON',",
+          "      resolution: 'the configuration was written again from the repository copy',",
+          '      preserved: [],',
+          "      resume: 'the queue resumes',",
+          "      ticket: { key: 'HARN-51', url: 'https://malton-family.atlassian.net/browse/HARN-51' },",
+          '    }),',
+          '  );',
+          "  process.stdout.write(JSON.stringify({ type: 'turn.completed' }) + '\\n');",
+          '  process.exit(0);',
+          '});',
+        ].join('\n'),
+      );
+      // The worker stops on the unreadable configuration once; the resumed one
+      // — after the repair — settles.
+      const worker = path.join(bin, 'worker.mjs');
+      await writeFile(
+        worker,
+        [
+          "import { existsSync, writeFileSync } from 'node:fs';",
+          `if (existsSync(${JSON.stringify(marker)})) { process.exit(0); }`,
+          `writeFileSync(${JSON.stringify(marker)}, 'first');`,
+          "process.stderr.write('error: the project configuration is not valid JSON\\n');",
+          'process.exit(1);',
+        ].join('\n'),
+        'utf8',
+      );
+      const service = await startLocalService((request) => {
+        if (request.method === 'GET' && request.url.includes('/comment')) {
+          return { status: 200, body: JSON.stringify({ comments: [], total: 0 }) };
+        }
+        return { status: 201, body: JSON.stringify({ id: '10042' }) };
+      });
+      const lines: string[] = [];
+      const previousToken = process.env[tokenEnv];
+      process.env[tokenEnv] = 'test-token';
+      let code: number;
+      try {
+        code = await withPathPrefix(standIn.bin, () =>
+          superviseCli(['run', '--repo', target, '--config', harnessPath], {
+            cwd: root,
+            io: { out: (text) => lines.push(text), err: (text) => lines.push(text) },
+            supervisorParts: { entry: worker },
+            fetch: serviceFetch(service.origin),
+          }),
+        );
+      } finally {
+        if (previousToken === undefined) {
+          delete process.env[tokenEnv];
+        } else {
+          process.env[tokenEnv] = previousToken;
+        }
+        await service.close();
+      }
+
+      expect(code).toBe(EXIT_OK);
+      expect(lines.join('\n')).toContain('supervise run: settled');
+      // The comment really was written into the ticket's own thread, through
+      // the connection the repair restored — not silently omitted because the
+      // file could not be read when the supervision started.
+      const posted = service.requests.find((request) => request.method === 'POST');
+      expect(posted?.url).toContain('/rest/api/3/issue/HARN-51/comment');
+      expect(posted?.body).toContain('Harness recovery report');
+      const workDir = path.join(root, 'runs');
+      const namespaces = await readdir(path.join(workDir, '.supervisor'));
+      const supervisorRootDir = path.join(workDir, '.supervisor', namespaces[0] ?? '');
+      const ids = await readdir(path.join(supervisorRootDir, 'incidents'));
+      const incident = await readIncident(incidentFilePath(supervisorRootDir, ids[0] ?? ''));
+      expect(incident?.ticket?.key).toBe('HARN-51');
+      expect(incident?.report.commentId).toBe('10042');
+      expect(incident?.report.problem).toBeNull();
+      expect(incident?.report.notification).toMatchObject({ state: 'sent', messageId: 'smoke-1' });
+      expect(incident?.resumedAt).not.toBeNull();
+    }, 90_000);
+  });
+
+  describe('a project configuration that names the supervisable queue', () => {
   it('composes the recovery policy with its launch and publisher resolved', async () => {
     const directory = await tempDir();
     await writeFile(

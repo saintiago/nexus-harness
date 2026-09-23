@@ -75,18 +75,18 @@ export interface CodexPromptRequest {
   readonly stop: AbortSignal;
   /** Where the runtime's own activity is reported, when a display is watching. */
   readonly onActivity?: (activity: AgentActivity) => void;
-    /**
-     * The runtime process itself, as soon as it exists. A caller that supervises
-     * the turn — the recovery turn's supervisor, for example — records this PID,
-     * so a restart can tell that the runtime is still running rather than start
-     * the same turn beside it. The call is awaited before the turn's prompt is
-     * handed over: the runtime has nothing to act on until then, so a caller
-     * that fails to record the process leaves a runtime that never began the
-     * turn — and the failure is the turn's own failure rather than work that ran
-     * under a launch no record names.
-     */
-    readonly onStarted?: (pid: number) => Promise<void> | void;
-  }
+  /**
+   * The runtime process itself, as soon as it exists. A caller that supervises
+   * the turn — the recovery turn's supervisor, for example — records this PID,
+   * so a restart can tell that the runtime is still running rather than start
+   * the same turn beside it. The call is awaited before the turn's prompt is
+   * handed over: the runtime has nothing to act on until then, so a caller
+   * that fails to record the process leaves a runtime that never began the
+   * turn — and the failure is the turn's own failure rather than work that ran
+   * under a launch no record names.
+   */
+  readonly onStarted?: (pid: number) => Promise<void> | void;
+}
 
 /**
  * Runs one top-level turn of the configured runtime with an explicit prompt and
@@ -422,8 +422,7 @@ export async function runCodexPrompt(
       launchError ??= `the coding runtime's launch could not be completed: ${messageOf(cause)}`;
       finish();
     });
-
-    });
+  });
 
   if (outcome.stopped) {
     // The run was stopped, so the turn was too. What the runtime managed to

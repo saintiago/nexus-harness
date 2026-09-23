@@ -60,13 +60,12 @@ import { messageOf } from '../shared/errors.js';
 import type { HarnessConfig, JiraSourceConfig, RecoveryConfig } from '../shared/types.js';
 import { SourceError } from '../sources/contract.js';
 import { createHttpClient, resolveJiraToken } from '../sources/jira/http.js';
-import type { HttpClient } from '../sources/jira/http.js';
 import { incidentDir, supervisorRoot } from '../supervisor/incident.js';
 import type { IncidentRecord } from '../supervisor/incident.js';
 import { createRecoveryTurn } from '../supervisor/recovery.js';
 import { createIncidentReporter } from '../supervisor/report.js';
 import { supervise } from '../supervisor/supervise.js';
-import type { SupervisorParts, SuperviseSummary } from '../supervisor/supervise.js';
+import type { JiraBoundaryTake, SupervisorParts, SuperviseSummary } from '../supervisor/supervise.js';
 import { runNexusWorker } from '../supervisor/worker.js';
 
 /** Which supervision the operator asked for, and what it was given. */
@@ -337,34 +336,53 @@ async function superviseCommand(
     return EXIT_INPUT_ERROR;
   }
 
-  // The report's own Jira boundary: the connected project's source connection,
-  // resolved before anything runs so a missing credential is a refusal rather
-  // than an incident. It is absent when the project's configuration could not
-  // be read at all — a report written into a thread nobody can name yet waits
-  // for the recovery agent's own judgment instead.
-  let jira: { http: HttpClient; token: string } | undefined;
-  let jiraIdentity: { siteUrl: string; projectKey: string } | undefined;
-  const sourceConfig = supervision.config?.source as JiraSourceConfig | undefined;
-  if (sourceConfig !== undefined) {
+  /**
+   * The report's own Jira boundary, resolved whenever it is needed rather than
+   * once before anything runs.
+   *
+   * The connected project's configuration is exactly what the recovery agent
+   * may repair, so the connection the incident's comment is written through is
+   * read from the file as it stands at that moment: a report that could not go
+   * into a thread before the repair is written into it after. A configuration
+   * that cannot be read at all is named as this publication's own problem — it
+   * stays outstanding — rather than a reason the supervision refused to start.
+   */
+  const jiraBoundary = async (): Promise<JiraBoundaryTake> => {
+    let config: HarnessConfig;
     try {
-      const token = resolveJiraToken(sourceConfig, process.env);
-      jira = {
-        http: createHttpClient(
-          sourceConfig,
-          token,
-          context.fetch === undefined ? {} : { fetch: context.fetch },
-        ),
-        token,
-      };
-      jiraIdentity = { siteUrl: sourceConfig.siteUrl, projectKey: sourceConfig.projectKey };
+      config = (await loadConfiguration(options.configPath, projectPath)).config;
     } catch (cause) {
-      if (cause instanceof SourceError) {
-        io.err(`error: ${cause.message}`);
-        return EXIT_INPUT_ERROR;
-      }
-      throw cause;
+      return {
+        boundary: {
+          kind: 'unreadable',
+          problem: `the connected project's configuration could not be read: ${messageOf(cause)}`,
+        },
+        identity: null,
+      };
     }
-  }
+    const source = config.source as JiraSourceConfig | undefined;
+    if (source === undefined) {
+      return { boundary: { kind: 'none' }, identity: null };
+    }
+    const identity = { siteUrl: source.siteUrl, projectKey: source.projectKey };
+    try {
+      const token = resolveJiraToken(source, process.env);
+      return {
+        boundary: {
+          kind: 'jira',
+          http: createHttpClient(
+            source,
+            token,
+            context.fetch === undefined ? {} : { fetch: context.fetch },
+          ),
+          token,
+        },
+        identity,
+      };
+    } catch (cause) {
+      return { boundary: { kind: 'unreadable', problem: messageOf(cause) }, identity };
+    }
+  };
 
   const stop = new AbortController();
   const pane = createActivityDisplay(io);
@@ -413,13 +431,12 @@ async function superviseCommand(
             pane.endInvocation();
           },
         }),
-      reporter:
-        substitute.reporter ??
-        createIncidentReporter({
-          ...(jira === undefined ? {} : { jira }),
-          notification: recovery.notifications ?? null,
-          logsDir: (incident: IncidentRecord) => incidentDir(root, incident.id),
-          cwd: workDir,
+        reporter:
+          substitute.reporter ??
+          createIncidentReporter({
+            notification: recovery.notifications ?? null,
+            logsDir: (incident: IncidentRecord) => incidentDir(root, incident.id),
+            cwd: workDir,
           now: () => new Date(),
         }),
       entry: substitute.entry ?? parts.entry,
@@ -456,11 +473,10 @@ async function superviseCommand(
       recovery,
       recoveryTurnTimeoutMs: recoveryTimeoutMs(supervision),
       io: { out: activeIo.out, err: activeIo.err },
-      stop: stop.signal,
-      now: () => new Date(),
-      ...(jira === undefined ? {} : { jira }),
-      ...(jiraIdentity === undefined ? {} : { jiraIdentity }),
-      recoveryTurn: composed.recoveryTurn,
+        stop: stop.signal,
+        now: () => new Date(),
+        jiraBoundary,
+        recoveryTurn: composed.recoveryTurn,
       reporter: composed.reporter,
       worker: composed.worker,
       isAlive: composed.isAlive,

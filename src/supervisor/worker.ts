@@ -55,26 +55,26 @@ export interface WorkerRequest {
   readonly cwd: string;
   /** The operator's stop request; an interrupt of the supervisor itself. */
   readonly stop: AbortSignal;
-    /** Where the supervisor's own lines about the worker go. */
-    readonly onLine?: (text: string) => void;
-    /**
-     * The PID of the process that was really started, as soon as it exists. The
-     * supervisor records it — durably, under the launch token the child was
-     * started with — so a restart can tell that a worker is still running
-     * instead of starting a second one beside it. This is the handshake's other
-     * half: the child waits for exactly that record before it begins any work,
-     * and the call is awaited here. A registration that fails rejects: the
-     * child began nothing, so it is stopped and the failure is let out rather
-     * than rounded into a worker that ran.
-     */
-    readonly onStarted?: (pid: number) => Promise<void> | void;
-    /**
-     * The launch record and token the child was started with, when it is a
-     * supervised worker: the child waits until that record names its PID, and
-     * the registration above is what writes it (`supervisor/launch.ts`).
-     */
-    readonly launch?: { readonly file: string; readonly token: string } | undefined;
-  }
+  /** Where the supervisor's own lines about the worker go. */
+  readonly onLine?: (text: string) => void;
+  /**
+   * The PID of the process that was really started, as soon as it exists. The
+   * supervisor records it — durably, under the launch token the child was
+   * started with — so a restart can tell that a worker is still running
+   * instead of starting a second one beside it. This is the handshake's other
+   * half: the child waits for exactly that record before it begins any work,
+   * and the call is awaited here. A registration that fails rejects: the
+   * child began nothing, so it is stopped and the failure is let out rather
+   * than rounded into a worker that ran.
+   */
+  readonly onStarted?: (pid: number) => Promise<void> | void;
+  /**
+   * The launch record and token the child was started with, when it is a
+   * supervised worker: the child waits until that record names its PID, and
+   * the registration above is what writes it (`supervisor/launch.ts`).
+   */
+  readonly launch?: { readonly file: string; readonly token: string } | undefined;
+}
 
 /** What one worker invocation left behind. */
 export interface WorkerOutcome {

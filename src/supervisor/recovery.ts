@@ -87,6 +87,12 @@ export interface RecoveryBrief {
   readonly previous: { readonly id: string; readonly path: string } | null;
   /** Where the ticket's own thread lives, when the project has a Jira source. */
   readonly jira: { readonly siteUrl: string; readonly projectKey: string } | null;
+  /**
+   * Why the project's Jira side could not be read, when it could not. The
+   * prompt says so rather than claiming the project has no source: an
+   * unreadable configuration is one of the things this turn is here to repair.
+   */
+  readonly jiraProblem: string | null;
   /** Where the incident's email summary is published, when it is configured. */
   readonly notification: { readonly topicArn: string; readonly email: string } | null;
 }
@@ -176,10 +182,16 @@ export function recoveryPrompt(brief: RecoveryBrief): string {
       `- Connected project checkout: \`${brief.repoPath}\`.`,
       `- Harness configuration: \`${brief.configPath}\`; project configuration: \`${brief.projectConfigPath}\`.`,
       `- This incident: \`${brief.incidentPath}\`, with its record and this turn's directory \`${brief.dir}\`.`,
-      brief.jira === null
-        ? '- The project has no Jira source, so no ticket thread belongs to this incident.'
-        : `- Ticket thread: the Jira project \`${brief.jira.projectKey}\` on ${brief.jira.siteUrl}.`,
-      "  Your environment carries the service account's credential, and the same service account's",
+      brief.jira !== null
+        ? `- Ticket thread: the Jira project \`${brief.jira.projectKey}\` on ${brief.jira.siteUrl}.`
+        : brief.jiraProblem !== null
+          ? [
+              `- The connected project's own Jira side could not be read`,
+              `  (${oneLine(brief.jiraProblem)}), so the thread this incident may owe cannot be named yet;`,
+              '  repairing that configuration is part of what this turn is for.',
+            ].join('\n')
+          : '- The project has no Jira source, so no ticket thread belongs to this incident.',
+        "  Your environment carries the service account's credential, and the same service account's",
       '  own actions in the thread are what a later developer or reviewer turn reads.',
       brief.previous === null
         ? '- No earlier incident is recorded for this work, so nothing here follows a recovery.'
@@ -619,7 +631,10 @@ async function recoveryTurn(
     // adopted. The supervisor holds the attempt and stops for reconciliation.
     const detail = shutdown.problem ?? 'no reason was recorded for it';
     const note = `its runtime could not be confirmed stopped (${detail}), so it may still be running`;
-    problem = problem === null ? `the recovery turn's runtime outlived the turn: ${note}.` : `${problem} ${note}.`;
+    problem =
+      problem === null
+        ? `the recovery turn's runtime outlived the turn: ${note}.`
+        : `${problem} ${note}.`;
   }
   if (problem !== null) {
     return { judgment: null, problem, shutdown, dir: request.dir, logPath };

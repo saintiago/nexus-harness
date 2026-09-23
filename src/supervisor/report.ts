@@ -275,8 +275,6 @@ export interface ReportOutcome {
 
 /** Everything one incident reporter needs to publish. */
 export interface IncidentReporterParts {
-  /** The Jira boundary, when the connected project has a source to write to. */
-  readonly jira?: { readonly http: HttpClient; readonly token: string } | undefined;
   /** Where the email summary goes, when the policy configures it. */
   readonly notification: RecoveryNotificationConfig | null;
   /**
@@ -290,10 +288,29 @@ export interface IncidentReporterParts {
   readonly runNotification?: typeof runCommand;
 }
 
+/**
+ * Where one incident's comment goes, as the publication that owes it sees the
+ * connected project right now.
+ *
+ * It is read at the moment of publication rather than captured once when the
+ * supervisor started, because a broken project configuration is exactly what
+ * the recovery agent is invoked to repair: the comment a repaired incident owes
+ * has to be written through the connection that repair restored. `unreadable`
+ * is the one state that leaves the comment outstanding — a thread may exist
+ * that nothing can name yet — while `none` is a project that declares no Jira
+ * source at all, where no thread belongs to any incident.
+ */
+export type IncidentJiraBoundary =
+  | { readonly kind: 'jira'; readonly http: HttpClient; readonly token: string }
+  | { readonly kind: 'none' }
+  | { readonly kind: 'unreadable'; readonly problem: string };
+
 /** Publishes one incident's report once, restart-safely. */
 export type IncidentReporter = (request: {
   readonly incident: IncidentRecord;
   readonly stop: AbortSignal;
+  /** The Jira boundary this publication resolves to, as the project stands now. */
+  readonly jira: IncidentJiraBoundary;
   /**
    * Persists what has been recorded so far, called before a publication is
    * attempted and again once it is known to have been attempted. The caller
@@ -339,7 +356,7 @@ export function reportNeedsPublication(
  */
 export function createIncidentReporter(parts: IncidentReporterParts): IncidentReporter {
   const runNotification = parts.runNotification ?? runCommand;
-  return async ({ incident, stop, checkpoint }) => {
+  return async ({ incident, stop, checkpoint, jira }) => {
     const text = incidentReportText(incident, parts.notification);
     let commentId = incident.report.commentId;
     let publishedAt = incident.report.publishedAt;
@@ -357,7 +374,7 @@ export function createIncidentReporter(parts: IncidentReporterParts): IncidentRe
       problem: problems.length === 0 ? null : problems.join(' '),
     });
 
-    if (incident.ticket !== null && parts.jira !== undefined) {
+    if (incident.ticket !== null && jira.kind === 'jira') {
       const key = incident.ticket.key;
       if (commentId === null) {
         // What will be posted is written down before it is posted, with the
@@ -369,7 +386,7 @@ export function createIncidentReporter(parts: IncidentReporterParts): IncidentRe
         // recording its id: look for it in the ticket's own thread first, and
         // adopt the comment that already carries this report's own identity.
         const marker = text.paragraphs[0] ?? '';
-        const found = await alreadyPublished(parts.jira, key, marker, stop).then(
+        const found = await alreadyPublished(jira, key, marker, stop).then(
           (id) => ({ id, problem: null }),
           (cause: unknown) => ({
             id: null,
@@ -389,7 +406,7 @@ export function createIncidentReporter(parts: IncidentReporterParts): IncidentRe
           problems.push('the report was not posted: the supervisor was stopped first');
         } else {
           try {
-            commentId = await postReport(parts.jira, key, text.paragraphs, stop);
+            commentId = await postReport(jira, key, text.paragraphs, stop);
             publishedAt = parts.now().toISOString();
           } catch (cause) {
             problems.push(
@@ -399,7 +416,16 @@ export function createIncidentReporter(parts: IncidentReporterParts): IncidentRe
           }
         }
       }
-    } else if (incident.ticket === null && parts.jira !== undefined) {
+    } else if (incident.ticket !== null && jira.kind === 'unreadable') {
+      // A configuration that cannot be read is not permission to forget the
+      // comment: the incident may owe one, and it stays owed until a thread can
+      // be named and written into.
+      problems.push(
+        `incident ${incident.id} names ${incident.ticket.key}, but the connected project's Jira ` +
+          `connection could not be read (${jira.problem}), so no Jira report was written; it ` +
+          'stays outstanding until one can be.',
+      );
+    } else if (jira.kind === 'jira') {
       problems.push(
         `incident ${incident.id} names no ticket, so no Jira report was written; the recovery ` +
           'agent did not identify which item the stop belonged to',
@@ -464,32 +490,54 @@ export function createIncidentReporter(parts: IncidentReporterParts): IncidentRe
           problem: null,
         };
         await writeDown(reportSoFar());
-        try {
-          const messageId = await sendSummary(
-            runNotification,
-            parts,
-            incident,
-            text.subject,
-            text.text,
-          );
+        const publication = await sendSummary(
+          runNotification,
+          parts,
+          incident,
+          text.subject,
+          text.text,
+        );
+        if (publication.problem === null) {
           notification = {
             topicArn: parts.notification.topicArn,
             email: parts.notification.email,
             state: 'sent',
-            messageId,
+            messageId: publication.messageId,
             problem: null,
           };
-        } catch (cause) {
+        } else if (publication.retryable) {
+          // The publisher never ran, or it ran and refused: the summary
+          // definitely was not sent, so a later invocation may try again.
           notification = {
             topicArn: parts.notification.topicArn,
             email: parts.notification.email,
             state: 'failed',
             messageId: null,
-            problem: messageOf(cause),
+            problem: publication.problem,
           };
           problems.push(
             `the email summary to ${parts.notification.email} could not be published through ` +
-              `${parts.notification.topicArn}: ${messageOf(cause)}`,
+              `${parts.notification.topicArn}: ${publication.problem}`,
+          );
+        } else {
+          // The publisher ran and its ending does not prove the topic refused
+          // anything: the summary may or may not have been sent. It is
+          // recorded as uncertain and never published again automatically,
+          // because a second email for one incident is worse than an
+          // unconfirmed one.
+          const detail =
+            `${publication.problem}; it may or may not have reached the topic, so it is not ` +
+            'sent again automatically — check the topic before resending it by hand';
+          notification = {
+            topicArn: parts.notification.topicArn,
+            email: parts.notification.email,
+            state: 'interrupted',
+            messageId: null,
+            problem: detail,
+          };
+          problems.push(
+            `the email summary to ${parts.notification.email} was left in flight through ` +
+              `${parts.notification.topicArn}: ${detail}`,
           );
         }
       }
@@ -554,11 +602,32 @@ async function postReport(
   return id;
 }
 
+/** What one publication attempt through the topic left behind. */
+interface SummaryPublication {
+  /** The message identity the publisher acknowledged, when it acknowledged one. */
+  readonly messageId: string | null;
+  /**
+   * Whether a later invocation may send the summary again. Only a send that
+   * definitely never happened — a publisher that could not be started, or one
+   * that ran and refused — is retried; an attempt that may have reached the
+   * topic is never repeated automatically.
+   */
+  readonly retryable: boolean;
+  /** Why the summary is not acknowledged as sent, or `null` when it is. */
+  readonly problem: string | null;
+}
+
 /**
- * Publishes one summary through the configured topic and reads the identity the
- * publisher acknowledged from its standard output. A publisher that exited
- * successfully without one is recorded as a refusal rather than assumed
- * delivered.
+ * Publishes one summary through the configured topic and reads what the
+ * publisher's own output says about it.
+ *
+ * The output is read whatever the ending was, not only after a successful exit:
+ * a publisher can send the summary, print the identity the topic gave it, and
+ * then time out, be signalled, or fail to have its log closed — endings that say
+ * nothing about whether the topic accepted the message. An acknowledgement
+ * found there is adopted; a publisher that could not be started at all, or one
+ * that ran and refused, is the only kind of attempt a later invocation may
+ * repeat, because only those prove nothing was sent.
  */
 async function sendSummary(
   runNotification: typeof runCommand,
@@ -566,10 +635,10 @@ async function sendSummary(
   incident: IncidentRecord,
   subject: string,
   text: string,
-): Promise<string | null> {
+): Promise<SummaryPublication> {
   const notification = parts.notification;
   if (notification === null) {
-    return null;
+    return { messageId: null, retryable: false, problem: null };
   }
   // The publication's own evidence lives beside the incident; the directory is
   // created here so a report that runs before anything else wrote it still
@@ -595,18 +664,46 @@ async function sendSummary(
     label,
     timeoutMs: NOTIFICATION_TIMEOUT_MS,
   });
-  if (result.outcome !== 'exited' || result.exitCode !== 0) {
-    throw new Error(
-      `"${notification.publisher.join(' ')}" did not publish the summary (${result.outcome}` +
-        `${result.exitCode === null ? '' : `, exit code ${String(result.exitCode)}`}); its output ` +
-        `is kept beside the incident record`,
-    );
-  }
   // The AWS CLI prints the publish result as JSON; the message identity is what
   // a restart checks before it would ever consider publishing again.
   const stdout = await readFile(result.stdoutPath, 'utf8').catch(() => '');
-  const match = /"MessageId"\s*:\s*"([^"]+)"/.exec(stdout);
-  return match?.[1] ?? null;
+  const acknowledged = /"MessageId"\s*:\s*"([^"]+)"/.exec(stdout)?.[1] ?? null;
+  if (acknowledged !== null) {
+    // The topic gave the publisher an identity, whatever else the process then
+    // did: this summary was published, and it is never published again.
+    return { messageId: acknowledged, retryable: false, problem: null };
+  }
+  if (result.outcome === 'exited' && result.exitCode === 0) {
+    // The publisher reported a successful publish without an identity to quote:
+    // taken at its word, exactly as it always was.
+    return { messageId: null, retryable: false, problem: null };
+  }
+  const how =
+    `"${notification.publisher.join(' ')}" did not publish the summary (${result.outcome}` +
+    `${result.exitCode === null ? '' : `, exit code ${String(result.exitCode)}`})`;
+  if (result.outcome === 'failed-to-launch') {
+    return {
+      messageId: null,
+      retryable: true,
+      problem:
+        `${how}: the publisher never ran, so nothing was sent; its output is kept beside ` +
+        'the incident record',
+    };
+  }
+  if (result.outcome === 'exited') {
+    return {
+      messageId: null,
+      retryable: true,
+      problem:
+        `${how} and acknowledged no message identity, so nothing was sent; its output is ` +
+        'kept beside the incident record',
+    };
+  }
+  return {
+    messageId: null,
+    retryable: false,
+    problem: `${how} and acknowledged no message identity`,
+  };
 }
 
 /** How many publication attempts one incident's log directory may hold. */

@@ -70,13 +70,13 @@ function incidentWith(options: {
           },
           // A concluded incident that returned the queue to work owes the very
           // work the stop interrupted: that is what a repeated stop repeats.
-            sequence: {
-              intent: scope === null ? ('run' as const) : ('ticket' as const),
-              scope,
-              blocker: null,
-              blockerStartedAt: null,
-              blockerSettledAt: null,
-            },
+          sequence: {
+            intent: scope === null ? ('run' as const) : ('ticket' as const),
+            scope,
+            blocker: null,
+            blockerStartedAt: null,
+            blockerSettledAt: null,
+          },
         }
       : {}),
     stops: options.stops.map(([exitCode, signal]) => ({
@@ -156,7 +156,14 @@ describe('the launch handshake a supervised worker waits on', () => {
       'utf8',
     );
     expect(
-      await awaitLaunchRegistration({ file, token: 'token-1', pid: 4242, timeoutMs: 50, sleep, now }),
+      await awaitLaunchRegistration({
+        file,
+        token: 'token-1',
+        pid: 4242,
+        timeoutMs: 50,
+        sleep,
+        now,
+      }),
     ).toContain('never registered it');
 
     await writeFile(
@@ -170,7 +177,14 @@ describe('the launch handshake a supervised worker waits on', () => {
       'utf8',
     );
     expect(
-      await awaitLaunchRegistration({ file, token: 'token-1', pid: 4242, timeoutMs: 50, sleep, now }),
+      await awaitLaunchRegistration({
+        file,
+        token: 'token-1',
+        pid: 4242,
+        timeoutMs: 50,
+        sleep,
+        now,
+      }),
     ).toContain('never registered it');
 
     // The record naming this launch's own process is what the worker waits for.
@@ -185,7 +199,14 @@ describe('the launch handshake a supervised worker waits on', () => {
       'utf8',
     );
     expect(
-      await awaitLaunchRegistration({ file, token: 'token-1', pid: 4242, timeoutMs: 50, sleep, now }),
+      await awaitLaunchRegistration({
+        file,
+        token: 'token-1',
+        pid: 4242,
+        timeoutMs: 50,
+        sleep,
+        now,
+      }),
     ).toBeNull();
   });
 
@@ -389,6 +410,7 @@ describe('what the recovery turn is told', () => {
       path: 'runs/.supervisor/namespace/incidents/incident-0/incident.json',
     },
     jira: { siteUrl: 'https://site.atlassian.net', projectKey: 'HARN' },
+    jiraProblem: null,
     notification: { topicArn: 'arn:aws:sns:eu-north-1:1:topic', email: 'a@b.example' },
   };
 

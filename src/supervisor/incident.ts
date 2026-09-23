@@ -316,12 +316,12 @@ export function openIncident(
     intent,
     scope,
     maxAttempts,
-      createdAt: at,
-      updatedAt: at,
-      resumedAt: null,
-      stage: 'open',
-      acknowledgement: null,
-      stops: [],
+    createdAt: at,
+    updatedAt: at,
+    resumedAt: null,
+    stage: 'open',
+    acknowledgement: null,
+    stops: [],
     origin: null,
     attempts: [],
     pending: null,
@@ -384,37 +384,37 @@ export async function readIncident(file: string): Promise<IncidentRecord | null>
         'with stops, attempts and a report). Inspect it by hand.',
     );
   }
-    const record = value as unknown as IncidentRecord;
-    // A record written before these fields existed is one with nothing in
-    // flight and nothing owed: reading it as such keeps a restart's decisions
-    // explicit rather than leaving `undefined` to spread through them.
-    const pending = isRecord(value['pending']) ? (record.pending as PendingRecovery) : null;
-    const sequence = isRecord(value['sequence']) ? (record.sequence as ResumePlan) : null;
-    const acknowledgement = value['acknowledgement'];
-    return {
-      ...record,
-      acknowledgement:
-        isRecord(acknowledgement) && typeof acknowledgement['at'] === 'string'
-          ? {
-              at: acknowledgement['at'],
-              note: typeof acknowledgement['note'] === 'string' ? acknowledgement['note'] : null,
-            }
-          : null,
-      origin: isRecord(value['origin']) ? record.origin : null,
-      pending:
-        pending === null
-          ? null
-          : { ...pending, problem: typeof pending.problem === 'string' ? pending.problem : null },
-      sequence:
-        sequence === null
-          ? null
-          : {
-              ...sequence,
-              blockerSettledAt:
-                typeof sequence.blockerSettledAt === 'string' ? sequence.blockerSettledAt : null,
-            },
-    };
-  }
+  const record = value as unknown as IncidentRecord;
+  // A record written before these fields existed is one with nothing in
+  // flight and nothing owed: reading it as such keeps a restart's decisions
+  // explicit rather than leaving `undefined` to spread through them.
+  const pending = isRecord(value['pending']) ? (record.pending as PendingRecovery) : null;
+  const sequence = isRecord(value['sequence']) ? (record.sequence as ResumePlan) : null;
+  const acknowledgement = value['acknowledgement'];
+  return {
+    ...record,
+    acknowledgement:
+      isRecord(acknowledgement) && typeof acknowledgement['at'] === 'string'
+        ? {
+            at: acknowledgement['at'],
+            note: typeof acknowledgement['note'] === 'string' ? acknowledgement['note'] : null,
+          }
+        : null,
+    origin: isRecord(value['origin']) ? record.origin : null,
+    pending:
+      pending === null
+        ? null
+        : { ...pending, problem: typeof pending.problem === 'string' ? pending.problem : null },
+    sequence:
+      sequence === null
+        ? null
+        : {
+            ...sequence,
+            blockerSettledAt:
+              typeof sequence.blockerSettledAt === 'string' ? sequence.blockerSettledAt : null,
+          },
+  };
+}
 
 /** Writes one incident record atomically, so a reader never sees half of one. */
 export async function writeIncident(file: string, incident: IncidentRecord): Promise<void> {
@@ -505,18 +505,18 @@ export async function readCurrentIncident(root: string): Promise<CurrentIncident
         'absence. Inspect it by hand.',
     );
   }
-    const workerPid = value['workerPid'];
-    const launch = value['launch'];
-    return {
-      version: 1,
-      id: typeof value['id'] === 'string' ? value['id'] : null,
-      workerPid: typeof workerPid === 'number' && Number.isInteger(workerPid) ? workerPid : null,
-      launch:
-        isRecord(launch) && typeof launch['token'] === 'string' && typeof launch['at'] === 'string'
-          ? { token: launch['token'], at: launch['at'] }
-          : null,
-    };
-  }
+  const workerPid = value['workerPid'];
+  const launch = value['launch'];
+  return {
+    version: 1,
+    id: typeof value['id'] === 'string' ? value['id'] : null,
+    workerPid: typeof workerPid === 'number' && Number.isInteger(workerPid) ? workerPid : null,
+    launch:
+      isRecord(launch) && typeof launch['token'] === 'string' && typeof launch['at'] === 'string'
+        ? { token: launch['token'], at: launch['at'] }
+        : null,
+  };
+}
 
 /**
  * Whether a resumed worker stopped again with the very failure the recovery it

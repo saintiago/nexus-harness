@@ -182,4 +182,3 @@ export function launchEnvironment(request: {
     [LAUNCH_TOKEN_ENV]: request.token,
   };
 }
-
