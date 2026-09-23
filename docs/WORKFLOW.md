@@ -1358,6 +1358,18 @@ watch` run `queue run` and `queue watch`. The three commands refuse a configurat
 compose a queue, and one that carries no `recovery` policy or no `recovery.notifications`: an
 incident that could be recovered but not reported is not a supervised run.
 
+The parent has an entry point of its own, so it can still start when the harness it supervises
+cannot: `<installation>/dist/cli/supervise.js` takes exactly the arguments above (`supervise run …`
+started through `dist/cli.js` dispatches to the same command). That entry loads the supervisor, the
+harness configuration it is started with, and the display — and none of the ordinary commands — so
+a broken queue or run module is a stop for the recovery agent to repair rather than a reason the
+parent never starts. The worker it starts is the ordinary CLI beside it (`dist/cli.js`).
+
+A connected project's configuration is read as far as it can be. A readable one that composes no
+queue is refused before anything claims, exactly as before; one that cannot be read at all does not
+stop the supervision, because that is a state the recovery agent exists to repair: the supervisor
+starts, names the problem, and supervises a worker that will stop on it.
+
 ### Fields
 
 `recovery` is a Nexus-wide harness field; a project configuration that carries one is refused with
@@ -1391,41 +1403,97 @@ commands change no timeout.
 ### What the supervisor keeps, and what a restart reads
 
 ```text
-<workDir>/.supervisor/<namespace>/          # <namespace>: the project lock namespace of §1
+<workDir>/.supervisor/<supervision-id>/     # a hash of the checkout and the harness configuration
   owner.json                                # the live supervisor: pid, token, intent, checkout
   current.json                              # the incident being carried, and the worker's pid
   incidents/<incident-id>/
-    incident.json                           # stops, attempts, conclusion, resumption, report ids
+    incident.json                           # stops, origin, attempts, pending attempt, resume plan,
+                                            # conclusion, resumption, report ids and states
     attempt-1/input.md, recovery.log, outcome.json
     recovery-notification.stdout.log, recovery-notification.stderr.log
 ```
 
-One live owner refuses a second supervisor for the same connected project and `workDir`; a record
-whose process is gone is adopted, so a restart continues the incident instead of starting a second
-worker; and a recorded worker PID that is still alive refuses a supervisor that would put a second
-worker beside it. Activating the supervisor beside a raw `queue` consumer that is really running is
-refused with the intake lock and its owner named — stop that consumer first. A lock is never broken
-automatically, here included.
+`<supervision-id>` names the supervision itself: one connected checkout and one harness
+configuration, never the project's own queue identity. The state has to stay readable while a
+broken project configuration is exactly what is being repaired, so it cannot be keyed by that
+configuration; the connected project's own lock namespace of §1 is what the activation check reads
+instead (and, until its configuration can be read, there is no lock to read).
+
+The owner record is the lock: it is created exclusively, so one live owner refuses a second
+supervisor for the same supervision, and two simultaneous starts cannot both take it. A record
+whose process is gone is adopted, which is what makes a restart continue the incident instead of
+starting a second worker; and a recorded worker PID — or a recovery turn's own runtime PID — that
+is still alive refuses a supervisor that would put a second one beside it. Activating the
+supervisor beside a raw `queue` consumer that is really running is refused with the intake lock and
+its owner named — stop that consumer first. A lock is never broken automatically, here included.
+
+### What a restart reconciles
+
+The records above are the state; the pointer file only says which worker is running right now.
+Before a restarted supervisor starts anything, it reads every incident record back and:
+
+- **reconciles an attempt that was left in flight.** An attempt is written down — with its turn's
+  directory and the PID of the runtime it started — before that turn is launched, so a restart
+  never launches the same attempt twice: a turn whose runtime is still running is refused, and one
+  whose runtime is gone is adopted whole from the `outcome.json` it left, or recorded as an
+  interrupted attempt that produced no judgment. Either way it counts toward `maxAttempts`.
+- **finishes a report that is unfinished.** Every concluded incident whose comment or email summary
+  is still outstanding is published again, wherever it sits, however many times the pointer has
+  moved since: a failed publication is never lost, and never repeats the recovery that succeeded.
+- **carries out the work the conclusions still owe.** A `repaired` conclusion owes the interrupted
+  work; a `blocked` conclusion owes the blocker first, as its own scoped `queue run --ticket <KEY>`
+  worker whatever intent the incident began with, and then the interrupted work. The resumption is
+  recorded when the interrupted work really starts again, and never before.
 
 ### What an incident records, and what it publishes
 
-One incident is one stopped episode. It keeps the stop evidence (the exit code or signal, and the
-failure's identity), one entry per recovery attempt with the agent's own `outcome.json` behind it,
-the conclusion (`repaired`, `blocked`, or a request for human help), the moment the queue really
-resumed, and the publication identities of its one report. The report is written into the ticket's
-own thread by the same service account that wrote the ticket — so both the next developer turn and
-the next reviewer turn read it in the shared history of §9 — and one summary is published through
-the configured topic. A restart finishes what an interrupted invocation left: it never posts an
-acknowledged comment twice, looks for an interrupted one in the thread before sending another, and
-never publishes an acknowledged summary again. A failed publication is recorded as the incident's
-reporting problem; it never repeats a recovery that succeeded.
+One incident is one stopped episode. It keeps the stop evidence (the exit code or signal, the
+failure's identity, and the incident whose resumed work the stopped worker was carrying out), one
+entry per recovery attempt with the agent's own `outcome.json` behind it, the attempt that is in
+flight while it is in flight, the conclusion (`repaired`, `blocked`, or a request for human help),
+the ticket the recovery identified, the work the conclusion still owes, the moment the queue
+really resumed, and the publication identities of its one report.
+
+The report is written into the ticket's own thread by the same service account that wrote the
+ticket — so both the next developer turn and the next reviewer turn read it in the shared history
+of §9, as a complete incident record beside that account's own comments — and one summary is
+published through the configured topic. An unscoped `run`/`watch` stop has no ticket of its own, so
+the recovery turn names the item it investigated in its judgment (`"ticket": { "key": … }`) and the
+report goes into that thread; a wrong ticket is worse than none, so a judgment that names one this
+harness cannot address produces no judgment at all.
+
+A restart finishes what an interrupted invocation left, and never publishes anything twice. The
+comment is looked for in the ticket's thread by its own identity before another is posted, and the
+email summary is recorded as `pending` **before** the publisher runs: a restart that finds
+`pending` reads the publisher's own output — the acknowledgement the CLI printed is the evidence —
+and adopts it when it is there. When it is not, the summary is recorded as `interrupted` and a
+person checks the topic, because a second email for one incident is worse than an unconfirmed one.
+Only a publication that really failed is retried, and retrying a publication never repeats the
+recovery that came before it. A publication problem is recorded on the incident and named to the
+operator; it never turns a successful recovery into a failed one.
+
+### When a failure is the same failure
+
+An exit code is conventional: `queue run` exits `1` for a stopped ticket, a broken configuration,
+and an unrelated failure alike, and an unscoped worker could be failing on any ticket at all. So
+the one repetition the supervisor does not investigate is read from evidence, not from the ending:
+the previous incident concluded `repaired` or `blocked`, the work that stopped again is exactly the
+work that recovery resumed — a ticket the supervisor can name — the worker left no new run evidence
+behind, and the ending is the same one. Only then does the supervisor conclude that another attempt
+would spend the same work for the same result, publish the incident, and ask for a person.
+
+Everything else is investigated, including a repeated unscoped failure. What bounds that case is
+the same evidence over a chain: each incident records whether the worker it resumed left any run
+evidence behind, so a queue that stops `maxAttempts` times in a row without doing anything at all —
+every one of those stops already investigated by a recovery turn — ends in an actionable request
+for human help instead of another attempt.
 
 ### Exits
 
 | Exit | Meaning |
 | --- | --- |
 | `0` | The worker settled, or a watch-mode worker ended cleanly. |
-| `1` | An incident needs a person — an unrecoverable judgment, an exhausted bound, or the same failure returned unchanged after a repair — or an input, configuration, or publication error stopped the supervision. The incident record names what to fix. |
+| `1` | An incident needs a person — an unrecoverable judgment, an exhausted bound, a failure returned unchanged after a repair, or a queue that stopped repeatedly without doing any work at all — or an input, configuration, or publication error stopped the supervision. The incident record names what to fix. |
 | `2` | Usage error: unknown intent or option, a missing `--config`/`--repo`, or `supervise ticket` without a key. |
 | `130` | The operator interrupted the supervision. The worker was stopped, the evidence was kept, and nothing was recovered. |
 

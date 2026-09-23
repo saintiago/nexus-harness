@@ -18,6 +18,12 @@ judgment; the ordinary loop keeps the required behavior — ownership, repair, e
 delivery and completion — and gains no branch for it. Recovery's permissions are deliberately
 wider than a coding or reviewer turn's, and they are separate from both.
 
+The supervisor has an entry point of its own (`src/cli/supervise.ts`, built to `dist/cli/supervise.js`)
+and keeps its state under a namespace derived from the checkout and the harness configuration it was
+started with. Both are the same decision: the parent that repairs a broken Nexus must not be loaded
+through it, and must not be keyed by the connected project's configuration, which may be the very
+thing that is broken.
+
 ## Component boundaries
 
 Task intake supplies work and context. Workspace management provides an owned working copy.

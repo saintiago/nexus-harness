@@ -27,10 +27,17 @@ import {
   processIsAlive,
 } from '../../src/supervisor/owner.js';
 import { createIncidentReporter } from '../../src/supervisor/report.js';
+import { createRecoveryTurn } from '../../src/supervisor/recovery.js';
+import type { RecoveryBrief } from '../../src/supervisor/recovery.js';
 import { runNexusWorker, WORKER_STOP_GRACE_MS } from '../../src/supervisor/worker.js';
 import { createHttpClient } from '../../src/sources/jira/http.js';
 import { intakeLockPath } from '../../src/sources/receipts.js';
-import { serviceFetch, startLocalService } from './integration-support.js';
+import {
+  installStandIn,
+  serviceFetch,
+  startLocalService,
+  withPathPrefix,
+} from './integration-support.js';
 import { JIRA_SOURCE_DEFAULTS } from '../../src/config/schema.js';
 
 /** The Jira connection the report is written through, as the schema defaults it. */
@@ -570,6 +577,89 @@ describe('the incident report’s publication boundaries', () => {
     // still the only one.
     expect((await readdir(logsDir)).filter((name) => name.endsWith('.stdout.log'))).toHaveLength(1);
   }, 30_000);
+});
+
+describe('the recovery turn’s own launch', () => {
+  /** One brief, as the supervisor writes it for a fresh incident. */
+  function briefFor(dir: string): RecoveryBrief {
+    return {
+      incidentId: 'incident-1',
+      incidentPath: path.join(path.dirname(dir), 'incident.json'),
+      dir,
+      installRoot: 'C:/nexus',
+      workDir: 'C:/runs',
+      repoPath: 'C:/target',
+      configPath: 'C:/nexus.config.json',
+      projectConfigPath: 'C:/target/nexus.project.json',
+      intent: 'ticket',
+      scope: 'HARN-51',
+      attempt: 1,
+      maxAttempts: 2,
+      timeoutMinutes: 60,
+      stop: {
+        at: '2026-09-23T00:01:00.000Z',
+        intent: 'ticket',
+        scope: 'HARN-51',
+        exitCode: null,
+        signal: 'SIGKILL',
+        signature: 'signature',
+      },
+      earlier: [],
+      previous: null,
+      jira: { siteUrl: 'https://site.atlassian.com', projectKey: 'HARN' },
+      notification: null,
+    };
+  }
+
+  it('creates the attempt directory it was given, runs the configured launch there and reads its judgment', async () => {
+    const directory = await tempDir();
+    // The turn's own directory does not exist yet: a fresh incident writes one
+    // attempt directory per attempt, and the launch has to make it before it
+    // can write the prompt the runtime reads.
+    const dir = path.join(directory, 'incidents', 'incident-1', 'attempt-1');
+    const standIn = await installStandIn(
+      'codex',
+      [
+        "import { writeFileSync } from 'node:fs';",
+        "import path from 'node:path';",
+        "let prompt = '';",
+        "process.stdin.setEncoding('utf8');",
+        "process.stdin.on('data', (chunk) => { prompt += chunk; });",
+        "process.stdin.on('end', () => {",
+        '  writeFileSync(',
+        "    path.join(process.cwd(), 'outcome.json'),",
+        '    JSON.stringify({',
+        "      status: 'repaired',",
+        "      summary: 'the stand-in runtime repaired the situation',",
+        "      cause: 'a half-written run',",
+        "      resolution: 'the workspace was returned to its recorded branch',",
+        '      preserved: [],',
+        '      resume: null,',
+        "      ticket: { key: 'HARN-51' },",
+        '    }),',
+        '  );',
+        "  process.stdout.write(JSON.stringify({ type: 'turn.completed' }) + '\\n');",
+        '  process.exit(0);',
+        '});',
+      ].join('\n'),
+    );
+    const turn = createRecoveryTurn({
+      selection: { runtime: 'codex', command: ['codex'] },
+      environment: process.env,
+    });
+    const result = await withPathPrefix(standIn.bin, () =>
+      turn({ brief: briefFor(dir), dir, stop: new AbortController().signal }),
+    );
+
+    expect(result.judgment?.status).toBe('repaired');
+    expect(result.judgment?.ticket?.key).toBe('HARN-51');
+    expect(result.problem).toBeNull();
+    // The prompt really was written into the directory the supervisor named,
+    // and the turn's own log lives beside it.
+    expect(await readFile(path.join(dir, 'input.md'), 'utf8')).toContain('incident-1');
+    expect(result.logPath).toBe(path.join(dir, 'recovery.log'));
+    expect(await readFile(result.logPath ?? '', 'utf8')).toContain('turn.completed');
+  }, 60_000);
 });
 
 describe('a project configuration that names the supervisable queue', () => {

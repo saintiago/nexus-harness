@@ -1118,24 +1118,53 @@ The recovery launch is the `nexus-recovery` profile
 unattended operational access: the output directory's workspaces and processes, GitHub through the
 operator's own credentials, the ticket thread through the service account credential the
 supervisor's environment carries, and the notification topic above. A `supervise` invocation
-refuses a configuration that declares no `recovery` policy, no notification policy, or no
-composable queue, before it claims anything.
+refuses a configuration that declares no `recovery` policy, no notification policy, or a readable
+project configuration that composes no queue, before it claims anything. A project configuration
+that cannot be read at all does not stop it: the supervisor starts, names the problem, and
+supervises a worker that will stop on it, which is the state the recovery agent is there to repair.
+
+The parent can also be started on its own, which is what to reach for when the ordinary CLI will
+not load:
+
+```powershell
+node dist/cli/supervise.js run --repo ../target-project --config nexus.config.json
+```
+
+That entry point takes exactly the arguments above and loads the supervisor, the harness
+configuration and the display — no ordinary command, and no worker module — so a broken queue or
+run module is repaired by the recovery agent instead of taking the parent down with it. The worker
+it starts is the ordinary CLI beside it (`dist/cli.js`).
 
 The supervisor keeps only:
 
 ```text
-<workDir>/.supervisor/<namespace>/
-  owner.json                        # the live supervisor; a live owner refuses a second one
+<workDir>/.supervisor/<supervision-id>/     # a hash of the checkout and the harness configuration
+  owner.json                        # the live supervisor, created exclusively; a second start is refused
   current.json                      # the incident being carried, and the worker's PID
-  incidents/<incident-id>/incident.json
+  incidents/<incident-id>/incident.json   # stops, origin, attempts, pending attempt, resume plan,
+                                          # conclusion, resumption, report ids and states
   incidents/<incident-id>/attempt-1/{input.md,recovery.log,outcome.json}
+  incidents/<incident-id>/recovery-notification*.{stdout,stderr}.log
 ```
 
-One supervisor runs per connected project and `workDir`; a restart adopts the incident its
-predecessor left instead of starting a second worker, and a recorded worker PID that is still alive
-refuses a supervisor that would put a second worker beside it. Starting the supervisor while a raw
-`queue` consumer still runs is refused with the intake lock and its owner named — stop that
-consumer first; a lock is never broken automatically.
+One supervisor runs per supervision — one checkout and one harness configuration — and the owner
+record is created exclusively, so two simultaneous starts cannot both own it. A restart adopts the
+incident its predecessor left instead of starting a second worker; a recorded worker PID, or a
+recovery turn's runtime PID, that is still alive refuses a supervisor that would put a second one
+beside it; and an attempt that was left in flight is reconciled from its own `outcome.json` rather
+than launched again, counted toward `recovery.maxAttempts` either way. Starting the supervisor
+while a raw `queue` consumer still runs is refused with the intake lock and its owner named — stop
+that consumer first; a lock is never broken automatically.
+
+An incident's report survives a restart without repeating itself. The Jira comment is looked for in
+the ticket's thread before another is posted, and the email summary is written down as `pending`
+before the publisher runs, so a restart can tell an unattempted send from one that was in flight:
+the publisher's own output is read back, an acknowledged `MessageId` is adopted, and a send that was
+never acknowledged is recorded as `interrupted` and left to a person to check rather than sent
+again. A publication that failed is retried by the next invocation without repeating the recovery
+that succeeded, wherever the incident record sits. A blocker a judgment ranked ahead of the
+interrupted ticket really runs first — as its own scoped `queue run --ticket <KEY>` worker — and the
+resumption is recorded when the interrupted work is really started again.
 
 Exit codes are the queue's own with the supervision added: `0` when the worker settled, `1` when an
 incident needs a person or an input, configuration, or publication error stopped the supervision,

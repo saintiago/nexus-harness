@@ -676,6 +676,18 @@ worker beside it. Activation beside a raw queue consumer that is really running 
 lock and its owner named. Nothing here breaks, adopts or deletes a lock: the queue's own
 exclusivity rules are untouched.
 
+Ownership is the exclusive creation of that record, so two starts that both read an absent record
+cannot both become the owner; a stale record is renamed away before the record is created again, so
+simultaneous takeovers still leave exactly one owner. The supervisor's own state is keyed by the
+supervision itself — the connected checkout and the harness configuration it was started with —
+never by the connected project's configuration, which has to stay repairable while it is broken;
+the project's own lock namespace is what the activation check reads while that configuration can be
+read. The parent has an entry point of its own (`dist/cli/supervise.js`) that loads no ordinary
+command and no worker module, so a broken queue, run, review or source command does not stop the
+parent that has to repair it; a project configuration that cannot be read at all starts the
+supervision rather than refusing it, while a readable configuration that composes no queue is still
+refused before anything claims.
+
 **How an ending is read.** A plain zero exit is the worker's own settled result. Any other ending
 that arrives under the operator's own interrupt is the operator's stop: the supervision stays
 stopped, recovers nothing, keeps the evidence where it is, and exits with the conventional
@@ -692,9 +704,12 @@ ticket's thread through the service account credential, GitHub through the opera
 credentials, and the configured notification topic. It writes one judgment file: `repaired`,
 `blocked` or `unrecoverable`, with the cause, the committed and uncommitted work it preserved,
 what it repaired or reconciled, the work that resumes, an optional blocker ranked ahead of the
-interrupted ticket, and — when it could not repair the situation — exactly what a person must do.
-A judgment field that runs past its bound is refused rather than cut down, and the attempt is
-recorded as one that produced no judgment.
+interrupted ticket, the ticket the stop belonged to, and — when it could not repair the situation —
+exactly what a person must do. A judgment field that runs past its bound is refused rather than cut
+down, and the attempt is recorded as one that produced no judgment; so is a judgment that names a
+ticket this harness cannot address, because a report written against the wrong item is worse than
+none. The ticket a judgment names is what an unscoped stop's report is written into, which is how
+an ordinary `run` or `watch` incident gets a thread at all.
 
 **A recovery turn's permissions.** It is the one turn that may repair the Nexus installation
 itself, independently of the broken runtime, and it runs the installation's own configured checks
@@ -706,16 +721,35 @@ or a verification.
 
 **Bounds.** One incident spends at most `recovery.maxAttempts` recovery turns, and a resumed worker
 that stops again with the very failure its recovery reported repaired ends in an actionable
-request for human help instead of another attempt. A recovery turn is bounded by the configured
-`taskTimeoutMinutes`, unchanged: no new timeout is introduced for it. An exhausted bound, an
-unchanged repetition, an `unrecoverable` judgment and an attempt that produced no judgment all end
-in the same actionable place — the incident record, the Jira report and the email summary kept,
-and a nonzero exit naming what a person must do.
+request for human help instead of another attempt. That repetition is read from evidence and never
+from an exit code alone: the recovered work must be the work that stopped again, that work must be
+a ticket the supervisor can name, the worker must have left no new run evidence behind, and the
+ending must be the same one. A failure the supervisor cannot read that way — an unscoped one, or a
+different failure on a ticket it cannot tell apart — is investigated like any other, and the
+supervisor bounds that case over the chain it can see: each incident records whether the work it
+resumed left any run evidence behind, and a queue that stops `maxAttempts` times in a row without
+doing any work at all, every one of those stops already investigated, ends in the same request for
+a person. A recovery turn is bounded by the configured `taskTimeoutMinutes`, unchanged: no new
+timeout is introduced for it. An exhausted bound, an unchanged repetition, a barren chain, an
+`unrecoverable` judgment and an attempt that produced no judgment all end in the same actionable
+place — the incident record, the Jira report and the email summary kept, and a nonzero exit naming
+what a person must do.
+
+**An attempt a restart finds in flight.** An attempt is written down before its turn is launched,
+with the directory the turn works in and the PID of the runtime it started, and it is cleared only
+when its result is recorded. A restarted supervisor therefore never launches the same attempt
+twice: a runtime that is still running is a refusal, one that is gone is reconciled against the
+judgment file it left behind — adopted whole when it is there, recorded as an interrupted attempt
+that produced no judgment when it is not — and either way the attempt counts toward the bound,
+because it was really spent.
 
 **Resumption.** A `repaired` or `blocked` conclusion returns the queue to work: the parent starts
 the worker again and records the moment that really happened, so a blocker ranked ahead of the
-interrupted ticket is a decision the incident record names rather than a promise. An incident that
-ended in a request for human help is not resumed: it is reported and the supervision stops.
+interrupted ticket is a decision the parent executes rather than a promise: the blocker runs first
+as its own scoped `queue run --ticket <KEY>` worker, whatever intent the incident began with, and
+the interrupted work runs after it. The resumption is recorded when that interrupted work really
+starts, and never before. An incident that ended in a request for human help is not resumed: it is
+reported and the supervision stops.
 
 **Reporting.** Each incident publishes one concise report into the ticket's own Jira thread,
 written by the same service account that wrote the ticket, so the next developer turn and the next
@@ -723,15 +757,26 @@ reviewer turn both read it in the shared history of §2; and one email summary t
 configured SNS topic to the configured address. Publication survives a restart without repeating
 itself: an acknowledged comment is never posted twice, a comment whose own write was interrupted
 is looked for in the ticket's thread by its own identity before another is sent, and an
-acknowledged summary is never published again. A publication that failed is recorded as the
-incident's reporting problem and is never a reason to repeat a recovery that succeeded.
+acknowledged summary is never published again. The email summary's attempt is written down as
+`pending` before the publisher runs, so a restart distinguishes an unattempted send from one that
+was in flight: the publisher's own output is read back, an acknowledgement found there is adopted,
+and the absence of one is recorded as `interrupted` and never retried automatically, because a
+second email for one incident is worse than an unconfirmed one. A publication that failed is
+recorded as the incident's reporting problem and is never a reason to repeat a recovery that
+succeeded; an unfinished publication stays reachable and is finished by the next invocation
+wherever the incident sits, however many times the pointer has moved since. The complete incident
+— every stop, every attempt with its cause and preserved work, the conclusion and what resumes —
+reaches both roles through the local history of §2, beside the comments the same service account
+made while handling it, as context that is never an approval or a verification.
 
 **Restart and deduplication.** The supervisor's state is one owner record, one current-incident
-pointer, and one record per incident under the connected project's own namespace; nothing survives
-in a database or a service. A restart adopts the incident it finds, spends the attempts that
-record are missing, finishes its report if that is all that is left, and starts a worker again
-only where the record says the queue may resume. An incident record that cannot be read back is
-refused by name rather than treated as an absence.
+pointer, and one record per incident under the supervision's own id; nothing survives in a database
+or a service. A restart adopts the incident it finds, spends the attempts that record is missing,
+finishes its report if that is all that is left, carries out the resumption each conclusion still
+owes, and starts a worker again only where the records say the queue may resume. An incident record
+that cannot be read back is refused by name rather than treated as an absence, and the pointer
+names the worker that is running right now — a worker, or a recovery turn's own runtime, that is
+still alive is refused rather than duplicated.
 
 ## Jira API references
 

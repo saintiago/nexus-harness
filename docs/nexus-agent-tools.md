@@ -263,7 +263,9 @@ The supervised recovery turn of [WORKFLOW.md](WORKFLOW.md) §12 runs under its o
 example selects it as `codex --profile nexus-recovery --model gpt-6-astra -c
 model_reasoning_effort=high`. It is the same native mechanism as the two coding tiers — one layer
 over the operator's own configuration, selected by the launch prefix, installed the same way —
-with two deliberate differences:
+with two deliberate differences. It is launched by the supervisor's own entry point
+(`dist/cli/supervise.js`), which loads no ordinary command, so a broken Nexus can still be repaired
+by this tier:
 
 - **Its tools are wider.** Recovery keeps the three research servers and the GitHub connector, and
   unlike a coding turn it enables that connector's write surface: repairing a broken queue can mean

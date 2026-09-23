@@ -751,6 +751,12 @@ async function handleIncident(
 ): Promise<HandledIncident> {
   let current = known;
   while (current.record.stage === 'open') {
+    if (request.stop.aborted) {
+      // The operator asked the supervision to stop: the incident is left open
+      // where it is, with no attempt spent, and the caller reports the
+      // cancellation rather than a request for human help.
+      break;
+    }
     if (current.record.pending !== null) {
       // A turn an earlier invocation started and never finished recording:
       // reconciled against its own process and its own judgment, and counted
