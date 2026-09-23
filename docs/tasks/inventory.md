@@ -17,8 +17,8 @@ In progress means implementation or review is underway. Pending means work has n
 | [Adapter simplification](adapter-simplification.md) | Verified |
 | [Configuration compatibility](configuration-integration.md) | Verified |
 | [TaskEngine and ExecutionRunner](execution-runner.md) | Verified |
-| [Action artifacts and findings](action-artifacts.md) | In progress |
-| [Task preparation actions](task-preparation.md) | Pending |
+| [Action artifacts and findings](action-artifacts.md) | Verified |
+| [Task preparation actions](task-preparation.md) | In progress |
 | [Development cycle](development-cycle.md) | Pending |
 | [Delivery, review and completion](delivery-review-completion.md) | Pending |
 | [OperatorInterface](operator-interface.md) | Pending |
