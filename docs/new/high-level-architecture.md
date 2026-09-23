@@ -98,6 +98,21 @@ and read task artifacts and prepare the additional instructions/context. AgentRu
 arguments with its configured base/profile instructions and executes the agent. It does not discover
 or read an action request file. Other actions receive only the capabilities they use.
 
+## Simplicity
+
+Use the smallest design that satisfies an explicit requirement or solves a demonstrated problem.
+Every contract field, abstraction, validation rule and persistent record must serve a concrete need.
+Hypothetical failures and possible future extensions alone do not justify additional mechanisms.
+
+Account for the full cost of a design choice: implementation, validation, failure handling, persistence,
+tests, documentation and ongoing maintenance. A small field can create obligations across many components.
+Do not introduce a guarantee and then treat the checks and tests it requires as justification for it.
+Requirements justify mechanisms; mechanisms do not create their own requirements.
+
+Keep specialized guarantees within the component or action that needs them. Shared contracts contain
+only what their consumers require. When a mechanism is unnecessary, remove its dependent validation,
+state and tests as well. Prefer removing the obligation to building machinery around it.
+
 ## Low coupling and high cohesion
 
 Each component owns a focused responsibility, the state that belongs to it and the behavior needed
@@ -174,7 +189,6 @@ paths. A task key is never used directly as a filesystem path.
 ```ts
 type ArtifactRef = {
   path: string;
-  sha256: string;
 };
 
 type Fault = {
@@ -198,10 +212,9 @@ type Shutdown = {
 type Observer<E> = (event: E) => void;
 ```
 
-ArtifactRef identifies an immutable, deliberately exported file. Its producer finishes and hashes
-the file before publishing the reference; the receiver verifies identity and content before use.
-It is not permission to traverse the producer's private storage. Missing or altered artifacts are
-explicit faults. Mutable workspace locations are separate values and are never ArtifactRefs.
+ArtifactRef identifies an artifact file by its absolute path. Content format and any required
+verification belong to the owning artifact contract. The reference itself provides no integrity
+or immutability guarantee.
 
 Expected failures are returned as data. An implementation exception at a component boundary becomes
 an internal fault with retained evidence; it does not imply that effects were rolled back. Fault
