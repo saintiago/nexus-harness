@@ -56,13 +56,13 @@ coverage at the appropriate layer; discard duplication and assertions tied only 
 The active suites live in the directory of the layer that owns their behavior, and
 `vitest.config.ts` runs each directory as its own project: `tests/unit/` decides behavior from
 explicit inputs and realizes no effect — configuration and input validation, queue and run state
-transitions, repair and escalation decisions, review and completion decisions, and
-conversation-history rules; `tests/boundary/` verifies this host's real contracts — processes,
-Git and filesystem behavior, and the Jira and GitHub adapters against controlled services and
-stand-in programs; and `tests/workflow/` proves the four assembled connections above. A suite
-outside every layer, and a layer with no suite, fail `tests/unit/layers.test.ts`: validation has
-no empty-suite acceptance, and a layer that stops being discovered stops being a failure rather
-than passing.
+transitions, repair, escalation and baseline-diagnosis decisions, review, watch and completion
+decisions, and conversation-history rules; `tests/boundary/` verifies this host's real contracts —
+processes, Git and filesystem behavior, the intake receipts and lock, the pre-delivery diagnosis's
+reviewer turn, and the Jira and GitHub adapters against controlled services and stand-in programs;
+and `tests/workflow/` proves the four assembled connections above. A suite outside every layer, and
+a layer with no suite, fail `tests/unit/layers.test.ts`: validation has no empty-suite acceptance,
+and a layer that stops being discovered stops being a failure rather than passing.
 
 The archived suites whose coverage those layers now carry were removed as their coverage was
 rebuilt. What stays in `tests_old/` is reference material: the whole-command surfaces those
@@ -72,9 +72,15 @@ to the active suite that carries its required behavior — the coding-runtime ad
 stream, the configured setup/check round and the run timeline, the Jira connector's queue, claim,
 pointer, publication and recovery behavior, source readiness, the review scan's GitHub reads, the
 completion path's GitHub commands, the final report, the command line's own surface, the run's
-repair, records and history, and the serial queue's own decisions — and names the surfaces no
-active suite reaches yet: the terminal presentation, the source coordinator's receipts, claims and
-publication, the pre-delivery baseline diagnosis pass, and the review watch's timing.
+repair, records and history, and the serial queue's own decisions. Every required behavior the map
+names is carried by an active suite: the terminal presentation is
+`tests/unit/activity-display.test.ts`; the source coordinator's receipts, claims and publication
+are `tests/boundary/source-coordinator.test.ts`; the pre-delivery baseline diagnosis is
+`tests/boundary/baseline-review.test.ts` for the one reviewer turn's own record and
+`tests/unit/baseline-diagnosis.test.ts` for what the diagnosis publishes, resumes and refuses; and
+the review watch's timing is `tests/unit/reviews.test.ts`. No archived file is the only record of
+a required behavior; what the archive keeps is the whole-command surfaces and the shared fixtures
+those behaviors are assembled into, which the active layers prove at their own layer.
 
 Cache deterministic unit results only when all their inputs are declared. Checks of real process
 or host behavior run fresh — the boundary and workflow layers run on every validation. Maintain

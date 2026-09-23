@@ -65,6 +65,7 @@ function screenRows(chunks: readonly string[]): readonly string[] {
       index += 1;
       continue;
     }
+    // eslint-disable-next-line no-control-regex
     const up = /^\u001b\[(\d+)A/.exec(text.slice(index));
     if (up !== null) {
       cursor = Math.max(0, cursor - Number(up[1]));
