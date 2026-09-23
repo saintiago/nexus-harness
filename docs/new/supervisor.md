@@ -90,15 +90,13 @@ These are constructor-injected dependencies. The work port's parent-side process
 transport and process handles; this component decides when it is invoked and cancelled. The bridge
 must return observed shutdown, not trust a child's claim that cleanup succeeded.
 
-Follow the [configuration startup contract](configuration.md#startup-and-restart). projectConfigPath
-is an absolute filepath, retained as execution intent and forwarded to the Nexus worker on each
-launch. The worker entry point reads that file and its Nexus configuration before constructing the
-TaskEngine provider. The path is a process startup parameter, not configuration for ExecutionRunner.
+The [worker startup contract](high-level-architecture.md#configuration-and-startup) accepts
+projectConfigPath as an absolute filepath. Retain it as execution intent and pass it on each launch.
 
 For recovery, use the [workspace data contract](workspace.md#layout-and-reference) and construct
 AdditionalContext from the incident and available evidence. Pass the reference and context directly
-to AgentRuntime.run; do not ask the runtime to discover an incident request file. A recovery invocation
-may use an operational workspace when preparation of the task's workspace itself failed.
+to AgentRuntime.run. If the task workspace is unavailable, supply a separate operational workspace
+reference for recovery.
 
 Map finite mode to queue selection with return-on-empty, watch to queue selection with wait-on-empty,
 single-ticket to the exact named selection, and single-task to the supplied file.
@@ -111,19 +109,14 @@ After abnormal termination, obtain the last durable public evidence through `ins
 verified completions from results and inspection by source and stable task identity, so lost or
 repeated progress events cannot lose or double-count completed tasks.
 
-## Configuration and composition
+### Construction settings
 
-Application startup binds the ports and supplies lifecycle, storage, recovery and notification
-settings from Nexus configuration. They are available before the worker starts, including when worker
-startup fails. The maximum recovery attempts per incident is a required positive integer.
-The initial recovery profile is `nexus-recovery`, configured as `gpt-6-astra` with high reasoning effort.
-Credentials are resolved by the bound providers, not copied into settings or execution records.
+Construction requires bound ports and lifecycle, storage, recovery and notification settings conforming
+to [Nexus configuration](configuration.md#nexus-configuration). These inputs are available before the
+first child launch. Credentials remain references in settings and execution records.
 
-Retain the original project configuration filepath, mode and target across child restarts. Each child
-startup reloads configuration and binds settings for that invocation, allowing an intentional correction
-to take effect. Preserve the recovery allowance and existing workflow checkpoint. A changed workflow
-definition is not silently applied to retained state. Configuration records contain credential
-references rather than values.
+Retain the original project configuration filepath, mode and target across child restarts. Preserve
+the recovery allowance and continuation reference when launching a replacement child.
 
 ## Internal lifecycle
 

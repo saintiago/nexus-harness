@@ -46,15 +46,14 @@ the Nexus worker process, whose startup constructs TaskEngine and its dependenci
 called by task actions for development/review and by Supervisor for recovery. Adapters are modules
 used at external boundaries; there is no adapter registry or additional service implied by this grouping.
 
-Workspace and configuration are data designs, not additional active components. WorkspaceLayout
-defines the directory hierarchy; WorkspaceRef identifies a concrete instance. PrepareWorkspace
-creates directories and the working copy at that reference using the supplied repository settings.
+Workspace and configuration are data designs, not additional active components. Workspace has a
+fixed directory hierarchy; WorkspaceRef identifies a concrete instance.
 
 ## Configuration and startup
 
 Project configuration lives in the target project's root and describes repository source/base,
 preparation and CI/check commands, task source and delivery requirements. Nexus configuration owns
-workflow definitions, workspace layout/storage, profiles, runtime instructions and operational policy.
+workflow definitions, workspace storage, profiles, runtime instructions and operational policy.
 
 ```text
 Supervisor(projectConfigPath)
@@ -67,6 +66,27 @@ Supervisor(projectConfigPath)
 Supervisor retains and forwards the project filepath on restart. Its own recovery configuration is
 available before child startup. The child loads both files; each component receives only the settings
 it needs. ExecutionRunner does not load project configuration or interpret workspace layout.
+
+Worker startup validates both configurations and the selected workflow before constructing components.
+Relative project paths resolve against the project configuration directory; relative Nexus paths
+resolve against the Nexus configuration directory. Each invocation receives immutable resolved settings.
+Restart reloads settings while preserving the workflow definition associated with an existing checkpoint.
+
+Startup binds dependencies as follows:
+
+| Consumer | Inputs |
+| --- | --- |
+| ExecutionRunner | Nexus-selected workflow, bound actions and checkpoint location |
+| PrepareWorkspace | WorkspaceRef and project repository settings |
+| Verify | Project CI/check definitions and WorkspaceRef |
+| AgentRuntime | Nexus profiles, instructions, tool/provider settings and execution controls |
+| Agent-backed actions | AgentRuntime capability, profile selection and WorkspaceRef |
+| Source/delivery actions | Relevant project settings and adapter capabilities |
+| Supervisor | Nexus lifecycle/recovery settings and projectConfigPath |
+
+These bindings belong to application startup. Components receive the required values and capabilities,
+not both entire configuration objects. Project commands run in the prepared worktree. Credential
+references resolve through host settings and remain absent as secret values from agent context.
 
 Agent-backed actions call AgentRuntime.run(profile, workspaceRef, additionalContext). They select
 and read task artifacts and prepare the additional instructions/context. AgentRuntime combines these

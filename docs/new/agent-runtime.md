@@ -6,13 +6,14 @@ Status: proposed component design.
 
 Run a configured agent profile in a supplied workspace with additional context prepared by the caller.
 Own the profile catalogue, runtime instructions, prompt assembly, provider invocation, output parsing
-and shutdown. The caller selects task information and artifacts for the invocation.
+and shutdown.
 
 ## Interface
 
 Use the [shared value types](high-level-architecture.md#shared-interface-vocabulary) and the plain
-[WorkspaceRef](workspace.md#layout-and-reference) value. Workspace layout and profile configuration
-are supplied at construction according to the [configuration contract](configuration.md#dependency-construction).
+[WorkspaceRef](workspace.md#layout-and-reference) value. Construction requires base instructions,
+profiles, provider/tool settings and execution controls from
+[Nexus configuration](configuration.md#nexus-configuration).
 
 ### Provided interface
 
@@ -71,10 +72,8 @@ information contains the task-specific context assembled by the caller. Artifact
 files the agent may inspect. The runtime places those references in the prompt without opening them
 to discover or assemble an invocation request. The agent can read them through its permitted tools.
 
-The calling action owns selecting and reading input artifacts, preserving complete required findings
-and interpreting the result against the candidate/task it supplied. Recovery callers similarly provide
-incident context through this argument. The runtime receives the request as arguments rather than
-loading it from a workspace file.
+All invocation context is supplied in AdditionalContext. The runtime does not load an invocation
+request from a workspace file.
 
 Progress observation, cancellation and configured time limits are execution controls bound when the
 runtime is constructed. Each invocation observes the active execution cancellation signal and emits
@@ -144,10 +143,9 @@ type RecoveryOutput = {
 };
 ```
 
-The runtime validates the profile's output shape. The caller validates task-specific meaning: that
-reviewed revisions match the candidate, supplied findings received dispositions, required evidence
-exists and an asserted delivery actually happened. Agent reports alone cannot establish completion.
-Persist full findings and responses; report formatting must not silently truncate them.
+The runtime validates the selected output schema and preserves full returned text. A completed result
+guarantees schema validity and confirmed shutdown, not the truth of the agent's claims or completion
+of the caller's task.
 
 ### Required interfaces
 
@@ -162,33 +160,25 @@ runtime has no task sequencing or supervisor dependency.
 
 ## Instructions and profiles
 
-Nexus configuration supplies runtime base instructions and the profile catalogue. A profile adds
-role instructions, model, effort and tool settings. Prompt assembly combines:
+The supplied profile catalogue contains role instructions, model, effort and tool settings. Prompt
+assembly combines:
 
 1. Runtime base instructions.
 2. The selected profile's role instructions.
 3. Instructions and information supplied in AdditionalContext.
 4. The workspace location and caller-supplied artifact references.
 
-The runtime adds no task information by inspecting workspace artifacts. The caller decides what is
-relevant. Check the assembled input against provider limits before launch; do not silently truncate
+The runtime adds no task information by inspecting workspace artifacts. Check the assembled input
+against provider limits before launch; do not silently truncate
 the supplied context. Return an explicit input failure when it cannot be supplied completely.
 
-Profile instructions describe how that role works. Repository documentation remains the source of
-product intent. The additional instructions state what the particular action needs done. Context
-cannot change configured permissions, select another model or rewrite host configuration.
+Profile instructions are fixed for the selected profile. AdditionalContext contributes invocation
+instructions and information without modifying model selection, permissions or runtime configuration.
 
 ## Permissions
 
-Developer profiles can inspect supplied context, modify the assigned worktree and run local checks.
-Publication and task-source mutation are not developer capabilities. Reviewer profiles can inspect
-the candidate and run checks with exclusive workspace access; modifying candidate source or publishing
-approval is outside that role. Recovery profiles can investigate and repair authorized operational
-resources, reconcile stopped work and create/rank blocker tickets.
-
-Recovery cannot falsify evidence, bypass completion gates, force a task to Done or start a competing
-queue. The caller acts on its continuation recommendation and handles notifications. Broad operational
-capabilities remain confined to recovery profiles.
+Apply exactly the selected profile's tool policy. Additional instructions cannot grant capabilities
+outside that policy. Profile permissions remain isolated between invocations.
 
 Resolve credentials only for authorized tools. Keep credential values out of prompts, transcripts
 and general child environments. Use the configured tool/process isolation to enforce permissions;
@@ -204,16 +194,12 @@ resolve profile → assemble supplied context → launch → collect → parse o
                                                  ↘ stop → retain partial evidence → finish
 ```
 
-The invocation controller creates runtime-owned transcript/output files in the configured artifact
-area and returns their references. This output persistence does not make it a reader of action input
-records. The caller can persist the returned role result in the artifact format its consumers expect.
+The invocation controller retains the assembled prompt, transcript and parsed output in the artifact
+directory, separated by invocation ID. It returns references to completed transcript/output files.
+The working directory is worktree/ within the supplied workspace root.
 
-A workspace reference is a plain location value. It has no prepare, read-request or execute methods.
-The runtime uses the supplied layout to resolve its working directory and output locations. Preparation
-and action-specific artifact handling have already been assigned to their respective owners.
-
-The caller grants exclusive workspace use for the invocation. The runtime owns its child processes
-and tool executions, retains their evidence and releases their handles after shutdown. An existing
+The runtime owns its child processes and tool executions, retains their evidence and releases their
+handles after shutdown. An existing
 provider session never replaces the explicit profile and additional context for a new call.
 
 ## Cancellation

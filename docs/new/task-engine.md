@@ -7,8 +7,8 @@ Status: proposed component design.
 Execute a task workflow supplied as YAML. The workflow defines sequencing, ordinary functions perform
 the actions, and persistent artifacts carry data between actions. Process one action at a time.
 
-The public module is `src/task-engine/index.ts`. Application startup binds the workflow, action
-implementations, their dependencies and storage locations before execution.
+The public module is `src/task-engine/index.ts`. Its construction inputs are a workflow, bound action
+implementations and a checkpoint location.
 
 ## Composition
 
@@ -32,9 +32,9 @@ Actions own task-specific behavior. Workflow definitions are executable input, n
 ## Interface
 
 Use the [shared value types](high-level-architecture.md#shared-interface-vocabulary).
-Actions use the [workspace data contract](workspace.md#layout-and-reference). Settings are supplied
-through the [configuration construction contract](configuration.md#dependency-construction): Nexus
-owns workflows and workspace layout; the project owns repository and preparation/CI commands.
+Actions use the [workspace data contract](workspace.md#layout-and-reference). Workflow settings
+conform to [Nexus configuration](configuration.md#nexus-configuration); repository and
+command settings conform to [project configuration](configuration.md#project-configuration).
 
 ### Provided interface
 
@@ -171,8 +171,7 @@ inside the runner.
 
 The runner owns only its workflow checkpoint. It does not inspect, validate, route or copy action
 artifacts; allocate their storage; decide repair policy; or discover and reconcile external effects.
-It does not provide an execution identity or storage scope to actions. Application startup configures
-the actions with their shared persistent storage and dependencies independently of the runner.
+Its bound action functions require no execution identity or storage scope from the runner.
 
 Before starting, validate the YAML structure, initial state, referenced transitions and action bindings.
 An undeclared outcome, action exception or checkpoint failure stops execution with a fault. The runner
@@ -186,7 +185,7 @@ A workflow declares named states, one action per nonterminal state, transitions 
 and terminal results. Loops and branches are explicit transitions. Business decisions are typed actions;
 YAML does not contain scripts, arbitrary expressions or artifact input/output mappings.
 
-For example, a finite workflow with pull-request review can be expressed as:
+The finite delivery workflow is:
 
 ```yaml
 name: finite-delivery
@@ -234,54 +233,22 @@ of a checkpoint. Required task checks and completion evidence remain action cont
 
 ## Actions
 
-An action is an ordinary typed function. Construction supplies its configuration, dependencies and
-artifact readers/writers. The runner calls the bound function and receives only its named outcome.
-For example, the runner-facing Verify function returns `passed` or `failed`; detailed check evidence
-is persisted by that action, not returned through the runner as a data-routing mechanism.
+An action is a bound typed function. Its runner-facing result is a named outcome declared by the
+workflow. Detailed outputs are not routed through ExecutionRunner.
 
-| Action | Owns |
-| --- | --- |
-| SelectTask | Read source ordering, validate eligibility and requirements, claim one task and persist its identity/input |
-| PrepareWorkspace | Materialize the supplied workspace layout/reference and prepare the working copy using supplied repository settings |
-| Develop | Read the task and prior feedback, invoke implementation and persist the candidate and developer response |
-| Verify | Run configured candidate checks and persist their results for the identified candidate |
-| Review | Assess the identified candidate, preserve complete findings and return the review decision |
-| SelectRepair | Apply configured repair/escalation policy to retained attempts and persist the selected profile or exhaustion |
-| Deliver | Publish the verified candidate and retain its delivery identity and evidence |
-| CompleteTask | Verify required approval, integration and post-merge checks; perform the permitted source transition and persist completion |
-
-Actions do not call the next action or select its state. They may have substantial internal implementation,
-but return outcomes for sequencing. Existing-artifact checks, reuse, receipts and the consequences of
-repetition belong to the action that needs them. The runner imposes no universal deduplication or
-transaction protocol. For example, Deliver may reuse an existing pull request for its branch.
-
-Task identity, candidate revision and completion evidence remain explicit domain contracts. Preserving
-dirty work, keeping full review findings and applying configured completion gates are action responsibilities.
-An agent's narrative alone cannot establish that checks or integration succeeded.
+Actions do not call the next action or select its state. The workflow defines all sequencing. An action
+can execute again after interruption; the runner supplies no deduplication or transaction guarantee.
 
 ## Persistent artifacts
 
-Artifacts are the durable inputs and outputs of actions. Producers and consumers agree on location,
-format and meaning through their data contracts. Application startup supplies their shared storage
-location. The workflow definition and ExecutionRunner do not need to know those artifact contracts.
-
-For example, Develop persists a candidate record that Verify, Deliver and Review know how to read.
-Review persists findings that SelectRepair and Develop know how to read. A queue execution stores each
-task's artifacts under its identity; the selected-task record identifies the current task to actions.
-Actions prevent stale task or candidate data from being mistaken for the current input.
+Artifacts are the durable inputs and outputs of actions. Their locations, formats and meanings are
+action data contracts. Workflow definitions contain no artifact mappings, and ExecutionRunner does
+not interpret those contracts.
 
 An action finishes writing its output artifacts before returning its outcome. Only then does the runner
 persist the next state. A crash can leave outputs without an advanced checkpoint; the action starts
 anew and decides whether to reuse those outputs. Atomic checkpoint replacement does not imply an
 atomic transaction over the action's files or external effects.
 
-Conversation history is persistent, attributed data used by actions, not another orchestration component.
-Its readers/writers retain complete requirements, findings, responses and human/recovery comments and
-provide the context needed for each invocation. Artifact schemas and their readers/writers are owned
-by the actions that exchange them.
-
-WorkspaceLayout and WorkspaceRef are plain data, with no methods or actions. The latter identifies
-the concrete workspace even before preparation. Construction supplies the layout and root from Nexus
-configuration and the repository source/base from project configuration. CI/check commands likewise
-come from the project and are bound to the actions that execute them. Workflow YAML is selected from
-Nexus configuration. No action independently locates either configuration file.
+ExecutionRunner persists only control state. It neither maintains conversation history nor assembles
+agent context.

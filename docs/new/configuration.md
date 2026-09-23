@@ -1,80 +1,61 @@
 # Configuration
 
-Status: proposed configuration and startup design.
+Status: proposed configuration data design.
 
-Project configuration describes the target project. Nexus configuration describes how Nexus operates.
-Both are configuration data; loading, validation and dependency construction belong to application startup.
+Project configuration defines the target project. Nexus configuration defines harness operation.
+Each setting has one owner.
 
-## Ownership
+## Project configuration
 
-| Project configuration | Nexus configuration |
+The project configuration is a JSON file in the target project's root directory. Its filepath is
+explicit; its filename is unrestricted. Relative paths are relative to that file's directory.
+
+| Settings | Definition |
 | --- | --- |
-| Repository source and base branch | Executable workflow definitions and mode-to-workflow selection |
-| Preparation and CI/check commands | Workspace layout and storage root |
-| Project task-source settings | Agent profiles, runtime instructions, tools and provider connections |
-| Project delivery and completion requirements | Recovery/escalation policies and execution limits |
-| References to required project credentials | Host credential resolution and notification configuration |
+| Repository | Source location and base branch |
+| Preparation | Commands required to prepare the repository for work |
+| CI/checks | Named commands and criteria used to verify repository changes |
+| Task source | Project identity, source selection and source field/workflow mappings |
+| Delivery and completion | Target repository/branch, required checks and post-merge requirements |
+| Credential references | Names of the credentials required by project integrations |
 
-Project configuration does not select workflow files, redefine workspace layout or override Nexus
-profiles and policies. There is no generic merge of the two objects: startup takes each setting from
-its owner and supplies it to the appropriate consumer. Credential values are resolved on the host
-and are never copied into task context or persisted configuration reports.
+Project configuration contains no harness workflow definitions, workspace layout overrides, agent
+profiles or recovery/escalation policies. Task-source workflow mappings refer to external issue
+statuses and transitions; they do not define the harness's executable workflow.
 
-## File locations
+## Nexus configuration
 
-The project configuration file lives in the target project's root. The operator supplies its filepath
-when starting Supervisor. The filename is not an identity or discovery rule; the explicit path is
-authoritative. Resolve it to an absolute path before starting a child process.
+The Nexus configuration is a JSON file at the installation's configured path. That path is independent
+of the target project's directory. Relative paths are relative to the Nexus configuration directory.
 
-Nexus reads its own configuration from the installation's configured location. The same location
-is available to Supervisor and to the Nexus worker. It is not discovered from the target project's
-working directory, and a task's working copy cannot substitute another Nexus configuration.
-
-Relative project paths are resolved against the project configuration directory. Relative Nexus paths,
-including workflow and instruction files, are resolved against the Nexus configuration directory.
-Repository commands execute in the prepared worktree, not in the original source checkout.
-
-## Startup and restart
-
-```text
-Supervisor(projectConfigPath)
-    → starts Nexus worker(projectConfigPath)
-        → reads project configuration
-        → reads Nexus configuration
-        → validates the settings and selected workflow
-        → constructs actions and components with their relevant settings
-        → runs TaskEngine
-```
-
-The Nexus worker is the child application entry point, not an additional business component. It
-constructs the components; TaskEngine and its runner do not locate or load configuration files.
-
-Supervisor reads its own lifecycle, recovery and notification settings from Nexus configuration
-before launching the worker. It retains projectConfigPath and forwards that same absolute path on
-restart. Recovery can therefore run when worker configuration or construction fails. Invalid
-supervisor configuration is reported directly because recovery itself cannot be configured reliably.
-
-Each worker startup loads configuration; constructed dependencies retain their settings for that
-invocation. A restart can pick up an intentional configuration correction. The persisted workflow
-definition continues to govern an existing checkpoint; changing that definition requires an explicit
-decision rather than silently assigning new meaning to the saved state.
-
-## Dependency construction
-
-| Consumer | Supplied settings |
+| Settings | Definition |
 | --- | --- |
-| ExecutionRunner | Selected workflow, bound actions and checkpoint location |
-| PrepareWorkspace | Project repository settings, Nexus workspace layout and concrete workspace reference |
-| Verify | Project CI/check commands and current workspace reference |
-| AgentRuntime | Nexus profiles, base instructions, runtime/tool settings and workspace layout |
-| Agent-backed actions | Selected profile, AgentRuntime capability and current workspace reference |
-| Source/delivery actions | Relevant project integration settings and configured adapter capabilities |
-| Supervisor | Nexus lifecycle/recovery settings and the project configuration filepath |
+| Workflows | Workflow definition paths and the definition selected for each execution mode |
+| Workspace | Storage root |
+| Agent runtime | Base instructions, profile catalogue, provider connections and tool configuration |
+| Execution policy | Invocation limits, repair/escalation policies and recovery allowance |
+| Notifications | Destination and provider configuration |
+| Credentials | Host credential-resolution settings |
 
-Components and actions receive the settings they actually use, not both entire configuration objects.
-Actions prepare additional agent context from their task and artifacts. AgentRuntime combines that
-context with its configured instructions when run(profile, workspaceRef, additionalContext) is called.
+The workspace storage root is configurable. The [workspace layout](workspace.md#layout-and-reference)
+is fixed and has no configuration overrides.
 
-Validate required values, paths, profile references and command definitions before starting task actions.
-The configuration loader and construction code are ordinary startup code, not a configuration service
-or another orchestration layer.
+Profiles conform to [AgentProfile](agent-runtime.md#provided-interface). Profile IDs are unique.
+The initial recovery profile is nexus-recovery, with model gpt-6-astra and high reasoning effort.
+Workflow and escalation profile references identify entries in the same Nexus configuration.
+
+## Value constraints
+
+Command definitions contain an executable and an argument array. A shell command requires an explicit
+shell executable. Credential references contain identifiers, not secret values.
+
+Required paths and identifiers are nonempty. Duration values state their unit and are nonnegative.
+Recovery allowances are positive integers. Workflow definitions, profile references and configured
+provider settings must be valid for the selected mode.
+
+Project and Nexus configuration have disjoint ownership. They are not merged through generic override
+precedence. A setting supplied under the wrong owner is invalid.
+
+An execution's resolved settings are immutable values. Reloading creates a new settings value; it
+does not mutate an existing one. Configuration data contains no action instances, runtime process
+handles, artifact contents or workflow checkpoint state.

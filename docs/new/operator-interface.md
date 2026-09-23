@@ -62,11 +62,8 @@ options, duplicate conflicting options and a ticket key on an incompatible mode 
 spaces and are passed as individual arguments.
 
 `run` generates one execution ID and calls `execute` once with projectConfigPath and the selected
-mode. The provider is bound to Nexus lifecycle settings by startup. Follow the
-[configuration startup contract](configuration.md#startup-and-restart): the execution provider forwards
-the filepath to the worker, which reads both configurations and constructs its dependencies. This
-component parses the path and presents errors; it does not load domain settings. Credentials never
-enter OperatorCommand.
+mode. Its dependency is a configured Supervisor provider. Parse the filepath and present returned
+errors; do not load domain settings. OperatorCommand contains no credentials.
 
 The target command grammar is:
 

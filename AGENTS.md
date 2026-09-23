@@ -12,7 +12,7 @@ If code contradicts documentation, correct the code.
 - [Proposed AgentRuntime design](docs/new/agent-runtime.md): role interfaces, profiles, permissions and invocation lifecycle.
 - [Proposed Adapters design](docs/new/adapters.md): external operations, protocol translation and observed outcomes.
 - [Proposed Workspace design](docs/new/workspace.md): directory layout and concrete workspace references.
-- [Proposed configuration design](docs/new/configuration.md): project/Nexus ownership and application startup.
+- [Proposed configuration design](docs/new/configuration.md): project/Nexus setting ownership, file locations and value constraints.
 - [Long-term vision](docs/LONG_TERM_VISION.md): future purpose and direction; not current behavior.
 - [Architecture](docs/architecture.md): design principles, ownership, testing and tech stack.
 - [Components](docs/components.md): responsibilities and required behavior.
