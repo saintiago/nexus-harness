@@ -41,7 +41,6 @@ type ExecutionResult = {
 
 type RecoveryDecision =
   | { kind: 'resume' }
-  | { kind: 'run-blocker'; key: string }
   | { kind: 'needs-attention' };
 
 type RecoveryReport = {
@@ -86,7 +85,7 @@ Use the [Notifications adapter](adapters/notifications.md#interface) to publish 
 
 ### Worker entry point
 
-The internal worker entry receives the absolute project filepath and an optional recovery target.
+The internal worker entry receives the absolute project filepath.
 It uses the same installation configuration path as the parent. This is an internal launch contract,
 not an additional operator mode.
 
@@ -114,7 +113,7 @@ workflow's successful terminal outcomes are available before the first child sta
 
 ## Execution and recovery
 
-1. Start the worker with the requested scope.
+1. Start the worker with the project configuration filepath.
 2. Forward progress and wait for its result and exit.
 3. Finish on a successful terminal outcome and successful exit.
 4. On a blocked outcome, execution fault, invalid or missing result, or failed exit, invoke recovery.
@@ -132,13 +131,22 @@ Cross-project repair and changes to the Nexus installation are outside this capa
 requires either, return needs-attention with the diagnosis; do not create a ticket in another project,
 launch a repair there or update the running Nexus installation.
 
-A resume decision starts work with retained state. A run-blocker decision retains the original request,
-runs the named ticket in its own workspace using the same project configuration, then resumes the
-original request. The blocker key belongs to the current project's task source. Failure in that work
-uses the same recovery path.
+A resume decision restarts the worker with the same project configuration and the state reconciled
+by recovery.
+
+When a blocker must run first, recovery creates or reuses its ticket, makes it eligible and ranks it
+first in the current project's queue. Move the interrupted task to To Do and rank it immediately
+after the blocker. Use source rank, not priority. Preserve the interrupted task's workspace pointer,
+worktree and round artifacts.
+
+Before returning resume, recovery clears the queue's active selection and resets its persisted workflow
+to initial task selection. Changing source rank alone is insufficient: retained selection would
+otherwise continue the interrupted task. The normal workflow then selects the blocker and, after
+completing it, selects the interrupted task from its retained workspace. Application has no special
+blocker execution mode or return target.
 
 Each recovery invocation consumes the configured allowance for this execution. Worker restarts and
-blocker work do not reset it. Exhaustion, failed recovery or a needs-attention decision ends execution
+queue reordering do not reset it. Exhaustion, failed recovery or a needs-attention decision ends execution
 with needs-attention.
 
 Apply the decision without independently classifying the repair, requiring proof of changed state or
@@ -148,8 +156,8 @@ replace them.
 
 ## State and reports
 
-Retain the original request, current target, return target when running a blocker, recovery count and
-recovery reports as ordinary files under the configured storage root.
+Retain the original request, recovery count and recovery reports as ordinary files under the
+configured storage root. The task source owns queue order.
 
 Publish the saved recovery report. Notification failure is reported separately and does not repeat
 recovery. Provider acceptance confirms submission, not inbox delivery.

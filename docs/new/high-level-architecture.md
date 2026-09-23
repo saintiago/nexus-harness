@@ -165,8 +165,10 @@ A source failure is not an empty queue. Ordinary failed checks and review findin
 workflow's repair and escalation decisions.
 
 When work cannot continue, Application invokes recovery with the failure and available context.
-Recovery investigates, performs repairs and decides whether to resume, run a blocker first or request
-operator attention. Recovery and blocker execution stay within the current project. Cross-project
+Recovery investigates, performs repairs and decides whether to resume or request operator attention.
+When a blocker must run first, recovery ranks it first, moves the interrupted task to To Do immediately
+after it, and reconciles queue state to restart task selection before resuming. Normal queue processing
+handles both tasks. Recovery and blocker execution stay within the current project. Cross-project
 repair and Nexus installation changes require operator attention.
 Application applies the decision within its configured recovery allowance.
 Required task checks and completion gates still belong to the normal actions.
