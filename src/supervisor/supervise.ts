@@ -375,12 +375,20 @@ export async function supervise(request: SuperviseRequest): Promise<SuperviseSum
       // worker and recording it leaves a worker that did nothing at all, and
       // a restart refuses that launch instead of starting a second worker.
       const launch = { token: randomUUID(), at: request.now().toISOString() };
-      await writeCurrentIncident(root, {
-        version: 1,
-        id: step.plan?.known.record.id ?? null,
-        workerPid: null,
-        launch,
-      });
+      try {
+        await writeCurrentIncident(root, {
+          version: 1,
+          id: step.plan?.known.record.id ?? null,
+          workerPid: null,
+          launch,
+        });
+      } catch (cause) {
+        // The launch could not be written down, so no child may be started
+        // under it: the handshake's first half is what the child waits on.
+        const problem = `the launch of a worker could not be written down: ${messageOf(cause)}`;
+        io.err(`supervisor: ${problem}`);
+        return summary('attention', problem, carried?.record ?? null);
+      }
       let started = false;
       let outcome: WorkerOutcome;
       try {

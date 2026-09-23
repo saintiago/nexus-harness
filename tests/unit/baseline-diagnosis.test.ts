@@ -108,9 +108,9 @@ function evidenceDirectory(workDir: string, project: string, evidenceId: string)
 }
 
 /**
- * Records one diagnosis the way an invocation that stopped after its reviewer
- * turn wrote its record — the state a restart resumes from — and returns the
- * evidence directory.
+ * Records one diagnosis the way an invocation that recorded its evidence
+ * before its reviewer turn left it — what a later claim of the same item is
+ * answered from — and returns the evidence directory.
  */
 async function retainedEvidence(parts: {
   readonly workDir: string;

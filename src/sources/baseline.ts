@@ -384,7 +384,7 @@ export function baselineFindingGuidanceLines(finding: BaselineFinding): readonly
   return finding.outcome === 'repair' ? [repairFirstGuidanceLine(), ...fields] : fields;
 }
 
-/** The file one pending diagnosis keeps what a restart resumes from. */
+/** The file one diagnosis keeps its evidence record in. */
 export const BASELINE_EVIDENCE_FILE = 'evidence.json';
 
 /**
@@ -392,9 +392,11 @@ export const BASELINE_EVIDENCE_FILE = 'evidence.json';
  * of the evidence, the task the baseline failed under, the retained workspace it
  * ran in, and the completed red round itself. It is the local half of the
  * deduplication record — the comment on the item's thread is the remote half —
- * and it is what an invocation that stopped after this record was written, and
- * before the finding was published, resumes from instead of leaving the ticket
- * in the running status.
+ * and it is what the marker on the thread is held against, and what a later
+ * claim of the same item is answered from instead of spending a second reviewer
+ * turn. An invocation that stopped after this record was written, and before
+ * the finding was published, leaves the item in the running status where it is
+ * the supervised recovery agent's to reconcile (docs/WORKFLOW.md §11, §12).
  */
 export interface BaselineEvidence {
   readonly version: 1;
@@ -454,7 +456,7 @@ function evidenceProblem(file: string, problem: string): SourceError {
   return new SourceError(
     'fatal',
     `the baseline evidence "${file}" ${problem}, so the diagnosis it describes cannot be ` +
-      'resumed. Inspect it by hand; do not treat it as nothing pending.',
+      'read back or closed. Inspect it by hand; do not treat it as nothing.',
   );
 }
 
@@ -463,9 +465,8 @@ function evidenceProblem(file: string, problem: string): SourceError {
  * diagnosis that never reached its reviewer turn, or one whose record was
  * written by something else entirely — while a file that is there and does not
  * hold a record this harness wrote is refused by name. Treating a corrupt record
- * as "nothing pending" is exactly how a diagnosis that never finished would be
- * forgotten, and the item left in the running status with nothing looking for
- * it. The record has to be one this connected project wrote: evidence of
+ * as an absence is exactly how the item a diagnosis belongs to would be
+ * forgotten. The record has to be one this connected project wrote: evidence of
  * another project under the same output directory is refused rather than
  * finished or published through this project's connection.
  */
@@ -639,11 +640,12 @@ async function closeEvidence(
 
 /**
  * Every record the connected `project` has kept under `workDir`, oldest name
- * first. They are read in that fixed order so a resume is deterministic; each
- * one is skipped as soon as it says it finished, so a resolved diagnosis costs
- * one read and no remote call. Only this project's own evidence directory is
+ * first. They are read in that fixed order so a finding that has to be read back
+ * is found deterministically; each one is skipped as soon as it says it
+ * finished, so a resolved diagnosis costs one read and no remote call. Only this
+ * project's own evidence directory is
  * read: a `workDir` serves several connected projects, and starting one of them
- * must never enumerate, finish, or publish another's pending evidence
+ * must never enumerate, finish, or publish another's evidence
  * (docs/WORKFLOW.md §11).
  */
 async function evidenceFiles(workDir: string, project: string): Promise<readonly string[]> {
@@ -673,10 +675,9 @@ async function evidenceFiles(workDir: string, project: string): Promise<readonly
  * A directory under this project's evidence root is one this harness made for
  * one piece of evidence, and its record is what says which item and workspace it
  * belongs to, what was observed, and whether a finding was published. A record
- * that is gone is therefore not "nothing pending": nothing about that evidence
- * can be finished, read back, or closed, and treating it as nothing is how its
- * item would be left in the running status with nothing looking for it, or its
- * workspace started as an ordinary continuation when a reviewed finding was
+ * that is gone is therefore not an absence: nothing about that evidence
+ * can be read back or closed, and treating it as nothing is how its
+ * workspace would be started as an ordinary continuation when a reviewed finding was
  * required first. So it fails closed by name and a person inspects it, exactly
  * as a record that cannot be read does (docs/WORKFLOW.md §11).
  */
@@ -710,7 +711,7 @@ export interface BaselineDiagnosisParts {
    * one its intake lock is named by (`projectLockNamespace` in
    * `src/config/load.ts`). It names the evidence directory under `workDir`, so
    * two connected projects sharing one output directory never read, finish, or
-   * publish each other's pending diagnoses (docs/WORKFLOW.md §11).
+   * publish each other's evidence (docs/WORKFLOW.md §11).
    */
   readonly project: string;
   /** `<workDir>`: where the diagnosis's own evidence directories are kept. */
