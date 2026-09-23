@@ -23,6 +23,13 @@ Commands:
                  review and completion, and exit when no eligible ticket remains.
   queue watch    Do that, and when the queue is empty wait for the next eligible
                  ticket instead of exiting. One foreground process; Ctrl+C stops it.
+  supervise run    Run the queue under the supervisor: a worker in this process's
+                 place, and the configured recovery agent after an unexpected stop.
+  supervise watch  Do that for a watch-mode worker instead: it keeps watching until
+                 stopped or until an incident needs a person.
+  supervise ticket <key>
+                 Do that for one ticket only, followed by identity from its current
+                 status to its end. No other ticket is claimed or reported on.
 
 Options:
   --config <path>   The Nexus-wide harness configuration: the output directory,
@@ -37,6 +44,8 @@ Options:
   --task <path>     Task file (run; optional for check-config).
   --limit <count>   Most new source tasks one \`source run\` attempts, or most reviewer
                     turns one \`review scan\` starts (those commands only).
+  --ticket <key>    The one ticket a \`queue run\` follows by identity, and claims,
+                    reviews and reports on nothing else (\`queue run\` only).
   -h, --help        Show this help.
 
 Examples:
@@ -50,6 +59,9 @@ Examples:
   npm run dev -- review watch --config nexus.config.json --project ../target-project
   npm run dev -- queue run --repo ../target-project --config nexus.config.json
   npm run dev -- queue watch --repo ../target-project --config nexus.config.json
+  npm run dev -- supervise run --repo ../target-project --config nexus.config.json
+  npm run dev -- supervise watch --repo ../target-project --config nexus.config.json
+  npm run dev -- supervise ticket HARN-51 --repo ../target-project --config nexus.config.json
 
 Paths given on the command line resolve from the directory the command was invoked
 in, exactly as the shell would read them. \`workDir\` resolves from the harness
@@ -127,6 +139,34 @@ no agent while it is idle. A ticket confirmed Done is followed by source readine
 the configured base branch, the expected delivery repository, and a clean checkout
 are required, and the checkout is only ever fast-forwarded to the verified merge
 commit. Anything a person has to decide exits nonzero with the evidence kept.
+
+supervise run, supervise watch and supervise ticket put a small parent in front of
+that same queue. The supervisor starts the queue as a worker of its own — the same
+CLI, with the same two files, and with its activity display intact — and watches
+how that process ended. A plain zero exit settles it. An ending the operator asked
+for with Ctrl+C stays stopped: nothing is recovered from an intentional stop. Any
+other ending — a nonzero exit, a killed process, a crash with no report at all —
+opens an incident and starts the configured recovery agent, whose own judgment
+investigates the cause, preserves committed and uncommitted work, repairs the
+harness or the workspace, reconciles the ticket, and says what resumes; a ticket
+that has to come first may be ranked ahead of the interrupted one, and its
+resumption is recorded. The supervisor needs a \`recovery\` object in the harness
+configuration (docs/WORKFLOW.md section 12): the agent's launch, how many attempts
+one incident may spend, and where its summary is emailed. Each concluded incident
+publishes one concise Jira report into the ticket's own thread — written by the
+same service account, so both the next developer turn and the next reviewer turn
+read it in the shared history — and one email summary through the configured SNS
+topic; those publications survive a supervisor restart without being repeated.
+Recovery attempts are bounded, the same failure returning unchanged after a
+repair ends in an actionable request for human help, and recovery context never
+substitutes for a passed check, a review verdict, or the completion gate.
+The parent has an entry point of its own,
+\`node dist/cli/supervise.js <intent> --repo <checkout> --config <harness.json>\`,
+which loads no ordinary command: use it when the CLI this help comes from will not
+start, and let the recovery agent repair the installation.
+The command \`supervise ticket <key>\` scopes the worker with
+\`queue run --ticket <key>\`: only
+that ticket is discovered, claimed, and reported on.
 
 Exit codes:
   0    the run passed

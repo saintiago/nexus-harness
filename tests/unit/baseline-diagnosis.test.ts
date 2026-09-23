@@ -12,7 +12,7 @@
  * §11). No runtime, repository or Jira connection is started here; the reviewer
  * turn's real launch and its record stay the boundary layer's.
  */
-import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { CheckRoundResult, CommandResult, SourceRef, Task } from '../../src/shared/types.js';
@@ -55,7 +55,6 @@ const WORKSPACE = {
   baseCommit: BASE,
 };
 const PROJECT = 'connected-project';
-const FOREIGN = 'another-connected-project';
 const READY = 'To Do';
 const REVIEW = 'In Review';
 const FAILED_TURN = 'the baseline reviewer turn for HARN-11 did not complete: the turn failed';
@@ -109,9 +108,9 @@ function evidenceDirectory(workDir: string, project: string, evidenceId: string)
 }
 
 /**
- * Records one diagnosis the way an invocation that stopped after its reviewer
- * turn wrote its record — the state a restart resumes from — and returns the
- * evidence directory.
+ * Records one diagnosis the way an invocation that recorded its evidence
+ * before its reviewer turn left it — what a later claim of the same item is
+ * answered from — and returns the evidence directory.
  */
 async function retainedEvidence(parts: {
   readonly workDir: string;
@@ -345,104 +344,5 @@ describe('what one diagnosis publishes when its reviewer turn ended badly', () =
     expect(comment).toContain(`${BASELINE_MARKER_PREFIX}attention:`);
     expect(comment).toContain('was not seen to end');
     expect(comment).toContain('the host could not reach the process tree');
-  });
-});
-
-describe('the connected project a pending diagnosis belongs to', () => {
-  it("never resumes, comments on, moves, or closes another project's pending evidence", async () => {
-    const workDir = await createTempDir();
-    const { dir: foreignDir, evidenceId } = await retainedEvidence({ workDir, project: PROJECT });
-    const other = recordHarness([]);
-    const otherDiagnosis = diagnosisFor({
-      workDir,
-      project: FOREIGN,
-      reviewer: noSecondTurn,
-      record: other.record,
-    });
-
-    const resumed = await otherDiagnosis.resume(new AbortController().signal);
-
-    // The pending evidence belongs to the project that wrote it, and another
-    // project sharing this output directory reads none of it: it asks nothing
-    // of its own connection and writes nothing.
-    expect(resumed).toBeNull();
-    expect(other.reads).toEqual([]);
-    expect(other.posted).toEqual([]);
-    expect(other.moves).toEqual([]);
-    const kept = JSON.parse(
-      await readFile(path.join(foreignDir, BASELINE_EVIDENCE_FILE), 'utf8'),
-    ) as Record<string, unknown>;
-    expect(kept['project']).toBe(PROJECT);
-    expect(kept['closed']).toBeUndefined();
-    expect(evidenceId).toBe(baselineEvidenceId(REF, BASE, BASELINE));
-
-    // Its own invocation then finishes exactly what it recorded: one comment
-    // carrying the finding, and the item back in the status work is claimed from.
-    const own = recordHarness([]);
-    const ownDiagnosis = diagnosisFor({
-      workDir,
-      reviewer: async (asked) => ({
-        summary: null,
-        finding: REPAIR_FINDING,
-        problem: null,
-        logPath: path.join(asked.dir, 'reviewer.log'),
-        shutdown: null,
-      }),
-      record: own.record,
-    });
-
-    const finished = await ownDiagnosis.resume(new AbortController().signal);
-
-    expect(finished?.kind).toBe('repair');
-    expect(own.posted).toHaveLength(1);
-    expect(own.moves).toEqual([READY]);
-    expect(
-      (
-        JSON.parse(await readFile(path.join(foreignDir, BASELINE_EVIDENCE_FILE), 'utf8')) as Record<
-          string,
-          unknown
-        >
-      )['closed'],
-    ).toBe('repair');
-  });
-
-  it('refuses evidence another project wrote instead of acting on it through this one', async () => {
-    const workDir = await createTempDir();
-    const { dir: ownDir, evidenceId } = await retainedEvidence({ workDir, project: PROJECT });
-    // The record is copied — or the directory moved by hand — into the wrong
-    // project's evidence root. Its own `project` field still names the one that
-    // wrote it, and that is refused by name before any comment or move.
-    const foreignDir = evidenceDirectory(workDir, FOREIGN, evidenceId);
-    await mkdir(foreignDir, { recursive: true });
-    await writeFile(
-      path.join(foreignDir, BASELINE_EVIDENCE_FILE),
-      await readFile(path.join(ownDir, BASELINE_EVIDENCE_FILE), 'utf8'),
-      'utf8',
-    );
-    const other = recordHarness([]);
-    const otherDiagnosis = diagnosisFor({
-      workDir,
-      project: FOREIGN,
-      reviewer: noSecondTurn,
-      record: other.record,
-    });
-
-    const resumed = await otherDiagnosis.resume(new AbortController().signal);
-
-    expect(resumed?.kind).toBe('problem');
-    expect(resumed?.detail).toContain('another connected project');
-    expect(other.posted).toEqual([]);
-    expect(other.moves).toEqual([]);
-    // The evidence it does not belong to is neither closed nor re-read through
-    // the project that was handed the wrong path.
-    expect(
-      (
-        JSON.parse(await readFile(path.join(ownDir, BASELINE_EVIDENCE_FILE), 'utf8')) as Record<
-          string,
-          unknown
-        >
-      )['closed'],
-    ).toBeUndefined();
-    expect((await readdir(path.join(workDir, 'baseline', PROJECT))).length).toBeGreaterThan(0);
   });
 });

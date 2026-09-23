@@ -32,8 +32,11 @@ function describeEntry(entry: HistoryEntry): string {
 }
 
 /** Keep the newest whole entries inline and explicitly require the overflow locally. */
-function renderEntries(snapshot: HistorySnapshot, field: 'responses' | 'newHumanFeedback'): string {
-  const entries = snapshot.brief[field];
+function renderEntries(
+  snapshot: HistorySnapshot,
+  field: 'responses' | 'newHumanFeedback' | 'recovery',
+): string {
+  const entries = snapshot.brief[field] ?? [];
   if (entries.length === 0) return '(none)';
   let used = 0;
   let omitted = 0;
@@ -177,6 +180,22 @@ export function renderHistorySection(
       'preparing a snapshot or running the other role does not mark feedback as consumed. Older text stays searchable in the',
       'full history.',
       renderEntries(snapshot, 'newHumanFeedback'),
+    ].join('\n'),
+  );
+
+  sections.push(
+    [
+      '### Recovery context',
+      'A supervised queue of this ticket stopped unexpectedly while it was being worked, and a',
+      'separate recovery agent investigated and repaired the situation. Every incident below is',
+      'kept whole — the stop, each recovery attempt with what it found, repaired and preserved,',
+      'the conclusion and what resumes — together with the comments the same service account made',
+      'while handling it.',
+      '',
+      'This is context for your own turn. It is never an approval, a verification, a review',
+      'verdict, or a finished state: anything it says must still pass the configured checks, the',
+      'review, and the completion path like any other work.',
+      renderEntries(snapshot, 'recovery'),
     ].join('\n'),
   );
 

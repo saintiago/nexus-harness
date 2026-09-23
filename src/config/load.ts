@@ -25,17 +25,21 @@ import path from 'node:path';
 import { messageOf } from '../shared/errors.js';
 import type {
   AgentSelection,
+  Command,
   CompletionConfig,
   EscalationTier,
   GitHubDeliveryConfig,
   GitHubReviewAppConfig,
   GitHubReviewConfig,
   HarnessConfig,
+  RecoveryConfig,
   Task,
 } from '../shared/types.js';
 import { HARNESS_CONFIG_FILE_NAME, PROJECT_CONFIG_FILE_NAME } from './paths.js';
 import {
   DEFAULT_AGENT_SELECTION,
+  DEFAULT_RECOVERY_PUBLISHER,
+  DEFAULT_RECOVERY_SELECTION,
   HARNESS_OWNED_FIELDS,
   PROJECT_OWNED_FIELDS,
   checkCompletionStatuses,
@@ -91,6 +95,12 @@ export interface ResolvedHarnessConfig {
   readonly reviewer?: ResolvedReviewerConfig;
   /** The review-to-completion policy, unchanged: it names no launch. */
   readonly completion?: HarnessFileConfig['completion'];
+  /**
+   * The supervised-recovery policy, with its launch and its publisher resolved,
+   * when the configuration declares one. Absent means no command supervises a
+   * queue until an operator declares the policy (docs/WORKFLOW.md §12).
+   */
+  readonly recovery?: RecoveryConfig;
 }
 
 /** The Nexus-wide reviewer integration, with its launch resolved. */
@@ -114,12 +124,22 @@ function namesAPath(executable: string): boolean {
  * joined, or expanded (docs/WORKFLOW.md §1, "Agent launch and path rules").
  */
 export function resolveAgentSelection(agent: AgentSelection, configPath: string): AgentSelection {
-  const [executable = '', ...prefix] = agent.command;
+  return { runtime: agent.runtime, command: resolveCommand(agent.command, configPath) };
+}
+
+/**
+ * The same launch-path rules for one command that is not an agent selection:
+ * a relative path-valued executable resolves against the harness configuration
+ * file's own directory, once, before anything is started, and the remaining
+ * arguments are opaque.
+ */
+export function resolveCommand(command: Command, configPath: string): Command {
+  const [executable = '', ...rest] = command;
   const resolved =
     namesAPath(executable) && !path.isAbsolute(executable)
       ? path.resolve(path.dirname(path.resolve(configPath)), executable)
       : executable;
-  return { runtime: agent.runtime, command: [resolved, ...prefix] };
+  return [resolved, ...rest];
 }
 
 /** Renders `['checks', 0, 1]` as `checks[0][1]`. */
@@ -290,6 +310,37 @@ function resolveHarnessFile(
           },
         }),
     ...(harness.completion === undefined ? {} : { completion: harness.completion }),
+    ...(harness.recovery === undefined
+      ? {}
+      : { recovery: resolveRecovery(harness.recovery, harnessPath) }),
+  };
+}
+
+/**
+ * One recovery policy with its launches resolved: the documented recovery
+ * selection and publisher when the file names none, and the same launch-path
+ * rules as every other launch (a relative path-valued executable resolves
+ * against the harness configuration file's own directory).
+ */
+function resolveRecovery(
+  recovery: NonNullable<HarnessFileConfig['recovery']>,
+  harnessPath: string,
+): RecoveryConfig {
+  return {
+    agent: resolveAgentSelection(recovery.agent ?? DEFAULT_RECOVERY_SELECTION, harnessPath),
+    maxAttempts: recovery.maxAttempts,
+    ...(recovery.notifications === undefined
+      ? {}
+      : {
+          notifications: {
+            topicArn: recovery.notifications.topicArn,
+            email: recovery.notifications.email,
+            publisher: resolveCommand(
+              recovery.notifications.publisher ?? DEFAULT_RECOVERY_PUBLISHER,
+              harnessPath,
+            ),
+          },
+        }),
   };
 }
 
@@ -391,6 +442,7 @@ function compose(
     ...(source === undefined ? {} : { source }),
     ...(deliveryConfig === undefined ? {} : { delivery: deliveryConfig }),
     ...(review === undefined ? {} : { review }),
+    ...(harness.recovery === undefined ? {} : { recovery: harness.recovery }),
   };
 }
 

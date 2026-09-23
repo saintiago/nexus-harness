@@ -434,35 +434,6 @@ export type BaselineDiagnosisOutcome =
     };
 
 /**
- * What finishing a pending pre-delivery diagnosis did, as the coordinator and
- * the serial queue read it. `problem` is reserved for the diagnosis's own
- * machinery: the retained evidence could not be read, or the item could not be
- * asked about at all, so a person looks before anything else is taken
- * (docs/WORKFLOW.md §11).
- */
-export type BaselineResumeOutcome =
-  /** An actionable finding is on the thread and the item is back in its ready status. */
-  | { readonly kind: 'repair'; readonly detail: string; readonly commentId: string | null }
-  /**
-   * Nothing actionable: the item carries the evidence and what a person must
-   * do, and it stays in the review status. No coding turn is started from it.
-   */
-  | {
-      readonly kind: 'attention';
-      readonly detail: string;
-      readonly commentId: string | null;
-      readonly cleanupConfirmed: boolean;
-    }
-  /** The pending diagnosis could not be finished, so nothing else is taken. */
-  | { readonly kind: 'problem'; readonly detail: string }
-  /** The caller stopped the intake while the pending diagnosis was finished. */
-  | {
-      readonly kind: 'cancelled';
-      readonly detail: string;
-      readonly cleanupConfirmed: boolean;
-    };
-
-/**
  * What reading back the reviewed finding of one retained workspace produced.
  *
  * A claim that continues a workspace a red baseline was returned for repair has
@@ -597,17 +568,6 @@ export type BaselineReview = (request: BaselineReviewRequest) => Promise<Baselin
  */
 export interface BaselineDiagnosis {
   diagnose(request: BaselineDiagnosisRequest): Promise<BaselineDiagnosisOutcome>;
-  /**
-   * Finish the diagnosis a previous invocation left pending, from the evidence
-   * it retained and the item's own thread, before anything is discovered or
-   * claimed. `null` means nothing was pending: every piece of retained evidence
-   * already carries its finding or already left the running status, so nothing
-   * was written, moved, or spent. The same snapshot, commands, and results are
-   * never diagnosed twice, and a finding an earlier turn completed locally is
-   * reused when the publication it belonged to was interrupted
-   * (docs/WORKFLOW.md §11).
-   */
-  resume(stop: AbortSignal): Promise<BaselineResumeOutcome | null>;
   /**
    * The reviewed finding one retained workspace was returned for repair with,
    * read back from the evidence this harness kept beside it. A claim that

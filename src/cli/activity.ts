@@ -15,8 +15,9 @@
  *
  * Every agent invocation gets its own fresh pane. `beginInvocation` announces it
  * with a boundary line naming the role the phase launched — `developer` for a
- * coding or repair turn, `reviewer` for a Nexus Lens turn — and the ticket when
- * one is known, and starts an empty history: a new turn never inherits the rows
+ * coding or repair turn, `reviewer` for a Nexus Lens turn, `recovery` for the
+ * supervised recovery agent — and the ticket when one is known, and starts an
+ * empty history: a new turn never inherits the rows
  * of the one before it. `endInvocation` finalizes the pane: the rows it drew
  * stay exactly where they are as that invocation's segment of the timeline, so
  * later lifecycle events and the next pane follow them in scrollback order.
@@ -121,9 +122,9 @@ const LABELS: Record<AgentActivity['kind'], string> = {
 /**
  * Which agent a pane belongs to: the phase that launched the turn, never the
  * model it was launched with. A coding or repair turn is a `developer`; a Nexus
- * Lens turn is a `reviewer`.
+ * Lens turn is a `reviewer`; a supervised recovery turn is a `recovery`.
  */
-export type ActivityRole = 'developer' | 'reviewer';
+export type ActivityRole = 'developer' | 'reviewer' | 'recovery';
 
 /**
  * One agent invocation, as the timeline announces it before the invocation's

@@ -1,0 +1,75 @@
+# nexus-recovery.config.toml — the native Codex layer the supervised recovery turn runs under.
+#
+# Install it by copying this file into the Codex home under its own name, and point the recovery
+# launch prefix at it (docs/WORKFLOW.md §12):
+#
+#   Copy-Item examples\nexus-recovery.config.toml $env:USERPROFILE\.codex\nexus-recovery.config.toml
+#   ...\codex.exe --profile nexus-recovery --model gpt-6-astra -c model_reasoning_effort=high
+#
+# A profile file is a layer, not a replacement: Codex reads config.toml and then this file, so the
+# operator's personal turns are untouched. The adapter still appends its own
+# `--ask-for-approval never exec --sandbox danger-full-access --json -`.
+#
+# This is deliberately the widest of the Nexus profiles, because recovery is the one turn whose job
+# is operational: it investigates a stopped queue, preserves committed and uncommitted work,
+# repairs the Nexus installation or a working copy, reconciles a ticket, and reaches the
+# notification topic. It is still not an authority: it never approves, merges, pushes, or marks a
+# ticket Done, and its report never substitutes for a passed check, a review verdict, or the
+# completion gate (docs/spec.md §12).
+#
+# The model lines mirror <Codex home>\astra.config.toml. A profile cannot include another profile,
+# so when that file changes, mirror the change here.
+
+model = "gpt-6-astra"
+model_provider = "openai"
+model_reasoning_effort = "high"
+web_search = "disabled"
+mcp_optional_startup_grace_ms = 0
+
+# ---------------------------------------------------------------------------------------------
+# Research and reading tools: the same three the coding tiers carry. Recovery reads a lot of
+# evidence — a runtime bug, a provider protocol, a library's behaviour — before it repairs anything.
+# ---------------------------------------------------------------------------------------------
+
+[mcp_servers.openaiDeveloperDocs]
+url = "https://developers.openai.com/mcp"
+
+[mcp_servers.context7]
+url = "https://mcp.context7.com/mcp"
+#bearer_token_env_var = "CONTEXT7_API_KEY"
+
+[mcp_servers.tavily]
+url = "https://mcp.tavily.com/mcp/"
+http_headers = { "X-Tavily-Access-Mode" = "keyless" }
+#bearer_token_env_var = "TAVILY_API_KEY"
+
+# ---------------------------------------------------------------------------------------------
+# Connector apps. Unlike the coding profiles, recovery keeps the operator's personal-service
+# connectors out of the way but does need GitHub whole, writes included: repairing a broken Nexus
+# can mean fixing a branch or a pull request state an operator could not. The ticket thread is
+# reached through the service account credential the supervisor's own environment carries
+# (docs/WORKFLOW.md §12), and the summary is published by the configured SNS publisher command,
+# so no credential belongs in this file.
+# ---------------------------------------------------------------------------------------------
+
+[apps._default]
+enabled = false
+
+[apps.connector_76869538009648d5b282a4bb21c3d157]
+enabled = true
+destructive_enabled = true
+open_world_enabled = true
+
+[plugins."gmail@openai-curated-remote".mcp_servers.gmail]
+enabled = false
+
+[plugins."google-drive@openai-curated-remote".mcp_servers.google-drive]
+enabled = false
+
+[tool_suggest]
+disabled_tools = [
+  { type = "plugin", id = "gmail@openai-curated-remote" },
+  { type = "plugin", id = "google-drive@openai-curated-remote" },
+  { type = "plugin", id = "google-calendar@openai-curated-remote" },
+  { type = "plugin", id = "slack@openai-curated-remote" },
+]

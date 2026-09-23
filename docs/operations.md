@@ -77,6 +77,12 @@ archived file's required behavior and the active suite that carries it are named
 `npm start -- --help` prints the full usage text, and `npm start -- run` with a missing option
 prints a usage error and exits `2`.
 
+The supervised commands are the exception to "nothing leaves the machine beyond the configured
+delivery and completion steps": an incident's one concise report is written into the ticket's
+thread, and its summary is published to the configured SNS topic, which is what delivers the email
+to the configured address. Both are exactly what the `recovery.notifications` policy names, and a
+configuration that names none is refused by the supervised commands.
+
 ## Configuration: one harness file, one file per connected project
 
 Configuration is **two files**, and each field has exactly one owner
@@ -163,6 +169,8 @@ check-config: /home/you/project/docs/nexus.config.example.json is valid
   reviewer               github app 5001141 installation 163007360 as nexus-lens[bot], check "Nexus Lens review", key path environment variable NEXUS_LENS_PRIVATE_KEY_PATH
   reviewer launch        codex codex --profile nexus-astra --model gpt-6-astra
   completion             reviewer nexus-lens[bot] (App 5001141), check "Nexus Lens review", credential environment variable NEXUS_LENS_TOKEN, poll 30s, deadline 1800s
+  recovery               codex codex --profile nexus-recovery --model gpt-6-astra -c model_reasoning_effort=high, at most 2 attempt(s) per incident
+  recovery reporting     arn:aws:sns:eu-north-1:698643713254:nexus-recovery-notifications -> saint282@gmail.com, publisher aws sns publish
 check-config: /home/you/project/nexus.project.json is valid
   setup                  1 command
   checks                 1 command
@@ -293,9 +301,9 @@ read from the checkout `--repo` names, so the repository a run clones describes 
    the launch's own arguments could take back; the ticket stays In Review with the reason and the
    required human action.
    A finding that is actionable carries the order it belongs in: the next claim is told, in its
-   prompt, to repair the baseline before continuing the original task. A diagnosis a stopped invocation left
-   pending is finished before anything else is discovered: the missing status move, or the
-   validated outcome the reviewer turn's invocation recorded — never a second turn or a second
+   prompt, to repair the baseline before continuing the original task. A diagnosis that finds the
+   same evidence again makes only the step the earlier pass had not made — the missing status move —
+   from the validated outcome that pass's reviewer turn recorded: never a second turn or a second
    comment for the same evidence, and never the finding file a turn that then failed left behind. A
    stop that lands while the reviewer turn is running is recorded rather than dropped: that one
    comment and that one move run under their own bounded best-effort deadline, so the claimed
@@ -308,8 +316,11 @@ read from the checkout `--repo` names, so the repository a run clones describes 
    intake lock is kept for inspection — and a record that cannot be read at all fails closed the
    same way. The diagnosis's
    own evidence lives under the connected project's namespace, so two projects sharing one output
-   directory never act on each other's pending diagnosis, and the claim that follows a repair
-   always carries the finding — from the thread, or read back from that evidence. Only a comment
+   directory never act on each other's evidence, and the claim that follows a repair
+   always carries the finding — from the thread, or read back from that evidence. A ticket an
+   invocation left in the running status is an interrupted episode the ordinary loop does not
+   finish: it stays In Progress with its retained evidence, and the supervised queue's recovery
+   agent reconciles it (docs/WORKFLOW.md §12). Only a comment
    that says the whole finding, names the exact evidence the retained record closed as a repair,
    and repeats every field of the finding that record holds counts as coming from the thread — a
    marker names the evidence, never the text, so an edited comment is not it; a partial, edited, or
@@ -1033,6 +1044,188 @@ single In Review ticket through its scoped review and completion phases. Multipl
 tickets stop for attention. A merged pull request must still pass the existing admission and native
 GitHub checks. Ready tickets with retained workspace pointers resume before unrelated new work;
 Done tickets are never rerun. The queue never adopts or resets a workspace.
+
+### One ticket at a time, by identity
+
+```powershell
+npm run dev -- queue run --repo ../target-project --config nexus.config.json --ticket HARN-51
+```
+
+`--ticket` narrows a finite queue run to one ticket. The run reads that ticket's own status and
+follows it by identity — a ticket in review resumes its scoped review and completion, a ready
+ticket with a workspace pointer continues that workspace, and a ready ticket without one is the
+claim. Nothing else is discovered, claimed, or reported on. A scoped ticket that is in none of the
+configured statuses leaves the run with nothing to do and exits `0`, like an empty queue; a scoped
+ticket still in the running status is refused by name, because something else may still be working
+on it.
+
+## `supervise`: run the queue under a recovery agent
+
+```powershell
+npm run dev -- supervise run --repo ../target-project --config nexus.config.json
+npm run dev -- supervise watch --repo ../target-project --config nexus.config.json
+npm run dev -- supervise ticket HARN-51 --repo ../target-project --config nexus.config.json
+```
+
+The supervisor is a small parent around `queue run` and `queue watch`. It starts the queue as a
+worker of its own — the same CLI, the same two files, and the worker's activity display intact —
+and watches how that process ended. A plain zero exit settles the supervision. An ending the
+operator asked for with Ctrl+C stays stopped: the worker is stopped, its evidence is kept, and
+nothing is recovered from an intentional stop. Any other ending — a nonzero exit, a process killed
+by a signal, a crash that left no report at all, a worker that could not be started — opens one
+incident and starts the separate recovery agent described in
+[docs/WORKFLOW.md](../docs/WORKFLOW.md#12-supervision--supervise-run-supervise-watch-supervise-ticket)
+§12 and [docs/spec.md](../docs/spec.md#12-supervised-recovery) §12.
+
+The recovery agent's own judgment investigates the cause, preserves committed and uncommitted work,
+repairs the harness or the working copy, reconciles the ticket and the workspace, and says what
+resumes. A ticket that has to come first may be ranked ahead of the interrupted one, and its
+resumption is recorded on the incident. One incident spends at most `recovery.maxAttempts` recovery
+turns; the same failure returning unchanged after a repair ends in an actionable request for human
+help. Recovery may repair the Nexus installation itself — including its own code — and runs the
+installation's checks when it does. It never weakens a project's tests or checks, never approves,
+merges or pushes, and never marks a ticket Done: its report is context for the next developer and
+reviewer turn, and the configured checks, the Nexus Lens review and the completion path stay the
+only things that decide whether work is done.
+
+Each incident publishes one concise report into the ticket's own Jira thread — written by the same
+service account that wrote the ticket, so both the next developer turn and the next reviewer turn
+read it in the shared history — and one email summary through the configured SNS topic to the
+configured address (in the shipped example,
+`arn:aws:sns:eu-north-1:698643713254:nexus-recovery-notifications` to `saint282@gmail.com`). Both
+publications survive a supervisor restart without repeating: an acknowledged comment is never
+posted twice, an interrupted one is looked for in the thread before another is sent, and an
+acknowledged summary is never published again. A failed publication is recorded as the incident's
+reporting problem and never repeats a recovery that succeeded.
+
+The configuration needs a `recovery` object with its notification policy, and the notification
+publisher (the AWS CLI by default) needs to be able to publish to that topic:
+
+```json
+"recovery": {
+  "agent": {
+    "runtime": "codex",
+    "command": ["codex", "--profile", "nexus-recovery", "--model", "gpt-6-astra", "-c", "model_reasoning_effort=high"]
+  },
+  "maxAttempts": 2,
+  "notifications": {
+    "topicArn": "arn:aws:sns:eu-north-1:698643713254:nexus-recovery-notifications",
+    "email": "saint282@gmail.com",
+    "publisher": ["aws", "sns", "publish"]
+  }
+}
+```
+
+The recovery launch is the `nexus-recovery` profile
+([docs/nexus-agent-tools.md](../docs/nexus-agent-tools.md) §5), which is what gives that turn its
+unattended operational access: the output directory's workspaces and processes, GitHub through the
+operator's own credentials, the ticket thread through the service account credential the
+supervisor's environment carries, and the notification topic above. A `supervise` invocation
+refuses a configuration that declares no `recovery` policy, no notification policy, or a readable
+project configuration that composes no queue, before it claims anything. A project configuration
+that cannot be read at all does not stop it: the supervisor starts, names the problem, and
+supervises a worker that will stop on it, which is the state the recovery agent is there to repair.
+
+The parent can also be started on its own, which is what to reach for when the ordinary CLI will
+not load:
+
+```powershell
+node dist/cli/supervise.js run --repo ../target-project --config nexus.config.json
+```
+
+That entry point takes exactly the arguments above and loads the supervisor, the harness
+configuration and the display — no ordinary command, and no worker module — so a broken queue or
+run module is repaired by the recovery agent instead of taking the parent down with it. The worker
+it starts is the ordinary CLI beside it (`dist/cli.js`).
+
+The supervisor keeps only:
+
+```text
+<workDir>/.supervisor/<supervision-id>/     # a hash of the checkout and the harness configuration
+  holders/holder-000001-<token>.json   # one claim per invocation: the rank it published under,
+                                       #   and the token that names the publication itself
+  current.json                      # the incident being carried, the worker's PID, and the work
+                                    #   its launch was started for — and, once its worker ended,
+                                    #   how it ended, kept until that ending is recorded
+  incidents/<incident-id>/incident.json   # stops, origin, attempts, pending attempt, resume plan,
+                                          # conclusion, resumption, report ids and states
+  incidents/<incident-id>/attempt-1/{input.md,recovery.log,outcome.json}
+  incidents/<incident-id>/recovery-notification*.{stdout,stderr}.log
+```
+
+One supervisor runs per supervision — one checkout and one harness configuration — and the owner
+claim is published exclusively under the next free rank, so two simultaneous starts cannot both own
+it: the lowest live claim owns the queue, a contender that is not it is refused by name, and a
+claim is never renamed, replaced, or removed while its holder may be alive. A claim's own name
+carries the rank it published under and the invocation's own token, so a name belongs to one
+publication and is never written again: clearing a stale claim can only remove the record that
+clearing invocation read back — never a claim published under the same rank afterwards — and two
+starts that read one directory state are ordered by those names. The rank is read
+again before every publication, and a claim that ends up below one that is already there — the rank
+it named was cleared away in between — never decides the ownership: it awaits that claim for a
+bounded moment, clears away what is really gone, and refuses while a claim above it is still there,
+because that one may have decided first; an invocation whose own claim was cleared away in the
+meantime publishes again rather than owning with nothing of its own in the directory. A restart adopts the
+incident its predecessor left instead of starting a second worker; a recorded worker PID, or a
+recovery turn's runtime PID, that is still alive refuses a supervisor that would put a second one
+beside it; and an attempt that was left in flight is reconciled from its own `outcome.json` rather
+than launched again, counted toward `recovery.maxAttempts` either way. A claim whose process is gone
+cannot own anything: it is ignored while the ownership is decided and cleared away by the invocation
+that wins, so a crash between publishing a claim and deciding leaves nothing that blocks the next
+start. Every worker is launched through a handshake — the launch's
+token is written down first, the child does nothing until that record names its PID, and a
+registration that fails stops the child where it waits — so a restart that finds a launch naming no
+process refuses it by name instead of starting a second worker beside a process it cannot name. The
+launch is kept until its ending is durable: the invocation that watched the worker end writes that
+ending down beside it, and a restart decides on it exactly as that invocation would have — a settled
+worker and the operator's own stop owe nothing, every other ending is the incident that invocation
+was about to open, decided through the same bounds (a repeated unchanged failure and a chain of
+stops that did no work open already concluded, exactly as they would have in the invocation that
+watched the ending), and an ending nobody recorded is an unexpected stop investigated the same way,
+including a worker that was carrying out a step a held plan still owes. A recovery runtime the
+harness could not confirm stopped keeps the incident's ownership of it: the attempt stays in flight
+and nothing else runs until a later invocation shows the tree it led ended — or a person who checked
+the host records an acknowledgement, newer than the hold or than the attempt's own start — the same
+hold an interrupted attempt whose shutdown nothing recorded is kept under.
+Starting the supervisor
+while a raw `queue` consumer still runs is refused with the intake lock and its owner named — stop
+that consumer first; a lock is never broken automatically.
+
+An incident's report survives a restart without repeating itself. The Jira comment is looked for in
+the ticket's thread before another is posted, and the email summary is written down as `pending`
+before the publisher runs, with the label of that attempt's own log files, so a restart can tell an
+unattempted send from one that was in flight and knows which evidence belongs to it: that
+attempt's own output is read back and nothing else — an acknowledgement found there is adopted,
+even from a
+publisher that then timed out, was signalled, or could not have its log closed — and a send that
+was never acknowledged is recorded as `interrupted` and left to a person to check rather than sent
+again. Only a publisher that could not be started at all is a failure the next invocation may
+retry — a publisher that ran and acknowledged nothing is recorded as `interrupted` and left to a
+person, because its ending alone never proves the topic refused the summary — without repeating the
+recovery that succeeded, wherever the incident
+record sits. The Jira connection the comment is written through is read from the connected
+project's configuration at that moment, so a report that could not be written while the file was
+broken goes into the thread a repair restored. A report describes one conclusion: an incident that
+concludes again — the blocker whose completion could not be verified, chiefly — has the conclusion it
+now holds published on its own, as a comment whose identity names it and as a summary of its own
+carrying what a person has to do, while what the earlier conclusion published is kept as what it
+was. Each conclusion's summary is reconciled against its own attempt's log and never against
+another conclusion's acknowledgement: an earlier summary's `MessageId` is not evidence about the
+one still in flight.
+A blocker a judgment ranked ahead of the
+interrupted ticket really runs first — as its own scoped `queue run --ticket <KEY>` worker — and the
+resumption is recorded when the interrupted work is really started again, and only after the
+blocker's own ticket is read back as complete: a blocker whose worker settled without reaching the
+configured done status ends in a request for a person instead of advancing the plan. An incident
+that ended
+in a request for human help keeps the queue stopped until a person does what it asks and records the
+acknowledgement in the incident record (`"acknowledgement": { "at": …, "note": … }`): a restart is
+not an answer to that request, and an acknowledgement answers only what it is newer than — one made
+for an earlier hold never resolves a request the incident concluded after it.
+
+Exit codes are the queue's own with the supervision added: `0` when the worker settled, `1` when an
+incident needs a person or an input, configuration, or publication error stopped the supervision,
+`2` for a usage error, and `130` for the operator's own interrupt.
 
 ## Example task
 

@@ -167,7 +167,7 @@ Final statuses remain:
 
 Missing/skipped checks cannot produce `passed`. Keep agent summaries separate from observed results. Invalid input before execution is a CLI error, not a fictional run.
 
-On cancellation/timeout, stop owned commands and agent execution before reporting a clean stop. If termination cannot be confirmed, report the limitation, prevent further checks/repairs, and do not reuse the working copy in that run. Do not claim control over arbitrary detached or unrelated processes. Automatic crash recovery remains out of scope.
+On cancellation/timeout, stop owned commands and agent execution before reporting a clean stop. If termination cannot be confirmed, report the limitation, prevent further checks/repairs, and do not reuse the working copy in that run. Do not claim control over arbitrary detached or unrelated processes. A run itself still recovers nothing: an unexpected end leaves its evidence where it is, and the supervised queue of §12 is what investigates it.
 
 A failure to retain the developer report never replaces cancellation or timeout evidence. The
 harness processes the runtime's shutdown result before finalizing that failure; an unconfirmed
@@ -566,47 +566,37 @@ ticket In Progress with nothing looking for it.
 This pre-delivery diagnosis is recorded in Jira only. There is no pull request yet, so nothing is
 reviewed, approved, or checked on GitHub for it; the harness fabricates no pull-request review, no
 Lens approval, and no check run. The marker inside the one comment is the deduplication record: a
-restart that finds the same evidence — the same immutable item, the same snapshot, the same
+diagnosis that finds the same evidence again — the same immutable item, the same snapshot, the same
 configured commands with the same results — starts no second reviewer turn and writes no second
-comment, and completes only the step the interrupted pass had not made: the status move for a finding
-that is already on the thread, or the publication of the validated outcome the interrupted pass
-recorded under the output directory. That step is the one the accepted outcome asks for, not the one
-a marker names: evidence is closed as a repair, and a ticket returned to its ready status, only
-while the documented outcome holds the actionable finding the marker names, so a comment whose
-marker was edited onto a rejected turn can never promote it into a repair — and a workspace whose
-evidence was closed for a repair without that outcome, or with a rejection beside it, hands no
-finding on and starts no developer from the turn's own file. That record, one per piece of
-evidence, is written before
-anything is published and holds either the finding the turn produced or the problem that rejected
-the turn — so a restart never reads the turn's own finding file as if a failed, stopped, or
-timed-out turn had completed, and a turn that left no recorded outcome is not diagnosed again
-either. A reviewer turn whose own process tree could not be confirmed stopped is never settled: the
-item stays In Review with the evidence and what a person must do, and the intake keeps its lock for
-inspection. That holds when a restart's own resume step runs the diagnosis too — including when
-that invocation refuses the evidence before it would re-read the record, such as a check log that
-can no longer be read or a working copy that is no longer the snapshot: the stop the record already
-holds travels with the refusal, and a record that cannot be read at all fails closed by name instead
-of being rounded down to a confirmed one — and when it
-deduplicates a finding already on the issue, where the recorded stop is read back from the evidence
-before anything is moved instead of a stop being assumed — and when it reconciles an item that had
-already left the running status, where that record is read before the item is treated as settled —
-and a resume that reports an unconfirmed shutdown stops the intake before it discovers or claims
-anything, in a finite batch, a watch scan, and the serial queue alike, so nothing new starts while a
-reviewer runtime may still be writing. A resume with more than one record pending stops at the first
-unconfirmed shutdown instead of starting another reviewer turn, and a result that needs a person
-dominates any actionable one beside it. The evidence is kept per connected project — `<workDir>/
+comment, and completes only the step the earlier pass had not made: the status move for a finding
+that is already on the thread. That step is the one the accepted outcome asks for, not the one a
+marker names: evidence is closed as a repair, and a ticket returned to its ready status, only while
+the documented outcome holds the actionable finding the marker names, so a comment whose marker was
+edited onto a rejected turn can never promote it into a repair — and a workspace whose evidence was
+closed for a repair without that outcome, or with a rejection beside it, hands no finding on and
+starts no developer from the turn's own file. That record, one per piece of evidence, is written
+before anything is published and holds either the finding the turn produced or the problem that
+rejected the turn — so the turn's own finding file is never read as if a failed, stopped, or
+timed-out turn had completed, and a diagnosis that finds a recorded outcome replays it instead of
+spending a second reviewer turn. A reviewer turn whose own process tree could not be confirmed
+stopped is never settled: the item stays In Review with the evidence and what a person must do, and
+the intake keeps its lock for inspection — and when the same evidence is diagnosed again, that
+recorded stop is read back from the evidence before anything is moved instead of a stop being
+assumed. The evidence is kept per connected project — `<workDir>/
 baseline/<project>/<evidence>/` — and a record that names another connected project is refused by
 name rather than read, finished, or published through this one, so two projects sharing one output
-directory never act on each other's pending diagnoses. That recovery runs before anything is
-discovered or claimed, so a ticket left
-in the running status by an interrupted diagnosis is finished rather than reported back as a stuck
-consumer. A reviewer turn that was interrupted before it wrote a finding is not run again for the
-same evidence: the item stays In Review with the retained evidence and what a person must do. An item
-a person has moved in the meantime is left exactly where that person left it; a record this harness
-left unfinished after it really made the move is reconciled with the finding the item's own thread
-already carries — held against the accepted outcome the record keeps, so a rejection beside it is
-never settled as a repair — so that workspace's next claim is still told it when there really is
-one to hand over.
+directory never act on each other's evidence.
+
+An item a previous invocation left in the running status is an interrupted episode, and the
+exceptional recovery of one is not the ordinary loop's: no `source` or `queue` command discovers,
+finishes, comments on, or moves it, and none guesses what a retained record holds. That episode is
+the supervised queue's recovery agent's to investigate and reconcile (§12) — the item, its retained
+evidence and workspace, and the fact that the worker stopped unexpectedly are exactly what the agent
+is given — and until one acts, the item stays In Progress with its retained evidence, visible in
+Jira to whoever looks. A reviewer turn that was interrupted before it wrote a finding is not run
+again for the same evidence on the ordinary path: the recorded evidence and what a person must do
+stay where they are, and an item a person has moved in the meantime is left exactly where that
+person left it.
 
 ### Source readiness between tickets
 
@@ -646,6 +636,242 @@ standalone one-item commands are unchanged.
 This stays a small foreground control loop over existing modules: no database, durable queue, scheduler, detached background process, webhook system, workflow engine, multi-repository coordinator, or general dependency graph. One queue invocation holds the connected project's intake lock under its output directory for its whole life, including while it waits in watch mode, so a second consumer of the same connected project and `workDir` is refused rather than interleaved, while a queue for a different connected project may run under the same `workDir` and harness configuration; there is still no cross-machine coordination, and the storage root itself is not locked.
 
 One limitation is worth stating: a ticket whose pull request GitHub has already merged cannot be repaired in place, because the delivery step refuses to edit a merged pull request. A repair attempt after an unsuccessful post-merge workflow therefore ends with that refusal as an actionable stop rather than a second pull request; splitting such a repair into a new ticket is an operator decision.
+
+### One ticket, by identity
+
+`queue run --ticket <key>` narrows the same finite run to one ticket. The scoped run reads that
+ticket's own status and follows it by identity: a ticket in review resumes only its scoped review
+and completion lifecycle, a ready ticket carrying a workspace pointer continues that workspace, and
+a ready ticket without one is the claim itself. No other ticket is discovered, claimed, reported
+on, or counted, and a scoped run whose ticket is in none of the configured statuses carries
+nothing and claims nothing. A scoped ticket that is still in the running status is refused by name
+exactly as an unscoped scan refuses one, because something else may still be working on it. A
+scoped run holds the same intake lock and reports the same outcomes as an unscoped one.
+
+## 12. Supervised recovery
+
+`supervise run`, `supervise watch` and `supervise ticket <key>` put one small parent in front of
+the queue of §11. The parent runs the same CLI as a worker — the same two configuration files, the
+same activity display — and owns no ticket logic of its own: it watches how that process ended and
+starts a separate recovery agent when the ending was not the one the operator asked for. What used
+to be exceptional recovery policy inside the ordinary loop is the recovery agent's own judgment
+here, and the ordinary loop gains no branch for it.
+
+**What the parent owns.** One worker at a time for one connected project and `workDir`, enforced by
+its own claims under `<workDir>/.supervisor/<supervision-id>/` as well as by the queue's existing
+intake lock. A live owner is refused by name; a record whose process is gone is adopted with a
+fresh claim, which is what makes a supervisor restart resume the incident instead of starting a
+second worker; and a recorded worker PID that is really still running is a refusal, never a second
+worker beside it. Activation beside a raw queue consumer that is really running is refused with the
+lock and its owner named. Nothing here breaks, adopts or deletes a lock: the queue's own
+exclusivity rules are untouched.
+
+Ownership is a claim, and publication is exclusive: each invocation publishes its own claim under
+the next free rank, so two starts cannot both take one rank and a claim published later can never
+overtake one already there — the lowest live claim owns the queue, and every other invocation
+refuses by name. A claim's own name carries the rank *and* the invocation's own token, so a name
+belongs to one publication and is never written by anyone else: clearing a stale claim can only
+ever remove the record the clearing invocation read back, never a claim published under that rank
+afterwards, and the token also keeps two starts that read one directory state apart — the lower
+rank is below, and two claims of one rank compare by the names they published under. The rank is
+read again before every publication, and a publication that no longer stands above every claim
+really there — the rank it named was cleared away before it was published, and a claim published
+meanwhile outranks it — is withdrawn and published again above what is really there, so a delayed
+contender never publishes below a claim that has already decided. Ownership is granted only while
+the claim it was published under is really still there: an invocation whose own claim was cleared
+away publishes again above the state it now reads instead of owning a queue with nothing of its
+own in it. Nothing renames, replaces, or removes a claim a live holder may own: a
+claim whose process is gone is ignored while the ownership is decided and cleared away by the
+invocation that wins, so a crash between publishing a claim and deciding leaves the next start a
+queue it can safely take. The supervisor's own state is keyed by the
+supervision itself — the connected checkout and the harness configuration it was started with —
+never by the connected project's configuration, which has to stay repairable while it is broken;
+the project's own lock namespace is what the activation check reads while that configuration can be
+read.
+
+Every worker is launched through a handshake. The launch's token is written down — with no PID yet —
+before the child is spawned, the child is started with that token and does nothing until the same
+record names its PID, and a registration that fails stops the child where it waits rather than
+letting work run under a launch nothing recorded. A restart that finds a launch naming no process
+refuses it by name: the child it started is gated on exactly that record, so it began no work and
+gives up by itself, and no second worker starts beside a process nobody can name.
+
+The launch is kept until its ending is durable. The invocation that watched the worker end writes
+the ending down beside the launch — the exit code or signal, whether the operator asked for the stop,
+and whether the queue left new run evidence behind — before the launch may be cleared or the incident
+that ending owes may be recorded, so an invocation that stops between them leaves the next one the
+ending itself rather than a pointer that names nothing and no incident. A crash with no error report
+is covered by exactly this: the interruption is never rounded into "no worker was running".
+
+The parent has an entry point of its own (`dist/cli/supervise.js`) that loads no ordinary
+command and no worker module, so a broken queue, run, review or source command does not stop the
+parent that has to repair it; a project configuration that cannot be read at all starts the
+supervision rather than refusing it, while a readable configuration that composes no queue is still
+refused before anything claims.
+
+**How an ending is read.** A plain zero exit is the worker's own settled result. Any other ending
+that arrives under the operator's own interrupt is the operator's stop: the supervision stays
+stopped, recovers nothing, keeps the evidence where it is, and exits with the conventional
+cancellation code. Every other ending — a nonzero exit, a process killed by a signal, a crash that
+left no report at all, a worker that could not be started — is an unexpected stop, and the parent
+opens one incident for it.
+
+**One incident.** An incident records one stopped episode: the stop evidence, every recovery
+attempt it spent, its conclusion, the resumption it recorded, and the publication identities of
+its report — the publication describing the conclusion it holds, and the ones an earlier conclusion
+had before it. The recovery agent runs with its own configured launch — initially the
+`nexus-recovery` profile with `gpt-6-astra` at high reasoning effort — and with unattended
+operational access: the output directory's runs, retained workspaces, receipts and processes, the
+ticket's thread through the service account credential, GitHub through the operator's own
+credentials, and the configured notification topic. It writes one judgment file: `repaired`,
+`blocked` or `unrecoverable`, with the cause, the committed and uncommitted work it preserved,
+what it repaired or reconciled, the work that resumes, an optional blocker ranked ahead of the
+interrupted ticket, the ticket the stop belonged to, and — when it could not repair the situation —
+exactly what a person must do. A judgment field that runs past its bound is refused rather than cut
+down, and the attempt is recorded as one that produced no judgment; so is a judgment that names a
+ticket this harness cannot address, because a report written against the wrong item is worse than
+none. The ticket a judgment names is what an unscoped stop's report is written into, which is how
+an ordinary `run` or `watch` incident gets a thread at all.
+
+**A recovery turn's permissions.** It is the one turn that may repair the Nexus installation
+itself, independently of the broken runtime, and it runs the installation's own configured checks
+when it does; it may repair the configuration and a broken working copy, stop the processes the
+worker left, and reconcile the ticket with its workspace. It may not weaken, skip or delete a
+project's tests, checks, linting or tooling; it may not push, approve, merge, publish or mark a
+ticket Done; and its report is context for the next developer and reviewer turn, never an approval
+or a verification.
+
+**An interrupted episode the ordinary loop leaves alone.** A ticket a previous invocation left in
+the running status — a red baseline it diagnosed but never finished, chiefly — is part of what this
+turn reconciles: the ordinary `source` and `queue` commands gain no branch for it and never guess
+what a retained record holds (§11), and the recovery turn is what reads the retained evidence, the
+workspace and the ticket, returns the item to a state the queue can carry, and says what resumes.
+
+**Bounds.** One incident spends at most `recovery.maxAttempts` recovery turns, and a resumed worker
+that stops again with the very failure its recovery reported repaired ends in an actionable
+request for human help instead of another attempt. That repetition is read from evidence and never
+from an exit code alone: the recovered work must be the work that stopped again, that work must be
+a ticket the supervisor can name, the worker must have left no new run evidence behind — a run the
+queue really finished, never a directory it merely created before stopping — and the
+ending must be the same one. Where the queue did really run something in between, the repetition is
+read from what the two recoveries investigated instead: the same ticket and the same `cause` the
+earlier one reported repaired end in the same request for a person. A failure the supervisor cannot read that way — an unscoped one, or a
+different failure on a ticket it cannot tell apart — is investigated like any other, and the
+supervisor bounds that case over the chain it can see: each incident records whether the work it
+resumed left any run evidence behind, and a queue that stops `maxAttempts` times in a row without
+doing any work at all, every one of those stops already investigated, ends in the same request for
+a person. A recovery turn is bounded by the configured `taskTimeoutMinutes`, unchanged: no new
+timeout is introduced for it. An exhausted bound, an unchanged repetition, a barren chain, an
+`unrecoverable` judgment and an attempt that produced no judgment all end in the same actionable
+place — the incident record, the Jira report and the email summary kept, and a nonzero exit naming
+what a person must do. These bounds belong to the stop, not to the invocation that happened to
+watch it: an ending written down by an invocation that stopped before it could open the incident is
+decided on by the restart through the same decision, so a restart retains the escalation an
+uninterrupted invocation would have made rather than spending another recovery turn on the same
+work — a recorded repetition opens already concluded, and a chain of unobserved stops that did no
+work ends at the bound there too.
+
+**An attempt a restart finds in flight.** An attempt is written down before its turn is launched,
+with the directory the turn works in and the PID of the runtime it started, and it is cleared only
+when its result is recorded. A restarted supervisor therefore never launches the same attempt
+twice: a runtime that is still running is a refusal, one that is gone is reconciled against the
+judgment file it left behind — adopted whole when it is there, recorded as an interrupted attempt
+that produced no judgment when it is not — and either way the attempt counts toward the bound,
+because it was really spent. Nothing is handed to a recovery runtime before its PID is recorded, so
+an attempt that names no process is one whose turn never began: a restart refuses it by name for a
+person to reconcile instead of rounding it into an attempt that produced nothing. A turn whose
+runtime may still be repairing the workspace keeps its ownership: that covers a stop that could not
+be confirmed and a turn whose shutdown no invocation ever recorded, because the supervisor itself
+stopped inside it. The attempt stays in flight, its recorded PID stays the incident's, and what the
+invocation learned is recorded as what it was — the tree's own root and what could not be confirmed,
+or that nothing recorded it — rather than as prose a restart would have to interpret. No second
+attempt or worker starts beside a process nobody has accounted for, and a later invocation
+reconciles that hold only on evidence: the tree the attempt's runtime led has to be shown ended,
+which a missing root PID is not — an owned tool outliving its runtime is exactly what a failed tree
+stop leaves behind — and where the host cannot answer that question at all, a person who has checked
+the host says so by recording an acknowledgement on the incident, newer than the hold or than the
+attempt's own start when no hold could be recorded.
+
+**Resumption.** A `repaired` or `blocked` conclusion returns the queue to work: the parent starts
+the worker again and records the moment that really happened, so a blocker ranked ahead of the
+interrupted ticket is a decision the parent executes rather than a promise: the blocker runs first
+as its own scoped `queue run --ticket <KEY>` worker, whatever intent the incident began with, and
+the interrupted work runs after it. The resumption is recorded when that interrupted work really
+starts, and never before — and the plan advances on the blocker's confirmed result, never on its
+start: a blocker whose own worker was started but never seen to settle is still owed, and a restart
+carries it out again before the interrupted work may run. A settled worker is not a settled blocker
+either: a scoped run reports a completed run with nothing completed when its ticket is not in a
+status the queue carries, so the parent reads the ticket itself through the connected project's own
+Jira connection, and only the configured done status advances the plan. A blocker that ended
+somewhere else — and one whose status could not be read — leaves the interrupted work where it is
+and ends in an actionable request for a person, rather than resuming behind a blocker that never
+ran or starting the same worker again for the same result. An incident that ended in a request for
+human help is not resumed: it is reported and the supervision stops, and a restart is not an answer
+to it — the unresolved request keeps the queue stopped until a person does what it asks and
+acknowledges it in the incident record (`"acknowledgement": { "at": …, "note": … }`). An
+acknowledgement resolves the thing it is newer than and nothing else: one a person made for an
+earlier hold is never read as an answer to a request the incident concluded after it, so a restart
+cannot bypass a request nobody has answered.
+
+**Reporting.** Each incident publishes one concise report into the ticket's own Jira thread,
+written by the same service account that wrote the ticket, so the next developer turn and the next
+reviewer turn both read it in the shared history of §2; and one email summary through the
+configured SNS topic to the configured address. Publication survives a restart without repeating
+itself: an acknowledged comment is never posted twice, a comment whose own write was interrupted
+is looked for in the ticket's thread by its own identity before another is sent, and an
+acknowledged summary is never published again. The email summary's attempt is written down as
+`pending` before the publisher runs, so a restart distinguishes an unattempted send from one that
+was in flight: the attempt's own log is named with it, the publisher's own output is read back from
+exactly that file, an acknowledgement found there is adopted, and an ending that does not prove the
+topic refused anything — a timeout, a signal, a log that
+could not be closed — is recorded as `interrupted` and never retried automatically, because a
+second email for one incident is worse than an unconfirmed one; only a publisher that could not be
+started at all is a failure a later invocation may retry: a publisher that ran and acknowledged
+nothing is uncertain whatever its exit code — an accepted publish whose answer was lost, a refused
+one, and a summary that never left the machine all end that way — and is recorded as `interrupted`
+for a person. The reconciliation is never a search of the incident's own directory: one incident
+publishes a summary for each conclusion it reaches, so an acknowledgement under another attempt's
+label — the earlier conclusion's summary, chiefly — says nothing about the publication still in
+flight, and adopting it would mark a summary delivered that was never sent. The Jira connection a
+comment is written through is read from the connected
+project's configuration as it stands at that moment, so a report owed after a repair goes into the
+thread the repaired configuration names rather than being silently omitted. A publication that
+failed is
+recorded as the incident's reporting problem and is never a reason to repeat a recovery that
+succeeded; an unfinished publication stays reachable and is finished by the next invocation
+wherever the incident sits, however many times the pointer has moved since. The complete incident
+— every stop, every attempt with its cause and preserved work, the conclusion and what resumes —
+reaches both roles through the local history of §2, beside the comments the same service account
+made while handling it — its published report recognized by the identity the incident recorded,
+its other comments by its configured author name and the window the incident covered — as context
+that is never an approval or a verification.
+
+A report describes one conclusion, and each publication records which one it describes. An incident
+that concludes again — a blocker whose completion could not be verified is the one such path — has
+the conclusion it now holds published on its own: a comment under its own identity, whose first line
+names the conclusion, and a summary of its own through the topic, carrying the conclusion and the
+detail it asks for. What the earlier conclusion published is kept as what it was and shown in the
+incident's history, and a publication that describes another conclusion never stands in for this
+one's, so the request a person has to act on reaches the thread and the inbox rather than staying in
+the record while a restart only refuses to start work.
+
+**Restart and deduplication.** The supervisor's state is one set of claims, one current-incident
+pointer, and one record per incident under the supervision's own id; nothing survives in a database
+or a service. A restart adopts the incident it finds, spends the attempts that record is missing,
+finishes its report if that is all that is left, carries out the resumption each conclusion still
+owes, and starts a worker again only where the records say the queue may resume. An incident record
+that cannot be read back is refused by name rather than treated as an absence, and the pointer
+names the worker that is running right now — a worker, or a recovery turn's own runtime, that is
+still alive is refused rather than duplicated. A pointer whose worker is gone and whose ending no
+incident recorded is not read as "no worker is running": the pointer's launch says what that worker
+was carrying out, and an ending it records is decided on exactly as the invocation that watched it
+decided — a settled worker finished its work and the operator's own stop recovers nothing — while
+any other ending, an ending nobody observed and one written down before the invocation that watched
+it could record the incident included, is an unexpected stop: the supervisor itself stopped while
+its worker ran, so an incident is opened for it and investigated before any fresh work starts. A
+launch that was carrying out a step an incident's plan still owes is investigated like any other:
+that plan records the interruption the step began from, never what happened during it, and the step
+is carried out again only after its own interruption is reconciled.
 
 ## Jira API references
 

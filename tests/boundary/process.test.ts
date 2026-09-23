@@ -15,6 +15,7 @@
  * confirms whatever is left before the temporary directories are removed —
  * whatever the case itself asserted, or failed to assert.
  */
+import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { mkdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -22,7 +23,11 @@ import { describe, expect, it } from 'vitest';
 import { runCommand } from '../../src/process/command.js';
 import { runInvocation } from '../../src/process/invocation.js';
 import type { InvocationResult } from '../../src/process/invocation.js';
-import { collectHostUtilityWords } from '../../src/process/stop.js';
+import {
+  collectHostUtilityWords,
+  confirmOwnedTreeEnded,
+  ownedTreeLiveness,
+} from '../../src/process/stop.js';
 import { createTempDir } from '../support.js';
 import {
   pause,
@@ -329,6 +334,73 @@ describe('ending what an invocation started', () => {
     expect(result.terminationProblem).toBeNull();
     expect(await waitUntilGone(Number(recorded.pid))).toBe(true);
     expect(await waitUntilGone(Number(recorded.child))).toBe(true);
+  }, 60_000);
+
+  it('never reads a dead root as proof that the tree it led has ended', async () => {
+    const cwd = await createTempDir();
+    const ledger = path.join(cwd, 'orphans.pids');
+    processes.watchPidFile(ledger);
+    // A root that starts a child in its own process group and then exits: the
+    // recorded PID is gone and what it started is not — exactly the state a
+    // stop that failed leaves behind.
+    const script = [
+      `const { spawn } = await import('node:child_process');`,
+      `const { appendFileSync } = await import('node:fs');`,
+      `const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });`,
+      `appendFileSync(${JSON.stringify(ledger)}, String(process.pid) + '\\n');`,
+      `appendFileSync(${JSON.stringify(ledger)}, String(child.pid) + '\\n');`,
+      `process.exit(0);`,
+    ].join('\n');
+    const leader = spawn(process.execPath, ['-e', script], {
+      cwd,
+      stdio: 'ignore',
+      windowsHide: true,
+      // The root leads its own group where this host has them, exactly as the
+      // harness starts every invocation it may later have to stop.
+      detached: process.platform !== 'win32',
+    });
+    processes.own(leader.pid);
+
+    let recorded: readonly number[] = [];
+    for (let attempt = 0; attempt < 100 && recorded.length < 2; attempt += 1) {
+      recorded = (await readFile(ledger, 'utf8').catch(() => ''))
+        .split('\n')
+        .map((line) => line.trim())
+        .filter((line) => /^\d+$/.test(line))
+        .map(Number);
+      if (recorded.length < 2) {
+        await pause(50);
+      }
+    }
+    const root = recorded[0];
+    if (root === undefined) {
+      throw new Error('the fixture never recorded the root it started');
+    }
+    expect(await waitUntilGone(root)).toBe(true);
+
+    // The root is gone; the tree it led is not, and no confirmation may read
+    // the missing PID as its ending.
+    const surviving = confirmOwnedTreeEnded(root);
+    expect(surviving.kind).toBe('unconfirmed');
+    if (surviving.kind === 'unconfirmed') {
+      expect(surviving.problem).toMatch(
+        process.platform === 'win32' ? /cannot say/ : /is still running/,
+      );
+    }
+    // A PID that is not one — and, above all, `0`, which would address this
+    // process's own group if it were ever signalled — is never probed as a
+    // tree.
+    expect(ownedTreeLiveness(0)).toBe('unknown');
+    expect(confirmOwnedTreeEnded(0).kind).toBe('unconfirmed');
+    expect(confirmOwnedTreeEnded(null).kind).toBe('unconfirmed');
+
+    // With what it started ended, the tree is shown gone where this host can
+    // ask its group; a host that cannot (a Windows root already gone) still
+    // leaves it to a person rather than inferring it.
+    expect(await processes.stopAll()).toEqual([]);
+    expect(confirmOwnedTreeEnded(root).kind).toBe(
+      process.platform === 'win32' ? 'unconfirmed' : 'ended',
+    );
   }, 60_000);
 
   it('starts nothing at all when the stop arrived before the invocation did', async () => {

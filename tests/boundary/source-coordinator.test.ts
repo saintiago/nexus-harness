@@ -74,7 +74,6 @@ import type {
   BaselineDiagnosisRequest,
   BaselineFinding,
   BaselineReviewedFinding,
-  BaselineResumeOutcome,
   PublishedComment,
   SourceCandidate,
   SourceComment,
@@ -953,116 +952,6 @@ describe('a Git stop the intake could not confirm before any run result exists',
 });
 
 /**
- * The pending pre-delivery diagnosis a previous invocation left: before anything
- * is discovered, the intake finishes it. A reviewer turn whose own stop could
- * not be confirmed stops discovery and polling exactly as a Git stop does — the
- * lock is kept while it may still be writing — while a diagnosis that needs a
- * person but stopped cleanly is reported and the batch goes on with the tickets
- * it may take. No coding turn is ever started from a diagnosis
- * (docs/WORKFLOW.md §11).
- */
-describe('a pending baseline diagnosis a previous invocation left', () => {
-  /** The diagnosis boundary, with only the resume outcome the case supplies. */
-  function diagnosisResuming(
-    outcome: BaselineResumeOutcome | null,
-  ): SourceContext['baselineDiagnosis'] {
-    return {
-      diagnose: async () => {
-        throw new Error('nothing on this path diagnoses fresh evidence');
-      },
-      resume: async () => outcome,
-      reviewedFinding: async () => {
-        throw new Error('nothing on this path reads a reviewed finding back');
-      },
-    };
-  }
-
-  /** What a pending diagnosis whose reviewer was not confirmed stopped resumes as. */
-  function unconfirmedDiagnosis(): BaselineResumeOutcome {
-    return {
-      kind: 'attention',
-      detail: `${REF.key}: the reviewer runtime could not be confirmed stopped`,
-      commentId: 'c1',
-      cleanupConfirmed: false,
-    };
-  }
-
-  it('stops a batch before discovery and keeps the lock', async () => {
-    const workDir = await createTempDir();
-    const harness = coordinatorHarness(workDir, {
-      candidates: [candidate()],
-      baselineDiagnosis: diagnosisResuming(unconfirmedDiagnosis()),
-    });
-
-    const summary = await runSource(harness.context, null);
-
-    expect(summary).toMatchObject({ outcome: 'stopped', attempted: 0, cleanupConfirmed: false });
-    expect(summary.problem).toContain(
-      `${REF.key}: the reviewer runtime could not be confirmed stopped`,
-    );
-    // Nothing was discovered, claimed or run: a reviewer runtime may still be
-    // writing to the diagnosis's evidence, and no coding turn is started from a
-    // diagnosis either way.
-    expect(harness.calls.lists).toBe(0);
-    expect(harness.calls.claims).toEqual([]);
-    expect(harness.calls.runs).toEqual([]);
-    expect(harness.calls.completions).toEqual([]);
-    expect(existsSync(intakeLockPath(workDir, NAMESPACE))).toBe(true);
-    expect(harness.calls.outputs.join('\n')).toContain('left in place for inspection');
-  });
-
-  it('stops a watch the same way, without waiting for another scan', async () => {
-    const workDir = await createTempDir();
-    const waits: number[] = [];
-    const watch = watchHarness({
-      workDir,
-      waits,
-      list: async () => [candidate()],
-      baselineDiagnosis: diagnosisResuming(unconfirmedDiagnosis()),
-    });
-
-    const summary = await watchSource(watch.context);
-
-    expect(summary).toMatchObject({ outcome: 'stopped', attempted: 0, cleanupConfirmed: false });
-    // The scan never happened, so there is nothing to wait out and no second
-    // scan follows it.
-    expect(watch.scans()).toBe(0);
-    expect(waits).toEqual([]);
-    expect(watch.harness.calls.runs).toEqual([]);
-    expect(existsSync(intakeLockPath(workDir, NAMESPACE))).toBe(true);
-  });
-
-  it('reports a diagnosis that needs a person and goes on when it stopped cleanly', async () => {
-    const workDir = await createTempDir();
-    const harness = coordinatorHarness(workDir, {
-      candidates: [candidate()],
-      baselineDiagnosis: diagnosisResuming({
-        kind: 'attention',
-        detail: `${REF.key}: the baseline diagnosis needs a person`,
-        commentId: 'c1',
-        cleanupConfirmed: true,
-      }),
-    });
-
-    const summary = await runSource(harness.context, null);
-
-    // The item is left where the diagnosis left it and the batch goes on with
-    // the tickets it may take: discovery happens, the ticket runs, and the lock
-    // is released as usual.
-    expect(summary).toMatchObject({
-      outcome: 'completed',
-      attempted: 1,
-      passed: 1,
-      cleanupConfirmed: true,
-    });
-    expect(harness.calls.lists).toBe(1);
-    expect(harness.calls.runs).toEqual([REF.key]);
-    expect(harness.calls.outputs.join('\n')).toContain('needs a person');
-    expect(existsSync(intakeLockPath(workDir, NAMESPACE))).toBe(false);
-  });
-});
-
-/**
  * The reviewed finding a claim that continues a returned workspace may not
  * start without: the retained evidence beside the workspace says whether a
  * repair is required and which finding it carries, so the complete recorded
@@ -1087,7 +976,6 @@ describe('the reviewed finding a continued workspace was returned for', () => {
       diagnose: async () => {
         throw new Error('nothing on this path diagnoses fresh evidence');
       },
-      resume: async () => null,
       reviewedFinding: async () => {
         if (result instanceof Error) {
           throw result;
@@ -1254,7 +1142,6 @@ describe('the pre-delivery diagnosis of a completed red baseline', () => {
         diagnosed.push(request);
         return outcome;
       },
-      resume: async () => null,
       reviewedFinding: async () => {
         throw new Error('nothing on this path reads a finding back');
       },

@@ -177,3 +177,76 @@ export async function requestTreeStop(pid: number): Promise<string | null> {
   // instead of asking a window that may never answer.
   return runHostUtility('taskkill', ['/PID', String(pid), '/T', '/F']);
 }
+
+/**
+ * What this host can say about the process tree one recorded PID led: whether
+ * anything of it is still running, that it is gone, or that the host cannot
+ * answer.
+ *
+ * Every invocation the harness starts leads its own process group on this
+ * host's POSIX platforms, so the group itself answers — even after its leader
+ * is gone, which is exactly what a stop that failed leaves behind: a tool the
+ * runtime spawned outlives the runtime, and only the group can still be seen.
+ * Windows has no such group: the tree is addressed by its recorded root there,
+ * so a root that is still running says the tree has not ended, and a root that
+ * is gone leaves nothing this host can ask — `unknown`, never "gone", because
+ * nothing here may read a missing root as proof about what it started.
+ */
+export function ownedTreeLiveness(pid: number): 'gone' | 'running' | 'unknown' {
+  if (!Number.isInteger(pid) || pid <= 0) {
+    return 'unknown';
+  }
+  if (process.platform === 'win32') {
+    try {
+      process.kill(pid, 0);
+      return 'running';
+    } catch (cause) {
+      return (cause as NodeJS.ErrnoException).code === 'ESRCH' ? 'unknown' : 'running';
+    }
+  }
+  try {
+    // The negated PID addresses the group the invocation led, so a descendant
+    // that survived its parent keeps the tree visible here.
+    process.kill(-pid, 0);
+    return 'running';
+  } catch (cause) {
+    // Nothing left in the group is the answer this asked for; anything else is
+    // a group that exists but could not be signalled.
+    return (cause as NodeJS.ErrnoException).code === 'ESRCH' ? 'gone' : 'running';
+  }
+}
+
+/** What confirming the end of one owned process tree found. */
+export type OwnedTreeEnding =
+  { readonly kind: 'ended' } | { readonly kind: 'unconfirmed'; readonly problem: string };
+
+/**
+ * Confirms that nothing of one process tree the harness started is left, as far
+ * as this host can show. Only an answer that the tree is really gone confirms
+ * it: a tree that is still there has not ended, and a host that cannot answer —
+ * a Windows root that is already gone, chiefly — leaves the question to a
+ * person rather than to an inference (docs/spec.md §12).
+ */
+export function confirmOwnedTreeEnded(
+  pid: number | null,
+  probe: (pid: number) => 'gone' | 'running' | 'unknown' = ownedTreeLiveness,
+): OwnedTreeEnding {
+  if (pid === null) {
+    return {
+      kind: 'unconfirmed',
+      problem: 'the attempt recorded no runtime PID, so its tree cannot be looked for',
+    };
+  }
+  const liveness = probe(pid);
+  if (liveness === 'gone') {
+    return { kind: 'ended' };
+  }
+  return {
+    kind: 'unconfirmed',
+    problem:
+      liveness === 'running'
+        ? `something of the tree ${String(pid)} led is still running`
+        : `the recorded process ${String(pid)} is gone, and this host cannot say whether anything ` +
+          'it started is still running',
+  };
+}

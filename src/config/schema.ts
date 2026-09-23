@@ -17,7 +17,7 @@
  * silent guess.
  */
 import { z } from 'zod';
-import type { AgentSelection, CompletionConfig } from '../shared/types.js';
+import type { AgentSelection, Command, CompletionConfig } from '../shared/types.js';
 
 /** A string that is present and contains something other than whitespace. */
 function nonBlankString(field: string): z.ZodString {
@@ -199,6 +199,20 @@ export const COMPLETION_DEFAULTS = {
 /** The smallest delay between two completion polls, in seconds. */
 export const MIN_COMPLETION_POLL_INTERVAL_SECONDS = 5;
 
+/** Documented defaults of the Nexus-wide `recovery` object. */
+export const RECOVERY_DEFAULTS = {
+  maxAttempts: 2,
+} as const;
+
+/**
+ * A topic ARN, as SNS publishes it: `arn:aws:sns:<region>:<account>:<name>`. It
+ * is one literal argument, so a configured ARN can never look like an option.
+ */
+const TOPIC_ARN_PATTERN = /^arn:aws:sns:[a-z0-9-]+:[0-9]{12}:[A-Za-z0-9_-]+$/;
+
+/** One email address, as the summary's destination is written down. */
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
 /**
  * One identifier for an expected post-merge GitHub Actions workflow: the file
  * name, the path under `.github/workflows`, or the numeric workflow ID. It is
@@ -358,6 +372,48 @@ const reviewerSchema = z.strictObject({
 });
 
 /**
+ * Where one incident's summary is emailed. The publisher is executable plus
+ * literal arguments, without the arguments the harness appends, so an operator
+ * can select the AWS CLI (`aws sns publish`), a wrapper, or a stand-in for an
+ * offline exercise (docs/WORKFLOW.md §12).
+ */
+const recoveryNotificationsSchema = z.strictObject({
+  topicArn: z
+    .string({ error: 'recovery.notifications.topicArn must be a string' })
+    .regex(TOPIC_ARN_PATTERN, {
+      error:
+        'recovery.notifications.topicArn must be an SNS topic ARN such as ' +
+        '"arn:aws:sns:eu-north-1:698643713254:nexus-recovery-notifications"',
+    }),
+  email: z.string({ error: 'recovery.notifications.email must be a string' }).regex(EMAIL_PATTERN, {
+    error:
+      'recovery.notifications.email must be an email address such as ' +
+      '"saint282@gmail.com": it is who the SNS topic\'s own subscription delivers the summary to',
+  }),
+  publisher: commandSchema.optional(),
+});
+
+/**
+ * The optional Nexus-wide supervised-recovery policy: the launch a recovery
+ * turn uses, how many turns one incident may spend, and where its summary is
+ * emailed. Nothing project-specific belongs here — the ticket a report names,
+ * the workspace an incident concerns, and the connection its report is written
+ * through all come from the project configuration and the incident record —
+ * and a configuration that declares none is refused by the commands that
+ * supervise rather than defaulted into one nobody selected
+ * (docs/WORKFLOW.md §12).
+ */
+const recoverySchema = z.strictObject({
+  agent: agentSchema.optional(),
+  maxAttempts: boundedInteger(
+    'recovery.maxAttempts',
+    1,
+    'a positive integer: an incident gets at least one recovery turn',
+  ).default(RECOVERY_DEFAULTS.maxAttempts),
+  notifications: recoveryNotificationsSchema.optional(),
+});
+
+/**
  * The project configuration a connected repository carries at its root: the
  * commands that decide a task in that repository, its Jira connection, and its
  * GitHub destination. Nothing Nexus-wide belongs here — no launch, no limit, no
@@ -406,6 +462,7 @@ export const harnessConfigSchema = z
       .optional(),
     reviewer: reviewerSchema.optional(),
     completion: completionSchema.optional(),
+    recovery: recoverySchema.optional(),
   })
   .refine(
     (config) =>
@@ -449,6 +506,7 @@ export const HARNESS_OWNED_FIELDS = [
   'escalation',
   'reviewer',
   'completion',
+  'recovery',
 ] as const;
 
 /**
@@ -472,6 +530,33 @@ export const DEFAULT_AGENT_SELECTION: AgentSelection = {
   runtime: 'codex',
   command: ['codex'],
 };
+
+/**
+ * The recovery launch the harness uses when the configuration names none: the
+ * `nexus-recovery` native profile — the one profile that carries the recovery
+ * agent's own wider tool set — pointed at `gpt-6-astra`, with the profile's own
+ * high reasoning effort restated as a launch argument so a profile file that is
+ * missing cannot quietly fall back to the personal defaults
+ * (docs/nexus-agent-tools.md, docs/WORKFLOW.md §12). It is a launch prefix like
+ * any other, not a fallback: a recovery turn whose configured launch fails does
+ * not come back to this one.
+ */
+export const DEFAULT_RECOVERY_SELECTION: AgentSelection = {
+  runtime: 'codex',
+  command: [
+    'codex',
+    '--profile',
+    'nexus-recovery',
+    '--model',
+    'gpt-6-astra',
+    '-c',
+    'model_reasoning_effort=high',
+  ],
+};
+
+/** How the incident summary is published when the configuration names none. */
+export const DEFAULT_RECOVERY_PUBLISHER: Command = ['aws', 'sns', 'publish'];
+
 export const taskSchema = z.strictObject({
   id: nonBlankString('id'),
   title: nonBlankString('title'),

@@ -32,6 +32,13 @@ import {
 import type { SnapshotContent } from '../../src/history/store.js';
 import { createTicketHistory } from '../../src/history/sync.js';
 import { textSha256 } from '../../src/history/reports.js';
+import { renderHistorySection } from '../../src/history/prompt.js';
+import {
+  incidentFilePath,
+  openIncident,
+  supervisorRoot,
+  writeIncident,
+} from '../../src/supervisor/incident.js';
 import type { SourceRef, Task } from '../../src/shared/types.js';
 import { createTempDir } from '../support.js';
 
@@ -163,6 +170,128 @@ describe('comparing timestamps', () => {
     );
     // An unknown legacy time ties conservatively instead of ordering wrongly.
     expect(compareHistoryTime('not-a-time', '2026-09-16T10:00:00.000Z')).toBe(0);
+  });
+});
+
+describe('the supervised recoveries a ticket’s history carries', () => {
+  it('keeps one incident whole, with the account’s own comments, for both roles', async () => {
+    const workDir = await createTempDir();
+    const root = supervisorRoot(workDir, 'namespace');
+    const seeded = openIncident(
+      'namespace',
+      'ticket',
+      REF.key,
+      2,
+      () => new Date('2026-09-16T10:00:00.000Z'),
+    );
+    await writeIncident(incidentFilePath(root, seeded.id), {
+      ...seeded,
+      updatedAt: '2026-09-16T11:00:00.000Z',
+      stage: 'settled',
+      ticket: { key: REF.key, url: REF.url },
+      conclusion: {
+        outcome: 'repaired',
+        detail: 'the workspace was returned to its recorded branch',
+        at: '2026-09-16T11:00:00.000Z',
+      },
+      stops: [
+        {
+          at: '2026-09-16T10:05:00.000Z',
+          intent: 'ticket',
+          scope: REF.key,
+          exitCode: 1,
+          signal: null,
+          ending: 'exited',
+          launch: null,
+          signature: 'signature',
+        },
+      ],
+      attempts: [
+        {
+          attempt: 1,
+          startedAt: '2026-09-16T10:10:00.000Z',
+          endedAt: '2026-09-16T11:00:00.000Z',
+          outcome: 'repaired',
+          summary: 'the consumer was killed mid-run',
+          cause: 'a stale intake lock',
+          resolution: 'the lock was explained and the ticket returned to its ready status',
+          preserved: ['committed work on harness/HARN-11'],
+          resume: 'HARN-11 resumes from its retained workspace',
+          blocker: null,
+          help: null,
+          problem: null,
+          dir: null,
+          logPath: null,
+        },
+      ],
+      report: {
+        publishedAt: '2026-09-16T11:00:00.000Z',
+        commentId: 'comment-report',
+        commentText: 'Harness recovery report (incident seeded).',
+        conclusion: { outcome: 'repaired', at: '2026-09-16T11:00:00.000Z' },
+        superseded: [],
+        notification: null,
+        problem: null,
+      },
+    });
+    // A comment the same service account wrote while the recovery ran: it is
+    // that incident's own comment, not a person's feedback — and the incident's
+    // published report is recognized by the identity the record kept, whatever
+    // display name the account carries.
+    const comments = [
+      jiraComment({
+        sourceId: 'comment-report',
+        author: 'Nexus Service Account',
+        createdAt: '2026-09-16T10:20:00.000Z',
+        text: 'Harness recovery report (incident seeded). The supervised queue stopped.',
+      }),
+      jiraComment({
+        sourceId: 'comment-recovery',
+        author: 'nexus-lens[bot]',
+        createdAt: '2026-09-16T10:30:00.000Z',
+        text: 'the lock was explained and the ticket returned to its ready status',
+      }),
+    ];
+    const ticketHistory = history(workDir, {
+      jira: async () => ({ comments, truncated: false }),
+    });
+    // Both roles read the same recovery context: it is the account's own record
+    // of what happened to the ticket, not one role's private view.
+    const reviewer = await prepare(ticketHistory, 'reviewer');
+    const developer = await prepare(ticketHistory, 'developer');
+    const snapshot = reviewer;
+
+    const entry = snapshot.entries.find((candidate) => candidate.kind === 'recovery-report');
+    const developerEntry = developer.entries.find(
+      (candidate) => candidate.kind === 'recovery-report',
+    );
+    expect(entry?.complete).toBe(true);
+    expect(developerEntry?.text).toBe(entry?.text);
+    expect(entry?.text).toContain('a stale intake lock');
+    expect(entry?.text).toContain('the lock was explained');
+    expect(entry?.text).toContain('committed work on harness/HARN-11');
+    expect(snapshot.brief.recovery?.map((candidate) => candidate.id)).toEqual(
+      expect.arrayContaining([
+        entry?.id,
+        'jira:jira-comment:comment-recovery',
+        'jira:jira-comment:comment-report',
+      ]),
+    );
+    // Neither the incident nor the account's comment was offered to the
+    // reviewer as a person's feedback.
+    expect(snapshot.brief.newHumanFeedback).toEqual([]);
+    // The report the incident published is the harness's own text, whatever the
+    // service account is called in the thread.
+    expect(
+      snapshot.entries.find((candidate) => candidate.id === 'jira:jira-comment:comment-report')
+        ?.role,
+    ).toBe('harness');
+
+    // Both roles read the same recovery section, and it says what it is.
+    const prompt = renderHistorySection(snapshot, 'reviewer');
+    expect(prompt).toContain('### Recovery context');
+    expect(prompt).toContain('never an approval');
+    expect(prompt).toContain('a stale intake lock');
   });
 });
 

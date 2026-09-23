@@ -107,6 +107,63 @@ export interface HarnessConfig {
    * remote service (docs/WORKFLOW.md §5).
    */
   readonly source?: JiraSourceConfig;
+  /**
+   * The optional supervised-recovery policy, normalized: the launch a recovery
+   * turn uses, how many recovery attempts one incident may spend, and where its
+   * summary is emailed. Absent means nothing supervises a queue — the ordinary
+   * commands behave exactly as they did, and no incident record exists
+   * (docs/WORKFLOW.md §12).
+   */
+  readonly recovery?: RecoveryConfig;
+}
+
+/**
+ * Where one incident's concise report is emailed: the SNS topic that carries
+ * it and the address the report is for. The topic is the operator's own
+ * existing infrastructure — the harness publishes to it, it never subscribes,
+ * confirms, or reads a topic — and the address is recorded in the summary so a
+ * reader knows who it was sent to.
+ */
+export interface RecoveryNotificationConfig {
+  /** The SNS topic ARN the summary is published to. */
+  readonly topicArn: string;
+  /** The address the topic's own subscription delivers the summary to. */
+  readonly email: string;
+  /**
+   * The publisher, as executable plus literal arguments, without the arguments
+   * this module appends: `--topic-arn`, `--subject`, and `--message`. A
+   * configured publisher is resolved like any other launch (its executable
+   * follows the launch-path rules), and its standard output is read for the
+   * message identity it acknowledged.
+   */
+  readonly publisher: Command;
+}
+
+/**
+ * The Nexus-wide supervised-recovery policy: the launch of the recovery agent,
+ * the bound on one incident's recovery attempts, and where the incident
+ * summary is emailed. Recovery judgment belongs to that agent — the harness
+ * starts it, records what it did, and publishes what it concluded — and its
+ * permissions are deliberately wider than a coding or reviewer turn's: it is
+ * the one turn that may repair the Nexus installation itself, reconcile a
+ * working copy and the ticket, and reach the configured notifications
+ * (docs/WORKFLOW.md §12).
+ */
+export interface RecoveryConfig {
+  /**
+   * The recovery turn's own launch, resolved like any other selection: the
+   * documented default is the `nexus-recovery` profile with `gpt-6-astra` at
+   * high reasoning effort.
+   */
+  readonly agent: AgentSelection;
+  /**
+   * How many recovery turns one incident may spend before it ends in an
+   * actionable request for human help. At least one: an incident with no
+   * recovery attempt would report a failure nobody investigated.
+   */
+  readonly maxAttempts: number;
+  /** Where the incident's summary is emailed, when the policy declares one. */
+  readonly notifications?: RecoveryNotificationConfig;
 }
 
 /**

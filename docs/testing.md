@@ -39,7 +39,12 @@ runs and is repaired in the same retained working copy (`execution-repair.test.t
 attempt is handed to the reviewer through a pinned view of its own workspace
 (`review-handoff.test.ts`), the pass is delivered and the ticket is finished only on the merge
 GitHub made at that revision (`delivery-completion.test.ts`), and an interrupted attempt's
-workspace is the one the next attempt continues (`continuation.test.ts`). Each case assembles the
+workspace is the one the next attempt continues (`continuation.test.ts`), and a supervised queue
+recovers an unexpected stop, resumes the work, bounds its attempts, runs a blocker ahead of the
+interrupted ticket and records the resumption after it, adopts the judgment of an attempt an
+earlier invocation left in flight, finishes a report that invocation could not publish, keeps an
+intentional cancellation stopped, and refuses a second worker beside one that never stopped
+(`supervision.test.ts`). Each case assembles the
 harness's own modules — the runner, the workspace, the configured commands, the review scan, the
 delivery step, the completion pass, the report and the ledger — and supplies only the two
 responses a workflow gets from outside: the agent turn, and the service answers of the configured
@@ -59,7 +64,7 @@ explicit inputs and realizes no effect — configuration and input validation, q
 transitions, repair, escalation and baseline-diagnosis decisions, review, watch and completion
 decisions, and conversation-history rules; `tests/boundary/` verifies this host's real contracts —
 processes, Git and filesystem behavior, the intake receipts and lock, the coordinator's escalation
-handoff, its response to a pending diagnosis, its handoff of a completed red baseline to the
+handoff, its handoff of a completed red baseline to the
 configured diagnosis and of the required repair finding to a returned workspace's next claim, the
 pre-delivery diagnosis's reviewer turn, and the Jira and GitHub adapters against controlled
 services and stand-in programs; and
@@ -85,7 +90,15 @@ finding a continuation is told, and its watch cadence are
 `tests/boundary/baseline-review.test.ts` for the one reviewer turn's own record and
 `tests/unit/baseline-diagnosis.test.ts` for what the diagnosis publishes, resumes and refuses; and
 the review scan's evidence, its publication refusals, and the review watch's timing are
-`tests/unit/reviews.test.ts`. No archived file
+`tests/unit/reviews.test.ts`. The supervisor's own decisions — how a worker ending is read, when a
+resumed failure is the one that was repaired, what a recovery judgment may say, and what the
+incident report and prompt carry — are `tests/unit/supervisor.test.ts`; the boundary that keeps the
+parent startable while the harness it supervises is broken — the import graph of
+`src/cli/supervise.ts` — is `tests/unit/supervision-entry.test.ts`; its state files, exclusive
+owner acquisition and intake-lock refusals, worker process and publication boundaries (including
+the `pending` summary a restart has to reconcile) are `tests/boundary/supervisor.test.ts`; the
+recovery records both roles read in the shared history are `tests/unit/history.test.ts`; and the
+assembled supervision is `tests/workflow/supervision.test.ts`. No archived file
 is the only record of a required behavior; what the archive keeps is the whole-command surfaces and
 the shared fixtures those behaviors are assembled into, which the active layers prove at their own
 layer.

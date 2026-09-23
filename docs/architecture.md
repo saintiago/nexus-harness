@@ -12,16 +12,26 @@ Separate decisions from external effects. Coordinators decide what happens next;
 Git, process and service operations. Use ordinary functions and explicit inputs. Add an abstraction
 when it clarifies a real responsibility, not to prepare for hypothetical future work.
 
-The intended recovery direction is a supervisor around Nexus with a separate recovery agent.
-Planned changes do not replace required recovery behavior or permissions until those requirements
-are explicitly revised.
+A supervisor around Nexus runs the queue as a worker and invokes a separate recovery agent after
+an unexpected stop (docs/spec.md §12). Exceptional recovery policy belongs to that agent's
+judgment; the ordinary loop keeps the required behavior — ownership, repair, escalation, verified
+delivery and completion — and gains no branch for it. Recovery's permissions are deliberately
+wider than a coding or reviewer turn's, and they are separate from both.
+
+The supervisor has an entry point of its own (`src/cli/supervise.ts`, built to `dist/cli/supervise.js`)
+and keeps its state under a namespace derived from the checkout and the harness configuration it was
+started with. Both are the same decision: the parent that repairs a broken Nexus must not be loaded
+through it, and must not be keyed by the connected project's configuration, which may be the very
+thing that is broken.
 
 ## Component boundaries
 
 Task intake supplies work and context. Workspace management provides an owned working copy.
 Execution coordinates developer turns and checks; review evaluates the result; delivery and
 completion integrate it through the configured gates. Queue coordination carries one ticket
-through these responsibilities. Process execution and records support every phase.
+through these responsibilities, and supervision sits in front of it: it runs the queue as a
+worker, keeps one incident record per unexpected stop, and hands recovery judgment to a separate
+agent. Process execution and records support every phase.
 
 Each component has a clear [responsibility](components.md). Keep external protocols behind
 adapters. Pass observations and requested operations across boundaries rather than exposing

@@ -28,11 +28,13 @@ import {
   resolveWorkDir,
 } from '../config/load.js';
 import { projectConfigFile } from '../config/paths.js';
+import { queueConfigurationProblem } from '../config/queue-requirements.js';
 import { createGitHubCompletion } from '../delivery/completion.js';
 import { createGitHubDelivery } from '../delivery/github.js';
 import type {
   QueueArmOutcome,
   QueueCompletionOutcome,
+  QueueRecovery,
   QueueReviewOutcome,
   QueueSummary,
 } from '../queue/loop.js';
@@ -43,15 +45,16 @@ import { messageOf } from '../shared/errors.js';
 import type { HarnessConfig, JiraSourceConfig } from '../shared/types.js';
 import { createCompletionPass } from '../sources/completion.js';
 import type { ArmOutcome, CompletionOutcome } from '../sources/completion.js';
-import type { SourceContext, SourceTake } from '../sources/contract.js';
+import type { QueueTicket, SourceContext, SourceTake } from '../sources/contract.js';
 import { SourceError } from '../sources/contract.js';
-import { createBaselineDiagnosis, resumeStop } from '../sources/baseline.js';
+import { createBaselineDiagnosis } from '../sources/baseline.js';
 import { takeOneItem } from '../sources/coordinator.js';
 import { createJiraBaselineRecord } from '../sources/jira/baseline.js';
 import { discoverQueueWork } from '../sources/jira/queue.js';
 import { createJiraCompletionSource, readReviewItem } from '../sources/jira/completion.js';
 import { createJiraSource } from '../sources/jira/connector.js';
 import { createHttpClient, resolveJiraToken } from '../sources/jira/http.js';
+import { discoverScopedQueueWork } from '../sources/jira/queue.js';
 import { acquireIntakeLock } from '../sources/receipts.js';
 import type { ReviewScanContext, ReviewSummary } from '../reviews/contract.js';
 import { ReviewError } from '../reviews/contract.js';
@@ -96,52 +99,12 @@ interface QueueCommandOptions {
   readonly mode: QueueRunMode;
   readonly configPath: string;
   readonly repoPath: string;
-}
-
-/**
- * Everything the configured queue needs, or the reason it cannot be one.
- *
- * A queue completes a ticket through a chain of three configured pieces, so a
- * configuration that cannot complete one is refused before any credential is
- * resolved. The loader already refuses a completion policy whose App, login,
- * or check disagrees with the configured reviewer; what is left for the queue
- * itself is that all three objects are there, because other commands treat
- * them as optional.
- */
-function queueConfigurationProblem(
-  config: HarnessConfig,
-  harnessPath: string,
-  projectPath: string,
-): string | null {
-  if (config.source === undefined) {
-    return (
-      `${projectPath} has no "source" object, so there is no queue to take tickets from ` +
-      '(docs/WORKFLOW.md section 5).'
-    );
-  }
-  if (config.delivery === undefined) {
-    return (
-      `${projectPath} has no "delivery" object, so a passed attempt would stay local and no pull ` +
-      'request could be completed. A queue command needs one; docs/WORKFLOW.md section 8 defines it.'
-    );
-  }
-  if (config.review === undefined) {
-    return (
-      `${harnessPath} has no "reviewer" object, so a ticket could never be reviewed before it is ` +
-      'completed. A queue command needs the Nexus-wide reviewer integration; docs/WORKFLOW.md ' +
-      'section 9 defines it.'
-    );
-  }
-  const delivery = config.delivery;
-  const completion = delivery.completion;
-  if (completion === undefined) {
-    return (
-      `${projectPath} configures "delivery" without "delivery.completion", so nothing would ever ` +
-      'mark a ticket Done. A queue command needs that object; docs/WORKFLOW.md section 10 defines ' +
-      'it.'
-    );
-  }
-  return null;
+  /**
+   * The one ticket a scoped `queue run --ticket` follows, or `null`. A scoped
+   * run carries that ticket by identity and claims nothing else
+   * (docs/WORKFLOW.md §11, §12).
+   */
+  readonly ticket: string | null;
 }
 
 /** One review scan's summary, as the loop reads it. */
@@ -272,7 +235,7 @@ function exitCodeForQueue(summary: QueueSummary): number {
  * lock for the whole run, and hand the serial loop its four ordinary phases.
  */
 async function queueCommand(options: QueueCommandOptions, context: CliContext): Promise<number> {
-  const { mode, configPath, repoPath } = options;
+  const { mode, configPath, repoPath, ticket } = options;
   const projectPath = projectConfigFile(repoPath);
   const { io } = context;
 
@@ -406,6 +369,14 @@ async function queueCommand(options: QueueCommandOptions, context: CliContext): 
     const sourceIo = { out: activeIo.out, err: activeIo.err };
 
     const stop = new AbortController();
+    /**
+     * What the scoped run's own discovery last read: the ticket it follows, and
+     * the phase the queue currently holds it in. Only a scoped run reads it.
+     */
+    let scopedWork: {
+      readonly recovery: QueueRecovery | null;
+      readonly ticket: QueueTicket | null;
+    } | null = null;
     const release = (context.signals ?? hostSignals()).onInterrupt(() => {
       if (stop.signal.aborted) {
         activeIo.err(
@@ -565,33 +536,55 @@ async function queueCommand(options: QueueCommandOptions, context: CliContext): 
             pollIntervalMs: sourceConfig.pollIntervalSeconds * 1000,
             completionPollIntervalMs: completionConfig.pollIntervalSeconds * 1000,
             discover: async () => {
-              // A previous invocation can stop after a red baseline was diagnosed
-              // and before its finding was recorded on the ticket. That item is
-              // still in the running status, where a fresh scan never looks and
-              // where the queue's own recovery refuses to guess: finishing the
-              // diagnosis here is what returns it to its ready status, so the
-              // ordinary repair claim continues the same retained workspace
-              // (docs/WORKFLOW.md §11).
-              const resumed = await baselineDiagnosis.resume(stop.signal);
-              const stopped = resumeStop(resumed);
-              if (stopped !== null) {
-                // Nothing else is discovered or claimed: the item needs a
-                // person, or the intake is being stopped. `cleanupConfirmed`
-                // travels with the stop, so a reviewer runtime that could not
-                // be confirmed ended keeps this invocation's intake lock
-                // instead of being rounded into an ordinary clean stop.
-                return { problem: stopped.detail, cleanupConfirmed: stopped.cleanupConfirmed };
+              // A scoped run follows one ticket by identity and discovers
+              // nothing else: the scoped ticket's own phase is what the loop
+              // carries, and a scoped ticket that is in none of the configured
+              // statuses leaves the run with nothing to do rather than taking
+              // an unrelated ticket (docs/WORKFLOW.md §11, §12).
+              if (ticket !== null) {
+                const scoped = await discoverScopedQueueWork(
+                  sourceConfig,
+                  jiraHttp,
+                  stop.signal,
+                  ticket,
+                );
+                scopedWork = scoped;
+                if (scoped.ticket === null) {
+                  sourceIo.out(
+                    `queue run: ${ticket} is not in any configured status now, so the scoped run ` +
+                      'carries nothing and claims no other ticket',
+                  );
+                }
+                return scoped.recovery;
               }
-              if (resumed !== null) {
-                sourceIo.out(resumed.detail);
-              }
+              // An item a previous invocation left in the running status is not
+              // this loop's to finish: the exceptional recovery of an
+              // interrupted episode belongs to the supervised queue's recovery
+              // agent, and the ordinary loop gains no branch for it
+              // (docs/WORKFLOW.md §12).
               return await discoverQueueWork(sourceConfig, jiraHttp, stop.signal);
             },
             consume: async ({ only }): Promise<SourceTake> => {
               try {
+                // A scoped run's claim is the one ticket its discovery read,
+                // taken by identity: `only` from the loop wins when the loop is
+                // continuing that same ticket, and nothing else is ever
+                // selected.
+                const scoped =
+                  ticket === null || only !== null ? only : (scopedWork?.ticket ?? null);
+                if (ticket !== null && scoped === null) {
+                  return {
+                    outcome: 'empty',
+                    ticket: null,
+                    run: null,
+                    skipped: 0,
+                    problem: null,
+                    cleanupConfirmed: true,
+                  };
+                }
                 return await takeOneItem(intake, {
                   lockHeld: true,
-                  ...(only === null ? {} : { only }),
+                  ...(scoped === null ? {} : { only: scoped }),
                 });
               } catch (cause) {
                 if (cause instanceof SourceError || cause instanceof WorkspaceError) {
@@ -826,6 +819,7 @@ export async function queueCli(args: readonly string[], context: CliContext): Pr
       mode: subcommand,
       configPath: path.resolve(cwd, parsed.options.config ?? ''),
       repoPath: path.resolve(cwd, parsed.options.repo ?? ''),
+      ticket: subcommand === 'run' ? (parsed.options.ticket ?? null) : null,
     },
     context,
   );

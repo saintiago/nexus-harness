@@ -26,17 +26,28 @@
  * final outcome, and the exit code. And one rule above all: a run is reported as
  * finished only once its report really exists, so a report that could not be
  * written is a failure the user sees rather than a completion they were told.
+ *
+ * `supervise` is dispatched here like any other command, but its implementation
+ * lives under `supervisor/` and loads none of the commands above: the same
+ * command is reachable through the supervisor's own entry point
+ * (`dist/supervisor/cli.js`), which exists so a broken queue or run module does
+ * not take the parent that has to repair it down with it.
  */
 import { pathToFileURL } from 'node:url';
 import { checkConfig } from './cli/check-config.js';
 import { EXIT_INPUT_ERROR, EXIT_OK, EXIT_USAGE } from './cli/context.js';
-import type { CliContext, CliTerminal } from './cli/context.js';
+import type { CliContext } from './cli/context.js';
 import { HELP, USAGE_HINT } from './cli/help.js';
 import { CHECK_CONFIG_OPTIONS, parseOptions, RUN_OPTIONS } from './cli/options.js';
 import { queueCli } from './cli/queue-command.js';
 import { reviewCli } from './cli/review-command.js';
 import { runCommand } from './cli/run-command.js';
 import { sourceCli } from './cli/source-command.js';
+import { consoleContext } from './cli/terminal.js';
+import { superviseCli } from './cli/supervise.js';
+import { awaitLaunchRegistration, launchFromEnvironment } from './supervisor/launch.js';
+
+export { colorAllowed } from './cli/terminal.js';
 
 /**
  * Runs one CLI invocation and returns its exit code. Never throws for bad
@@ -76,6 +87,10 @@ export async function runCli(
     return queueCli(argv.slice(1), context);
   }
 
+  if (command === 'supervise') {
+    return superviseCli(argv.slice(1), context);
+  }
+
   if (command !== 'check-config' && command !== 'run') {
     io.err(`error: unknown command "${command}"\n${USAGE_HINT}`);
     return EXIT_USAGE;
@@ -95,56 +110,6 @@ export async function runCli(
     : checkConfig(parsed.options, context);
 }
 
-/** The real console, reading the current working directory at call time. */
-export function consoleContext(): CliContext {
-  return {
-    cwd: process.cwd(),
-    io: {
-      out: (text) => process.stdout.write(`${text}\n`),
-      err: (text) => process.stderr.write(`${text}\n`),
-      terminal: consoleTerminal(),
-    },
-  };
-}
-
-/**
- * The process's own standard output as the pane needs it, when it is really an
- * interactive terminal. A redirected stream — piped to a file, a test's own
- * recorder, a process that reads it — is not one: it gets ordinary lines, and
- * never a cursor sequence.
- */
-function consoleTerminal(): CliTerminal | undefined {
-  if (process.stdout.isTTY !== true) {
-    return undefined;
-  }
-  return {
-    write: (text) => process.stdout.write(text),
-    get columns() {
-      return process.stdout.columns;
-    },
-    get rows() {
-      return process.stdout.rows;
-    },
-    onResize: (handler) => {
-      process.stdout.on('resize', handler);
-      return () => {
-        process.stdout.off('resize', handler);
-      };
-    },
-    color: colorAllowed(process.env),
-  };
-}
-
-/**
- * Whether the pane may color the terminal. The `NO_COLOR` convention — set to
- * anything but the empty string — asks for none: the timeline uses plain output
- * without cursor or color sequences.
- */
-export function colorAllowed(environment: NodeJS.ProcessEnv): boolean {
-  const requested = environment['NO_COLOR'];
-  return requested === undefined || requested === '';
-}
-
 /** True when this module is the process entry point, not an import. */
 function isEntryPoint(): boolean {
   const entry = process.argv[1];
@@ -160,10 +125,30 @@ function isEntryPoint(): boolean {
 }
 
 if (isEntryPoint()) {
+  const context = consoleContext();
   try {
-    process.exitCode = await runCli(process.argv.slice(2), consoleContext());
+    process.exitCode = await runSupervisedLaunch(context, process.argv.slice(2));
   } catch (cause) {
     process.stderr.write(`error: unexpected failure: ${String(cause)}\n`);
     process.exitCode = EXIT_INPUT_ERROR;
   }
+}
+
+/**
+ * The launch handshake, as the launched process sees it: a worker the
+ * supervisor started waits here until the supervisor's own record names it,
+ * and does nothing at all if that record never comes (`supervisor/launch.ts`).
+ * A process a person started directly carries no launch in its environment and
+ * runs the command unchanged — the handshake costs nothing when there is none.
+ */
+async function runSupervisedLaunch(context: CliContext, argv: readonly string[]): Promise<number> {
+  const launch = launchFromEnvironment(process.env);
+  if (launch !== null) {
+    const problem = await awaitLaunchRegistration({ ...launch, pid: process.pid });
+    if (problem !== null) {
+      context.io.err(`error: ${problem}`);
+      return EXIT_INPUT_ERROR;
+    }
+  }
+  return await runCli(argv, context);
 }

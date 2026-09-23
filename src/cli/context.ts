@@ -10,6 +10,7 @@ import type { GitHubDeliveryParts } from '../delivery/github.js';
 import type { GitHubCompletionParts } from '../delivery/completion.js';
 import type { RunnerDependencies } from '../runs/contracts.js';
 import type { SourceRefreshParts } from '../workspace/refresh.js';
+import type { SupervisorParts } from '../supervisor/supervise.js';
 
 /** The run passed, or the CLI printed what it was asked for. */
 export const EXIT_OK = 0;
@@ -124,4 +125,11 @@ export interface CliContext {
    * production substitutes it.
    */
   refreshParts?: SourceRefreshParts;
+  /**
+   * The supervisor's own outward boundaries, when a caller needs to stand in
+   * for one of them: the worker it starts (the Nexus CLI itself), the recovery
+   * turn, the incident reporter, and the paths it reads them from. The real
+   * ones when a caller gives none: nothing in production substitutes them.
+   */
+  supervisorParts?: Partial<SupervisorParts>;
 }

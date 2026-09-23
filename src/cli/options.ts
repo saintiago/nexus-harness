@@ -11,6 +11,7 @@ export interface ParsedOptions {
   readonly config: string | undefined;
   readonly task: string | undefined;
   readonly limit: string | undefined;
+  readonly ticket: string | undefined;
 }
 
 export type OptionParse =
@@ -60,8 +61,27 @@ export const REVIEW_WATCH_OPTIONS: ReadonlyMap<string, string> = new Map([
 export const QUEUE_RUN_OPTIONS: ReadonlyMap<string, string> = new Map([
   ['--repo', 'a path value'],
   ['--config', 'a path value'],
+  ['--ticket', 'a Jira issue key'],
 ]);
 export const QUEUE_WATCH_OPTIONS: ReadonlyMap<string, string> = new Map([
+  ['--repo', 'a path value'],
+  ['--config', 'a path value'],
+]);
+/**
+ * `supervise run` and `supervise watch` take the two files the worker runs
+ * with; `supervise ticket` names the one ticket its scoped run follows. Its
+ * scope is the subcommand's own positional argument rather than an option, so a
+ * scoped run cannot be mistaken for a plain one (docs/WORKFLOW.md §12).
+ */
+export const SUPERVISE_RUN_OPTIONS: ReadonlyMap<string, string> = new Map([
+  ['--repo', 'a path value'],
+  ['--config', 'a path value'],
+]);
+export const SUPERVISE_WATCH_OPTIONS: ReadonlyMap<string, string> = new Map([
+  ['--repo', 'a path value'],
+  ['--config', 'a path value'],
+]);
+export const SUPERVISE_TICKET_OPTIONS: ReadonlyMap<string, string> = new Map([
   ['--repo', 'a path value'],
   ['--config', 'a path value'],
 ]);
@@ -115,6 +135,7 @@ export function parseOptions(
       config: values.get('--config'),
       task: values.get('--task'),
       limit: values.get('--limit'),
+      ticket: values.get('--ticket'),
     },
   };
 }
