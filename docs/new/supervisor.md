@@ -58,7 +58,7 @@ filepath and execution mode. Completed means the configured workflow finished su
 needs-attention means execution could not continue. The report identifies the saved recovery report
 when recovery occurred.
 
-EngineEvent is imported from [TaskEngine's event contract](task-engine.md#provided-interface).
+EngineEvent is imported from [TaskEngine's event contract](task-engine/architecture.md#provided-interface).
 Forward producer events unchanged and emit lifecycle events with source supervisor and types starting,
 running, recovering and finished. Observation does not control execution.
 
@@ -69,7 +69,7 @@ requests this format; this component parses it. A malformed report is a failed r
 
 | Port | Provider contract | Values exchanged |
 | --- | --- | --- |
-| Work | [TaskEngine.run and subscribe](task-engine.md#provided-interface) | WorkflowResult and EngineEvent |
+| Work | [TaskEngine.run and subscribe](task-engine/architecture.md#provided-interface) | WorkflowResult and EngineEvent |
 | Recovery | [AgentRuntime.run](agent-runtime.md#provided-interface) | Recovery profile, WorkspaceRef, AdditionalContext and agent output |
 | Notification | [Notifications.publish](adapters.md#notifications) | Subject, report body and publication result |
 

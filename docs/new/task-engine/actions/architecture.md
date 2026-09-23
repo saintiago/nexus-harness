@@ -10,7 +10,7 @@ interface to other actions.
 
 ## Interface
 
-Actions follow the [TaskEngine action contract](../../task-engine.md#actions). They are bound functions;
+Actions follow the [TaskEngine action contract](../architecture.md#actions). They are bound functions;
 configuration, capabilities, event publishing and the [workspace reference](../../workspace.md#layout-and-reference)
 are supplied before execution. An action receives only the dependencies it needs.
 

@@ -32,11 +32,11 @@ Actions own task-specific behavior. Workflow definitions are executable input, n
 
 ## Interface
 
-Use the [shared value types](high-level-architecture.md#shared-interface-vocabulary).
-Action structure and artifact interfaces follow the [general action design](task-engine/actions/architecture.md).
-Actions use the [workspace data contract](workspace.md#layout-and-reference). Workflow settings
-conform to [Nexus configuration](configuration.md#nexus-configuration); repository and
-command settings conform to [project configuration](configuration.md#project-configuration).
+Use the [shared value types](../high-level-architecture.md#shared-interface-vocabulary).
+Action structure and artifact interfaces follow the [general action design](actions/architecture.md).
+Actions use the [workspace data contract](../workspace.md#layout-and-reference). Workflow settings
+conform to [Nexus configuration](../configuration.md#nexus-configuration); repository and
+command settings conform to [project configuration](../configuration.md#project-configuration).
 
 ### Provided interface
 
@@ -87,11 +87,11 @@ storage, then calls run again.
 
 | Port | Provider contract | Use |
 | --- | --- | --- |
-| Agent execution | [AgentRuntime.run](agent-runtime.md#provided-interface) | Profile ID, WorkspaceRef, AdditionalContext and AgentResult |
-| Task source | [Jira](adapters.md#jira) | Read source documents and ordering; update task state, fields and reports |
-| Repository | [Git](adapters.md#git) | Observe and prepare revisions/workspaces; publish an observed branch |
-| Delivery | [GitHub](adapters.md#github) | Publish and observe pull requests, review, checks and integration |
-| Commands | [Processes](adapters.md#processes) | Run configured setup/check commands and return exit codes and output |
+| Agent execution | [AgentRuntime.run](../agent-runtime.md#provided-interface) | Profile ID, WorkspaceRef, AdditionalContext and AgentResult |
+| Task source | [Jira](../adapters.md#jira) | Read source documents and ordering; update task state, fields and reports |
+| Repository | [Git](../adapters.md#git) | Observe and prepare revisions/workspaces; publish an observed branch |
+| Delivery | [GitHub](../adapters.md#github) | Publish and observe pull requests, review, checks and integration |
+| Commands | [Processes](../adapters.md#processes) | Run configured setup/check commands and return exit codes and output |
 
 Dependencies are supplied to actions at construction; ExecutionRunner receives none of these ports.
 Local task files are an owned input format. Actions normalize source documents, construct role inputs
@@ -130,50 +130,17 @@ A workflow declares named states, one action per nonterminal state, transitions 
 and terminal results. Loops and branches are explicit transitions. Business decisions are typed actions;
 YAML does not contain scripts, arbitrary expressions or artifact input/output mappings.
 
-The finite delivery workflow is:
+Each state names an action and maps its returned outcomes to the next state. A terminal state
+declares the workflow result. For example, this state routes verification outcomes:
 
 ```yaml
-name: finite-delivery
-initial: select
-
-states:
-  select:
-    action: SelectTask
-    on: { selected: prepare, empty: finished, failed: blocked }
-  prepare:
-    action: PrepareWorkspace
-    on: { prepared: startRound, failed: blocked }
-  startRound:
-    action: StartRound
-    on: { started: develop }
-  develop:
-    action: Develop
-    on: { completed: verify, failed: blocked }
-  verify:
-    action: Verify
-    on: { passed: deliver, failed: repair }
-  deliver:
-    action: Deliver
-    on: { published: review, failed: blocked }
-  review:
-    action: Review
-    on: { approved: complete, changesRequested: repair, inconclusive: blocked }
-  repair:
-    action: SelectRepair
-    on: { selected: startRound, exhausted: blocked }
-  complete:
-    action: CompleteTask
-    on: { completed: select, failed: blocked }
-  finished:
-    terminal: drained
-  blocked:
-    terminal: blocked
+verify:
+  action: Verify
+  on: { passed: deliver, failed: repair }
 ```
 
-After completion, the transition back to select supplies queue coordination. The repair transitions
-supply review/check coordination. There are no additional coordinators choosing the next action.
-Other workflows can reuse these actions: single-task execution ends after completion, while watch
-adds waiting and another selection when the source is empty. Waiting is an action, not runner policy.
+The complete finite workflow is defined in [finite-delivery.yml](../../../workflows/finite-delivery.yml).
+Queue loops, repair loops and waits are workflow choices; the runner only follows transitions.
 
 Restart loads the supplied workflow and its saved state. A saved state absent from that workflow is
 an input error. Required task checks and completion evidence remain action contracts.
