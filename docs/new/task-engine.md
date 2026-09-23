@@ -32,6 +32,7 @@ Actions own task-specific behavior. Workflow definitions are executable input, n
 ## Interface
 
 Use the [shared value types](high-level-architecture.md#shared-interface-vocabulary).
+Action structure and artifact interfaces follow the [general action design](task-engine/actions/architecture.md).
 Actions use the [workspace data contract](workspace.md#layout-and-reference). Workflow settings
 conform to [Nexus configuration](configuration.md#nexus-configuration); repository and
 command settings conform to [project configuration](configuration.md#project-configuration).
