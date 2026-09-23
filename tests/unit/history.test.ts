@@ -996,6 +996,277 @@ describe('one ticket history', () => {
     ).toThrow(/does not verify R1-F1/);
   });
 
+  it('settles nothing from a review GitHub has dismissed', async () => {
+    const workDir = await createTempDir();
+    const ticketHistory = history(workDir);
+    const root = workspaceHistoryRoot(workDir, 'HARN-11');
+    const approvedHead = 'c'.repeat(40);
+    const currentHead = 'd'.repeat(40);
+    await ticketHistory.recordReviewerReport?.({
+      ref: REF,
+      workspaceId: 'HARN-11',
+      task: TASK,
+      reviewId: 'review-1',
+      round: 1,
+      head: HEAD,
+      decision: 'request_changes',
+      summary: 'the greeting ignores the argument it is given',
+      findings: [{ path: 'src/greeting.ts', line: 2, body: 'the argument is ignored' }],
+      now: new Date('2026-09-16T10:00:00.000Z'),
+    });
+    await notePublishedReview(root, 'review-1', {
+      id: 71,
+      url: 'https://github.com/owner/name/pull/7#pullrequestreview-71',
+      body: 'Nexus Lens review — HARN-11: the greeting ignores the argument',
+    });
+    // Round 2 approved at a revision and verified R1-F1 there, and GitHub
+    // published that approval; it then dismissed it, as it does with an
+    // approval that a later push made stale.
+    await ticketHistory.recordReviewerReport?.({
+      ref: REF,
+      workspaceId: 'HARN-11',
+      task: TASK,
+      reviewId: 'review-2',
+      round: 2,
+      head: approvedHead,
+      decision: 'approve',
+      summary: 'the repair holds at this revision',
+      findings: [],
+      verifications: [{ finding: 'R1-F1', state: 'verified', evidence: 'read src/greeting.ts:2' }],
+      now: new Date('2026-09-16T10:30:00.000Z'),
+    });
+    await notePublishedReview(root, 'review-2', {
+      id: 82,
+      url: 'https://github.com/owner/name/pull/7#pullrequestreview-82',
+      body: 'Nexus Lens review — HARN-11: the repair holds at this revision',
+    });
+
+    // The dismissed approval decides nothing, whatever head the pull request
+    // now carries: while a later revision has moved the head — the case the
+    // dismissal is meant to notice — and while it still sits at the head the
+    // approval was made on. R1-F1 is still outstanding either way, and the
+    // next verdict has to state a reading of it rather than approve an empty
+    // request.
+    for (const head of [currentHead, approvedHead]) {
+      const snapshot = await prepare(
+        history(workDir, {
+          pull: async () => ({
+            pullRequest: {
+              number: 7,
+              url: 'https://github.com/owner/name/pull/7',
+              title: 'HARN-11: add a greeting function',
+              headBranch: 'harness/HARN-11',
+              baseBranch: 'main',
+              headSha: head,
+              observedAt: '2026-09-16T11:00:00.000Z',
+            },
+            comments: [
+              {
+                sourceId: '82',
+                author: 'nexus-lens[bot]',
+                createdAt: '2026-09-16T10:30:00.000Z',
+                updatedAt: null,
+                text: 'Nexus Lens review — HARN-11: the repair holds at this revision',
+                url: 'https://github.com/owner/name/pull/7#pullrequestreview-82',
+                state: 'DISMISSED',
+                commit: approvedHead,
+              },
+            ],
+            truncated: false,
+          }),
+        }),
+        'reviewer',
+        3,
+      );
+      expect(
+        unresolvedRounds(snapshot.brief).map((one) => one.findings.map((finding) => finding.id)),
+      ).toEqual([['R1-F1']]);
+      const outstanding = outstandingFindingIds(unresolvedRounds(snapshot.brief));
+      expect(outstanding).toEqual(['R1-F1']);
+      expect(() =>
+        parseVerdict(
+          JSON.stringify({ verdict: 'approve', summary: 'the repair holds', findings: [] }),
+          'verdict.json',
+          outstanding,
+          retainedFindingIds(snapshot),
+        ),
+      ).toThrow(/does not verify R1-F1/);
+    }
+  });
+
+  it('keeps a dismissed change request’s findings and settles none of its readings', async () => {
+    const workDir = await createTempDir();
+    const ticketHistory = history(workDir);
+    const root = workspaceHistoryRoot(workDir, 'HARN-11');
+    await ticketHistory.recordReviewerReport?.({
+      ref: REF,
+      workspaceId: 'HARN-11',
+      task: TASK,
+      reviewId: 'review-1',
+      round: 1,
+      head: HEAD,
+      decision: 'request_changes',
+      summary: 'the greeting ignores the argument it is given',
+      findings: [{ path: 'src/greeting.ts', line: 2, body: 'the argument is ignored' }],
+      now: new Date('2026-09-16T10:00:00.000Z'),
+    });
+    await notePublishedReview(root, 'review-1', {
+      id: 71,
+      url: 'https://github.com/owner/name/pull/7#pullrequestreview-71',
+      body: 'Nexus Lens review — HARN-11: the greeting ignores the argument',
+    });
+    await ticketHistory.recordReviewerReport?.({
+      ref: REF,
+      workspaceId: 'HARN-11',
+      task: TASK,
+      reviewId: 'review-2',
+      round: 2,
+      head: HEAD,
+      decision: 'request_changes',
+      summary: 'one repair is verified and another defect is new',
+      findings: [{ path: 'src/salutation.ts', line: 3, body: 'the salutation is wrong' }],
+      verifications: [{ finding: 'R1-F1', state: 'verified', evidence: 'read src/greeting.ts:2' }],
+      now: new Date('2026-09-16T10:40:00.000Z'),
+    });
+    await notePublishedReview(root, 'review-2', {
+      id: 82,
+      url: 'https://github.com/owner/name/pull/7#pullrequestreview-82',
+      body: 'Nexus Lens review — HARN-11: one repair is verified and another defect is new',
+    });
+
+    const snapshot = await prepare(
+      history(workDir, {
+        pull: async () =>
+          pullConversation([
+            {
+              sourceId: '82',
+              author: 'nexus-lens[bot]',
+              createdAt: '2026-09-16T10:40:00.000Z',
+              updatedAt: null,
+              text: 'Nexus Lens review — HARN-11: one repair is verified and another defect is new',
+              url: 'https://github.com/owner/name/pull/7#pullrequestreview-82',
+              state: 'DISMISSED',
+              commit: HEAD,
+            },
+          ]),
+      }),
+      'reviewer',
+      3,
+    );
+
+    // Dismissal withdraws GitHub's blocking state, not the defects the review
+    // recorded: both identities still stand, and neither reading its report
+    // stated settled anything.
+    const rounds = unresolvedRounds(snapshot.brief);
+    expect(rounds.map((one) => one.findings.map((finding) => finding.id))).toEqual([
+      ['R1-F1'],
+      ['R2-F1'],
+    ]);
+    const outstanding = outstandingFindingIds(rounds);
+    expect(outstanding).toEqual(['R1-F1', 'R2-F1']);
+    expect(() =>
+      parseVerdict(
+        JSON.stringify({
+          verdict: 'approve',
+          summary: 'both defects are gone',
+          findings: [],
+          verifications: [
+            { finding: 'R1-F1', state: 'verified', evidence: 'read src/greeting.ts:2' },
+          ],
+        }),
+        'verdict.json',
+        outstanding,
+        retainedFindingIds(snapshot),
+      ),
+    ).toThrow(/does not verify R2-F1/);
+  });
+
+  it('matches a retained report to the native review its record published without a note', async () => {
+    const workDir = await createTempDir();
+    const ticketHistory = history(workDir);
+    await ticketHistory.recordReviewerReport?.({
+      ref: REF,
+      workspaceId: 'HARN-11',
+      task: TASK,
+      reviewId: 'review-2',
+      round: 2,
+      head: HEAD,
+      decision: 'request_changes',
+      summary: 'the repair did not hold',
+      findings: [{ path: 'src/greeting.ts', line: 2, body: 'the argument is still ignored' }],
+      now: new Date('2026-09-16T10:00:00.000Z'),
+    });
+    // The review record — written when GitHub acknowledged the review — names
+    // the native review this attempt published. The enrichment that would have
+    // noted the same id on the report digest never arrived.
+    const reviewDir = path.join(workDir, 'reviews', 'review-2');
+    await mkdir(reviewDir, { recursive: true });
+    await writeFile(
+      path.join(reviewDir, 'review.json'),
+      JSON.stringify({
+        version: 1,
+        reviewId: 'review-2',
+        ref: REF,
+        startedAt: '2026-09-16T09:50:00.000Z',
+        endedAt: '2026-09-16T10:00:00.000Z',
+        disposition: 'reviewed',
+        verdict: 'request_changes',
+        problem: null,
+        pullRequest: { headSha: HEAD, headBranch: 'harness/HARN-11' },
+        review: {
+          id: 72,
+          url: 'https://github.com/owner/name/pull/7#pullrequestreview-72',
+          state: 'CHANGES_REQUESTED',
+        },
+      }),
+      'utf8',
+    );
+
+    const snapshot = await prepare(
+      history(workDir, {
+        // The published review and its inline finding come back on the next
+        // read, exactly as GitHub reports the review the harness published.
+        pull: async () =>
+          pullConversation([
+            {
+              sourceId: '72',
+              author: 'nexus-lens[bot]',
+              createdAt: '2026-09-16T10:00:00.000Z',
+              updatedAt: null,
+              text: 'Nexus Lens review — HARN-11: the repair did not hold\n\nnexus-history: reviewer review-2',
+              url: 'https://github.com/owner/name/pull/7#pullrequestreview-72',
+              state: 'CHANGES_REQUESTED',
+              commit: HEAD,
+            },
+            {
+              sourceId: '9001',
+              author: 'nexus-lens[bot]',
+              createdAt: '2026-09-16T10:00:00.000Z',
+              updatedAt: null,
+              text: 'src/greeting.ts:2 — the argument is still ignored',
+              url: 'https://github.com/owner/name/pull/7#discussion_r9001',
+              path: 'src/greeting.ts',
+              line: 2,
+              body: 'the argument is still ignored',
+              reviewId: 72,
+              commit: HEAD,
+            },
+          ]),
+      }),
+      'reviewer',
+      3,
+    );
+
+    // One defect keeps one identity: the retained report and the native review
+    // it published are the same round, read at the native review's own state.
+    const rounds = unresolvedRounds(snapshot.brief);
+    expect(rounds.map((one) => one.findings.map((finding) => finding.id))).toEqual([['R2-F1']]);
+    expect(rounds[0]?.nativeReviewId).toBe(72);
+    expect(rounds[0]?.head).toBe(HEAD);
+    expect(rounds[0]?.decision).toBe('request_changes');
+    expect(snapshot.gaps.filter((gap) => gap.includes('no complete local report'))).toEqual([]);
+  });
+
   it('does not let a request refused publication settle what it verified', async () => {
     const workDir = await createTempDir();
     const ticketHistory = history(workDir);
@@ -1176,6 +1447,115 @@ describe('one ticket history', () => {
     ]);
     expect(round?.findings.map((finding) => finding.continues)).toEqual(['R1-F1']);
     expect(outstandingFindingIds(unresolvedRounds(after.brief))).toEqual(['R1-F1']);
+  });
+
+  it('keeps a settled native review’s identity nameable for a later regression', async () => {
+    const workDir = await createTempDir();
+    const ticketHistory = history(workDir);
+    const root = workspaceHistoryRoot(workDir, 'HARN-11');
+    /** One native review, as the pull request conversation reports it. */
+    const nativeReview = (overrides: Partial<ReadComment>): ReadComment => ({
+      sourceId: '91',
+      author: 'a human reviewer',
+      createdAt: '2026-09-16T10:00:00.000Z',
+      updatedAt: null,
+      text: 'the argument is ignored',
+      url: 'https://github.com/owner/name/pull/7#pullrequestreview-91',
+      state: 'CHANGES_REQUESTED',
+      commit: HEAD,
+      ...overrides,
+    });
+    // An independent defect is still outstanding from a harness review round,
+    // so the settled native identity is not one of the required readings.
+    await ticketHistory.recordReviewerReport?.({
+      ref: REF,
+      workspaceId: 'HARN-11',
+      task: TASK,
+      reviewId: 'review-3',
+      round: 3,
+      head: HEAD,
+      decision: 'request_changes',
+      summary: 'the salutation is wrong',
+      findings: [{ path: 'src/salutation.ts', line: 3, body: 'the salutation is wrong' }],
+      now: new Date('2026-09-16T11:00:00.000Z'),
+    });
+    await notePublishedReview(root, 'review-3', {
+      id: 73,
+      url: 'https://github.com/owner/name/pull/7#pullrequestreview-73',
+      body: 'Nexus Lens review — HARN-11: the salutation is wrong',
+    });
+
+    const snapshot = await prepare(
+      history(workDir, {
+        // The native reviewer's finding, and then that same reviewer's approval
+        // at the current head: reconciliation settles the identity the finding
+        // was raised with, and no local report ever held it.
+        pull: async () =>
+          pullConversation([
+            nativeReview({}),
+            {
+              sourceId: '9001',
+              author: 'a human reviewer',
+              createdAt: '2026-09-16T10:00:00.000Z',
+              updatedAt: null,
+              text: 'src/greeting.ts:2 — the argument is ignored',
+              url: 'https://github.com/owner/name/pull/7#discussion_r9001',
+              path: 'src/greeting.ts',
+              line: 2,
+              body: 'the argument is ignored',
+              reviewId: 91,
+              commit: HEAD,
+            },
+            nativeReview({
+              sourceId: '92',
+              state: 'APPROVED',
+              createdAt: '2026-09-16T10:30:00.000Z',
+              text: 'the repair holds',
+            }),
+          ]),
+      }),
+      'reviewer',
+      4,
+    );
+
+    const rounds = unresolvedRounds(snapshot.brief);
+    const outstanding = outstandingFindingIds(rounds);
+    expect(outstanding).toEqual(['R3-F1']);
+    // The identity the settled native review raised is retained — the review and
+    // its inline comment stay in the shared entries — so a later revision that
+    // brings the defect back names the same finding instead of a new one.
+    const retained = retainedFindingIds(snapshot);
+    expect(retained).toEqual(['R3-F1', 'N91-F1']);
+    const regression = parseVerdict(
+      JSON.stringify({
+        verdict: 'request_changes',
+        summary: 'repairing the salutation reintroduced the greeting defect',
+        findings: [
+          {
+            path: 'src/greeting.ts',
+            line: 2,
+            body: 'the argument is ignored again',
+            kind: 'regression',
+            continues: 'N91-F1',
+          },
+        ],
+        verifications: [
+          { finding: 'R3-F1', state: 'verified', evidence: 'read src/salutation.ts:3' },
+        ],
+      }),
+      'verdict.json',
+      outstanding,
+      retained,
+    );
+    expect(regression.findings).toEqual([
+      {
+        path: 'src/greeting.ts',
+        line: 2,
+        body: 'the argument is ignored again',
+        kind: 'regression',
+        continues: 'N91-F1',
+      },
+    ]);
   });
 
   it('keeps a continued defect’s identity through recording and the next prompt', async () => {
