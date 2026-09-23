@@ -1374,7 +1374,7 @@ where it belongs. It is optional as a whole — `run`, `source`, `review` and `q
 | --- | --- |
 | `recovery.agent` | The recovery turn's launch prefix, resolved like `agent` (§1). Default: `codex --profile nexus-recovery --model gpt-6-astra -c model_reasoning_effort=high`, the tier [nexus-agent-tools.md](nexus-agent-tools.md) installs. |
 | `recovery.maxAttempts` | How many recovery turns one incident may spend. A positive integer, default `2`. |
-| `recovery.notifications` | Where the incident summary is emailed: `topicArn` (an SNS topic ARN), `email` (the address the topic's own subscription delivers to), and an optional `publisher` command, default `["aws", "sns", "publish"]`. The harness appends `--topic-arn`, `--subject` and `--message`; the publisher's own output is read for the acknowledged `MessageId`. |
+| `recovery.notifications` | Where the incident summary is emailed: `topicArn` (an SNS topic ARN), `email` (the address the topic's own subscription delivers to), and an optional `publisher` command, default `["aws", "sns", "publish"]`. The harness appends `--topic-arn`, `--subject` and `--message`; the publisher's own output — the log files of the attempt that wrote `pending` down — is read for the acknowledged `MessageId`, and for that attempt alone. |
 
 ```json
 "recovery": {
@@ -1398,7 +1398,8 @@ commands change no timeout.
 
 ```text
 <workDir>/.supervisor/<supervision-id>/     # a hash of the checkout and the harness configuration
-  holders/holder-000001.json                # one claim per invocation: pid, token, intent, checkout
+  holders/holder-000001-<token>.json        # one claim per invocation: the rank it published under
+                                            #   plus its own token, then pid, intent, checkout
   current.json                              # the incident being carried, the worker's pid, and the
                                             #   work its launch was started for
   incidents/<incident-id>/
@@ -1414,19 +1415,27 @@ broken project configuration is exactly what is being repaired, so it cannot be 
 configuration; the connected project's own lock namespace of §1 is what the activation check reads
 instead (and, until its configuration can be read, there is no lock to read).
 
-The claims are the lock, and a claim is the rank it was published under: a start reads the highest
-rank any claim carries and creates the next one exclusively, so two simultaneous starts cannot hold
-one claim, and a claim published from the directory as it stands always outranks every claim
-already there. The rank is read again before every publication, and a claim that was published
+The claims are the lock, and a claim is the rank it was published under together with the
+invocation's own token: a start reads the highest rank any claim carries and creates the next one
+exclusively, so two simultaneous starts cannot hold one claim, and a claim published from the
+directory as it stands always outranks every claim already there. The token is what makes the
+name a name: it is the invocation's own, so no contender ever writes a name another contender
+wrote, and clearing a stale claim can only ever remove the record the clearing invocation read
+back — never a claim published under that rank afterwards, which carries a name of its own. Two
+claims that carry one rank — two starts reading a single directory state — are ordered by those
+names, so every contender orders the same two claims alike. The rank is read again before every
+publication, and a claim that was published
 below one already there — the rank it named was cleared away in between, so a claim published
 meanwhile outranks it — is withdrawn and published again above what is really there: a delayed
 contender never publishes below a claim that has already decided. The
-lowest-ranking live claim owns the queue, and every other invocation refuses by name. A claim whose
+lowest live claim owns the queue, and every other invocation refuses by name. A claim whose
 process is gone cannot own anything: it is ignored while the ownership is decided and cleared away
 by the invocation that wins, which is what makes a restart continue the incident instead of starting
 a second worker. Nothing renames, replaces, or removes a claim a live holder may own — no contender
 ever touches another's record — so a contender cannot lose a race it has already won, and a crash
-between publishing a claim and deciding leaves the next start a queue it can take safely. A
+between publishing a claim and deciding leaves the next start a queue it can take safely: an
+invocation whose own claim was cleared away before it decided publishes again above the state it
+then reads rather than owning a queue with nothing of its own in it. A
 recorded worker PID — or a recovery turn's own runtime PID — that is still alive refuses a
 supervisor that would put a second one beside it. Activating the
 supervisor beside a raw `queue` consumer that is really running is refused with the intake lock and
@@ -1540,9 +1549,14 @@ never taken for this one's and this one's is never taken for the earlier one's.
 
 A restart finishes what an interrupted invocation left, and never publishes anything twice. The
 comment is looked for in the ticket's thread by its own identity before another is posted, and the
-email summary is recorded as `pending` **before** the publisher runs: a restart that finds
-`pending` reads the publisher's own output — the acknowledgement the CLI printed is the evidence —
-and adopts it when it is there. When it is not, the summary is recorded as `interrupted` and a
+email summary is recorded as `pending` **before** the publisher runs, together with the label of
+that attempt's own log files: a restart that finds
+`pending` reads that attempt's own output — the acknowledgement the CLI printed there is the
+evidence — and adopts it when it is there. An acknowledgement found under another attempt's label
+belongs to another publication — an earlier conclusion's summary, when the incident concluded
+again — and is never read as this one's delivery: the request a person has to act on would then be
+marked sent without anything of it having left the machine. When the named attempt acknowledged
+nothing, the summary is recorded as `interrupted` and a
 person checks the topic, because a second email for one incident is worse than an unconfirmed one.
 Only a publication that really failed is retried, and retrying a publication never repeats the
 recovery that came before it. What "really failed" means is read from the publisher's own output and
@@ -1581,6 +1595,13 @@ the same evidence over a chain: each incident records whether the worker it resu
 evidence behind, so a queue that stops `maxAttempts` times in a row without doing anything at all —
 every one of those stops already investigated by a recovery turn — ends in an actionable request
 for human help instead of another attempt.
+
+These bounds belong to the stop, not to the invocation that happened to watch it: an invocation
+that stopped between writing its worker's ending down and recording the incident leaves that ending
+in the pointer, and the restart that adopts it decides it through the same evidence — the same
+repetition test, the same chain of barren stops, and the same actionable request for a person when
+either bound is reached. A crash there cannot turn one escalation into an endless series of
+recovery turns.
 
 ### Exits
 

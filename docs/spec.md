@@ -668,12 +668,19 @@ exclusivity rules are untouched.
 
 Ownership is a claim, and publication is exclusive: each invocation publishes its own claim under
 the next free rank, so two starts cannot both take one rank and a claim published later can never
-overtake one already there — the lowest-ranking live claim owns the queue, and every other
-invocation refuses by name. The rank is read again before every publication, and a publication that
-no longer stands above every claim really there — the rank it named was cleared away before it was
-published, and a claim published meanwhile outranks it — is withdrawn and published again above
-what is really there, so a delayed contender never publishes below a claim that has already
-decided. Nothing renames, replaces, or removes a claim a live holder may own: a
+overtake one already there — the lowest live claim owns the queue, and every other invocation
+refuses by name. A claim's own name carries the rank *and* the invocation's own token, so a name
+belongs to one publication and is never written by anyone else: clearing a stale claim can only
+ever remove the record the clearing invocation read back, never a claim published under that rank
+afterwards, and the token also keeps two starts that read one directory state apart — the lower
+rank is below, and two claims of one rank compare by the names they published under. The rank is
+read again before every publication, and a publication that no longer stands above every claim
+really there — the rank it named was cleared away before it was published, and a claim published
+meanwhile outranks it — is withdrawn and published again above what is really there, so a delayed
+contender never publishes below a claim that has already decided. Ownership is granted only while
+the claim it was published under is really still there: an invocation whose own claim was cleared
+away publishes again above the state it now reads instead of owning a queue with nothing of its
+own in it. Nothing renames, replaces, or removes a claim a live holder may own: a
 claim whose process is gone is ignored while the ownership is decided and cleared away by the
 invocation that wins, so a crash between publishing a claim and deciding leaves the next start a
 queue it can safely take. The supervisor's own state is keyed by the
@@ -757,7 +764,12 @@ a person. A recovery turn is bounded by the configured `taskTimeoutMinutes`, unc
 timeout is introduced for it. An exhausted bound, an unchanged repetition, a barren chain, an
 `unrecoverable` judgment and an attempt that produced no judgment all end in the same actionable
 place — the incident record, the Jira report and the email summary kept, and a nonzero exit naming
-what a person must do.
+what a person must do. These bounds belong to the stop, not to the invocation that happened to
+watch it: an ending written down by an invocation that stopped before it could open the incident is
+decided on by the restart through the same decision, so a restart retains the escalation an
+uninterrupted invocation would have made rather than spending another recovery turn on the same
+work — a recorded repetition opens already concluded, and a chain of unobserved stops that did no
+work ends at the bound there too.
 
 **An attempt a restart finds in flight.** An attempt is written down before its turn is launched,
 with the directory the turn works in and the PID of the runtime it started, and it is cleared only
@@ -809,14 +821,19 @@ itself: an acknowledged comment is never posted twice, a comment whose own write
 is looked for in the ticket's thread by its own identity before another is sent, and an
 acknowledged summary is never published again. The email summary's attempt is written down as
 `pending` before the publisher runs, so a restart distinguishes an unattempted send from one that
-was in flight: the publisher's own output is read back, an acknowledgement found there is adopted,
-and an ending that does not prove the topic refused anything — a timeout, a signal, a log that
+was in flight: the attempt's own log is named with it, the publisher's own output is read back from
+exactly that file, an acknowledgement found there is adopted, and an ending that does not prove the
+topic refused anything — a timeout, a signal, a log that
 could not be closed — is recorded as `interrupted` and never retried automatically, because a
 second email for one incident is worse than an unconfirmed one; only a publisher that could not be
 started at all is a failure a later invocation may retry: a publisher that ran and acknowledged
 nothing is uncertain whatever its exit code — an accepted publish whose answer was lost, a refused
 one, and a summary that never left the machine all end that way — and is recorded as `interrupted`
-for a person. The Jira connection a comment is written through is read from the connected
+for a person. The reconciliation is never a search of the incident's own directory: one incident
+publishes a summary for each conclusion it reaches, so an acknowledgement under another attempt's
+label — the earlier conclusion's summary, chiefly — says nothing about the publication still in
+flight, and adopting it would mark a summary delivered that was never sent. The Jira connection a
+comment is written through is read from the connected
 project's configuration as it stands at that moment, so a report owed after a repair goes into the
 thread the repaired configuration names rather than being silently omitted. A publication that
 failed is

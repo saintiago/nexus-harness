@@ -191,9 +191,7 @@ export function incidentReportText(
  * log of the attempt that state belongs to — the evidence a person needs when
  * the summary is the one thing still unconfirmed.
  */
-function describeNotificationState(
-  state: NonNullable<IncidentReport['notification']>,
-): string {
+function describeNotificationState(state: NonNullable<IncidentReport['notification']>): string {
   return (
     `email summary ${state.state} for ${state.email}` +
     (state.messageId === null ? '' : ` (message ${state.messageId})`) +

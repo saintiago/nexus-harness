@@ -1142,7 +1142,8 @@ The supervisor keeps only:
 
 ```text
 <workDir>/.supervisor/<supervision-id>/     # a hash of the checkout and the harness configuration
-  holders/holder-000001.json        # one claim per invocation, named by the rank it published
+  holders/holder-000001-<token>.json   # one claim per invocation: the rank it published under,
+                                       #   and the token that names the publication itself
   current.json                      # the incident being carried, the worker's PID, and the work
                                     #   its launch was started for — and, once its worker ended,
                                     #   how it ended, kept until that ending is recorded
@@ -1154,12 +1155,17 @@ The supervisor keeps only:
 
 One supervisor runs per supervision — one checkout and one harness configuration — and the owner
 claim is published exclusively under the next free rank, so two simultaneous starts cannot both own
-it: the lowest-ranking live claim owns the queue, a contender that is not it is refused by name,
-and a claim is never renamed, replaced, or removed while its holder may be alive. The rank is read
+it: the lowest live claim owns the queue, a contender that is not it is refused by name, and a
+claim is never renamed, replaced, or removed while its holder may be alive. A claim's own name
+carries the rank it published under and the invocation's own token, so a name belongs to one
+publication and is never written again: clearing a stale claim can only remove the record that
+clearing invocation read back — never a claim published under the same rank afterwards — and two
+starts that read one directory state are ordered by those names. The rank is read
 again before every publication, and a claim that ends up below one that is already there — the rank
 it named was cleared away in between — never decides the ownership: it awaits that claim for a
 bounded moment, clears away what is really gone, and refuses while a claim above it is still there,
-because that one may have decided first. A restart adopts the
+because that one may have decided first; an invocation whose own claim was cleared away in the
+meantime publishes again rather than owning with nothing of its own in the directory. A restart adopts the
 incident its predecessor left instead of starting a second worker; a recorded worker PID, or a
 recovery turn's runtime PID, that is still alive refuses a supervisor that would put a second one
 beside it; and an attempt that was left in flight is reconciled from its own `outcome.json` rather
@@ -1173,7 +1179,9 @@ process refuses it by name instead of starting a second worker beside a process 
 launch is kept until its ending is durable: the invocation that watched the worker end writes that
 ending down beside it, and a restart decides on it exactly as that invocation would have — a settled
 worker and the operator's own stop owe nothing, every other ending is the incident that invocation
-was about to open, and an ending nobody recorded is an unexpected stop investigated the same way,
+was about to open, decided through the same bounds (a repeated unchanged failure and a chain of
+stops that did no work open already concluded, exactly as they would have in the invocation that
+watched the ending), and an ending nobody recorded is an unexpected stop investigated the same way,
 including a worker that was carrying out a step a held plan still owes. A recovery runtime the
 harness could not confirm stopped keeps the incident's ownership of it: the attempt stays in flight
 and nothing else runs until a later invocation shows the tree it led ended — or a person who checked
@@ -1185,8 +1193,10 @@ that consumer first; a lock is never broken automatically.
 
 An incident's report survives a restart without repeating itself. The Jira comment is looked for in
 the ticket's thread before another is posted, and the email summary is written down as `pending`
-before the publisher runs, so a restart can tell an unattempted send from one that was in flight:
-the publisher's own output is read back, an acknowledged `MessageId` is adopted — even from a
+before the publisher runs, with the label of that attempt's own log files, so a restart can tell an
+unattempted send from one that was in flight and knows which evidence belongs to it: that
+attempt's own output is read back and nothing else — an acknowledgement found there is adopted,
+even from a
 publisher that then timed out, was signalled, or could not have its log closed — and a send that
 was never acknowledged is recorded as `interrupted` and left to a person to check rather than sent
 again. Only a publisher that could not be started at all is a failure the next invocation may
@@ -1198,7 +1208,10 @@ project's configuration at that moment, so a report that could not be written wh
 broken goes into the thread a repair restored. A report describes one conclusion: an incident that
 concludes again — the blocker whose completion could not be verified, chiefly — has the conclusion it
 now holds published on its own, as a comment whose identity names it and as a summary of its own
-carrying what a person has to do, while what the earlier conclusion published is kept as what it was.
+carrying what a person has to do, while what the earlier conclusion published is kept as what it
+was. Each conclusion's summary is reconciled against its own attempt's log and never against
+another conclusion's acknowledgement: an earlier summary's `MessageId` is not evidence about the
+one still in flight.
 A blocker a judgment ranked ahead of the
 interrupted ticket really runs first — as its own scoped `queue run --ticket <KEY>` worker — and the
 resumption is recorded when the interrupted work is really started again, and only after the
