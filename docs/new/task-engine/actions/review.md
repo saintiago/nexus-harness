@@ -15,7 +15,7 @@ and [Jira adapter](../../adapters/jira.md#interface).
 
 Use [ReviewerRole](../../agent-runtime/reviewer-role.md#interface). Supply the response format below
 and complete findings/responses using the [findings contract](findings.md). The profile includes
-the shared quality standard and reviewer instructions.
+the complete reviewer instructions.
 
 ### Output
 
