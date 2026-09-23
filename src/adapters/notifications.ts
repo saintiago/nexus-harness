@@ -1,5 +1,5 @@
 import { PublishCommand, SNSClient } from '@aws-sdk/client-sns';
-import type { Result } from '../result.js';
+import { fault, messageOf, ok, type Result } from '../result.js';
 
 /**
  * The Notifications adapter publishes an explicitly supplied notification through the configured
@@ -12,19 +12,6 @@ import type { Result } from '../result.js';
  * validates its own limits, including the subject length and the topic's maximum message size, and
  * a rejection is reported as a fault carrying the provider's own error.
  */
-
-/** Render a thrown value as a message. */
-function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-function ok<Value>(value: Value): Result<Value> {
-  return { ok: true, value };
-}
-
-function fault(message: string): Result<never> {
-  return { ok: false, fault: { message } };
-}
 
 /** The SNS provider connection: the AWS Region that owns the destination topic. */
 export type SnsConnection = {

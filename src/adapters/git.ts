@@ -1,5 +1,5 @@
 import type { ProcessOutputObserver, ProcessResult } from './processes.js';
-import type { Result } from '../result.js';
+import { fault, ok, type Result } from '../result.js';
 
 /**
  * Run one git command. The caller supplies the executable, environment and process handling;
@@ -50,14 +50,6 @@ type CompletedCommand = {
   readonly stdout: string;
   readonly stderr: string;
 };
-
-function ok<Value>(value: Value): Result<Value> {
-  return { ok: true, value };
-}
-
-function fault(message: string): Result<never> {
-  return { ok: false, fault: { message } };
-}
 
 /** A failed command's diagnostics, preferring stderr because Git reports failures there. */
 function failureOf(command: CompletedCommand): Result<never> {

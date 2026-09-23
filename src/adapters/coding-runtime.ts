@@ -1,6 +1,6 @@
 import { stat } from 'node:fs/promises';
 import path from 'node:path';
-import type { Result } from '../result.js';
+import { fault, messageOf, ok, type Result } from '../result.js';
 import { run } from './processes.js';
 import type { ProcessOutput } from './processes.js';
 
@@ -16,19 +16,6 @@ import type { ProcessOutput } from './processes.js';
  * client or filesystem policy, and it never silently falls back to the operator's personal
  * settings when the selected configuration is not installed.
  */
-
-/** Render a thrown value as a message. */
-function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-function ok<Value>(value: Value): Result<Value> {
-  return { ok: true, value };
-}
-
-function fault(message: string): Result<never> {
-  return { ok: false, fault: { message } };
-}
 
 /** One activity entry the provider reported while the invocation ran. */
 export type CodingRuntimeActivity = {
@@ -165,8 +152,8 @@ function invocationArguments(profile: string, request: CodingRuntimeRequest): re
 /** One parsed provider event: an object whose type names the event. */
 type ProviderEvent = Record<string, unknown>;
 
-/** The item record of an `item.*` event, or null when the event carries no item object. */
-function itemOf(value: unknown): ProviderEvent | null {
+/** A value read as a plain object record, or null for any other value. */
+function recordOf(value: unknown): ProviderEvent | null {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     return null;
   }
@@ -180,7 +167,7 @@ function nonemptyText(value: unknown): string | null {
 
 /** The accumulated text of one completed agent message item, or null for another item. */
 function agentMessageText(item: unknown): string | null {
-  const record = itemOf(item);
+  const record = recordOf(item);
   if (record === null || record['type'] !== 'agent_message') {
     return null;
   }
@@ -235,7 +222,7 @@ function webSearchText(item: ProviderEvent): string | null {
  */
 function toolResultText(item: ProviderEvent, call: string): string {
   const outcome = nonemptyText(item['status']) ?? 'completed';
-  const error = itemOf(item['error']);
+  const error = recordOf(item['error']);
   const failure = error === null ? null : nonemptyText(error['message']);
   const payload = payloadText(item['result']) ?? payloadText(item['results']);
   return [outcome, call, failure, payload]
@@ -245,7 +232,7 @@ function toolResultText(item: ProviderEvent, call: string): string {
 
 /** One file change entry of a `file_change` item, or null for an entry without a path. */
 function changeActivity(change: unknown): CodingRuntimeActivity | null {
-  const record = itemOf(change);
+  const record = recordOf(change);
   const path = record === null ? null : nonemptyText(record['path']);
   if (path === null) {
     return null;
@@ -263,7 +250,7 @@ function changeActivity(change: unknown): CodingRuntimeActivity | null {
  * keep up with the CLI.
  */
 function itemActivities(eventType: string, item: unknown): readonly CodingRuntimeActivity[] {
-  const record = itemOf(item);
+  const record = recordOf(item);
   if (record === null) {
     return [];
   }
@@ -311,7 +298,7 @@ function itemActivities(eventType: string, item: unknown): readonly CodingRuntim
       if (eventType !== 'item.completed') {
         return [];
       }
-      const text = nonemptyText(record['text']);
+      const text = agentMessageText(record);
       return text === null ? [] : [{ type: 'message', text }];
     }
     case 'file_change': {
@@ -329,7 +316,7 @@ function itemActivities(eventType: string, item: unknown): readonly CodingRuntim
 
 /** What one failure event says, where the provider's failures carry their message. */
 function failureText(event: ProviderEvent): string | null {
-  const error = itemOf(event['error']);
+  const error = recordOf(event['error']);
   const nested = error === null ? null : nonemptyText(error['message']);
   return nested ?? nonemptyText(event['message']);
 }
@@ -416,12 +403,8 @@ export function createCodingRuntime(settings: CodingRuntimeSettings): CodingRunt
           protocolProblem = `The provider wrote a line that is not a JSON event: ${text}`;
           return;
         }
-        if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-          protocolProblem = `The provider wrote a line that is not a JSON event: ${text}`;
-          return;
-        }
-        const event = parsed as ProviderEvent;
-        if (typeof event['type'] !== 'string') {
+        const event = recordOf(parsed);
+        if (event === null || typeof event['type'] !== 'string') {
           protocolProblem = `The provider wrote a line that is not a JSON event: ${text}`;
           return;
         }

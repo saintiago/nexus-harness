@@ -1,7 +1,7 @@
 import { createSign } from 'node:crypto';
 import { z } from 'zod';
 import type { ProcessOutputObserver, ProcessResult } from './processes.js';
-import type { Result } from '../result.js';
+import { fault, messageOf, ok, type Result } from '../result.js';
 
 /**
  * The GitHub adapter performs explicitly requested GitHub operations and returns observed
@@ -14,19 +14,6 @@ import type { Result } from '../result.js';
  * use an installation token obtained from the Nexus Lens App private key. App credentials and
  * tokens stay inside this adapter; they are never returned, persisted or written to diagnostics.
  */
-
-/** Render a thrown value as a message. */
-function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-function ok<Value>(value: Value): Result<Value> {
-  return { ok: true, value };
-}
-
-function fault(message: string): Result<never> {
-  return { ok: false, fault: { message } };
-}
 
 /** Run one `gh` command. The caller supplies the executable, environment and process handling. */
 export type GhCommandExecution = (

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { Result } from '../result.js';
+import { fault, messageOf, ok, type Result } from '../result.js';
 
 /**
  * The Jira adapter performs explicitly requested Jira operations and returns provider data. It owns
@@ -7,19 +7,6 @@ import type { Result } from '../result.js';
  * policy and publication decisions belong to the calling action. Jira documents, comments and issue
  * fields stay in the provider's own structure.
  */
-
-/** Render a thrown value as a message. */
-function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-function ok<Value>(value: Value): Result<Value> {
-  return { ok: true, value };
-}
-
-function fault(message: string): Result<never> {
-  return { ok: false, fault: { message } };
-}
 
 /** A Jira rich-text document in Atlassian Document Format, preserved unchanged. */
 export type JiraDocument = Readonly<Record<string, unknown>>;

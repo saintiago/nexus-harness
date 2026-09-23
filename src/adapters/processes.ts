@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import type { Result } from '../result.js';
+import { fault, messageOf, type Result } from '../result.js';
 
 /** A supplied command with its working directory, environment and optional time limit. */
 export type ProcessCommand = {
@@ -20,15 +20,6 @@ export type ProcessOutputObserver = (output: ProcessOutput) => void;
 
 /** Command data: the exit code of a completed command. */
 export type ProcessResult = Result<{ readonly exitCode: number }>;
-
-/** Render a thrown value as a message. */
-function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-function fault(message: string): ProcessResult {
-  return { ok: false, fault: { message } };
-}
 
 /**
  * End the command's process group. Children lead their own group because they are spawned
