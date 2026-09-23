@@ -554,35 +554,7 @@ export async function supervise(request: SuperviseRequest): Promise<SuperviseSum
       // An unexpected stop: a signal, a crash, a nonzero exit, or a worker that
       // never started. This is the one case the recovery agent exists for.
       const at = request.now().toISOString();
-      const previous = previousIncidentFor(incidents, step);
-      const repeated =
-        previous !== null &&
-        unchangedAfterRecovery(previous.record, {
-          intent: step.intent,
-          scope: step.scope,
-          exitCode: outcome.exitCode,
-          signal: outcome.signal,
-          progress,
-        });
-      // A stop that ends a worker which was already resuming, without the queue
-      // having done anything at all in between, is a repetition whichever exit
-      // code it wears. The first such repetition is still investigated — an
-      // unscoped failure could be a different ticket entirely — but a whole
-      // chain of them, every one of which a recovery turn already investigated,
-      // ends in a person's hands rather than in another attempt.
-      const origin: StopOrigin =
-        step.plan === null
-          ? { incident: null, progress: true }
-          : { incident: step.plan.known.record.id, progress };
-      const barren = origin.incident !== null && !origin.progress;
-      const chain = barren ? 1 + barrenChain(incidents, origin.incident) : 0;
-      const exhausted =
-        !repeated &&
-        barren &&
-        chain >= request.recovery.maxAttempts &&
-        previous !== null &&
-        previous.record.conclusion !== null &&
-        previous.record.conclusion.outcome !== 'help';
+      const previous = previousIncidentFor(incidents, step.scope);
       const opened = openIncident(
         request.namespace,
         step.intent,
@@ -598,48 +570,29 @@ export async function supervise(request: SuperviseRequest): Promise<SuperviseSum
         `supervisor: the worker stopped unexpectedly (${ended}), so incident ${opened.id} was ` +
           `opened${previous === null ? '' : ` over ${previous.record.id}`}.`,
       );
-      const stopped: IncidentRecord = {
-        ...opened,
-        updatedAt: at,
-        origin,
-        stops: [
-          {
-            at,
-            intent: step.intent,
-            scope: step.scope,
-            exitCode: outcome.exitCode,
-            signal: outcome.signal,
-            ending:
-              outcome.launchProblem !== null
-                ? 'launch-failed'
-                : outcome.signal === null
-                  ? 'exited'
-                  : 'signalled',
-            launch: launch.token,
-            signature: stopSignature(step.intent, step.scope, outcome.exitCode, outcome.signal),
-          },
-        ],
-        ...(repeated || exhausted
-          ? {
-              stage: 'help' as const,
-              conclusion: {
-                outcome: 'help' as const,
-                detail: repeated
-                  ? 'the same failure returned unchanged after a recovery attempt that reported ' +
-                    'the situation repaired, so another attempt would spend the same work for the ' +
-                    'same result. A person decides what happens next: ' +
-                    (previous?.record.attempts.at(-1)?.summary ??
-                      'see the earlier recovery turn log')
-                  : `the queue stopped ${String(chain)} times in a row without doing any work at ` +
-                    'all, and every one of those stops was already investigated by a recovery ' +
-                    'turn that reported the situation repaired. Another attempt would spend the ' +
-                    'same work for the same result, so a person decides what happens next, ' +
-                    `starting from incident ${String(origin.incident)}.`,
-                at,
-              },
-            }
-          : {}),
-      };
+      const stopped = unexpectedStopRecord(
+        request,
+        incidents,
+        opened,
+        { intent: step.intent, scope: step.scope },
+        step.plan?.known.record.id ?? null,
+        {
+          at,
+          intent: step.intent,
+          scope: step.scope,
+          exitCode: outcome.exitCode,
+          signal: outcome.signal,
+          ending:
+            outcome.launchProblem !== null
+              ? 'launch-failed'
+              : outcome.signal === null
+                ? 'exited'
+                : 'signalled',
+          launch: launch.token,
+          signature: stopSignature(step.intent, step.scope, outcome.exitCode, outcome.signal),
+        },
+        progress,
+      );
       await persist(root, stopped);
       carried = { record: stopped, path: incidentFilePath(root, stopped.id) };
       incidents = await readSupervisionState(root);
@@ -967,12 +920,93 @@ async function runEvidence(request: SuperviseRequest): Promise<RunEvidence> {
 /** The incident this stop repeats, when one names the same work. */
 function previousIncidentFor(
   incidents: readonly KnownIncident[],
-  step: WorkerStep,
+  scope: string | null,
 ): KnownIncident | null {
   const same = incidents.filter(
-    (known) => known.record.scope === step.scope && known.record.stage !== 'open',
+    (known) => known.record.scope === scope && known.record.stage !== 'open',
   );
   return same.at(-1) ?? null;
+}
+
+/**
+ * The incident one unexpected stop opens, with the escalation the bound already
+ * forces decided here rather than in whatever invocation happens to read the
+ * stop.
+ *
+ * An invocation that watched its worker end and one that adopts the ending the
+ * invocation before it wrote down are deciding the very same thing, so they
+ * decide it through this one function: the failure is compared with the
+ * recovery it may repeat, the chain of stops that did no work is counted, and a
+ * repetition or an exhausted chain ends in the same actionable request for
+ * human help — an incident that opens already concluded, with no attempt spent
+ * on the same work a recovery turn already reported repaired. A restart
+ * therefore retains the escalation an uninterrupted invocation would have
+ * made, and a repeated failure cannot be investigated forever by crashing the
+ * supervisor between its own two writes (docs/WORKFLOW.md §12).
+ */
+function unexpectedStopRecord(
+  request: SuperviseRequest,
+  incidents: readonly KnownIncident[],
+  opened: IncidentRecord,
+  work: { readonly intent: SupervisorIntent; readonly scope: string | null },
+  planIncident: string | null,
+  stop: WorkerStop,
+  progress: boolean,
+): IncidentRecord {
+  const previous = previousIncidentFor(incidents, work.scope);
+  const repeated =
+    previous !== null &&
+    unchangedAfterRecovery(previous.record, {
+      intent: work.intent,
+      scope: work.scope,
+      exitCode: stop.exitCode,
+      signal: stop.signal,
+      progress,
+    });
+  // A stop that ends a worker which was already resuming, without the queue
+  // having done anything at all in between, is a repetition whichever exit code
+  // it wears. The first such repetition is still investigated — an unscoped
+  // failure could be a different ticket entirely — but a whole chain of them,
+  // every one of which a recovery turn already investigated, ends in a person's
+  // hands rather than in another attempt.
+  const origin: StopOrigin =
+    planIncident === null
+      ? { incident: null, progress: true }
+      : { incident: planIncident, progress };
+  const barren = origin.incident !== null && !origin.progress;
+  const chain = barren ? 1 + barrenChain(incidents, origin.incident) : 0;
+  const exhausted =
+    !repeated &&
+    barren &&
+    chain >= request.recovery.maxAttempts &&
+    previous !== null &&
+    previous.record.conclusion !== null &&
+    previous.record.conclusion.outcome !== 'help';
+  return {
+    ...opened,
+    updatedAt: stop.at,
+    origin,
+    stops: [stop],
+    ...(repeated || exhausted
+      ? {
+          stage: 'help' as const,
+          conclusion: {
+            outcome: 'help' as const,
+            detail: repeated
+              ? 'the same failure returned unchanged after a recovery attempt that reported ' +
+                'the situation repaired, so another attempt would spend the same work for the ' +
+                'same result. A person decides what happens next: ' +
+                (previous?.record.attempts.at(-1)?.summary ?? 'see the earlier recovery turn log')
+              : `the queue stopped ${String(chain)} times in a row without doing any work at ` +
+                'all, and every one of those stops was already investigated by a recovery ' +
+                'turn that reported the situation repaired. Another attempt would spend the ' +
+                'same work for the same result, so a person decides what happens next, ' +
+                `starting from incident ${String(origin.incident)}.`,
+            at: stop.at,
+          },
+        }
+      : {}),
+  };
 }
 
 /**
@@ -1207,18 +1241,40 @@ async function reconcileLaunch(
       launch: launch.token,
       signature: stopSignature(work.intent, work.scope, ending.exitCode, ending.signal),
     };
+    // The ending is decided on exactly as the invocation that watched it would
+    // have decided: its own progress evidence is what the repeated-failure
+    // bound is read from, and the incident this launch was carrying out — the
+    // pointer names it — is the origin the chain of barren stops is counted
+    // from. Whether the queue moved on before that worker ended was watched by
+    // the invocation that wrote the ending down, and that is what is read here.
+    const escalated = unexpectedStopRecord(
+      request,
+      incidents,
+      opened,
+      work,
+      current?.id ?? null,
+      stop,
+      ending.progress,
+    );
     const record: IncidentRecord = {
-      ...opened,
-      updatedAt: ending.at,
-      // Whether the queue moved on before that worker ended was watched by the
-      // invocation that wrote the ending down, and that is what is read here.
-      origin:
-        current?.id === null || current?.id === undefined
-          ? { incident: null, progress: true }
-          : { incident: current.id, progress: ending.progress },
-      stops: [stop],
+      ...escalated,
       ...(work.scope === null ? {} : { ticket: { key: work.scope, url: null } }),
     };
+    if (record.stage === 'help') {
+      // The bound already decides this ending: it opens concluded, and a person
+      // has to decide what happens next. Nothing is spent on another recovery
+      // turn for the same work — that is what makes a restart retain the
+      // escalation the invocation that watched the ending would have made.
+      return {
+        kind: 'incident',
+        record,
+        note:
+          `supervisor: the worker of launch ${launch.token} is gone and the ending written down ` +
+          `for it (${describeWorkerStop(stop)}) was never recorded as an incident, so incident ` +
+          `${record.id} was opened from it — and ends in a request for human help rather than ` +
+          'in another recovery attempt.',
+      };
+    }
     return {
       kind: 'incident',
       record,
@@ -1261,17 +1317,24 @@ async function reconcileLaunch(
     launch: launch.token,
     signature: stopSignature(work.intent, work.scope, null, null),
   };
+  // Nothing about that worker's run can be shown: its ending was never
+  // observed, so whatever it did is not evidence this supervisor holds, and the
+  // work it was carrying out is still owed. That is the same reading the
+  // ordinary loop gives a worker that left no run evidence behind, and it is
+  // decided the same way: a chain of stops that each did no work at all, every
+  // one of them already investigated, ends in a person's hands here too — a
+  // restart that adopts an unobserved ending cannot restart that chain forever.
+  const escalated = unexpectedStopRecord(
+    request,
+    incidents,
+    opened,
+    work,
+    current?.id ?? null,
+    stop,
+    false,
+  );
   const record: IncidentRecord = {
-    ...opened,
-    updatedAt: at,
-    // Nothing about that worker's run can be shown: its ending was never
-    // observed, so whatever it did is not evidence this supervisor holds, and
-    // the work it was carrying out is still owed.
-    origin:
-      current?.id === null || current?.id === undefined
-        ? { incident: null, progress: true }
-        : { incident: current.id, progress: false },
-    stops: [stop],
+    ...escalated,
     ...(work.scope === null ? {} : { ticket: { key: work.scope, url: null } }),
   };
   return {
@@ -1279,7 +1342,11 @@ async function reconcileLaunch(
     record,
     note:
       `supervisor: the worker of launch ${launch.token} is gone and no incident recorded its ` +
-      `ending (${describeWorkerStop(stop)}), so incident ${record.id} was opened for it.`,
+      `ending (${describeWorkerStop(stop)}), so incident ${record.id} was opened for it` +
+      (record.stage === 'help'
+        ? ' — and the chain of stops that did no work is already at its bound, so it ends in a ' +
+          'request for human help rather than in another recovery attempt.'
+        : '.'),
   };
 }
 
