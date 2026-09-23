@@ -854,7 +854,7 @@ recorded after the review is the claim the reviewer is shown, named with the run
 came from, and an earlier answer stays readable in the report it was recorded in. The harness reads
 those answers out of the developer's own summary — one `### Finding <identity>` section per
 finding, with `Cause`, `Affected scope`, `Repair`, `Verification` and `Remaining uncertainty` each
-stated, a wrapped value indented under the line that names it. A finding with no such section, and
+stated, and a wrapped value indented under the line that names it. A finding with no such section, and
 a section that leaves a field out, is recorded as an incomplete response: the brief says so where
 the answer would be, and the answer is never presented as complete remediation, whatever the
 surrounding discussion reads. A turn that answers one finding never stands in for another, and the
