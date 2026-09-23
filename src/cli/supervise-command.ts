@@ -102,12 +102,14 @@ function installationRoot(entry: string): string {
 /** The CLI entry and interpreter the worker is started with. */
 function entryParts(
   context: CliContext,
-): { entry: string; interpreter: string; cwd: string } | string {
+):
+  { entry: string; interpreter: string; interpreterArgs: readonly string[]; cwd: string } | string {
   const substitute = context.supervisorParts?.entry;
   if (substitute !== undefined) {
     return {
       entry: substitute,
       interpreter: context.supervisorParts?.interpreter ?? process.execPath,
+      interpreterArgs: context.supervisorParts?.interpreterArgs ?? [],
       cwd: context.supervisorParts?.cwd ?? context.cwd,
     };
   }
@@ -119,7 +121,15 @@ function entryParts(
       '`npm run dev -- supervise …`.'
     );
   }
-  return { entry: path.resolve(entry), interpreter: process.execPath, cwd: context.cwd };
+  return {
+    entry: path.resolve(entry),
+    interpreter: process.execPath,
+    // How this process itself was started: a supervisor run through `tsx`
+    // starts its worker through `tsx` too, and the loader arguments are passed
+    // on unchanged rather than guessed at.
+    interpreterArgs: [...process.execArgv],
+    cwd: context.cwd,
+  };
 }
 
 /**
@@ -263,6 +273,7 @@ async function superviseCommand(
         }),
       entry: substitute.entry ?? parts.entry,
       interpreter: substitute.interpreter ?? parts.interpreter,
+      interpreterArgs: substitute.interpreterArgs ?? parts.interpreterArgs,
       cwd: substitute.cwd ?? parts.cwd,
       installRoot: substitute.installRoot ?? installationRoot(substitute.entry ?? parts.entry),
       isAlive:
@@ -288,6 +299,7 @@ async function superviseCommand(
       installRoot: parts0.installRoot,
       entry: parts0.entry,
       interpreter: parts0.interpreter,
+      interpreterArgs: parts0.interpreterArgs,
       cwd: parts0.cwd,
       recovery,
       recoveryTurnTimeoutMs: config.taskTimeoutMinutes * 60_000,

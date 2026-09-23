@@ -141,6 +141,7 @@ async function runSupervision(overrides: {
     installRoot: overrides.repoPath,
     entry: path.join(overrides.repoPath, 'cli.js'),
     interpreter: process.execPath,
+    interpreterArgs: [],
     cwd: overrides.repoPath,
     recovery: {
       agent: { runtime: 'codex', command: ['codex', '--profile', 'nexus-recovery'] },

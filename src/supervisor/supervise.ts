@@ -78,6 +78,8 @@ export interface SuperviseRequest {
   /** The CLI entry the worker runs; the same file this process runs. */
   readonly entry: string;
   readonly interpreter: string;
+  /** The interpreter arguments the worker is started with, passed on unchanged. */
+  readonly interpreterArgs: readonly string[];
   /** The directory the worker starts in. */
   readonly cwd: string;
   readonly recovery: RecoveryConfig;
@@ -129,6 +131,8 @@ export interface SupervisorParts {
   /** The CLI entry the worker runs; the same file this process runs. */
   readonly entry: string;
   readonly interpreter: string;
+  /** The interpreter arguments the worker runs with; see the worker. */
+  readonly interpreterArgs: readonly string[];
   readonly cwd: string;
   /** The Nexus installation the supervisor and its recovery turn work on. */
   readonly installRoot: string;
@@ -240,6 +244,7 @@ export async function supervise(request: SuperviseRequest): Promise<SuperviseSum
       const outcome = await runWorker({
         entry: request.entry,
         interpreter: request.interpreter,
+        interpreterArgs: request.interpreterArgs,
         intent: request.intent,
         scope: request.scope,
         repoPath: request.repoPath,

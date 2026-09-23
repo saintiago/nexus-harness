@@ -162,6 +162,105 @@ describe('the command line’s own surface', () => {
     expect(missingProject.err.join('\n')).toContain('requires --project');
   }, 45_000);
 
+  it('refuses a supervised command line that names no intent, no key, or no files', async () => {
+    const cases: ReadonlyArray<readonly [readonly string[], string]> = [
+      [['supervise'], 'requires one of: run, watch, ticket'],
+      [['supervise', 'frobnicate'], 'unknown supervise command "frobnicate"'],
+      [['supervise', 'ticket'], 'requires a ticket key'],
+      [['supervise', 'run'], 'requires --config and --repo'],
+      // The queue's own `--ticket` scope belongs to `queue run`, never here.
+      [['supervise', 'run', '--ticket', 'HARN-51'], 'unknown option "--ticket"'],
+    ];
+    for (const [argv, expected] of cases) {
+      const invocation = await invoke(argv);
+      expect(invocation.code, argv.join(' ')).toBe(EXIT_USAGE);
+      expect(invocation.err.join('\n'), argv.join(' ')).toContain(expected);
+      expect(invocation.out, argv.join(' ')).toEqual([]);
+    }
+  }, 45_000);
+
+  it('refuses to supervise a configuration with no recovery policy, and one with no reporting', async () => {
+    const { cwd, harnessPath, projectDir } = await configuredProject();
+    const bare = await invoke(
+      [
+        'supervise',
+        'run',
+        '--config',
+        path.relative(cwd, harnessPath),
+        '--repo',
+        path.relative(cwd, projectDir),
+      ],
+      { cwd },
+    );
+    expect(bare.code).toBe(EXIT_INPUT_ERROR);
+    expect(bare.err.join('\n')).toContain('declares no "recovery" policy');
+    expect(bare.err.join('\n')).toContain('section 12');
+
+    // A complete queue configuration whose recovery policy names nowhere to
+    // send the summary is refused too: an incident that could be recovered but
+    // not reported is not a supervised run.
+    const root = await createTempDir();
+    const target = path.join(root, 'target');
+    await mkdir(target, { recursive: true });
+    const jira = {
+      type: 'jira',
+      siteUrl: 'https://site.atlassian.net',
+      cloudId: '9337c4da-7d33-4c1d-b03c-db207e537f88',
+      projectKey: 'HARN',
+    };
+    const unreported = await writeJsonFile(root, 'harness.json', {
+      workDir: 'runs',
+      maxRepairs: 2,
+      taskTimeoutMinutes: 60,
+      commandTimeoutMinutes: 10,
+      reviewer: {
+        app: {
+          appId: 5001141,
+          installationId: 163007360,
+          privateKeyPathEnv: 'NEXUS_LENS_PRIVATE_KEY_PATH',
+          login: 'nexus-lens[bot]',
+        },
+        reviewer: { runtime: 'codex', command: ['codex', '--profile', 'nexus-astra'] },
+      },
+      completion: {
+        lensApp: 'nexus-lens[bot]',
+        lensAppId: 5001141,
+        lensCheckName: 'Nexus Lens review',
+        reviewerTokenEnv: 'NEXUS_LENS_TOKEN',
+      },
+      recovery: { maxAttempts: 2 },
+    });
+    await writeJsonFile(target, 'nexus.project.json', {
+      setup: [],
+      checks: [['node', 'check.mjs']],
+      source: jira,
+      delivery: {
+        type: 'github',
+        repository: 'owner/name',
+        baseBranch: 'main',
+        completion: {
+          postMergeWorkflows: ['ci.yml'],
+          toDoStatus: 'To Do',
+          doneStatus: 'Done',
+        },
+      },
+    });
+    const invocation = await invoke(
+      [
+        'supervise',
+        'run',
+        '--config',
+        path.relative(cwd, unreported),
+        '--repo',
+        path.relative(cwd, target),
+      ],
+      { cwd },
+    );
+    expect(invocation.code).toBe(EXIT_INPUT_ERROR);
+    expect(invocation.err.join('\n')).toContain('without "recovery.notifications"');
+    expect(invocation.err.join('\n')).toContain('nexus.config.example.json');
+  }, 45_000);
+
   it('reads only a set, non-empty NO_COLOR as a request for no color', () => {
     expect(colorAllowed({})).toBe(true);
     expect(colorAllowed({ NO_COLOR: '' })).toBe(true);

@@ -38,6 +38,13 @@ export interface WorkerRequest {
   readonly entry: string;
   /** The interpreter that runs it: this process's own Node.js. */
   readonly interpreter: string;
+  /**
+   * The interpreter arguments this process was itself started with. They are
+   * passed on unchanged, so a supervisor started through a loader — `tsx`, for
+   * example — runs the worker the same way it is running itself rather than
+   * handing Node a file it cannot read.
+   */
+  readonly interpreterArgs?: readonly string[];
   readonly intent: SupervisorIntent;
   /** The ticket a `ticket` intent scopes the worker to, or `null`. */
   readonly scope: string | null;
@@ -124,6 +131,7 @@ export function workerArguments(request: {
  */
 export async function runNexusWorker(request: WorkerRequest): Promise<WorkerOutcome> {
   const args = [
+    ...(request.interpreterArgs ?? []),
     request.entry,
     ...workerArguments({
       intent: request.intent,
