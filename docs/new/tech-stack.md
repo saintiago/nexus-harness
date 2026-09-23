@@ -8,7 +8,7 @@ installation, builds, tests and Nexus execution. Native Windows execution is not
 ## Language and tooling
 
 Use Node.js, TypeScript ES modules and npm. Use XState for workflow execution and persisted snapshots.
-Use Zod for external input validation, Vitest for tests, ESLint for linting and Prettier for formatting.
+Use Zod for external input validation, ESLint for linting and Prettier for formatting.
 
 Use Dependency Cruiser in validation to enforce component import boundaries. Cross-component imports
 use public interfaces; actions may import other actions' artifact declarations, not their implementations.
@@ -18,6 +18,15 @@ orchestration implementations. Startup wiring assembles implementations. Contrac
 Use Turborepo for local validation caching and tool-native caches where appropriate. Cache only
 deterministic validation results with their inputs declared. Live service operations and completion
 checks are never replaced by cached validation results.
+
+## Testing
+
+Use Vitest for unit, component, integration and system tests, including contract and workflow tests.
+Use its assertions, spies, mocks, fake timers and setup/cleanup hooks. Workflow tests execute the real
+XState machine with supplied action implementations.
+
+Use Node.js standard filesystem and process APIs for temporary resources in integration tests.
+Different test scopes share the same test runner; they do not require separate frameworks.
 
 ## Integrations
 
