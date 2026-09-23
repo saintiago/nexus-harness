@@ -47,6 +47,7 @@ import type {
   ReviewScanContext,
   ReviewSummary,
   ReviewVerdict,
+  ReviewVerification,
   ReviewView,
   ReviewWatchOptions,
 } from './contract.js';
@@ -224,6 +225,11 @@ interface ReviewRecord {
   readonly endedAt: string;
   readonly disposition: ReviewDisposition;
   readonly verdict: ReviewDecision | null;
+  /**
+   * What the verdict verified about the dispositions before it, as the
+   * reviewer wrote it. Empty when no change request was outstanding.
+   */
+  readonly verifications: readonly ReviewVerification[];
   readonly review: PublishedReview | null;
   readonly check: PublishedCheck | null;
   readonly problem: string | null;
@@ -262,6 +268,18 @@ function reviewBody(
     }
   } else {
     lines.push('', 'See the inline findings on this review.');
+  }
+  const verifications = verdict.verifications ?? [];
+  if (verifications.length > 0) {
+    // The reviewer's own reading of the dispositions before this round: a
+    // claimed repair is verified here, or it stays unverified, and the two are
+    // never published as the same thing.
+    lines.push('', 'Dispositions of earlier findings, as verified by this review:');
+    for (const verification of verifications) {
+      lines.push(
+        `- ${verification.finding} — ${verification.state}: ${oneLine(verification.evidence)}`,
+      );
+    }
   }
   lines.push(
     '',
@@ -526,6 +544,7 @@ async function reviewWithTurn(
   const writeRecord = async (parts: {
     readonly disposition: ReviewDisposition;
     readonly decision: ReviewDecision | null;
+    readonly verifications?: readonly ReviewVerification[];
     readonly review: PublishedReview | null;
     readonly check: PublishedCheck | null;
     readonly problem: string | null;
@@ -542,6 +561,7 @@ async function reviewWithTurn(
       endedAt: context.now().toISOString(),
       disposition: parts.disposition,
       verdict: parts.decision,
+      verifications: parts.verifications ?? [],
       review: parts.review,
       check: parts.check,
       problem: parts.problem,
@@ -668,6 +688,9 @@ async function reviewWithTurn(
         decision: verdict.decision,
         summary: verdict.summary,
         findings: verdict.findings,
+        ...(verdict.verifications === undefined || verdict.verifications.length === 0
+          ? {}
+          : { verifications: verdict.verifications }),
         now: context.now(),
       });
     } catch (cause) {
@@ -844,6 +867,7 @@ async function reviewWithTurn(
   await writeRecord({
     disposition: result.disposition,
     decision: result.decision,
+    verifications: verdict.verifications ?? [],
     review,
     check,
     problem: checkProblem,

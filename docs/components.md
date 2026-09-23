@@ -16,7 +16,12 @@ or delivered. An uncertain workspace must not be silently reset or adopted.
 
 Give the developer the task and relevant history, execute the configured checks, and request
 repairs from observed failures. Apply the configured repair allowance, escalation and deadlines.
-A developer's success claim cannot substitute for a successful check result.
+A developer's success claim cannot substitute for a successful check result. Tell the turn what a
+passing check does and does not mean, let it change the project's own build and test configuration
+only where the task explicitly asks for that, and require it to verify its change at the affected
+integration point instead of repeating an expensive test matrix. Every finding a review left
+outstanding receives one explicit answer — cause, affected scope, repair, verification, remaining
+uncertainty — and a missing or partial answer stays incomplete rather than reading as remediation.
 
 ## Process execution
 
@@ -28,13 +33,43 @@ are reused. Report uncertainty when shutdown cannot be established.
 
 Give developers and reviewers consistent, attributed task context. Preserve complete actionable
 findings and responses, distinguish new feedback from previously consumed material, and expose
-missing evidence. Keep a turn's input stable while later conversation updates arrive.
+missing evidence. Keep a turn's input stable while later conversation updates arrive. Keep every
+outstanding finding's identity stable, render it with the answer it received and the verification
+it was given, and keep a developer's claim apart from a reviewer's verification: a finding with no
+complete answer — or one whose latest report is missing or incomplete — and a finding whose repair
+was never verified are never presented as resolved. A finding a later review raises again keeps the
+identity it continues and records its own occurrence beside it, and a new change request adds the
+findings it raises without clearing the ones already outstanding. A continuation is resolved
+against every identity the history retained, so a defect an earlier review already settled keeps the
+identity it was raised with when a later revision brings it back: a native review the harness kept
+no report for is reconstructed from the review and its inline comments — each finding named by the
+comment's own source identity, so deleting an earlier sibling cannot rename the findings that
+remain — and those identities survive the review that settled them. The claim and the verification
+are read at the level each was made: a developer report is answered by its newest coding turn alone,
+so an earlier turn's complete answer never stands in for a later turn that gave none, and a
+verification is read under the identity the history named, whether it was published or recovered
+from the reviewer's own retained file. A report recovered after its digest was lost keeps the
+identities it was recorded with: its round is read back from the review's own evidence — the
+snapshot its turn was prepared with, or the verdict saved beside its digest — and never counted off
+the attempts that remain, so a round no evidence establishes without renaming another review's
+finding is named as a gap, with the recovered findings scoped by the review's own identity instead.
+The next review's number is one more than the highest round the history establishes and never below
+the number of attempts it holds, so a new review never takes a round another review already states.
 
 ## Review
 
 Evaluate the delivered revision against the task and required behavior. Give the reviewer a
 consistent repository view and complete prior findings. Validate and retain its verdict before
-publication. Approval applies to the reviewed revision, not to later changes.
+publication. Verify each outstanding disposition in the reviewed revision itself and record that
+verification with the verdict — only a `verified` reading settles one, while `unverified` and
+`regressed` leave it outstanding for the next round; classify and group confirmed related
+occurrences rather than reporting one example at a time; and keep reviewing the whole change against
+the requested outcome. Approval applies to the reviewed revision, not to later changes. Only a
+review the pull request itself carries settles an earlier disposition: an approval clears one only
+at the head it was made on, a verdict refused publication is conversation, not a settlement, and a
+review GitHub has dismissed settles nothing — its approval clears nothing at any head, and the
+findings its own report raised stay outstanding because dismissal withdraws the blocking state,
+not the defect the review recorded.
 
 ## Delivery and completion
 

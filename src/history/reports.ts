@@ -18,15 +18,19 @@ import type { SourceRef } from '../shared/types.js';
 import { readWorkspaceState } from '../workspace/state.js';
 import type {
   DeveloperReportRequest,
-  HistoryDelivery,
   HistoryFinding,
+  HistoryDelivery,
+  HistoryFindingVerification,
   HistoryReportSummary,
+  HistoryOccurrence,
   PublishedDeveloperReport,
   RecordedReport,
   ReviewerReportRequest,
+  UnidentifiedFinding,
 } from './contract.js';
 import { HistoryError } from './contract.js';
 import { readBaselineReports } from './baseline.js';
+import { identifyFindings } from './findings.js';
 import { historyReportsDir } from './paths.js';
 import { compareHistoryTime } from './time.js';
 
@@ -91,7 +95,14 @@ export interface ReviewerReportDigest {
   readonly head: string;
   readonly decision: string;
   readonly summary: string;
+  /**
+   * The findings this report raises, each with the stable identity it keeps. A
+   * record read back without identities is assigned them from the round and the
+   * finding's position (`findingIdOf`).
+   */
   readonly findings: readonly HistoryFinding[];
+  /** What this review verified about the dispositions earlier rounds raised. */
+  readonly verifications?: readonly HistoryFindingVerification[];
   readonly createdAt: string;
   readonly textFile: string;
   readonly recordFile: string | null;
@@ -228,20 +239,79 @@ function developerReportText(
   return `${lines.join('\n').trimEnd()}\n`;
 }
 
+/** The heading one coding turn of a complete developer report opens. */
+const TURN_HEADING = /^#{2,6}\s+Turn\s+\d+\s*\(/i;
+
+/**
+ * The newest coding turn's own summary of one complete developer report: the
+ * text its last `Turn <n>` heading opens, and nothing above it.
+ *
+ * A run's report holds every coding turn it ran, in order, and each turn states
+ * its own answers — or states none. The newest turn is what the developer
+ * claims now, so an earlier turn's complete answer is history: it stays
+ * readable in the report it was recorded in and is not read as an answer the
+ * newest turn never gave (docs/WORKFLOW.md §9). A text that states no coding
+ * turn at all is read whole, so a report this harness did not render itself is
+ * still searched for the answers it holds.
+ */
+export function latestCodingTurnText(text: string): string {
+  const lines = text.split(/\r?\n/);
+  let start: number | null = null;
+  for (const [index, line] of lines.entries()) {
+    if (TURN_HEADING.test(line)) {
+      start = index + 1;
+    }
+  }
+  return start === null ? text : lines.slice(start).join('\n');
+}
+
 /**
  * The fields one complete reviewer report rendering is made of. A report this
  * harness recorded carries them directly; one recovered from a reviewer's own
  * retained verdict carries the same fields plus where it was recovered from.
  */
-type ReviewerReportFields = Pick<
-  ReviewerReportRequest,
-  'ref' | 'round' | 'reviewId' | 'head' | 'decision' | 'summary' | 'findings'
-> & {
+type ReviewerReportFields = {
+  readonly ref: SourceRef;
+  readonly round: number | null;
+  readonly reviewId: string;
+  readonly head: string;
+  readonly decision: string;
+  readonly summary: string;
+  /** The findings, each with the identity it keeps. */
+  readonly findings: readonly HistoryFinding[];
+  /** What this review verified about earlier dispositions, if anything. */
+  readonly verifications?: readonly HistoryFindingVerification[];
   /** Where the rendering was recovered from; `null` for a directly recorded report. */
   readonly recoveredFrom?: string | null;
+  /** The round a recovered report was recorded with, and how it was read back. */
+  readonly recoveredRound?: RecoveredRound | null;
   /** The published review URL, when the review record names one. */
   readonly publishedUrl?: string | null;
 };
+
+/** One place a grouped finding names, as the report rendering states it. */
+function occurrenceLine(occurrence: HistoryOccurrence): string {
+  return `  - also at ${occurrence.path}${
+    occurrence.line === null ? '' : `:${String(occurrence.line)}`
+  }`;
+}
+
+/** How one finding stands against the rounds before it, in the report's words. */
+function findingKindLine(finding: HistoryFinding): string | null {
+  const kind = finding.kind ?? 'new';
+  switch (kind) {
+    case 'new':
+      return null;
+    case 'unresolved':
+      return `- Classified: unresolved defect continuing ${
+        finding.continues ?? '(an earlier finding it does not name)'
+      }`;
+    case 'regression':
+      return `- Classified: repair regression against ${
+        finding.continues ?? '(an earlier finding it does not name)'
+      }`;
+  }
+}
 
 /** The complete reviewer report as Markdown: summary and every finding whole. */
 function reviewerReportText(request: ReviewerReportFields): string {
@@ -255,6 +325,11 @@ function reviewerReportText(request: ReviewerReportFields): string {
   if (request.recoveredFrom !== undefined && request.recoveredFrom !== null) {
     lines.push(
       `- Recovered from: ${oneLine(request.recoveredFrom)}`,
+      `- Original round: ${
+        request.recoveredRound === undefined || request.recoveredRound === null
+          ? String(request.round)
+          : recoveredRoundLine(request.recoveredRound)
+      }`,
       `- Publication: ${
         request.publishedUrl === undefined || request.publishedUrl === null
           ? 'this review published no native review'
@@ -274,13 +349,48 @@ function reviewerReportText(request: ReviewerReportFields): string {
   if (request.findings.length === 0) {
     lines.push('(no findings)');
   }
-  for (const [index, finding] of request.findings.entries()) {
-    lines.push(
-      `### Finding ${String(index + 1)}: ${finding.path}${
+  for (const finding of request.findings) {
+    const entries = [
+      `### Finding ${finding.id}: ${finding.path}${
         finding.line === null ? '' : `:${String(finding.line)}`
       }`,
       '',
-      finding.body.trim(),
+      `- Identity: ${finding.id} — name it by this in a response or a verification.`,
+    ];
+    if (finding.recordedAs !== undefined) {
+      entries.push(
+        `- Recorded as: ${finding.recordedAs} — where this review raised the defect again; ` +
+          `the identity above (${finding.id}) is the one it keeps.`,
+      );
+    }
+    const classified = findingKindLine(finding);
+    if (classified !== null) {
+      entries.push(classified);
+    }
+    entries.push('', finding.body.trim());
+    if (finding.related !== undefined && finding.related.length > 0) {
+      entries.push(
+        '',
+        'Confirmed occurrences grouped under this finding:',
+        ...finding.related.map(occurrenceLine),
+      );
+    }
+    entries.push('');
+    lines.push(...entries);
+  }
+  const verifications = request.verifications ?? [];
+  if (verifications.length > 0) {
+    lines.push(
+      `## Verification of earlier dispositions (${String(verifications.length)})`,
+      '',
+      'These are the reviewer’s own readings of the reviewed revision, made at the place each',
+      'earlier defect lived. They are verification, not a developer claim: a disposition this',
+      'section does not name as `verified` is still not verified.',
+      '',
+      ...verifications.map(
+        (verification) =>
+          `- ${verification.finding} — ${verification.state}: ${verification.evidence.trim()}`,
+      ),
       '',
     );
   }
@@ -408,6 +518,11 @@ export async function recordReviewerReport(
   request: ReviewerReportRequest,
 ): Promise<RecordedReport> {
   const dir = historyReportsDir(root);
+  // The identity is fixed here, once: the round, its findings and every
+  // response and verification that follows name the finding by it
+  // (docs/WORKFLOW.md §9).
+  const findings = identifyFindings(request.findings, request.round);
+  const verifications = request.verifications ?? [];
   try {
     await mkdir(dir, { recursive: true });
   } catch (cause) {
@@ -432,7 +547,8 @@ export async function recordReviewerReport(
     head: request.head,
     decision: request.decision,
     summary: request.summary,
-    findings: request.findings,
+    findings,
+    ...(verifications.length === 0 ? {} : { verifications }),
     createdAt: request.now.toISOString(),
     textFile: textName,
     recordFile: recordName,
@@ -440,7 +556,10 @@ export async function recordReviewerReport(
     published: null,
   };
   try {
-    await atomicWrite(reportFile(root, textName), reviewerReportText(request));
+    await atomicWrite(
+      reportFile(root, textName),
+      reviewerReportText({ ...request, findings, verifications }),
+    );
     await atomicWrite(
       reportFile(root, recordName),
       `${JSON.stringify(
@@ -453,7 +572,8 @@ export async function recordReviewerReport(
           head: request.head,
           decision: request.decision,
           summary: request.summary,
-          findings: request.findings,
+          findings,
+          verifications,
           recordedAt: digest.createdAt,
         },
         null,
@@ -697,15 +817,26 @@ export function reportSummaryOf(report: LocalReport): HistoryReportSummary | nul
     nativeReviewId: digest.published?.id ?? null,
     decision: digest.decision,
     summary: digest.summary,
-    findings: digest.findings,
+    findings: identifyFindings(digest.findings, digest.round, digest.reviewId),
+    ...(digest.verifications === undefined || digest.verifications.length === 0
+      ? {}
+      : { verifications: digest.verifications }),
     pullRequest: null,
   };
 }
 
 /**
- * The next review round's number for one ticket: one more than the reviewer
- * reports and review records this machine already holds, so the number a report
- * is recorded with is the position the brief and the index show.
+ * The next review round's number for one ticket: one more than the highest
+ * round this machine can establish for a review it already holds, and never at
+ * or below the number of review attempts it still holds, so the number a report
+ * is recorded with is the position the brief and the index show and a new
+ * review is never recorded under a round another review already states.
+ *
+ * A review establishes its round in its own durable evidence: a retained
+ * report's digest, the history snapshot the attempt was prepared with, or the
+ * report verdict saved beside its digest. Counting the review attempts that
+ * remain is a floor, never the position an attempt really had: an attempt whose
+ * evidence is gone is absent from any count of them (docs/WORKFLOW.md §9).
  */
 export async function nextReviewRound(parts: {
   readonly workDir: string;
@@ -713,33 +844,66 @@ export async function nextReviewRound(parts: {
   readonly ref: SourceRef;
 }): Promise<number> {
   const { workDir, root, ref } = parts;
-  const rounds = new Set<string>();
+  /** Every review attempt this machine still names, so one attempt counts once. */
+  const attempts = new Set<string>();
+  /** The highest round a review of this ticket establishes; `0` when none states one. */
+  let highest = 0;
+  const dir = historyReportsDir(root);
   try {
-    for (const name of await readdir(historyReportsDir(root))) {
-      if (/^reviewer-[A-Za-z0-9_-]+\.json$/.test(name)) {
-        rounds.add(name.slice('reviewer-'.length, -'.json'.length));
+    for (const name of await readdir(dir)) {
+      if (!/^reviewer-[A-Za-z0-9_-]+\.json$/.test(name)) {
+        continue;
+      }
+      attempts.add(name.slice('reviewer-'.length, -'.json'.length));
+      const value = await readJson(path.join(dir, name));
+      const record =
+        typeof value === 'object' && value !== null && !Array.isArray(value)
+          ? (value as Record<string, unknown>)
+          : null;
+      const round = record === null ? undefined : record['round'];
+      // A round of another ticket this workspace served earlier is not this
+      // ticket's round to count.
+      if (
+        record !== null &&
+        sameTicket(record['ref'], ref) &&
+        typeof round === 'number' &&
+        Number.isSafeInteger(round) &&
+        round >= 1
+      ) {
+        highest = Math.max(highest, round);
       }
     }
   } catch {
     // No reports directory yet: nothing was reviewed.
   }
+  const reviewsRoot = path.join(path.resolve(workDir), 'reviews');
   try {
-    for (const name of await readdir(path.join(path.resolve(workDir), 'reviews'))) {
-      const record = await readJson(
-        path.join(path.resolve(workDir), 'reviews', name, 'review.json'),
-      );
+    for (const name of await readdir(reviewsRoot)) {
+      const record = await readJson(path.join(reviewsRoot, name, 'review.json'));
       if (record === null || typeof record !== 'object') {
         continue;
       }
       const value = record as Record<string, unknown>;
-      if (sameTicket(value['ref'], ref) && typeof value['reviewId'] === 'string') {
-        rounds.add(value['reviewId']);
+      if (!sameTicket(value['ref'], ref) || typeof value['reviewId'] !== 'string') {
+        continue;
+      }
+      attempts.add(value['reviewId']);
+      // The attempt's own evidence states the round it was recorded with even
+      // when its report digest is gone; a record that states none adds nothing
+      // but the attempt it was.
+      const stated = await statedReviewRound({
+        root,
+        reviewId: value['reviewId'],
+        history: typeof value['history'] === 'string' ? value['history'] : null,
+      });
+      if (stated !== null) {
+        highest = Math.max(highest, stated.round);
       }
     }
   } catch {
     // No review directory yet: nothing was reviewed.
   }
-  return rounds.size + 1;
+  return Math.max(highest, attempts.size) + 1;
 }
 
 /**
@@ -756,6 +920,14 @@ export async function readLocalReports(parts: {
   readonly now: Date;
 }): Promise<{
   readonly reports: readonly LocalReport[];
+  /**
+   * The reviewer attempts whose own record names a native review GitHub
+   * published, by the attempt's review id: the evidence that the verdict
+   * reached the pull request. An attempt refused publication, and one whose
+   * record was never written, are absent — nothing published either
+   * (docs/spec.md §9).
+   */
+  readonly publishedReviews: readonly string[];
   readonly problems: readonly string[];
 }> {
   const { workDir, root, ref, workspaceId } = parts;
@@ -995,6 +1167,7 @@ export async function readLocalReports(parts: {
     published: { readonly id: number; readonly url: string } | null;
     head: string | null;
     url: string | null;
+    history: string | null;
   }[] = [];
   for (const name of reviewNames) {
     const value = await readJson(path.join(reviewsRoot, name, 'review.json'));
@@ -1045,20 +1218,81 @@ export async function readLocalReports(parts: {
       published: publishedRecord,
       head: typeof reviewedHead === 'string' ? reviewedHead : null,
       url: publishedRecord === null ? null : publishedRecord.url,
+      history: typeof record['history'] === 'string' ? record['history'] : null,
     });
   }
   records.sort(
     (a, b) => compareHistoryTime(a.startedAt, b.startedAt) || a.reviewId.localeCompare(b.reviewId),
   );
-  for (const [index, record] of records.entries()) {
+  // An attempt's own record names the native review GitHub acknowledged for it.
+  // When the enrichment that would have noted that same id on the retained
+  // digest failed, the record is the remaining evidence of the publication:
+  // carrying the recorded identity here matches the retained report to the
+  // native review, so reconciliation reads that review's own state and does not
+  // reconstruct one review as a second round with a second finding identity
+  // (docs/WORKFLOW.md §9). The body hash stays unknown — the retained report is
+  // still the complete one — and the rendering is authenticated by the recorded
+  // review id alone.
+  const publishedByReview = new Map<string, { readonly id: number; readonly url: string }>(
+    records.flatMap((record) =>
+      record.published === null ? [] : [[record.reviewId, record.published] as const],
+    ),
+  );
+  for (const [index, report] of reports.entries()) {
+    if (report.kind !== 'reviewer-report' || report.digest.published !== null) {
+      continue;
+    }
+    const published = publishedByReview.get(report.digest.reviewId);
+    if (published === undefined) {
+      continue;
+    }
+    reports[index] = {
+      ...report,
+      digest: {
+        ...report.digest,
+        published: { id: published.id, url: published.url, bodySha256: null },
+      },
+    };
+  }
+  // The attempts a native review was really published for: the report digest
+  // carries the publication identity once the scan recorded it, while the
+  // attempt's own record names the review it published even when that note was
+  // lost. Either is evidence a verdict became a review; neither is present for
+  // a verdict the publication guards refused.
+  const publishedReviews = records
+    .filter((record) => record.published !== null)
+    .map((record) => record.reviewId);
+
+  /**
+   * The rounds the retained reports and the already recovered reports name. A
+   * round one of them holds is never handed to another review's findings: the
+   * attempts that remain are not evidence of a round, so a recovery that cannot
+   * read one keeps the gap and names its findings by the review's own identity
+   * instead (docs/WORKFLOW.md §9).
+   */
+  const claimedRounds = new Set<number>();
+  for (const report of reports) {
+    if (report.kind === 'reviewer-report' && report.digest.round !== null) {
+      claimedRounds.add(report.digest.round);
+    }
+  }
+
+  for (const record of records) {
     if (knownReviews.has(record.reviewId)) {
       continue;
     }
-    const round = index + 1;
     // The reviewer's own verdict is the complete report, and it is retained
     // beside the review record. It is read back before this attempt is called
     // missing, so a review this machine ran is never reported as absent while
-    // its findings sit on disk.
+    // its findings sit on disk — and the round it was recorded with is read
+    // back from the review's own evidence, so the findings keep the identities
+    // they were raised with instead of being renamed onto another review's
+    // (docs/WORKFLOW.md §9).
+    const round = await recoveredReviewRound({
+      root,
+      record,
+      claimed: claimedRounds,
+    });
     const recovered = await readRetainedVerdict({
       dir: record.dir,
       record,
@@ -1067,6 +1301,17 @@ export async function readLocalReports(parts: {
       round,
     });
     if (recovered.report !== null) {
+      if (round.round !== null) {
+        claimedRounds.add(round.round);
+      } else {
+        problems.push(
+          `the recovered reviewer report (review ${record.reviewId}) keeps the wording of the ` +
+            `reviewer's own retained verdict, but the round it was recorded with could not be ` +
+            `established: ${round.problem ?? 'no recorded round survived'}. Its findings are named ` +
+            `by the review's own identity instead, so recovering it never renames another ` +
+            `review's finding`,
+        );
+      }
       reports.push(recovered.report);
       continue;
     }
@@ -1074,15 +1319,16 @@ export async function readLocalReports(parts: {
       record.verdict === null
         ? `its reviewer attempt ended without a published verdict`
         : `it published a ${record.verdict} review`;
+    const ofRound = round.round === null ? '' : ` of round ${String(round.round)}`;
     reports.push({
       kind: 'missing-report',
       role: 'reviewer',
       sourceId: record.reviewId,
       ref,
-      round,
+      round: round.round,
       createdAt: record.startedAt,
       text:
-        `The complete reviewer report of round ${String(round)} (review ${record.reviewId}) is ` +
+        `The complete reviewer report${ofRound} (review ${record.reviewId}) is ` +
         `missing on this machine: the review record says ${what}` +
         (record.url === null ? '' : ` (${record.url})`) +
         (record.problem === null ? '' : `; its recorded problem was: ${oneLine(record.problem)}`) +
@@ -1090,9 +1336,12 @@ export async function readLocalReports(parts: {
         '. Only the published rendering, if any, is available; it may have been bounded for the ' +
         'destination it was published to.',
       problem:
-        `the complete reviewer report of round ${String(round)} (review ${record.reviewId}) ` +
+        `the complete reviewer report${ofRound} (review ${record.reviewId}) ` +
         `could not be recovered from this machine` +
-        (recovered.problem === null ? '' : `: ${recovered.problem}`),
+        (recovered.problem === null ? '' : `: ${recovered.problem}`) +
+        (round.problem === null
+          ? ''
+          : `; the round it was recorded with could not be established either: ${round.problem}`),
       reportPath: null,
     });
   }
@@ -1100,7 +1349,7 @@ export async function readLocalReports(parts: {
   const baseline = await readBaselineReports({ workDir, ref, workspaceId });
   reports.push(...baseline.reports);
   problems.push(...baseline.problems);
-  return { reports, problems };
+  return { reports, publishedReviews, problems };
 }
 
 /** One review record's identity, as the recovery of its verdict reads it. */
@@ -1112,6 +1361,209 @@ interface ReviewRecordIdentity {
   readonly problem: string | null;
   readonly published: { readonly id: number; readonly url: string } | null;
   readonly head: string | null;
+  /** The conversation snapshot this review's turn was prepared with, when the record names one. */
+  readonly history: string | null;
+}
+
+/**
+ * The round one recovered reviewer report was originally recorded with, and how
+ * this machine read it back.
+ *
+ * A recovered report's findings keep the identities they were raised with only
+ * when the round they were recorded under is restored, because an identity is
+ * the round and the finding's position in it. The round is read back from the
+ * review's own durable evidence — the conversation snapshot the attempt was
+ * prepared with, or the report verdict saved beside its digest. When neither
+ * states it, the review attempts that remain are not evidence of it: an attempt
+ * whose own evidence is gone is absent from any count of them, and the number
+ * such a count yields may be a round another review already states. A round is
+ * never invented: the findings are named by the review's own identity instead,
+ * and the gap is reported (docs/WORKFLOW.md §9).
+ */
+interface RecoveredRound {
+  /** The round the review was recorded with, or `null` when it cannot be established. */
+  readonly round: number | null;
+  /** Where the round was read back from, or `null` when it could not be established. */
+  readonly from: string | null;
+  /** Why the round could not be established, or `null` when it was. */
+  readonly problem: string | null;
+}
+
+/** What one recovered report says about the round it was recorded with, in one line. */
+function recoveredRoundNote(round: RecoveredRound): string {
+  return round.round === null
+    ? `the round it was recorded with could not be established (${
+        round.problem ?? 'no recorded round survived'
+      }), so its findings are named by the review's own identity instead`
+    : `the round it was recorded with, ${String(round.round)}, was read back from ${
+        round.from ?? 'its own evidence'
+      }`;
+}
+
+/** The same reading, as the recovered report's own rendering states it. */
+function recoveredRoundLine(round: RecoveredRound): string {
+  return round.round === null
+    ? `could not be established — its findings are named by the review's own identity; ${
+        round.problem ?? 'no recorded round survived'
+      }`
+    : `${String(round.round)} — read back from ${round.from ?? 'its own evidence'}`;
+}
+
+/**
+ * The round one saved report verdict was recorded under, read from the
+ * identities its findings state. A verdict that carries no finding, or one
+ * whose findings do not agree on a round, states none this machine can read,
+ * and `null` is then the honest answer.
+ */
+function recordedRoundOf(saved: unknown): number | null {
+  if (typeof saved !== 'object' || saved === null || Array.isArray(saved)) {
+    return null;
+  }
+  const findings = (saved as Record<string, unknown>)['findings'];
+  if (!Array.isArray(findings)) {
+    return null;
+  }
+  let round: number | null = null;
+  for (const raw of findings) {
+    if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+      return null;
+    }
+    const finding = raw as Record<string, unknown>;
+    // A finding the review raised here states its own round and position as its
+    // identity; a continuation keeps the earlier identity it names, and the
+    // occurrence this review recorded it as is beside it.
+    const recordedAs = finding['recordedAs'];
+    const stated = typeof recordedAs === 'string' ? recordedAs : finding['id'];
+    if (typeof stated !== 'string') {
+      return null;
+    }
+    const parsed = /^R(\d+)-F\d+$/.exec(stated.trim());
+    if (parsed === null || parsed[1] === undefined) {
+      return null;
+    }
+    const held = Number(parsed[1]);
+    if (round === null) {
+      round = held;
+    } else if (round !== held) {
+      return null;
+    }
+  }
+  return round;
+}
+
+/**
+ * The round one review attempt's own durable evidence states, and where it
+ * states it: the conversation snapshot the attempt was prepared with, or the
+ * report verdict saved beside its digest. `null` is the honest answer when
+ * neither is there — and never a number read off the position of the attempts
+ * around it, which no evidence establishes (docs/WORKFLOW.md §9).
+ */
+async function statedReviewRound(parts: {
+  readonly root: string;
+  readonly reviewId: string;
+  readonly history: string | null;
+}): Promise<{ readonly round: number; readonly from: string } | null> {
+  // The snapshot this review's own turn was prepared with states the round the
+  // attempt was given, before anything was recorded from it.
+  if (parts.history !== null) {
+    const file = path.join(parts.history, 'index.json');
+    const index = await readJson(file);
+    const round =
+      index !== null && typeof index === 'object' && !Array.isArray(index)
+        ? (index as Record<string, unknown>)['round']
+        : undefined;
+    if (typeof round === 'number' && Number.isSafeInteger(round) && round >= 1) {
+      return { round, from: `the history snapshot this review was prepared with ("${file}")` };
+    }
+  }
+  // A review id this harness did not write is not turned into a file name.
+  if (!/^[A-Za-z0-9_-]+$/.test(parts.reviewId)) {
+    return null;
+  }
+  // The report verdict the harness saved beside the digest states each
+  // finding's own identity (`recordedAs`), and the round is the one they were
+  // recorded under.
+  const verdictFile = reportFile(parts.root, `reviewer-${parts.reviewId}.verdict.json`);
+  const recorded = recordedRoundOf(await readJson(verdictFile));
+  return recorded === null
+    ? null
+    : { round: recorded, from: `the report verdict saved beside its digest ("${verdictFile}")` };
+}
+
+/**
+ * Establishes one recovered reviewer report's original round from the review's
+ * own durable evidence, never from its position among the review records that
+ * remain. A round another review of this ticket already holds is a named gap,
+ * not a second identity for one review's findings; so is a round no evidence
+ * states at all.
+ */
+async function recoveredReviewRound(parts: {
+  readonly root: string;
+  readonly record: ReviewRecordIdentity;
+  readonly claimed: ReadonlySet<number>;
+}): Promise<RecoveredRound> {
+  const { record } = parts;
+  const settled = (round: number, from: string): RecoveredRound =>
+    parts.claimed.has(round)
+      ? {
+          round: null,
+          from: null,
+          problem:
+            `${from} names round ${String(round)}, which another review of this ticket already ` +
+            "holds, so recovering this report under that round would rename that review's finding",
+        }
+      : { round, from, problem: null };
+
+  const stated = await statedReviewRound({
+    root: parts.root,
+    reviewId: record.reviewId,
+    history: record.history,
+  });
+  if (stated !== null) {
+    return settled(stated.round, stated.from);
+  }
+  // Nothing of the review's own states its round, and the attempts that remain
+  // are no evidence of it: an attempt whose own evidence is gone is absent from
+  // any count of them, so a count would name these findings with a round this
+  // review may never have had — possibly one another review of this ticket
+  // already states, which would rename that review's finding. The gap and the
+  // review's own identity are the honest answer.
+  return {
+    round: null,
+    from: null,
+    problem:
+      'neither the history snapshot its turn was prepared with nor the report verdict saved ' +
+      'beside its digest survived, and the review attempts that remain are no evidence of a ' +
+      'round none of them states',
+  };
+}
+
+/**
+ * The other occurrences one finding grouped, as a retained verdict states them,
+ * or `null` when it states none this harness can read. A malformed entry is
+ * dropped rather than invented: the finding itself stays whole either way.
+ */
+function relatedOccurrences(value: unknown): readonly HistoryOccurrence[] | null {
+  if (!Array.isArray(value) || value.length === 0) {
+    return null;
+  }
+  const occurrences: HistoryOccurrence[] = [];
+  for (const raw of value) {
+    if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+      continue;
+    }
+    const occurrence = raw as Record<string, unknown>;
+    const where = occurrence['path'];
+    if (typeof where !== 'string' || where.trim() === '') {
+      continue;
+    }
+    const line = occurrence['line'];
+    occurrences.push({
+      path: where.trim(),
+      line: typeof line === 'number' && Number.isSafeInteger(line) && line >= 1 ? line : null,
+    });
+  }
+  return occurrences.length === 0 ? null : occurrences;
 }
 
 /** What reading one retained reviewer verdict produced. */
@@ -1119,6 +1571,29 @@ interface RetainedVerdictRead {
   readonly report: LocalReport | null;
   /** Why the retained verdict is not a complete report, when it is not. */
   readonly problem: string | null;
+}
+
+/**
+ * The identity one verification of a retained verdict names, in the spelling
+ * the history uses.
+ *
+ * A verdict is written with the identities the snapshot named, and a reviewer
+ * may spell one in any case: `parseVerdict` accepts that by resolving the
+ * identity against the history, so `r1-f1` becomes `R1-F1` before anything is
+ * published. A verdict read back from disk is read without that history, so the
+ * same normalization is applied here — the report's own finding keeps its
+ * spelling, and any other identity is read as the one this harness names, which
+ * is upper case. Without it, a recovery would keep the reviewer's spelling
+ * verbatim and settle nothing the published verdict settled, so a valid
+ * verification would change meaning after a restart (docs/WORKFLOW.md §9).
+ */
+function recoveredVerificationIdentity(
+  stated: string,
+  findings: readonly HistoryFinding[],
+): string {
+  const named = stated.trim();
+  const own = findings.find((finding) => finding.id.toUpperCase() === named.toUpperCase());
+  return own?.id ?? named.toUpperCase();
 }
 
 /**
@@ -1133,7 +1608,7 @@ async function readRetainedVerdict(parts: {
   readonly record: ReviewRecordIdentity;
   readonly ref: SourceRef;
   readonly workspaceId: string;
-  readonly round: number;
+  readonly round: RecoveredRound;
 }): Promise<RetainedVerdictRead> {
   const file = path.join(parts.dir, 'verdict.json');
   let text: string;
@@ -1184,7 +1659,7 @@ async function readRetainedVerdict(parts: {
       problem: `the reviewer's own verdict "${file}" carries no list of findings`,
     };
   }
-  const findings: HistoryFinding[] = [];
+  const stated: UnidentifiedFinding[] = [];
   for (const [index, raw] of rawFindings.entries()) {
     if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
       return {
@@ -1219,11 +1694,57 @@ async function readRetainedVerdict(parts: {
         problem: `finding ${String(index + 1)} of "${file}" carries no usable line number`,
       };
     }
-    findings.push({
+    const related = relatedOccurrences(finding['related']);
+    stated.push({
       path: where.trim(),
       line: line === undefined || line === null ? null : line,
       body,
+      ...(finding['kind'] === 'unresolved' || finding['kind'] === 'regression'
+        ? {
+            kind: finding['kind'],
+            continues: typeof finding['continues'] === 'string' ? finding['continues'] : null,
+          }
+        : {}),
+      ...(related === null ? {} : { related }),
     });
+  }
+  // The identity is assigned the same way a directly recorded report's is: a
+  // continuation keeps the identity it names, so a restart reads the same
+  // defects back under the same names the brief and the answers used. A round
+  // this machine cannot establish names the findings by the review's own
+  // identity instead — the same fallback a report kept without a round number
+  // gets — so no other review's finding is renamed over (docs/WORKFLOW.md §9).
+  const findings = identifyFindings(
+    stated,
+    parts.round.round,
+    parts.round.round === null ? parts.record.reviewId : undefined,
+  );
+  const verifications: HistoryFindingVerification[] = [];
+  const rawVerifications = record['verifications'];
+  if (Array.isArray(rawVerifications)) {
+    for (const raw of rawVerifications) {
+      if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+        continue;
+      }
+      const verification = raw as Record<string, unknown>;
+      const finding = verification['finding'];
+      const state = verification['state'];
+      const evidence = verification['evidence'];
+      if (
+        typeof finding !== 'string' ||
+        finding.trim() === '' ||
+        (state !== 'verified' && state !== 'unverified' && state !== 'regressed') ||
+        typeof evidence !== 'string' ||
+        evidence.trim() === ''
+      ) {
+        continue;
+      }
+      verifications.push({
+        finding: recoveredVerificationIdentity(finding, findings),
+        state,
+        evidence: evidence.trim(),
+      });
+    }
   }
   const head = parts.record.head ?? '(the review record names no reviewed head)';
   const digest: ReviewerReportDigest = {
@@ -1232,16 +1753,19 @@ async function readRetainedVerdict(parts: {
     reviewId: parts.record.reviewId,
     ref: parts.ref,
     workspaceId: parts.workspaceId,
-    round: parts.round,
+    round: parts.round.round,
     task: { id: parts.ref.key, title: parts.ref.key },
     head,
     decision,
     summary: summary.trim(),
     findings,
+    ...(verifications.length === 0 ? {} : { verifications }),
     createdAt: parts.record.endedAt ?? parts.record.startedAt,
     textFile: '',
     recordFile: null,
-    recordProblem: `this report was recovered from the reviewer's own retained verdict at "${file}"`,
+    recordProblem:
+      `this report was recovered from the reviewer's own retained verdict at "${file}"; ` +
+      recoveredRoundNote(parts.round),
     published:
       parts.record.published === null
         ? null
@@ -1253,13 +1777,15 @@ async function readRetainedVerdict(parts: {
       digest,
       text: reviewerReportText({
         ref: parts.ref,
-        round: parts.round,
+        round: parts.round.round,
         reviewId: parts.record.reviewId,
         head,
         decision,
         summary: summary.trim(),
         findings,
+        verifications,
         recoveredFrom: file,
+        recoveredRound: parts.round,
         publishedUrl: parts.record.published?.url ?? null,
       }),
       complete: true,

@@ -11,6 +11,7 @@
  */
 import { existsSync } from 'node:fs';
 import path from 'node:path';
+import { outstandingFindingIds, unresolvedRounds } from '../../history/findings.js';
 import { renderHistorySection } from '../../history/prompt.js';
 import { BASELINE_GUIDANCE_PREFIX } from '../../runs/contracts.js';
 import type { AgentTurnRequest } from '../../runs/contracts.js';
@@ -105,13 +106,73 @@ export function promptFor(request: AgentTurnRequest): string {
 
   sections.push(
     [
+      '## How this turn is judged',
+      '- The configured checks decide whether the work is judged as passing, and they are not the',
+      '  task: a green round is not completion. Judge the work by the acceptance criteria, and make',
+      '  the behavior right rather than the command quiet.',
+      '- If this task explicitly asks for a change to the project’s build or test configuration —',
+      '  a new test, a changed command, new tooling — make exactly that change. Otherwise leave how',
+      '  the project is built and checked as you found it.',
+      '- Verify the change at the integration point it affects: exercise the behavior through the',
+      '  code path a caller reaches, or through the command or test that covers it, and say how you',
+      '  verified it in your summary. Do not re-run the project’s whole expensive test matrix for',
+      '  this turn — the harness runs the configured checks itself after every turn.',
+      '- When the evidence points at one shared cause, look for every place it reaches before you',
+      '  repair it. A repair that fixes the reported example and leaves the same defect beside it',
+      '  is not finished work.',
+    ].join('\n'),
+  );
+
+  // The findings an earlier review left outstanding are answered by identity:
+  // the harness reads one answer section per finding from the turn's own
+  // summary, and a missing or partial one stays what it is — not a complete
+  // response (docs/WORKFLOW.md §9).
+  const outstanding =
+    request.history === undefined
+      ? []
+      : outstandingFindingIds(unresolvedRounds(request.history.brief));
+  if (outstanding.length > 0) {
+    sections.push(
+      [
+        '## Answer every outstanding finding',
+        'The ticket history above lists every review round whose change request is still',
+        'outstanding, each finding with the identity it keeps. Those findings are the change you',
+        'were asked to make: end your summary with one section per finding, naming its identity',
+        'exactly, in this shape:',
+        '',
+        `### Finding ${outstanding[0] ?? 'R2-F1'}`,
+        '- Cause: why the defect happened.',
+        '- Affected scope: every place the same cause reaches, and what you found in the related',
+        '  paths you checked.',
+        '- Repair: what you changed.',
+        '- Verification: how you verified the repair at the integration point it affects — the',
+        '  command, test or code path that exercises the behavior — and not merely that the project’s',
+        '  whole suite is green.',
+        '- Remaining uncertainty: what you could not establish, or `none`.',
+        '',
+        `Outstanding identities: ${outstanding.join(', ')}.`,
+        '',
+        'Keep each value on the line that names it; an indented line under it continues that',
+        'value, and any other line ends it.',
+        '',
+        'The harness reads those sections from your own final summary. A finding you do not answer,',
+        'or whose answer leaves out a field, is recorded as no complete response: the reviewer sees',
+        'the gap and will not treat it as a repaired finding. Answer each finding for itself; one',
+        'answer never stands in for another, and a finding you answer must still be repaired in the',
+        'working copy — the reviewer verifies the revision, not the answer.',
+      ].join('\n'),
+    );
+  }
+
+  sections.push(
+    [
       '## What this turn must not do',
       '- Do not weaken, skip, delete, or loosen the project’s tests, checks, linting, type checking,',
       '  or other tooling to make the work look finished. Fix the cause, not the way it is checked.',
-      '- Do not change how the project is built or checked, and do not touch the harness that started',
-      '  you: its configuration and the commands it runs live outside this working copy, and they are',
-      '  not yours to change. This turn is not sandboxed, so nothing else stops a write outside it:',
-      '  do not make one.',
+      '- Do not change how the project is built or checked except where this task explicitly asks',
+      '  for it, and do not touch the harness that started you: its configuration and the commands it',
+      '  runs live outside this working copy, and they are not yours to change. This turn is not',
+      '  sandboxed, so nothing else stops a write outside it: do not make one.',
       `- Do not modify the source checkout this copy came from (${sourceRoot}), or any other` +
         ' checkout, and do not push, open pull requests, publish packages, deploy, or upload the work',
       '  anywhere: this turn’s work stays in this working copy.',

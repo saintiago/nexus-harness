@@ -295,6 +295,19 @@ A red baseline stops a **fresh attempt** before any coding turn; a **continuatio
 
 Before every coding turn the harness also prepares the ticket's **conversation history** — the current requirements, the Jira thread, the pull request conversation and the harness's own complete reports — and hands the turn its brief and local paths (§9, "The ticket conversation history"). A run whose task came from a file rather than a source has no such history and behaves exactly as before.
 
+The coding prompt is role-specific and says what this turn is and is not. A passing check is not
+the task's completion: the configured checks decide whether the work is judged as passing, and the
+acceptance criteria decide whether the task is done, so a turn makes the behavior right rather than
+the command quiet. A change to how the project is built or checked belongs to a turn only where the
+task explicitly asks for one — a new test, a changed command, new tooling — and the blanket rule
+against touching the project's tooling stands everywhere else. The turn verifies its change at the
+integration point it affects (the callers that reach it, or the command or test that covers it) and
+says how, rather than re-running the project's whole expensive test matrix, which the harness runs
+itself after every turn. When the ticket's review has left findings outstanding, the same prompt
+asks for one answer per finding identity — cause, affected scope, repair, verification, remaining
+uncertainty — in the turn's own summary, and the harness reads those answers out of the complete
+developer report it already retains (§9, "The ticket conversation history").
+
 The delivery step is **outside the run**: the run's own report is written first, and only a `passed` attempt is delivered. A delivery failure changes neither the run's status nor its evidence, and it never starts a coding turn (§8). A red baseline never reaches it either: for a fresh source attempt the ending is diagnosed locally first (§11, "The pre-delivery baseline diagnosis"), so an attempt is delivered only after a post-agent round passed every configured setup and check and the ticket's own work is on the recorded branch.
 
 Every working copy is given a **repository-local** Git identity (`Nexus Agent <nexus@local>`, commit signing disabled) before any check or coding turn runs, so a turn can make small local commits as it works; a turn is asked to finish with the work it wants built on committed, because the harness starts no further coding turn from a working copy that still holds uncommitted work. Those commits stay in the retained working copy: the harness itself never merges or integrates a target's changes and, without a configured delivery step, never pushes or publishes them either. A commit is not a check result, and anything a turn leaves uncommitted is kept — the round after the turn judges it, and a delivery step refuses to publish it — but it ends the run there rather than going to another agent. A continued workspace keeps the base commit its ledger recorded as the comparison base, so `changes` in the report is the whole diff against that base, committed and uncommitted parts alike. These settings are written with `git config --local`; the harness never writes global or system Git configuration.
@@ -722,22 +735,47 @@ The queue is the configured project, issue type, and label in the `source`'s **r
    reviewer reads from the view like any other file. It is instructed to review only: it must not
    change the view (including ignored files; no edits, commits, checkouts, fetches, or pushes),
    implement fixes, commit, push, merge, or edit the ticket or the pull request, and it must write one `verdict.json` (a
-   `verdict` of `approve`, `request_changes`, or `inconclusive`, a summary, and a findings array).
-   Findings are blocking; approval requires an empty findings array and sufficient evidence. The
+   `verdict` of `approve`, `request_changes`, or `inconclusive`, a summary, a findings array, and a
+   verifications array). Findings are blocking; approval requires an empty findings array and
+   sufficient evidence. The verdict also states how each finding stands against the earlier
+   rounds — `new`, `unresolved` (an earlier finding whose claimed repair did not hold) or
+   `regression` (one this revision reintroduced; the two continuations name the earlier identity
+   in `continues`) — and groups the other confirmed occurrences of one defect under
+   `related` instead of reporting one finding per example. A continuation is resolved against
+   every finding identity the history retained, not only the ones still outstanding: a repair
+   regression reintroduces a defect an earlier review already verified, and it names the identity
+   that defect was raised with instead of a new one. When the snapshot carried outstanding
+   findings, the verdict states one verification per finding identity — `verified`, `unverified`
+   or `regressed`, with the evidence the reviewer itself read — and a verdict that verifies none
+   of them, names something else, or approves while leaving a disposition unverified is refused
+   as inconclusive: a developer's claim is never published as a verified fix, and an approval
+   clears a change request only when the reviewer verified its disposition itself. An
+   `inconclusive` verdict is the one result that decides nothing and states no reading of the
+   outstanding findings. The
    reviewer must select `inconclusive` when material code/test context or tools are unavailable,
    explaining what the coordinator needs to provide in its summary. A turn that fails, is
    stopped, or writes no usable verdict is also **inconclusive**: nothing is published for it, and
-   no coding repair is started.
+   no coding repair is started. The prompt says what a successful check does not mean: the change
+   is judged against the ticket at the integration point it affects, the project's whole test
+   matrix is not re-run to stand in for that judgment, and a build or test change the ticket
+   explicitly asks for is part of the change — checked for what it does and for what it must not
+   weaken.
 7. Before anything is published, the view is re-checked: it must still be at the reviewed head
    with no changed path, or an edit, a new file, a commit, or a moved head publishes nothing. The
    pull request is then re-read and must still be open at that same head, and the ticket is
    re-read and must still be in the configured review status. A head that moved, a closed pull
    request, a ticket that left review, and a view the turn changed publish nothing: the result is
-   stale, and a later scan reviews the new head.
+   stale, and a later scan reviews the new head. Such a verdict is retained as conversation — its
+   complete report was recorded before these guards — and settles nothing it read: only a review
+   the pull request itself carries settles a disposition, and an approval clears a change request
+   only at the head it was made on.
 8. The verdict becomes one native review — `APPROVE` for an approved verdict, `REQUEST_CHANGES`
    otherwise — pinned to the reviewed commit with `commit_id` and carrying the ticket reference
-   and URL, the summary, and any finding the diff could not position. Findings whose file and line
-   the pull request's own patch shows are published as native inline comments.
+   and URL, the summary, and any finding the diff could not position, together with the
+   dispositions this review verified when the snapshot carried outstanding findings (each named by
+   the identity of the finding it answers and stated as `verified`, `unverified` or `regressed`).
+   Findings whose file and line the pull request's own patch shows are published as native inline
+   comments.
    `REQUEST_CHANGES` requires at least one finding; an approval is published only when the
    reviewer completed with a usable verdict.
 9. One app-owned check run named `checkName` is then published on the same head: conclusion
@@ -808,12 +846,89 @@ reached while following pagination, or a complete report is missing, the prompt 
 it knows about, so a turn is never told the history is complete when it is not; a snapshot that
 cannot be written at all stops the turn before it starts.
 
-Outstanding findings are reconciled across retained and native reviews, independently by reviewer.
-A later published approval from that reviewer at the current head clears their request; another reviewer's
-approval, an old-head approval, a comment-only review or an inconclusive verdict cannot clear it.
-Published findings without a retained report remain visible with an explicit provenance gap.
-Responses include older comments edited after the review. This does not enforce remediation of
-individual findings.
+Outstanding findings are reconciled across retained and native reviews, independently by reviewer,
+finding by finding as well as round by round. A later published approval from that reviewer at the
+current head clears their request; another reviewer's approval, an old-head approval, a comment-only
+review, an inconclusive verdict, and a review GitHub has since dismissed cannot clear it. A
+dismissed review is not an active decision: nothing it read is settled by it — the decision its own
+report stated is what its round keeps, so an approval keeps the head it was made on and a dismissed
+change request's findings still stand — and dismissal withdraws the blocking state the review had
+on the pull request, never the defect the review recorded. A round that requests changes adds the
+findings it raises and clears nothing: a new change request never silently resolves an earlier
+defect. A round's own verifications settle exactly the identities they name — `verified` clears that
+one finding, `unverified` and `regressed` leave it outstanding for the next round to answer and
+verify — and that reviewer's latest change request stands as a round of its own, so a native review
+that states no finding of its own is still an outstanding request. Published findings without a retained
+report remain visible with an explicit provenance gap. Responses include older comments edited after
+the review.
+
+Every finding keeps the identity it is rendered with: the round that raised the defect and its
+position in that round's report, `R3-F2`, derived from the retained report rather than stored
+twice — so the brief, a
+developer's answer and a later reviewer's verification all name the same finding the same way, and
+the identity is reproduced rather than re-derived when a snapshot is rebuilt or a run restarts. A
+finding a later review raises again is not a new identity: it is classified `unresolved` or
+`regression`, names the identity it continues, and keeps it for as long as it is outstanding, while
+the review's own occurrence — its own round and position — is recorded and rendered beside it, so
+the latest wording of the defect is not lost. A native review the harness kept no complete report
+for is reconstructed from the review's own entry and its inline comments, each finding named by the
+review and the comment's own source identity rather than its position among the comments GitHub
+returned in one snapshot: deleting an earlier sibling cannot rename the defects that remain, so an
+answer or a verification written against one identity still names the same finding, and an identity
+a deleted comment held never comes to stand for another. Those identities are reproduced from the
+snapshot for as long as it holds the review: a defect an approval settled keeps
+the identity it was raised with, so a later revision that brings it back continues that finding
+instead of raising an unconnected new one. Two reviews this harness kept no round number for are
+named apart by a bounded digest of the identity that scopes them, so two baseline diagnoses of one
+project cannot share one finding identity.
+
+A report recovered from the reviewer's own retained verdict after its digest was lost keeps the
+identities it was recorded with: the round is read back from the review's own durable evidence — the
+history snapshot its turn was prepared with, or the report verdict saved beside its digest — and
+never counted off the review attempts that remain, because an attempt whose own evidence is gone is
+absent from any such count and the number it yields may be a round another review already states.
+The recovered report says where its round came from, or names the gap when nothing states it: a
+round no evidence establishes without naming another review's findings the same way is a named gap,
+never an invented identity — the recovered findings are named by the review's own identity instead,
+and the snapshot says the round could not be established. The next review's number is one more than
+the highest round this machine establishes — a retained report's own round, and the round an
+attempt's own evidence states when its report is gone — and never below the number of review
+attempts it holds, so a new review is never recorded under a round another review already states.
+
+The brief renders each outstanding finding whole, with that identity and how the round classified
+it, and under the finding the answer a developer turn gave it: the newest developer report recorded
+after the review is the claim the reviewer is shown, named with the run and the round it came from,
+and an earlier answer stays readable in the report it was recorded in. The newest coding turn of
+that report is what the developer claims now, exactly as the newest attempt is: a turn that answers
+a finding again answers it, and a turn that answers nothing — or answers only part of it — states no
+complete response, however completely an earlier turn answered the same finding. The newest attempt
+stands, whatever it holds: a report that is missing, or one that comes back incomplete, keeps its
+answers incomplete with that provenance attached, and an older complete claim is never read as the
+current attempt's response. The harness reads
+those answers out of the developer's own summary — one `### Finding <identity>` section per
+finding, with `Cause`, `Affected scope`, `Repair`, `Verification` and `Remaining uncertainty` each
+stated, and a wrapped value indented under the line that names it. A finding with no such section, and
+a section that leaves a field out, is recorded as an incomplete response: the brief says so where
+the answer would be, and the answer is never presented as complete remediation, whatever the
+surrounding discussion reads. A turn that answers one finding never stands in for another, and the
+identities the prompt lists are the ones the developer is held to. Complete exchanges survive
+further turns and restarts because both halves are retained: the answers are read back out of the
+complete developer reports, and the verifications out of the complete reviewer reports, every time
+a snapshot is prepared. One answer field longer than the brief's own rendering bound is cut for the
+prompt only, with the complete developer report the answer was read from named where the cut is —
+the retained report is unchanged, and it is what both roles can read in full.
+
+What one review verified about the dispositions before it is recorded with that review and rendered
+under its round: `verified`, `unverified` or `regressed`, with the reviewer's own evidence. A
+developer's answer is a claim and a verification is a fact, and the two are rendered and recorded
+as such; a later review that finds the defect still present raises its own finding classified
+`unresolved` or `regression` and naming the identity it continues, so one defect is followed across
+rounds instead of being re-raised as an unconnected new finding. A verification names the identity
+the history gave the finding, whatever case the reviewer wrote it in: the scan resolves that
+identity before anything is published, and a verdict read back from the reviewer's own retained
+file is resolved the same way, so a recovery settles exactly the dispositions the published verdict
+settled instead of changing meaning when a report digest is lost. Confirmed related occurrences of
+one defect are grouped under the finding that names the cause rather than repeated as examples.
 
 Native GitHub reviews have no edit timestamp. Synchronization compares their bodies against the
 recorded publication hash and marks changed renderings as edited, including when the prior snapshot
@@ -842,7 +957,12 @@ recorded publication identities is recognized only from a configured harness aut
 harness's own rendering shape — its run
 result line, the marker naming the same run, and its artifacts and repairs lines — which a comment
 that quotes a marker does not match. The inline findings of a native review published by the App are
-the retained report's own findings, mapped by the review's identity; a reply to one stays a reply.
+the retained report's own findings, mapped by the review's identity; a reply to one stays a reply. A
+publication note that failed after GitHub acknowledged the review is recovered from the attempt's
+own review record: the recorded native review id is what matches the retained report to the review
+it published, so the review's own state — an approval's head, a dismissal, a later change request —
+is what reconciliation reads, and one review is one round rather than a reconstructed second round
+beside the report that already holds it.
 
 The normal completion pass records its acknowledged Jira findings comment with the exact local
 reviewer's native review identity and head. Its review excerpt becomes a mirror; its distinct

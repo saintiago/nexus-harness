@@ -488,6 +488,39 @@ export type RunStatus = 'passed' | 'failed' | 'cancelled';
 export type AttemptKind = 'implementation' | 'repair';
 
 /**
+ * How one review finding stands against the rounds before it. A reviewer states
+ * this with every finding so a related occurrence is grouped with the defect it
+ * belongs to instead of being reported as a fresh, unconnected one
+ * (docs/WORKFLOW.md §9):
+ *
+ * - `new` is an independent defect this round found for the first time;
+ * - `unresolved` is a defect an earlier round raised, the developer answered and
+ *   the reviewer still finds in the reviewed revision;
+ * - `regression` is a defect an earlier round raised, the developer repaired and
+ *   this round finds reintroduced.
+ *
+ * `unresolved` and `regression` name the earlier finding they continue, so the
+ * two roles can follow one defect across rounds without renaming it.
+ */
+export type FindingKind = 'new' | 'unresolved' | 'regression';
+
+/**
+ * What a reviewer verified about one earlier finding's disposition: whether the
+ * repair the developer claimed really holds in the reviewed revision.
+ *
+ * - `verified` means the reviewer itself observed the repair at the place the
+ *   defect lived; the claim and the verification are now one;
+ * - `unverified` means the reviewer could not establish the claim (the repair is
+ *   absent, partial, or no evidence supports it);
+ * - `regressed` means the repair held and a later change in the same revision
+ *   brought the defect back.
+ *
+ * `unverified` and `regressed` are never an approval: they stay an outstanding
+ * defect the next round answers.
+ */
+export type FindingVerificationState = 'verified' | 'unverified' | 'regressed';
+
+/**
  * One line of what a coding turn is doing, as the terminal's activity pane shows
  * it: complete messages and bounded work summaries from the runtime's event stream.
  *

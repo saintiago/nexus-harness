@@ -21,15 +21,18 @@ import {
   type HistoryDelivery,
   type HistoryEntry,
   type HistoryFinding,
+  type HistoryFindingResponse,
   type HistoryMirror,
   type HistoryReportSummary,
   type ReviewerReportRequest,
   type ReadComment,
 } from './contract.js';
+import { nativeFindingIdOf, parseFindingAnswers } from './findings.js';
 import { historyMarkerOf } from './marker.js';
 import { compareHistoryTime } from './time.js';
 import { workspaceHistoryRoot } from './paths.js';
 import {
+  latestCodingTurnText,
   notePublishedDeveloperReport,
   readLocalReports,
   recordDeveloperReport,
@@ -96,6 +99,14 @@ function entryOfComment(
     round: null,
     commit: comment.commit ?? parts.commit,
     state: comment.state ?? null,
+    // A reply belongs to the conversation, not to the review's own findings, so
+    // only a comment published as part of its review keeps the parent identity.
+    ...(parts.kind === 'pr-review-comment' &&
+    comment.reviewId !== undefined &&
+    comment.reviewId !== null &&
+    (comment.inReplyToId === undefined || comment.inReplyToId === null)
+      ? { reviewId: comment.reviewId }
+      : {}),
     url: comment.url,
     sourceId: comment.sourceId,
     text: comment.text,
@@ -447,38 +458,105 @@ interface ReviewRoundCandidate {
   readonly summary: HistoryReportSummary;
   /** The round's own entries: its review, and the findings it published. */
   readonly ownEntryIds: readonly string[];
+  /**
+   * Whether the review the round states really reached the pull request: a
+   * native review this machine recorded as published for the report, or a
+   * native review read back from the pull request itself. A verdict retained
+   * before the publication guards that was refused publication — a view the
+   * turn changed, a head that moved, a ticket that left review — is
+   * conversation only, and settles nothing (docs/spec.md §9).
+   */
+  readonly published: boolean;
+  /**
+   * Whether GitHub has since dismissed the review this round states. A
+   * dismissed review is not an active decision: it settles nothing it read and
+   * its approval clears nothing, whichever decision its own report stated.
+   */
+  readonly dismissed: boolean;
 }
 
 /**
- * Reconciles retained and native reviews independently by reviewer. Only an
- * approval by that reviewer at the current head clears their outstanding
- * request; comment-only and inconclusive rounds decide nothing.
+ * What one reviewer still holds: the round that last stated each outstanding
+ * finding, their latest change request as a round of its own, and the head that
+ * request was made on.
  */
-function unresolvedRound(
-  reports: readonly HistoryReportSummary[],
-  candidates: readonly Candidate[],
-  harnessAuthors: readonly string[],
-  currentHead: string | null,
-): readonly ReviewRoundCandidate[] {
+interface OutstandingReview {
+  /**
+   * The latest change request this reviewer made, until an approval by the same
+   * reviewer at the current head clears it. A round that raises no finding of
+   * its own — a native review whose only record is its decision — still stands:
+   * nothing may read its request as resolved.
+   */
+  request: ReviewRoundCandidate | null;
+  /** Outstanding finding identity → the round that last stated it. */
+  readonly findings: Map<string, ReviewRoundCandidate>;
+  /** The head of this reviewer's latest change request, for the check below. */
+  head: string | null;
+}
+
+/**
+ * Reconciles retained and native reviews independently by reviewer, finding by
+ * finding rather than round by round.
+ *
+ * A round that requests changes adds its own findings and clears nothing: a new
+ * change request never silently resolves an earlier defect. A round's own
+ * verifications settle exactly the identities they name — `verified` clears one
+ * finding, `unverified` and `regressed` leave it outstanding — but only when
+ * the round is an eligible, active review the pull request itself carries: a
+ * verdict refused publication settles nothing it read, a review GitHub
+ * dismissed settles nothing, and only an approval by that reviewer at the
+ * current head clears what they still hold. A dismissed review keeps the
+ * decision its own report stated, so the findings it raised still stand until a
+ * later review verifies them: dismissal withdraws GitHub's blocking state,
+ * never the defect the review recorded. Comment-only and inconclusive
+ * rounds decide nothing. The reviewer's latest
+ * change request stands as a round of its own as well, so a native review that
+ * states no finding — only its decision and its body — is still an outstanding
+ * request and never reads as resolved by the round that came after it.
+ *
+ * Each identity is held under the round that last stated it, so the brief
+ * renders the finding with its latest wording and, in a continuation, the
+ * occurrence that round recorded beside the identity the defect keeps.
+ */
+function unresolvedRound(parts: {
+  readonly reports: readonly HistoryReportSummary[];
+  readonly candidates: readonly Candidate[];
+  readonly harnessAuthors: readonly string[];
+  readonly currentHead: string | null;
+  /** The review ids whose recorded native review was published (docs/spec.md §9). */
+  readonly publishedReviews: ReadonlySet<string>;
+}): readonly ReviewRoundCandidate[] {
+  const { reports, candidates, harnessAuthors, currentHead, publishedReviews } = parts;
   const rounds: ReviewRoundCandidate[] = [];
   const coveredReviews = new Set<string>();
 
   /** The inline comments one native review published, by the review's own id. */
   const inlineOf = (reviewId: string): readonly Candidate[] =>
-    candidates.filter((candidate) => {
-      if (candidate.entry.kind !== 'pr-review-comment') {
-        return false;
-      }
-      const comment = candidate.comment;
-      if (comment === null || comment.reviewId === undefined || comment.reviewId === null) {
-        return false;
-      }
-      if (comment.inReplyToId !== undefined && comment.inReplyToId !== null) {
-        // A reply is a response to a finding, not part of the review itself.
-        return false;
-      }
-      return String(comment.reviewId) === reviewId;
-    });
+    candidates
+      .filter((candidate) => {
+        if (candidate.entry.kind !== 'pr-review-comment') {
+          return false;
+        }
+        const comment = candidate.comment;
+        if (comment === null || comment.reviewId === undefined || comment.reviewId === null) {
+          return false;
+        }
+        if (comment.inReplyToId !== undefined && comment.inReplyToId !== null) {
+          // A reply is a response to a finding, not part of the review itself.
+          return false;
+        }
+        return String(comment.reviewId) === reviewId;
+      })
+      // A finding's identity is the comment's own source identity, so a
+      // deleted sibling cannot rename the defects that remain; ordering them
+      // the way the snapshot orders their entries keeps the round's own
+      // rendering reproducible from the snapshot alone, after the round that
+      // raised the finding was settled and no report states it any more.
+      .toSorted(
+        (a, b) =>
+          compareHistoryTime(a.entry.createdAt, b.entry.createdAt) ||
+          a.entry.id.localeCompare(b.entry.id),
+      );
 
   for (const report of reports) {
     if (report.kind !== 'reviewer-report') {
@@ -492,8 +570,22 @@ function unresolvedRound(
         candidate.entry.kind === 'pr-review' &&
         candidate.entry.sourceId === String(report.nativeReviewId),
     );
-    const decision = native?.entry.state?.toLowerCase() ?? (report.decision ?? '').toLowerCase();
-    if (decision === 'approve' && report.nativeReviewId === null) {
+    const nativeState = native?.entry.state?.toLowerCase() ?? null;
+    // A review GitHub dismissed is not an active decision: it settles nothing
+    // it read, and its approval clears nothing. The decision its own report
+    // stated is what the round keeps, so a dismissed change request's findings
+    // still stand and an approval keeps the head restriction it was made with
+    // (docs/WORKFLOW.md §9).
+    const dismissed = nativeState === 'dismissed';
+    const decision =
+      nativeState === null || dismissed ? (report.decision ?? '').toLowerCase() : nativeState;
+    // Whether this verdict became a review GitHub published: the report's own
+    // digest records the publication identity once the scan noted it, and the
+    // attempt's review record names the review it published even when that note
+    // was lost. A verdict refused publication reached the pull request as
+    // nothing at all.
+    const published = report.nativeReviewId !== null || publishedReviews.has(report.sourceId);
+    if (decision === 'approve' && !published) {
       // Retain the report, but an approval refused by publication guards is
       // not evidence that earlier change requests were resolved.
       continue;
@@ -516,6 +608,8 @@ function unresolvedRound(
       decision,
       summary: report,
       ownEntryIds: own,
+      published,
+      dismissed,
     });
   }
 
@@ -533,6 +627,7 @@ function unresolvedRound(
         continue;
       }
       findings.push({
+        id: nativeFindingIdOf(entry.sourceId, inline.entry.sourceId),
         path: comment.path ?? '(inline review comment)',
         line: comment.line ?? null,
         body: comment.body ?? comment.text,
@@ -566,26 +661,150 @@ function unresolvedRound(
         pullRequest: null,
       },
       ownEntryIds: own,
+      // This round is a native review the pull request carries: it was read
+      // back from its own conversation, so it was published to exist.
+      published: true,
+      // Its state is all this round states, so a dismissal leaves it no active
+      // decision of its own to stand under.
+      dismissed: (entry.state ?? '').toLowerCase() === 'dismissed',
     });
   }
 
   rounds.sort(
     (a, b) => compareHistoryTime(a.at, b.at) || a.summary.entryId.localeCompare(b.summary.entryId),
   );
-  const outstanding = new Map<string, ReviewRoundCandidate>();
+  const held = new Map<string, OutstandingReview>();
   for (const round of rounds) {
-    if (requestsChanges(round.decision)) {
-      outstanding.set(round.owner, round);
-    } else if (
-      (round.decision === 'approve' || round.decision === 'approved') &&
-      round.summary.head === (currentHead ?? outstanding.get(round.owner)?.summary.head)
-    ) {
-      outstanding.delete(round.owner);
+    const owner = held.get(round.owner) ?? { request: null, findings: new Map(), head: null };
+    const approving = round.decision === 'approve' || round.decision === 'approved';
+    // A round settles what it read only when it is an eligible, active review
+    // the pull request itself carries: an approval decides at the head it was
+    // made on, a verdict refused publication decides nothing at all, and a
+    // review GitHub dismissed decides nothing at all either. Then only a
+    // `verified` reading settles an identity; `unverified` and `regressed` are
+    // a reviewer's own statement that the defect is still there.
+    const settles =
+      round.published &&
+      !round.dismissed &&
+      (!approving || round.summary.head === (currentHead ?? owner.head));
+    if (settles) {
+      for (const verification of round.summary.verifications ?? []) {
+        if (verification.state === 'verified') {
+          owner.findings.delete(verification.finding);
+        }
+      }
     }
-    // COMMENTED and inconclusive rounds cannot resolve a change request.
-    // DISMISSED reviews are not added as outstanding in the first place.
+    if (requestsChanges(round.decision)) {
+      // A change request adds the findings it raises; it never clears one. That
+      // holds for a request refused publication as well: it settles no
+      // disposition, and the defect it recorded has no other statement to
+      // stand under, so dropping it would lose a finding the history holds.
+      for (const finding of round.summary.findings) {
+        owner.findings.set(finding.id, round);
+      }
+      owner.request = round;
+      owner.head = round.summary.head ?? owner.head;
+    } else if (approving && settles) {
+      owner.findings.clear();
+      owner.request = null;
+      owner.head = null;
+    }
+    // COMMENTED and inconclusive rounds cannot resolve a change request, and a
+    // native review whose own state is a dismissal raises nothing of its own:
+    // no report states a decision for it, so its dismissal is conversation
+    // only — the identities it recorded stay nameable for a later regression,
+    // and it settles nothing (docs/WORKFLOW.md §9).
+    held.set(round.owner, owner);
   }
-  return [...outstanding.values()];
+  // Each outstanding identity is rendered under the round that last stated it,
+  // with that round's verifications; a round nothing maps to has been resolved
+  // whole and is no longer outstanding.
+  const stated = new Map<string, ReviewRoundCandidate>();
+  for (const owner of held.values()) {
+    for (const [finding, round] of owner.findings) {
+      stated.set(finding, round);
+    }
+  }
+  const outstanding = new Set<ReviewRoundCandidate>([
+    ...[...held.values()].flatMap((owner) => (owner.request === null ? [] : [owner.request])),
+    ...stated.values(),
+  ]);
+  return rounds
+    .filter((round) => outstanding.has(round))
+    .map((round) => ({
+      ...round,
+      summary: {
+        ...round.summary,
+        findings: round.summary.findings.filter((finding) => stated.get(finding.id) === round),
+      },
+    }));
+}
+
+/**
+ * The developer's answers to one outstanding round's findings, read from the
+ * newest developer report recorded after that review, complete or not. Identity
+ * ties an answer to a finding: the report has to name the finding by the same
+ * identity the brief renders, and an answer that leaves out a field, or a
+ * report that answers nothing, is kept as the incomplete response it is — never
+ * rounded up to complete remediation (docs/WORKFLOW.md §9).
+ *
+ * The report's own findings are answered per coding turn, and the newest turn
+ * is the claim: a turn that answers a finding again answers it, and a turn that
+ * answers nothing — or answers only part of it — states no complete response,
+ * however completely an earlier turn answered the same finding. Those earlier
+ * answers stay readable in the report they were recorded in; they are not read
+ * as the current claim.
+ *
+ * The newest attempt is the current claim, whatever it holds: an earlier
+ * attempt's answer stays in the snapshot as its own entry, but the work as it
+ * now stands is what the latest attempt said about it, and a latest attempt
+ * whose report is missing or comes back incomplete keeps its answers
+ * incomplete with that provenance attached. An older complete claim is never
+ * read as the current attempt's response, and no attempt at all is no response.
+ * Deriving the answers from the retained reports each time is what makes a
+ * complete exchange survive further turns and restarts without a second store.
+ */
+function responsesOf(
+  round: ReviewRoundCandidate,
+  entries: readonly HistoryEntry[],
+): readonly HistoryFindingResponse[] {
+  const findings = round.summary.findings.map((finding) => finding.id);
+  if (findings.length === 0) {
+    return [];
+  }
+  const newest = entries
+    .filter(
+      (entry) =>
+        (entry.kind === 'developer-report' ||
+          (entry.kind === 'missing-report' && entry.role === 'developer')) &&
+        compareHistoryTime(entry.createdAt, round.at) >= 0,
+    )
+    .toSorted(
+      (a, b) => compareHistoryTime(b.createdAt, a.createdAt) || b.id.localeCompare(a.id),
+    )[0];
+  if (newest === undefined) {
+    return [];
+  }
+  // A report the harness could not read in full is not a complete claim: its
+  // answers stay incomplete, with the report's own problem attached, so an
+  // unusable attempt can never read as complete remediation.
+  const source = newest.complete
+    ? null
+    : `the newest developer report of this attempt (${newest.id}) is not complete — ` +
+      `${newest.problem ?? 'the harness could not read it in full'}`;
+  return parseFindingAnswers(latestCodingTurnText(newest.text), findings).map((answer) => ({
+    ...answer,
+    complete: answer.complete && source === null,
+    problem:
+      source === null
+        ? answer.problem
+        : `${source}. Nothing here is a complete response` +
+          (answer.problem === null ? '' : `: ${answer.problem}`),
+    entryId: newest.id,
+    runId: newest.sourceId,
+    round: newest.round,
+    createdAt: newest.createdAt,
+  }));
 }
 
 /** The latest delivery the snapshot can prove: the pull request now, or the last report's. */
@@ -915,12 +1134,13 @@ export function createTicketHistory(parts: TicketHistoryParts): TicketHistory {
         );
       }
 
-      const unresolved = unresolvedRound(
+      const unresolved = unresolvedRound({
         reports,
-        reviewCandidates,
+        candidates: reviewCandidates,
         harnessAuthors,
-        pullRequest?.pullRequest?.headSha ?? null,
-      );
+        currentHead: pullRequest?.pullRequest?.headSha ?? null,
+        publishedReviews: new Set(local.publishedReviews),
+      });
       const reconstructedGap = unresolved.some((round) => !round.summary.complete)
         ? 'the latest review that requested changes has no complete local report; its findings ' +
           'are the published text, which may have been bounded for the destination it was ' +
@@ -929,7 +1149,14 @@ export function createTicketHistory(parts: TicketHistoryParts): TicketHistory {
       if (reconstructedGap !== null) {
         gaps.push(reconstructedGap);
       }
-      const round = unresolved.at(-1)?.summary ?? null;
+      // The developer's answers to each outstanding round, read from the
+      // complete developer reports recorded after it. A finding with no
+      // complete answer is rendered as exactly that (docs/WORKFLOW.md §9).
+      const unresolvedReviews: HistoryReportSummary[] = unresolved.map((candidate) => {
+        const responses = responsesOf(candidate, entries);
+        return responses.length === 0 ? candidate.summary : { ...candidate.summary, responses };
+      });
+      const round = unresolvedReviews.at(-1) ?? null;
       const ownEntryIds = new Set(unresolved.flatMap((round) => round.ownEntryIds));
       for (const { entry } of reviewCandidates) {
         if (
@@ -998,7 +1225,7 @@ export function createTicketHistory(parts: TicketHistoryParts): TicketHistory {
         task: current.task,
         latestDelivery: latestDelivery(pullRequest?.pullRequest ?? null, reports),
         unresolved: round,
-        unresolvedReviews: unresolved.map((round) => round.summary),
+        unresolvedReviews,
         responses,
         newHumanFeedback,
         ...(recovery.length === 0 ? {} : { recovery }),

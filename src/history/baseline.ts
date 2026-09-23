@@ -5,6 +5,7 @@ import { readBaselineOutcome } from '../reviews/baseline.js';
 import { readBaselineEvidence } from '../sources/baseline.js';
 import { messageOf } from '../shared/errors.js';
 import type { SourceRef } from '../shared/types.js';
+import { findingIdOf } from './findings.js';
 import type { LocalReport, ReviewerReportDigest } from './reports.js';
 
 export async function readBaselineReports(parts: {
@@ -85,7 +86,14 @@ export async function readBaselineReports(parts: {
           findings:
             finding === null
               ? []
-              : [{ path: file, line: null, body: JSON.stringify(finding, null, 2) }],
+              : [
+                  {
+                    id: findingIdOf(null, 0, sourceId),
+                    path: file,
+                    line: null,
+                    body: JSON.stringify(finding, null, 2),
+                  },
+                ],
           createdAt,
           textFile: '',
           recordFile: file,
