@@ -1197,6 +1197,34 @@ interface ReviewRecordIdentity {
   readonly head: string | null;
 }
 
+/**
+ * The other occurrences one finding grouped, as a retained verdict states them,
+ * or `null` when it states none this harness can read. A malformed entry is
+ * dropped rather than invented: the finding itself stays whole either way.
+ */
+function relatedOccurrences(value: unknown): readonly HistoryOccurrence[] | null {
+  if (!Array.isArray(value) || value.length === 0) {
+    return null;
+  }
+  const occurrences: HistoryOccurrence[] = [];
+  for (const raw of value) {
+    if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+      continue;
+    }
+    const occurrence = raw as Record<string, unknown>;
+    const where = occurrence['path'];
+    if (typeof where !== 'string' || where.trim() === '') {
+      continue;
+    }
+    const line = occurrence['line'];
+    occurrences.push({
+      path: where.trim(),
+      line: typeof line === 'number' && Number.isSafeInteger(line) && line >= 1 ? line : null,
+    });
+  }
+  return occurrences.length === 0 ? null : occurrences;
+}
+
 /** What reading one retained reviewer verdict produced. */
 interface RetainedVerdictRead {
   readonly report: LocalReport | null;
@@ -1302,6 +1330,7 @@ async function readRetainedVerdict(parts: {
         problem: `finding ${String(index + 1)} of "${file}" carries no usable line number`,
       };
     }
+    const related = relatedOccurrences(finding['related']);
     findings.push({
       id: findingIdOf(parts.round, index),
       path: where.trim(),
@@ -1313,6 +1342,7 @@ async function readRetainedVerdict(parts: {
             continues: typeof finding['continues'] === 'string' ? finding['continues'] : null,
           }
         : {}),
+      ...(related === null ? {} : { related }),
     });
   }
   const verifications: HistoryFindingVerification[] = [];
