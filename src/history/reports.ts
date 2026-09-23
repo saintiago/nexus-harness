@@ -1148,6 +1148,36 @@ export async function readLocalReports(parts: {
   records.sort(
     (a, b) => compareHistoryTime(a.startedAt, b.startedAt) || a.reviewId.localeCompare(b.reviewId),
   );
+  // An attempt's own record names the native review GitHub acknowledged for it.
+  // When the enrichment that would have noted that same id on the retained
+  // digest failed, the record is the remaining evidence of the publication:
+  // carrying the recorded identity here matches the retained report to the
+  // native review, so reconciliation reads that review's own state and does not
+  // reconstruct one review as a second round with a second finding identity
+  // (docs/WORKFLOW.md §9). The body hash stays unknown — the retained report is
+  // still the complete one — and the rendering is authenticated by the recorded
+  // review id alone.
+  const publishedByReview = new Map<string, { readonly id: number; readonly url: string }>(
+    records.flatMap((record) =>
+      record.published === null ? [] : [[record.reviewId, record.published] as const],
+    ),
+  );
+  for (const [index, report] of reports.entries()) {
+    if (report.kind !== 'reviewer-report' || report.digest.published !== null) {
+      continue;
+    }
+    const published = publishedByReview.get(report.digest.reviewId);
+    if (published === undefined) {
+      continue;
+    }
+    reports[index] = {
+      ...report,
+      digest: {
+        ...report.digest,
+        published: { id: published.id, url: published.url, bodySha256: null },
+      },
+    };
+  }
   // The attempts a native review was really published for: the report digest
   // carries the publication identity once the scan recorded it, while the
   // attempt's own record names the review it published even when that note was
