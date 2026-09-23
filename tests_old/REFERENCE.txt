@@ -27,9 +27,10 @@ below is kept for the behavior named beside the active suite that now carries it
 - refresh.test.ts — source readiness between two queue tickets
   (tests/boundary/source-readiness.test.ts).
 - review-github.test.ts — the review scan's GitHub reads (tests/boundary/github-review.test.ts).
-- reviews.test.ts — the scan's evidence and decisions, and the watch's poll interval, its
-  server-directed wait and its backoff reset (tests/unit/reviews.test.ts), assembled in
-  tests/workflow/review-handoff.test.ts.
+- reviews.test.ts — the scan's evidence and decisions — including the publication refusals a
+  changed repository view and a failed or cancelled reviewer turn are held to — and the watch's
+  poll interval, its server-directed wait and its backoff reset (tests/unit/reviews.test.ts),
+  assembled in tests/workflow/review-handoff.test.ts.
 - completion-github.test.ts, completion-arm.test.ts — the completion path's own GitHub commands:
   every read with the reader credential, the one auto-merge mutation with the operator's, and the
   refusal diagnostics (tests/boundary/completion-commands.test.ts); the gate, merge and Jira
@@ -68,15 +69,17 @@ below is kept for the behavior named beside the active suite that now carries it
 - source.test.ts — the intake coordinator's own retained state: the receipt reserved before
   anything remote or paid, the retention of an uncertain claim, the release of a claim that sent
   no mutation, the local result a failed publication keeps, the run whose own stop could not be
-  confirmed publishing nothing and keeping its receipt and lock while a confirmed stop still gets
-  its one bounded feedback, the published checks line of a stopped final turn naming the last
-  round that really ran rather than the baseline, the delivery decisions — a passed attempt
-  delivered before its result is published, failed and cancelled attempts never delivered, and a
-  delivery failure published beside the passed outcome before intake stops — and the per-project
-  lock that is never broken or adopted; and the watch cadence over that state — the poll
-  interval, the server-directed retry delay, the backoff a read that reserved nothing gets, and
-  the fatal failure that stops the loop instead (tests/boundary/source-coordinator.test.ts) —
-  with the four-field task and claim contracts themselves in tests/boundary/jira-connector.test.ts.
+  confirmed — at the item's own preflight before any run result exists, wrapped by the run
+  preflight, and after one alike — publishing nothing and keeping its receipt and lock while a
+  confirmed stop still gets its one bounded feedback, the published checks line of a stopped
+  final turn naming the last round that really ran rather than the baseline, the delivery
+  decisions — a passed attempt delivered before its result is published, failed and cancelled
+  attempts never delivered, and a delivery failure published beside the passed outcome before
+  intake stops — and the per-project lock that is never broken or adopted; and the watch cadence
+  over that state — the poll interval, the server-directed retry delay, the backoff a read that
+  reserved nothing gets, and the fatal failure that stops the loop instead
+  (tests/boundary/source-coordinator.test.ts) — with the four-field task and claim contracts
+  themselves in tests/boundary/jira-connector.test.ts.
 - activity.test.ts — the activity pane's presentation: the lines one invocation draws, the
   message and latest-work bound, the boundary that opens a pane, and the control characters and
   escape sequences a runtime's text may never carry into the terminal

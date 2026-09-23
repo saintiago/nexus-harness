@@ -16,13 +16,14 @@
  * one output directory, an uncertain claim keeps the receipt it just created and
  * stops intake for a person, a rejected claim releases only the reservation this
  * process made, a failed publication keeps the local result and stops, a run
- * whose own stop could not be confirmed publishes nothing and keeps its receipt
- * and the lock, a confirmed stop still gets its one bounded feedback under a
- * deadline of its own, a passed attempt is delivered before its result is
- * published and failed or cancelled work never reaches delivery, a delivery
- * failure is published beside the outcome the run produced before intake stops,
- * and a lock is never broken, adopted, or removed by a process that does not own
- * it.
+ * whose own stop could not be confirmed — before any run result exists, at the
+ * item's own preflight and wrapped by the run preflight alike, as well as after
+ * one — publishes nothing and keeps its receipt and the lock, a confirmed stop
+ * still gets its one bounded feedback under a deadline of its own, a passed
+ * attempt is delivered before its result is published and failed or cancelled
+ * work never reaches delivery, a delivery failure is published beside the
+ * outcome the run produced before intake stops, and a lock is never broken,
+ * adopted, or removed by a process that does not own it.
  */
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
@@ -30,6 +31,7 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { DeliveredPullRequest, Delivery, DeliveryRequest } from '../../src/delivery/github.js';
 import { DeliveryError } from '../../src/delivery/github.js';
+import { RunCancelledError, RunTimeoutError } from '../../src/runs/contracts.js';
 import type { RunTaskResult } from '../../src/runs/contracts.js';
 import { summarizeChanges } from '../../src/reporting/changes.js';
 import type {
@@ -56,7 +58,9 @@ import {
   intakeLockPath,
   readReceipt,
   receiptFilePath,
+  reserveReceipt,
 } from '../../src/sources/receipts.js';
+import { WorkspaceError } from '../../src/workspace/errors.js';
 import { createTempDir } from './integration-support.js';
 
 const SITE = 'https://example.atlassian.net';
@@ -173,6 +177,20 @@ function timedOutRun(
   });
 }
 
+/** What the Git steps the cases below supply could not confirm about their own stop. */
+const CLEANUP = 'the stand-in Git tree did not stop';
+
+/**
+ * The failure a Git step records when the harness stopped it and could not
+ * confirm that everything it started had ended — the evidence a caller that
+ * reports why a run ended has to carry rather than round down.
+ */
+function unconfirmedGitStop(kind: 'timeout' | 'cancelled' = 'timeout'): WorkspaceError {
+  return new WorkspaceError('the Git inspection did not finish', {
+    stop: { termination: 'unconfirmed', problem: CLEANUP, kind, timeoutMs: 25 },
+  });
+}
+
 /** One completed round holding a single check, as the published checks line reads it. */
 function checkRound(outcome: RoundOutcome, exitCode: number | null): CheckRoundResult {
   return {
@@ -225,6 +243,8 @@ function coordinatorHarness(
     readonly run?: (request: SourceRunRequest) => Promise<RunTaskResult> | RunTaskResult;
     /** The delivery step the case configures; absent means delivery is off. */
     readonly delivery?: Delivery;
+    /** The source/output preflight re-run before each reservation; a passing one when absent. */
+    readonly preflight?: SourceContext['preflight'];
   } = {},
 ) {
   const recorder = {
@@ -279,7 +299,9 @@ function coordinatorHarness(
       err: (text) => recorder.outputs.push(text),
     },
     stop: stop.signal,
-    preflight: async () => ({ sourceRoot: path.join(workDir, 'source'), baseCommit: BASE }),
+    preflight:
+      parts.preflight ??
+      (async () => ({ sourceRoot: path.join(workDir, 'source'), baseCommit: BASE })),
     ...(parts.delivery === undefined ? {} : { delivery: parts.delivery }),
     run: async (request) => {
       recorder.runs.push(request.sourceRef.key);
@@ -597,6 +619,110 @@ describe('the ending one run reports', () => {
   });
 });
 
+/**
+ * A Git step the harness had to stop and could not confirm stopped is an intake
+ * stop before a run result exists exactly as much as after one: the working copy
+ * it was reading may still be written to, so nothing is published, nothing later
+ * is read, and the receipt and the lock stay for a person (docs/spec.md §6).
+ */
+describe('a Git stop the intake could not confirm before any run result exists', () => {
+  it('keeps the lock, the receipt and every later reading when an item preflight fails this way', async () => {
+    const workDir = await createTempDir();
+    // An earlier attempt's receipt is this machine's evidence that the item was
+    // already attempted: a failed preflight leaves it exactly as it is.
+    const held: SourceReceipt = {
+      version: 1,
+      source: REF,
+      reservedAt: '2026-09-22T09:00:00.000Z',
+    };
+    await reserveReceipt(receiptFilePath(workDir, REF), held);
+    let readings = 0;
+    const harness = coordinatorHarness(workDir, {
+      candidates: [candidate(), candidate('10012', 'HARN-12')],
+      preflight: async () => {
+        readings += 1;
+        // The batch's own reading passes; the item's own recheck, before its
+        // reservation, is the one that could not be stopped.
+        if (readings === 1) {
+          return { sourceRoot: path.join(workDir, 'source'), baseCommit: BASE };
+        }
+        throw unconfirmedGitStop();
+      },
+    });
+
+    const summary = await runSource(harness.context, null);
+
+    expect(summary).toMatchObject({ outcome: 'stopped', attempted: 0, cleanupConfirmed: false });
+    expect(summary.problem).toContain(`${REF.key}: source preflight`);
+    expect(summary.problem).toContain(CLEANUP);
+    // Nothing was claimed, run or published after the failed stop, and the
+    // second candidate was never even prepared.
+    expect(harness.calls.prepared).toEqual([]);
+    expect(harness.calls.claims).toEqual([]);
+    expect(harness.calls.runs).toEqual([]);
+    expect(harness.calls.completions).toEqual([]);
+    // The receipt and the lock are kept, and the terminal says why.
+    expect(await receipt(workDir)).toEqual(held);
+    expect(existsSync(intakeLockPath(workDir, NAMESPACE))).toBe(true);
+    expect(harness.calls.outputs.join('\n')).toContain('left in place for inspection');
+  });
+
+  it('keeps the reservation and the lock when a stopped run preflight wraps this stop', async () => {
+    const workDir = await createTempDir();
+    const harness = coordinatorHarness(workDir, {
+      candidates: [candidate(), candidate('10012', 'HARN-12')],
+      run: () => {
+        harness.stop.abort(new Error('interrupt'));
+        throw new RunCancelledError('the run was stopped before its workspace was ready', {
+          cause: unconfirmedGitStop('cancelled'),
+        });
+      },
+    });
+
+    const summary = await runSource(harness.context, null);
+
+    expect(summary).toMatchObject({ outcome: 'cancelled', attempted: 1, cleanupConfirmed: false });
+    expect(summary.problem).toContain(`${REF.key}: run preflight`);
+    expect(summary.problem).toContain(CLEANUP);
+    // The claim reached the runner, and the run produced no result at all:
+    // nothing is published and the second candidate is never taken.
+    expect(harness.calls.claims).toEqual([REF.key]);
+    expect(harness.calls.runs).toEqual([REF.key]);
+    expect(harness.calls.completions).toEqual([]);
+    const kept = await receipt(workDir);
+    expect(kept?.runId).toBeUndefined();
+    expect(kept?.problem).toBe('run: the run was stopped before its workspace was ready');
+    expect(existsSync(intakeLockPath(workDir, NAMESPACE))).toBe(true);
+  });
+
+  it('stops intake when a timed-out run preflight wraps this stop', async () => {
+    const workDir = await createTempDir();
+    const harness = coordinatorHarness(workDir, {
+      candidates: [candidate(), candidate('10012', 'HARN-12')],
+      run: () => {
+        throw new RunTimeoutError('the run deadline expired before its workspace was ready', {
+          cause: unconfirmedGitStop(),
+        });
+      },
+    });
+
+    const summary = await runSource(harness.context, null);
+
+    expect(summary).toMatchObject({ outcome: 'stopped', attempted: 1, cleanupConfirmed: false });
+    expect(summary.problem).toContain(`${REF.key}: run preflight`);
+    expect(summary.problem).toContain(CLEANUP);
+    expect(harness.calls.runs).toEqual([REF.key]);
+    expect(harness.calls.completions).toEqual([]);
+    // The claim's own reservation is what the next scan reads as "already
+    // attempted" while a person settles the Git process; it names no run.
+    const kept = await receipt(workDir);
+    expect(kept?.runId).toBeUndefined();
+    expect(kept?.problem).toContain('run: ');
+    expect(kept?.problem).toContain('the run deadline expired');
+    expect(existsSync(intakeLockPath(workDir, NAMESPACE))).toBe(true);
+  });
+});
+
 describe('delivering a passed attempt before its result is published', () => {
   /** The pull request a case's delivery stand-in answers with. */
   const PULL_REQUEST: DeliveredPullRequest = {
@@ -779,11 +905,16 @@ function watchHarness(parts: {
   readonly workDir: string;
   readonly list: (scan: number) => Promise<readonly SourceCandidate[]>;
   readonly prepare?: (found: SourceCandidate) => Promise<SourceTask | null>;
+  /** The source/output preflight the watch scans under; a passing one when absent. */
+  readonly preflight?: SourceContext['preflight'];
   readonly waits: number[];
   /** Called after each wait was recorded; the case may end the watch here. */
   readonly afterWait?: (count: number) => void;
 }) {
-  const harness = coordinatorHarness(parts.workDir, {});
+  const harness = coordinatorHarness(
+    parts.workDir,
+    parts.preflight === undefined ? {} : { preflight: parts.preflight },
+  );
   const stop = new AbortController();
   let scans = 0;
   const prepare = parts.prepare;
@@ -919,6 +1050,36 @@ describe('the source watch', () => {
     expect(summary.problem).toContain('the configured token was not accepted');
     expect(waits).toEqual([]);
     expect(existsSync(intakeLockPath(workDir, NAMESPACE))).toBe(false);
+  });
+
+  it('keeps the lock and polls no further when a scan stops on an unconfirmed Git stop', async () => {
+    const workDir = await createTempDir();
+    const waits: number[] = [];
+    let readings = 0;
+    const watch = watchHarness({
+      workDir,
+      waits,
+      list: async () => [candidate()],
+      preflight: async () => {
+        readings += 1;
+        // The watch's own reading passes; the item's own recheck, inside the
+        // first scan, is the one that could not be stopped.
+        if (readings === 1) {
+          return { sourceRoot: path.join(workDir, 'source'), baseCommit: BASE };
+        }
+        throw unconfirmedGitStop();
+      },
+    });
+
+    const summary = await watchSource(watch.context);
+
+    expect(summary).toMatchObject({ outcome: 'stopped', attempted: 0, cleanupConfirmed: false });
+    expect(summary.problem).toContain(CLEANUP);
+    // The loop ends where the batch did: no wait, no second scan, and the lock
+    // this watch was holding is left in place for inspection.
+    expect(waits).toEqual([]);
+    expect(watch.scans()).toBe(1);
+    expect(existsSync(intakeLockPath(workDir, NAMESPACE))).toBe(true);
   });
 });
 
