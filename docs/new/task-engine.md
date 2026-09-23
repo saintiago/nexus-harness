@@ -40,102 +40,46 @@ command settings conform to [project configuration](configuration.md#project-con
 
 ```ts
 interface TaskEngine {
-  run(
-    request: EngineRequest,
-    observe: Observer<EngineEvent>,
-    stop: AbortSignal,
-  ): Promise<EngineResult>;
-  inspect(invocationId: string): Promise<Result<EngineInspection>>;
+  run(): Promise<WorkflowResult>;
+  subscribe(listener: EventListener): Unsubscribe;
 }
 
-type EngineRequest = {
-  executionId: string;
-  invocationId: string;
-  selection:
-    | { kind: 'queue'; whenEmpty: 'return' | 'wait' }
-    | { kind: 'ticket'; key: string }
-    | { kind: 'file'; path: string };
-  continuation: ArtifactRef | null;
-};
-
-type TaskIdentity = { source: string; id: string; key: string | null };
-
-type EnginePhase = 'selecting' | 'preparing' | 'baseline' | 'developing'
-                 | 'checking' | 'reviewing' | 'delivering' | 'completing' | 'idle';
+type WorkflowResult = Result<string>;
 
 type EngineEvent = {
-  invocationId: string;
-  sequence: number;
-  at: string;
-  body:
-    | { kind: 'phase'; task: TaskIdentity | null; phase: EnginePhase }
-    | { kind: 'activity'; role: 'developer' | 'reviewer'; text: string }
-    | { kind: 'verified'; completion: VerifiedTask }
-    | { kind: 'evidence'; inspection: EngineInspection };
+  source: string;
+  type: string;
+  data: unknown;
 };
 
-type VerifiedTask = {
-  task: TaskIdentity;
-  revision: string;
-  completion: 'local' | 'integrated';
-  evidence: ArtifactRef;
-};
-
-type EngineResult = {
-  invocationId: string;
-  outcome: 'drained' | 'target-completed' | 'blocked' | 'cancelled';
-  activeTask: TaskIdentity | null;
-  verified: readonly VerifiedTask[];
-  fault: Fault | null;
-  shutdown: Shutdown;
-  continuation: ArtifactRef | null;
-  report: ArtifactRef | null;
-};
-
-type EngineInspection = {
-  invocationId: string;
-  state: 'unknown' | 'active' | 'terminal' | 'interrupted';
-  activeTask: TaskIdentity | null;
-  verified: readonly VerifiedTask[];
-  continuation: ArtifactRef | null;
-  report: ArtifactRef | null;
-  evidence: readonly ArtifactRef[];
-};
+type EventListener = (event: EngineEvent) => void;
+type Unsubscribe = () => void;
+type EventPublisher = (event: EngineEvent) => void;
 ```
 
-These types describe the outer TaskEngine interface. Task selection, task reports and artifact
-references do not become ExecutionRunner concepts. Construction binds the request to the configured
-workflow and actions. Task-specific events and reports come from actions and their persisted data;
-the runner supplies state transitions and its terminal result.
+run executes the configured workflow from the persisted state. A terminal state returns its declared
+outcome as the result value. Execution failure returns a fault; intentional cancellation uses the
+cancelled fault code. These are execution outcomes, not task reports or completion inventories.
+A persisted terminal state returns its outcome without executing another action.
 
-`run` admits at most one invocation per instance and one writer per task/workspace. An invocation
-ID cannot describe different input. Resume an interrupted workflow at its last persisted state;
-the action for that state starts anew. A persisted terminal state returns its result without running
-another action. Invalid input returns blocked with an input fault and no new task effects.
+subscribe registers a listener for subsequent events and returns a function that removes that
+listener. The runner and every action receive the same EventPublisher capability during construction.
+TaskEngine forwards emitted events without interpreting or rewriting their payloads. Producers own
+event types and data contracts; there is no fixed enumeration of task phases in this interface.
+Event data is JSON-serializable for transport across the process boundary.
 
-`drained` is valid only for queue selection after a successful fresh empty read. Watch waits on an
-empty read and exits through cancellation or a fault. `target-completed` is valid only for the exact
-selected ticket or local file. A missing, invalid or ineligible target is blocked unless its completion
-can be verified through the configured completion gates. It is never equivalent to an empty queue.
+Subscriptions provide observation only. They do not replay history, recover artifacts or drive
+workflow transitions. Removing a listener does not stop execution. Listener failures are isolated
+from actions and other listeners.
 
-`verified` contains this invocation's confirmed completions, with source identity preserved. It
-is also retained durably as each completion is established. Callers aggregate by source and stable
-task ID, not by display key or event count. `local` means the configured local checks passed; it
-does not imply publication or a source transition. `integrated` requires every configured integration
-gate. A blocked outcome has a fault; a cancelled outcome requires confirmed shutdown. Unconfirmed
-shutdown is blocked. A report is null only before admission or after a persistence failure.
+### Construction
 
-`inspect` is a read-only public export available in the parent-side provider even when a work
-process died. It reads only this component's records, makes no task mutations and launches no work.
-It exports the last durable evidence and continuation, including when there is no final report.
-Interrupted means process death was established; otherwise an unfinished record remains active.
-Absent records return unknown with empty evidence, never invented success. Corrupt records return
-a fault. Inspection is a snapshot, not permission to write or proof that every descendant stopped.
+The workflow, bound actions, checkpoint location and cancellation control are supplied before run.
+Source and remote repository settings are supplied to the actions that use them, together with the
+workspace reference and other required capabilities. They are not repeated in a run request.
 
-A continuation is an opaque reference to retained execution storage, including the workflow checkpoint
-and action artifacts. Construction reconnects these locations; the runner reads only its checkpoint.
-A caller temporarily running a different target uses separate storage and retains the original
-continuation for return. It does not rewrite the original workflow state.
+One instance executes one workflow at a time. Restart reconnects the same checkpoint and action
+storage, then calls run again.
 
 ### Required interfaces
 

@@ -76,7 +76,7 @@ Startup binds dependencies as follows:
 
 | Consumer | Inputs |
 | --- | --- |
-| ExecutionRunner | Nexus-selected workflow, bound actions and checkpoint location |
+| TaskEngine / ExecutionRunner | Nexus-selected workflow, bound actions, checkpoint location and execution controls |
 | PrepareWorkspace | WorkspaceRef and project repository settings |
 | Verify | Project CI/check definitions and WorkspaceRef |
 | AgentRuntime | Nexus profiles, instructions, tool/provider settings and execution controls |
@@ -87,6 +87,11 @@ Startup binds dependencies as follows:
 These bindings belong to application startup. Components receive the required values and capabilities,
 not both entire configuration objects. Project commands run in the prepared worktree. Credential
 references resolve through host settings and remain absent as secret values from agent context.
+
+TaskEngine exposes run() and subscribe(listener). Startup supplies source and remote repository
+settings to the relevant actions. Subscribers receive events emitted by the runner or any action;
+TaskEngine forwards them without interpreting producer payloads. run returns the workflow's terminal
+outcome or an execution fault. Restart reconnects the saved checkpoint and action storage.
 
 Agent-backed actions call AgentRuntime.run(profile, workspaceRef, additionalContext). They select
 and read task artifacts and prepare the additional instructions/context. AgentRuntime combines these
@@ -124,7 +129,7 @@ coupled.
 | --- | --- | --- |
 | OperatorInterface | Operator commands, configuration input, progress rendering and final presentation | Queue decisions, agent execution or recovery policy |
 | Supervisor | Execution intent, TaskEngine process lifecycle, incident records, recovery invocation and verified restart | Normal task-phase sequencing or code-review decisions |
-| TaskEngine | Serial task lifecycle, task/workspace ownership, execution evidence and conversation history | Terminal formatting or exceptional operational recovery policy |
+| TaskEngine | Workflow execution, action composition, checkpoint progression and event subscriptions | Interpreting action artifacts, task-result aggregation or operational recovery policy |
 | AgentRuntime | Profile catalogue, base/profile instructions, agent execution, output shape and cancellation | Selecting action input artifacts, queue decisions or declaring delivery complete |
 | Adapters | External protocol translation, authentication and faithful operation results | Business lifecycle decisions or inferred success |
 
@@ -143,8 +148,8 @@ AgentRuntime. A role's report does not replace the deterministic evidence requir
 | Caller or producer | Receiver | Contract boundary |
 | --- | --- | --- |
 | OperatorInterface | Supervisor | Start with project configuration filepath, mode and target; request intentional cancellation |
-| Supervisor | Nexus worker / TaskEngine | Pass the project filepath to worker startup; invoke the engine with execution intent or continuation; request shutdown |
-| TaskEngine | Supervisor | Structured progress, terminal outcome and evidence of confirmed shutdown |
+| Supervisor | Nexus worker / TaskEngine | Pass configuration filepath/mode/target to startup; subscribe and run the configured engine; request worker shutdown |
+| TaskEngine | Supervisor | Producer events and workflow result through the process bridge |
 | Supervisor | OperatorInterface | Execution progress, recovery progress, final outcome and requests for operator action |
 | TaskEngine actions | AgentRuntime | run(profile, workspaceRef, additionalContext) for development/review |
 | Supervisor | AgentRuntime | run(recoveryProfile, workspaceRef, additionalContext) with incident evidence and original intent |
@@ -222,8 +227,13 @@ contains no recovery or task policy. A missing, malformed or mismatched result i
 even when the child exited zero. The bridge also checks cancellation and exit evidence before
 accepting a reported success. There is no network service or message broker in this design.
 
-TaskEngine emits structured facts about its work. It does not choose colors, terminal layout or
-human-readable progress sentences. OperatorInterface renders Supervisor's execution view and sends explicit
+For a configured TaskEngine, start carries the worker's startup settings. The worker binds them before
+calling run(); the transport does not add request parameters to TaskEngine's method.
+
+Actions emit events through a publisher bound during construction; ExecutionRunner also emits progress.
+TaskEngine forwards these producer events to subscribers without imposing task phases or interpreting
+payloads. The process bridge transports events/results and independently establishes child shutdown.
+OperatorInterface renders Supervisor's execution view and sends explicit
 commands; it does not infer engine state from log wording. Changing presentation must not change
 execution decisions. A presentation failure is distinct from an explicit cancellation request.
 
@@ -241,8 +251,8 @@ inspection establishes that no eligible work remains. It does not reserve a fixe
    binds the actions/components and starts TaskEngine with the selected Nexus workflow.
 3. TaskEngine selects one eligible task, carries it through implementation, ordinary repair,
    review, delivery and verified completion, then inspects the queue again.
-4. TaskEngine sends structured progress to Supervisor, which maps it into the execution view
-   exposed to OperatorInterface.
+4. Supervisor's subscription receives runner/action events and maps recognized events into the
+   execution view exposed to OperatorInterface.
 5. When the queue is confirmed empty, TaskEngine returns a drained outcome. Supervisor confirms
    its shutdown and OperatorInterface presents the result.
 

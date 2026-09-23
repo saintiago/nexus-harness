@@ -8,7 +8,7 @@ If code contradicts documentation, correct the code.
 - [Proposed high-level architecture](docs/new/high-level-architecture.md): target composition, component contracts and execution modes.
 - [Proposed OperatorInterface design](docs/new/operator-interface.md): commands, execution presentation and terminal ownership.
 - [Proposed Supervisor design](docs/new/supervisor.md): execution lifecycle, recovery and restart decisions.
-- [Proposed TaskEngine design](docs/new/task-engine.md): task lifecycle, ordinary repairs, history and completion evidence.
+- [Proposed TaskEngine design](docs/new/task-engine.md): declarative execution, action composition and event subscriptions.
 - [Proposed AgentRuntime design](docs/new/agent-runtime.md): role interfaces, profiles, permissions and invocation lifecycle.
 - [Proposed Adapters design](docs/new/adapters.md): external operations, protocol translation and observed outcomes.
 - [Proposed Workspace design](docs/new/workspace.md): directory layout and concrete workspace references.

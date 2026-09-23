@@ -56,7 +56,6 @@ type DisplayStage = 'preparing' | 'implementing' | 'verifying' | 'reviewing'
 type ExecutionResult = {
   executionId: string;
   outcome: 'completed' | 'cancelled' | 'needs-attention' | 'rejected';
-  completedTasks: number;
   activeTaskKey: string | null;
   reason: string | null;
   shutdown: Shutdown;
@@ -82,7 +81,7 @@ or persistence itself failed; it is never fabricated from a missing record.
 
 | Port | Provider contract | Values exchanged |
 | --- | --- | --- |
-| Work | [TaskEngine.run and inspect](task-engine.md#provided-interface) | EngineRequest, EngineEvent, EngineResult, EngineInspection |
+| Work | [TaskEngine.run and subscribe](task-engine.md#provided-interface) | WorkflowResult, EngineEvent and subscription removal |
 | Recovery invocation | [AgentRuntime.run](agent-runtime.md#provided-interface) | Recovery profile ID, WorkspaceRef, AdditionalContext and RecoveryOutput in AgentResult |
 | Notification | [Notifications.publish](adapters.md#notifications) | NotificationRequest and publication receipt |
 
@@ -98,16 +97,18 @@ AdditionalContext from the incident and available evidence. Pass the reference a
 to AgentRuntime.run. If the task workspace is unavailable, supply a separate operational workspace
 reference for recovery.
 
-Map finite mode to queue selection with return-on-empty, watch to queue selection with wait-on-empty,
-single-ticket to the exact named selection, and single-task to the supplied file.
-A recovery continuation is passed back through the work port as an opaque exported artifact. Do
-not inspect private checkpoint fields or manufacture a phase to skip a gate.
+Pass the execution mode and any target to worker startup. Startup selects the workflow and constructs
+its configured actions. Subscribe before calling run; release the subscription when the invocation
+ends. run accepts no request object. Restart uses the same retained checkpoint and action storage.
 
-Map downstream progress into DisplayStage and role activity here. The work port's finer phase model
-is not exposed to the execution-view consumer. Missing progress does not imply a hung process.
-After abnormal termination, obtain the last durable public evidence through `inspect`. Aggregate
-verified completions from results and inspection by source and stable task identity, so lost or
-repeated progress events cannot lose or double-count completed tasks.
+Map recognized producer events into DisplayStage and role activity. Unrecognized events do not alter
+execution decisions. Progress can be incomplete; it is not a durable completion inventory. The returned
+WorkflowResult carries a terminal outcome or execution fault, not task reports or artifact contents.
+Process shutdown is established by the process bridge independently of that result.
+
+Recovery receives the workspace reference, observed process failure, last result and available events.
+Persistent evidence is available through artifact contracts. Progress events do not authorize checkpoint
+changes or skipped gates.
 
 ### Construction settings
 
@@ -116,7 +117,7 @@ to [Nexus configuration](configuration.md#nexus-configuration). These inputs are
 first child launch. Credentials remain references in settings and execution records.
 
 Retain the original project configuration filepath, mode and target across child restarts. Preserve
-the recovery allowance and continuation reference when launching a replacement child.
+the recovery allowance and workspace reference when launching a replacement child.
 
 ## Internal lifecycle
 
@@ -131,10 +132,9 @@ Admission validates input and acquires the project execution lease before starti
 identity includes canonical source/project/repository identity, not just a display key. It spans
 work invocations and recovery, so there is no unowned gap in which another supervisor may enter.
 
-A normal completed work result ends finite or single-target execution. Ordinary coding repairs and
-review iterations do not create incidents. An unexpected child exit, invalid result, or blocked work
-result opens one incident with whatever evidence is available, including an explicit absence of a
-terminal report. Exit code zero without a valid result is not completion.
+A successful terminal outcome for the configured mode ends execution. A blocked terminal outcome,
+execution fault, unexpected child exit or invalid result opens an incident with available evidence.
+A missing result remains explicitly missing. Exit code zero without a valid result is not completion.
 
 Before invoking recovery, stop and verify the previous writer. When termination cannot be confirmed,
 retain ownership and return attention. A recovery invocation with write permissions must not run
@@ -147,11 +147,11 @@ Persist incident intent before invoking recovery. The recovery report can recomm
 - Re-inspect the original scope because recovery believes it is complete.
 - Stop for an operator decision.
 
-The recommendation never proves completion. Re-inspection goes through the work port's normal
-verification. A blocker plan records the next target and the original return intent, runs that target,
-then restores the original intent. If the blocker itself fails, recovery can revise the next target
-under the same incident allowance. Preserve the original continuation; do not build a dependency
-graph or require the lifecycle controller to infer task dependencies.
+The recommendation never proves completion. Recovery inspects persisted evidence. A blocker plan
+retains the original workspace and return intent while running
+the next target in its own workspace. Return restores the original binding and resumes its persisted
+state. If the blocker fails, recovery can revise the next target under the same incident allowance.
+Do not infer task dependencies or rewrite saved workflow transitions from progress observations.
 
 Each recovery invocation consumes the incident allowance. Do not restart an unchanged failure
 merely because recovery returned successfully: require recorded corrective actions or new evidence
@@ -180,8 +180,8 @@ Own execution records, invocation identities, cancellation intent, incident reco
 allowance, pending blocker/return intent and notification receipts. Use exclusive creation and
 atomic file replacement under the configured storage root. Do not create another task ledger.
 
-Export an immutable incident bundle containing intent, last public work result/progress, public
-continuation and evidence references, process identity and the observed failure. Do not infer a
+Export an immutable incident bundle containing intent, last workflow result and observed events,
+workspace and evidence references, process identity and the observed failure. Do not infer a
 successful operation from an agent's narrative or read private downstream records as a shortcut.
 
 Persist each recovery report before notification. Publish a concise incident summary through the
