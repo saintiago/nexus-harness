@@ -207,6 +207,23 @@ export function incidentHistoryText(incident: IncidentRecord): string {
           : ` (started ${incident.sequence.blockerStartedAt})`),
     );
   }
+  // What the incident is still holding, and what a person did about it: both
+  // are part of the episode a developer or reviewer turn reads, and neither is
+  // an approval or a verification.
+  const held = incident.pending?.unconfirmedStop ?? null;
+  if (held !== null) {
+    lines.push(
+      `Held: the recovery attempt it started could not be confirmed stopped (${held.problem}), ` +
+        'so nothing of that attempt is adopted and nothing else runs until the tree it led is ' +
+        'shown ended — or a person says it is.',
+    );
+  }
+  if (incident.acknowledgement !== null) {
+    lines.push(
+      `Acknowledged by a person at ${incident.acknowledgement.at}` +
+        (incident.acknowledgement.note === null ? '' : `: ${incident.acknowledgement.note}`),
+    );
+  }
   lines.push('', 'Stops observed:');
   for (const stop of incident.stops) {
     lines.push(

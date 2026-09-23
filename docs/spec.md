@@ -658,9 +658,9 @@ to be exceptional recovery policy inside the ordinary loop is the recovery agent
 here, and the ordinary loop gains no branch for it.
 
 **What the parent owns.** One worker at a time for one connected project and `workDir`, enforced by
-its own owner record under `<workDir>/.supervisor/<namespace>/` as well as by the queue's existing
+its own claims under `<workDir>/.supervisor/<supervision-id>/` as well as by the queue's existing
 intake lock. A live owner is refused by name; a record whose process is gone is adopted with a
-fresh token, which is what makes a supervisor restart resume the incident instead of starting a
+fresh claim, which is what makes a supervisor restart resume the incident instead of starting a
 second worker; and a recorded worker PID that is really still running is a refusal, never a second
 worker beside it. Activation beside a raw queue consumer that is really running is refused with the
 lock and its owner named. Nothing here breaks, adopts or deletes a lock: the queue's own
