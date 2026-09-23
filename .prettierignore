@@ -1,0 +1,13 @@
+# Installed, generated and cached content.
+node_modules/
+dist/
+coverage/
+.turbo/
+
+# Generated lockfile.
+package-lock.json
+
+# Design documentation is maintained as written; the markdown formatter re-pads
+# its tables and would rewrite documents this toolchain does not own.
+AGENTS.md
+docs/
