@@ -72,3 +72,4 @@ A multi-component flow does not create a special shared contract.
 
 - [Testing architecture](docs/testing.md): test scopes, contracts and system journeys.
 - [Documentation guide](docs/documentation.md): document ownership and maintenance.
+- [Implementation tasks](docs/tasks/): scoped implementation work and its design references.
