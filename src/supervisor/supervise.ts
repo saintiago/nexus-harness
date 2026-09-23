@@ -36,6 +36,7 @@
 import { randomUUID } from 'node:crypto';
 import { readFile, readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
+import { confirmOwnedTreeEnded } from '../process/stop.js';
 import { phaseStop } from '../runs/stops.js';
 import { messageOf } from '../shared/errors.js';
 import type { RecoveryConfig } from '../shared/types.js';
@@ -155,6 +156,11 @@ export interface SuperviseRequest {
   /** Stood in for by a test; the real worker starts the Nexus CLI. */
   readonly worker?: ((request: WorkerRequest) => Promise<WorkerOutcome>) | undefined;
   readonly isAlive?: LivenessProbe | undefined;
+  /**
+   * What this host can say about the process tree one recorded PID led (see
+   * `src/process/stop.ts`). Stood in for by a test, like `isAlive`.
+   */
+  readonly treeLiveness?: ((pid: number) => 'gone' | 'running' | 'unknown') | undefined;
 }
 
 /** One supervision invocation's outcome. */
@@ -1091,6 +1097,7 @@ async function startAttempt(
     dir,
     logPath: null,
     problem: null,
+    unconfirmedStop: null,
   };
   const pendingRecord: IncidentRecord = { ...current, pending, updatedAt: startedAt };
   await writeIncident(incidentFilePath(root, current.id), pendingRecord);
@@ -1179,6 +1186,38 @@ async function reconcilePendingAttempt(
         'beside it. Wait for it, or stop it by hand, and run the supervisor again.',
     );
   }
+  // The runtime's own process being gone is not the same as the tree it led
+  // being gone: a tool the turn started can outlive the runtime, and a stop
+  // that could not be confirmed is exactly the state that leaves behind. Until
+  // that tree is shown ended — or a person says it is — nothing of this attempt
+  // is adopted, and no second attempt or worker starts beside it.
+  const stop = pending.unconfirmedStop;
+  if (stop !== null && !acknowledgedAfter(known.record, stop.at)) {
+    const ending = confirmOwnedTreeEnded(stop.pid, request.treeLiveness);
+    if (ending.kind === 'unconfirmed') {
+      throw new Error(
+        `incident ${known.record.id}: the stop of the recovery turn started ${pending.startedAt} ` +
+          `was never confirmed, and nothing has shown that the tree it owned has ended since ` +
+          `(${ending.problem}). Nothing else runs beside a process nobody has accounted for: ` +
+          'check the processes on this host, stop what that turn left, and run the supervisor ' +
+          'again — its judgment is then adopted and the attempt counted as spent. On a host that ' +
+          'cannot show the tree ended (a Windows root that is already gone, chiefly) a person ' +
+          'who has checked the host resolves this by recording an acknowledgement on the ' +
+          `incident: add "acknowledgement": { "at": …, "note": … } to "${known.path}".`,
+      );
+    }
+    io.out(
+      `supervisor: incident ${known.record.id}: the tree the unconfirmed stop left behind is ` +
+        'shown ended now, so attempt ' +
+        `${String(pending.attempt)} is reconciled against the judgment it left.`,
+    );
+  } else if (stop !== null) {
+    io.out(
+      `supervisor: incident ${known.record.id}: a person acknowledged that nothing of the ` +
+        `recovery turn started ${pending.startedAt} is left, so attempt ` +
+        `${String(pending.attempt)} is reconciled against the judgment it left.`,
+    );
+  }
   const outcomePath = path.join(pending.dir, RECOVERY_OUTCOME_FILE);
   let result: RecoveryTurnResult;
   try {
@@ -1246,8 +1285,11 @@ async function recordAttempt(
       `the recovery turn's runtime could not be confirmed stopped ` +
       `(${shutdown.problem ?? 'no reason was recorded'}), so it may still be repairing the ` +
       'workspace. The attempt stays in flight and this incident keeps owning that process: ' +
-      'nothing else runs beside it. Wait for it, or stop it by hand, and run the supervisor ' +
-      'again; the attempt is then reconciled and counted as spent.';
+      'nothing else runs beside it, and what this turn left is recorded — its runtime, and what ' +
+      'the stop could not confirm — so a restart shows the tree really ended (or a person says ' +
+      'it did) before anything of that attempt is adopted or another turn or worker starts. ' +
+      'Stop what is left by hand and run the supervisor again; the attempt is then reconciled ' +
+      'and counted as spent.';
     io.err(`supervisor: incident ${current.id}: ${detail}`);
     // The record is read back before it is written: the attempt's own PID was
     // recorded when the turn's runtime was registered, and this write keeps
@@ -1257,7 +1299,19 @@ async function recordAttempt(
     const pending = latest.pending;
     let incident = latest;
     if (pending !== null) {
-      incident = { ...latest, pending: { ...pending, problem: detail }, updatedAt: endedAt };
+      incident = {
+        ...latest,
+        pending: {
+          ...pending,
+          problem: detail,
+          unconfirmedStop: {
+            at: endedAt,
+            pid: pending.turnPid,
+            problem: shutdown.problem ?? 'no reason was recorded for it',
+          },
+        },
+        updatedAt: endedAt,
+      };
       await writeIncident(file, incident);
     }
     return { incident: { record: incident, path: known.path }, hold: detail };
@@ -1361,6 +1415,26 @@ async function recordAttempt(
   const next: KnownIncident = { record: updated, path: known.path };
   await persist(root, updated);
   return { incident: next, hold: null };
+}
+
+/**
+ * Whether a person answered, by hand, a hold the incident recorded at `at`.
+ *
+ * The incident's acknowledgement is the one place a person says something was
+ * really done, and it is read here for the hold an unconfirmed stop produces:
+ * that hold is resolved by a person, and the acknowledgement has to be newer
+ * than the hold, so an acknowledgement that answered something else — an
+ * earlier request for help, or an earlier hold already resolved — is never
+ * read as an answer to this one. Nothing here infers that a person acted.
+ */
+function acknowledgedAfter(incident: IncidentRecord, at: string): boolean {
+  const acknowledged = incident.acknowledgement;
+  if (acknowledged === null) {
+    return false;
+  }
+  const answered = Date.parse(acknowledged.at);
+  const held = Date.parse(at);
+  return Number.isFinite(answered) && Number.isFinite(held) && answered > held;
 }
 
 /** One incident's conclusion, and the record it produces. */

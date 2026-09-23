@@ -179,23 +179,6 @@ export async function runNexusWorker(request: WorkerRequest): Promise<WorkerOutc
       stopRequested: request.stop.aborted,
     };
   }
-  if (child.pid !== undefined) {
-    try {
-      await request.onStarted?.(child.pid);
-    } catch (cause) {
-      // The launch was never registered, and the child is gated on exactly that
-      // record: it has done nothing, so its tree is stopped here — which also
-      // releases the child's own wait — and the launch's failure is what the
-      // caller is given. A worker that cannot be recorded is never run.
-      const stopProblem = await requestTreeStop(child.pid);
-      throw new Error(
-        `the launch of the worker (pid ${String(child.pid)}) could not be registered: ` +
-          `${messageOf(cause)}. The worker never began any work.` +
-          (stopProblem === null ? '' : ` Stopping it was not confirmed: ${stopProblem}`),
-        { cause },
-      );
-    }
-  }
 
   let stopRequested = request.stop.aborted;
   let stopTimer: NodeJS.Timeout | null = null;
@@ -247,8 +230,14 @@ export async function runNexusWorker(request: WorkerRequest): Promise<WorkerOutc
   };
   request.stop.addEventListener('abort', stopListener, { once: true });
 
-  return await new Promise<WorkerOutcome>((resolve) => {
-    let launchProblem: string | null = null;
+  // The child's own ending is subscribed to before anything is awaited: a
+  // worker whose module never reaches the CLI's launch gate — a broken
+  // installation, say — can exit while its registration is still being
+  // written, and an ending that arrived with no listener would be lost, leaving
+  // the supervisor waiting for work that is already over instead of recovering
+  // from it.
+  let launchProblem: string | null = null;
+  const outcome = new Promise<WorkerOutcome>((resolve) => {
     child.on('error', (cause) => {
       launchProblem ??= `the worker could not be started: ${messageOf(cause)}`;
     });
@@ -267,8 +256,28 @@ export async function runNexusWorker(request: WorkerRequest): Promise<WorkerOutc
         stopRequested,
       });
     });
-    if (request.stop.aborted) {
-      forwardStop();
-    }
   });
+  if (request.stop.aborted) {
+    forwardStop();
+  }
+
+  if (child.pid !== undefined) {
+    try {
+      await request.onStarted?.(child.pid);
+    } catch (cause) {
+      // The launch was never registered, and the child is gated on exactly that
+      // record: it has done nothing, so its tree is stopped here — which also
+      // releases the child's own wait — and the launch's failure is what the
+      // caller is given. A worker that cannot be recorded is never run.
+      const stopProblem = await requestTreeStop(child.pid);
+      throw new Error(
+        `the launch of the worker (pid ${String(child.pid)}) could not be registered: ` +
+          `${messageOf(cause)}. The worker never began any work.` +
+          (stopProblem === null ? '' : ` Stopping it was not confirmed: ${stopProblem}`),
+        { cause },
+      );
+    }
+  }
+
+  return await outcome;
 }

@@ -1453,8 +1453,13 @@ Before a restarted supervisor starts anything, it reads every incident record ba
 - **holds for a runtime that could not be confirmed stopped.** A turn whose runtime may still be
   repairing the workspace keeps its ownership: the attempt stays in flight, its recorded PID stays
   the incident's, and nothing else — no second attempt, no worker — starts beside a process nobody
-  has accounted for. The hold is named when it happens, and a later invocation reconciles it against
-  that process before anything continues.
+  has accounted for. The hold is named when it happens, and what it is made of is recorded: the
+  tree's own root and what the stop could not confirm. A later invocation reconciles it only on
+  evidence that the tree the turn's runtime led has ended — a missing root PID is not that evidence,
+  because a tool the turn started can outlive the runtime a failed tree stop left behind — and where
+  this host cannot answer that question at all (a Windows root that is already gone, chiefly), the
+  incident waits for a person who has checked the host and records an acknowledgement newer than
+  the hold.
 - **finishes a report that is unfinished.** Every concluded incident whose comment or email summary
   is still outstanding is published again, wherever it sits, however many times the pointer has
   moved since: a failed publication is never lost, and never repeats the recovery that succeeded.

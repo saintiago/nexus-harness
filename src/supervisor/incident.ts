@@ -103,6 +103,26 @@ export interface PendingRecovery {
    * stopped, chiefly. `null` for an attempt an invocation simply died inside of.
    */
   readonly problem: string | null;
+  /**
+   * The stop that invocation asked of the attempt's runtime and could not
+   * confirm, or `null` when the attempt is in flight for another reason.
+   *
+   * It is the evidence a restart decides on, and it is kept structured rather
+   * than only as prose: the runtime's recorded tree is what has to be shown
+   * ended — a missing root PID is not that proof — before the attempt's
+   * judgment is adopted or anything else starts beside it.
+   */
+  readonly unconfirmedStop: UnconfirmedStop | null;
+}
+
+/** One stop of an attempt's runtime that could not be confirmed. */
+export interface UnconfirmedStop {
+  /** When the stop was recorded as unconfirmed. */
+  readonly at: string;
+  /** The tree's recorded root, or `null` when none could be recorded. */
+  readonly pid: number | null;
+  /** What could not be confirmed, as the invocation that stopped it saw it. */
+  readonly problem: string;
 }
 
 /** One recovery attempt, as the agent's own outcome file describes it. */
@@ -338,6 +358,24 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
+ * One attempt's unconfirmed stop, as it was written down, or `null`. A record
+ * written before the field existed has none: an attempt left in flight by such
+ * an invocation carries only its own prose, and the restart still refuses it
+ * for a person to reconcile.
+ */
+function unconfirmedStopOf(value: unknown): UnconfirmedStop | null {
+  if (!isRecord(value) || typeof value['at'] !== 'string') {
+    return null;
+  }
+  return {
+    at: value['at'],
+    pid: typeof value['pid'] === 'number' && Number.isInteger(value['pid']) ? value['pid'] : null,
+    problem:
+      typeof value['problem'] === 'string' ? value['problem'] : 'no reason was recorded for it',
+  };
+}
+
+/**
  * Reads one incident record. A missing file is an absence; a file that is not
  * a record this harness wrote is a refusal by name, never an absence: treating
  * corruption as "no incident" is how a restart starts a second recovery for
@@ -399,7 +437,11 @@ export async function readIncident(file: string): Promise<IncidentRecord | null>
     pending:
       pending === null
         ? null
-        : { ...pending, problem: typeof pending.problem === 'string' ? pending.problem : null },
+        : {
+            ...pending,
+            problem: typeof pending.problem === 'string' ? pending.problem : null,
+            unconfirmedStop: unconfirmedStopOf(pending.unconfirmedStop),
+          },
     sequence:
       sequence === null
         ? null

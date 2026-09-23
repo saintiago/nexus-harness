@@ -88,7 +88,11 @@ function waitParts(request: LaunchWait): {
       request.sleep ??
       (async (ms: number) => {
         await new Promise<void>((resolve) => {
-          setTimeout(resolve, ms).unref?.();
+          // The wait is deliberately referenced: while a launched worker waits
+          // for its own registration, this timer is the only work keeping the
+          // process alive, and an unref'd one would let the process exit with
+          // the launch never decided — neither registered nor refused.
+          setTimeout(resolve, ms);
         });
       }),
     now: request.now ?? (() => Date.now()),

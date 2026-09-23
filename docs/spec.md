@@ -757,8 +757,13 @@ because it was really spent. Nothing is handed to a recovery runtime before its 
 an attempt that names no process is one whose turn never began: a restart refuses it by name for a
 person to reconcile instead of rounding it into an attempt that produced nothing. A turn whose
 runtime could not be confirmed stopped keeps its ownership: the attempt stays in flight, its
-recorded PID stays the incident's, and no second attempt or worker starts beside a process nobody
-has accounted for until a later invocation reconciles it.
+recorded PID stays the incident's, and the stop itself is recorded as what it was — the tree's own
+root, and what could not be confirmed — rather than as prose a restart would have to interpret. No
+second attempt or worker starts beside a process nobody has accounted for, and a later invocation
+reconciles that hold only on evidence: the tree the attempt's runtime led has to be shown ended,
+which a missing root PID is not — an owned tool outliving its runtime is exactly what a failed tree
+stop leaves behind — and where the host cannot answer that question at all, a person who has
+checked the host says so by recording an acknowledgement on the incident, newer than the hold.
 
 **Resumption.** A `repaired` or `blocked` conclusion returns the queue to work: the parent starts
 the worker again and records the moment that really happened, so a blocker ranked ahead of the

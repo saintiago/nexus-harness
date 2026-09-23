@@ -133,6 +133,7 @@ async function runSupervision(overrides: {
   readonly maxAttempts?: number;
   readonly stop?: AbortSignal;
   readonly isAlive?: SuperviseRequest['isAlive'];
+  readonly treeLiveness?: SuperviseRequest['treeLiveness'];
   readonly scope?: string | null;
   readonly reporter?: SuperviseRequest['reporter'];
   readonly jiraBoundary?: SuperviseRequest['jiraBoundary'];
@@ -192,6 +193,7 @@ async function runSupervision(overrides: {
       }),
     worker: overrides.worker,
     ...(overrides.isAlive === undefined ? {} : { isAlive: overrides.isAlive }),
+    ...(overrides.treeLiveness === undefined ? {} : { treeLiveness: overrides.treeLiveness }),
   });
 }
 
@@ -578,6 +580,163 @@ describe('a supervised queue', () => {
     expect(stored?.report.commentId).toBe('10042');
   }, 30_000);
 
+  it('holds an attempt whose stop was never confirmed until the tree it led is shown ended', async () => {
+    const { workDir, repoPath, configPath } = await workspace();
+    const root = supervisorRoot(workDir, 'namespace');
+    const incident = await seedIncident(root);
+    const dir = path.join(incidentDir(root, incident.id), 'attempt-1');
+    await mkdir(dir, { recursive: true });
+    await writeFile(
+      path.join(dir, RECOVERY_OUTCOME_FILE),
+      JSON.stringify({
+        status: 'repaired',
+        summary: 'the runtime was stopped and its work kept',
+        cause: 'a tool the turn started outlived its runtime',
+        resolution: 'the workspace was returned to its recorded branch',
+        preserved: [],
+        resume: 'the queue resumes',
+      }),
+      'utf8',
+    );
+    // The state a stop that could not be confirmed leaves behind: the attempt
+    // stays in flight with its runtime recorded, and the stop itself is kept
+    // as evidence rather than only as prose.
+    await seedPending(root, incident.id, {
+      attempt: 1,
+      dir,
+      turnPid: 5252,
+      unconfirmedStop: { at: '2026-09-23T00:02:30.000Z', pid: 5252 },
+    });
+    const recovery = scriptedRecovery([
+      { status: 'repaired', summary: 'this turn should never run', cause: 'c' },
+    ]);
+    const requests: (string | null)[] = [];
+    const worker = async (request: { readonly scope: string | null }): Promise<WorkerOutcome> => {
+      requests.push(request.scope);
+      return ended(0);
+    };
+
+    // The runtime's own root is gone and something it started is still there:
+    // that is not a tree that ended, so nothing of the attempt is adopted and
+    // nothing else starts beside it.
+    const held = await runSupervision({
+      workDir,
+      repoPath,
+      configPath,
+      isAlive: () => false,
+      treeLiveness: () => 'running',
+      worker,
+      recoveryTurn: recovery,
+    });
+    expect(held.outcome).toBe('attention');
+    expect(held.problem).toContain('never confirmed');
+    expect(held.workerRuns).toBe(0);
+    expect(recovery.calls).toBe(0);
+    const stillHeld = await readIncident(incidentFilePath(root, incident.id));
+    expect(stillHeld?.pending?.unconfirmedStop).not.toBeNull();
+    expect(stillHeld?.attempts).toHaveLength(0);
+
+    // Once the tree is shown ended, the judgment the turn left is adopted whole
+    // and the attempt is counted as spent — it really was — and the queue
+    // resumes in the same invocation.
+    const resumed = await runSupervision({
+      workDir,
+      repoPath,
+      configPath,
+      isAlive: () => false,
+      treeLiveness: () => 'gone',
+      worker,
+      recoveryTurn: recovery,
+    });
+    expect(resumed.outcome).toBe('settled');
+    expect(resumed.workerRuns).toBe(1);
+    expect(recovery.calls).toBe(0);
+    expect(requests).toEqual([null]);
+    const stored = await readIncident(incidentFilePath(root, incident.id));
+    expect(stored?.pending).toBeNull();
+    expect(stored?.attempts).toHaveLength(1);
+    expect(stored?.attempts[0]).toMatchObject({
+      outcome: 'repaired',
+      cause: 'a tool the turn started outlived its runtime',
+    });
+  }, 30_000);
+
+  it('resolves an unconfirmed stop only on a person’s own, later acknowledgement', async () => {
+    const { workDir, repoPath, configPath } = await workspace();
+    const root = supervisorRoot(workDir, 'namespace');
+    const incident = await seedIncident(root);
+    const dir = path.join(incidentDir(root, incident.id), 'attempt-1');
+    await mkdir(dir, { recursive: true });
+    await writeFile(
+      path.join(dir, RECOVERY_OUTCOME_FILE),
+      JSON.stringify({
+        status: 'repaired',
+        summary: 'the runtime was stopped and its work kept',
+        cause: 'a half-written run',
+        resolution: 'the workspace was returned to its recorded branch',
+        preserved: [],
+        resume: 'the queue resumes',
+      }),
+      'utf8',
+    );
+    await seedPending(root, incident.id, {
+      attempt: 1,
+      dir,
+      turnPid: 5252,
+      unconfirmedStop: { at: '2026-09-23T00:02:30.000Z', pid: 5252 },
+    });
+    const acknowledge = async (at: string): Promise<void> => {
+      const file = incidentFilePath(root, incident.id);
+      const record = await readIncident(file);
+      if (record === null) {
+        throw new Error('the seeded incident is gone');
+      }
+      await writeIncident(file, {
+        ...record,
+        acknowledgement: { at, note: 'checked this host by hand' },
+      });
+    };
+    const recovery = scriptedRecovery([
+      { status: 'repaired', summary: 'this turn should never run', cause: 'c' },
+    ]);
+
+    // An acknowledgement that predates the hold answered something else, so the
+    // hold stands: nothing here infers that a person answered this one.
+    await acknowledge('2026-09-23T00:02:00.000Z');
+    const older = await runSupervision({
+      workDir,
+      repoPath,
+      configPath,
+      isAlive: () => false,
+      treeLiveness: () => 'unknown',
+      worker: scriptedWorker([ended(0)]),
+      recoveryTurn: recovery,
+    });
+    expect(older.outcome).toBe('attention');
+    expect(older.workerRuns).toBe(0);
+    expect(recovery.calls).toBe(0);
+
+    // A host that cannot show the tree ended — a Windows root that is already
+    // gone, chiefly — leaves the question to a person; once they say what they
+    // checked, the attempt is reconciled against its own judgment.
+    await acknowledge('2026-09-23T00:05:00.000Z');
+    const answered = await runSupervision({
+      workDir,
+      repoPath,
+      configPath,
+      isAlive: () => false,
+      treeLiveness: () => 'unknown',
+      worker: scriptedWorker([ended(0)]),
+      recoveryTurn: recovery,
+    });
+    expect(answered.outcome).toBe('settled');
+    expect(recovery.calls).toBe(0);
+    const stored = await readIncident(incidentFilePath(root, incident.id));
+    expect(stored?.pending).toBeNull();
+    expect(stored?.attempts).toHaveLength(1);
+    expect(stored?.attempts[0]).toMatchObject({ outcome: 'repaired', cause: 'a half-written run' });
+  }, 30_000);
+
   it('counts an interrupted attempt toward the bound and asks for a person when it is spent', async () => {
     const { workDir, repoPath, configPath } = await workspace();
     const root = supervisorRoot(workDir, 'namespace');
@@ -897,13 +1056,32 @@ describe('a supervised queue', () => {
     expect(refused.workerRuns).toBe(0);
     expect(scripted.calls).toBe(0);
 
-    // A restart that finds that runtime gone reconciles the attempt: it counts
-    // as spent, and the incident goes on from there.
+    // A restart that finds the runtime's own root gone, with the tree it led
+    // still there, still holds: a missing PID is not proof that what the turn
+    // started has ended, and adopting its judgment there would start work
+    // beside a process nobody has accounted for.
+    const heldAgain = await runSupervision({
+      workDir,
+      repoPath,
+      configPath,
+      isAlive: () => false,
+      treeLiveness: () => 'running',
+      worker: scriptedWorker([ended(0)]),
+      recoveryTurn: scripted,
+    });
+    expect(heldAgain.outcome).toBe('attention');
+    expect(heldAgain.problem).toContain('never confirmed');
+    expect(heldAgain.workerRuns).toBe(0);
+    expect(scripted.calls).toBe(0);
+
+    // Once that tree is shown ended, the attempt is reconciled: it counts as
+    // spent, and the incident goes on from there.
     const resumed = await runSupervision({
       workDir,
       repoPath,
       configPath,
       isAlive: () => false,
+      treeLiveness: () => 'gone',
       worker: scriptedWorker([ended(0)]),
       recoveryTurn: scripted,
     });
@@ -981,6 +1159,8 @@ async function seedPending(
     /** The runtime PID the attempt records, or none for the crash window. */
     readonly turnPid: number | null;
     readonly problem?: string | null;
+    /** The stop of that runtime a previous invocation could not confirm. */
+    readonly unconfirmedStop?: { readonly at: string; readonly pid: number | null } | null;
   },
 ): Promise<void> {
   const file = incidentFilePath(root, id);
@@ -1001,6 +1181,14 @@ async function seedPending(
       dir: pending.dir,
       logPath: null,
       problem: pending.problem ?? null,
+      unconfirmedStop:
+        pending.unconfirmedStop === undefined || pending.unconfirmedStop === null
+          ? null
+          : {
+              at: pending.unconfirmedStop.at,
+              pid: pending.unconfirmedStop.pid,
+              problem: 'the runtime did not end after it was stopped',
+            },
     },
   });
   await writeCurrentIncident(root, { version: 1, id, workerPid: null, launch: null });

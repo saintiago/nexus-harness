@@ -41,6 +41,8 @@ import { runCommand } from '../../src/process/command.js';
 import { repoRoot } from '../support.js';
 import {
   installStandIn,
+  pause,
+  runProgram,
   serviceFetch,
   startLocalService,
   withPathPrefix,
@@ -459,6 +461,108 @@ describe('the worker process', () => {
       }),
     ).rejects.toThrow(/could not be registered/);
     expect(await readFile(marker, 'utf8').catch(() => null)).toBeNull();
+  }, 60_000);
+
+  it('sees a worker that ends while its own registration is still being written', async () => {
+    const directory = await tempDir();
+    // A worker that ends immediately: whichever way it got there, its ending
+    // happens while the supervisor is still writing down that it started.
+    const entry = await workerScript(directory, 'process.exit(7);\n');
+    const outcome = await runNexusWorker({
+      entry,
+      interpreter: process.execPath,
+      intent: 'run',
+      scope: null,
+      repoPath: directory,
+      configPath: path.join(directory, 'nexus.config.json'),
+      cwd: directory,
+      stop: new AbortController().signal,
+      onStarted: async () => {
+        await pause(250);
+      },
+    });
+    // The ending is kept, not lost: a supervisor that missed it would wait for
+    // work that is already over, and would never invoke recovery for it.
+    expect(outcome.exitCode).toBe(7);
+    expect(outcome.signal).toBeNull();
+    expect(outcome.launchProblem).toBeNull();
+    expect(outcome.stopRequested).toBe(false);
+  }, 30_000);
+
+  it('keeps a launched worker waiting for a registration that lands late', async () => {
+    const directory = await tempDir();
+    const record = path.join(directory, 'current.json');
+    const pidFile = path.join(directory, 'pid.txt');
+    const marker = path.join(directory, 'waited.txt');
+    const entry = path.join(directory, 'waiting.mts');
+    await writeFile(
+      entry,
+      [
+        `import { writeFile } from 'node:fs/promises';`,
+        `import { awaitLaunchRegistration } from ${JSON.stringify(
+          pathToFileURL(path.join(repoRoot, 'src', 'supervisor', 'launch.js')).href,
+        )};`,
+        `await writeFile(${JSON.stringify(pidFile)}, String(process.pid), 'utf8');`,
+        `const problem = await awaitLaunchRegistration({ file: ${JSON.stringify(record)}, token: 'late', pid: process.pid, timeoutMs: 30_000 });`,
+        `await writeFile(${JSON.stringify(marker)}, problem === null ? 'proceeded' : problem, 'utf8');`,
+      ].join('\n'),
+      'utf8',
+    );
+
+    const waiting = runProgram(process.execPath, ['--import', 'tsx', entry], { cwd: repoRoot });
+    let pid: number | null = null;
+    for (let attempt = 0; attempt < 100 && pid === null; attempt += 1) {
+      const text = await readFile(pidFile, 'utf8').catch(() => '');
+      pid = text.trim() === '' ? null : Number(text.trim());
+      if (pid === null) {
+        await pause(50);
+      }
+    }
+    expect(pid).not.toBeNull();
+    // The registration lands after the child has been waiting for a while: a
+    // wait that let the process exit would leave the launch undecided.
+    await pause(250);
+    await writeFile(
+      record,
+      JSON.stringify({
+        version: 1,
+        launch: { token: 'late', at: '2026-09-23T00:00:00.000Z' },
+        workerPid: pid,
+      }),
+      'utf8',
+    );
+
+    const outcome = await waiting;
+    expect(outcome.code).toBe(0);
+    expect(await readFile(marker, 'utf8')).toBe('proceeded');
+  }, 60_000);
+
+  it('keeps a launched worker alive to give up by itself when nothing registers it', async () => {
+    const directory = await tempDir();
+    const record = path.join(directory, 'current.json');
+    const marker = path.join(directory, 'waited.txt');
+    const entry = path.join(directory, 'giving-up.mts');
+    await writeFile(
+      entry,
+      [
+        `import { writeFile } from 'node:fs/promises';`,
+        `import { awaitLaunchRegistration } from ${JSON.stringify(
+          pathToFileURL(path.join(repoRoot, 'src', 'supervisor', 'launch.js')).href,
+        )};`,
+        `const problem = await awaitLaunchRegistration({ file: ${JSON.stringify(record)}, token: 'never', pid: process.pid, timeoutMs: 1_500 });`,
+        `await writeFile(${JSON.stringify(marker)}, problem ?? 'proceeded', 'utf8');`,
+      ].join('\n'),
+      'utf8',
+    );
+    const startedAt = Date.now();
+    const outcome = await runProgram(process.execPath, ['--import', 'tsx', entry], {
+      cwd: repoRoot,
+    });
+    // The wait really lasts its own bound, and it ends in a diagnostic rather
+    // than in a process that exited with the launch never decided.
+    expect(outcome.code).toBe(0);
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(1_200);
+    expect(await readFile(marker, 'utf8')).toContain('never registered it');
   }, 60_000);
 
   it('reports an entry that cannot be started at all', async () => {
