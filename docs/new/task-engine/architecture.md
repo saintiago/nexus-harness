@@ -118,7 +118,7 @@ storage, then calls run again.
 
 Dependencies are supplied to actions at construction; ExecutionRunner receives none of these ports.
 Actions read task details and locally saved conversation, construct role inputs
-and verify role claims against observed evidence. No presentation or supervisor dependency is required.
+and verify role claims against observed evidence. No presentation or Application dependency is required.
 An agent-backed action calls run(profile, workspaceRef, additionalContext). The action reads the
 artifacts it needs and supplies invocation instructions/context directly. The runtime does not read
 an action request from the workspace. Actions without agent work do not receive AgentRuntime.

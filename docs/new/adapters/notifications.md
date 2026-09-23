@@ -16,7 +16,7 @@ The consumer owns report content, persistence and decisions about further notifi
 ### Required capability
 
 publish(subject, body) sends one message to the configured destination and returns its provider
-message identity. [Supervisor](../supervisor.md#required-interfaces) uses this for recovery reports.
+message identity. [Application](../application.md#component-wiring) uses this for recovery reports.
 
 ## Behavior
 

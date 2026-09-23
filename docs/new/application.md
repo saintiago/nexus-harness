@@ -2,9 +2,9 @@
 
 ## Responsibility
 
-Own command handling, configuration loading, component construction and process exit.
-Provide the parent and worker entry points. Use ordinary construction functions, without a service
-registry or dependency-injection framework.
+Manage a Nexus execution: command handling, configuration loading, component construction, worker
+lifecycle, recovery and process exit. Provide the parent and worker entry points.
+Use ordinary construction functions without a service registry or dependency-injection framework.
 
 The public module is `src/application/index.ts`.
 
@@ -22,29 +22,72 @@ supplies the Nexus configuration filepath. Resolve the project filepath against 
 Reject missing arguments and unknown options. Help requires no configuration or external connections.
 Launch shortcuts invoke this command; they contain no execution logic.
 
+### Provided interface
+
+```ts
+interface Application {
+  execute(request: ExecutionRequest): Promise<ExecutionResult>;
+  subscribe(listener: Observer<ExecutionEvent>): Unsubscribe;
+}
+
+type ExecutionRequest = { projectConfigPath: string };
+type ExecutionEvent = EngineEvent;
+
+type ExecutionResult = {
+  outcome: 'completed' | 'needs-attention';
+  reason: string;
+  report: ArtifactRef | null;
+};
+
+type RecoveryDecision =
+  | { kind: 'resume' }
+  | { kind: 'run-blocker'; key: string }
+  | { kind: 'needs-attention' };
+
+type RecoveryReport = {
+  summary: string;
+  decision: RecoveryDecision;
+};
+```
+
+Use the [shared value types](high-level-architecture.md#shared-interface-vocabulary) and
+[TaskEngine event types](task-engine/architecture.md#provided-interface).
+One execute call manages one execution using the absolute project filepath.
+Completed means the configured workflow finished successfully; needs-attention means it could not
+continue. The report points to the saved recovery report when recovery occurred.
+
+subscribe observes subsequent events and returns an unsubscribe function. Forward worker events
+unchanged. Emit lifecycle events with source application and types starting, running, recovering and
+finished. The finished event carries ExecutionResult. Listener failures do not affect execution.
+
+Recovery invocations emit the [agent activity events](task-engine/architecture.md#agent-activity-events)
+with role recovery. Request RecoveryReport in the recovery context and parse the returned output.
+A malformed report is a failed recovery invocation.
+
 ### Component wiring
 
-Load settings according to [Configuration](configuration.md). Construct components through their
-documented interfaces and supply only the settings and capabilities each needs.
+Load settings according to [Configuration](configuration.md). Supply each component only the settings
+and capabilities its contract requires.
 
 | Process | Construction and invocation |
 | --- | --- |
-| Parent | Construct recovery AgentRuntime and notification/process adapters; supply them and lifecycle settings to [Supervisor](supervisor.md#interface) |
-| Parent | Construct [OperatorInterface](operator-interface.md#interface) with the Supervisor event subscription and terminal capabilities |
-| Parent | Start presentation, call Supervisor.execute with the absolute project filepath, then stop presentation when execution ends |
-| Worker | Construct [Adapters](adapters/architecture.md#interface) and [AgentRuntime](agent-runtime/architecture.md#interface) from their relevant settings |
+| Parent | Construct recovery [AgentRuntime](agent-runtime/architecture.md#interface) and notification/process [Adapters](adapters/architecture.md#interface) |
+| Parent | Construct [OperatorInterface](operator-interface.md#interface) with the Application event subscription and terminal capabilities; start presentation before execute and stop it afterward |
+| Worker | Construct adapters and AgentRuntime from their relevant settings |
 | Worker | Bind action capabilities, selection storage and event publishing; construct [TaskEngine](task-engine/architecture.md#interface) with the selected workflow and workflow-state filepath |
-| Worker | Subscribe to TaskEngine events before calling run; send events and its final result through the worker protocol |
+| Worker | Subscribe to TaskEngine events before calling run; send events and the final result through the worker protocol |
 
-Supervisor owns child launch, restart and recovery decisions. Application provides the worker entry
-point and connects its transport. OperatorInterface receives forwarded worker events through Supervisor
-once; Application does not add another subscription to display those same events.
+OperatorInterface receives worker and parent events through one combined subscription.
+Prepare recovery context from the original request, failure, available output and
+[workspace reference](workspace.md#layout-and-reference). If the task workspace is unavailable,
+supply an operational workspace. Pass context to AgentRuntime.run with the configured recovery profile.
+Use the [Notifications adapter](adapters/notifications.md#interface) to publish the recovery report.
 
 ### Worker entry point
 
-The internal worker entry receives the absolute project filepath and an optional recovery target from
-Supervisor. It uses the same installation configuration path as the parent. This is an internal launch
-contract, not an additional operator mode.
+The internal worker entry receives the absolute project filepath and an optional recovery target.
+It uses the same installation configuration path as the parent. This is an internal launch contract,
+not an additional operator mode.
 
 Send newline-delimited JSON on stdout:
 
@@ -56,19 +99,53 @@ Send newline-delimited JSON on stdout:
 Use the [TaskEngine event and result types](task-engine/architecture.md#provided-interface).
 Reserve stderr for diagnostics. Forward events unchanged. Send the final result before exiting.
 A returned workflow outcome exits with 0; an execution fault or worker initialization failure exits
-with 1. Supervisor interprets the workflow outcome and process result; a zero exit alone does not
-declare successful task completion.
+with 1. The parent evaluates both the outcome and process exit; zero exit alone is not completion.
 
 ## Configuration loading
 
-The parent reads the installation configuration before constructing its dependencies. Each worker
-launch reads project and installation configuration and loads the selected workflow.
-Resolve relative paths against their owning configuration file. Validate required values and
-references before constructing their consumers.
+The parent reads installation configuration before constructing its dependencies. Each worker launch
+reads project and installation configuration and loads the selected workflow. Resolve relative paths
+against their owning configuration file. Validate required values and references before use.
 
 Supply resolved settings as immutable values. Resolve credential references from the host;
-do not print secret values or place them in agent context.
-Do not inspect task artifacts, decide which ticket runs next or reinterpret saved workflow state.
+do not print secret values or place them in agent context. Lifecycle settings and the selected
+workflow's successful terminal outcomes are available before the first child starts.
+
+## Execution and recovery
+
+1. Start the worker with the requested scope.
+2. Forward progress and wait for its result and exit.
+3. Finish on a successful terminal outcome and successful exit.
+4. On a blocked outcome, execution fault, invalid or missing result, or failed exit, invoke recovery.
+5. Save the recovery report, publish it and apply its decision.
+
+Work and recovery run sequentially. Each invocation finishes before the next starts.
+An absent error description stays absent; recovery investigates from the available context.
+
+Recovery investigates, fixes operational problems, reconciles retained work and may create or rank a
+blocker through its authorized tools. It reconciles saved workflow state when needed before requesting
+resumption. Its report explains the cause, actions taken and remaining problems.
+
+A resume decision starts work with retained state. A run-blocker decision retains the original request,
+runs the named ticket in its own workspace, then resumes the original request. Failure in that work
+uses the same recovery path.
+
+Each recovery invocation consumes the configured allowance for this execution. Worker restarts and
+blocker work do not reset it. Exhaustion, failed recovery or a needs-attention decision ends execution
+with needs-attention.
+
+Apply the decision without independently classifying the repair, requiring proof of changed state or
+judging progress past an earlier failure. Recovery owns that judgment. Task selection, workflow
+transitions and verification/completion gates remain worker responsibilities; recovery reports do not
+replace them.
+
+## State and reports
+
+Retain the original request, current target, return target when running a blocker, recovery count and
+recovery reports as ordinary files under the configured storage root.
+
+Publish the saved recovery report. Notification failure is reported separately and does not repeat
+recovery. Provider acceptance confirms submission, not inbox delivery.
 
 ## Process completion
 
@@ -78,5 +155,5 @@ The parent exits with:
 - 1 for execution requiring attention, initialization failure or an unexpected execution error.
 - 2 for invalid command input.
 
-Print command and initialization errors to stderr. Once presentation starts, stop it when execution
-ends, including failure. Application adds no retry loop, recovery policy or persistent state.
+Print command and parent initialization errors to stderr. Once presentation starts, stop it when
+execution ends, including failure.

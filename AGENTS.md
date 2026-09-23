@@ -37,9 +37,8 @@ A multi-component flow does not create a special shared contract.
 
 - [Tech stack](docs/new/tech-stack.md): Linux platform, WSL development, language, tooling and integrations.
 - [High-level architecture](docs/new/high-level-architecture.md): target composition, component contracts and finite execution.
-- [Application design](docs/new/application.md): commands, configuration loading, parent/worker wiring and process exit.
+- [Application design](docs/new/application.md): commands, configuration, worker lifecycle, recovery and process exit.
 - [OperatorInterface design](docs/new/operator-interface.md): event subscriptions, activity pane and terminal colors.
-- [Supervisor design](docs/new/supervisor.md): execution lifecycle, recovery and restart decisions.
 - [TaskEngine design](docs/new/task-engine/architecture.md): declarative execution, action composition and event subscriptions.
 - [ExecutionRunner design](docs/new/task-engine/execution-runner.md): XState binding, persisted execution state and progress events.
 - [Finite workflow](workflows/finite-delivery.ts): XState definition for the target TaskEngine and Stately visualization.

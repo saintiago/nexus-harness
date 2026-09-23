@@ -14,13 +14,12 @@ Cover decisions, meaningful variations and failure outcomes here.
 
 | Subject | Behavior to verify | Supplied dependencies |
 | --- | --- | --- |
-| Application | Command interpretation, configuration paths and exit-code mapping | Arguments, configuration values and execution results |
+| Application | Commands, configuration paths, exit codes and recovery decisions within the configured allowance | Arguments, configuration, work/recovery results and notification responses |
 | SelectTask | Source ordering, eligibility and continuation decisions | Issue data and retained selection |
 | SelectRepair | Repair counting, profile escalation and exhaustion | Round history and policy |
 | Review | Verdict interpretation and rejection of approval with unresolved blocking findings | Agent result and repository observations |
 | CompleteTask | Completion only after merge and successful configured checks for that merge | GitHub observations and source updates |
 | AgentRuntime | Profile resolution and complete context assembly | Coding-provider response |
-| Supervisor | Resume, blocker and attention decisions within its recovery allowance | Work, recovery and notification results |
 | OperatorInterface | Event presentation, activity grouping, pane lifecycle and colors | Events, terminal dimensions and output sink |
 | Workflow | Declared transitions, repair loops and terminal outcomes | Named action outcomes, using the real XState definition |
 

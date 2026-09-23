@@ -9,7 +9,7 @@ The public entry point is `src/operator-interface/index.ts`.
 ## Interface
 
 Consume [TaskEngine events](task-engine/architecture.md#provided-interface) and
-[Supervisor events](supervisor.md#provided-interface) through their subscription contracts.
+[Application events](application.md#provided-interface) through their subscription contracts.
 Construction supplies the event subscriptions and terminal output capabilities.
 
 ```ts
@@ -23,7 +23,7 @@ start subscribes to the supplied streams. stop unsubscribes, finalizes the visib
 terminal styling. Neither method starts or stops execution.
 [Application](application.md#interface) owns command parsing, execution startup and process exit codes.
 
-When Supervisor forwards worker events, subscribe to that combined stream once; do not also subscribe
+When Application forwards worker events, subscribe to that combined stream once; do not also subscribe
 to the same worker events separately. Agent invocation boundaries and activity arrive through these
 streams, following the [agent activity contract](task-engine/architecture.md#agent-activity-events).
 Read role and task identity from event data, never from model names or rendered log text.
@@ -71,7 +71,7 @@ active pane without declaring the invocation successful.
 | Reviewer messages and invocation heading | Blue |
 | Developer messages and invocation heading | Yellow |
 | TaskEngine progress, including action and workflow events | White |
-| Supervisor, recovery and other diagnostics | Terminal default |
+| Application, recovery and other diagnostics | Terminal default |
 
 Tool activity stays grey regardless of agent role. Agent message colors take precedence over the
 stream carrying them: a reviewer message forwarded through TaskEngine remains blue. Reset styling
