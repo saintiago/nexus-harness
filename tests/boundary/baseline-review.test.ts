@@ -21,6 +21,7 @@ import { describe, expect, it } from 'vitest';
 import type { BaselineFinding } from '../../src/sources/contract.js';
 import {
   BASELINE_FINDING_FILE,
+  BASELINE_OUTCOME_FILE,
   BASELINE_REVIEWER_LOG,
   BASELINE_TURN_DIRECTORY,
   createBaselineReviewer,
@@ -244,6 +245,56 @@ describe('what one baseline reviewer turn records', () => {
 });
 
 describe('the evidence one diagnosis keeps', () => {
+  it('refuses incomplete evidence before a turn, and carries a stop it never saw end', async () => {
+    const { dir, request, reviewer, turns } = await reviewerFixture({
+      ending: 'completed',
+      withRuntime: true,
+    });
+    // What a previous invocation recorded for this evidence: a reviewer turn
+    // whose own process tree was never seen to end. Its log files are gone now,
+    // so this invocation refuses before it would re-read that record — and the
+    // recorded stop still has to travel, because that runtime may still be
+    // writing to the evidence directory.
+    await mkdir(dir, { recursive: true });
+    await writeFile(
+      path.join(dir, BASELINE_OUTCOME_FILE),
+      `${JSON.stringify({
+        version: 1,
+        state: 'rejected',
+        problem: 'the reviewer turn was stopped before it produced a finding',
+        shutdown: {
+          termination: 'unconfirmed',
+          problem: 'the host could not reach the process tree',
+        },
+      })}\n`,
+      'utf8',
+    );
+    const gone = {
+      ...request,
+      baseline: {
+        ...request.baseline,
+        checks: request.baseline.checks.map((check) => ({
+          ...check,
+          stdoutPath: path.join(dir, 'gone.stdout.log'),
+          stderrPath: path.join(dir, 'gone.stderr.log'),
+        })),
+      },
+    };
+
+    const outcome = await reviewer(gone);
+
+    // The missing evidence is refused by name, no runtime is started for it,
+    // and the recorded stop is carried out rather than rounded down.
+    expect(outcome.finding).toBeNull();
+    expect(outcome.problem).toContain('incomplete evidence');
+    expect(outcome.problem).toContain('gone.stdout.log');
+    expect(outcome.shutdown).toEqual({
+      termination: 'unconfirmed',
+      problem: 'the host could not reach the process tree',
+    });
+    expect(await turns()).toBe(0);
+  });
+
   it('starts no runtime and records nothing for a turn the caller already stopped', async () => {
     const { dir, request, reviewer, turns } = await reviewerFixture({
       ending: 'completed',

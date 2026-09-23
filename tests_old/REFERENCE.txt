@@ -52,11 +52,12 @@ below is kept for the behavior named beside the active suite that now carries it
   (tests/unit/queue.test.ts), with intake continuation in tests/workflow/continuation.test.ts.
 - baseline.test.ts, baseline-queue.integration.test.ts — the baseline findings, the guidance they
   produce and the outcomes they decide (tests/unit/escalation.test.ts); what one diagnosis
-  publishes, resumes and refuses, and the connected project one piece of evidence belongs to
-  (tests/unit/baseline-diagnosis.test.ts); and the one reviewer turn's record — the rejection a
-  failed turn is recorded as, the restart that reuses it, and the finding it refuses to read from
-  the turn's own file (tests/boundary/baseline-review.test.ts) — with the retained workspace the
-  next attempt continues in tests/workflow/continuation.test.ts.
+  publishes, resumes and refuses — a reviewer stop it could not confirm included — and the
+  connected project one piece of evidence belongs to (tests/unit/baseline-diagnosis.test.ts); and
+  the one reviewer turn's record — the rejection a failed turn is recorded as, the restart that
+  reuses it, the finding it refuses to read from the turn's own file, and the incomplete evidence
+  it refuses to run past (tests/boundary/baseline-review.test.ts) — with the retained workspace
+  the next attempt continues in tests/workflow/continuation.test.ts.
 - cli-run.integration.test.ts, local-run.integration.test.ts — a run through the built command,
   its clone, its checks, its repair and its report (tests/workflow/execution-repair.test.ts), on
   top of the real process, Git and filesystem contracts (tests/boundary/process.test.ts,

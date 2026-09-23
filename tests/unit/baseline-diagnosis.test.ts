@@ -311,6 +311,43 @@ describe('what a restart does with the evidence one reviewer turn left', () => {
   });
 });
 
+describe('what one diagnosis publishes when its reviewer turn ended badly', () => {
+  it('carries a stop the reviewer runtime never confirmed into the result that keeps the lock', async () => {
+    const workDir = await createTempDir();
+    const thread = recordHarness([]);
+    const diagnosis = diagnosisFor({
+      workDir,
+      record: thread.record,
+      reviewer: async () => ({
+        summary: null,
+        finding: null,
+        problem: 'the baseline reviewer turn did not complete: the runtime was stopped',
+        logPath: 'reviewer.log',
+        shutdown: {
+          termination: 'unconfirmed',
+          problem: 'the host could not reach the process tree',
+        },
+      }),
+    });
+
+    const outcome = await diagnosis.diagnose(request());
+
+    // A turn that produced no usable finding keeps the item In Review with the
+    // evidence and what a person must do — and an unconfirmed stop is never
+    // rounded down: the caller is told to keep the intake lock, because
+    // something the reviewer runtime started may still be writing.
+    expect(outcome.kind).toBe('attention');
+    if (outcome.kind === 'attention') {
+      expect(outcome.cleanupConfirmed).toBe(false);
+    }
+    expect(thread.moves).toEqual([REVIEW]);
+    const comment = thread.posted[0]?.join('\n') ?? '';
+    expect(comment).toContain(`${BASELINE_MARKER_PREFIX}attention:`);
+    expect(comment).toContain('was not seen to end');
+    expect(comment).toContain('the host could not reach the process tree');
+  });
+});
+
 describe('the connected project a pending diagnosis belongs to', () => {
   it("never resumes, comments on, moves, or closes another project's pending evidence", async () => {
     const workDir = await createTempDir();
