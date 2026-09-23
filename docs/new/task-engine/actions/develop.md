@@ -17,6 +17,10 @@ Import the output declarations of [Verify](verify.md#output), [Review](review.md
 fallbacks for missing current-round inputs.
 
 Configuration supplies the initial developer profile. A selected repair supplies the next profile.
+Each uses [DevelopmentRole](../../agent-runtime/development-role.md#interface). Supply task-specific
+context and the response format; the profile supplies the constant role instructions.
+Request status, summary and findingResponses from the output shape below. Repository revisions and
+profile identity are observed by this action rather than accepted from the agent.
 
 ### Output
 
