@@ -75,10 +75,12 @@ completion path's GitHub commands, the final report, the command line's own surf
 repair, records and history, and the serial queue's own decisions. Every required behavior the map
 names is carried by an active suite: the terminal presentation is
 `tests/unit/activity-display.test.ts`; the source coordinator's receipts, claims, publication,
-delivery decisions, lock and watch cadence are `tests/boundary/source-coordinator.test.ts`; the
-pre-delivery baseline diagnosis is `tests/boundary/baseline-review.test.ts` for the one reviewer
-turn's own record and `tests/unit/baseline-diagnosis.test.ts` for what the diagnosis publishes,
-resumes and refuses; and the review watch's timing is `tests/unit/reviews.test.ts`. No archived file
+delivery decisions, lock, unconfirmed Git stops and its watch cadence are
+`tests/boundary/source-coordinator.test.ts`; the pre-delivery baseline diagnosis is
+`tests/boundary/baseline-review.test.ts` for the one reviewer turn's own record and
+`tests/unit/baseline-diagnosis.test.ts` for what the diagnosis publishes, resumes and refuses; and
+the review scan's evidence, its publication refusals, and the review watch's timing are
+`tests/unit/reviews.test.ts`. No archived file
 is the only record of a required behavior; what the archive keeps is the whole-command surfaces and
 the shared fixtures those behaviors are assembled into, which the active layers prove at their own
 layer.

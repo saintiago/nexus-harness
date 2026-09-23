@@ -289,7 +289,11 @@ describe('the reviewer prompt', () => {
   });
 });
 
-/** The scan context one case drives, with the ticket it is about. */
+/**
+ * The scan context one case drives, with the ticket it is about: the reviewer
+ * turn's own outcome, the view's own state after it, and the caller's stop are
+ * supplied by the case, and nothing here starts a process or reads GitHub.
+ */
 async function scanHarness(parts: {
   readonly item?: SourceTask | null;
   readonly pointers?: readonly string[];
@@ -299,6 +303,10 @@ async function scanHarness(parts: {
   readonly current?: OpenPullRequest | null;
   readonly verdict?: ReviewerVerdict;
   readonly turnProblem?: string;
+  /** Why the view is no longer the clean snapshot it was pinned as; clean when absent. */
+  readonly viewProblem?: string;
+  /** Whether the caller's interrupt arrives while the reviewer turn is running. */
+  readonly cancelDuringTurn?: boolean;
 }) {
   const workDir = await createTempDir();
   const workspaceId = 'HARN-11';
@@ -322,7 +330,8 @@ async function scanHarness(parts: {
   };
   const pullRequest = parts.pullRequest === undefined ? PULL_REQUEST : parts.pullRequest;
   const published = { reviews: [] as unknown[], checks: [] as unknown[] };
-  const calls = { reviewerTurns: 0 };
+  const calls = { reviewerTurns: 0, viewChecks: 0 };
+  const stop = new AbortController();
 
   const repository: ReviewRepository = {
     findOpenPullRequest: async () => pullRequest,
@@ -359,7 +368,10 @@ async function scanHarness(parts: {
 
   const views: ReviewViewSource = {
     prepare: async ({ dir, head, base }) => ({ path: `${dir}/repo`, head, base }),
-    problem: async () => null,
+    problem: async () => {
+      calls.viewChecks += 1;
+      return parts.viewProblem ?? null;
+    },
   };
 
   const outputs: string[] = [];
@@ -371,6 +383,11 @@ async function scanHarness(parts: {
     repository,
     reviewer: async () => {
       calls.reviewerTurns += 1;
+      if (parts.cancelDuringTurn === true) {
+        // The interrupt the caller sends arrives while the paid turn is running;
+        // the turn still finishes and answers with its verdict.
+        stop.abort(new Error('the operator stopped the review scan'));
+      }
       return {
         summary: 'a summary',
         verdict: parts.verdict ?? { decision: 'approve', summary: 'fine', findings: [] },
@@ -385,11 +402,11 @@ async function scanHarness(parts: {
     checkName: 'Nexus Lens review',
     reviewerTimeoutMs: 30_000,
     io: { out: (text) => outputs.push(text), err: (text) => outputs.push(text) },
-    stop: new AbortController().signal,
+    stop: stop.signal,
     now: () => new Date('2026-09-16T11:10:00.000Z'),
     sleep: async () => undefined,
   };
-  return { context, published, calls, outputs };
+  return { context, published, calls, outputs, stop };
 }
 
 describe('one review scan', () => {
@@ -519,6 +536,61 @@ describe('one review scan', () => {
 
     expect(summary.scanned).toBe(0);
     expect(harness.calls.reviewerTurns).toBe(0);
+  });
+});
+
+/**
+ * The verdicts one scan refuses even though the reviewer turn produced one: a
+ * view the turn left changed, and a turn that failed or was interrupted before
+ * it answered. Each is a ticket needing a person, and each publishes neither a
+ * native review nor a check — an approval is never posted from evidence the scan
+ * cannot stand behind (docs/spec.md §9).
+ */
+describe('a verdict one scan will not publish', () => {
+  it('publishes nothing when the reviewer changed its repository view', async () => {
+    const harness = await scanHarness({
+      viewProblem: 'the repository view carries 1 changed path(s): "notes.txt"',
+    });
+
+    const summary = await scanReviews(harness.context);
+
+    expect(summary).toMatchObject({ attention: 1, reviewed: 0, reviewerRuns: 1 });
+    // The view is re-checked after the turn, and what its own check found is
+    // what the operator is shown.
+    expect(harness.calls.viewChecks).toBe(1);
+    expect(harness.outputs.join('\n')).toContain('repository view for');
+    expect(harness.outputs.join('\n')).toContain('notes.txt');
+    expect(harness.published.reviews).toEqual([]);
+    expect(harness.published.checks).toEqual([]);
+  });
+
+  it('refuses a completed approval a failed turn returned', async () => {
+    const harness = await scanHarness({
+      verdict: { decision: 'approve', summary: 'the change is right', findings: [] },
+      turnProblem: 'the reviewer runtime was interrupted',
+    });
+
+    const summary = await scanReviews(harness.context);
+
+    expect(summary).toMatchObject({ attention: 1, reviewed: 0, reviewerRuns: 1 });
+    expect(harness.outputs.join('\n')).toContain('the reviewer runtime was interrupted');
+    expect(harness.published.reviews).toEqual([]);
+    expect(harness.published.checks).toEqual([]);
+  });
+
+  it('publishes nothing when the caller cancelled the scan during the reviewer turn', async () => {
+    const harness = await scanHarness({
+      cancelDuringTurn: true,
+      verdict: { decision: 'approve', summary: 'the change is right', findings: [] },
+    });
+
+    const summary = await scanReviews(harness.context);
+
+    expect(harness.stop.signal.aborted).toBe(true);
+    expect(summary).toMatchObject({ attention: 1, reviewed: 0, reviewerRuns: 1 });
+    expect(summary.items.map((item) => item.disposition)).toEqual(['attention']);
+    expect(harness.published.reviews).toEqual([]);
+    expect(harness.published.checks).toEqual([]);
   });
 });
 
