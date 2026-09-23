@@ -331,7 +331,9 @@ export function reviewPrompt(
             '  exactly once, what you yourself observed: "verified" only when you read the repair at',
             '  the place the defect lived, "unverified" when the claim does not hold or your reading',
             '  does not show it, "regressed" when the defect is back. An "approve" verdict must',
-            '  carry "verified" for every outstanding finding; a claim is never a verification.',
+            '  carry "verified" for every outstanding finding, and "request_changes" must still',
+            '  state its reading of each one — an "inconclusive" verdict decides nothing and need',
+            '  not state them. A claim is never a verification.',
           ]),
       `- At most ${String(MAX_FINDINGS)} findings, each body at most ${String(MAX_FINDING_CHARS)}`,
       `  characters, and a summary of at most ${String(MAX_SUMMARY_CHARS)} characters.`,
@@ -599,7 +601,10 @@ export function parseVerdict(
     named.add(verification.finding);
   }
   const missing = outstanding.filter((finding) => !named.has(finding));
-  if (outstanding.length > 0 && missing.length > 0) {
+  // An inconclusive verdict decides nothing — it clears no change request and
+  // publishes nothing — so it is the one result that does not have to state a
+  // reading of every outstanding disposition. Everything else does.
+  if (decision !== 'inconclusive' && outstanding.length > 0 && missing.length > 0) {
     throw new ReviewError(
       'inconclusive',
       `the reviewer's ${where} does not verify ${missing.join(', ')}, so the disposition of an ` +

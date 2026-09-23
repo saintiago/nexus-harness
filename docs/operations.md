@@ -910,7 +910,9 @@ reviewer reads the reviewed revision itself, at the place each earlier defect li
 one verification per finding identity — `verified`, `unverified` or `regressed`, with the evidence
 it read. The harness refuses a verdict that verifies none of them, names an identity no review
 raised, or approves while a disposition is unverified: a developer's claim is never published as a
-verified fix, and only a verified disposition clears the change request a later approval clears.
+verified fix, and only a verified disposition clears the change request a later approval clears. An
+`inconclusive` verdict decides nothing and states no reading of the outstanding findings — it
+publishes neither a review nor a check.
 The verdict classifies the reviewer's own findings against the earlier rounds (`new`, `unresolved`,
 `regression`, the continuations naming the earlier identity) and groups the other confirmed
 occurrences of one defect under the finding that names the cause. The review prompt states what a

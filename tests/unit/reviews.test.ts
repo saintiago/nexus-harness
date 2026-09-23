@@ -310,6 +310,23 @@ describe('the dispositions and the verification of a verdict', () => {
         'verdict.json',
       ),
     ).toThrow(/no change request was outstanding/);
+    // An inconclusive verdict decides nothing, so it need not state a reading
+    // of the outstanding findings; it publishes neither a review nor a check.
+    expect(
+      parseVerdict(
+        JSON.stringify({
+          verdict: 'inconclusive',
+          summary: 'the reviewed view could not be read',
+          findings: [],
+        }),
+        'verdict.json',
+        ['R2-F1'],
+      ),
+    ).toEqual({
+      decision: 'inconclusive',
+      summary: 'the reviewed view could not be read',
+      findings: [],
+    });
   });
 
   it('refuses a continuation or a verification the history cannot resolve', () => {
@@ -535,7 +552,7 @@ describe('the reviewer prompt', () => {
     expect(prompt).toContain('## The outstanding findings and their answers');
     expect(prompt).toContain('Outstanding identities you must verify: R2-F1.');
     expect(prompt).toContain('"verifications"');
-    expect(prompt).toContain('a claim is never a verification');
+    expect(prompt).toMatch(/[Aa] claim is never a verification/);
     expect(prompt).toContain('"kind"');
     expect(prompt).toContain('"related"');
     expect(prompt).toContain('still review the whole change against the requested');

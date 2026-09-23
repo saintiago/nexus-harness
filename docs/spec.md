@@ -125,9 +125,11 @@ A claimed fix is never a verified fix. Only the reviewer's own verification, mad
 revision at the place the defect lived, says a disposition is resolved, and it is recorded with the
 verdict that made it. A verdict therefore states one verification per outstanding finding identity
 — `verified`, `unverified` or `regressed`, with the evidence the reviewer itself read — and a
-verdict that verifies none of them, verifies something else, or approves while leaving a
+decision that verifies none of them, verifies something else, or approves while leaving a
 disposition unverified is refused as inconclusive and publishes nothing, exactly like a missing or
-unusable verdict. The reviewer's own findings are classified against the earlier rounds:
+unusable verdict. An `inconclusive` verdict itself is the one result that decides nothing and
+states no reading: it clears no change request, and it publishes no review or check either. The
+reviewer's own findings are classified against the earlier rounds:
 `unresolved` for a defect an earlier round raised and the revision still shows, `regression` for
 one this revision reintroduced, and `new` for an independent defect; the continuations name the
 earlier identity in `continues` and group the other places the same defect reaches under `related`.

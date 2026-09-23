@@ -746,7 +746,9 @@ The queue is the configured project, issue type, and label in the `source`'s **r
    or `regressed`, with the evidence the reviewer itself read — and a verdict that verifies none
    of them, names something else, or approves while leaving a disposition unverified is refused
    as inconclusive: a developer's claim is never published as a verified fix, and an approval
-   clears a change request only when the reviewer verified its disposition itself. The
+   clears a change request only when the reviewer verified its disposition itself. An
+   `inconclusive` verdict is the one result that decides nothing and states no reading of the
+   outstanding findings. The
    reviewer must select `inconclusive` when material code/test context or tools are unavailable,
    explaining what the coordinator needs to provide in its summary. A turn that fails, is
    stopped, or writes no usable verdict is also **inconclusive**: nothing is published for it, and
