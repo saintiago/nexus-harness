@@ -67,11 +67,16 @@ below is kept for the behavior named beside the active suite that now carries it
   claim, pointer and publication contracts (tests/boundary/jira-connector.test.ts).
 - source.test.ts — the intake coordinator's own retained state: the receipt reserved before
   anything remote or paid, the retention of an uncertain claim, the release of a claim that sent
-  no mutation, the local result a failed publication keeps, and the per-project lock that is
-  never broken or adopted; and the watch cadence over that state — the poll interval, the
-  server-directed retry delay, the backoff a read that reserved nothing gets, and the fatal
-  failure that stops the loop instead (tests/boundary/source-coordinator.test.ts) — with the
-  four-field task and claim contracts themselves in tests/boundary/jira-connector.test.ts.
+  no mutation, the local result a failed publication keeps, the run whose own stop could not be
+  confirmed publishing nothing and keeping its receipt and lock while a confirmed stop still gets
+  its one bounded feedback, the published checks line of a stopped final turn naming the last
+  round that really ran rather than the baseline, the delivery decisions — a passed attempt
+  delivered before its result is published, failed and cancelled attempts never delivered, and a
+  delivery failure published beside the passed outcome before intake stops — and the per-project
+  lock that is never broken or adopted; and the watch cadence over that state — the poll
+  interval, the server-directed retry delay, the backoff a read that reserved nothing gets, and
+  the fatal failure that stops the loop instead (tests/boundary/source-coordinator.test.ts) —
+  with the four-field task and claim contracts themselves in tests/boundary/jira-connector.test.ts.
 - activity.test.ts — the activity pane's presentation: the lines one invocation draws, the
   message and latest-work bound, the boundary that opens a pane, and the control characters and
   escape sequences a runtime's text may never carry into the terminal
