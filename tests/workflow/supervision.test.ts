@@ -584,6 +584,97 @@ describe('a supervised queue', () => {
     expect(stored?.resumedAt).not.toBeNull();
   }, 30_000);
 
+  it('leaves the same work to do when the blocker’s ending really was observed', async () => {
+    const { workDir, repoPath, configPath } = await workspace();
+    const root = supervisorRoot(workDir, 'namespace');
+    // The same crash during the blocker, one step later: the invocation that
+    // watched the blocker's worker stop opened its incident and recorded that
+    // stop, and died before either the resumption or the parent's step ran.
+    const parent = await seedIncident(root);
+    const seeded = await readIncident(incidentFilePath(root, parent.id));
+    if (seeded === null) {
+      throw new Error('the seeded incident is gone');
+    }
+    await writeIncident(incidentFilePath(root, parent.id), {
+      ...seeded,
+      scope: 'HARN-51',
+      ticket: { key: 'HARN-51', url: null },
+      conclusion: {
+        outcome: 'blocked',
+        detail: 'HARN-77 has to land first',
+        at: '2026-09-23T00:03:00.000Z',
+      },
+      sequence: {
+        intent: 'ticket',
+        scope: 'HARN-51',
+        blocker: { key: 'HARN-77', reason: 'it repairs the shared module' },
+        blockerStartedAt: '2026-09-23T00:04:00.000Z',
+        blockerSettledAt: null,
+      },
+    });
+    const { openIncident: opened } = await import('../../src/supervisor/incident.js');
+    const blocker = opened(
+      'namespace',
+      'ticket',
+      'HARN-77',
+      2,
+      () => new Date('2026-09-23T00:05:00Z'),
+    );
+    const stopped: IncidentRecord = {
+      ...blocker,
+      updatedAt: '2026-09-23T00:06:00.000Z',
+      origin: { incident: parent.id, progress: false },
+      stops: [
+        {
+          at: '2026-09-23T00:06:00.000Z',
+          intent: 'ticket',
+          scope: 'HARN-77',
+          exitCode: 1,
+          signal: null,
+          ending: 'exited',
+          launch: null,
+          signature: 'the-blockers-stop',
+        },
+      ],
+      ticket: { key: 'HARN-77', url: null },
+    };
+    await writeIncident(incidentFilePath(root, stopped.id), stopped);
+    await writeCurrentIncident(root, {
+      version: 1,
+      id: stopped.id,
+      workerPid: null,
+      launch: null,
+      ending: null,
+    });
+
+    const requests: (string | null)[] = [];
+    const recovery = scriptedRecovery([{ status: 'repaired', summary: 's', cause: 'c' }]);
+    const summary = await runSupervision({
+      workDir,
+      repoPath,
+      configPath,
+      scope: 'HARN-51',
+      isAlive: () => false,
+      now: () => new Date('2026-09-23T00:30:00.000Z'),
+      worker: async (request) => {
+        requests.push(request.scope);
+        return ended(0);
+      },
+      recoveryTurn: recovery,
+    });
+
+    // The blocker's own incident resumes it, and the parent's step carries it
+    // out again and reads its ticket back before the interrupted work runs:
+    // the same shape the unobserved ending takes, whatever this invocation knew
+    // about how the blocker ended.
+    expect(recovery.calls).toBe(1);
+    expect(requests).toEqual(['HARN-77', 'HARN-77', 'HARN-51']);
+    expect(summary.outcome).toBe('settled');
+    const stored = await readIncident(incidentFilePath(root, parent.id));
+    expect(stored?.sequence?.blockerSettledAt).not.toBeNull();
+    expect(stored?.resumedAt).not.toBeNull();
+  }, 30_000);
+
   it('bounds the attempts one incident may spend', async () => {
     const { workDir, repoPath, configPath } = await workspace();
     const recovery = scriptedRecovery([null]);
