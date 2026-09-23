@@ -72,6 +72,15 @@ export interface HistoryEntry {
   readonly commit: string | null;
   /** A native review's state (`APPROVED`, `CHANGES_REQUESTED`, …), when it has one. */
   readonly state: string | null;
+  /**
+   * The native review one inline review comment was published with, when the
+   * comment is part of that review rather than a reply to another comment. A
+   * native review the harness kept no complete report for is reconstructed as a
+   * round whose findings are the review's own inline comments, named by their
+   * position; keeping the parent here is what lets a snapshot reproduce those
+   * identities after the round that raised them was settled.
+   */
+  readonly reviewId?: number | null;
   /** A browser link to the source entry, when the source reports one. */
   readonly url: string | null;
   /** The source's own identifier: a Jira comment id, a GitHub review id, a run id. */

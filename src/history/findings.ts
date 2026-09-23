@@ -169,7 +169,10 @@ export function unresolvedRounds(brief: HistoryBrief): readonly HistoryReportSum
  * already-verified finding resolves against this retained set while the
  * verification requirement stays with the outstanding one (docs/WORKFLOW.md
  * §9). A round reconstructed from a native review has no retained report of its
- * own, so the outstanding identities are part of this set as well.
+ * own, so the outstanding identities are part of this set as well — and so are
+ * the identities a native review an approval has already settled states in its
+ * own entry and inline comments: a defect that returns keeps the name it was
+ * raised with, whether or not a report was ever kept for it.
  */
 export function retainedFindingIds(snapshot: HistorySnapshot): readonly string[] {
   const ids: string[] = [];
@@ -180,9 +183,15 @@ export function retainedFindingIds(snapshot: HistorySnapshot): readonly string[]
       ids.push(id);
     }
   };
+  const coveredReviews = new Set<string>();
   for (const report of snapshot.reports) {
     if (report.kind !== 'reviewer-report') {
       continue;
+    }
+    // A retained report states its own findings' identities, so the native
+    // review it was published as is never reconstructed from its entries.
+    if (report.nativeReviewId !== null) {
+      coveredReviews.add(String(report.nativeReviewId));
     }
     for (const finding of report.findings) {
       add(finding.id);
@@ -193,6 +202,23 @@ export function retainedFindingIds(snapshot: HistorySnapshot): readonly string[]
   for (const round of unresolvedRounds(snapshot.brief)) {
     for (const finding of round.findings) {
       add(finding.id);
+    }
+  }
+  // A native review this machine kept no report for is reconstructed from its
+  // own entry and its inline comments, and a later approval can settle it: from
+  // then on no outstanding round states those identities any more. Reproducing
+  // them from the entries the snapshot keeps is what lets a later revision that
+  // brings one of those defects back name the identity it was raised with
+  // instead of raising an unconnected new finding (docs/WORKFLOW.md §9).
+  for (const review of snapshot.entries) {
+    if (review.kind !== 'pr-review' || coveredReviews.has(review.sourceId)) {
+      continue;
+    }
+    const inline = snapshot.entries.filter(
+      (entry) => entry.kind === 'pr-review-comment' && entry.reviewId === Number(review.sourceId),
+    );
+    for (const [index] of inline.entries()) {
+      add(findingIdOf(null, index, review.sourceId));
     }
   }
   return ids;
