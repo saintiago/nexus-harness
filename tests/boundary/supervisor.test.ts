@@ -971,6 +971,46 @@ describe('the recovery turn’s own launch', () => {
     expect(result.logPath).toBe(path.join(dir, 'recovery.log'));
     expect(await readFile(result.logPath ?? '', 'utf8')).toContain('turn.completed');
   }, 60_000);
+
+  it('never hands the prompt to a runtime whose launch could not be recorded', async () => {
+    const directory = await tempDir();
+    const dir = path.join(directory, 'incidents', 'incident-1', 'attempt-1');
+    const marker = path.join(directory, 'prompted.txt');
+    // The stand-in writes a marker only once it has been handed its prompt: a
+    // runtime whose launch could not be recorded must never get that far.
+    const standIn = await installStandIn(
+      'codex',
+      [
+        "import { writeFileSync } from 'node:fs';",
+        "let prompt = '';",
+        "process.stdin.setEncoding('utf8');",
+        "process.stdin.on('data', (chunk) => { prompt += chunk; });",
+        "process.stdin.on('end', () => {",
+        `  writeFileSync(${JSON.stringify(marker)}, 'the prompt arrived');`,
+        "  process.stdout.write(JSON.stringify({ type: 'turn.completed' }) + '\\n');",
+        '  process.exit(0);',
+        '});',
+      ].join('\n'),
+    );
+    const turn = createRecoveryTurn({
+      selection: { runtime: 'codex', command: ['codex'] },
+      environment: process.env,
+    });
+    const result = await withPathPrefix(standIn.bin, () =>
+      turn({
+        brief: briefFor(dir),
+        dir,
+        stop: new AbortController().signal,
+        onStarted: async () => {
+          throw new Error('the attempt record could not be written');
+        },
+      }),
+    );
+
+    expect(result.judgment).toBeNull();
+    expect(result.problem).toContain('could not be registered');
+    expect(await readFile(marker, 'utf8').catch(() => null)).toBeNull();
+  }, 60_000);
 });
 
 describe('the supervised command around a checkout it cannot read', () => {

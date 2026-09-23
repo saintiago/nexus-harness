@@ -424,6 +424,28 @@ export async function runCodexPrompt(
     });
   });
 
+  const { report: parsed } = outcome;
+
+  // A launch that never completed is that launch's failure, whether or not it
+  // also had to be stopped on its way out: nothing of the turn was handed over,
+  // and the stop's own record travels with it.
+  if (outcome.launchError !== null) {
+    log.write(`# the runtime could not be started: ${outcome.launchError}\n`);
+    throw new AgentError(`the coding runtime could not be started: ${outcome.launchError}`, {
+      // A launch that had to be stopped on its way out is reported with how
+      // that went: a runtime this turn could not account for is a process a
+      // supervisor must not start work beside.
+      ...(outcome.termination === null || outcome.termination === 'confirmed'
+        ? {}
+        : {
+            shutdown: {
+              termination: outcome.termination,
+              problem: outcome.terminationProblem,
+            },
+          }),
+    });
+  }
+
   if (outcome.stopped) {
     // The run was stopped, so the turn was too. What the runtime managed to
     // report before that is kept as the turn's summary, and the stop's own
@@ -441,25 +463,6 @@ export async function runCodexPrompt(
         problem: outcome.terminationProblem,
       },
     };
-  }
-
-  const { report: parsed } = outcome;
-
-  if (outcome.launchError !== null) {
-    log.write(`# the runtime could not be started: ${outcome.launchError}\n`);
-    throw new AgentError(`the coding runtime could not be started: ${outcome.launchError}`, {
-      // A launch that had to be stopped on its way out is reported with how
-      // that went: a runtime this turn could not account for is a process a
-      // supervisor must not start work beside.
-      ...(outcome.termination === null || outcome.termination === 'confirmed'
-        ? {}
-        : {
-            shutdown: {
-              termination: outcome.termination,
-              problem: outcome.terminationProblem,
-            },
-          }),
-    });
   }
 
   if (parsed.failure !== null) {
