@@ -99,8 +99,6 @@ export interface SuperviseRequest {
   /** The recovery turn's own boundaries, supplied by the command that composes it. */
   readonly recoveryTurn: RecoveryTurn;
   readonly reporter: IncidentReporter;
-  /** The directory the notification command's own output is kept under. */
-  readonly logsDir: string;
   /** Stood in for by a test; the real worker starts the Nexus CLI. */
   readonly worker?: ((request: WorkerRequest) => Promise<WorkerOutcome>) | undefined;
   readonly isAlive?: LivenessProbe | undefined;

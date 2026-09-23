@@ -177,7 +177,6 @@ async function runSupervision(overrides: {
           problem: null,
         };
       }),
-    logsDir: path.join(overrides.workDir, '.supervisor'),
     worker: overrides.worker,
     ...(overrides.isAlive === undefined ? {} : { isAlive: overrides.isAlive }),
   });

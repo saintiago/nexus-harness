@@ -310,7 +310,6 @@ async function superviseCommand(
       ...(jiraIdentity === undefined ? {} : { jiraIdentity }),
       recoveryTurn: parts0.recoveryTurn,
       reporter: parts0.reporter,
-      logsDir: root,
       worker: parts0.worker,
       isAlive: parts0.isAlive,
     });
