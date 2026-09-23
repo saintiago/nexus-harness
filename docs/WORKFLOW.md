@@ -1517,12 +1517,13 @@ failure's identity, and the incident whose resumed work the stopped worker was c
 entry per recovery attempt with the agent's own `outcome.json` behind it, the attempt that is in
 flight while it is in flight, the conclusion (`repaired`, `blocked`, or a request for human help),
 the ticket the recovery identified, the work the conclusion still owes, the moment the queue
-really resumed, and the publication identities of its one report.
+really resumed, and the publication identities of its report — the one describing the conclusion it
+holds, with any publication an earlier conclusion had kept beside it.
 
 The report is written into the ticket's own thread by the same service account that wrote the
 ticket — so both the next developer turn and the next reviewer turn read it in the shared history
-of §9, as a complete incident record beside that account's own comments — and one summary is
-published through the configured topic. An unscoped `run`/`watch` stop has no ticket of its own, so
+of §9, as a complete incident record beside that account's own comments — and one summary of each
+conclusion it reports is published through the configured topic. An unscoped `run`/`watch` stop has no ticket of its own, so
 the recovery turn names the item it investigated in its judgment (`"ticket": { "key": … }`) and the
 report goes into that thread; a wrong ticket is worse than none, so a judgment that names one this
 harness cannot address produces no judgment at all.

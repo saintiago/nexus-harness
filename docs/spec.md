@@ -711,7 +711,8 @@ opens one incident for it.
 
 **One incident.** An incident records one stopped episode: the stop evidence, every recovery
 attempt it spent, its conclusion, the resumption it recorded, and the publication identities of
-its one report. The recovery agent runs with its own configured launch — initially the
+its report — the publication describing the conclusion it holds, and the ones an earlier conclusion
+had before it. The recovery agent runs with its own configured launch — initially the
 `nexus-recovery` profile with `gpt-6-astra` at high reasoning effort — and with unattended
 operational access: the output directory's runs, retained workspaces, receipts and processes, the
 ticket's thread through the service account credential, GitHub through the operator's own
