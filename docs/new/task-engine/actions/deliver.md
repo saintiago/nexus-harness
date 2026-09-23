@@ -2,7 +2,7 @@
 
 ## Responsibility
 
-Publish verified work to a pull request and publish its developer summary.
+Publish verified work to a pull request, request native auto-merge and publish its developer summary.
 
 ## Interface
 
@@ -40,13 +40,17 @@ Require successful verification for the current committed head. Publish the bran
 non-forced push and confirm the remote branch head. Find the task's existing pull request or its matching branch; decide whether to create
 or update it. A closed or unrelated pull request is not silently reused.
 
+Request native auto-merge immediately after first creating the pull request. Required review and
+checks remain repository merge gates; requesting auto-merge does not wait for Review or CompleteTask.
+
 Record the resulting pull-request identity and head. Set the ticket's PR field and configured review
 status. Publish a concise developer comment beginning with the profile, followed by what changed and
 why. Count completed developer repair turns when reporting repairs used, and include profile escalation
 when applicable. A selected but unexecuted repair is not a used repair. Keep operational paths and repeated links
 out of the comment. Jira publication applies only to Jira tasks.
 
-Inspect existing publication state on repetition and finish incomplete work. Use the recorded PR
+Inspect existing publication state on repetition and finish incomplete work, including requesting
+auto-merge if it is not enabled on the open pull request. Use the recorded PR
 identity and revision to distinguish an already-published result from another change. This decision
 belongs here rather than in a universal adapter ensure operation.
 

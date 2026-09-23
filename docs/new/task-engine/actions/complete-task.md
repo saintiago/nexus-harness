@@ -38,8 +38,7 @@ Only completed produces a usable completionArtifact. Provider access failures ar
 Require approval of the delivered head. Read current PR state and checks from their configured
 producers. If the head changed, do not transfer the old approval.
 
-Request native auto-merge for the approved head when not already enabled. Observe the actual merge
-and run results for the merge revision. Pending work remains pending within the configured completion
+Observe the actual merge and run results for the merge revision. Pending work remains pending within the configured completion
 wait; failed checks or expiry cannot produce completed.
 
 Write completion evidence after the merge and checks are confirmed. Transition the ticket to Done

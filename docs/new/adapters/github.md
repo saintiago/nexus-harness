@@ -27,7 +27,7 @@ that operation; it does not combine the decision into ensurePullRequest.
 | Publish review | PR, reviewed head, verdict and content → review identity | Review |
 | Read checks | Revision → check names, producer identities, statuses and conclusions | Review, CompleteTask |
 | Publish or update review check | Revision, configured check and result → check identity | Review |
-| Request auto-merge | PR and expected head → provider acceptance | [CompleteTask](../task-engine/actions/complete-task.md#interface) |
+| Request auto-merge | PR and expected head → provider acceptance | Deliver |
 | Read workflow runs and jobs | Merge revision and configured workflow identities → statuses, conclusions and revisions | CompleteTask |
 
 Use the configured credential identity for each operation, including the designated check publisher.
