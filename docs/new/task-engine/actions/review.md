@@ -37,7 +37,7 @@ type ReviewResponse = Pick<ReviewOutput, 'verdict' | 'summary' | 'findings' | 'p
 ```
 
 Request one JSON object conforming to ReviewResponse as the agent's final output. Include that shape,
-its finding definitions and verdict rules in the context. Parse and validate the response, then add
+its finding definitions, identity/disposition rules and verdict rules in the context. Parse and validate the response, then add
 the configured profile and observed reviewed head to create ReviewOutput. They are not agent claims.
 
 ### Outcomes

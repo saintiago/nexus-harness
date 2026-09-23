@@ -44,7 +44,7 @@ type DevelopmentResponse = Pick<DevelopmentOutput, 'status' | 'summary' | 'findi
 ```
 
 Request one JSON object conforming to DevelopmentResponse as the agent's final output. Include that
-shape and FindingResponse in context. Require exactly one response per supplied finding ID; use an
+shape, FindingResponse and its response/identity rules in context. Require exactly one response per supplied finding ID; use an
 empty array when none were supplied. Parse and validate it before recording the artifact.
 
 The action records the profile and observed repository revisions. The agent supplies the status, summary and
