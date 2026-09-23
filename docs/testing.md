@@ -122,7 +122,8 @@ unverified disposition forward into the next round — settling nothing from a r
 dismissed, matching a retained report to the native review its own record published, and keeping a
 settled native review's identity nameable, and reading a recovered report's round back from the
 review's own evidence — the snapshot it was prepared with or the verdict saved beside its digest —
-instead of the position among the review records that remain — are `tests/unit/history.test.ts`.
+instead of the position among the review records that remain, with the next review numbered past
+every round the history still holds — are `tests/unit/history.test.ts`.
 
 Cache deterministic unit results only when all their inputs are declared. Checks of real process
 or host behavior run fresh — the boundary and workflow layers run on every validation. Maintain

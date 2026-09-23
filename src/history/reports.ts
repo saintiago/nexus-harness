@@ -846,7 +846,7 @@ export async function nextReviewRound(parts: {
   const { workDir, root, ref } = parts;
   /** Every review attempt this machine still names, so one attempt counts once. */
   const attempts = new Set<string>();
-  /** The highest round a retained report states; `0` when none states one. */
+  /** The highest round a review of this ticket establishes; `0` when none states one. */
   let highest = 0;
   const dir = historyReportsDir(root);
   try {
@@ -856,11 +856,20 @@ export async function nextReviewRound(parts: {
       }
       attempts.add(name.slice('reviewer-'.length, -'.json'.length));
       const value = await readJson(path.join(dir, name));
-      const round =
+      const record =
         typeof value === 'object' && value !== null && !Array.isArray(value)
-          ? (value as Record<string, unknown>)['round']
-          : undefined;
-      if (typeof round === 'number' && Number.isSafeInteger(round) && round >= 1) {
+          ? (value as Record<string, unknown>)
+          : null;
+      const round = record === null ? undefined : record['round'];
+      // A round of another ticket this workspace served earlier is not this
+      // ticket's round to count.
+      if (
+        record !== null &&
+        sameTicket(record['ref'], ref) &&
+        typeof round === 'number' &&
+        Number.isSafeInteger(round) &&
+        round >= 1
+      ) {
         highest = Math.max(highest, round);
       }
     }
@@ -1454,10 +1463,6 @@ async function statedReviewRound(parts: {
   readonly reviewId: string;
   readonly history: string | null;
 }): Promise<{ readonly round: number; readonly from: string } | null> {
-  // A review id this harness did not write is not turned into a file name.
-  if (!/^[A-Za-z0-9_-]+$/.test(parts.reviewId)) {
-    return null;
-  }
   // The snapshot this review's own turn was prepared with states the round the
   // attempt was given, before anything was recorded from it.
   if (parts.history !== null) {
@@ -1470,6 +1475,10 @@ async function statedReviewRound(parts: {
     if (typeof round === 'number' && Number.isSafeInteger(round) && round >= 1) {
       return { round, from: `the history snapshot this review was prepared with ("${file}")` };
     }
+  }
+  // A review id this harness did not write is not turned into a file name.
+  if (!/^[A-Za-z0-9_-]+$/.test(parts.reviewId)) {
+    return null;
   }
   // The report verdict the harness saved beside the digest states each
   // finding's own identity (`recordedAs`), and the round is the one they were

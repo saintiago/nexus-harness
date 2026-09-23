@@ -50,9 +50,11 @@ so an earlier turn's complete answer never stands in for a later turn that gave 
 verification is read under the identity the history named, whether it was published or recovered
 from the reviewer's own retained file. A report recovered after its digest was lost keeps the
 identities it was recorded with: its round is read back from the review's own evidence — the
-snapshot its turn was prepared with, or the verdict saved beside its digest — and a round no
-evidence can establish without renaming another review's finding is named as a gap, with the
-recovered findings scoped by the review's own identity instead.
+snapshot its turn was prepared with, or the verdict saved beside its digest — and never counted off
+the attempts that remain, so a round no evidence establishes without renaming another review's
+finding is named as a gap, with the recovered findings scoped by the review's own identity instead.
+The next review's number is one more than the highest round the history establishes and never below
+the number of attempts it holds, so a new review never takes a round another review already states.
 
 ## Review
 

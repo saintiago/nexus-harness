@@ -535,9 +535,11 @@ snapshot recovers its outcome, reason and checks from the ledger and `result.jso
 or unusable final report is an explicit gap naming that path; the saved turn messages remain
 readable. Earlier snapshots and saved digests stay unchanged, and recovery assumes no delivery.
 A reviewer's retained `verdict.json` is read back instead of being reported missing, the round it
-was recorded with is read back from that review's own evidence, and a report whose round cannot be
-established without renaming another review's finding is named as a gap with its findings scoped by
-the review's own identity. A source the
+was recorded with is read back from that review's own evidence and never counted off the attempts
+that remain, and a report whose round cannot be established without renaming another review's
+finding is named as a gap with its findings scoped by the review's own identity. The next review is
+numbered past every round the history establishes, so it never takes one that is already held.
+A source the
 harness could not read, a pagination bound that was reached, and a report that is missing or cannot
 be read as the conversation it claims to be (an older workspace whose `result.json` or review record
 is unusable) are named as gaps in the snapshot and in the prompt, so a turn is told what is

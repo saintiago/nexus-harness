@@ -885,11 +885,15 @@ project cannot share one finding identity.
 A report recovered from the reviewer's own retained verdict after its digest was lost keeps the
 identities it was recorded with: the round is read back from the review's own durable evidence — the
 history snapshot its turn was prepared with, or the report verdict saved beside its digest — and
-only when none of it survived from the position among every review attempt this machine still holds,
-retained reports counted the way the next round's number counted them. The recovered report says
-where its round came from. A round that would name another review's findings the same way is a named
-gap, never a second identity: the recovered findings are named by the review's own identity instead,
-and the snapshot says the round could not be established.
+never counted off the review attempts that remain, because an attempt whose own evidence is gone is
+absent from any such count and the number it yields may be a round another review already states.
+The recovered report says where its round came from, or names the gap when nothing states it: a
+round no evidence establishes without naming another review's findings the same way is a named gap,
+never an invented identity — the recovered findings are named by the review's own identity instead,
+and the snapshot says the round could not be established. The next review's number is one more than
+the highest round this machine establishes — a retained report's own round, and the round an
+attempt's own evidence states when its report is gone — and never below the number of review
+attempts it holds, so a new review is never recorded under a round another review already states.
 
 The brief renders each outstanding finding whole, with that identity and how the round classified
 it, and under the finding the answer a developer turn gave it: the newest developer report recorded
