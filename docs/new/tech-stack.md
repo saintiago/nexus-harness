@@ -10,6 +10,11 @@ installation, builds, tests and Nexus execution. Native Windows execution is not
 Use Node.js, TypeScript ES modules and npm. Use XState for workflow execution and persisted snapshots.
 Use Zod for external input validation, Vitest for tests, ESLint for linting and Prettier for formatting.
 
+Use Dependency Cruiser in validation to enforce component import boundaries. Cross-component imports
+use public interfaces; actions may import other actions' artifact declarations, not their implementations.
+Keep ExecutionRunner independent of concrete actions and adapters, and adapters independent of
+orchestration implementations. Startup wiring assembles implementations. Contract tests verify behavior.
+
 Use Turborepo for local validation caching and tool-native caches where appropriate. Cache only
 deterministic validation results with their inputs declared. Live service operations and completion
 checks are never replaced by cached validation results.
