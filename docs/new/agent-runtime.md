@@ -64,7 +64,7 @@ invocation. Invocation failures and timeouts return a fault.
 
 ### Required interface
 
-Use the [coding runtime adapter](adapters.md#coding-runtime) for provider communication. Supply the resolved
+Use the [coding runtime adapter](adapters/coding-runtime.md#interface) for provider communication. Supply the resolved
 model, effort, tool settings, assembled prompt, configured time limit and working directory. The working
 directory is worktree/ within the supplied workspace root.
 

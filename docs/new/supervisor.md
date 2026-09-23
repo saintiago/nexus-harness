@@ -69,7 +69,7 @@ requests this format; this component parses it. A malformed report is a failed r
 | --- | --- | --- |
 | Work | [TaskEngine.run and subscribe](task-engine/architecture.md#provided-interface) | WorkflowResult and EngineEvent |
 | Recovery | [AgentRuntime.run](agent-runtime.md#provided-interface) | Recovery profile, WorkspaceRef, AdditionalContext and agent output |
-| Notification | [Notifications adapter](adapters.md#notifications) | Subject, report body and publication result |
+| Notification | [Notifications adapter](adapters/notifications.md#interface) | Subject, report body and publication result |
 
 The [worker startup contract](high-level-architecture.md#configuration-and-startup) accepts the
 project filepath, mode and target. Pass these on each launch. The worker binds its dependencies,

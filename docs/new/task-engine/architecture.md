@@ -87,10 +87,10 @@ storage, then calls run again.
 | Port | Provider contract | Use |
 | --- | --- | --- |
 | Agent execution | [AgentRuntime.run](../agent-runtime.md#provided-interface) | Profile ID, WorkspaceRef, AdditionalContext and AgentResult |
-| Task source | [Jira](../adapters.md#jira) | Read source documents and ordering; update task state, fields and reports |
-| Repository | [Git](../adapters.md#git) | Read repository state and perform Git operations selected by actions |
-| Delivery | [GitHub](../adapters.md#github) | Publish and observe pull requests, review, checks and integration |
-| Commands | [Processes](../adapters.md#processes) | Run configured setup/check commands and return exit codes and output |
+| Task source | [Jira](../adapters/jira.md#interface) | Read source documents and ordering; update task state, fields and reports |
+| Repository | [Git](../adapters/git.md#interface) | Read repository state and perform Git operations selected by actions |
+| Delivery | [GitHub](../adapters/github.md#interface) | Publish and observe pull requests, review, checks and integration |
+| Commands | [Processes](../adapters/processes.md#interface) | Run configured setup/check commands and return exit codes and output |
 
 Dependencies are supplied to actions at construction; ExecutionRunner receives none of these ports.
 Local task files are an owned input format. Actions normalize source documents, construct role inputs

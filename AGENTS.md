@@ -14,7 +14,13 @@ If code contradicts documentation, correct the code.
 - [Action design](docs/new/task-engine/actions/architecture.md): action structure, typed input/output artifacts and repeated-round handoffs.
 - [StartRound design](docs/new/task-engine/actions/start-round.md): round directories, current-round state and artifact-root selection.
 - [AgentRuntime design](docs/new/agent-runtime.md): profiles, supplied context and agent invocation.
-- [Adapters design](docs/new/adapters.md): thin external boundaries, consumer-driven contracts and provider translation.
+- [Adapters design](docs/new/adapters/architecture.md): shared external-boundary responsibilities and contract conventions.
+- [Jira adapter](docs/new/adapters/jira.md): issue data, comments, changes and ranking.
+- [GitHub adapter](docs/new/adapters/github.md): pull requests, reviews, checks and workflow observations.
+- [Git adapter](docs/new/adapters/git.md): repository data and explicit Git operations.
+- [Processes adapter](docs/new/adapters/processes.md): command execution, streamed output and exit results.
+- [Coding runtime adapter](docs/new/adapters/coding-runtime.md): coding-provider invocation and activity.
+- [Notifications adapter](docs/new/adapters/notifications.md): notification publication.
 - [Workspace design](docs/new/workspace.md): directory layout and concrete workspace references.
 - [Configuration design](docs/new/configuration.md): project/Nexus setting ownership, file locations and value constraints.
 - [Long-term vision](docs/LONG_TERM_VISION.md): future purpose and direction; not current behavior.
