@@ -77,7 +77,7 @@ describe('the command line’s own surface', () => {
       expect(invocation.err, argv.join(' ')).toEqual([]);
     }
     // The help names every command the entry point dispatches.
-    for (const command of ['check-config', 'run', 'source', 'review', 'queue']) {
+    for (const command of ['check-config', 'run', 'source', 'review', 'queue', 'supervise']) {
       expect(HELP).toContain(command);
     }
   }, 45_000);

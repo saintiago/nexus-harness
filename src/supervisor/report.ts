@@ -15,7 +15,7 @@
  * remain the only things that decide whether work is done
  * (docs/WORKFLOW.md §12).
  */
-import { readFile } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
 import { buildCommentDocument } from '../sources/jira/adf-text.js';
 import { readCommentThread } from '../sources/jira/comments.js';
 import type { HttpClient } from '../sources/jira/http.js';
@@ -362,6 +362,10 @@ async function sendSummary(
   if (notification === null) {
     return null;
   }
+  // The publication's own evidence lives beside the incident; the directory is
+  // created here so a report that runs before anything else wrote it still
+  // keeps the publisher's output.
+  await mkdir(parts.logsDir(incident), { recursive: true });
   const result = await runNotification({
     command: [
       ...notification.publisher,

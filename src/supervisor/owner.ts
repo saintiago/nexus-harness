@@ -115,7 +115,9 @@ export async function acquireSupervisorOwnership(request: {
   await mkdir(root, { recursive: true });
 
   const existing = await readOwner(file);
-  if (existing !== null && existing.pid !== process.pid && isAlive(existing.pid)) {
+  // A live owner is refused whether or not it is this process: a second
+  // invocation in one process is a second supervisor like any other.
+  if (existing !== null && isAlive(existing.pid)) {
     return {
       ok: false,
       problem:

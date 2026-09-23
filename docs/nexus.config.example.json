@@ -45,5 +45,25 @@
     "reviewerTokenEnv": "NEXUS_LENS_TOKEN",
     "pollIntervalSeconds": 30,
     "deadlineSeconds": 1800
+  },
+  "recovery": {
+    "agent": {
+      "runtime": "codex",
+      "command": [
+        "codex",
+        "--profile",
+        "nexus-recovery",
+        "--model",
+        "gpt-6-astra",
+        "-c",
+        "model_reasoning_effort=high"
+      ]
+    },
+    "maxAttempts": 2,
+    "notifications": {
+      "topicArn": "arn:aws:sns:eu-north-1:698643713254:nexus-recovery-notifications",
+      "email": "saint282@gmail.com",
+      "publisher": ["aws", "sns", "publish"]
+    }
   }
 }
