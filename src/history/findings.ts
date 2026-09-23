@@ -98,11 +98,11 @@ function scopeToken(scope: string): string {
  *
  * A finding that continues an earlier one is the exception, because the
  * identity a defect keeps is the identity it was first raised with: the
- * continuation keeps the identity it names in `continues` and records this
- * round's own occurrence — the round and position this review states it at —
- * beside it. A later reviewer therefore verifies the same identity it read in
- * the brief, and the occurrence only says where this review recorded the defect
- * again.
+ * continuation keeps the identity it names in `continues` and records what
+ * this round's own report stated it as — the round and position of its
+ * occurrence — beside it. A later reviewer therefore verifies the same identity
+ * it read in the brief, and `recordedAs` only says where this review raised the
+ * defect again.
  */
 export function identifyFindings(
   findings: readonly UnidentifiedFinding[],
@@ -110,16 +110,16 @@ export function identifyFindings(
   scope?: string,
 ): readonly HistoryFinding[] {
   return findings.map((finding, index) => {
-    const occurrence = findingIdOf(round, index, scope);
+    const recordedAs = findingIdOf(round, index, scope);
     const stated = finding.id === undefined ? '' : finding.id.trim();
     const continued =
       finding.kind === 'unresolved' || finding.kind === 'regression'
         ? (finding.continues ?? '').trim()
         : '';
     if (continued !== '') {
-      return { ...finding, id: continued.toUpperCase(), occurrence };
+      return { ...finding, id: continued.toUpperCase(), recordedAs };
     }
-    return { ...finding, id: stated === '' ? occurrence : stated };
+    return { ...finding, id: stated === '' ? recordedAs : stated };
   });
 }
 

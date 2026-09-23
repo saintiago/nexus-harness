@@ -663,11 +663,11 @@ function unresolvedRound(
 
 /**
  * The developer's answers to one outstanding round's findings, read from the
- * newest complete developer report recorded after that review. Identity ties an
- * answer to a finding: the report has to name the finding by the same identity
- * the brief renders, and an answer that leaves out a field, or a report that
- * answers nothing, is kept as the incomplete response it is — never rounded up
- * to complete remediation (docs/WORKFLOW.md §9).
+ * newest developer report recorded after that review, complete or not. Identity
+ * ties an answer to a finding: the report has to name the finding by the same
+ * identity the brief renders, and an answer that leaves out a field, or a
+ * report that answers nothing, is kept as the incomplete response it is — never
+ * rounded up to complete remediation (docs/WORKFLOW.md §9).
  *
  * The newest attempt is the current claim, whatever it holds: an earlier
  * attempt's answer stays in the snapshot as its own entry, but the work as it

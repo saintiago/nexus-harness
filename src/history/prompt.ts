@@ -171,9 +171,9 @@ function describeFinding(
   if (classification !== null) {
     lines.push(classification);
   }
-  if (finding.occurrence !== undefined) {
+  if (finding.recordedAs !== undefined) {
     lines.push(
-      `  This review recorded the occurrence at ${finding.occurrence}; the defect keeps the ` +
+      `  This review recorded it as ${finding.recordedAs}; the defect keeps the ` +
         `identity ${finding.id}.`,
     );
   }

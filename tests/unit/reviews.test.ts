@@ -309,7 +309,7 @@ describe('the dispositions and the verification of a verdict', () => {
         }),
         'verdict.json',
       ),
-    ).toThrow(/no change request was outstanding/);
+    ).toThrow(/the history named no outstanding finding identity/);
     // An inconclusive verdict decides nothing, so it need not state a reading
     // of the outstanding findings; it publishes neither a review nor a check.
     expect(
@@ -610,6 +610,37 @@ describe('the reviewer prompt', () => {
     // The answer itself is rendered with the finding, as a claim.
     expect(prompt).toContain('Developer response (a claim, not a verification');
     expect(prompt).toContain('the helper returns what it was given');
+  });
+
+  it('keeps a change request that states no finding visible, without inventing an identity', () => {
+    const snapshot = historyWithOutstandingFinding();
+    const review = snapshot.brief.unresolvedReviews?.[0];
+    if (review === undefined) {
+      throw new Error('the fixture carries one outstanding review');
+    }
+    const bare: HistorySnapshot = {
+      ...snapshot,
+      brief: {
+        ...snapshot.brief,
+        unresolved: { ...review, findings: [], responses: [] },
+        unresolvedReviews: [{ ...review, findings: [], responses: [] }],
+      },
+    };
+    const prompt = reviewPrompt(
+      evidence,
+      { path: '/evidence/repo', head: HEAD, base: PULL_REQUEST.baseSha },
+      '/evidence/review-3',
+      bare,
+    );
+
+    // The request is still shown, and the contract says what it means: no
+    // identity to verify, no verification to write, and nothing but a matching
+    // approval clears it.
+    expect(prompt).toContain('## The outstanding findings and their answers');
+    expect(prompt).toContain('states no finding identity of its own');
+    expect(prompt).toContain('an approval clears it only at the head it was made on');
+    expect(prompt).not.toContain('Outstanding identities you must verify:');
+    expect(prompt).toContain('The history names no outstanding finding identity');
   });
 
   it('shows a verdict example that a reviewer can really write, before and after a change request', () => {

@@ -324,9 +324,9 @@ function reviewerReportText(request: ReviewerReportFields): string {
       '',
       `- Identity: ${finding.id} — name it by this in a response or a verification.`,
     ];
-    if (finding.occurrence !== undefined) {
+    if (finding.recordedAs !== undefined) {
       entries.push(
-        `- Occurrence: ${finding.occurrence} — where this review recorded the defect again; ` +
+        `- Recorded as: ${finding.recordedAs} — where this review raised the defect again; ` +
           `the identity above (${finding.id}) is the one it keeps.`,
       );
     }

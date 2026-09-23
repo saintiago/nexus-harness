@@ -129,7 +129,7 @@ describe('the identity one finding keeps', () => {
     ).toEqual([
       {
         id: 'R1-F1',
-        occurrence: 'R2-F1',
+        recordedAs: 'R2-F1',
         path: 'src/greeting.ts',
         line: 2,
         body: 'the argument is still ignored',
@@ -153,7 +153,7 @@ describe('the identity one finding keeps', () => {
           { path: 'b', line: 2, body: 'a defect found for the first time' },
         ],
         2,
-      ).map((finding) => [finding.id, finding.occurrence ?? null]),
+      ).map((finding) => [finding.id, finding.recordedAs ?? null]),
     ).toEqual([
       ['R1-F1', 'R2-F1'],
       ['R2-F2', null],

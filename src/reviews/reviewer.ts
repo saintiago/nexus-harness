@@ -276,9 +276,9 @@ export function reviewPrompt(
     ].join('\n'),
   );
 
-  const outstanding =
-    history === undefined ? [] : outstandingFindingIds(unresolvedRounds(history.brief));
-  if (outstanding.length > 0) {
+  const outstandingRounds = history === undefined ? [] : unresolvedRounds(history.brief);
+  const outstanding = outstandingFindingIds(outstandingRounds);
+  if (outstandingRounds.length > 0) {
     sections.push(
       [
         '## The outstanding findings and their answers',
@@ -301,7 +301,14 @@ export function reviewPrompt(
         '  occurrences under it in `related`; do not raise one finding per example, and do not leave',
         '  a related path unread once the evidence points at one shared cause.',
         '',
-        `Outstanding identities you must verify: ${outstanding.join(', ')}.`,
+        ...(outstanding.length === 0
+          ? [
+              'The outstanding review above states no finding identity of its own — no inline finding',
+              'was recorded with it — so there is no identity here to verify. Its own text stands as',
+              'the request: an approval clears it only at the head it was made on, and anything else',
+              'leaves it outstanding.',
+            ]
+          : [`Outstanding identities you must verify: ${outstanding.join(', ')}.`]),
         '',
         'Whatever the findings above say, still review the whole change against the requested',
         'outcome: a repaired defect says nothing about the rest of the diff.',
@@ -342,8 +349,8 @@ export function reviewPrompt(
       '  same defect as several findings.',
       ...(outstanding.length === 0
         ? [
-            '- No change request is outstanding, so this verdict carries no "verifications"; a',
-            '  verification nothing raised is refused.',
+            '- The history names no outstanding finding identity, so this verdict carries no',
+            '  "verifications"; a verification nothing raised is refused.',
           ]
         : [
             '- "verifications" states, for every identity the history above lists as outstanding,',
@@ -526,8 +533,8 @@ function verdictVerification(
       'inconclusive',
       outstanding.length === 0
         ? `verification ${String(index + 1)} of the reviewer's ${REVIEW_VERDICT_FILE} verifies ` +
-            `"${stated}" although no change request was outstanding, so there is nothing that ` +
-            'verification can stand for.'
+            `"${stated}" although the history named no outstanding finding identity, so there is ` +
+            'nothing that verification can stand for.'
         : `verification ${String(index + 1)} of the reviewer's ${REVIEW_VERDICT_FILE} names ` +
             `"${stated}", which is not one of the outstanding findings the history named ` +
             `(${outstanding.join(', ')}).`,

@@ -955,14 +955,14 @@ describe('one ticket history', () => {
 
     const snapshot = await prepare(ticketHistory, 'reviewer', 3);
     const [round] = snapshot.brief.unresolvedReviews ?? [];
-    expect(round?.findings.map((finding) => [finding.id, finding.occurrence])).toEqual([
+    expect(round?.findings.map((finding) => [finding.id, finding.recordedAs])).toEqual([
       ['R1-F1', 'R2-F1'],
     ]);
     expect(round?.findings.map((finding) => finding.continues)).toEqual(['R1-F1']);
     expect(outstandingFindingIds(unresolvedRounds(snapshot.brief))).toEqual(['R1-F1']);
     const prompt = renderHistorySection(snapshot, 'reviewer');
     expect(prompt).toContain(
-      'This review recorded the occurrence at R2-F1; the defect keeps the identity R1-F1.',
+      'This review recorded it as R2-F1; the defect keeps the identity R1-F1.',
     );
     // The complete report on disk names the same identity, so a restart reads
     // the same defect back rather than a renamed one.
@@ -971,7 +971,7 @@ describe('one ticket history', () => {
       'utf8',
     );
     expect(report).toContain('### Finding R1-F1: src/greeting.ts:2');
-    expect(report).toContain('- Occurrence: R2-F1');
+    expect(report).toContain('- Recorded as: R2-F1');
     const restarted = await prepare(history(workDir), 'reviewer', 4);
     expect(restarted.brief.unresolvedReviews?.[0]?.findings.map((finding) => finding.id)).toEqual([
       'R1-F1',
