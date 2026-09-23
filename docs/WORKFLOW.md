@@ -881,6 +881,16 @@ the identity it was raised with, so a later revision that brings it back continu
 instead of raising an unconnected new one. Two reviews this harness kept no round number for are
 named apart by a bounded digest of the identity that scopes them, so two baseline diagnoses of one
 project cannot share one finding identity.
+
+A report recovered from the reviewer's own retained verdict after its digest was lost keeps the
+identities it was recorded with: the round is read back from the review's own durable evidence — the
+history snapshot its turn was prepared with, or the report verdict saved beside its digest — and
+only when none of it survived from the position among every review attempt this machine still holds,
+retained reports counted the way the next round's number counted them. The recovered report says
+where its round came from. A round that would name another review's findings the same way is a named
+gap, never a second identity: the recovered findings are named by the review's own identity instead,
+and the snapshot says the round could not be established.
+
 The brief renders each outstanding finding whole, with that identity and how the round classified
 it, and under the finding the answer a developer turn gave it: the newest developer report recorded
 after the review is the claim the reviewer is shown, named with the run and the round it came from,

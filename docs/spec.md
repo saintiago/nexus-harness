@@ -197,6 +197,14 @@ are rebuilt from the run's own `result.json` and from the reviewer's retained ve
 review record; a record that cannot be read back as the conversation it claims to be — invalid
 JSON, no list of turns — is marked incomplete, naming what is missing, rather than presented as
 complete, and a report that is really gone is marked missing, with the workspace staying usable.
+A reviewer report recovered from the reviewer's own retained verdict keeps the finding identities it
+was recorded with: its round is read back from the review's own durable evidence — the history
+snapshot the attempt was prepared with, or the report verdict saved beside its digest — and only
+when none of it survived from the position among the review attempts this machine still holds,
+retained reports included, counted the way that attempt's own round number was counted. When no
+evidence can establish a round without naming another review's finding the same way, the recovered
+findings are named by the review's own identity and the gap is named: a conflicting identity is
+never invented, and an outstanding finding is never silently overwritten.
 Developer turn summaries are saved after each turn, including before the next repair; the final
 run report enriches the same entry. If the coordinator stops before that enrichment, a subsequent
 snapshot reconciles an interim digest with the finished workspace attempt and its `result.json`,

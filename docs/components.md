@@ -48,7 +48,11 @@ remain — and those identities survive the review that settled them. The claim 
 are read at the level each was made: a developer report is answered by its newest coding turn alone,
 so an earlier turn's complete answer never stands in for a later turn that gave none, and a
 verification is read under the identity the history named, whether it was published or recovered
-from the reviewer's own retained file.
+from the reviewer's own retained file. A report recovered after its digest was lost keeps the
+identities it was recorded with: its round is read back from the review's own evidence — the
+snapshot its turn was prepared with, or the verdict saved beside its digest — and a round no
+evidence can establish without renaming another review's finding is named as a gap, with the
+recovered findings scoped by the review's own identity instead.
 
 ## Review
 

@@ -120,7 +120,9 @@ the classifications, the verifications and the refusals a verdict is held to are
 refreshes and restarts, with the prompt that renders them and the reconciliation that carries an
 unverified disposition forward into the next round — settling nothing from a review GitHub
 dismissed, matching a retained report to the native review its own record published, and keeping a
-settled native review's identity nameable — are `tests/unit/history.test.ts`.
+settled native review's identity nameable, and reading a recovered report's round back from the
+review's own evidence — the snapshot it was prepared with or the verdict saved beside its digest —
+instead of the position among the review records that remain — are `tests/unit/history.test.ts`.
 
 Cache deterministic unit results only when all their inputs are declared. Checks of real process
 or host behavior run fresh — the boundary and workflow layers run on every validation. Maintain
