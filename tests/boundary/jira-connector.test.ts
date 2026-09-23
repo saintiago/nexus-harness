@@ -449,6 +449,60 @@ describe('recording the workspace and publishing the result', () => {
   }, 45_000);
 });
 
+/** One ADF document holding one paragraph, as a comment body is written. */
+function document(text: string): Record<string, unknown> {
+  return {
+    type: 'doc',
+    version: 1,
+    content: [{ type: 'paragraph', content: [{ type: 'text', text }] }],
+  };
+}
+
+describe('the ticket’s own conversation', () => {
+  it('reads only the comments added since the previous attempt', async () => {
+    const { source, service } = await connect(() =>
+      json({
+        comments: [
+          {
+            id: '1',
+            author: { displayName: 'Ada' },
+            created: '2026-09-15T10:00:00.000Z',
+            body: document('The earlier note the harness already read.'),
+          },
+          {
+            id: '2',
+            author: { displayName: 'Ada' },
+            created: '2026-09-16T10:00:00.000Z',
+            body: document('What about the second case?'),
+          },
+          {
+            id: '3',
+            created: '2026-09-17T10:00:00.000Z',
+            body: document('And one more thing.'),
+          },
+        ],
+      }),
+    );
+
+    const comments = await source.commentsSince(
+      PREPARED,
+      '2026-09-15T12:00:00.000Z',
+      new AbortController().signal,
+    );
+
+    // What was said after the previous attempt is the attempt's context: the
+    // comment at or before the moment it already saw is not repeated.
+    expect(comments.map((comment) => comment.text)).toEqual([
+      'What about the second case?',
+      'And one more thing.',
+    ]);
+    expect(comments[0]?.author).toBe('Ada');
+    expect(comments[1]?.author).toBe('unknown');
+    expect(comments[0]?.createdAt).toBe('2026-09-16T10:00:00.000Z');
+    expect(service.requests[0]?.url).toContain('/rest/api/3/issue/10011/comment');
+  }, 45_000);
+});
+
 /** One issue a recovery case lists, with the status and pointers it is given. */
 function queueIssue(
   id: string,

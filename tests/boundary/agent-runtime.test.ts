@@ -375,9 +375,7 @@ describe('a read-only diagnostic launch', () => {
     // no write outside the turn's own working root to undo.
     expect(existsSync(marker)).toBe(false);
     // The refusal is the turn's own evidence, where the turn's output goes.
-    expect(await readText(diagnostic.agentLog.path)).toContain(
-      'the diagnostic launch was refused',
-    );
+    expect(await readText(diagnostic.agentLog.path)).toContain('the diagnostic launch was refused');
 
     // The same prefix is still configuration for a coding turn: that policy is
     // unsandboxed by design, and only the diagnostic refuses what it cannot
