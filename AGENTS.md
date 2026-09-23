@@ -54,6 +54,9 @@ A multi-component flow does not create a special shared contract.
 - [CompleteTask design](docs/new/task-engine/actions/complete-task.md): merge/check evidence and task completion.
 - [AgentRuntime design](docs/new/agent-runtime/architecture.md): profiles, supplied context and agent invocation.
 - [DevelopmentRole design](docs/new/agent-runtime/development-role.md): constant developer instructions and task-specific input boundary.
+- [ReviewerRole design](docs/new/agent-runtime/reviewer-role.md): evidence-based review instructions and prior-finding evaluation.
+- [Shared quality standard](docs/new/agent-runtime/quality-standard.md): common developer/reviewer criteria and related-defect investigation.
+- [Findings contract](docs/new/task-engine/actions/findings.md): finding, response and disposition shapes shared across rounds.
 - [Adapters design](docs/new/adapters/architecture.md): shared external-boundary responsibilities and contract conventions.
 - [Jira adapter](docs/new/adapters/jira.md): issue data, comments, changes and ranking.
 - [GitHub adapter](docs/new/adapters/github.md): pull requests, reviews, checks and workflow observations.

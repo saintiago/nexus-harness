@@ -19,7 +19,8 @@ fallbacks for missing current-round inputs.
 Configuration supplies the initial developer profile. A selected repair supplies the next profile.
 Each uses [DevelopmentRole](../../agent-runtime/development-role.md#interface). Supply task-specific
 context and the response format; the profile supplies the constant role instructions.
-Request status, summary and findingResponses from the output shape below. Repository revisions and
+Use the [findings contract](findings.md) for complete finding inputs and response values.
+Request DevelopmentResponse below. Repository revisions and
 profile identity are observed by this action rather than accepted from the agent.
 
 ### Output
@@ -36,11 +37,17 @@ type DevelopmentOutput = {
   baseRevision: string;
   headRevision: string;
   summary: string;
-  findingResponses: { findingId: string; response: string }[];
+  findingResponses: FindingResponse[];
 };
+
+type DevelopmentResponse = Pick<DevelopmentOutput, 'status' | 'summary' | 'findingResponses'>;
 ```
 
-The action records the profile and observed repository revisions. The agent supplies the summary and
+Request one JSON object conforming to DevelopmentResponse as the agent's final output. Include that
+shape and FindingResponse in context. Require exactly one response per supplied finding ID; use an
+empty array when none were supplied. Parse and validate it before recording the artifact.
+
+The action records the profile and observed repository revisions. The agent supplies the status, summary and
 responses. Summary explains what changed and why, or why implementation could not be completed.
 It is not a declaration that checks passed.
 

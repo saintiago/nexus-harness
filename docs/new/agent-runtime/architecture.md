@@ -12,7 +12,9 @@ Use the [shared value types](../high-level-architecture.md#shared-interface-voca
 provider/tool settings, invocation limits and an activity observer from
 [Nexus configuration](../configuration.md#nexus-configuration).
 
-Developer profiles include the [DevelopmentRole instructions](development-role.md#constant-prompt).
+Developer and reviewer profiles include the [shared quality standard](quality-standard.md#constant-prompt)
+and their respective [DevelopmentRole](development-role.md#constant-prompt) or
+[ReviewerRole](reviewer-role.md#constant-prompt) instructions, each once per invocation.
 
 ### Provided interface
 

@@ -73,6 +73,13 @@ Do not replace both sides with independently handcrafted fixtures. Test malforme
 required fields at the artifact-reading boundary without repeating that matrix for every consumer.
 Vitest runs these tests; Zod supplies runtime shape validation.
 
+For finding handoffs, carry the review's actual Finding values into development input, then its actual
+FindingResponse values into the next review. Verify preserved IDs and complete evidence. Cover missing
+or unknown response IDs, open findings without a current entry, and verdicts inconsistent with blocking
+findings at their owning action boundary. Verify that developer and reviewer prompts each contain the
+same shared quality instructions once, alongside their own role instructions; test prompt assembly,
+not the wording of documentation.
+
 Contract and workflow describe what a test proves, not additional pyramid layers. Classify them by
 the scope and dependencies they exercise. Test Nexus's XState definition and integration, not XState's
 internal implementation.

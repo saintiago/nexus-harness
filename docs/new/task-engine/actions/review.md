@@ -13,6 +13,10 @@ Use [Selection](select-task.md#output), earlier-round review/development history
 [Git adapter](../../adapters/git.md#interface), [GitHub adapter](../../adapters/github.md#interface)
 and [Jira adapter](../../adapters/jira.md#interface).
 
+Use [ReviewerRole](../../agent-runtime/reviewer-role.md#interface). Supply the response format below
+and complete findings/responses using the [findings contract](findings.md). The profile includes
+the shared quality standard and reviewer instructions.
+
 ### Output
 
 ```text
@@ -25,23 +29,16 @@ type ReviewOutput = {
   headRevision: string;
   verdict: 'approved' | 'changesRequested' | 'inconclusive';
   summary: string;
-  findings: {
-    id: string;
-    title: string;
-    body: string;
-    severity: 'blocking' | 'non-blocking';
-    location?: { path: string; line: number };
-  }[];
-  priorFindings: {
-    findingId: string;
-    disposition: 'resolved' | 'open' | 'withdrawn';
-    reason: string;
-  }[];
+  findings: Finding[];
+  priorFindings: FindingDisposition[];
 };
+
+type ReviewResponse = Pick<ReviewOutput, 'verdict' | 'summary' | 'findings' | 'priorFindings'>;
 ```
 
-Findings contain the complete problem, impact and repair guidance. IDs allow later development and
-review reports to refer to the same finding; they are not a separate finding database.
+Request one JSON object conforming to ReviewResponse as the agent's final output. Include that shape,
+its finding definitions and verdict rules in the context. Parse and validate the response, then add
+the configured profile and observed reviewed head to create ReviewOutput. They are not agent claims.
 
 ### Outcomes
 
@@ -63,8 +60,9 @@ checks; it must not alter implementation files. The action verifies that the rev
 implementation remain unchanged after the turn.
 
 The reviewer evaluates correctness and missing behavior, explains prior finding dispositions and
-returns a verdict. Check that the report is usable and refers to the reviewed revision. Approval must
-not coexist with unresolved blocking findings.
+returns a verdict. Validate finding IDs, prior dispositions and the verdict under the shared contract.
+Bind the report to the revision actually reviewed. Missing required responses or inconsistent verdicts
+are unusable output, not approval or a newly invented coding finding.
 
 Save the complete report. Publish its review and configured review check for that exact head through
 the Nexus Lens publication capability. Only approved produces a successful review check;
