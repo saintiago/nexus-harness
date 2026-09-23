@@ -201,6 +201,30 @@ export interface ResumePlan {
   readonly blockerSettledAt: string | null;
 }
 
+/** The conclusion one recorded publication describes. */
+export interface PublishedConclusion {
+  readonly outcome: 'repaired' | 'blocked' | 'help';
+  readonly at: string;
+}
+
+/**
+ * One publication state an incident's report superseded: what was published for
+ * a conclusion the incident has since replaced, kept so the history still shows
+ * it.
+ *
+ * An incident concludes once and keeps one report; a conclusion that changes
+ * afterwards — a blocker whose own ticket never reached the status that resumes
+ * the interrupted work, chiefly — is published on its own, in Jira and by email,
+ * and what the earlier conclusion published is recorded here as what it was.
+ */
+export interface SupersededReport {
+  /** The conclusion the superseded publications described, when one is known. */
+  readonly conclusion: PublishedConclusion | null;
+  readonly commentId: string | null;
+  readonly notification: IncidentReport['notification'];
+  readonly problem: string | null;
+}
+
 /** Where one incident's concise report was published. */
 export interface IncidentReport {
   /** When the Jira report was acknowledged; `null` until it was. */
@@ -209,6 +233,19 @@ export interface IncidentReport {
   readonly commentId: string | null;
   /** The exact text published, so a restart can see what was said. */
   readonly commentText: string | null;
+  /**
+   * The conclusion this publication state describes, or `null` while nothing
+   * has been written down for one.
+   *
+   * A report is written from the incident's conclusion and its own text says
+   * which one it is, so a state that does not describe the conclusion the
+   * incident now holds is not that conclusion's publication: the conclusion it
+   * does not describe is published on its own, and the earlier one is kept as a
+   * superseded publication rather than taken for the new one's.
+   */
+  readonly conclusion: PublishedConclusion | null;
+  /** The publication states this one superseded, oldest first. */
+  readonly superseded: readonly SupersededReport[];
   /**
    * The email summary, and how far its publication got. `pending` is written
    * down before the publisher runs and is never assumed either way: a restart
@@ -389,6 +426,8 @@ export function openIncident(
       publishedAt: null,
       commentId: null,
       commentText: null,
+      conclusion: null,
+      superseded: [],
       notification: null,
       problem: null,
     },
@@ -416,6 +455,50 @@ function unconfirmedStopOf(value: unknown): UnconfirmedStop | null {
     problem:
       typeof value['problem'] === 'string' ? value['problem'] : 'no reason was recorded for it',
   };
+}
+
+/** The conclusion one recorded publication state describes, or `null`. */
+export function publishedConclusionOf(value: unknown): PublishedConclusion | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const outcome = value['outcome'];
+  const at = value['at'];
+  if (
+    (outcome !== 'repaired' && outcome !== 'blocked' && outcome !== 'help') ||
+    typeof at !== 'string'
+  ) {
+    return null;
+  }
+  return { outcome, at };
+}
+
+/**
+ * The superseded publications one report carries, as they were written down. A
+ * record written before the field existed carries none — it never concluded
+ * twice — and an entry this harness did not write is dropped rather than
+ * guessed at.
+ */
+function supersededReportsOf(value: unknown): readonly SupersededReport[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const kept: SupersededReport[] = [];
+  for (const entry of value) {
+    if (!isRecord(entry)) {
+      continue;
+    }
+    const notification = entry['notification'];
+    kept.push({
+      conclusion: publishedConclusionOf(entry['conclusion']),
+      commentId: typeof entry['commentId'] === 'string' ? entry['commentId'] : null,
+      notification: isRecord(notification)
+        ? (notification as unknown as IncidentReport['notification'])
+        : null,
+      problem: typeof entry['problem'] === 'string' ? entry['problem'] : null,
+    });
+  }
+  return kept;
 }
 
 /**
@@ -467,8 +550,25 @@ export async function readIncident(file: string): Promise<IncidentRecord | null>
   const pending = isRecord(value['pending']) ? (record.pending as PendingRecovery) : null;
   const sequence = isRecord(value['sequence']) ? (record.sequence as ResumePlan) : null;
   const acknowledgement = value['acknowledgement'];
+  const conclusion = isRecord(value['conclusion'])
+    ? (record.conclusion as IncidentConclusion)
+    : null;
+  const report = isRecord(value['report']) ? (record.report as IncidentReport) : record.report;
   return {
     ...record,
+    conclusion,
+    report: {
+      ...report,
+      commentText: typeof report.commentText === 'string' ? report.commentText : null,
+      // A record written before this was kept described whatever conclusion it
+      // held with the publication it recorded: reading it as such keeps that
+      // publication from being made a second time.
+      conclusion:
+        publishedConclusionOf(report.conclusion) ??
+        publishedConclusionOf(value['conclusion']) ??
+        null,
+      superseded: supersededReportsOf(report.superseded),
+    },
     acknowledgement:
       isRecord(acknowledgement) && typeof acknowledgement['at'] === 'string'
         ? {

@@ -35,8 +35,13 @@ import type { HttpClient } from '../sources/jira/http.js';
 import { runCommand } from '../process/command.js';
 import { messageOf } from '../shared/errors.js';
 import type { RecoveryNotificationConfig } from '../shared/types.js';
-import { describeWorkerStop } from './incident.js';
-import type { IncidentRecord, IncidentReport, RecoveryAttempt } from './incident.js';
+import { describeWorkerStop, publishedConclusionOf } from './incident.js';
+import type {
+  IncidentRecord,
+  IncidentReport,
+  RecoveryAttempt,
+  SupersededReport,
+} from './incident.js';
 
 /** How long one notification command may take: a command bound like any other. */
 const NOTIFICATION_TIMEOUT_MS = 120_000;
@@ -85,11 +90,17 @@ export function incidentReportText(
 
   // The first paragraph is the report's identity: an interrupted publication is
   // recognized in the ticket's thread by exactly this line, which names the
-  // incident it belongs to.
+  // incident it belongs to and the conclusion it reports. A conclusion the
+  // incident reaches later is a publication of its own — its own first line —
+  // and is never mistaken for the one already in the thread, nor is that one
+  // mistaken for it.
   const paragraphs: string[] = [
-    `Harness recovery report (incident ${incident.id}). The supervised queue stopped ` +
-      'unexpectedly, and the separate recovery agent was invoked to investigate, preserve and ' +
-      'repair the situation.',
+    `Harness recovery report (incident ${incident.id}` +
+      (incident.conclusion === null
+        ? ''
+        : `, ${incident.conclusion.outcome} at ${incident.conclusion.at}`) +
+      '). The supervised queue stopped unexpectedly, and the separate recovery agent was ' +
+      'invoked to investigate, preserve and repair the situation.',
   ];
   paragraphs.push(
     `What happened: ${ended}${stop === null ? '' : ` at ${stop.at}`}.` +
@@ -103,6 +114,12 @@ export function incidentReportText(
       'attempt(s) spent; the bound is the configured recovery.maxAttempts, and a repeated unchanged ' +
       'failure ends in a request for human help rather than another attempt.',
   );
+  // What the incident concluded, in the incident's own words: for a request for
+  // human help this is the actionable part, and it reaches Jira and the email
+  // summary rather than staying only in the record.
+  if (incident.conclusion !== null) {
+    paragraphs.push(`Conclusion: ${outcome} — ${incident.conclusion.detail}`);
+  }
   if (attempt === null) {
     paragraphs.push(
       'Result: no recovery judgment was produced, so a person has to decide what happens next.',
@@ -267,6 +284,25 @@ export function incidentHistoryText(incident: IncidentRecord): string {
             : ` (message ${incident.report.notification.messageId})`)) +
       '.',
   );
+  for (const earlier of incident.report.superseded) {
+    lines.push(
+      'Superseded publication: ' +
+        (earlier.conclusion === null
+          ? 'an earlier conclusion'
+          : `${earlier.conclusion.outcome} at ${earlier.conclusion.at}`) +
+        ' — ' +
+        (earlier.commentId === null ? 'no Jira comment' : `Jira comment ${earlier.commentId}`) +
+        '; ' +
+        (earlier.notification === null
+          ? 'no email summary'
+          : `email summary ${earlier.notification.state}` +
+            (earlier.notification.messageId === null
+              ? ''
+              : ` (message ${earlier.notification.messageId})`)) +
+        (earlier.problem === null ? '' : `; reporting problem: ${earlier.problem}`) +
+        '.',
+    );
+  }
   if (incident.report.problem !== null) {
     lines.push(`Reporting problem: ${incident.report.problem}`);
   }
@@ -333,6 +369,27 @@ export type IncidentReporter = (request: {
 }) => Promise<ReportOutcome>;
 
 /**
+ * Whether one incident's recorded publication state describes the conclusion
+ * that incident now holds.
+ *
+ * A report is written from a conclusion and says which one it is, so a state
+ * written for a conclusion the incident has since replaced does not describe
+ * the one it holds now: that conclusion is outstanding, and the earlier
+ * publication is kept as the earlier conclusion's. A state that describes no
+ * conclusion — one written before this was recorded — describes whatever the
+ * incident holds, which is how a record from before this harness kept it goes
+ * on being published once and once only.
+ */
+function reportDescribesConclusion(incident: IncidentRecord): boolean {
+  const described = incident.report.conclusion;
+  const current = incident.conclusion;
+  if (described === null || current === null) {
+    return true;
+  }
+  return described.outcome === current.outcome && described.at === current.at;
+}
+
+/**
  * Whether one concluded incident still needs its report published.
  *
  * A comment is outstanding while the ticket it belongs to is known and no
@@ -353,11 +410,13 @@ export function reportNeedsPublication(
     readonly notification: RecoveryNotificationConfig | null;
   },
 ): boolean {
+  const describes = reportDescribesConclusion(incident);
   const commentOutstanding =
-    parts.jira && incident.ticket !== null && incident.report.commentId === null;
+    parts.jira && incident.ticket !== null && (incident.report.commentId === null || !describes);
   const state = incident.report.notification?.state ?? null;
   const emailOutstanding =
-    parts.notification !== null && (state === 'failed' || state === 'pending' || state === null);
+    parts.notification !== null &&
+    (state === 'failed' || state === 'pending' || state === null || !describes);
   return commentOutstanding || emailOutstanding;
 }
 
@@ -371,11 +430,21 @@ export function createIncidentReporter(parts: IncidentReporterParts): IncidentRe
   const runNotification = parts.runNotification ?? runCommand;
   return async ({ incident, stop, checkpoint, jira }) => {
     const text = incidentReportText(incident, parts.notification);
-    let commentId = incident.report.commentId;
-    let publishedAt = incident.report.publishedAt;
-    const commentText = incident.report.commentText ?? text.text;
-    let notification = incident.report.notification;
+    // A report describes one conclusion. When the incident holds a publication
+    // made for a conclusion it has since replaced, that publication is kept as
+    // what it was — the history shows both — and the conclusion now held is
+    // published on its own: a comment under its own identity, whose first line
+    // names the conclusion, and a summary of its own. What the earlier
+    // conclusion published is never published again as this one's.
+    const describes = reportDescribesConclusion(incident);
+    const carried = describes ? incident.report : null;
+    const superseded = describedPublication(incident, describes);
+    let commentId = carried?.commentId ?? null;
+    let publishedAt = carried?.publishedAt ?? null;
+    const commentText = carried?.commentText ?? text.text;
+    let notification = carried?.notification ?? null;
     const problems: string[] = [];
+    const concludes = publishedConclusionOf(incident.conclusion);
     const writeDown = async (report: IncidentReport): Promise<void> => {
       await checkpoint?.(report);
     };
@@ -383,6 +452,8 @@ export function createIncidentReporter(parts: IncidentReporterParts): IncidentRe
       publishedAt,
       commentId,
       commentText,
+      conclusion: concludes,
+      superseded,
       notification,
       problem: problems.length === 0 ? null : problems.join(' '),
     });
@@ -560,11 +631,44 @@ export function createIncidentReporter(parts: IncidentReporterParts): IncidentRe
       publishedAt,
       commentId,
       commentText,
+      conclusion: concludes,
+      superseded,
       notification,
       problem: problems.length === 0 ? null : problems.join(' '),
     };
     return { report, problem: report.problem };
   };
+}
+
+/**
+ * The superseded publications one report carries: what the incident holds now,
+ * with the publication state of the conclusion it has replaced added to it when
+ * there was one. A state that published nothing is not kept — there is nothing
+ * to show — and a publication the earlier conclusion never acknowledged is
+ * recorded with the problem the publisher reported rather than dropped.
+ */
+function describedPublication(
+  incident: IncidentRecord,
+  describes: boolean,
+): readonly SupersededReport[] {
+  if (describes) {
+    return incident.report.superseded;
+  }
+  const report = incident.report;
+  const carried =
+    report.commentId !== null || report.notification !== null || report.problem !== null;
+  if (!carried) {
+    return report.superseded;
+  }
+  return [
+    ...report.superseded,
+    {
+      conclusion: report.conclusion,
+      commentId: report.commentId,
+      notification: report.notification,
+      problem: report.problem,
+    },
+  ];
 }
 
 /**

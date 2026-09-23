@@ -14,7 +14,9 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { RECOVERY_OUTCOME_FILE, parseRecoveryJudgment } from '../../src/supervisor/recovery.js';
+import { incidentReportText } from '../../src/supervisor/report.js';
 import {
+  publishedConclusionOf,
   incidentDir,
   incidentFilePath,
   readCurrentIncident,
@@ -141,9 +143,11 @@ async function runSupervision(overrides: {
   readonly lines?: string[];
   /** The clock this invocation reads, for a case whose incidents need an order. */
   readonly now?: () => Date;
+  /** Filled with every incident the report was published from, oldest first. */
+  readonly reports?: IncidentRecord[];
 }): Promise<SuperviseSummary> {
   const lines = overrides.lines ?? [];
-  const reports: IncidentRecord[] = [];
+  const reports = overrides.reports ?? [];
   return await supervise({
     intent: overrides.scope === undefined || overrides.scope === null ? 'run' : 'ticket',
     scope: overrides.scope ?? null,
@@ -188,6 +192,8 @@ async function runSupervision(overrides: {
             publishedAt: '2026-09-23T00:00:00.000Z',
             commentId: '10042',
             commentText: 'the report',
+            conclusion: publishedConclusionOf(incident.conclusion),
+            superseded: incident.report.superseded,
             notification: {
               topicArn: NOTIFICATION.topicArn,
               email: NOTIFICATION.email,
@@ -400,11 +406,13 @@ describe('a supervised queue', () => {
       },
     ]);
     const requests: (string | null)[] = [];
+    const reported: IncidentRecord[] = [];
     const summary = await runSupervision({
       workDir,
       repoPath,
       configPath,
       scope: 'HARN-51',
+      reports: reported,
       worker: async (request) => {
         requests.push(request.scope);
         // The first stop is the interrupted ticket; the blocker's own worker
@@ -431,9 +439,23 @@ describe('a supervised queue', () => {
     expect(incident?.conclusion?.outcome).toBe('help');
     expect(incident?.sequence).toBeNull();
     expect(incident?.resumedAt).toBeNull();
-    // The incident was reported like any other: the person reading it has the
-    // same evidence in Jira as everywhere else.
+    // The incident was reported like any other — twice, because it concluded
+    // twice: the blocked conclusion it published first, and then the request
+    // for human help, which is published on its own with the actionable detail
+    // a person has to read rather than left to the record.
     expect(incident?.report.commentId).toBe('10042');
+    expect(reported.map((entry) => entry.conclusion?.outcome)).toEqual(['blocked', 'help']);
+    const request = reported.at(-1);
+    if (request === undefined) {
+      throw new Error('the follow-on conclusion was not published');
+    }
+    const text = incidentReportText(request, NOTIFICATION);
+    expect(text.text).toContain('completion is not verified');
+    expect(text.text).toContain('HARN-77');
+    expect(text.text).toContain('a person decides whether HARN-77 is complete');
+    // The record's own publication state describes the conclusion the incident
+    // holds now, not the one that was replaced.
+    expect(incident?.report.conclusion?.outcome).toBe('help');
   }, 30_000);
 
   it('holds that plan while the blocker’s own status cannot be read at all', async () => {
@@ -1597,6 +1619,8 @@ describe('a supervised queue', () => {
         publishedAt: null,
         commentId: null,
         commentText: null,
+        conclusion: { outcome: 'repaired', at: '2026-09-23T00:03:00.000Z' },
+        superseded: [],
         notification: {
           topicArn: NOTIFICATION.topicArn,
           email: NOTIFICATION.email,

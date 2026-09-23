@@ -166,7 +166,13 @@ export async function readRecoveryHistory(request: {
       to: stored.record.updatedAt,
     })),
     commentIds: kept
-      .map((stored) => stored.record.report.commentId)
+      // The report of the conclusion an incident holds, and every report an
+      // earlier conclusion published before it: all of them are this harness's
+      // own text in the thread, never a person's feedback.
+      .flatMap((stored) => [
+        stored.record.report.commentId,
+        ...stored.record.report.superseded.map((earlier) => earlier.commentId),
+      ])
       .filter((id): id is string => typeof id === 'string' && id !== ''),
     problems,
   };

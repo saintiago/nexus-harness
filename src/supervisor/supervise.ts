@@ -513,7 +513,14 @@ export async function supervise(request: SuperviseRequest): Promise<SuperviseSum
           const concluded = await updateIncident(root, step.plan.known.record.id, (latest) =>
             conclude(latest, 'help', detail, request.now),
           );
-          carried = concluded;
+          // The incident concluded again, and that conclusion is what its report
+          // has to say now: the request reaches Jira and the notification topic
+          // as the conclusion's own publication — never as a repeat of what the
+          // earlier conclusion published — rather than staying in the record
+          // while the next pass only refuses to start work.
+          const published = await publish(request, root, concluded.record);
+          reportProblem = published.reportProblem ?? reportProblem;
+          carried = published.incident;
           continue;
         }
         if (owedWork(await readSupervisionState(root)).length > 0) {

@@ -1527,6 +1527,16 @@ the recovery turn names the item it investigated in its judgment (`"ticket": { "
 report goes into that thread; a wrong ticket is worse than none, so a judgment that names one this
 harness cannot address produces no judgment at all.
 
+A report describes one conclusion, and its own first line says which. An incident concludes once,
+but a conclusion can change: a blocker the recovery ranked first, whose own worker settled without
+its ticket ever reaching the status that resumes the interrupted work, ends in a request for a person
+instead. The conclusion the incident holds then is published on its own — a comment under its own
+identity in the thread, and a summary of its own through the topic, whose text carries what the
+incident concluded and the actionable detail it asks for — while what the earlier conclusion
+published is kept as what it was and shown in the incident's history. Nothing is published twice:
+the state names the conclusion it describes, so a publication that describes another conclusion is
+never taken for this one's and this one's is never taken for the earlier one's.
+
 A restart finishes what an interrupted invocation left, and never publishes anything twice. The
 comment is looked for in the ticket's thread by its own identity before another is posted, and the
 email summary is recorded as `pending` **before** the publisher runs: a restart that finds

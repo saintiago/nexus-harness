@@ -22,6 +22,7 @@ import {
   writeCurrentIncident,
   writeIncident,
 } from '../../src/supervisor/incident.js';
+import type { IncidentRecord } from '../../src/supervisor/incident.js';
 import {
   acquireSupervisorOwnership,
   holderFilePath,
@@ -807,6 +808,106 @@ describe('the incident report’s publication boundaries', () => {
       } finally {
         await serviceWithReport.close();
       }
+    } finally {
+      await service.close();
+    }
+  }, 30_000);
+
+  it('publishes a conclusion the incident reached later as its own comment', async () => {
+    const directory = await tempDir();
+    // The thread really holds what was published: the second publication has to
+    // find the first comment — the same incident, an earlier conclusion — and
+    // post the new conclusion anyway, under its own identity.
+    const thread: { readonly id: string; readonly body: unknown }[] = [];
+    const service = await startLocalService((request) => {
+      if (request.method === 'GET' && request.url.includes('/comment')) {
+        return {
+          status: 200,
+          body: JSON.stringify({
+            comments: thread.map((comment) => ({
+              id: comment.id,
+              created: '2026-09-23T00:04:00.000Z',
+              author: { displayName: 'nexus' },
+              body: comment.body,
+            })),
+            total: thread.length,
+          }),
+        };
+      }
+      const id = `1004${String(thread.length + 1)}`;
+      // The published comment's own body, exactly as the ticket's thread
+      // carries it back: the ADF document the report was posted as.
+      thread.push({
+        id,
+        body: (JSON.parse(request.body) as { readonly body: unknown }).body,
+      });
+      return { status: 201, body: JSON.stringify({ id }) };
+    });
+    try {
+      const incident = reportIncident('ns');
+      const reporter = createIncidentReporter({
+        notification: null,
+        logsDir: () => path.join(directory, 'logs'),
+        cwd: directory,
+        now: () => new Date('2026-09-23T00:04:00.000Z'),
+      });
+      const jira = {
+        kind: 'jira' as const,
+        http: createHttpClient(JIRA_CONFIG, 'token', { fetch: serviceFetch(service.origin) }),
+        token: 'token',
+      };
+      const first = await reporter({ incident, stop: new AbortController().signal, jira });
+      expect(first.report.commentId).toBe('10041');
+
+      // The incident concluded again after that publication — the blocker it
+      // ranked first settled without ever reaching the status that resumes the
+      // interrupted work — and now asks a person to act.
+      const requested: IncidentRecord = {
+        ...incident,
+        conclusion: {
+          outcome: 'help',
+          detail: 'restore the queue’s Jira credential and run the supervisor again',
+          at: '2026-09-23T00:10:00.000Z',
+        },
+        sequence: null,
+        report: first.report,
+      };
+      const second = await reporter({
+        incident: requested,
+        stop: new AbortController().signal,
+        jira,
+      });
+
+      // The new conclusion is its own comment, carrying the request, and the
+      // earlier one is kept as what it was rather than overwritten.
+      expect(second.report.commentId).toBe('10042');
+      expect(second.problem).toBeNull();
+      const posted = service.requests.filter((request) => request.method === 'POST');
+      expect(posted).toHaveLength(2);
+      expect(posted[1]?.body).toContain(
+        'restore the queue’s Jira credential and run the supervisor again',
+      );
+      expect(posted[1]?.body).toContain('help at 2026-09-23T00:10:00.000Z');
+      expect(second.report.superseded).toHaveLength(1);
+      expect(second.report.superseded[0]).toMatchObject({
+        conclusion: { outcome: 'repaired', at: '2026-09-23T00:03:00.000Z' },
+        commentId: '10041',
+      });
+
+      // And a restart of the same conclusion adopts the comment it finds in the
+      // thread rather than posting a third one for the same request.
+      const restart = await createIncidentReporter({
+        notification: null,
+        logsDir: () => path.join(directory, 'logs'),
+        cwd: directory,
+        now: () => new Date('2026-09-23T00:20:00.000Z'),
+      })({
+        incident: { ...requested, report: second.report },
+        stop: new AbortController().signal,
+        jira,
+      });
+      expect(restart.report.commentId).toBe('10042');
+      expect(service.requests.filter((request) => request.method === 'POST')).toHaveLength(2);
     } finally {
       await service.close();
     }

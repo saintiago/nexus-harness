@@ -828,6 +828,15 @@ made while handling it — its published report recognized by the identity the i
 its other comments by its configured author name and the window the incident covered — as context
 that is never an approval or a verification.
 
+A report describes one conclusion, and each publication records which one it describes. An incident
+that concludes again — a blocker whose completion could not be verified is the one such path — has
+the conclusion it now holds published on its own: a comment under its own identity, whose first line
+names the conclusion, and a summary of its own through the topic, carrying the conclusion and the
+detail it asks for. What the earlier conclusion published is kept as what it was and shown in the
+incident's history, and a publication that describes another conclusion never stands in for this
+one's, so the request a person has to act on reaches the thread and the inbox rather than staying in
+the record while a restart only refuses to start work.
+
 **Restart and deduplication.** The supervisor's state is one set of claims, one current-incident
 pointer, and one record per incident under the supervision's own id; nothing survives in a database
 or a service. A restart adopts the incident it finds, spends the attempts that record is missing,

@@ -457,6 +457,8 @@ describe('the incident report', () => {
         publishedAt: null,
         commentId: null,
         commentText: null,
+        conclusion: { outcome: 'repaired', at: '2026-09-23T00:03:00.000Z' },
+        superseded: [],
         notification: null,
         problem: null,
         ...report,
@@ -508,6 +510,19 @@ describe('the incident report', () => {
         notification,
       }),
     ).toBe(false);
+    // The incident concluded again after that publication: what was published
+    // describes the conclusion it replaced, so the one it holds now is
+    // outstanding — the request reaches the thread and the email — even though
+    // the earlier summary really was sent.
+    const reconcluded = {
+      ...concluded({ commentId: '10042', notification: sent }, ticket),
+      conclusion: {
+        outcome: 'help' as const,
+        detail: 'restore the queue’s Jira credential',
+        at: '2026-09-23T00:10:00.000Z',
+      },
+    };
+    expect(reportNeedsPublication(reconcluded, { jira: true, notification })).toBe(true);
     // No Jira thread to write into, and no notification policy: nothing left.
     expect(
       reportNeedsPublication(concluded({ notification: sent }, null), {
@@ -552,6 +567,8 @@ describe('the incident report', () => {
         publishedAt: null,
         commentId: null,
         commentText: null,
+        conclusion: { outcome: 'blocked', at: '2026-09-23T00:03:00.000Z' },
+        superseded: [],
         notification: {
           topicArn: notification.topicArn,
           email: notification.email,
@@ -568,6 +585,9 @@ describe('the incident report', () => {
     expect(report.text).toContain('a shared module is broken');
     expect(report.text).toContain('Blocker ranked first: HARN-77 — it repairs the shared module');
     expect(report.text).toContain('Resumption: HARN-51 resumes after HARN-77');
+    // What the incident concluded, in its own words: the actionable detail
+    // reaches the thread and the email summary rather than only the record.
+    expect(report.text).toContain('Conclusion: blocker ranked first — HARN-77 is ranked ahead');
     expect(report.text).toContain(
       'records the moment the interrupted work itself is started again',
     );

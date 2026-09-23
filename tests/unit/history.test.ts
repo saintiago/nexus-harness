@@ -228,6 +228,8 @@ describe('the supervised recoveries a ticket’s history carries', () => {
         publishedAt: '2026-09-16T11:00:00.000Z',
         commentId: 'comment-report',
         commentText: 'Harness recovery report (incident seeded).',
+        conclusion: { outcome: 'repaired', at: '2026-09-16T11:00:00.000Z' },
+        superseded: [],
         notification: null,
         problem: null,
       },
