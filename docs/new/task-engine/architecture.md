@@ -73,6 +73,25 @@ Subscriptions provide observation only. They do not replay history, recover arti
 workflow transitions. Removing a listener does not stop execution. Listener failures are isolated
 from actions and other listeners.
 
+### Agent activity events
+
+The caller of an agent invocation publishes these events using its own source. They travel through
+the ordinary event stream:
+
+| Type | Data |
+| --- | --- |
+| agent-started | `{ role: 'developer' \| 'reviewer' \| 'recovery', operation: string, profile: string, task?: string }` |
+| agent-activity | The runtime's AgentEvent: type and text |
+| agent-finished | `null` |
+
+Use role developer, reviewer or recovery. Activity types distinguish message, command, result and
+change. The caller forwards activity unchanged from
+[AgentRuntime](../agent-runtime/architecture.md#provided-interface). It emits agent-finished when
+the invocation ends, including failure; that event does not declare task success.
+
+Invocations are sequential, so activity belongs to the most recent agent-started until agent-finished.
+No display session IDs or separate activity transport are required.
+
 ### Construction
 
 The workflow, bound actions and workflow-state filepath are supplied before run.

@@ -20,7 +20,7 @@ Cover decisions, meaningful variations and failure outcomes here.
 | CompleteTask | Completion only after merge and successful configured checks for that merge | GitHub observations and source updates |
 | AgentRuntime | Profile resolution and complete context assembly | Coding-provider response |
 | Supervisor | Resume, blocker and attention decisions within its recovery allowance | Work, recovery and notification results |
-| OperatorInterface | Argument interpretation and progress presentation | Events and output sink |
+| OperatorInterface | Event presentation, activity grouping, pane lifecycle and colors | Events, terminal dimensions and output sink |
 | Workflow | Declared transitions, repair loops and terminal outcomes | Named action outcomes, using the real XState definition |
 
 Tests assert observable results and required effects. Do not mirror private methods or incidental

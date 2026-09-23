@@ -37,7 +37,10 @@ type AgentProfile = {
   toolSettings: Readonly<Record<string, unknown>>;
 };
 
-type AgentEvent = { type: string; text: string };
+type AgentEvent = {
+  type: 'message' | 'command' | 'result' | 'change';
+  text: string;
+};
 
 type AgentResult = Result<{
   output: string;

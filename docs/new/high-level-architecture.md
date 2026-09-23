@@ -9,9 +9,8 @@ independently against it.
 ```text
 Nexus
 ├── OperatorInterface
-│   ├── Commands and launch shortcuts
-│   ├── Project configuration filepath input
-│   └── Progress and result presentation
+│   ├── Event subscriptions
+│   └── Progress, activity pane and result presentation
 ├── Supervisor
 │   ├── TaskEngine process lifecycle
 │   └── Recovery coordination
@@ -47,6 +46,12 @@ Workspace and configuration are data designs. Workspace defines a fixed director
 reference to an instance.
 
 ## Configuration and startup
+
+The command entry point parses `nexus queue run --project-config <file>` or `nexus --help`.
+It resolves the project filepath, wires presentation subscriptions before starting execution, calls
+Supervisor.execute and stops presentation after execution finishes. Help and completed execution
+exit with 0, execution requiring attention with 1, and invalid command input with 2.
+Launch shortcuts call this same entry point; they contain no execution policy.
 
 Project configuration lives in the target project's root. It defines repository source,
 preparation and CI/check commands, task source and delivery requirements. Nexus configuration owns
@@ -99,7 +104,7 @@ invocation ends. Cancellation and coordination between multiple writers are not 
 
 | Component | Owns | Does not own |
 | --- | --- | --- |
-| OperatorInterface | Commands, configuration filepath input and presentation | Queue decisions, agent execution or recovery policy |
+| OperatorInterface | Event subscriptions, display state and terminal presentation | Commands, execution startup, queue decisions or recovery policy |
 | Supervisor | Work process lifecycle, execution intent and recovery decisions supplied by the agent | Task phases or judging the adequacy of a recovery repair |
 | TaskEngine | Sequential workflow execution, bound actions, persisted state and event subscriptions | Interpreting action artifacts or operational recovery policy |
 | AgentRuntime | Profiles, prompt assembly, invocation and output collection | Business output schemas, task selection or declaring completion |
@@ -115,15 +120,17 @@ recovery permissions. Agent reports do not replace checks required for completio
 
 ## Relationships and contracts
 
-OperatorInterface depends on Supervisor's execution contract. Supervisor runs TaskEngine without
-knowing its internal orchestration. It forwards producer events unchanged and adds its own lifecycle
-events; presentation interprets events for display.
+OperatorInterface observes events; it does not call execution methods. Startup wires its subscriptions
+and starts Supervisor. Supervisor runs TaskEngine without knowing its internal orchestration.
+It forwards producer events unchanged and adds its own lifecycle events. This combined stream carries
+both components' events to presentation without duplicate subscriptions.
 
 | Caller or producer | Receiver | Contract boundary |
 | --- | --- | --- |
-| OperatorInterface | Supervisor | Execute the finite queue with project filepath |
+| Command entry point | Supervisor | Execute the finite queue with project filepath |
 | Supervisor | Nexus worker / TaskEngine | Launch configured workflow and receive events/result |
-| Supervisor | OperatorInterface | Forwarded events, lifecycle events and final result |
+| TaskEngine, through Supervisor | OperatorInterface | Unchanged worker event stream |
+| Supervisor | OperatorInterface | Lifecycle events, including the final execution result |
 | TaskEngine actions | AgentRuntime | run(profile, workspaceRef, additionalContext) |
 | Supervisor | AgentRuntime | Same run interface with recovery profile and failure context |
 | AgentRuntime | Caller | Agent output, activity and invocation result |
@@ -174,7 +181,7 @@ runner can emit events. TaskEngine forwards them without interpreting payloads.
 Finite Run processes eligible work serially until a fresh source inspection finds no eligible tasks.
 It does not reserve a fixed batch at startup.
 
-1. OperatorInterface sends Supervisor the project filepath.
+1. Startup connects presentation to events and sends Supervisor the project filepath.
 2. Supervisor starts the worker; startup reads configuration and constructs the selected workflow.
 3. TaskEngine executes selection, implementation, repair, review, delivery and completion actions
    according to the workflow, then selects again.

@@ -15,10 +15,8 @@ Use the [shared value types](high-level-architecture.md#shared-interface-vocabul
 
 ```ts
 interface Supervisor {
-  execute(
-    request: ExecutionRequest,
-    observe: Observer<ExecutionEvent>,
-  ): Promise<ExecutionResult>;
+  execute(request: ExecutionRequest): Promise<ExecutionResult>;
+  subscribe(listener: Observer<ExecutionEvent>): Unsubscribe;
 }
 
 type ExecutionRequest = {
@@ -49,9 +47,13 @@ filepath. Completed means the configured workflow finished successfully;
 needs-attention means execution could not continue. The report identifies the saved recovery report
 when recovery occurred.
 
-EngineEvent is imported from [TaskEngine's event contract](task-engine/architecture.md#provided-interface).
+EngineEvent and Unsubscribe are imported from [TaskEngine's event contract](task-engine/architecture.md#provided-interface).
 Forward producer events unchanged and emit lifecycle events with source supervisor and types starting,
 running, recovering and finished. Observation does not control execution.
+subscribe observes subsequent events and returns an unsubscribe function. Listener failures do not
+affect execution. The finished event carries the ExecutionResult, including the reason when attention
+is needed. Recovery invocations emit the same
+[agent activity events](task-engine/architecture.md#agent-activity-events), with role recovery.
 
 RecoveryReport is the output required at this component's recovery boundary. The invocation context
 requests this format; this component parses it. A malformed report is a failed recovery invocation.
