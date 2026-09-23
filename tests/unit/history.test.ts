@@ -170,13 +170,6 @@ async function writeReviewAttempt(
       readonly path: string;
       readonly line: number | null;
       readonly body: string;
-      readonly kind?: 'unresolved' | 'regression';
-      readonly continues?: string;
-    }[];
-    readonly verifications?: readonly {
-      readonly finding: string;
-      readonly state: 'verified' | 'unverified' | 'regressed';
-      readonly evidence: string;
     }[];
   },
 ): Promise<string> {
@@ -215,7 +208,6 @@ async function writeReviewAttempt(
       verdict: 'request_changes',
       summary: request.summary,
       findings: request.findings ?? [],
-      ...(request.verifications === undefined ? {} : { verifications: request.verifications }),
       recordedAt: request.endedAt,
     }),
     'utf8',
