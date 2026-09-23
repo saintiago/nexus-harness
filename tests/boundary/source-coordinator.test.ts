@@ -3,46 +3,69 @@
  * run's own ending, as real files under one output directory: the receipt that
  * reserves an item before anything remote or paid happens, the per-project lock
  * that admits one consumer at a time, the delivery of a passed attempt before
- * its result is published, and the watch cadence over that state — the poll
- * interval, a retry that waits out the delay the source asked for, and a failure
- * that stops the loop instead.
+ * its result is published, the escalation ladder one claim climbs, the pending
+ * pre-delivery diagnosis a later invocation finishes before it discovers
+ * anything, and the watch cadence over that state — the poll interval, a retry
+ * that waits out the delay the source asked for, and a failure that stops the
+ * loop instead.
  *
- * The item, the agent turn, the delivery step and the service answers are the
- * case's stand-ins — the coordinator starts no runtime, no command and no real
- * `git` here — while the receipt file, its exclusive creation, its atomic
- * replacement and the lock directory are the harness's own code, on a real
- * temporary filesystem. What is asserted is the documented intake behavior
- * (docs/spec.md §6, docs/WORKFLOW.md §8): an item is never attempted twice from
- * one output directory, an uncertain claim keeps the receipt it just created and
- * stops intake for a person, a rejected claim releases only the reservation this
- * process made, a failed publication keeps the local result and stops, a run
- * whose own stop could not be confirmed — before any run result exists, at the
- * item's own preflight and wrapped by the run preflight alike, as well as after
- * one — publishes nothing and keeps its receipt and the lock, a confirmed stop
- * still gets its one bounded feedback under a deadline of its own, a passed
+ * The item, the agent turn, the reviewer turn, the delivery step and the service
+ * answers are the case's stand-ins — the coordinator starts no runtime and no
+ * configured command here — while the receipt file, its exclusive creation, its
+ * atomic replacement and the lock directory are the harness's own code, on a
+ * real temporary filesystem. What is asserted is the documented intake behavior
+ * (docs/spec.md §6, docs/WORKFLOW.md §8 and §11): an item is never attempted
+ * twice from one output directory, an uncertain claim keeps the receipt it just
+ * created and stops intake for a person, a rejected claim releases only the
+ * reservation this process made, a failed publication keeps the local result and
+ * stops, a run whose own stop could not be confirmed — before any run result
+ * exists, at the item's own preflight, wrapped by the run preflight, and while a
+ * retained workspace is verified for a continuation, as well as after one —
+ * publishes nothing and keeps its receipt and the lock, a confirmed stop still
+ * gets its one bounded feedback under a deadline of its own, a pending diagnosis
+ * whose reviewer was not confirmed stopped stops discovery and polling alike
+ * while a diagnosis that stopped cleanly is reported and stepped past, a passed
  * attempt is delivered before its result is published and failed or cancelled
  * work never reaches delivery, a delivery failure is published beside the
- * outcome the run produced before intake stops, and a lock is never broken,
- * adopted, or removed by a process that does not own it.
+ * outcome the run produced before intake stops, one claim climbs the configured
+ * ladder in the same retained workspace while a ticket that came back to work
+ * starts at the first rung again, and a lock is never broken, adopted, or removed
+ * by a process that does not own it.
+ *
+ * Two cases reach the workspace boundary itself. The one that reopens a retained
+ * workspace is handed what the Git read the verification makes reported — a stop
+ * the harness could not confirm — at the process boundary that read belongs to,
+ * exactly as a stand-in `git` would report it; the one that continues a retained
+ * workspace after a finished cycle lets the harness read a real temporary
+ * checkout, because the state that verification reads is the host's, never the
+ * case's.
  */
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { DeliveredPullRequest, Delivery, DeliveryRequest } from '../../src/delivery/github.js';
 import { DeliveryError } from '../../src/delivery/github.js';
+import type { InvocationResult } from '../../src/process/invocation.js';
+import * as invocation from '../../src/process/invocation.js';
 import { RunCancelledError, RunTimeoutError } from '../../src/runs/contracts.js';
 import type { RunTaskResult } from '../../src/runs/contracts.js';
 import { summarizeChanges } from '../../src/reporting/changes.js';
 import type {
+  AttemptEvidence,
+  AttemptKind,
   CheckRoundResult,
+  EscalationTier,
   RoundOutcome,
   SourceRef,
   Task,
   TerminationOutcome,
 } from '../../src/shared/types.js';
 import type {
+  BaselineResumeOutcome,
+  PublishedComment,
   SourceCandidate,
+  SourceComment,
   SourceRunOutcome,
   SourceRunRequest,
   SourceTask,
@@ -61,7 +84,12 @@ import {
   reserveReceipt,
 } from '../../src/sources/receipts.js';
 import { WorkspaceError } from '../../src/workspace/errors.js';
-import { createTempDir } from './integration-support.js';
+import { workspacePathFor } from '../../src/workspace/run-directory.js';
+import { readWorkspaceState, writeWorkspaceState } from '../../src/workspace/state.js';
+import type { WorkspaceAttempt, WorkspaceState } from '../../src/workspace/state.js';
+import { createTempDir, gitOrFail, useIsolatedGitEnvironment } from './integration-support.js';
+
+useIsolatedGitEnvironment();
 
 const SITE = 'https://example.atlassian.net';
 const REF: SourceRef = {
@@ -217,15 +245,112 @@ function checkRound(outcome: RoundOutcome, exitCode: number | null): CheckRoundR
   };
 }
 
+/** One coding turn of a run's own evidence, with the round observed after it. */
+function attemptTurn(
+  turn: number,
+  kind: AttemptKind,
+  checks: CheckRoundResult | null,
+): AttemptEvidence {
+  return {
+    turn,
+    kind,
+    agentLog: `/work/runs/run-1/logs/agent-${String(turn)}.log`,
+    agentSummary: `turn ${String(turn)} ended`,
+    checks,
+  };
+}
+
+/**
+ * The run one rung of the ladder produced when it spent its whole repair
+ * allowance on ordinary completed red check rounds: the one ending that climbs
+ * to the next configured tier (src/sources/run-outcomes.ts).
+ */
+function exhaustedRung(workDir: string, allowance: number): RunTaskResult {
+  const turns: AttemptEvidence[] = [attemptTurn(1, 'implementation', checkRound('failed', 1))];
+  for (let turn = 2; turn <= allowance + 1; turn += 1) {
+    turns.push(attemptTurn(turn, 'repair', checkRound('failed', 1)));
+  }
+  return { ...runResult(workDir, 'failed'), attempts: turns, repairsUsed: allowance };
+}
+
+/**
+ * What one Git invocation the harness had to stop reports when its own stop
+ * could not be confirmed: the same evidence {@link unconfirmedGitStop} stands in
+ * for where a case never reaches the process boundary.
+ */
+function unconfirmedGitInvocation(): InvocationResult {
+  return {
+    outcome: 'timed-out',
+    exitCode: 0,
+    signal: null,
+    launchError: null,
+    timeoutMs: 25,
+    termination: 'unconfirmed',
+    terminationProblem: CLEANUP,
+  };
+}
+
+/**
+ * One retained workspace on disk, as a finished cycle leaves it: a real checkout
+ * on the branch its ledger records, and that ledger beside it.
+ */
+async function retainedWorkspace(
+  workDir: string,
+  attempts: readonly WorkspaceAttempt[] = [],
+): Promise<{
+  readonly workspaceId: string;
+  readonly workspacePath: string;
+  readonly branch: string;
+  readonly baseCommit: string;
+  readonly sourceRoot: string;
+  readonly state: WorkspaceState;
+}> {
+  const workspaceId = REF.key;
+  const branch = `harness/${workspaceId}`;
+  const sourceRoot = path.join(workDir, 'source');
+  const workspacePath = workspacePathFor(workDir, workspaceId);
+  await mkdir(workspacePath, { recursive: true });
+  await gitOrFail(['init', '--quiet', '--initial-branch=main'], workspacePath);
+  await writeFile(path.join(workspacePath, 'README.md'), 'the item’s own baseline\n', 'utf8');
+  await gitOrFail(['add', '--all'], workspacePath);
+  await gitOrFail(['commit', '--quiet', '--message', 'baseline'], workspacePath);
+  await gitOrFail(['checkout', '--quiet', '-b', branch], workspacePath);
+  const state: WorkspaceState = {
+    version: 1,
+    workspaceId,
+    sourceRoot,
+    baseCommit: BASE,
+    branch,
+    createdAt: '2026-09-22T09:00:00.000Z',
+    sourceItem: { type: 'jira', scope: SITE, id: REF.id, key: REF.key },
+    attempts,
+  };
+  await writeWorkspaceState(workDir, state);
+  return {
+    workspaceId,
+    workspacePath,
+    branch,
+    baseCommit: state.baseCommit,
+    sourceRoot,
+    state,
+  };
+}
+
 /** What one coordinator case watches: the calls its stand-in source received. */
 interface CoordinatorCalls {
   readonly lists: number;
   readonly prepared: string[];
   readonly claims: string[];
   readonly runs: string[];
+  /** Every run the ladder asked for, in the order it asked. */
+  readonly requests: SourceRunRequest[];
   readonly refusals: string[];
   /** One entry per published result, with the outcome it was published as. */
   readonly completions: Array<{ readonly key: string; readonly outcome: SourceRunOutcome }>;
+  /** One entry per published intermediate rung, in the order it was published. */
+  readonly progresses: Array<{ readonly key: string; readonly outcome: SourceRunOutcome }>;
+  /** Every publication, progress and result alike, in the order it happened. */
+  readonly publications: string[];
   readonly outputs: string[];
 }
 
@@ -234,15 +359,25 @@ function coordinatorHarness(
   workDir: string,
   parts: {
     readonly candidates?: readonly SourceCandidate[];
+    /** The item each fresh read returns; the fixture's own when absent. */
+    readonly prepare?: (found: SourceCandidate) => Promise<SourceTask> | SourceTask;
     readonly claim?: (item: SourceTask) => Promise<boolean>;
+    /** One rung's own intermediate comment; absent means no rung may publish one. */
+    readonly progress?: (item: SourceTask, outcome: SourceRunOutcome) => Promise<PublishedComment>;
     readonly complete?: (
       item: SourceTask,
       outcome: SourceRunOutcome,
     ) => Promise<{ readonly commentId: string; readonly text: string }>;
+    /** What the item's own thread carries since its last attempt; nothing when absent. */
+    readonly commentsSince?: (item: SourceTask) => Promise<readonly SourceComment[]>;
     /** The run each stand-in agent turn produced; a passed one when absent. */
     readonly run?: (request: SourceRunRequest) => Promise<RunTaskResult> | RunTaskResult;
+    /** The configured escalation ladder; one tier when absent. */
+    readonly tiers?: readonly EscalationTier[];
     /** The delivery step the case configures; absent means delivery is off. */
     readonly delivery?: Delivery;
+    /** The pending diagnosis the case supplies; absent means the phase is off. */
+    readonly baselineDiagnosis?: SourceContext['baselineDiagnosis'];
     /** The source/output preflight re-run before each reservation; a passing one when absent. */
     readonly preflight?: SourceContext['preflight'];
   } = {},
@@ -252,8 +387,11 @@ function coordinatorHarness(
     prepared: [] as string[],
     claims: [] as string[],
     runs: [] as string[],
+    requests: [] as SourceRunRequest[],
     refusals: [] as string[],
     completions: [] as Array<{ key: string; outcome: SourceRunOutcome }>,
+    progresses: [] as Array<{ key: string; outcome: SourceRunOutcome }>,
+    publications: [] as string[],
     outputs: [] as string[],
   };
   const stop = new AbortController();
@@ -264,17 +402,23 @@ function coordinatorHarness(
     },
     prepare: async (found) => {
       recorder.prepared.push(found.ref.key);
-      return prepared(found);
+      return parts.prepare === undefined ? prepared(found) : await parts.prepare(found);
     },
     claim: async (item) => {
       recorder.claims.push(item.ref.key);
       return parts.claim === undefined ? true : await parts.claim(item);
     },
-    progress: async (item) => {
-      throw new Error(`no ladder rung published a progress comment for ${item.ref.key}`);
+    progress: async (item, outcome) => {
+      recorder.progresses.push({ key: item.ref.key, outcome });
+      recorder.publications.push(`progress:${item.ref.key}:${outcome.status}`);
+      if (parts.progress === undefined) {
+        throw new Error(`no ladder rung published a progress comment for ${item.ref.key}`);
+      }
+      return await parts.progress(item, outcome);
     },
     complete: async (item, outcome) => {
       recorder.completions.push({ key: item.ref.key, outcome });
+      recorder.publications.push(`complete:${item.ref.key}:${outcome.status}`);
       return parts.complete === undefined
         ? await Promise.resolve({ commentId: '9001', text: 'published' })
         : await parts.complete(item, outcome);
@@ -286,13 +430,16 @@ function coordinatorHarness(
     attention: async (item, reason) => {
       recorder.refusals.push(`${item.ref.key}: attention: ${reason}`);
     },
-    commentsSince: async () => [],
+    commentsSince: async (item) =>
+      parts.commentsSince === undefined ? [] : await parts.commentsSince(item),
   };
   const context: SourceContext = {
     source,
     workDir,
     lockNamespace: NAMESPACE,
-    tiers: [{ name: 'default', agent: { runtime: 'codex', command: ['codex'] }, maxRepairs: 1 }],
+    tiers: parts.tiers ?? [
+      { name: 'default', agent: { runtime: 'codex', command: ['codex'] }, maxRepairs: 1 },
+    ],
     repoPath: path.join(workDir, 'source'),
     io: {
       out: (text) => recorder.outputs.push(text),
@@ -303,8 +450,12 @@ function coordinatorHarness(
       parts.preflight ??
       (async () => ({ sourceRoot: path.join(workDir, 'source'), baseCommit: BASE })),
     ...(parts.delivery === undefined ? {} : { delivery: parts.delivery }),
+    ...(parts.baselineDiagnosis === undefined
+      ? {}
+      : { baselineDiagnosis: parts.baselineDiagnosis }),
     run: async (request) => {
       recorder.runs.push(request.sourceRef.key);
+      recorder.requests.push(request);
       return parts.run === undefined ? runResult(workDir) : await parts.run(request);
     },
     now: () => new Date('2026-09-23T10:00:00.000Z'),
@@ -621,9 +772,11 @@ describe('the ending one run reports', () => {
 
 /**
  * A Git step the harness had to stop and could not confirm stopped is an intake
- * stop before a run result exists exactly as much as after one: the working copy
- * it was reading may still be written to, so nothing is published, nothing later
- * is read, and the receipt and the lock stay for a person (docs/spec.md §6).
+ * stop before a run result exists exactly as much as after one — the item's own
+ * preflight, the run preflight, and the verification of a retained workspace a
+ * continuation would reopen alike: the working copy it was reading may still be
+ * written to, so nothing is published, nothing later is read, and the receipt
+ * and the lock stay for a person (docs/spec.md §6).
  */
 describe('a Git stop the intake could not confirm before any run result exists', () => {
   it('keeps the lock, the receipt and every later reading when an item preflight fails this way', async () => {
@@ -720,6 +873,175 @@ describe('a Git stop the intake could not confirm before any run result exists',
     expect(kept?.problem).toContain('run: ');
     expect(kept?.problem).toContain('the run deadline expired');
     expect(existsSync(intakeLockPath(workDir, NAMESPACE))).toBe(true);
+  });
+
+  it('keeps the lock, the receipt and the retained workspace when reopening one fails this way', async () => {
+    const workDir = await createTempDir();
+    // The workspace a previous cycle retained, and the receipt its own earlier
+    // attempt left: the item's pointer names it, so this claim would continue it.
+    const workspace = await retainedWorkspace(workDir);
+    await writeFile(path.join(workspace.workspacePath, 'partial.txt'), 'keep partial work', 'utf8');
+    const held: SourceReceipt = {
+      version: 1,
+      source: REF,
+      reservedAt: '2026-09-22T09:00:00.000Z',
+    };
+    await reserveReceipt(receiptFilePath(workDir, REF), held);
+    const harness = coordinatorHarness(workDir, {
+      candidates: [candidate(), candidate('10012', 'HARN-12')],
+      prepare: (found) => ({
+        ref: found.ref,
+        task: { ...TASK, id: found.ref.key },
+        pointers: [workspace.workspaceId],
+      }),
+      preflight: async () => ({ sourceRoot: workspace.sourceRoot, baseCommit: BASE }),
+    });
+    // The verification reads the checkout with Git; this is what the read
+    // reported — a stop the harness could not confirm, so the working copy may
+    // still be written to. Any further read would reach the real Git and take
+    // the case off this branch.
+    const read = vi
+      .spyOn(invocation, 'runInvocation')
+      .mockResolvedValueOnce(unconfirmedGitInvocation());
+    try {
+      const summary = await runSource(harness.context, null);
+
+      expect(summary).toMatchObject({ outcome: 'stopped', attempted: 0, cleanupConfirmed: false });
+      expect(summary.problem).toContain(`${REF.key}: continuation verification`);
+      expect(summary.problem).toContain('termination unconfirmed');
+      expect(summary.problem).toContain(CLEANUP);
+      // The one read the verification made is the one the case handed it.
+      expect(read).toHaveBeenCalledTimes(1);
+      // Nothing was claimed, run or published — not even a refusal, which would
+      // take the item out of the queue on the strength of a failed reading — and
+      // the second candidate was never read.
+      expect(harness.calls.prepared).toEqual([REF.key]);
+      expect(harness.calls.claims).toEqual([]);
+      expect(harness.calls.runs).toEqual([]);
+      expect(harness.calls.completions).toEqual([]);
+      expect(harness.calls.refusals).toEqual([]);
+      // The receipt, the ledger and the working copy are left exactly as they
+      // were, and the lock stays for a person to inspect.
+      expect(await receipt(workDir)).toEqual(held);
+      expect(await readWorkspaceState(workDir, workspace.workspaceId)).toEqual(workspace.state);
+      expect(await readFile(path.join(workspace.workspacePath, 'partial.txt'), 'utf8')).toBe(
+        'keep partial work',
+      );
+      expect(existsSync(intakeLockPath(workDir, NAMESPACE))).toBe(true);
+      expect(harness.calls.outputs.join('\n')).toContain('left in place for inspection');
+    } finally {
+      read.mockRestore();
+    }
+  });
+});
+
+/**
+ * The pending pre-delivery diagnosis a previous invocation left: before anything
+ * is discovered, the intake finishes it. A reviewer turn whose own stop could
+ * not be confirmed stops discovery and polling exactly as a Git stop does — the
+ * lock is kept while it may still be writing — while a diagnosis that needs a
+ * person but stopped cleanly is reported and the batch goes on with the tickets
+ * it may take. No coding turn is ever started from a diagnosis
+ * (docs/WORKFLOW.md §11).
+ */
+describe('a pending baseline diagnosis a previous invocation left', () => {
+  /** The diagnosis boundary, with only the resume outcome the case supplies. */
+  function diagnosisResuming(
+    outcome: BaselineResumeOutcome | null,
+  ): SourceContext['baselineDiagnosis'] {
+    return {
+      diagnose: async () => {
+        throw new Error('nothing on this path diagnoses fresh evidence');
+      },
+      resume: async () => outcome,
+      reviewedFinding: async () => {
+        throw new Error('nothing on this path reads a reviewed finding back');
+      },
+    };
+  }
+
+  /** What a pending diagnosis whose reviewer was not confirmed stopped resumes as. */
+  function unconfirmedDiagnosis(): BaselineResumeOutcome {
+    return {
+      kind: 'attention',
+      detail: `${REF.key}: the reviewer runtime could not be confirmed stopped`,
+      commentId: 'c1',
+      cleanupConfirmed: false,
+    };
+  }
+
+  it('stops a batch before discovery and keeps the lock', async () => {
+    const workDir = await createTempDir();
+    const harness = coordinatorHarness(workDir, {
+      candidates: [candidate()],
+      baselineDiagnosis: diagnosisResuming(unconfirmedDiagnosis()),
+    });
+
+    const summary = await runSource(harness.context, null);
+
+    expect(summary).toMatchObject({ outcome: 'stopped', attempted: 0, cleanupConfirmed: false });
+    expect(summary.problem).toContain(
+      `${REF.key}: the reviewer runtime could not be confirmed stopped`,
+    );
+    // Nothing was discovered, claimed or run: a reviewer runtime may still be
+    // writing to the diagnosis's evidence, and no coding turn is started from a
+    // diagnosis either way.
+    expect(harness.calls.lists).toBe(0);
+    expect(harness.calls.claims).toEqual([]);
+    expect(harness.calls.runs).toEqual([]);
+    expect(harness.calls.completions).toEqual([]);
+    expect(existsSync(intakeLockPath(workDir, NAMESPACE))).toBe(true);
+    expect(harness.calls.outputs.join('\n')).toContain('left in place for inspection');
+  });
+
+  it('stops a watch the same way, without waiting for another scan', async () => {
+    const workDir = await createTempDir();
+    const waits: number[] = [];
+    const watch = watchHarness({
+      workDir,
+      waits,
+      list: async () => [candidate()],
+      baselineDiagnosis: diagnosisResuming(unconfirmedDiagnosis()),
+    });
+
+    const summary = await watchSource(watch.context);
+
+    expect(summary).toMatchObject({ outcome: 'stopped', attempted: 0, cleanupConfirmed: false });
+    // The scan never happened, so there is nothing to wait out and no second
+    // scan follows it.
+    expect(watch.scans()).toBe(0);
+    expect(waits).toEqual([]);
+    expect(watch.harness.calls.runs).toEqual([]);
+    expect(existsSync(intakeLockPath(workDir, NAMESPACE))).toBe(true);
+  });
+
+  it('reports a diagnosis that needs a person and goes on when it stopped cleanly', async () => {
+    const workDir = await createTempDir();
+    const harness = coordinatorHarness(workDir, {
+      candidates: [candidate()],
+      baselineDiagnosis: diagnosisResuming({
+        kind: 'attention',
+        detail: `${REF.key}: the baseline diagnosis needs a person`,
+        commentId: 'c1',
+        cleanupConfirmed: true,
+      }),
+    });
+
+    const summary = await runSource(harness.context, null);
+
+    // The item is left where the diagnosis left it and the batch goes on with
+    // the tickets it may take: discovery happens, the ticket runs, and the lock
+    // is released as usual.
+    expect(summary).toMatchObject({
+      outcome: 'completed',
+      attempted: 1,
+      passed: 1,
+      cleanupConfirmed: true,
+    });
+    expect(harness.calls.lists).toBe(1);
+    expect(harness.calls.runs).toEqual([REF.key]);
+    expect(harness.calls.outputs.join('\n')).toContain('needs a person');
+    expect(existsSync(intakeLockPath(workDir, NAMESPACE))).toBe(false);
   });
 });
 
@@ -897,6 +1219,150 @@ describe('delivering a passed attempt before its result is published', () => {
 });
 
 /**
+ * The escalation ladder one claim climbs: one attempt per rung, each its own run
+ * in the same retained workspace, an intermediate rung's own comment published
+ * while the item stays in the running status, and — when a ticket comes back to
+ * work in a workspace whose attempts have already spent the ladder — the first
+ * developer invocation of the new cycle is the first configured tier again, with
+ * the guidance the workspace's own ledger and the item's thread carry
+ * (docs/implement-workspace-continuation.md).
+ */
+describe('the escalation ladder one claim climbs', () => {
+  const TIERS: readonly EscalationTier[] = [
+    {
+      name: 'flash',
+      agent: { runtime: 'codex', command: ['codex', '--model', 'flash'] },
+      maxRepairs: 1,
+    },
+    {
+      name: 'pro',
+      agent: { runtime: 'codex', command: ['codex', '--model', 'pro'] },
+      maxRepairs: 2,
+    },
+  ];
+
+  it('climbs to the configured next tier in the same workspace, publishing the rung before the result', async () => {
+    const workDir = await createTempDir();
+    const harness = coordinatorHarness(workDir, {
+      tiers: TIERS,
+      candidates: [candidate()],
+      run: (request) =>
+        request.tier?.name === 'flash' ? exhaustedRung(workDir, 1) : runResult(workDir),
+      progress: async () => ({ commentId: '9001', text: 'published' }),
+    });
+
+    const summary = await runSource(harness.context, null);
+
+    // One issue, two attempts, one entry in the counters: the climb ended at the
+    // rung that passed.
+    expect(summary).toMatchObject({ outcome: 'completed', attempted: 1, passed: 1, failed: 0 });
+    expect(harness.calls.requests.map((request) => request.tier?.name)).toEqual(['flash', 'pro']);
+    // The second rung works in the workspace the first attempt made — the record
+    // its own run carried — as the workspace's next attempt.
+    expect(harness.calls.requests[0]?.continuedWorkspace).toBeUndefined();
+    expect(harness.calls.requests[1]?.continuedWorkspace).toEqual({
+      workspaceId: REF.key,
+      workspacePath: workspacePathFor(workDir, REF.key),
+      branch: `harness/${REF.key}`,
+      baseCommit: BASE,
+      attempt: 2,
+    });
+    // The intermediate rung's own comment is published while the item stays in
+    // the running status; only the last rung's result moves it to review.
+    expect(harness.calls.progresses.map((entry) => entry.outcome.attempt)).toEqual([
+      { number: 1, of: 2, tier: 'flash' },
+    ]);
+    expect(harness.calls.completions.map((entry) => entry.outcome.attempt)).toEqual([
+      { number: 2, of: 2, tier: 'pro' },
+    ]);
+    expect(harness.calls.publications).toEqual([
+      `progress:${REF.key}:failed`,
+      `complete:${REF.key}:passed`,
+    ]);
+    expect(harness.calls.outputs.join('\n')).toContain('the issue stays in the running status');
+    expect(harness.calls.outputs.join('\n')).toContain('escalating to tier pro (attempt 2 of 2)');
+    expect(await receipt(workDir)).toMatchObject({
+      outcome: 'passed',
+      feedback: 'sent',
+      runId: 'run-1',
+    });
+  });
+
+  it('restarts a ticket that came back to work at the first tier of its retained workspace', async () => {
+    const workDir = await createTempDir();
+    // The workspace two attempts of an earlier cycle left, in the ledger and the
+    // checkout the next claim continues.
+    const workspace = await retainedWorkspace(workDir, [
+      {
+        runId: 'run-1',
+        outcome: 'failed',
+        tier: 'flash',
+        reason: 'the first rung left the greeting missing',
+        endedAt: '2026-09-22T09:00:00.000Z',
+        reportPath: path.join(workDir, 'runs', 'run-1', 'result.json'),
+      },
+      {
+        runId: 'run-2',
+        outcome: 'failed',
+        tier: 'pro',
+        reason: 'the second rung left the greeting unpunctuated',
+        endedAt: '2026-09-22T10:00:00.000Z',
+        reportPath: path.join(workDir, 'runs', 'run-2', 'result.json'),
+      },
+    ]);
+    const harness = coordinatorHarness(workDir, {
+      tiers: TIERS,
+      candidates: [candidate()],
+      prepare: (found) => ({
+        ref: found.ref,
+        task: { ...TASK, id: found.ref.key },
+        pointers: [workspace.workspaceId],
+      }),
+      preflight: async () => ({ sourceRoot: workspace.sourceRoot, baseCommit: BASE }),
+      commentsSince: async () => [
+        {
+          author: 'Nexus Lens',
+          createdAt: '2026-09-23T09:00:00.000Z',
+          text: 'the reviewer asked for the greeting to end in a newline',
+        },
+      ],
+    });
+
+    const summary = await runSource(harness.context, null);
+
+    expect(summary).toMatchObject({ outcome: 'completed', attempted: 1, passed: 1 });
+    // The cycle's first rung is the first configured tier, whatever the
+    // workspace's own attempt count has reached — and it continues that same
+    // workspace, at its next attempt.
+    expect(harness.calls.requests.map((request) => request.tier?.name)).toEqual(['flash']);
+    expect(harness.calls.requests[0]?.continuedWorkspace).toEqual({
+      workspaceId: workspace.workspaceId,
+      workspacePath: workspace.workspacePath,
+      branch: workspace.branch,
+      baseCommit: workspace.baseCommit,
+      attempt: 3,
+    });
+    // What the attempts before it did, and what the item's own thread said
+    // since, travels with the attempt as its guidance.
+    expect(harness.calls.requests[0]?.guidance).toEqual([
+      'attempt 1 (tier flash) failed: the first rung left the greeting missing',
+      'attempt 2 (tier pro) failed: the second rung left the greeting unpunctuated',
+      'comment by Nexus Lens at 2026-09-23T09:00:00.000Z: ' +
+        'the reviewer asked for the greeting to end in a newline',
+    ]);
+    // This cycle's own ladder may still climb; this attempt passed, so it did
+    // not, and the issue is told the result once.
+    expect(harness.calls.progresses).toEqual([]);
+    expect(harness.calls.completions).toHaveLength(1);
+    expect(harness.calls.completions[0]?.outcome.attempt).toEqual({
+      number: 1,
+      of: 2,
+      tier: 'flash',
+    });
+  });
+});
+
+/**
  * One source watch whose scans, reads and waits the case controls. The item and
  * the agent turn are the same stand-ins a finite batch is driven with; the
  * idle wait is where a case ends the watch.
@@ -907,14 +1373,18 @@ function watchHarness(parts: {
   readonly prepare?: (found: SourceCandidate) => Promise<SourceTask | null>;
   /** The source/output preflight the watch scans under; a passing one when absent. */
   readonly preflight?: SourceContext['preflight'];
+  /** The pending diagnosis the case supplies; absent means the phase is off. */
+  readonly baselineDiagnosis?: SourceContext['baselineDiagnosis'];
   readonly waits: number[];
   /** Called after each wait was recorded; the case may end the watch here. */
   readonly afterWait?: (count: number) => void;
 }) {
-  const harness = coordinatorHarness(
-    parts.workDir,
-    parts.preflight === undefined ? {} : { preflight: parts.preflight },
-  );
+  const harness = coordinatorHarness(parts.workDir, {
+    ...(parts.preflight === undefined ? {} : { preflight: parts.preflight }),
+    ...(parts.baselineDiagnosis === undefined
+      ? {}
+      : { baselineDiagnosis: parts.baselineDiagnosis }),
+  });
   const stop = new AbortController();
   let scans = 0;
   const prepare = parts.prepare;
