@@ -1143,7 +1143,8 @@ The supervisor keeps only:
 ```text
 <workDir>/.supervisor/<supervision-id>/     # a hash of the checkout and the harness configuration
   holders/holder-000001.json        # one claim per invocation, named by the rank it published
-  current.json                      # the incident being carried, and the worker's PID
+  current.json                      # the incident being carried, the worker's PID, and the work
+                                    #   its launch was started for
   incidents/<incident-id>/incident.json   # stops, origin, attempts, pending attempt, resume plan,
                                           # conclusion, resumption, report ids and states
   incidents/<incident-id>/attempt-1/{input.md,recovery.log,outcome.json}
