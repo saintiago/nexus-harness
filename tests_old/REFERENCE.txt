@@ -67,8 +67,10 @@ below is kept for the behavior named beside the active suite that now carries it
 - source.test.ts — the intake coordinator's own retained state: the receipt reserved before
   anything remote or paid, the retention of an uncertain claim, the release of a claim that sent
   no mutation, the local result a failed publication keeps, and the per-project lock that is
-  never broken or adopted (tests/boundary/source-coordinator.test.ts), with the four-field task
-  and claim contracts themselves in tests/boundary/jira-connector.test.ts.
+  never broken or adopted; and the watch cadence over that state — the poll interval, the
+  server-directed retry delay, the backoff a read that reserved nothing gets, and the fatal
+  failure that stops the loop instead (tests/boundary/source-coordinator.test.ts) — with the
+  four-field task and claim contracts themselves in tests/boundary/jira-connector.test.ts.
 - activity.test.ts — the activity pane's presentation: the lines one invocation draws, the
   message and latest-work bound, the boundary that opens a pane, and the control characters and
   escape sequences a runtime's text may never carry into the terminal

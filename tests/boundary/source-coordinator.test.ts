@@ -1,7 +1,9 @@
 /**
  * The intake coordinator's retained state, as real files under one output
  * directory: the receipt that reserves an item before anything remote or paid
- * happens, and the per-project lock that admits one consumer at a time.
+ * happens, the per-project lock that admits one consumer at a time, and the
+ * watch cadence over that state — the poll interval, a retry that waits out the
+ * delay the source asked for, and a failure that stops the loop instead.
  *
  * The item, the agent turn and the service answers are the case's stand-ins —
  * the coordinator starts no runtime and no command here — while the receipt
@@ -28,7 +30,8 @@ import type {
   TaskSource,
 } from '../../src/sources/contract.js';
 import { SourceError, SourceFeedbackError } from '../../src/sources/contract.js';
-import { runSource } from '../../src/sources/coordinator.js';
+import { runSource, WATCH_BACKOFF_BASE_MS, watchSource } from '../../src/sources/coordinator.js';
+import type { SourceWatchOptions } from '../../src/sources/coordinator.js';
 import type { SourceReceipt } from '../../src/sources/receipts.js';
 import {
   acquireIntakeLock,
@@ -336,6 +339,158 @@ describe('one item, one receipt, across invocations', () => {
     expect(harness.calls.claims).toEqual([]);
     expect(harness.calls.runs).toEqual([]);
     expect(await readFile(file, 'utf8')).toBe('{ not json');
+  });
+});
+
+/**
+ * One source watch whose scans, reads and waits the case controls. The item and
+ * the agent turn are the same stand-ins a finite batch is driven with; the
+ * idle wait is where a case ends the watch.
+ */
+function watchHarness(parts: {
+  readonly workDir: string;
+  readonly list: (scan: number) => Promise<readonly SourceCandidate[]>;
+  readonly prepare?: (found: SourceCandidate) => Promise<SourceTask | null>;
+  readonly waits: number[];
+  /** Called after each wait was recorded; the case may end the watch here. */
+  readonly afterWait?: (count: number) => void;
+}) {
+  const harness = coordinatorHarness(parts.workDir, {});
+  const stop = new AbortController();
+  let scans = 0;
+  const prepare = parts.prepare;
+  const context: SourceWatchOptions = {
+    ...harness.context,
+    stop: stop.signal,
+    pollIntervalMs: 30_000,
+    source: {
+      ...harness.context.source,
+      listEligible: async () => {
+        scans += 1;
+        return await parts.list(scans);
+      },
+      ...(prepare === undefined
+        ? {}
+        : { prepare: async (found: SourceCandidate) => await prepare(found) }),
+    },
+    sleep: async (ms) => {
+      parts.waits.push(ms);
+      parts.afterWait?.(parts.waits.length);
+    },
+  };
+  return { harness, stop, scans: () => scans, context };
+}
+
+describe('the source watch', () => {
+  it('scans, processes a batch, waits the interval, and picks up later work', async () => {
+    const workDir = await createTempDir();
+    const waits: number[] = [];
+    const stop = new AbortController();
+    const watch = watchHarness({
+      workDir,
+      waits,
+      list: async (scan) => (scan === 1 ? [] : [candidate()]),
+      afterWait: (count) => {
+        // The second wait follows the run the later scan found: the watch has
+        // scanned again, run the ticket, and is idle once more.
+        if (count === 2) {
+          stop.abort(new Error('stop watching'));
+        }
+      },
+    });
+
+    const summary = await watchSource({
+      ...watch.context,
+      stop: stop.signal,
+    });
+
+    expect(watch.scans()).toBe(2);
+    expect(waits).toEqual([30_000, 30_000]);
+    expect(summary).toMatchObject({ outcome: 'cancelled', attempted: 1, passed: 1 });
+    expect(watch.harness.calls.runs).toEqual([REF.key]);
+    // Nothing outlives the watch: the lock it held is released.
+    expect(existsSync(intakeLockPath(workDir, NAMESPACE))).toBe(false);
+  });
+
+  it('waits out a server-directed delay after a read failure, and never shortens it', async () => {
+    const workDir = await createTempDir();
+    const waits: number[] = [];
+    const stop = new AbortController();
+    const watch = watchHarness({
+      workDir,
+      waits,
+      list: async (scan) => {
+        if (scan === 1) {
+          throw new SourceError('retryable-read', 'the search answered HTTP 429', {
+            retryAfterMs: 600_000,
+          });
+        }
+        return [];
+      },
+      afterWait: (count) => {
+        if (count === 2) {
+          stop.abort(new Error('stop watching'));
+        }
+      },
+    });
+
+    const summary = await watchSource({ ...watch.context, stop: stop.signal });
+
+    expect(watch.scans()).toBe(2);
+    expect(waits).toEqual([600_000, 30_000]);
+    expect(watch.harness.calls.outputs.join('\n')).toContain('retrying in 600000 ms');
+    expect(summary.outcome).toBe('cancelled');
+  });
+
+  it('retries a read that failed before any reservation with its own backoff', async () => {
+    const workDir = await createTempDir();
+    const waits: number[] = [];
+    const stop = new AbortController();
+    let reads = 0;
+    const watch = watchHarness({
+      workDir,
+      waits,
+      list: async () => [candidate()],
+      prepare: async (found) => {
+        reads += 1;
+        if (reads === 1) {
+          throw new SourceError('retryable-read', 'the issue read timed out');
+        }
+        return prepared(found);
+      },
+      afterWait: (count) => {
+        if (count === 2) {
+          stop.abort(new Error('stop watching'));
+        }
+      },
+    });
+
+    const summary = await watchSource({ ...watch.context, stop: stop.signal });
+
+    // Nothing was claimed or reserved by the read that failed, so the watch
+    // backs off by its own base and asks again instead of stopping.
+    expect(waits).toEqual([WATCH_BACKOFF_BASE_MS, 30_000]);
+    expect(summary).toMatchObject({ outcome: 'cancelled', passed: 1 });
+    expect((await receipt(workDir))?.feedback).toBe('sent');
+  });
+
+  it('stops on a fatal failure instead of retrying it', async () => {
+    const workDir = await createTempDir();
+    const waits: number[] = [];
+    const watch = watchHarness({
+      workDir,
+      waits,
+      list: async () => {
+        throw new SourceError('fatal', 'the configured token was not accepted');
+      },
+    });
+
+    const summary = await watchSource(watch.context);
+
+    expect(summary.outcome).toBe('stopped');
+    expect(summary.problem).toContain('the configured token was not accepted');
+    expect(waits).toEqual([]);
+    expect(existsSync(intakeLockPath(workDir, NAMESPACE))).toBe(false);
   });
 });
 
