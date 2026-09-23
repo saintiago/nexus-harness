@@ -375,7 +375,9 @@ describe('GitHub adapter', () => {
           state: 'CHANGES_REQUESTED',
           body: 'Needs work',
           commit_id: 'reviewed-revision',
+          user: { login: 'nexus-lens[bot]', type: 'Bot' },
         },
+        { id: 56, state: 'COMMENTED', body: 'Note', commit_id: null, user: null },
       ]),
       ghJson([{ id: 77, body: 'Reply', path: 'src/index.ts', in_reply_to_id: 66 }]),
     ]);
@@ -390,7 +392,10 @@ describe('GitHub adapter', () => {
         state: 'CHANGES_REQUESTED',
         body: 'Needs work',
         commit_id: 'reviewed-revision',
+        user: { login: 'nexus-lens[bot]', type: 'Bot' },
+        author: 'nexus-lens[bot]',
       },
+      { id: 56, state: 'COMMENTED', body: 'Note', commit_id: null, user: null, author: null },
     ]);
     expect(conversation.reviewComments[0]).toMatchObject({
       id: 77,

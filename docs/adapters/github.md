@@ -23,7 +23,7 @@ that operation; it does not combine the decision into ensurePullRequest.
 | Find pull requests | Branch/base filters → matching PR identities | [Deliver](../task-engine/actions/deliver.md#interface) |
 | Read pull request | PR identity → head, base, state, merge revision and auto-merge state | Deliver, Review, CompleteTask |
 | Create or update pull request | Explicit branch/base or PR identity and requested fields → PR identity, URL and head | Deliver |
-| Read conversation and reviews | PR identity → complete comments, review threads, findings and reviewed revisions | [Review](../task-engine/actions/review.md#interface) |
+| Read conversation and reviews | PR identity → complete comments, review threads, review authors and reviewed revisions | [Review](../task-engine/actions/review.md#interface) |
 | Publish review as Nexus Lens | PR, reviewed head, verdict and content → review identity | Review |
 | Read checks | Revision → check names, producer identities, statuses and conclusions | Review, CompleteTask |
 | Publish or update Nexus Lens review check | Reviewed revision, configured check and result → App-owned check identity | Review |
@@ -37,7 +37,7 @@ Queries return observations; the caller decides whether the expected gate or pub
 
 ## Behavior
 
-Preserve revision and check-producer identity, conversation structure and complete requested content.
+Preserve revision, review-author and check-producer identity, conversation structure and complete requested content.
 Apply supported provider preconditions when requested.
 
 Obtain and renew installation tokens within this adapter as needed. Keep App credentials and tokens

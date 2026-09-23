@@ -46,6 +46,19 @@ export const reviewOutputSchema = z.object({
 
 export type ReviewOutput = z.infer<typeof reviewOutputSchema>;
 
+/**
+ * The agent's response fields. The action binds them to the configured profile and the observed
+ * reviewed head before writing its output.
+ */
+export const reviewResponseSchema = reviewOutputSchema.pick({
+  verdict: true,
+  summary: true,
+  findings: true,
+  priorFindings: true,
+});
+
+export type ReviewResponse = z.infer<typeof reviewResponseSchema>;
+
 export const reviewArtifact = {
   pathFromArtifactsRoot: 'review.json',
   schema: reviewOutputSchema,

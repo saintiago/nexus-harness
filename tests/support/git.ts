@@ -1,10 +1,10 @@
-import type { GitAdapter, RepositoryState } from '../../src/adapters/git.js';
+import type { BranchHead, GitAdapter, RepositoryState } from '../../src/adapters/git.js';
 import { ok, type Result } from '../../src/result.js';
 
 /**
  * A controlled Git adapter for action tests: inspections answer from the scripted observations
- * and every other operation fails the test. The default observation is the prepared task branch at
- * the initial revision with no uncommitted work.
+ * and every other operation is answered by the supplied operations or fails the test. The default
+ * observation is the prepared task branch at the initial revision with no uncommitted work.
  */
 
 /** One repository observation with the prepared branch and no uncommitted work by default. */
@@ -19,8 +19,29 @@ export function repositoryState(overrides: Partial<RepositoryState> = {}): Repos
   };
 }
 
-/** A Git adapter that answers inspections from the script and fails every other operation. */
-export function scriptedGit(observations: readonly (RepositoryState | Error)[]): {
+/** The Git operations a test supplies beyond the scripted inspections. */
+export type GitOperations = {
+  pushBranch?(
+    repository: string,
+    branch: string,
+    expectedHead: string,
+  ): Result<BranchHead> | Promise<Result<BranchHead>>;
+  readRemoteBranchHead?(
+    remote: string,
+    branch: string,
+  ): Result<string | null> | Promise<Result<string | null>>;
+  readDiff?(
+    repository: string,
+    baseRevision: string,
+    headRevision: string,
+  ): Result<string> | Promise<Result<string>>;
+};
+
+/** A Git adapter that answers inspections from the script, the supplied operations and nothing else. */
+export function scriptedGit(
+  observations: readonly (RepositoryState | Error)[],
+  operations: GitOperations = {},
+): {
   readonly git: GitAdapter;
   readonly calls: string[];
 } {
@@ -55,14 +76,23 @@ export function scriptedGit(observations: readonly (RepositoryState | Error)[]):
       async createBranch() {
         return unexpected('createBranch');
       },
-      async readDiff() {
-        return unexpected('readDiff');
+      async pushBranch(repository, branch, expectedHead) {
+        calls.push(`push:${branch}@${expectedHead}`);
+        return operations.pushBranch
+          ? await operations.pushBranch(repository, branch, expectedHead)
+          : unexpected('pushBranch');
       },
-      async pushBranch() {
-        return unexpected('pushBranch');
+      async readRemoteBranchHead(remote, branch) {
+        calls.push(`remote:${remote}:${branch}`);
+        return operations.readRemoteBranchHead
+          ? await operations.readRemoteBranchHead(remote, branch)
+          : unexpected('readRemoteBranchHead');
       },
-      async readRemoteBranchHead() {
-        return unexpected('readRemoteBranchHead');
+      async readDiff(repository, baseRevision, headRevision) {
+        calls.push(`diff:${baseRevision}..${headRevision}`);
+        return operations.readDiff
+          ? await operations.readDiff(repository, baseRevision, headRevision)
+          : unexpected('readDiff');
       },
     },
   };

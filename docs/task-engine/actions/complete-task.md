@@ -36,7 +36,9 @@ Only completed produces a usable completionArtifact. Provider access failures ar
 ## Behavior
 
 Require approval of the delivered head. Read current PR state and checks from their configured
-producers. If the head changed, do not transfer the old approval.
+producers. The review check must come from the Nexus Lens producer, be completed and be successful
+for the approved head; a same-name check from another producer is not the Lens gate. If the head
+changed, do not transfer the old approval.
 
 Observe the actual merge and require every configured post-merge check to succeed for that merge
 revision. Those successful results are the completion evidence. Pending work remains pending within

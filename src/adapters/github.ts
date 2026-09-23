@@ -104,12 +104,14 @@ export type GitHubComment = {
   readonly [property: string]: unknown;
 };
 
-/** One submitted review with its state, body and the revision it reviewed. */
+/** One submitted review with its state, author, body and the revision it reviewed. */
 export type GitHubReview = {
   readonly id: number;
   readonly state: string;
   readonly body: string;
   readonly commit_id: string | null;
+  /** The login of the account that submitted the review, when the provider reports it. */
+  readonly author: string | null;
   readonly [property: string]: unknown;
 };
 
@@ -282,6 +284,7 @@ const reviewSchema = z.looseObject({
   state: z.string(),
   body: z.string(),
   commit_id: z.string().nullable(),
+  user: z.looseObject({ login: z.string() }).nullable(),
 });
 
 const reviewCommentSchema = z.looseObject({
@@ -357,11 +360,16 @@ const autoMergeAcceptanceSchema = z.looseObject({
   }),
 });
 
-/** The provider's review event for each verdict Nexus publishes. */
-const reviewEvents: Readonly<Record<ReviewVerdict, string>> = {
-  approved: 'APPROVE',
-  changesRequested: 'REQUEST_CHANGES',
-  inconclusive: 'COMMENT',
+/**
+ * How GitHub encodes each verdict Nexus publishes: the event that submits the review and the state
+ * the submitted review is later observed with. Consumers compare observed review states with it.
+ */
+export const reviewEncoding: Readonly<
+  Record<ReviewVerdict, { readonly event: string; readonly state: string }>
+> = {
+  approved: { event: 'APPROVE', state: 'APPROVED' },
+  changesRequested: { event: 'REQUEST_CHANGES', state: 'CHANGES_REQUESTED' },
+  inconclusive: { event: 'COMMENT', state: 'COMMENTED' },
 };
 
 /**
@@ -866,7 +874,10 @@ export function createGitHubAdapter(
       }
       return ok({
         comments: comments.value,
-        reviews: reviews.value,
+        reviews: reviews.value.map((review) => ({
+          ...review,
+          author: review.user?.login ?? null,
+        })),
         reviewComments: reviewComments.value,
       });
     },
@@ -883,7 +894,7 @@ export function createGitHubAdapter(
         {
           commit_id: review.revision,
           body: review.body,
-          event: reviewEvents[review.verdict],
+          event: reviewEncoding[review.verdict].event,
         },
       );
       return published.ok

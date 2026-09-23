@@ -69,6 +69,9 @@ Save the complete report. Publish its review and configured review check for tha
 the Nexus Lens publication capability. Only approved produces a successful review check;
 changesRequested and inconclusive cannot authorize merge. The complete agent conversation stays
 in local artifacts; the published review summarizes the result.
+Recognize an already-published review by the configured Nexus Lens author, the reviewed commit, the
+verdict and the report body, and the check by the configured name, the Nexus Lens producer identity,
+a completed status and the verdict's conclusion. Publish only the missing part.
 Publish a concise ticket comment beginning with the profile and explaining what was missed and what
 to improve. A requested repair stays in the current workflow; a Jira comment is not the repair input.
 
