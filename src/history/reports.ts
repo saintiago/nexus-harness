@@ -826,9 +826,17 @@ export function reportSummaryOf(report: LocalReport): HistoryReportSummary | nul
 }
 
 /**
- * The next review round's number for one ticket: one more than the reviewer
- * reports and review records this machine already holds, so the number a report
- * is recorded with is the position the brief and the index show.
+ * The next review round's number for one ticket: one more than the highest
+ * round this machine can establish for a review it already holds, and never at
+ * or below the number of review attempts it still holds, so the number a report
+ * is recorded with is the position the brief and the index show and a new
+ * review is never recorded under a round another review already states.
+ *
+ * A review establishes its round in its own durable evidence: a retained
+ * report's digest, the history snapshot the attempt was prepared with, or the
+ * report verdict saved beside its digest. Counting the review attempts that
+ * remain is a floor, never the position an attempt really had: an attempt whose
+ * evidence is gone is absent from any count of them (docs/WORKFLOW.md §9).
  */
 export async function nextReviewRound(parts: {
   readonly workDir: string;
@@ -836,33 +844,57 @@ export async function nextReviewRound(parts: {
   readonly ref: SourceRef;
 }): Promise<number> {
   const { workDir, root, ref } = parts;
-  const rounds = new Set<string>();
+  /** Every review attempt this machine still names, so one attempt counts once. */
+  const attempts = new Set<string>();
+  /** The highest round a retained report states; `0` when none states one. */
+  let highest = 0;
+  const dir = historyReportsDir(root);
   try {
-    for (const name of await readdir(historyReportsDir(root))) {
-      if (/^reviewer-[A-Za-z0-9_-]+\.json$/.test(name)) {
-        rounds.add(name.slice('reviewer-'.length, -'.json'.length));
+    for (const name of await readdir(dir)) {
+      if (!/^reviewer-[A-Za-z0-9_-]+\.json$/.test(name)) {
+        continue;
+      }
+      attempts.add(name.slice('reviewer-'.length, -'.json'.length));
+      const value = await readJson(path.join(dir, name));
+      const round =
+        typeof value === 'object' && value !== null && !Array.isArray(value)
+          ? (value as Record<string, unknown>)['round']
+          : undefined;
+      if (typeof round === 'number' && Number.isSafeInteger(round) && round >= 1) {
+        highest = Math.max(highest, round);
       }
     }
   } catch {
     // No reports directory yet: nothing was reviewed.
   }
+  const reviewsRoot = path.join(path.resolve(workDir), 'reviews');
   try {
-    for (const name of await readdir(path.join(path.resolve(workDir), 'reviews'))) {
-      const record = await readJson(
-        path.join(path.resolve(workDir), 'reviews', name, 'review.json'),
-      );
+    for (const name of await readdir(reviewsRoot)) {
+      const record = await readJson(path.join(reviewsRoot, name, 'review.json'));
       if (record === null || typeof record !== 'object') {
         continue;
       }
       const value = record as Record<string, unknown>;
-      if (sameTicket(value['ref'], ref) && typeof value['reviewId'] === 'string') {
-        rounds.add(value['reviewId']);
+      if (!sameTicket(value['ref'], ref) || typeof value['reviewId'] !== 'string') {
+        continue;
+      }
+      attempts.add(value['reviewId']);
+      // The attempt's own evidence states the round it was recorded with even
+      // when its report digest is gone; a record that states none adds nothing
+      // but the attempt it was.
+      const stated = await statedReviewRound({
+        root,
+        reviewId: value['reviewId'],
+        history: typeof value['history'] === 'string' ? value['history'] : null,
+      });
+      if (stated !== null) {
+        highest = Math.max(highest, stated.round);
       }
     }
   } catch {
     // No review directory yet: nothing was reviewed.
   }
-  return rounds.size + 1;
+  return Math.max(highest, attempts.size) + 1;
 }
 
 /**
@@ -1223,44 +1255,16 @@ export async function readLocalReports(parts: {
     .map((record) => record.reviewId);
 
   /**
-   * The review attempts this machine can still name, each dated by the earliest
-   * evidence that places it: a retained report's own recording time and the
-   * review record's start. A recovered report is placed among these only when
-   * nothing of its own states its round — and counting them all is what keeps
-   * the position it is placed at the position `nextReviewRound` counted, since
-   * a retained report is an attempt too (docs/WORKFLOW.md §9).
+   * The rounds the retained reports and the already recovered reports name. A
+   * round one of them holds is never handed to another review's findings: the
+   * attempts that remain are not evidence of a round, so a recovery that cannot
+   * read one keeps the gap and names its findings by the review's own identity
+   * instead (docs/WORKFLOW.md §9).
    */
-  const attempts = new Map<string, KnownReviewAttempt>();
-  const rememberAttempt = (attempt: KnownReviewAttempt): void => {
-    const held = attempts.get(attempt.reviewId);
-    attempts.set(
-      attempt.reviewId,
-      held === undefined
-        ? attempt
-        : {
-            reviewId: attempt.reviewId,
-            round: held.round ?? attempt.round,
-            at: compareHistoryTime(attempt.at, held.at) < 0 ? attempt.at : held.at,
-          },
-    );
-  };
-  for (const report of reports) {
-    if (report.kind === 'reviewer-report') {
-      rememberAttempt({
-        reviewId: report.digest.reviewId,
-        round: report.digest.round,
-        at: report.digest.createdAt,
-      });
-    }
-  }
-  for (const record of records) {
-    rememberAttempt({ reviewId: record.reviewId, round: null, at: record.startedAt });
-  }
-  /** The rounds the retained reports and the already recovered reports name. */
   const claimedRounds = new Set<number>();
-  for (const attempt of attempts.values()) {
-    if (attempt.round !== null) {
-      claimedRounds.add(attempt.round);
+  for (const report of reports) {
+    if (report.kind === 'reviewer-report' && report.digest.round !== null) {
+      claimedRounds.add(report.digest.round);
     }
   }
 
@@ -1278,7 +1282,6 @@ export async function readLocalReports(parts: {
     const round = await recoveredReviewRound({
       root,
       record,
-      attempts,
       claimed: claimedRounds,
     });
     const recovered = await readRetainedVerdict({
@@ -1354,17 +1357,6 @@ interface ReviewRecordIdentity {
 }
 
 /**
- * One review attempt this machine can still name: its own review id, the round
- * its retained report states when that report survives, and the earliest
- * evidence that places the attempt in time.
- */
-interface KnownReviewAttempt {
-  readonly reviewId: string;
-  readonly round: number | null;
-  readonly at: string;
-}
-
-/**
  * The round one recovered reviewer report was originally recorded with, and how
  * this machine read it back.
  *
@@ -1372,12 +1364,12 @@ interface KnownReviewAttempt {
  * when the round they were recorded under is restored, because an identity is
  * the round and the finding's position in it. The round is read back from the
  * review's own durable evidence — the conversation snapshot the attempt was
- * prepared with, or the report verdict saved beside its digest — and only when
- * none of it survived from the attempts this machine still holds, counted the
- * way `nextReviewRound` counts them, retained reports included. A round that
- * would name another review's findings the same way is never invented: the
- * findings are named by the review's own identity instead, and the gap is
- * reported (docs/WORKFLOW.md §9).
+ * prepared with, or the report verdict saved beside its digest. When neither
+ * states it, the review attempts that remain are not evidence of it: an attempt
+ * whose own evidence is gone is absent from any count of them, and the number
+ * such a count yields may be a round another review already states. A round is
+ * never invented: the findings are named by the review's own identity instead,
+ * and the gap is reported (docs/WORKFLOW.md §9).
  */
 interface RecoveredRound {
   /** The round the review was recorded with, or `null` when it cannot be established. */
@@ -1451,15 +1443,54 @@ function recordedRoundOf(saved: unknown): number | null {
 }
 
 /**
+ * The round one review attempt's own durable evidence states, and where it
+ * states it: the conversation snapshot the attempt was prepared with, or the
+ * report verdict saved beside its digest. `null` is the honest answer when
+ * neither is there — and never a number read off the position of the attempts
+ * around it, which no evidence establishes (docs/WORKFLOW.md §9).
+ */
+async function statedReviewRound(parts: {
+  readonly root: string;
+  readonly reviewId: string;
+  readonly history: string | null;
+}): Promise<{ readonly round: number; readonly from: string } | null> {
+  // A review id this harness did not write is not turned into a file name.
+  if (!/^[A-Za-z0-9_-]+$/.test(parts.reviewId)) {
+    return null;
+  }
+  // The snapshot this review's own turn was prepared with states the round the
+  // attempt was given, before anything was recorded from it.
+  if (parts.history !== null) {
+    const file = path.join(parts.history, 'index.json');
+    const index = await readJson(file);
+    const round =
+      index !== null && typeof index === 'object' && !Array.isArray(index)
+        ? (index as Record<string, unknown>)['round']
+        : undefined;
+    if (typeof round === 'number' && Number.isSafeInteger(round) && round >= 1) {
+      return { round, from: `the history snapshot this review was prepared with ("${file}")` };
+    }
+  }
+  // The report verdict the harness saved beside the digest states each
+  // finding's own identity (`recordedAs`), and the round is the one they were
+  // recorded under.
+  const verdictFile = reportFile(parts.root, `reviewer-${parts.reviewId}.verdict.json`);
+  const recorded = recordedRoundOf(await readJson(verdictFile));
+  return recorded === null
+    ? null
+    : { round: recorded, from: `the report verdict saved beside its digest ("${verdictFile}")` };
+}
+
+/**
  * Establishes one recovered reviewer report's original round from the review's
  * own durable evidence, never from its position among the review records that
  * remain. A round another review of this ticket already holds is a named gap,
- * not a second identity for one review's findings.
+ * not a second identity for one review's findings; so is a round no evidence
+ * states at all.
  */
 async function recoveredReviewRound(parts: {
   readonly root: string;
   readonly record: ReviewRecordIdentity;
-  readonly attempts: ReadonlyMap<string, KnownReviewAttempt>;
   readonly claimed: ReadonlySet<number>;
 }): Promise<RecoveredRound> {
   const { record } = parts;
@@ -1474,58 +1505,27 @@ async function recoveredReviewRound(parts: {
         }
       : { round, from, problem: null };
 
-  // The snapshot this review's own turn was prepared with states the round the
-  // attempt was given, before anything was recorded from it.
-  if (record.history !== null) {
-    const file = path.join(record.history, 'index.json');
-    const index = await readJson(file);
-    const round =
-      index !== null && typeof index === 'object' && !Array.isArray(index)
-        ? (index as Record<string, unknown>)['round']
-        : undefined;
-    if (typeof round === 'number' && Number.isSafeInteger(round) && round >= 1) {
-      return settled(round, `the history snapshot this review was prepared with ("${file}")`);
-    }
+  const stated = await statedReviewRound({
+    root: parts.root,
+    reviewId: record.reviewId,
+    history: record.history,
+  });
+  if (stated !== null) {
+    return settled(stated.round, stated.from);
   }
-
-  // The report verdict the harness saved beside the digest states each
-  // finding's own identity (`recordedAs`), and the round is the one they were
-  // recorded under.
-  const verdictFile = reportFile(parts.root, `reviewer-${record.reviewId}.verdict.json`);
-  const recorded = recordedRoundOf(await readJson(verdictFile));
-  if (recorded !== null) {
-    return settled(recorded, `the report verdict saved beside its digest ("${verdictFile}")`);
-  }
-
-  // Nothing of the review's own states its round: place it among every attempt
-  // this machine still holds, dated the way `nextReviewRound` counted them.
-  let earlier = 0;
-  for (const attempt of parts.attempts.values()) {
-    if (
-      attempt.reviewId !== record.reviewId &&
-      compareHistoryTime(attempt.at, record.startedAt) < 0
-    ) {
-      earlier += 1;
-    }
-  }
-  const placed = earlier + 1;
-  if (!parts.claimed.has(placed)) {
-    return {
-      round: placed,
-      from:
-        `the ${String(earlier)} review attempt${earlier === 1 ? '' : 's'} of this ticket this ` +
-        'machine still holds before it, retained reports and review records together',
-      problem: null,
-    };
-  }
+  // Nothing of the review's own states its round, and the attempts that remain
+  // are no evidence of it: an attempt whose own evidence is gone is absent from
+  // any count of them, so a count would name these findings with a round this
+  // review may never have had — possibly one another review of this ticket
+  // already states, which would rename that review's finding. The gap and the
+  // review's own identity are the honest answer.
   return {
     round: null,
     from: null,
     problem:
-      `the ${String(earlier)} review attempt${earlier === 1 ? '' : 's'} this machine still holds ` +
-      `before it place it at round ${String(placed)}, which another review of this ticket already ` +
-      'holds, so the round it was recorded with cannot be established without renaming a ' +
-      "different review's finding",
+      'nothing of this review states the round it was recorded with: neither the history ' +
+      'snapshot its turn was prepared with nor the report verdict saved beside its digest ' +
+      'survived, and the review attempts that remain are not evidence of its round',
   };
 }
 

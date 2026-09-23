@@ -33,6 +33,7 @@ import type { SnapshotContent } from '../../src/history/store.js';
 import { createTicketHistory } from '../../src/history/sync.js';
 import {
   latestCodingTurnText,
+  nextReviewRound,
   notePublishedReview,
   textSha256,
 } from '../../src/history/reports.js';
@@ -171,6 +172,11 @@ async function writeReviewAttempt(
       readonly line: number | null;
       readonly body: string;
     }[];
+    readonly verifications?: readonly {
+      readonly finding: string;
+      readonly state: string;
+      readonly evidence: string;
+    }[];
   },
 ): Promise<string> {
   const dir = path.join(workDir, 'reviews', request.reviewId);
@@ -208,6 +214,7 @@ async function writeReviewAttempt(
       verdict: 'request_changes',
       summary: request.summary,
       findings: request.findings ?? [],
+      verifications: request.verifications ?? [],
       recordedAt: request.endedAt,
     }),
     'utf8',
@@ -1405,17 +1412,29 @@ describe('one ticket history', () => {
 
     const recovered = await prepare(history(workDir), 'reviewer', 3);
     const rounds = unresolvedRounds(recovered.brief);
-    // The published verification settled R1-F1 whatever case it was written
-    // in; only the round-2 finding is still outstanding.
+    // Nothing of round 2 states the round it was recorded with, so it is not
+    // invented from the attempts that remain: the finding is named by the
+    // review's own identity and the gap is reported. The published verification
+    // settled R1-F1 whatever case it was written in.
     expect(
-      rounds.map((round) => [round.sourceId, round.findings.map((finding) => finding.id)]),
-    ).toEqual([['review-2', ['R2-F1']]]);
+      rounds.map((round) => [
+        round.sourceId,
+        round.round,
+        round.findings.map((finding) => finding.id),
+      ]),
+    ).toEqual([['review-2', null, ['NREVIEW-2-F1']]]);
     expect(rounds[0]?.verifications).toEqual([
       { finding: 'R1-F1', state: 'verified', evidence: 'read src/greeting.ts:2' },
     ]);
-    expect(outstandingFindingIds(rounds)).toEqual(['R2-F1']);
+    expect(outstandingFindingIds(rounds)).toEqual(['NREVIEW-2-F1']);
+    expect(
+      recovered.gaps.filter(
+        (gap) => gap.includes('could not be established') && gap.includes('review-2'),
+      ),
+    ).toHaveLength(1);
     // The next verdict is held to the identities that still stand, which are
-    // the same ones the recovered round states.
+    // the same ones the recovered round states — whatever case it writes them
+    // in.
     expect(() =>
       parseVerdict(
         JSON.stringify({
@@ -1423,7 +1442,7 @@ describe('one ticket history', () => {
           summary: 'the salutation is fixed',
           findings: [],
           verifications: [
-            { finding: 'r2-f1', state: 'verified', evidence: 'read src/salutation.ts:3' },
+            { finding: 'nreview-2-f1', state: 'verified', evidence: 'read src/salutation.ts:3' },
           ],
         }),
         'verdict.json',
@@ -1433,13 +1452,15 @@ describe('one ticket history', () => {
     ).not.toThrow();
   });
 
-  it('keeps a recovered report’s identity when the review records before it are gone', async () => {
+  it('names an unestablished round as a gap instead of numbering the finding from what remains', async () => {
     const workDir = await createTempDir();
     const ticketHistory = history(workDir);
     // Round 1's complete report is retained while its own review record is
-    // gone; round 2's digest was lost, and its record and the reviewer's own
-    // verdict remain. Counting the surviving records alone would place round 2
-    // first and name its finding R1-F1 — the identity round 1 already holds.
+    // gone; rounds 2 and 3 are gone entirely, and round 4's digest was lost —
+    // only its review record and the reviewer's own verdict remain. Counting
+    // the attempts that survive would call round 4 the second and name its
+    // finding R2-F1: a round some other review really held, whose own defect is
+    // not on this machine to object.
     await ticketHistory.recordReviewerReport?.({
       ref: REF,
       workspaceId: 'HARN-11',
@@ -1452,13 +1473,17 @@ describe('one ticket history', () => {
       findings: [{ path: 'src/greeting.ts', line: 2, body: 'the argument is ignored' }],
       now: new Date('2026-09-16T10:00:00.000Z'),
     });
-    await writeReviewAttempt(workDir, {
-      reviewId: 'review-2',
+    const reviewDir = await writeReviewAttempt(workDir, {
+      reviewId: 'review-4',
       startedAt: '2026-09-16T10:50:00.000Z',
       endedAt: '2026-09-16T10:55:00.000Z',
       summary: 'the salutation is wrong too',
       findings: [{ path: 'src/salutation.ts', line: 3, body: 'the salutation is wrong' }],
+      verifications: [
+        { finding: 'r1-f1', state: 'unverified', evidence: 'read src/greeting.ts:2' },
+      ],
     });
+    expect(reviewDir).toContain('review-4');
     const answer = (finding: string): readonly string[] => [
       `### Finding ${finding}`,
       '- Cause: the shared helper ignored the argument it was given.',
@@ -1467,13 +1492,15 @@ describe('one ticket history', () => {
       '- Verification: exercised greet("hi") through the exported function.',
       '- Remaining uncertainty: none.',
     ];
+    // The developer answered the defect round 4 raised under the identity it
+    // had then, and the defect round 1 raised under its own.
     await ticketHistory.recordDeveloperReport?.({
       ref: REF,
       workspaceId: 'HARN-11',
       task: TASK,
-      round: 3,
-      runId: 'run-3',
-      reportPath: '/work/runs/run-3/result.json',
+      round: 5,
+      runId: 'run-5',
+      reportPath: '/work/runs/run-5/result.json',
       status: 'in-progress',
       reason: 'Coding turn reports retained.',
       repairsUsed: 0,
@@ -1486,7 +1513,7 @@ describe('one ticket history', () => {
             '',
             ...answer('R1-F1'),
             '',
-            ...answer('R2-F1'),
+            ...answer('R4-F1'),
           ].join('\n'),
           checks: 'passed',
         },
@@ -1496,20 +1523,62 @@ describe('one ticket history', () => {
       now: new Date('2026-09-16T11:00:00.000Z'),
     });
 
-    const snapshot = await prepare(ticketHistory, 'reviewer', 3);
+    const snapshot = await prepare(ticketHistory, 'reviewer', 4);
     const rounds = unresolvedRounds(snapshot.brief);
     expect(
-      rounds.map((round) => [round.sourceId, round.findings.map((finding) => finding.id)]),
+      rounds.map((round) => [
+        round.sourceId,
+        round.round,
+        round.findings.map((finding) => finding.id),
+      ]),
     ).toEqual([
-      ['review-1', ['R1-F1']],
-      ['review-2', ['R2-F1']],
+      ['review-1', 1, ['R1-F1']],
+      ['review-4', null, ['NREVIEW-4-F1']],
     ]);
     const outstanding = outstandingFindingIds(rounds);
-    expect(outstanding).toEqual(['R1-F1', 'R2-F1']);
-    // The recovered finding keeps the identity the developer's answer and the
-    // next verdict name, so neither lookup is lost when the record before it
-    // was.
-    expect(rounds[1]?.responses?.[0]).toMatchObject({ finding: 'R2-F1', complete: true });
+    expect(outstanding).toEqual(['R1-F1', 'NREVIEW-4-F1']);
+    // No finding is renamed into the round the count would have handed it: the
+    // identity R2-F1 stands for nothing here, and the gap says why.
+    expect(outstanding).not.toContain('R2-F1');
+    const gaps = snapshot.gaps.filter(
+      (gap) => gap.includes('could not be established') && gap.includes('review-4'),
+    );
+    expect(gaps).toHaveLength(1);
+    const recovered = snapshot.entries.find((entry) => entry.sourceId === 'review-4');
+    expect(recovered?.text).toContain('Original round: could not be established');
+    expect(recovered?.text).toContain('### Finding NREVIEW-4-F1');
+    // What the review itself states still resolves: its verification of R1-F1
+    // is read under the history's identity, and the developer's complete answer
+    // to R1-F1 is found under that same identity.
+    expect(rounds[1]?.verifications).toEqual([
+      { finding: 'R1-F1', state: 'unverified', evidence: 'read src/greeting.ts:2' },
+    ]);
+    expect(rounds[0]?.responses?.[0]).toMatchObject({ finding: 'R1-F1', complete: true });
+    // The answer to the identity no evidence can restore is not rounded up to
+    // an answer to the finding the recovery names: nothing reads as complete
+    // remediation for it.
+    expect(rounds[1]?.responses?.[0]).toMatchObject({
+      finding: 'NREVIEW-4-F1',
+      complete: false,
+    });
+    expect(rounds[1]?.responses?.[0]?.problem).toMatch(/no answer to this finding/);
+    // The next verdict is held to the identities that really stand, and a
+    // verification written against the recovered identity settles it.
+    expect(() =>
+      parseVerdict(
+        JSON.stringify({
+          verdict: 'approve',
+          summary: 'both defects are gone',
+          findings: [],
+          verifications: [
+            { finding: 'NREVIEW-4-F1', state: 'verified', evidence: 'read src/salutation.ts:3' },
+          ],
+        }),
+        'verdict.json',
+        outstanding,
+        retainedFindingIds(snapshot),
+      ),
+    ).toThrow(/does not verify R1-F1/);
     expect(() =>
       parseVerdict(
         JSON.stringify({
@@ -1518,22 +1587,7 @@ describe('one ticket history', () => {
           findings: [],
           verifications: [
             { finding: 'r1-f1', state: 'verified', evidence: 'read src/greeting.ts:2' },
-          ],
-        }),
-        'verdict.json',
-        outstanding,
-        retainedFindingIds(snapshot),
-      ),
-    ).toThrow(/does not verify R2-F1/);
-    expect(() =>
-      parseVerdict(
-        JSON.stringify({
-          verdict: 'approve',
-          summary: 'both defects are gone',
-          findings: [],
-          verifications: [
-            { finding: 'R1-F1', state: 'verified', evidence: 'read src/greeting.ts:2' },
-            { finding: 'r2-f1', state: 'verified', evidence: 'read src/salutation.ts:3' },
+            { finding: 'nreview-4-f1', state: 'verified', evidence: 'read src/salutation.ts:3' },
           ],
         }),
         'verdict.json',
@@ -1541,11 +1595,6 @@ describe('one ticket history', () => {
         retainedFindingIds(snapshot),
       ),
     ).not.toThrow();
-    // The round was established from the attempts that remain, so no identity
-    // gap is named, and the recovered report says where its round came from.
-    expect(snapshot.gaps.filter((gap) => gap.includes('could not be established'))).toEqual([]);
-    const recovered = snapshot.entries.find((entry) => entry.sourceId === 'review-2');
-    expect(recovered?.text).toContain('Original round: 2 — read back from');
   });
 
   it('reads a recovered report’s round back from the snapshot it was prepared with', async () => {
@@ -1576,6 +1625,9 @@ describe('one ticket history', () => {
       rounds.map((round) => [round.sourceId, round.round, round.findings.map((f) => f.id)]),
     ).toEqual([['review-5', 5, ['R5-F1']]]);
     expect(snapshot.gaps.filter((gap) => gap.includes('could not be established'))).toEqual([]);
+    // The attempt's own record still states its round, so the round it holds is
+    // established for allocation too, and is not handed to a later review.
+    expect(await nextReviewRound({ workDir, root, ref: REF })).toBe(6);
   });
 
   it('reads a lost digest’s round back from the report verdict saved beside it', async () => {
@@ -1631,6 +1683,10 @@ describe('one ticket history', () => {
     const recovered = snapshot.entries.find((entry) => entry.sourceId === 'review-4');
     expect(recovered?.text).toContain('Original round: 4 — read back from');
     expect(recovered?.text).toContain('### Finding R4-F1');
+    // The next review is numbered past the round this recovery restored, even
+    // though rounds 2 and 3 are gone and the reports that remain would count to
+    // one below it: a round another review states is never handed out again.
+    expect(await nextReviewRound({ workDir, root, ref: REF })).toBe(5);
   });
 
   it('names a gap instead of renaming another review’s finding', async () => {
@@ -1704,6 +1760,76 @@ describe('one ticket history', () => {
         retainedFindingIds(snapshot),
       ),
     ).not.toThrow();
+  });
+
+  it('numbers the next review past every round the history still holds', async () => {
+    const workDir = await createTempDir();
+    const root = workspaceHistoryRoot(workDir, 'HARN-11');
+    const ticketHistory = history(workDir);
+    // Only round 2's complete report survives. Counting the review attempts
+    // that remain would hand the next review round 2 as well, and its findings
+    // would be recorded as R2-F1 — the identity of the defect round 2 already
+    // holds, whose own review stands unresolved.
+    await ticketHistory.recordReviewerReport?.({
+      ref: REF,
+      workspaceId: 'HARN-11',
+      task: TASK,
+      reviewId: 'review-2',
+      round: 2,
+      head: HEAD,
+      decision: 'request_changes',
+      summary: 'the greeting ignores the argument it is given',
+      findings: [{ path: 'src/greeting.ts', line: 2, body: 'the argument is ignored' }],
+      now: new Date('2026-09-16T10:00:00.000Z'),
+    });
+    expect(await nextReviewRound({ workDir, root, ref: REF })).toBe(3);
+    // The next review is recorded under the round it was handed, raising its
+    // own defect and reading round 2's defect as still there.
+    await ticketHistory.recordReviewerReport?.({
+      ref: REF,
+      workspaceId: 'HARN-11',
+      task: TASK,
+      reviewId: 'review-3',
+      round: 3,
+      head: HEAD,
+      decision: 'request_changes',
+      summary: 'the salutation is wrong',
+      findings: [{ path: 'src/salutation.ts', line: 3, body: 'the salutation is wrong' }],
+      verifications: [
+        { finding: 'R2-F1', state: 'unverified', evidence: 'read src/greeting.ts:2' },
+      ],
+      now: new Date('2026-09-16T11:00:00.000Z'),
+    });
+
+    const snapshot = await prepare(ticketHistory, 'reviewer', 4);
+    const rounds = unresolvedRounds(snapshot.brief);
+    // Neither defect overwrote the other: round 2's finding keeps its identity
+    // and the new review raises its own beside it.
+    expect(
+      rounds.map((round) => [round.sourceId, round.findings.map((finding) => finding.id)]),
+    ).toEqual([
+      ['review-2', ['R2-F1']],
+      ['review-3', ['R3-F1']],
+    ]);
+    // An approval that reads only the new defect as fixed is refused: what
+    // round 2 recorded is verified by nothing.
+    expect(() =>
+      parseVerdict(
+        JSON.stringify({
+          verdict: 'approve',
+          summary: 'the salutation is fixed',
+          findings: [],
+          verifications: [
+            { finding: 'R3-F1', state: 'verified', evidence: 'read src/salutation.ts:3' },
+          ],
+        }),
+        'verdict.json',
+        outstandingFindingIds(rounds),
+        retainedFindingIds(snapshot),
+      ),
+    ).toThrow(/does not verify R2-F1/);
+    // The round just recorded is spent as well.
+    expect(await nextReviewRound({ workDir, root, ref: REF })).toBe(4);
   });
 
   it('does not let a request refused publication settle what it verified', async () => {
