@@ -861,7 +861,9 @@ surrounding discussion reads. A turn that answers one finding never stands in fo
 identities the prompt lists are the ones the developer is held to. Complete exchanges survive
 further turns and restarts because both halves are retained: the answers are read back out of the
 complete developer reports, and the verifications out of the complete reviewer reports, every time
-a snapshot is prepared.
+a snapshot is prepared. One answer field longer than the brief's own rendering bound is cut for the
+prompt only, with the complete developer report the answer was read from named where the cut is —
+the retained report is unchanged, and it is what both roles can read in full.
 
 What one review verified about the dispositions before it is recorded with that review and rendered
 under its round: `verified`, `unverified` or `regressed`, with the reviewer's own evidence. A

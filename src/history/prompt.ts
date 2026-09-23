@@ -32,9 +32,10 @@ const MAX_INLINE_CHARS = 60_000;
 /**
  * How much of one answer field is repeated inline. Findings are rendered whole;
  * an answer is a claim about the work, and its complete text stays in the
- * developer report the finding's own line here names.
+ * developer report the finding's own line here names, which is stated where the
+ * bound is reached rather than left implicit.
  */
-const MAX_RESPONSE_FIELD_CHARS = 2_000;
+const MAX_RESPONSE_FIELD_CHARS = 4_000;
 
 /** One entry as the prompt renders it: attributed, complete, and local. */
 function describeEntry(entry: HistoryEntry): string {

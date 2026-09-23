@@ -117,7 +117,9 @@ recorded after the review is the claim the reviewer is given, and an earlier att
 stays readable in the report it was recorded in. A finding no answer names, an answer that leaves
 a field out, and a turn that answered nothing are all kept as an incomplete response for that
 finding: none of them is presented as complete remediation, and the prompt says so before the turn
-starts.
+starts. An answer field past the brief's own rendering bound is cut for that prompt only, with the
+report it was read from named where the cut is: the retained developer report is what both roles
+can read in full.
 
 A claimed fix is never a verified fix. Only the reviewer's own verification, made on the reviewed
 revision at the place the defect lived, says a disposition is resolved, and it is recorded with the
