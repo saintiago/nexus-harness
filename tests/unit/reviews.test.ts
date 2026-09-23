@@ -18,11 +18,12 @@ import type {
   ReviewRepository,
   ReviewScanContext,
   ReviewViewSource,
+  ReviewWatchOptions,
 } from '../../src/reviews/contract.js';
 import { ReviewError } from '../../src/reviews/contract.js';
 import { diffPosition, positionFindings } from '../../src/reviews/diff.js';
 import { parseVerdict, reviewEvidenceProblem, reviewPrompt } from '../../src/reviews/reviewer.js';
-import { scanReviews } from '../../src/reviews/scan.js';
+import { scanReviews, watchReviews } from '../../src/reviews/scan.js';
 import type { SourceCandidate, SourceTask } from '../../src/sources/contract.js';
 import type { SourceRef, Task } from '../../src/shared/types.js';
 import { sourceItemFor, writeWorkspaceState } from '../../src/workspace/state.js';
@@ -518,5 +519,128 @@ describe('one review scan', () => {
 
     expect(summary.scanned).toBe(0);
     expect(harness.calls.reviewerTurns).toBe(0);
+  });
+});
+
+/**
+ * One review watch whose scans, waits and stop the case controls: each scan is
+ * the case's own answer, and the idle wait is where a case ends the watch. No
+ * GitHub read, reviewer turn or repository view is reached.
+ */
+async function watchHarness(parts: {
+  readonly list: (scan: number) => Promise<readonly SourceCandidate[]>;
+  readonly sleep: (ms: number, stop: AbortSignal) => Promise<void>;
+  readonly pollIntervalMs: number;
+}) {
+  const workDir = await createTempDir();
+  let scans = 0;
+  const errors: string[] = [];
+  const context: ReviewWatchOptions = {
+    queue: {
+      list: async () => {
+        scans += 1;
+        return await parts.list(scans);
+      },
+      prepare: async () => null,
+    },
+    repository: {
+      findOpenPullRequest: async () => null,
+      readPullRequest: async () => null,
+      listReviews: async () => [],
+      reviewChecks: async () => [],
+      readEvidence: async () => {
+        throw new Error('no pull request was identified, so no evidence is read');
+      },
+      publishReview: async () => {
+        throw new Error('nothing is published by a watch case');
+      },
+      publishCheck: async () => {
+        throw new Error('nothing is published by a watch case');
+      },
+    },
+    reviewer: async () => {
+      throw new Error('no reviewer turn is started by a watch case');
+    },
+    views: {
+      prepare: async () => {
+        throw new Error('no repository view is pinned by a watch case');
+      },
+      problem: async () => null,
+    },
+    workDir,
+    sourceRoot: null,
+    login: 'nexus-lens[bot]',
+    checkName: 'Nexus Lens review',
+    reviewerTimeoutMs: 60_000,
+    io: { out: () => undefined, err: (text) => errors.push(text) },
+    stop: new AbortController().signal,
+    now: () => new Date('2026-09-16T11:10:00.000Z'),
+    sleep: async (ms, stop) => {
+      await parts.sleep(ms, stop);
+    },
+    pollIntervalMs: parts.pollIntervalMs,
+  };
+  return { context, errors, scans: () => scans };
+}
+
+describe('the review watch', () => {
+  it('waits out the poll interval, and a stop during the wait starts no further scan', async () => {
+    const stop = new AbortController();
+    const waits: number[] = [];
+    const harness = await watchHarness({
+      list: async () => [],
+      pollIntervalMs: 5_000,
+      sleep: async (ms, signal) => {
+        waits.push(ms);
+        expect(signal.aborted).toBe(false);
+        // The interrupt arrives while the watch is idle: the wait is where the
+        // loop notices it, and the scan that would follow is never started.
+        stop.abort(new Error('stop watching'));
+      },
+    });
+
+    const summary = await watchReviews({
+      ...harness.context,
+      stop: stop.signal,
+    });
+
+    expect(harness.scans()).toBe(1);
+    expect(waits).toEqual([5_000]);
+    expect(summary.outcome).toBe('cancelled');
+  });
+
+  it('never shortens a server-directed wait, doubles its own backoff, and resets on success', async () => {
+    const stop = new AbortController();
+    const waits: number[] = [];
+    const harness = await watchHarness({
+      list: async (scan) => {
+        if (scan === 1) {
+          throw new ReviewError('api', 'the search answered HTTP 429', {
+            retryAfterMs: 120_000,
+          });
+        }
+        if (scan === 2) {
+          throw new ReviewError('api', 'the search answered nothing usable');
+        }
+        return [];
+      },
+      pollIntervalMs: 5_000,
+      sleep: async (ms) => {
+        waits.push(ms);
+        if (waits.length === 3) {
+          stop.abort(new Error('stop watching'));
+        }
+      },
+    });
+
+    const summary = await watchReviews({ ...harness.context, stop: stop.signal });
+
+    // The first wait is the server's own minimum, never the shorter poll
+    // interval; the second is the watch's doubled backoff; the successful scan
+    // resets the backoff to the poll interval.
+    expect(harness.scans()).toBe(3);
+    expect(waits).toEqual([120_000, 10_000, 5_000]);
+    expect(harness.errors.join('\n')).toContain('will try again in 120s');
+    expect(summary.outcome).toBe('cancelled');
   });
 });
