@@ -47,7 +47,7 @@ import { createCompletionPass } from '../sources/completion.js';
 import type { ArmOutcome, CompletionOutcome } from '../sources/completion.js';
 import type { QueueTicket, SourceContext, SourceTake } from '../sources/contract.js';
 import { SourceError } from '../sources/contract.js';
-import { createBaselineDiagnosis, resumeStop } from '../sources/baseline.js';
+import { createBaselineDiagnosis } from '../sources/baseline.js';
 import { takeOneItem } from '../sources/coordinator.js';
 import { createJiraBaselineRecord } from '../sources/jira/baseline.js';
 import { discoverQueueWork } from '../sources/jira/queue.js';
@@ -557,26 +557,11 @@ async function queueCommand(options: QueueCommandOptions, context: CliContext): 
                 }
                 return scoped.recovery;
               }
-              // A previous invocation can stop after a red baseline was diagnosed
-              // and before its finding was recorded on the ticket. That item is
-              // still in the running status, where a fresh scan never looks and
-              // where the queue's own recovery refuses to guess: finishing the
-              // diagnosis here is what returns it to its ready status, so the
-              // ordinary repair claim continues the same retained workspace
-              // (docs/WORKFLOW.md §11).
-              const resumed = await baselineDiagnosis.resume(stop.signal);
-              const stopped = resumeStop(resumed);
-              if (stopped !== null) {
-                // Nothing else is discovered or claimed: the item needs a
-                // person, or the intake is being stopped. `cleanupConfirmed`
-                // travels with the stop, so a reviewer runtime that could not
-                // be confirmed ended keeps this invocation's intake lock
-                // instead of being rounded into an ordinary clean stop.
-                return { problem: stopped.detail, cleanupConfirmed: stopped.cleanupConfirmed };
-              }
-              if (resumed !== null) {
-                sourceIo.out(resumed.detail);
-              }
+              // An item a previous invocation left in the running status is not
+              // this loop's to finish: the exceptional recovery of an
+              // interrupted episode belongs to the supervised queue's recovery
+              // agent, and the ordinary loop gains no branch for it
+              // (docs/WORKFLOW.md §12).
               return await discoverQueueWork(sourceConfig, jiraHttp, stop.signal);
             },
             consume: async ({ only }): Promise<SourceTake> => {

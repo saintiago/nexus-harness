@@ -56,14 +56,11 @@ import type {
   BaselineRecord,
   BaselineReview,
   BaselineReviewResult,
-  BaselineResumeOutcome,
   BaselineReviewedFinding,
   SourceIo,
   SourceNote,
 } from './contract.js';
 import { SourceError } from './contract.js';
-import { readReceipt, receiptFilePath, updateReceipt } from './receipts.js';
-
 /** The prefix of the marker one diagnosis comment carries, in the Jira thread. */
 export const BASELINE_MARKER_PREFIX = 'nexus-baseline:';
 
@@ -691,31 +688,6 @@ function missingEvidenceRecord(file: string): string {
   );
 }
 
-/**
- * What one resume outcome means for the intake that asked for it: `null` when
- * the pending diagnosis left nothing in the way — nothing was pending, or the
- * finding is published and the item is back in its ready status — and the stop
- * the caller has to make otherwise, with whether everything the diagnosis
- * started was confirmed stopped.
- *
- * An unconfirmed stop is never rounded down: the caller keeps its intake lock
- * and starts nothing else, because a reviewer runtime may still be running and
- * writing to the evidence (docs/spec.md §3, §11). The rule lives here once, so
- * the source command and the serial queue cannot read the same outcome
- * differently.
- */
-export function resumeStop(
-  resumed: BaselineResumeOutcome | null,
-): { readonly detail: string; readonly cleanupConfirmed: boolean } | null {
-  if (resumed === null || resumed.kind === 'repair') {
-    return null;
-  }
-  return {
-    detail: resumed.detail,
-    cleanupConfirmed: resumed.kind === 'problem' ? true : resumed.cleanupConfirmed,
-  };
-}
-
 /** What one pre-delivery diagnosis is built from, all ordinary pieces. */
 export interface BaselineDiagnosisParts {
   /** The one bounded local reviewer turn the diagnosis runs. */
@@ -811,29 +783,6 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
       io.err(
         `${evidence.ref.key}: the baseline diagnosis is on the issue, but its retained evidence ` +
           `could not be marked finished: ${messageOf(cause)}`,
-      );
-    }
-  };
-
-  /**
-   * What the local receipt says once a diagnosis the item has been told about
-   * has finished. It is bookkeeping beside the item's own thread, so a receipt
-   * that cannot be read back is reported and nothing else is changed.
-   */
-  const noteFeedback = async (ref: SourceRef, commentId: string | null): Promise<void> => {
-    const file = receiptFilePath(workDir, ref);
-    try {
-      if ((await readReceipt(file)) === null) {
-        return;
-      }
-      await updateReceipt(file, {
-        feedback: 'sent',
-        ...(commentId === null ? {} : { commentId }),
-      });
-    } catch (cause) {
-      io.err(
-        `${ref.key}: the baseline diagnosis is on the issue, but its receipt could not be ` +
-          `updated: ${messageOf(cause)}`,
       );
     }
   };
@@ -1175,236 +1124,6 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
   };
 
   /**
-   * Finishing what a previous invocation left pending, before anything is
-   * discovered or claimed.
-   *
-   * The retained evidence says a diagnosis began for one exact snapshot,
-   * configured command list, and set of results; the item's own thread says
-   * whether its finding was already published. So this makes only the step that
-   * is really missing: the status move for a finding that is already on the
-   * thread, or the publication of one the reviewer turn already wrote. It never
-   * starts a second reviewer turn for the same evidence, never writes a second
-   * comment, and never touches an item a person has moved somewhere else.
-   */
-  const resume = async (stop: AbortSignal): Promise<BaselineResumeOutcome | null> => {
-    if (stop.aborted) {
-      return {
-        kind: 'cancelled',
-        detail: 'the intake was stopped before any pending baseline diagnosis could be resumed',
-        cleanupConfirmed: true,
-      };
-    }
-
-    let files: readonly string[];
-    try {
-      files = await evidenceFiles(workDir, project);
-    } catch (cause) {
-      return { kind: 'problem', detail: messageOf(cause) };
-    }
-
-    const resumed: {
-      readonly kind: 'repair' | 'attention';
-      readonly detail: string;
-      readonly commentId: string | null;
-      readonly cleanupConfirmed: boolean;
-    }[] = [];
-    for (const file of files) {
-      if (stop.aborted) {
-        return {
-          kind: 'cancelled',
-          detail: 'the intake was stopped while a pending baseline diagnosis was being resumed',
-          cleanupConfirmed: true,
-        };
-      }
-      let evidence: BaselineEvidence | null;
-      try {
-        evidence = await readBaselineEvidence(file, project);
-      } catch (cause) {
-        return { kind: 'problem', detail: messageOf(cause) };
-      }
-      if (evidence === null) {
-        // The directory is there and its record is not: whether a diagnosis
-        // began here, for which item, and whether its finding was published
-        // cannot be established, so nothing is resumed past it.
-        return {
-          kind: 'problem',
-          detail:
-            `${missingEvidenceRecord(file)}; nothing about it can be resumed, read back, or ` +
-            'closed, so this intake stops for a person — inspect that directory by hand, and ' +
-            'either restore the record it lost or remove the directory if it holds no pending ' +
-            'diagnosis',
-        };
-      }
-      if (evidence.closed !== undefined) {
-        continue;
-      }
-
-      const key = evidence.ref.key;
-      const where = path.dirname(file);
-      let running: boolean;
-      try {
-        running = await record.isRunning(evidence.ref.id, stop);
-      } catch (cause) {
-        return {
-          kind: 'problem',
-          detail:
-            `${key}: the baseline diagnosis retained under "${where}" could not be resumed, ` +
-            `because the item could not be read: ${messageOf(cause)}`,
-        };
-      }
-      if (!running) {
-        // The item is not in the running status. That may be a person's
-        // decision, which stands — or this harness's own move, made before the
-        // local record was finished. The item's own thread says which: evidence
-        // that already carries its own marker was published, so the record is
-        // finished with the outcome it published and the workspace's next claim
-        // is still told the finding. Nothing is moved and nothing is written to
-        // the thread: the item stays exactly where it is.
-        let notes: readonly SourceNote[];
-        try {
-          notes = await record.listComments(evidence.ref.id, stop);
-        } catch (cause) {
-          if (stop.aborted) {
-            return {
-              kind: 'cancelled',
-              detail:
-                `${key}: the intake was stopped before the retained baseline diagnosis under ` +
-                `"${where}" could be reconciled with its item`,
-              cleanupConfirmed: true,
-            };
-          }
-          return {
-            kind: 'problem',
-            detail:
-              `${key}: the baseline diagnosis retained under "${where}" could not be reconciled ` +
-              `with the item's own thread, so intake stops for a person: ${messageOf(cause)}`,
-          };
-        }
-        const published = markerFor(notes, evidence.evidenceId);
-        // The item has already left its running status, but that says nothing
-        // about the reviewer turn this evidence recorded: a rejection whose
-        // own process tree was not confirmed stopped may still be writing, and
-        // this route used to finish the record and report nothing. Read the
-        // record before settling anything, and refuse one that cannot be read
-        // rather than rounding it down to a confirmed stop. It is also what the
-        // marker is held to here, exactly as it is when the resume completes a
-        // move the earlier invocation did not make: a comment's marker — which
-        // anyone who can edit the issue can change — may not close evidence as
-        // the repair its own rejected turn never produced.
-        let recordedTurn: BaselineOutcome | null;
-        try {
-          recordedTurn = await readBaselineOutcome(path.dirname(file));
-        } catch (cause) {
-          io.err(
-            `${key}: the baseline diagnosis retained under "${where}" is no longer in its ` +
-              `running status, but what its reviewer turn recorded cannot be read: ` +
-              messageOf(cause),
-          );
-          return unfinished(
-            stop,
-            `${key}: the baseline diagnosis retained under "${where}" is no longer in its ` +
-              `running status, but whether its reviewer runtime was ever seen to end cannot be ` +
-              `established, so nothing is treated as settled and the intake lock is kept: ` +
-              messageOf(cause),
-            published?.note.id ?? null,
-            false,
-          );
-        }
-        const shutdown =
-          recordedTurn !== null && recordedTurn.state === 'rejected' ? recordedTurn.shutdown : null;
-        const unconfirmed = unconfirmedShutdownProblem(shutdown);
-        await finish(
-          file,
-          evidence,
-          published === null ? 'left-alone' : corroboratedKind(published.kind, recordedTurn),
-        );
-        if (unconfirmed !== null) {
-          io.err(
-            `${key}: the baseline diagnosis retained under "${where}" is no longer in its ` +
-              `running status, and everything its reviewer runtime started was not seen to end ` +
-              `(${oneLine(unconfirmed)}), so the intake lock is kept`,
-          );
-          return unfinished(
-            stop,
-            `${key}: the baseline diagnosis retained under "${where}" is no longer in its ` +
-              `running status, and its reviewer runtime was not seen to end (${oneLine(
-                unconfirmed,
-              )}), so nothing is treated as settled and the intake lock is kept`,
-            published?.note.id ?? null,
-            false,
-          );
-        }
-        io.out(
-          published === null
-            ? `${key}: the baseline diagnosis retained under "${where}" was not resumed: the item ` +
-                'has left the running status, so it is left exactly where it is'
-            : `${key}: the baseline diagnosis retained under "${where}" is already on the issue ` +
-                `(comment ${published.note.id}); the item has left the running status, so it stays ` +
-                'where it is and the retained evidence now records the finding it published',
-        );
-        continue;
-      }
-
-      io.out(
-        `${key}: resuming the baseline diagnosis a previous invocation left pending (evidence ` +
-          `under ${where})`,
-      );
-      const outcome = await diagnose({
-        item: { ref: evidence.ref, task: evidence.task },
-        workspace: evidence.workspace,
-        baseline: evidence.baseline,
-        stop,
-      });
-      if (outcome.kind === 'cancelled') {
-        return {
-          kind: 'cancelled',
-          detail: outcome.detail,
-          cleanupConfirmed: outcome.cleanupConfirmed,
-        };
-      }
-      await noteFeedback(evidence.ref, outcome.commentId);
-      if (outcome.kind === 'attention' && !outcome.cleanupConfirmed) {
-        // A reviewer runtime that was not seen to end may still be writing:
-        // stop before this resume spends a second reviewer turn on another
-        // piece of evidence, and carry the unconfirmed stop to the caller so
-        // the intake lock is kept.
-        return {
-          kind: 'attention',
-          detail: [...resumed.map((prior) => prior.detail), outcome.detail].join(' '),
-          commentId: outcome.commentId,
-          cleanupConfirmed: false,
-        };
-      }
-      resumed.push({
-        kind: outcome.kind,
-        detail: outcome.detail,
-        commentId: outcome.commentId,
-        cleanupConfirmed: outcome.kind === 'repair' ? true : outcome.cleanupConfirmed,
-      });
-    }
-
-    const [first] = resumed;
-    if (first === undefined) {
-      return null;
-    }
-    // A result that needs a person dominates an actionable one: intake stops
-    // there rather than claiming another ticket on the strength of a repair,
-    // and a cleanup that was not confirmed is never rounded down by the
-    // actionable result beside it.
-    const attention = resumed.find((outcome) => outcome.kind === 'attention');
-    const detail = resumed.map((outcome) => outcome.detail).join(' ');
-    if (attention === undefined) {
-      return { kind: 'repair', detail, commentId: first.commentId };
-    }
-    return {
-      kind: 'attention',
-      detail,
-      commentId: attention.commentId,
-      cleanupConfirmed: resumed.every((outcome) => outcome.cleanupConfirmed),
-    };
-  };
-
-  /**
    * Reading back the finding one retained workspace was returned for repair
    * with. A claim that continues that workspace has to be told it, and the
    * item's own thread — the ordinary source of it — may not be readable or may
@@ -1554,5 +1273,5 @@ export function createBaselineDiagnosis(parts: BaselineDiagnosisParts): Baseline
     return { kind: 'finding', finding, evidenceId: newest.evidence.evidenceId };
   };
 
-  return { diagnose, resume, reviewedFinding };
+  return { diagnose, reviewedFinding };
 }

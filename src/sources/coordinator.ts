@@ -30,7 +30,6 @@ import type {
   BaselineFinding,
   BaselineDiagnosisOutcome,
   BaselineReviewedFinding,
-  BaselineResumeOutcome,
   CompletionRunSummary,
   SourceCandidate,
   SourceComment,
@@ -45,7 +44,7 @@ import type {
   PublishedComment,
 } from './contract.js';
 import { SourceError, SourceFeedbackError } from './contract.js';
-import { baselineFindingGuidanceLines, baselineThreadFinding, resumeStop } from './baseline.js';
+import { baselineFindingGuidanceLines, baselineThreadFinding } from './baseline.js';
 import { decideAttempt } from './eligibility.js';
 import { guidanceFrom } from './guidance.js';
 import {
@@ -699,77 +698,6 @@ async function diagnoseBaseline(
       `(${run.reportPath}).`,
     outcome.cleanupConfirmed,
   );
-}
-
-/**
- * Finishing a baseline diagnosis a previous invocation left pending, before
- * anything is discovered or claimed.
- *
- * An invocation can stop after the diagnosis's record was written and before the
- * item was told, leaving the ticket in the running status where a fresh scan
- * would never look and `queue`'s own recovery refuses to guess. This is the step
- * that closes that window: the item's thread decides whether the finding is
- * already published (then only the status move is missing) and the retained
- * evidence decides whether one is still to publish, so nothing is diagnosed
- * twice and no coding turn is ever started from a diagnosis.
- *
- * `onAttention` is how a batch and a serial step differ. A batch reports an item
- * that a diagnosis left In Review and goes on with the tickets it may take; a
- * serial step stops there instead, because it never takes another ticket while
- * one needs a person.
- */
-async function resumeBaseline(
-  context: SourceContext,
-  state: BatchState,
-  phase: string,
-  onAttention: 'stop' | 'continue',
-): Promise<Step | 'none'> {
-  const diagnosis = context.baselineDiagnosis;
-  if (diagnosis === undefined || context.stop.aborted) {
-    return 'none';
-  }
-
-  let outcome: BaselineResumeOutcome | null;
-  try {
-    outcome = await diagnosis.resume(context.stop);
-  } catch (cause) {
-    return stopWith(
-      state,
-      `${phase}: a pending baseline diagnosis could not be resumed, so intake stops for a person: ` +
-        messageOf(cause),
-    );
-  }
-  if (outcome === null) {
-    return 'none';
-  }
-  if (outcome.kind === 'repair') {
-    context.io.out(outcome.detail);
-    return 'none';
-  }
-  // Nothing actionable was resumed: the item carries the evidence and what a
-  // person must do, and intake stops here rather than discovering or claiming
-  // anything else. That holds for a reviewer runtime the recovery could not
-  // confirm stopped as much as for one that ended: an unconfirmed stop keeps
-  // the lock, exactly as it does for a run's own unconfirmed stop
-  // (docs/spec.md §3), and nothing starts while it may still be writing.
-  const stopped = resumeStop(outcome);
-  if (stopped === null) {
-    return 'none';
-  }
-  if (!stopped.cleanupConfirmed) {
-    state.cleanupConfirmed = false;
-  }
-  if (outcome.kind === 'cancelled' && context.stop.aborted) {
-    return 'cancelled';
-  }
-  if (outcome.kind === 'attention' && onAttention === 'continue' && stopped.cleanupConfirmed) {
-    // A batch that is not stopped and carries no unconfirmed shutdown reports
-    // the item and goes on with the tickets it may take; the item itself is
-    // left exactly as the diagnosis left it.
-    context.io.err(outcome.detail);
-    return 'none';
-  }
-  return stopWith(state, `${phase}: ${stopped.detail}`, stopped.cleanupConfirmed);
 }
 
 /**
@@ -1575,17 +1503,6 @@ export async function runSource(
 
   const lock = await acquireIntakeLock(context.workDir, context.lockNamespace, context.now);
   try {
-    // Before anything is discovered, finish whatever a previous invocation left
-    // pending: an item still in the running status because its red baseline was
-    // diagnosed but never recorded would not be listed as eligible again.
-    const resumed = await resumeBaseline(context, state, 'source intake', 'continue');
-    if (resumed === 'cancelled') {
-      return summarize('cancelled', state);
-    }
-    if (resumed === 'stop') {
-      return summarize('stopped', state);
-    }
-
     let candidates: readonly SourceCandidate[];
     try {
       candidates = await context.source.listEligible(context.stop);
@@ -1691,17 +1608,6 @@ export async function takeOneItem(
       ? null
       : await acquireIntakeLock(context.workDir, context.lockNamespace, context.now);
   try {
-    // A serial step recovers the same way a batch does, and stops instead of
-    // going on when the recovered diagnosis needs a person: a queue never takes
-    // another ticket while one of them is waiting on a human.
-    const resumed = await resumeBaseline(context, state, 'the queue step', 'stop');
-    if (resumed === 'cancelled') {
-      return step('cancelled');
-    }
-    if (resumed === 'stop') {
-      return step('attention');
-    }
-
     let candidates: readonly SourceCandidate[];
     try {
       candidates = await context.source.listEligible(context.stop);
@@ -1797,17 +1703,6 @@ export async function watchSource(options: SourceWatchOptions): Promise<SourceSu
     for (;;) {
       if (stop.aborted) {
         return summarize('cancelled', state);
-      }
-
-      // The same pre-claim recovery a finite batch runs, on every scan: a ticket
-      // whose baseline diagnosis never finished is finished before this scan
-      // looks for eligible work.
-      const resumed = await resumeBaseline(options, state, 'source intake', 'continue');
-      if (resumed === 'cancelled') {
-        return summarize('cancelled', state);
-      }
-      if (resumed === 'stop') {
-        return summarize('stopped', state);
       }
 
       let candidates: readonly SourceCandidate[];
