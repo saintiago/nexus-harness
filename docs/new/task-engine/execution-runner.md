@@ -42,15 +42,19 @@ XState executes it.
 Save the XState persisted snapshot as JSON at the supplied filepath. If the file is absent, start
 from the initial state; otherwise restore from it. Business artifacts stay outside the snapshot.
 
-The Nexus binding must finish saving the active state before its bound operation starts, and save
-terminal state before returning the outcome. XState does not perform these file writes or wait for
-an asynchronous persistence subscriber; this ordering is part of the integration we implement.
+Subscribe before starting the XState actor. On each state update, capture its persisted snapshot
+and save it. Serialize writes in notification order so an older save cannot overwrite a newer one.
+
+XState proceeds without waiting for these writes. There is no persistence gate around actions.
+Before returning a terminal outcome, wait for the pending writes, including the terminal snapshot,
+to finish.
 
 On restoration, XState restarts an active invocation. A terminal snapshot returns its output without
-running operations. An operation may therefore execute again after interruption; handling existing
-work belongs to that operation.
+running operations. Saved state may lag execution: a crash can cause one or more completed operations
+to run again. Handling repeated execution and existing work belongs to those operations.
 
-A state read/write error ends execution. Keep the last saved runnable snapshot on an operation error.
+Report state read/write failures as execution errors, not terminal outcomes. On an operation error,
+retain the last saved runnable snapshot rather than replacing it with an errored machine snapshot.
 Use ordinary file save/load, without a second checkpoint system or transaction protocol.
 
 ## Progress and errors

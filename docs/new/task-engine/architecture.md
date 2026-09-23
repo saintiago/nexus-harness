@@ -102,8 +102,8 @@ an action request from the workspace. Actions without agent work do not receive 
 ## ExecutionRunner
 
 XState executes the state machine. The runner binds operations, saves/restores execution state and
-publishes progress. Before each operation begins, its active state is saved; terminal state is saved
-before returning the result. Detailed behavior belongs to its own design.
+publishes progress. Subscription-driven saves run in order without gating actions. The runner waits
+for the terminal save before returning the outcome. Detailed behavior belongs to its own design.
 
 ## Workflow definition
 
@@ -154,9 +154,9 @@ Artifacts are the durable inputs and outputs of actions. Their locations, format
 action data contracts. Workflow definitions contain no artifact mappings, and ExecutionRunner does
 not interpret those contracts.
 
-An action finishes writing its output artifacts before returning its outcome. Only then does the runner
-persist the next state. A crash can leave outputs without an advanced workflow state; the action starts
-anew and decides whether to reuse those outputs.
+An action finishes writing its output artifacts before returning its outcome. XState then transitions;
+the runner saves its state through a subscription. Saves can lag execution, so a crash can cause
+completed actions to run again. Each action decides whether to reuse existing outputs.
 
 ExecutionRunner persists only control state. It neither maintains conversation history nor assembles
 agent context.
