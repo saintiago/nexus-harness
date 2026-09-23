@@ -977,6 +977,39 @@ describe('one ticket history', () => {
     expect(restarted.brief.unresolvedReviews?.[0]?.findings.map((finding) => finding.id)).toEqual([
       'R1-F1',
     ]);
+
+    // Reviewing it again does not rename it a second time: the third round's
+    // occurrence is recorded beside the same identity.
+    await ticketHistory.recordReviewerReport?.({
+      ref: REF,
+      workspaceId: 'HARN-11',
+      task: TASK,
+      reviewId: 'review-3',
+      round: 3,
+      head: HEAD,
+      decision: 'request_changes',
+      summary: 'the repair still did not hold',
+      findings: [
+        {
+          path: 'src/greeting.ts',
+          line: 2,
+          body: 'the argument is still ignored',
+          kind: 'unresolved',
+          continues: 'r1-f1',
+        },
+      ],
+      verifications: [
+        { finding: 'R1-F1', state: 'unverified', evidence: 'the helper still ignores it' },
+      ],
+      now: new Date('2026-09-16T11:10:00.000Z'),
+    });
+    const reviewedAgain = await prepare(history(workDir), 'reviewer', 5);
+    const again = reviewedAgain.brief.unresolvedReviews ?? [];
+    expect(again.map((round) => round.findings.map((finding) => finding.id))).toEqual([['R1-F1']]);
+    expect(again[0]?.findings.map((finding) => finding.recordedAs)).toEqual(['R3-F1']);
+    expect(again[0]?.verifications).toEqual([
+      { finding: 'R1-F1', state: 'unverified', evidence: 'the helper still ignores it' },
+    ]);
   });
 
   it('keeps a missing or incomplete developer report from reading as a complete response', async () => {
@@ -1082,6 +1115,36 @@ describe('one ticket history', () => {
       'missing-report',
     );
     expect(missing.gaps.join('\n')).toMatch(/complete developer report/);
+
+    // A restart that retained an earlier summary but can no longer read the
+    // final evidence marks that attempt's report incomplete as well: the
+    // summary it kept does not become a complete claim again.
+    await report('run-5', '2026-09-16T11:45:00.000Z');
+    await writeWorkspaceState(workDir, {
+      version: 1,
+      workspaceId: 'HARN-11',
+      sourceRoot: workDir,
+      baseCommit: HEAD,
+      branch: 'harness/HARN-11',
+      createdAt: '2026-09-16T10:00:00.000Z',
+      sourceItem: sourceItemFor(REF),
+      attempts: [
+        {
+          runId: 'run-5',
+          reportPath: path.join(workDir, 'runs', 'run-5', 'result.json'),
+          outcome: 'passed',
+          reason: 'every configured check passed',
+          endedAt: '2026-09-16T11:45:00.000Z',
+        },
+      ],
+    });
+    const reconciled = await prepare(history(workDir), 'reviewer', 5);
+    const [reconciledResponse] = reconciled.brief.unresolvedReviews?.[0]?.responses ?? [];
+    expect(reconciledResponse?.finding).toBe('R1-F1');
+    expect(reconciledResponse?.complete).toBe(false);
+    expect(reconciledResponse?.problem).toMatch(/not complete/);
+    expect(reconciledResponse?.problem).toMatch(/final evidence/);
+    expect(reconciledResponse?.entryId).toBe('harness:developer-report:run-5');
   });
 
   it('gives two baseline diagnoses under one project different identities', async () => {

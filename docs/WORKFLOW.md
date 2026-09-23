@@ -852,8 +852,9 @@ states no finding of its own is still an outstanding request. Published findings
 report remain visible with an explicit provenance gap. Responses include older comments edited after
 the review.
 
-Every finding keeps the identity it is rendered with: the round that raised it and its position
-there, `R3-F2`, derived from the retained report rather than stored twice — so the brief, a
+Every finding keeps the identity it is rendered with: the round that raised the defect and its
+position in that round's report, `R3-F2`, derived from the retained report rather than stored
+twice — so the brief, a
 developer's answer and a later reviewer's verification all name the same finding the same way, and
 the identity is reproduced rather than re-derived when a snapshot is rebuilt or a run restarts. A
 finding a later review raises again is not a new identity: it is classified `unresolved` or
