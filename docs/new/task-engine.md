@@ -18,6 +18,7 @@ TaskEngine
 └── Actions
     ├── SelectTask
     ├── PrepareWorkspace
+    ├── StartRound
     ├── Develop
     ├── Verify
     ├── Review
@@ -141,7 +142,10 @@ states:
     on: { selected: prepare, empty: finished, failed: blocked }
   prepare:
     action: PrepareWorkspace
-    on: { prepared: develop, failed: blocked }
+    on: { prepared: startRound, failed: blocked }
+  startRound:
+    action: StartRound
+    on: { started: develop }
   develop:
     action: Develop
     on: { completed: verify, failed: blocked }
@@ -156,7 +160,7 @@ states:
     on: { approved: complete, changesRequested: repair, inconclusive: blocked }
   repair:
     action: SelectRepair
-    on: { selected: develop, exhausted: blocked }
+    on: { selected: startRound, exhausted: blocked }
   complete:
     action: CompleteTask
     on: { completed: select, failed: blocked }

@@ -37,9 +37,9 @@ An artifact declaration has two properties:
 }
 ```
 
-pathFromArtifactsRoot is a fixed relative path within the workspace's artifacts directory.
+pathFromArtifactsRoot is a fixed relative path within the current round's artifact directory.
 type describes the stored content's shape. The declaration identifies a data contract; the current
-workspace determines the concrete file. Store the content in the file, not the declaration.
+workspace and round determine the concrete file. Store the content in the file, not the declaration.
 
 Each producer exports its output declarations separately from its executable implementation.
 Consumers import those declarations rather than redefining paths or content shapes. Each output
@@ -62,6 +62,11 @@ The producing action's design defines its fields and their meaning.
 Artifact helpers are bound to the current workspace. readInputArtifacts accepts imported declarations
 and returns their typed contents in argument order. writeOutputArtifact accepts an owned declaration
 and content of its declared type. Structured contents are stored as JSON.
+
+On each call, resolve the current root through the
+[StartRound artifact-helper contract](start-round.md#artifact-helper-contract). A declaration such as
+development.json therefore resolves to artifacts/<current round>/development.json. Missing current
+inputs never fall back to earlier rounds.
 
 The interaction is:
 
@@ -99,13 +104,14 @@ are artifacts; the returned outcome is only the workflow's transition key.
 
 ## Repeated rounds
 
-Each completed invocation replaces its current output at the declared fixed path. Thus Review reads
-development.json from the preceding completed Develop invocation; Develop reads review.json for the
-latest review findings. The consuming action defines whether an input is needed on its initial round.
+Each round has a separate directory. Producers write their declared paths within that directory;
+consumers read the same paths within the current round. A missing current-round output cannot be
+mistaken for an earlier round's result.
 
-Sequential execution and writing outputs before returning establish this handoff. Consumers use the
-declared path, not a filename search, round counter or latest-artifact index. A transition that consumes
-an output requires that output to have been produced for that round; an old file is not a new result.
+Earlier directories preserve previous exchanges without producers archiving their outputs. Actions
+that need earlier findings or conversation use those directories explicitly as history when assembling
+context; ordinary input reads remain scoped to the current round.
 
-Current output files carry the latest results. Previous exchanges remain in separate conversation
-history artifacts. Workflow YAML contains states and transitions, not artifact paths or mappings.
+Workflow sequencing starts a round before implementation and starts another before a selected repair.
+Within a round, actions finish writing their outputs before returning. Workflow YAML contains states
+and transitions, not artifact paths or mappings.

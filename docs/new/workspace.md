@@ -12,17 +12,20 @@ The workspace layout is:
 <workspace root>/
 ├── worktree/
 ├── artifacts/
+│   └── <roundNumber>/
 └── state/
-    └── workflow.json
+    ├── workflow.json
+    └── current-round.json
 ```
 
 | Path relative to root | Contents |
 | --- | --- |
 | `worktree/` | The target repository working copy |
-| `artifacts/` | Persistent inputs, outputs and conversation records |
+| `artifacts/<roundNumber>/` | Persistent inputs and outputs for one round; earlier rounds form history |
 | `state/workflow.json` | The persisted workflow state |
+| `state/current-round.json` | The current round number |
 
-These names and locations are fixed. Subdirectories and files within artifacts/ are defined by
+These names and locations are fixed. roundNumber is a positive integer. Files within each round are defined by
 their individual artifact contracts. The workspace layout does not define their schemas.
 
 ```ts
