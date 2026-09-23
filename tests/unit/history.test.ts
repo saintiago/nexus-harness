@@ -1115,7 +1115,7 @@ describe('one ticket history', () => {
     // The verified identity is not outstanding any more, but it is retained,
     // and that is what the repair regression of the third revision names.
     const retained = retainedFindingIds(snapshot);
-    expect(retained).toEqual(['R2-F1', 'R1-F1']);
+    expect(retained).toEqual(['R1-F1', 'R2-F1']);
     const regression = parseVerdict(
       JSON.stringify({
         verdict: 'request_changes',

@@ -650,7 +650,10 @@ function unresolvedRound(parts: {
       }
     }
     if (requestsChanges(round.decision)) {
-      // A change request adds the findings it raises; it never clears one.
+      // A change request adds the findings it raises; it never clears one. That
+      // holds for a request refused publication as well: it settles no
+      // disposition, and the defect it recorded has no other statement to
+      // stand under, so dropping it would lose a finding the history holds.
       for (const finding of round.summary.findings) {
         owner.findings.set(finding.id, round);
       }

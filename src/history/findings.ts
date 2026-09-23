@@ -180,16 +180,18 @@ export function retainedFindingIds(snapshot: HistorySnapshot): readonly string[]
       ids.push(id);
     }
   };
-  for (const round of unresolvedRounds(snapshot.brief)) {
-    for (const finding of round.findings) {
-      add(finding.id);
-    }
-  }
   for (const report of snapshot.reports) {
     if (report.kind !== 'reviewer-report') {
       continue;
     }
     for (const finding of report.findings) {
+      add(finding.id);
+    }
+  }
+  // A round reconstructed from a native review has no retained report of its
+  // own; its identities belong to this set as well.
+  for (const round of unresolvedRounds(snapshot.brief)) {
+    for (const finding of round.findings) {
       add(finding.id);
     }
   }

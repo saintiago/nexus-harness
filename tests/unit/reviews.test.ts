@@ -705,6 +705,38 @@ describe('the reviewer prompt', () => {
     expect(prompt).toContain('The history names no outstanding finding identity');
   });
 
+  it('names the identities the history retained but does not have to verify', () => {
+    const snapshot = historyWithOutstandingFinding();
+    const review = snapshot.brief.unresolvedReviews?.[0];
+    if (review === undefined) {
+      throw new Error('the fixture carries one outstanding review');
+    }
+    // An earlier round raised R1-F1 and a later review settled it: it is no
+    // longer outstanding, and its identity is what a repair regression of the
+    // reviewed revision names.
+    const settled: HistoryReportSummary = {
+      ...review,
+      entryId: 'harness:reviewer-report:review-1',
+      sourceId: 'review-1',
+      round: 1,
+      findings: [
+        { id: 'R1-F1', path: 'src/greeting.ts', line: 2, body: 'the argument is ignored' },
+      ],
+      responses: [],
+    };
+    const carrying: HistorySnapshot = { ...snapshot, reports: [settled, ...snapshot.reports] };
+    const prompt = reviewPrompt(
+      evidence,
+      { path: '/evidence/repo', head: HEAD, base: PULL_REQUEST.baseSha },
+      '/evidence/review-2',
+      carrying,
+    );
+
+    expect(prompt).toContain('Outstanding identities you must verify: R2-F1.');
+    expect(prompt).toContain('The history also retains R1-F1, which this round does not verify');
+    expect(prompt).toContain('continues that identity in "continues"');
+  });
+
   it('shows a verdict example that a reviewer can really write, before and after a change request', () => {
     /** The one JSON example the prompt states, parsed the way the scan reads it. */
     const exampleOf = (prompt: string): string => {

@@ -282,6 +282,13 @@ export function reviewPrompt(
 
   const outstandingRounds = history === undefined ? [] : unresolvedRounds(history.brief);
   const outstanding = outstandingFindingIds(outstandingRounds);
+  // The identities the same history retains but this round does not have to
+  // verify: a defect that returns after an earlier review named it keeps one of
+  // these identities (docs/WORKFLOW.md §9).
+  const settledEarlier =
+    history === undefined
+      ? []
+      : retainedFindingIds(history).filter((finding) => !outstanding.includes(finding));
   if (outstandingRounds.length > 0) {
     sections.push(
       [
@@ -314,6 +321,13 @@ export function reviewPrompt(
               'leaves it outstanding.',
             ]
           : [`Outstanding identities you must verify: ${outstanding.join(', ')}.`]),
+        ...(settledEarlier.length === 0
+          ? []
+          : [
+              `The history also retains ${settledEarlier.join(', ')}, which this round does not verify: a defect that`,
+              'returns after an earlier review named it continues that identity in "continues" rather',
+              'than being raised as a new finding.',
+            ]),
         '',
         'Whatever the findings above say, still review the whole change against the requested',
         'outcome: a repaired defect says nothing about the rest of the diff.',
