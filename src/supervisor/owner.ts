@@ -1,0 +1,210 @@
+/**
+ * Who owns one supervised queue, and what an activation must be sure of first.
+ *
+ * Two facts decide whether a `supervise` invocation may start a worker at all:
+ *
+ * - the supervisor's own owner record, so a restart of the supervisor adopts
+ *   the state it left instead of starting a second worker beside a live one —
+ *   a live owner is refused by name, and a record whose process is gone is
+ *   taken over with a fresh token, which is what makes a plain restart safe;
+ * - the connected project's intake lock, so activating the supervisor over an
+ *   existing raw `queue` consumer is refused while that consumer is really
+ *   running. Nothing here breaks a lock: the queue's own exclusivity rules are
+ *   untouched, and an owner that is gone leaves the harness's own recovery
+ *   judgment to the incident (docs/WORKFLOW.md §12).
+ */
+import { randomUUID } from 'node:crypto';
+import { readFile, mkdir, rename, rm, writeFile } from 'node:fs/promises';
+import path from 'node:path';
+import { messageOf } from '../shared/errors.js';
+import { intakeLockPath } from '../sources/receipts.js';
+import { ownerFilePath } from './incident.js';
+
+/** The record one supervisor invocation holds under its project's root. */
+export interface OwnerRecord {
+  readonly version: 1;
+  readonly pid: number;
+  readonly token: string;
+  readonly startedAt: string;
+  readonly intent: string;
+  readonly repoPath: string;
+}
+
+/** Whether one recorded process is still running, as this host reports it. */
+export type LivenessProbe = (pid: number) => boolean;
+
+/** The host's own answer: a process that exists is alive unless nothing holds it. */
+export function processIsAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) {
+    return false;
+  }
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (cause) {
+    // EPERM means the process exists and belongs to someone else; ESRCH is the
+    // only answer that says it is gone.
+    return (cause as NodeJS.ErrnoException).code !== 'ESRCH';
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** Reads the owner record; an unreadable one is refused, never ignored. */
+async function readOwner(file: string): Promise<OwnerRecord | null> {
+  let text: string;
+  try {
+    text = await readFile(file, 'utf8');
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code === 'ENOENT') {
+      return null;
+    }
+    throw new Error(
+      `the supervisor's owner record "${file}" could not be read: ${messageOf(cause)}`,
+      { cause },
+    );
+  }
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch (cause) {
+    throw new Error(
+      `the supervisor's owner record "${file}" is not valid JSON (${messageOf(cause)}). Inspect ` +
+        'it by hand before starting another supervisor.',
+      { cause },
+    );
+  }
+  if (!isRecord(value) || typeof value['pid'] !== 'number' || typeof value['token'] !== 'string') {
+    throw new Error(
+      `the supervisor's owner record "${file}" names no owning process, so this invocation will ` +
+        'not take it over. Inspect it by hand.',
+    );
+  }
+  return value as unknown as OwnerRecord;
+}
+
+/** The supervisor's own lock, which only its holder removes. */
+export interface SupervisorOwnership {
+  readonly root: string;
+  readonly file: string;
+  /** Removes the record only while this invocation still owns it. */
+  release(): Promise<void>;
+}
+
+export type OwnershipTake =
+  | { readonly ok: true; readonly ownership: SupervisorOwnership }
+  | { readonly ok: false; readonly problem: string };
+
+/**
+ * Takes the supervisor's own owner record: refused while a live supervisor
+ * holds it, adopted when the recorded process is gone. The adopted record says
+ * so, so a person reading it can see which invocation holds the queue now.
+ */
+export async function acquireSupervisorOwnership(request: {
+  readonly root: string;
+  readonly intent: string;
+  readonly repoPath: string;
+  readonly now: () => Date;
+  readonly isAlive?: LivenessProbe;
+}): Promise<OwnershipTake> {
+  const { root, intent, repoPath, now } = request;
+  const isAlive = request.isAlive ?? processIsAlive;
+  const file = ownerFilePath(root);
+  await mkdir(root, { recursive: true });
+
+  const existing = await readOwner(file);
+  if (existing !== null && existing.pid !== process.pid && isAlive(existing.pid)) {
+    return {
+      ok: false,
+      problem:
+        `another supervisor already runs this connected project (pid ${String(existing.pid)}, ` +
+        `started ${existing.startedAt}, record "${file}"). Only one supervisor may run a worker ` +
+        'for one project and workDir at a time. Stop that supervisor, or let it finish, before ' +
+        'starting another; a live owner is never taken over.',
+    };
+  }
+
+  const token = randomUUID();
+  const record: OwnerRecord = {
+    version: 1,
+    pid: process.pid,
+    token,
+    startedAt: now().toISOString(),
+    intent,
+    repoPath,
+  };
+  const temporary = path.join(root, `owner.json.tmp-${randomUUID()}`);
+  try {
+    await writeFile(temporary, `${JSON.stringify(record, null, 2)}\n`, 'utf8');
+    await rename(temporary, file);
+  } catch (cause) {
+    await rm(temporary, { force: true });
+    return {
+      ok: false,
+      problem: `the supervisor's owner record "${file}" could not be written: ${messageOf(cause)}`,
+    };
+  }
+
+  return {
+    ok: true,
+    ownership: {
+      root,
+      file,
+      release: async () => {
+        const recorded = await readOwner(file).catch(() => null);
+        if (recorded === null || recorded.token !== token) {
+          // Not this invocation's record any more: it is left in place for a
+          // person rather than removed from under whoever holds it.
+          return;
+        }
+        await rm(file, { force: true });
+      },
+    },
+  };
+}
+
+/**
+ * The activation check in front of one worker: a raw queue consumer that is
+ * really running holds the connected project's intake lock, and starting a
+ * supervised worker beside it would be a second consumer of one queue. The
+ * lock is read, never touched: a live owner is refused by name, and an owner
+ * that is gone is left exactly as it was for the recovery incident to explain.
+ */
+export async function intakeConsumerProblem(request: {
+  readonly workDir: string;
+  readonly namespace: string;
+  readonly isAlive?: LivenessProbe;
+}): Promise<string | null> {
+  const isAlive = request.isAlive ?? processIsAlive;
+  const lock = intakeLockPath(request.workDir, request.namespace);
+  let recorded: unknown;
+  try {
+    recorded = JSON.parse(await readFile(path.join(lock, 'owner.json'), 'utf8'));
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code === 'ENOENT') {
+      return null;
+    }
+    // The lock directory exists but its owner record could not be read: that is
+    // exactly the state the queue refuses to break automatically, and this
+    // activation will not guess either.
+    return (
+      `"${lock}" exists and its owner record could not be read (${messageOf(cause)}), so this ` +
+      'invocation will not start a supervised worker beside it. Inspect the lock by hand; a lock ' +
+      'is never broken automatically.'
+    );
+  }
+  const pid = isRecord(recorded) && typeof recorded['pid'] === 'number' ? recorded['pid'] : null;
+  if (pid === null || pid === process.pid || !isAlive(pid)) {
+    // No live consumer: the lock is a leftover this invocation leaves to the
+    // recovery incident, which is what investigates a stop that was never
+    // confirmed. Nothing deletes it here.
+    return null;
+  }
+  return (
+    `a raw queue consumer already holds this connected project's intake lock "${lock}" ` +
+    `(pid ${String(pid)}). Stop that consumer before activating the supervisor, so one queue ` +
+    'has one worker; neither this invocation nor the recovery path takes a live lock over.'
+  );
+}
