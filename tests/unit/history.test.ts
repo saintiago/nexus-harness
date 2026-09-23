@@ -1473,7 +1473,7 @@ describe('one ticket history', () => {
       findings: [{ path: 'src/greeting.ts', line: 2, body: 'the argument is ignored' }],
       now: new Date('2026-09-16T10:00:00.000Z'),
     });
-    const reviewDir = await writeReviewAttempt(workDir, {
+    await writeReviewAttempt(workDir, {
       reviewId: 'review-4',
       startedAt: '2026-09-16T10:50:00.000Z',
       endedAt: '2026-09-16T10:55:00.000Z',
@@ -1483,7 +1483,6 @@ describe('one ticket history', () => {
         { finding: 'r1-f1', state: 'unverified', evidence: 'read src/greeting.ts:2' },
       ],
     });
-    expect(reviewDir).toContain('review-4');
     const answer = (finding: string): readonly string[] => [
       `### Finding ${finding}`,
       '- Cause: the shared helper ignored the argument it was given.',
@@ -1670,6 +1669,39 @@ describe('one ticket history', () => {
       summary: 'the salutation is wrong',
       findings: [{ path: 'src/salutation.ts', line: 3, body: 'the salutation is wrong' }],
     });
+    // The developer answered the defect round 4 recorded, under the identity it
+    // has in the brief.
+    await ticketHistory.recordDeveloperReport?.({
+      ref: REF,
+      workspaceId: 'HARN-11',
+      task: TASK,
+      round: 5,
+      runId: 'run-5',
+      reportPath: '/work/runs/run-5/result.json',
+      status: 'in-progress',
+      reason: 'Coding turn reports retained.',
+      repairsUsed: 0,
+      attempts: [
+        {
+          turn: 1,
+          kind: 'repair',
+          agentSummary: [
+            'I repaired the salutation.',
+            '',
+            '### Finding R4-F1',
+            '- Cause: the helper formatted the salutation itself.',
+            '- Affected scope: src/salutation.ts; src/greeting.ts shares the helper.',
+            '- Repair: the helper formats the salutation it is given.',
+            '- Verification: exercised greet("hi") through the exported function.',
+            '- Remaining uncertainty: none.',
+          ].join('\n'),
+          checks: 'passed',
+        },
+      ],
+      pullRequest: null,
+      deliveryFailure: null,
+      now: new Date('2026-09-16T12:00:00.000Z'),
+    });
 
     const snapshot = await prepare(ticketHistory, 'reviewer', 5);
     const rounds = unresolvedRounds(snapshot.brief);
@@ -1683,6 +1715,9 @@ describe('one ticket history', () => {
     const recovered = snapshot.entries.find((entry) => entry.sourceId === 'review-4');
     expect(recovered?.text).toContain('Original round: 4 — read back from');
     expect(recovered?.text).toContain('### Finding R4-F1');
+    // The restored identity is the one the developer answered, so that complete
+    // answer is still read as the claim against the recovered finding.
+    expect(rounds[1]?.responses?.[0]).toMatchObject({ finding: 'R4-F1', complete: true });
     // The next review is numbered past the round this recovery restored, even
     // though rounds 2 and 3 are gone and the reports that remain would count to
     // one below it: a round another review states is never handed out again.
