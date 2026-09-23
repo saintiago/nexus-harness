@@ -49,10 +49,13 @@ export type FindingAnswerField = (typeof FINDING_ANSWER_FIELDS)[number]['key'];
 
 /**
  * The stable identity of one finding: `R2-F3` is the third finding of round 2,
- * and `N77-F3` is the third finding of a review whose round number is not known
- * (a native review, or a baseline diagnosis, this harness kept no round number
- * for) — its own review identity scopes the identity, so two reviews that
- * cannot be numbered apart do not name two different findings the same way. The
+ * and `N77-F3` is the third finding of a report whose round number is not known
+ * (a baseline diagnosis, or a report this harness kept no round number for) —
+ * its own identity scopes the identity, so two reports that cannot be numbered
+ * apart do not name two different findings the same way. A finding a native
+ * review stated as one of its own inline comments is named by the comment's own
+ * source identity instead ({@link nativeFindingIdOf}), because the position
+ * among the comments one read returned does not survive a deleted sibling. The
  * identity is derived, never invented per snapshot, so a finding carries the
  * same name in the brief, in the developer's answer and in the reviewer's
  * verification.

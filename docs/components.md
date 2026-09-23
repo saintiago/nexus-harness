@@ -42,8 +42,13 @@ identity it continues and records its own occurrence beside it, and a new change
 findings it raises without clearing the ones already outstanding. A continuation is resolved
 against every identity the history retained, so a defect an earlier review already settled keeps the
 identity it was raised with when a later revision brings it back: a native review the harness kept
-no report for is reconstructed from the review and its inline comments, and those identities
-survive the review that settled them.
+no report for is reconstructed from the review and its inline comments — each finding named by the
+comment's own source identity, so deleting an earlier sibling cannot rename the findings that
+remain — and those identities survive the review that settled them. The claim and the verification
+are read at the level each was made: a developer report is answered by its newest coding turn alone,
+so an earlier turn's complete answer never stands in for a later turn that gave none, and a
+verification is read under the identity the history named, whether it was published or recovered
+from the reviewer's own retained file.
 
 ## Review
 

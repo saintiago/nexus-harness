@@ -126,9 +126,13 @@ defect again does not rename it: the finding is classified `unresolved` or `regr
 identity it continues, keeps it, and records its own occurrence beside it, so the latest wording is
 not lost while the defect keeps one name from the round that raised it. A native review the harness
 kept no complete report for is reconstructed from the review's own entry and its inline comments,
-and those identities are reproduced from the snapshot for as long as it holds the review, so a
-defect an approval already settled keeps the identity it was raised with when a later revision
-brings it back. A disposition a review read
+with each finding named by the review and the comment's own source identity rather than its position
+among the comments one read returned, so deleting an earlier sibling cannot rename the findings that
+remain: an answer or a verification written against one of those identities still names the same
+finding, and the identity a deleted comment held never comes to stand for another. Those identities
+are reproduced from the snapshot for as long as it holds the review, so a defect an approval
+already settled keeps the identity it was raised with when a later revision brings it back. A
+disposition a review read
 as `unverified` or `regressed` stays outstanding until a later round verifies it, whatever else that
 round decides. A developer turn whose brief carries outstanding findings answers each of them in its
 own final summary, one section per identity, stating the cause, the affected scope (the related
@@ -137,7 +141,10 @@ affects, and what remains uncertain. The harness reads those sections out of the
 report it already retains; the newest attempt recorded after the review is the claim the reviewer is
 given — a latest attempt whose complete report is missing or comes back incomplete keeps its answers
 incomplete with that provenance attached, and an older complete claim is never read in its place —
-and an earlier attempt's answer stays readable in the report it was recorded in. A finding no answer
+and an earlier attempt's answer stays readable in the report it was recorded in. Within one report
+the newest coding turn is the claim as well: a turn that answers a finding again answers it, and a
+turn that answers nothing, or answers only part of one, states no complete response however
+completely an earlier turn answered the same finding. A finding no answer
 names, an answer that leaves a field out, and a turn that answered nothing are all kept as an
 incomplete response for that finding: none of them is presented as complete remediation, and the
 prompt says so before the turn starts. An answer field past the brief's own rendering bound is cut
@@ -159,7 +166,11 @@ earlier identity in `continues` and group the other places the same defect reach
 A continuation is resolved against every finding the history retained, not only the identities
 still outstanding: a finding whose disposition an earlier review verified stays settled until a
 later revision reintroduces the defect, and that revision names the same identity again rather
-than raising an unconnected new one. The verification requirement stays with the outstanding
+than raising an unconnected new one. A verification names the identity the history gave the
+finding, whatever case the reviewer wrote it in: the scan resolves it before publishing, and a
+verdict read back from the reviewer's own retained file is resolved the same way, so a recovery
+settles the same dispositions the published verdict settled instead of losing them when the report
+digest is gone. The verification requirement stays with the outstanding
 identities: every decision but `inconclusive` states one verification per identity the snapshot
 listed as outstanding.
 Both roles investigate the related paths once the evidence points at one shared cause — a repair

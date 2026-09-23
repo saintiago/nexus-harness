@@ -871,8 +871,12 @@ finding a later review raises again is not a new identity: it is classified `unr
 `regression`, names the identity it continues, and keeps it for as long as it is outstanding, while
 the review's own occurrence — its own round and position — is recorded and rendered beside it, so
 the latest wording of the defect is not lost. A native review the harness kept no complete report
-for is reconstructed from the review's own entry and its inline comments, and those identities are
-reproduced from the snapshot for as long as it holds the review: a defect an approval settled keeps
+for is reconstructed from the review's own entry and its inline comments, each finding named by the
+review and the comment's own source identity rather than its position among the comments GitHub
+returned in one snapshot: deleting an earlier sibling cannot rename the defects that remain, so an
+answer or a verification written against one identity still names the same finding, and an identity
+a deleted comment held never comes to stand for another. Those identities are reproduced from the
+snapshot for as long as it holds the review: a defect an approval settled keeps
 the identity it was raised with, so a later revision that brings it back continues that finding
 instead of raising an unconnected new one. Two reviews this harness kept no round number for are
 named apart by a bounded digest of the identity that scopes them, so two baseline diagnoses of one
@@ -880,10 +884,13 @@ project cannot share one finding identity.
 The brief renders each outstanding finding whole, with that identity and how the round classified
 it, and under the finding the answer a developer turn gave it: the newest developer report recorded
 after the review is the claim the reviewer is shown, named with the run and the round it came from,
-and an earlier answer stays readable in the report it was recorded in. The newest attempt stands,
-whatever it holds: a report that is missing, or one that comes back incomplete, keeps its answers
-incomplete with that provenance attached, and an older complete claim is never read as the current
-attempt's response. The harness reads
+and an earlier answer stays readable in the report it was recorded in. The newest coding turn of
+that report is what the developer claims now, exactly as the newest attempt is: a turn that answers
+a finding again answers it, and a turn that answers nothing — or answers only part of it — states no
+complete response, however completely an earlier turn answered the same finding. The newest attempt
+stands, whatever it holds: a report that is missing, or one that comes back incomplete, keeps its
+answers incomplete with that provenance attached, and an older complete claim is never read as the
+current attempt's response. The harness reads
 those answers out of the developer's own summary — one `### Finding <identity>` section per
 finding, with `Cause`, `Affected scope`, `Repair`, `Verification` and `Remaining uncertainty` each
 stated, and a wrapped value indented under the line that names it. A finding with no such section, and
@@ -902,7 +909,11 @@ under its round: `verified`, `unverified` or `regressed`, with the reviewer's ow
 developer's answer is a claim and a verification is a fact, and the two are rendered and recorded
 as such; a later review that finds the defect still present raises its own finding classified
 `unresolved` or `regression` and naming the identity it continues, so one defect is followed across
-rounds instead of being re-raised as an unconnected new finding. Confirmed related occurrences of
+rounds instead of being re-raised as an unconnected new finding. A verification names the identity
+the history gave the finding, whatever case the reviewer wrote it in: the scan resolves that
+identity before anything is published, and a verdict read back from the reviewer's own retained
+file is resolved the same way, so a recovery settles exactly the dispositions the published verdict
+settled instead of changing meaning when a report digest is lost. Confirmed related occurrences of
 one defect are grouped under the finding that names the cause rather than repeated as examples.
 
 Native GitHub reviews have no edit timestamp. Synchronization compares their bodies against the

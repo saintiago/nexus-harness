@@ -76,9 +76,10 @@ export interface HistoryEntry {
    * The native review one inline review comment was published with, when the
    * comment is part of that review rather than a reply to another comment. A
    * native review the harness kept no complete report for is reconstructed as a
-   * round whose findings are the review's own inline comments, named by their
-   * position; keeping the parent here is what lets a snapshot reproduce those
-   * identities after the round that raised them was settled.
+   * round whose findings are the review's own inline comments, each named by
+   * the review and the comment's own source identity; keeping the parent here is
+   * what lets a snapshot reproduce those identities — the same ones, whatever
+   * happens to a sibling comment — after the round that raised them was settled.
    */
   readonly reviewId?: number | null;
   /** A browser link to the source entry, when the source reports one. */
@@ -112,7 +113,10 @@ export interface HistoryOccurrence {
  *
  * The identity is stable for as long as the finding is outstanding: it is
  * derived from the review round and the finding's position in it
- * (`findingIdOf`, `findings.ts`), and both roles name the finding by it — the
+ * (`findingIdOf`, `findings.ts`) — or, for a native review the harness kept no
+ * report for, from the review and the inline comment's own source identity
+ * (`nativeFindingIdOf`), so a deleted sibling cannot rename it. Both roles name
+ * the finding by that identity — the
  * developer answers it, and a later reviewer verifies that answer or groups a
  * related occurrence under it (docs/WORKFLOW.md §9).
  */
