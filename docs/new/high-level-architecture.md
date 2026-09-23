@@ -190,15 +190,3 @@ operator attention. Supervisor applies that decision within its configured recov
 Required task checks and completion gates still belong to the normal actions.
 
 The defined workflow includes development, verification, delivery, review and completion.
-
-## Verification boundaries
-
-Cover component contracts with contract tests using controlled dependencies. Verify real provider
-behavior and caller handling of defined outcomes; schema checks alone do not establish behavior.
-
-Use unit tests for internal decisions, focused integration tests for process, persistence and external
-protocol boundaries, and a small number of complete workflows for composition. Do not repeat the same
-behavioral matrix at every layer or start all Nexus for every contract test.
-
-Allocate requirements to components and interactions. The verification inventory links those
-requirements to tests; component architecture defines the design.

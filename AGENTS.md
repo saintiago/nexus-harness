@@ -78,6 +78,7 @@ A multi-component flow does not create a special shared contract.
 
 ## Development
 
+- [Testing architecture](docs/new/testing.md): test scopes, real and substituted dependencies, contracts and system journeys.
 - [Development guide](docs/development.md): implementation, verification and role boundaries.
 - [Git workflow](docs/GIT-WORKFLOW.md): branches, pull requests and integration.
 - [Testing](docs/testing.md): test pyramid, boundaries and coverage restoration.
