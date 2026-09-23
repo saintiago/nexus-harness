@@ -80,7 +80,8 @@ and capabilities its contract requires.
 OperatorInterface receives worker and parent events through one combined subscription.
 Prepare recovery context from the original request, failure, available output and
 [workspace reference](workspace.md#layout-and-reference). If the task workspace is unavailable,
-supply an operational workspace. Pass context to AgentRuntime.run with the configured recovery profile.
+supply an operational workspace. Include the current project configuration and recovery scope in the
+context. Pass context to AgentRuntime.run with the configured recovery profile.
 Use the [Notifications adapter](adapters/notifications.md#interface) to publish the recovery report.
 
 ### Worker entry point
@@ -122,12 +123,18 @@ workflow's successful terminal outcomes are available before the first child sta
 Work and recovery run sequentially. Each invocation finishes before the next starts.
 An absent error description stays absent; recovery investigates from the available context.
 
-Recovery investigates, fixes operational problems, reconciles retained work and may create or rank a
-blocker through its authorized tools. It reconciles saved workflow state when needed before requesting
-resumption. Its report explains the cause, actions taken and remaining problems.
+Recovery stays within the current project. It investigates, fixes project execution problems,
+reconciles retained work and may create or rank a blocker in that project's configured task source.
+It reconciles saved workflow state when needed before requesting resumption. Its report explains
+the cause, actions taken and remaining problems.
+
+Cross-project repair and changes to the Nexus installation are outside this capability. If continuing
+requires either, return needs-attention with the diagnosis; do not create a ticket in another project,
+launch a repair there or update the running Nexus installation.
 
 A resume decision starts work with retained state. A run-blocker decision retains the original request,
-runs the named ticket in its own workspace, then resumes the original request. Failure in that work
+runs the named ticket in its own workspace using the same project configuration, then resumes the
+original request. The blocker key belongs to the current project's task source. Failure in that work
 uses the same recovery path.
 
 Each recovery invocation consumes the configured allowance for this execution. Worker restarts and

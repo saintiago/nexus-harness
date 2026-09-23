@@ -166,7 +166,9 @@ workflow's repair and escalation decisions.
 
 When work cannot continue, Application invokes recovery with the failure and available context.
 Recovery investigates, performs repairs and decides whether to resume, run a blocker first or request
-operator attention. Application applies that decision within its configured recovery allowance.
+operator attention. Recovery and blocker execution stay within the current project. Cross-project
+repair and Nexus installation changes require operator attention.
+Application applies the decision within its configured recovery allowance.
 Required task checks and completion gates still belong to the normal actions.
 
 The defined workflow includes development, verification, delivery, review and completion.
