@@ -42,12 +42,15 @@ function orderByClause(ordering: JiraOrdering): string {
  * order. No arbitrary JQL and no timestamp cursor: the configured values are the
  * whole queue definition (docs/WORKFLOW.md §5).
  */
-export function queueJql(config: JiraSourceConfig): string {
+export function queueJql(config: JiraSourceConfig, key?: string): string {
   return [
     `project = ${jqlLiteral(config.projectKey)}`,
     `AND issuetype = ${jqlLiteral(config.issueType)}`,
     `AND labels = ${jqlLiteral(config.label)}`,
     `AND status = ${jqlLiteral(config.readyStatus)}`,
+    // A scoped read is the same queue narrowed to one issue key: the key is a
+    // literal this connector builds, never text from a caller's own query.
+    ...(key === undefined ? [] : [`AND key = ${jqlLiteral(key)}`]),
     orderByClause(config.ordering),
   ].join(' ');
 }
@@ -60,8 +63,9 @@ export async function listEligibleIssues(
   config: JiraSourceConfig,
   http: HttpClient,
   stop: AbortSignal,
+  key?: string,
 ): Promise<readonly SourceCandidate[]> {
-  const jql = queueJql(config);
+  const jql = queueJql(config, key);
   const candidates: SourceCandidate[] = [];
   const seen = new Set<string>();
   const seenTokens = new Set<string>();

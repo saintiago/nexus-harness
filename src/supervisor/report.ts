@@ -165,8 +165,11 @@ export interface IncidentReporterParts {
   readonly jira?: { readonly http: HttpClient; readonly token: string } | undefined;
   /** Where the email summary goes, when the policy configures it. */
   readonly notification: RecoveryNotificationConfig | null;
-  /** The directory the notification command's own output is kept under. */
-  readonly logsDir: string;
+  /**
+   * The directory the notification command's own output is kept under, named by
+   * the incident: one incident's publication evidence stays with its record.
+   */
+  readonly logsDir: (incident: IncidentRecord) => string;
   /** The working directory the notification command runs in. */
   readonly cwd: string;
   readonly now: () => Date;
@@ -253,7 +256,13 @@ export function createIncidentReporter(parts: IncidentReporterParts): IncidentRe
         problems.push('the email summary was not sent: the supervisor was stopped first');
       } else {
         try {
-          const messageId = await sendSummary(runNotification, parts, text.subject, text.text);
+          const messageId = await sendSummary(
+            runNotification,
+            parts,
+            incident,
+            text.subject,
+            text.text,
+          );
           notification = {
             topicArn: parts.notification.topicArn,
             email: parts.notification.email,
@@ -345,6 +354,7 @@ async function postReport(
 async function sendSummary(
   runNotification: typeof runCommand,
   parts: IncidentReporterParts,
+  incident: IncidentRecord,
   subject: string,
   text: string,
 ): Promise<string | null> {
@@ -363,7 +373,7 @@ async function sendSummary(
       text,
     ],
     cwd: parts.cwd,
-    logsDir: parts.logsDir,
+    logsDir: parts.logsDir(incident),
     label: `recovery-notification`,
     timeoutMs: NOTIFICATION_TIMEOUT_MS,
   });

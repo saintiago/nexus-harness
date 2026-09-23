@@ -73,6 +73,17 @@ function describeHarness(
         `deadline ${String(completion.deadlineSeconds)}s`,
     );
   }
+  const recovery = harness.recovery;
+  if (recovery !== undefined) {
+    lines.push(
+      `  recovery               ${recovery.agent.runtime} ${recovery.agent.command.join(' ')}, ` +
+        `at most ${String(recovery.maxAttempts)} attempt(s) per incident`,
+      recovery.notifications === undefined
+        ? '  recovery reporting     Jira only: no notification policy is configured'
+        : `  recovery reporting     ${recovery.notifications.topicArn} -> ` +
+            `${recovery.notifications.email}, publisher ${recovery.notifications.publisher.join(' ')}`,
+    );
+  }
   return lines.join('\n');
 }
 

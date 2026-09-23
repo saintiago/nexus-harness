@@ -37,6 +37,7 @@ import { queueCli } from './cli/queue-command.js';
 import { reviewCli } from './cli/review-command.js';
 import { runCommand } from './cli/run-command.js';
 import { sourceCli } from './cli/source-command.js';
+import { superviseCli } from './cli/supervise-command.js';
 
 /**
  * Runs one CLI invocation and returns its exit code. Never throws for bad
@@ -74,6 +75,10 @@ export async function runCli(
 
   if (command === 'queue') {
     return queueCli(argv.slice(1), context);
+  }
+
+  if (command === 'supervise') {
+    return superviseCli(argv.slice(1), context);
   }
 
   if (command !== 'check-config' && command !== 'run') {

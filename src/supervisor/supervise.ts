@@ -117,6 +117,25 @@ export interface SuperviseSummary {
 }
 
 /**
+ * The supervisor's own outward boundaries, and the paths it reads them from.
+ * The command composes the real ones; a test substitutes the pieces it drives,
+ * exactly as the other commands' `…Parts` do.
+ */
+export interface SupervisorParts {
+  /** The worker: the Nexus CLI, started as a child process by default. */
+  readonly worker: (request: WorkerRequest) => Promise<WorkerOutcome>;
+  readonly recoveryTurn: RecoveryTurn;
+  readonly reporter: IncidentReporter;
+  /** The CLI entry the worker runs; the same file this process runs. */
+  readonly entry: string;
+  readonly interpreter: string;
+  readonly cwd: string;
+  /** The Nexus installation the supervisor and its recovery turn work on. */
+  readonly installRoot: string;
+  readonly isAlive: LivenessProbe;
+}
+
+/**
  * One supervision invocation. Everything the caller composes — the worker, the
  * recovery turn, the reporter — is handed in, so the decisions this module owns
  * are decided from explicit evidence.

@@ -33,6 +33,7 @@ import { createGitHubDelivery } from '../delivery/github.js';
 import type {
   QueueArmOutcome,
   QueueCompletionOutcome,
+  QueueRecovery,
   QueueReviewOutcome,
   QueueSummary,
 } from '../queue/loop.js';
@@ -43,7 +44,7 @@ import { messageOf } from '../shared/errors.js';
 import type { HarnessConfig, JiraSourceConfig } from '../shared/types.js';
 import { createCompletionPass } from '../sources/completion.js';
 import type { ArmOutcome, CompletionOutcome } from '../sources/completion.js';
-import type { SourceContext, SourceTake } from '../sources/contract.js';
+import type { QueueTicket, SourceContext, SourceTake } from '../sources/contract.js';
 import { SourceError } from '../sources/contract.js';
 import { createBaselineDiagnosis, resumeStop } from '../sources/baseline.js';
 import { takeOneItem } from '../sources/coordinator.js';
@@ -52,6 +53,7 @@ import { discoverQueueWork } from '../sources/jira/queue.js';
 import { createJiraCompletionSource, readReviewItem } from '../sources/jira/completion.js';
 import { createJiraSource } from '../sources/jira/connector.js';
 import { createHttpClient, resolveJiraToken } from '../sources/jira/http.js';
+import { discoverScopedQueueWork } from '../sources/jira/queue.js';
 import { acquireIntakeLock } from '../sources/receipts.js';
 import type { ReviewScanContext, ReviewSummary } from '../reviews/contract.js';
 import { ReviewError } from '../reviews/contract.js';
@@ -96,6 +98,12 @@ interface QueueCommandOptions {
   readonly mode: QueueRunMode;
   readonly configPath: string;
   readonly repoPath: string;
+  /**
+   * The one ticket a scoped `queue run --ticket` follows, or `null`. A scoped
+   * run carries that ticket by identity and claims nothing else
+   * (docs/WORKFLOW.md §11, §12).
+   */
+  readonly ticket: string | null;
 }
 
 /**
@@ -108,7 +116,7 @@ interface QueueCommandOptions {
  * itself is that all three objects are there, because other commands treat
  * them as optional.
  */
-function queueConfigurationProblem(
+export function queueConfigurationProblem(
   config: HarnessConfig,
   harnessPath: string,
   projectPath: string,
@@ -272,7 +280,7 @@ function exitCodeForQueue(summary: QueueSummary): number {
  * lock for the whole run, and hand the serial loop its four ordinary phases.
  */
 async function queueCommand(options: QueueCommandOptions, context: CliContext): Promise<number> {
-  const { mode, configPath, repoPath } = options;
+  const { mode, configPath, repoPath, ticket } = options;
   const projectPath = projectConfigFile(repoPath);
   const { io } = context;
 
@@ -406,6 +414,14 @@ async function queueCommand(options: QueueCommandOptions, context: CliContext): 
     const sourceIo = { out: activeIo.out, err: activeIo.err };
 
     const stop = new AbortController();
+    /**
+     * What the scoped run's own discovery last read: the ticket it follows, and
+     * the phase the queue currently holds it in. Only a scoped run reads it.
+     */
+    let scopedWork: {
+      readonly recovery: QueueRecovery | null;
+      readonly ticket: QueueTicket | null;
+    } | null = null;
     const release = (context.signals ?? hostSignals()).onInterrupt(() => {
       if (stop.signal.aborted) {
         activeIo.err(
@@ -565,6 +581,27 @@ async function queueCommand(options: QueueCommandOptions, context: CliContext): 
             pollIntervalMs: sourceConfig.pollIntervalSeconds * 1000,
             completionPollIntervalMs: completionConfig.pollIntervalSeconds * 1000,
             discover: async () => {
+              // A scoped run follows one ticket by identity and discovers
+              // nothing else: the scoped ticket's own phase is what the loop
+              // carries, and a scoped ticket that is in none of the configured
+              // statuses leaves the run with nothing to do rather than taking
+              // an unrelated ticket (docs/WORKFLOW.md §11, §12).
+              if (ticket !== null) {
+                const scoped = await discoverScopedQueueWork(
+                  sourceConfig,
+                  jiraHttp,
+                  stop.signal,
+                  ticket,
+                );
+                scopedWork = scoped;
+                if (scoped.ticket === null) {
+                  sourceIo.out(
+                    `queue run: ${ticket} is not in any configured status now, so the scoped run ` +
+                      'carries nothing and claims no other ticket',
+                  );
+                }
+                return scoped.recovery;
+              }
               // A previous invocation can stop after a red baseline was diagnosed
               // and before its finding was recorded on the ticket. That item is
               // still in the running status, where a fresh scan never looks and
@@ -589,9 +626,25 @@ async function queueCommand(options: QueueCommandOptions, context: CliContext): 
             },
             consume: async ({ only }): Promise<SourceTake> => {
               try {
+                // A scoped run's claim is the one ticket its discovery read,
+                // taken by identity: `only` from the loop wins when the loop is
+                // continuing that same ticket, and nothing else is ever
+                // selected.
+                const scoped =
+                  ticket === null || only !== null ? only : (scopedWork?.ticket ?? null);
+                if (ticket !== null && scoped === null) {
+                  return {
+                    outcome: 'empty',
+                    ticket: null,
+                    run: null,
+                    skipped: 0,
+                    problem: null,
+                    cleanupConfirmed: true,
+                  };
+                }
                 return await takeOneItem(intake, {
                   lockHeld: true,
-                  ...(only === null ? {} : { only }),
+                  ...(scoped === null ? {} : { only: scoped }),
                 });
               } catch (cause) {
                 if (cause instanceof SourceError || cause instanceof WorkspaceError) {
@@ -826,6 +879,7 @@ export async function queueCli(args: readonly string[], context: CliContext): Pr
       mode: subcommand,
       configPath: path.resolve(cwd, parsed.options.config ?? ''),
       repoPath: path.resolve(cwd, parsed.options.repo ?? ''),
+      ticket: subcommand === 'run' ? (parsed.options.ticket ?? null) : null,
     },
     context,
   );
