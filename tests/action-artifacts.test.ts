@@ -280,6 +280,46 @@ describe('artifact helpers over a workspace', () => {
     await expect(helpers.readArtifactHistory(verificationArtifact)).resolves.toEqual([]);
   });
 
+  it('reads an absent optional artifact as null and a present one as its content', async () => {
+    const root = await temporaryWorkspace();
+    await startRound(root, 1);
+    const helpers = createArtifactHelpers({ root });
+
+    await expect(
+      helpers.readOptionalInputArtifacts(verificationArtifact, devArtifact),
+    ).resolves.toEqual([null, null]);
+
+    await helpers.writeOutputArtifact(devArtifact, developmentOutput);
+    await expect(
+      helpers.readOptionalInputArtifacts(verificationArtifact, devArtifact),
+    ).resolves.toEqual([null, developmentOutput]);
+
+    // The optional read resolves the current round on every call, like the required read.
+    await startRound(root, 2);
+    await expect(helpers.readOptionalInputArtifacts(devArtifact)).resolves.toEqual([null]);
+  });
+
+  it('fails an optional read when an existing artifact is unreadable', async () => {
+    const root = await temporaryWorkspace();
+    await startRound(root, 1);
+    const helpers = createArtifactHelpers({ root });
+
+    await writeArtifactFile(root, 1, 'verification.json', '{ not json');
+    await expect(helpers.readOptionalInputArtifacts(verificationArtifact)).rejects.toThrow(
+      /is not valid JSON/,
+    );
+
+    await writeArtifactFile(
+      root,
+      1,
+      'verification.json',
+      JSON.stringify({ headRevision, status: 'unknown', checks: [] }),
+    );
+    await expect(helpers.readOptionalInputArtifacts(verificationArtifact)).rejects.toThrow(
+      /does not match its declared content type/,
+    );
+  });
+
   it('fails history when an earlier round holds an unreadable artifact', async () => {
     const root = await temporaryWorkspace();
     await startRound(root, 1);

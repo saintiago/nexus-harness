@@ -35,10 +35,12 @@ using the command's position in the configured check list.
 ### Outcomes
 
 - passed: every required command completed successfully against the recorded revision.
-- failed: at least one completed command failed.
+- failed: at least one completed command failed, or the checks left tracked implementation changes.
 
 Both outcomes write verificationArtifact and the command output. An inability to launch or complete
-a command is an execution error, not a failed assertion.
+a command is an execution error, not a failed assertion. So is a worktree that does not hold the
+development result's revision or that already holds tracked changes: no check runs and no verdict is
+written.
 
 ## Behavior
 
@@ -50,7 +52,8 @@ A developer's report does not replace these results. Preserve the command exit c
 do not reinterpret an infrastructure error as a code defect.
 
 Confirm that verification did not change the implementation revision or leave tracked implementation
-changes. An inconsistent repository state cannot produce passed.
+changes. A check that changes the revision is an execution error: captured logs remain and no verdict
+is written. Tracked changes left by the checks cannot produce passed.
 
 Repetition executes the configured checks again. Any cache used by those commands remains command
 behavior; this action adds no separate verification cache or configuration fingerprint.

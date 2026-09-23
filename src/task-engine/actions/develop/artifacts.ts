@@ -32,3 +32,15 @@ export const devArtifact = {
   pathFromArtifactsRoot: 'development.json',
   schema: developmentOutputSchema,
 } satisfies ArtifactDeclaration<typeof developmentOutputSchema>;
+
+/**
+ * The agent's response fields. The action binds them to the observed task, profile and revisions
+ * before writing its output.
+ */
+export const developmentResponseSchema = developmentOutputSchema.pick({
+  status: true,
+  summary: true,
+  findingResponses: true,
+});
+
+export type DevelopmentResponse = z.infer<typeof developmentResponseSchema>;

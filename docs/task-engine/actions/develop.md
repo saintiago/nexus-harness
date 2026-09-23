@@ -63,7 +63,8 @@ Both outcomes write devArtifact. Invocation failures or unusable output are exec
 Use the initial profile for the first implementation and the recorded repair choice for later rounds.
 Refresh the task and conversation, preserving human changes. Read relevant repository instructions
 and complete preceding findings and responses.
-Save refreshed conversation locally and provide it together with the existing round history.
+Update the selection record with the refreshed task and complete conversation, preserving its
+identity and workspace, and provide that file with the existing round history.
 Include available earlier-round history without silently truncating finding bodies.
 
 Invoke the agent once with the workspace reference and assembled context. The agent may inspect and
@@ -73,7 +74,9 @@ require them. Verification uses this same worktree.
 
 Interpret the returned report and inspect the resulting branch and revision. Completed work must be
 committed and ready for verification. Record failed when the turn reports incomplete work or leaves
-implementation changes uncommitted. Finish writing the report before returning.
+implementation changes uncommitted; when a completed turn's observed worktree is not ready, the
+recorded summary keeps the agent's explanation and the observed readiness failure. Finish writing
+the report before returning.
 
 On repetition, inspect existing work and the current-round report before deciding whether another
 invocation is needed. A report for a different task or revision is not evidence for the current work.

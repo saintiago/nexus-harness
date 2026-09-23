@@ -33,6 +33,15 @@ export type ArtifactHelpers = {
   readInputArtifacts<Declarations extends readonly ArtifactDeclaration[]>(
     ...declarations: Declarations
   ): Promise<{ -readonly [Key in keyof Declarations]: ArtifactContent<Declarations[Key]> }>;
+  /**
+   * The declared contents of the current round's optional artifacts, in argument order. An absent
+   * artifact is null; an unreadable existing artifact is an error.
+   */
+  readOptionalInputArtifacts<Declarations extends readonly ArtifactDeclaration[]>(
+    ...declarations: Declarations
+  ): Promise<{
+    -readonly [Key in keyof Declarations]: ArtifactContent<Declarations[Key]> | null;
+  }>;
   /** Write content to the current round at the declaration's path. */
   writeOutputArtifact<Declaration extends ArtifactDeclaration>(
     declaration: Declaration,
@@ -147,6 +156,23 @@ export function createArtifactHelpers(workspace: { readonly root: string }): Art
     };
   }
 
+  async function readOptionalInputArtifacts<Declarations extends readonly ArtifactDeclaration[]>(
+    ...declarations: Declarations
+  ): Promise<{
+    -readonly [Key in keyof Declarations]: ArtifactContent<Declarations[Key]> | null;
+  }> {
+    const round = await currentRoundNumber();
+    const contents: unknown[] = [];
+    for (const declaration of declarations) {
+      const file = artifactFile(round, declaration.pathFromArtifactsRoot);
+      const text = await readArtifactText(file);
+      contents.push(text === null ? null : parseArtifact(file, declaration, text));
+    }
+    return contents as {
+      -readonly [Key in keyof Declarations]: ArtifactContent<Declarations[Key]> | null;
+    };
+  }
+
   async function writeOutputArtifact<Declaration extends ArtifactDeclaration>(
     declaration: Declaration,
     content: ArtifactContent<Declaration>,
@@ -178,5 +204,10 @@ export function createArtifactHelpers(workspace: { readonly root: string }): Art
     return history;
   }
 
-  return { readInputArtifacts, writeOutputArtifact, readArtifactHistory };
+  return {
+    readInputArtifacts,
+    readOptionalInputArtifacts,
+    writeOutputArtifact,
+    readArtifactHistory,
+  };
 }
