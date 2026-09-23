@@ -154,14 +154,88 @@ describe('the supervisor’s own ownership', () => {
       pid: number;
     };
     expect(recorded.pid).toBe(process.pid);
-    for (const take of takes) {
-      if (take.ok) {
-        await take.ownership.release();
+      for (const take of takes) {
+        if (take.ok) {
+          await take.ownership.release();
+        }
       }
-    }
-  }, 30_000);
+    }, 30_000);
 
-  it('refuses a live owner and adopts one whose process is gone', async () => {
+    it('never removes the live record a second takeover created under a stale observation', async () => {
+      const root = await tempDir();
+      const now = (): Date => new Date('2026-09-23T00:00:00Z');
+      const file = path.join(root, 'owner.json');
+      // The record an earlier supervisor left behind: its process is gone, so
+      // both contenders below read it as stale.
+      await writeFile(
+        file,
+        JSON.stringify({
+          version: 1,
+          pid: 4242,
+          token: 'stale',
+          startedAt: 't',
+          intent: 'run',
+          repoPath: 'C:/target',
+        }),
+        'utf8',
+      );
+      const isAlive = (pid: number): boolean => pid === process.pid;
+
+      // B inspects the dead record and is held exactly there — the schedule the
+      // race turns on — while A takes the record over and creates its own, live
+      // one under the very name B inspected.
+      let releaseB: () => void = () => undefined;
+      const bHeld = new Promise<void>((resolve) => {
+        releaseB = resolve;
+      });
+      let bInspected: () => void = () => undefined;
+      const inspected = new Promise<void>((resolve) => {
+        bInspected = resolve;
+      });
+      const b = acquireSupervisorOwnership({
+        root,
+        intent: 'run',
+        repoPath: 'C:/target',
+        now,
+        isAlive,
+        onStaleInspection: async (record) => {
+          expect(record.token).toBe('stale');
+          bInspected();
+          await bHeld;
+        },
+      });
+      await inspected;
+
+      const a = await acquireSupervisorOwnership({
+        root,
+        intent: 'watch',
+        repoPath: 'C:/target',
+        now,
+        isAlive,
+      });
+      expect(a.ok).toBe(true);
+      const aRecord = JSON.parse(await readFile(file, 'utf8')) as { token: string };
+      expect(aRecord.token).not.toBe('stale');
+
+      // B resumes with its stale observation. It must not remove the record A
+      // holds: what B renames away is not the record it inspected, so it goes
+      // back untouched and B is refused by name instead.
+      releaseB();
+      const bResult = await b;
+      expect(bResult.ok).toBe(false);
+      if (!bResult.ok) {
+        expect(bResult.problem).toContain('another supervisor already runs');
+      }
+      expect(JSON.parse(await readFile(file, 'utf8'))).toEqual(aRecord);
+      expect((await readdir(root)).filter((name) => name.includes('taken'))).toEqual([]);
+
+      if (a.ok) {
+        await a.ownership.release();
+      }
+      expect(await readFile(file, 'utf8').catch(() => null)).toBeNull();
+    }, 30_000);
+
+    it('refuses a live owner and adopts one whose process is gone', async () => {
     const root = await tempDir();
     const now = (): Date => new Date('2026-09-23T00:00:00Z');
     const first = await acquireSupervisorOwnership({

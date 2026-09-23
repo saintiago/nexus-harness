@@ -20,9 +20,19 @@
  * over by renaming it away first — an atomic step only one contender can win —
  * and then creating the record exclusively again, so two simultaneous
  * takeovers still leave exactly one owner.
+ *
+ * A takeover never removes a record it did not itself see as dead. The record
+ * is read, its process is probed, and only then is the file renamed away; what
+ * the rename really moved is read back before it is deleted, so an invocation
+ * that inspected a stale record and lost the race to another contender — whose
+ * own, live record then stood under the name — puts that live record back
+ * instead of deleting it. A stale observation cannot take a live owner's record
+ * away, and a record that cannot be put back is refused by name rather than
+ * discarded.
  */
 import { randomUUID } from 'node:crypto';
-import { readFile, mkdir, rename, rm, writeFile } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { copyFile, readFile, mkdir, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { messageOf } from '../shared/errors.js';
 import { intakeLockPath } from '../sources/receipts.js';
@@ -108,6 +118,40 @@ export type OwnershipTake =
 /** How many takeover races one acquisition loses before it gives up. */
 const MAX_TAKEOVER_ROUNDS = 8;
 
+/** Everything one acquisition is asked for. */
+export interface OwnershipRequest {
+  readonly root: string;
+  readonly intent: string;
+  readonly repoPath: string;
+  readonly now: () => Date;
+  readonly isAlive?: LivenessProbe;
+  /**
+   * Reported once a record was read and probed as one whose process is gone,
+   * before the takeover does anything about it. Acquisition itself never passes
+   * one: it is the seam that lets a test interleave a second takeover with this
+   * one — the race a takeover is really exposed to — and drive that schedule
+   * directly, with no filesystem substitute.
+   */
+  readonly onStaleInspection?: (record: OwnerRecord) => Promise<void> | void;
+}
+
+/** What one takeover of a stale record did, or why it refused to do anything. */
+type TakeoverOutcome =
+  | { readonly kind: 'removed' }
+  /** Another contender took the record first: read again what it left. */
+  | { readonly kind: 'beaten' }
+  | { readonly kind: 'refused'; readonly problem: string };
+
+/** Why a live owner refuses a second invocation, by name. */
+function liveOwnerProblem(file: string, record: OwnerRecord): string {
+  return (
+    `another supervisor already runs this connected project (pid ${String(record.pid)}, ` +
+    `started ${record.startedAt}, record "${file}"). Only one supervisor may run a ` +
+    'worker for one project and workDir at a time. Stop that supervisor, or let it ' +
+    'finish, before starting another; a live owner is never taken over.'
+  );
+}
+
 /**
  * Takes the supervisor's own owner record: refused while a live supervisor
  * holds it, adopted when the recorded process is gone. Acquisition is the
@@ -117,13 +161,9 @@ const MAX_TAKEOVER_ROUNDS = 8;
  * The adopted record names its own invocation, so a person reading it can see
  * which one holds the queue now.
  */
-export async function acquireSupervisorOwnership(request: {
-  readonly root: string;
-  readonly intent: string;
-  readonly repoPath: string;
-  readonly now: () => Date;
-  readonly isAlive?: LivenessProbe;
-}): Promise<OwnershipTake> {
+export async function acquireSupervisorOwnership(
+  request: OwnershipRequest,
+): Promise<OwnershipTake> {
   const { root, intent, repoPath, now } = request;
   const isAlive = request.isAlive ?? processIsAlive;
   const file = ownerFilePath(root);
@@ -153,45 +193,15 @@ export async function acquireSupervisorOwnership(request: {
           problem: `the supervisor's owner record "${file}" could not be written: ${messageOf(cause)}`,
         };
       }
-      let existing: OwnerRecord | null;
-      try {
-        existing = await readOwner(file);
-      } catch (cause0) {
-        return { ok: false, problem: messageOf(cause0) };
-      }
-      // A live owner is refused whether or not it is this process: a second
-      // invocation in one process is a second supervisor like any other.
-      if (existing !== null && isAlive(existing.pid)) {
-        return {
-          ok: false,
-          problem:
-            `another supervisor already runs this connected project (pid ${String(existing.pid)}, ` +
-            `started ${existing.startedAt}, record "${file}"). Only one supervisor may run a ` +
-            'worker for one project and workDir at a time. Stop that supervisor, or let it ' +
-            'finish, before starting another; a live owner is never taken over.',
-        };
-      }
-      // The recorded process is gone. The stale record is renamed away first —
-      // an atomic step exactly one contender wins — so the next round's
-      // exclusive create decides between simultaneous takeovers.
-      const stale = path.join(root, `owner.json.stale-${randomUUID()}`);
-      try {
-        await rename(file, stale);
-      } catch (cause0) {
-        if ((cause0 as NodeJS.ErrnoException).code === 'ENOENT') {
-          // Another contender took the stale record first: read what it left.
-          continue;
+        // The record the create found is inspected and, when its process is
+        // gone, taken away — one record, once — and the next round's exclusive
+        // create decides between simultaneous takeovers.
+        const outcome = await takeOverStaleRecord(request, file, isAlive);
+        if (outcome.kind === 'refused') {
+          return { ok: false, problem: outcome.problem };
         }
-        return {
-          ok: false,
-          problem:
-            `the supervisor's owner record "${file}" could not be taken over after its process ` +
-            `was gone: ${messageOf(cause0)}. Inspect it by hand.`,
-        };
+        continue;
       }
-      await rm(stale, { force: true }).catch(() => undefined);
-      continue;
-    }
 
     return {
       ok: true,
@@ -216,8 +226,106 @@ export async function acquireSupervisorOwnership(request: {
     problem:
       `the supervisor's owner record "${file}" could not be acquired: ${String(MAX_TAKEOVER_ROUNDS)} ` +
       'attempts lost the takeover to another invocation. Only one supervisor runs one queue; ' +
-      'inspect the record by hand before trying again.',
+    'inspect the record by hand before trying again.',
   };
+}
+
+/**
+ * Takes the record that stands under the owner's name away from it, and never
+ * anything else.
+ *
+ * The record is read and its process probed; a live one is refused by name. A
+ * record whose process is gone is renamed away — an atomic step exactly one
+ * contender wins, so simultaneous takeovers cannot both claim the same record —
+ * and what the rename really moved is read back before it is deleted:
+ *
+ * - the very record this invocation inspected as dead, and still dead, is the
+ *   takeover's to remove;
+ * - another contender's own, live record — created in the window between this
+ *   invocation's read and its rename — is put back under the name it belongs to
+ *   and left alone, because a stale observation never removes a live owner's
+ *   record;
+ * - a record that cannot be put back is kept where it was moved to and refused
+ *   by name, because nothing here deletes a record it did not see as dead.
+ */
+async function takeOverStaleRecord(
+  request: OwnershipRequest,
+  file: string,
+  isAlive: LivenessProbe,
+): Promise<TakeoverOutcome> {
+  const { root } = request;
+  let inspected: OwnerRecord | null;
+  try {
+    inspected = await readOwner(file);
+  } catch (cause) {
+    return { kind: 'refused', problem: messageOf(cause) };
+  }
+  if (inspected === null) {
+    // Another contender removed the record between the failed create and this
+    // read: read again what it left behind.
+    return { kind: 'beaten' };
+  }
+  // A live owner is refused whether or not it is this process: a second
+  // invocation in one process is a second supervisor like any other.
+  if (isAlive(inspected.pid)) {
+    return { kind: 'refused', problem: liveOwnerProblem(file, inspected) };
+  }
+  await request.onStaleInspection?.(inspected);
+  // The recorded process is gone. The stale record is renamed away first — an
+  // atomic step exactly one contender wins — and the file that was really moved
+  // is what this invocation decides about, never the name it was moved from.
+  const taken = path.join(root, `owner.json.taken-${randomUUID()}`);
+  try {
+    await rename(file, taken);
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code === 'ENOENT') {
+      // Another contender took the record first: read what it left.
+      return { kind: 'beaten' };
+    }
+    return {
+      kind: 'refused',
+      problem:
+        `the supervisor's owner record "${file}" could not be taken over after its process ` +
+        `was gone: ${messageOf(cause)}. Inspect it by hand.`,
+    };
+  }
+  const moved = await readOwner(taken).catch(() => null);
+  if (moved === null || moved.token !== inspected.token || isAlive(moved.pid)) {
+    // Not the record this invocation inspected, or a record whose process is
+    // not gone after all: it belongs to someone, and it goes back.
+    const problem = await putRecordBack(taken, file);
+    return problem === null ? { kind: 'beaten' } : { kind: 'refused', problem };
+  }
+  await rm(taken, { force: true }).catch(() => undefined);
+  return { kind: 'removed' };
+}
+
+/**
+ * Puts a record that was taken away back under its own name, without replacing
+ * anything: the copy is created exclusively, so a record another contender
+ * created in the meantime is never overwritten. A record that cannot go back —
+ * the name is taken again — is kept where it was moved to and named, rather
+ * than deleted or dropped.
+ */
+async function putRecordBack(taken: string, file: string): Promise<string | null> {
+  try {
+    await copyFile(taken, file, constants.COPYFILE_EXCL);
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code === 'EEXIST') {
+      return (
+        `another invocation created its own owner record at "${file}" while this takeover was in ` +
+        `flight, so the record this invocation had taken away is kept at "${taken}" and is not ` +
+        'removed. Only one supervisor may run one queue: inspect both records by hand before ' +
+        'starting another.'
+      );
+    }
+    return (
+      `the supervisor's owner record "${file}" could not be put back after it was taken away ` +
+      `(${messageOf(cause)}); the record itself is kept at "${taken}". Inspect it by hand.`
+    );
+  }
+  await rm(taken, { force: true }).catch(() => undefined);
+  return null;
 }
 
 /**
