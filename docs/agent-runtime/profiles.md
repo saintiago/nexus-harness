@@ -2,9 +2,9 @@
 
 Repository templates:
 
-- [nexus-flash](../../../profiles/codex/nexus-flash.config.toml): DeepSeek Flash, maximum effort.
-- [nexus-astra](../../../profiles/codex/nexus-astra.config.toml): Astra, high effort.
-- [nexus-recovery](../../../profiles/codex/nexus-recovery.config.toml): Astra, high effort, selected for recovery.
+- [nexus-flash](../../profiles/codex/nexus-flash.config.toml): DeepSeek Flash, maximum effort.
+- [nexus-astra](../../profiles/codex/nexus-astra.config.toml): Astra, high effort.
+- [nexus-recovery](../../profiles/codex/nexus-recovery.config.toml): Astra, high effort, selected for recovery.
 
 All configure OpenAI Docs, Context7 and Tavily. They disable connector apps by default,
 explicitly disable the existing GitHub connector, and exclude personal-service plugins.

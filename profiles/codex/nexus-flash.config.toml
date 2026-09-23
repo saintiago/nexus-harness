@@ -1,4 +1,4 @@
-# Install and select as described in docs/new/agent-runtime/profiles.md.
+# Install and select as described in docs/agent-runtime/profiles.md.
 model = "deepseek-flash"
 model_provider = "deepseek"
 model_reasoning_effort = "max"

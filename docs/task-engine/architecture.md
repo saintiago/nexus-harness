@@ -153,7 +153,7 @@ verify: {
 }
 ```
 
-The complete finite workflow is defined in [finite-delivery.ts](../../../workflows/finite-delivery.ts).
+The complete finite workflow is defined in [finite-delivery.ts](../../workflows/finite-delivery.ts).
 Queue loops, repair loops and waits are workflow choices; the runner only follows transitions.
 
 Nexus registers its operations as promise actors. XState invokes them and follows the declared

@@ -1,4 +1,4 @@
-# Install and select as described in docs/new/agent-runtime/profiles.md.
+# Install and select as described in docs/agent-runtime/profiles.md.
 model = "gpt-6-astra"
 model_provider = "openai"
 model_reasoning_effort = "high"
