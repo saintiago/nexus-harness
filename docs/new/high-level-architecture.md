@@ -139,7 +139,7 @@ A multi-component flow does not create a special shared contract.
 | AgentRuntime | Profiles, prompt assembly, invocation and output collection | Business output schemas, task selection or declaring completion |
 | Adapters | External protocols, authentication and observed results | Business lifecycle or recovery decisions |
 
-ExecutionRunner follows YAML states and transitions. Actions perform task-specific operations and
+ExecutionRunner follows XState workflow definitions. Actions perform task-specific operations and
 exchange persistent artifacts through their contracts. Startup binds dependencies and storage.
 The runner has no knowledge of artifact contents or task semantics.
 

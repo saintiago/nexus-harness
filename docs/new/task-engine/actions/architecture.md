@@ -113,5 +113,5 @@ that need earlier findings or conversation use those directories explicitly as h
 context; ordinary input reads remain scoped to the current round.
 
 Workflow sequencing starts a round before implementation and starts another before a selected repair.
-Within a round, actions finish writing their outputs before returning. Workflow YAML contains states
+Within a round, actions finish writing their outputs before returning. Workflow definitions contain states
 and transitions, not artifact paths or mappings.

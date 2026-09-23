@@ -4,7 +4,7 @@ Status: proposed component design.
 
 ## Responsibility
 
-Execute a task workflow supplied as YAML. The workflow defines sequencing, ordinary functions perform
+Execute a task workflow supplied as an XState definition. The workflow defines sequencing, ordinary functions perform
 the actions, and persistent artifacts carry data between actions. Process one action at a time.
 
 The public module is `src/task-engine/index.ts`. Its construction inputs are a workflow, bound action
@@ -107,7 +107,7 @@ The runner understands state names, action names, outcomes and transitions. Its 
 1. Read the persisted state, or persist the workflow's initial state for a new execution.
 2. If the state is terminal, return its declared result.
 3. Invoke the action bound to that state.
-4. Select the next state using the action's returned outcome and the YAML transition table.
+4. Select the next state using the action's returned outcome and the workflow transitions.
 5. Persist the next state, then continue.
 
 The persisted state names the action to execute next. On restart, load the last successfully saved
@@ -119,28 +119,43 @@ artifacts; allocate their storage; decide repair policy; or discover and reconci
 Its bound action functions require no execution identity or storage scope from the runner.
 An action completes its work before returning; the runner awaits it before invoking another.
 
-Before starting, validate the YAML structure, initial state, referenced transitions and action bindings.
+Before starting, validate the initial state, referenced transitions and action bindings.
 An undeclared outcome, action exception or state read/write failure stops execution with a fault. The runner
 does not invent a transition or retry policy. An action that fails without an outcome leaves the
 persisted state unchanged.
 
 ## Workflow definition
 
-A workflow declares named states, one action per nonterminal state, transitions selected by outcomes,
-and terminal results. Loops and branches are explicit transitions. Business decisions are typed actions;
-YAML does not contain scripts, arbitrary expressions or artifact input/output mappings.
+A workflow is an XState machine definition with named states, one invoked operation per nonterminal
+state, transitions selected by outcomes and terminal results. Business operations and artifact handling
+remain outside the definition.
 
 Each state names an action and maps its returned outcomes to the next state. A terminal state
 declares the workflow result. For example, this state routes verification outcomes:
 
-```yaml
-verify:
-  action: Verify
-  on: { passed: deliver, failed: repair }
+```ts
+verify: {
+  invoke: {
+    src: 'Verify',
+    onDone: [
+      { guard: ({ event }) => event.output === 'passed', target: 'deliver' },
+      { guard: ({ event }) => event.output === 'failed', target: 'repair' },
+      { actions: 'unexpectedOutcome' },
+    ],
+  },
+}
 ```
 
-The complete finite workflow is defined in [finite-delivery.yml](../../../workflows/finite-delivery.yml).
+The complete finite workflow is defined in [finite-delivery.ts](../../../workflows/finite-delivery.ts).
 Queue loops, repair loops and waits are workflow choices; the runner only follows transitions.
+
+Bind named Nexus operations as XState promise actors using fromPromise and machine.provide.
+invoke waits for the operation; onDone selects a transition from its returned outcome. Nexus actions
+are not XState fire-and-forget actions. Unexpected outcomes and rejected operations are execution faults.
+
+The definition can be opened in Stately's visual editor. Git stores the authoritative definition;
+visualization does not require a separately maintained workflow. This proposed definition is not yet
+connected to the existing Nexus runtime. State persistence remains the runner's responsibility.
 
 Restart loads the supplied workflow and its saved state. A saved state absent from that workflow is
 an input error. Required task checks and completion evidence remain action contracts.

@@ -20,6 +20,6 @@
     "incremental": true,
     "tsBuildInfoFile": ".turbo/tsc/typecheck.tsbuildinfo"
   },
-  "include": ["src/**/*.ts", "tests/**/*.ts", "vitest.config.ts"],
+  "include": ["src/**/*.ts", "tests/**/*.ts", "workflows/**/*.ts", "vitest.config.ts"],
   "exclude": ["tests/fixtures", "tests_old"]
 }

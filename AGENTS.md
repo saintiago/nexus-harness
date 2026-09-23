@@ -9,7 +9,7 @@ If code contradicts documentation, correct the code.
 - [Proposed OperatorInterface design](docs/new/operator-interface.md): commands, execution presentation and terminal ownership.
 - [Proposed Supervisor design](docs/new/supervisor.md): execution lifecycle, recovery and restart decisions.
 - [Proposed TaskEngine design](docs/new/task-engine/architecture.md): declarative execution, action composition and event subscriptions.
-- [Proposed finite workflow](workflows/finite-delivery.yml): executable YAML definition for the target TaskEngine.
+- [Proposed finite workflow](workflows/finite-delivery.ts): XState definition for the target TaskEngine and Stately visualization.
 - [Proposed action design](docs/new/task-engine/actions/architecture.md): action structure, typed input/output artifacts and repeated-round handoffs.
 - [Proposed StartRound design](docs/new/task-engine/actions/start-round.md): round directories, current-round state and artifact-root selection.
 - [Proposed AgentRuntime design](docs/new/agent-runtime.md): profiles, supplied context and agent invocation.

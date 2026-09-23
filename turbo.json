@@ -22,7 +22,7 @@
       "outputLogs": "new-only"
     },
     "typecheck": {
-      "inputs": ["src/**", "tests/**", "tsconfig*.json", "vitest*.config.ts"],
+      "inputs": ["src/**", "tests/**", "workflows/**", "tsconfig*.json", "vitest*.config.ts"],
       "outputs": [],
       "outputLogs": "new-only"
     },
