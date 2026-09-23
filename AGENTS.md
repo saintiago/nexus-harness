@@ -3,6 +3,36 @@
 Documentation is the law; code is not. Documentation states intent, and code is its embodiment.
 If code contradicts documentation, correct the code.
 
+## Simplicity
+
+Use the smallest design that satisfies an explicit requirement or solves a demonstrated problem.
+Every contract field, abstraction, validation rule and persistent record must serve a concrete need.
+Hypothetical failures and possible future extensions alone do not justify additional mechanisms.
+
+Account for the full cost of a design choice: implementation, validation, failure handling, persistence,
+tests, documentation and maintenance. A small field can create obligations across many components.
+Requirements justify mechanisms; mechanisms do not create their own requirements.
+
+Keep specialized guarantees within the component or action that needs them. Shared contracts contain
+only what their consumers require. When a mechanism is unnecessary, remove its dependent validation,
+state and tests as well. Prefer removing the obligation to building machinery around it.
+
+## Low coupling and high cohesion
+
+Each component owns a focused responsibility, its state and the behavior needed to fulfill it.
+Closely related decisions stay within that boundary.
+
+Components depend only on public contracts. Each contract has one authoritative definition, owned
+by its provider; consumers reference it. Internal changes must not require consumer changes while
+the public contract remains compatible. Routine coordinated redesign indicates a boundary problem.
+
+Each component architecture is independent. Its interface section is the only place that names other
+components, imports their contracts or defines interaction with them. Its internal design uses its
+own responsibilities and state. System composition and flows belong in the high-level architecture.
+
+Contract tests verify individual boundaries. Integration and workflow tests verify cooperation.
+A multi-component flow does not create a special shared contract.
+
 ## Purpose and design
 
 - [Tech stack](docs/new/tech-stack.md): Linux platform, WSL development, language, tooling and integrations.

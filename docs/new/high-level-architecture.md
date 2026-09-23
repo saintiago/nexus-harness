@@ -86,19 +86,7 @@ Agent-backed actions call AgentRuntime.run(profile, workspaceRef, additionalCont
 reads the artifacts it needs and supplies context. The runtime combines this with its base/profile
 instructions. Other actions receive only the capabilities they use.
 
-## Simplicity
-
-Use the smallest design that satisfies an explicit requirement or solves a demonstrated problem.
-Every contract field, abstraction, validation rule and persistent record must serve a concrete need.
-Hypothetical failures and possible future extensions alone do not justify additional mechanisms.
-
-Account for the full cost of a design choice: implementation, validation, failure handling, persistence,
-tests, documentation and maintenance. A small field can create obligations across many components.
-Requirements justify mechanisms; mechanisms do not create their own requirements.
-
-Keep specialized guarantees within the component or action that needs them. Shared contracts contain
-only what their consumers require. When a mechanism is unnecessary, remove its dependent validation,
-state and tests as well. Prefer removing the obligation to building machinery around it.
+## Execution model
 
 Persisted workflow state is the checkpoint. Save and load it directly. The current design requires
 neither a separate checkpoint subsystem nor a filesystem transaction protocol. A future database
@@ -106,26 +94,6 @@ does not require a storage framework now.
 
 Execution is sequential: an action finishes before the next starts, and recovery runs after the work
 invocation ends. Cancellation and coordination between multiple writers are not current features.
-
-## Low coupling and high cohesion
-
-Each component owns a focused responsibility, its state and the behavior needed to fulfill it.
-Closely related decisions stay within that boundary.
-
-Components depend only on public contracts. Each contract has one authoritative definition, owned
-by its provider; consumers reference it. Internal changes must not require consumer changes while
-the public contract remains compatible. Routine coordinated redesign indicates a boundary problem.
-
-Each component architecture is independent. Its interface section is the only place that names other
-components, imports their contracts or defines interaction with them. Its internal design uses its
-own responsibilities and state. System composition and flows are defined here.
-
-OperatorInterface depends on Supervisor's execution contract. Supervisor runs TaskEngine without
-knowing its internal orchestration. It forwards producer events unchanged and adds its own lifecycle
-events; presentation interprets events for display.
-
-Contract tests verify individual boundaries. Integration and workflow tests verify cooperation.
-A multi-component flow does not create a special shared contract.
 
 ## Component responsibilities
 
@@ -146,6 +114,10 @@ state through its authorized tools. Sharing a runtime does not give development/
 recovery permissions. Agent reports do not replace checks required for completion.
 
 ## Relationships and contracts
+
+OperatorInterface depends on Supervisor's execution contract. Supervisor runs TaskEngine without
+knowing its internal orchestration. It forwards producer events unchanged and adds its own lifecycle
+events; presentation interprets events for display.
 
 | Caller or producer | Receiver | Contract boundary |
 | --- | --- | --- |
