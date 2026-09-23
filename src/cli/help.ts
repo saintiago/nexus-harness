@@ -44,6 +44,8 @@ Options:
   --task <path>     Task file (run; optional for check-config).
   --limit <count>   Most new source tasks one \`source run\` attempts, or most reviewer
                     turns one \`review scan\` starts (those commands only).
+  --ticket <key>    The one ticket a \`queue run\` follows by identity, and claims,
+                    reviews and reports on nothing else (\`queue run\` only).
   -h, --help        Show this help.
 
 Examples:
