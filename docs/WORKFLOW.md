@@ -1477,7 +1477,12 @@ Before a restarted supervisor starts anything, it reads every incident record ba
 - **carries out the work the conclusions still owe.** A `repaired` conclusion owes the interrupted
   work; a `blocked` conclusion owes the blocker first, as its own scoped `queue run --ticket <KEY>`
   worker whatever intent the incident began with, and then the interrupted work. The resumption is
-  recorded when the interrupted work really starts again, and never before.
+  recorded when the interrupted work really starts again, and never before. The plan advances on the
+  blocker's own ticket, read back through the connected project's Jira connection: a worker that
+  settles proves nothing — a scoped run reports a completed run with nothing completed when its
+  ticket is in none of the statuses the queue carries — so only the configured done status resumes
+  the interrupted work, and a blocker that ended somewhere else, or one whose status could not be
+  read, asks a person instead.
 - **keeps an unresolved request for human help stopped.** A `help` conclusion is not answered by a
   restart: the incident keeps the queue stopped until a person does what it asks and acknowledges it
   in the record (`"acknowledgement": { "at": …, "note": … }`), so a restart neither starts a fresh

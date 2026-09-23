@@ -137,6 +137,7 @@ async function runSupervision(overrides: {
   readonly scope?: string | null;
   readonly reporter?: SuperviseRequest['reporter'];
   readonly jiraBoundary?: SuperviseRequest['jiraBoundary'];
+  readonly blockerCompletion?: SuperviseRequest['blockerCompletion'];
   readonly lines?: string[];
 }): Promise<SuperviseSummary> {
   const lines = overrides.lines ?? [];
@@ -170,6 +171,12 @@ async function runSupervision(overrides: {
       overrides.jiraBoundary ??
       (async () => ({ boundary: { kind: 'none' as const }, identity: null })),
     recoveryTurn: overrides.recoveryTurn,
+    blockerCompletion:
+      overrides.blockerCompletion ??
+      (async ({ key }) => ({
+        kind: 'completed' as const,
+        detail: `${key} is in the configured done status`,
+      })),
     reporter:
       overrides.reporter ??
       (async ({ incident }) => {
@@ -375,6 +382,94 @@ describe('a supervised queue', () => {
     // again: both are recorded, and the resumption only after the blocker.
     expect(incident?.sequence?.blockerStartedAt).not.toBeNull();
     expect(incident?.resumedAt).not.toBeNull();
+  }, 30_000);
+
+  it('does not resume behind a blocker that never reached the configured done status', async () => {
+    const { workDir, repoPath, configPath } = await workspace();
+    const recovery = scriptedRecovery([
+      {
+        status: 'blocked',
+        summary: 'the shared module is broken',
+        cause: 'HARN-77 has not landed',
+        resolution: 'HARN-77 was returned to its ready status',
+        preserved: [],
+        resume: 'HARN-51 resumes once HARN-77 is done',
+        blocker: { key: 'HARN-77', reason: 'it repairs the shared module' },
+      },
+    ]);
+    const requests: (string | null)[] = [];
+    const summary = await runSupervision({
+      workDir,
+      repoPath,
+      configPath,
+      scope: 'HARN-51',
+      worker: async (request) => {
+        requests.push(request.scope);
+        // The first stop is the interrupted ticket; the blocker's own worker
+        // then settles — as the queue does when it reports a completed run with
+        // nothing completed, because the ticket is not in a status it carries.
+        return requests.length === 1 ? ended(1) : ended(0);
+      },
+      recoveryTurn: recovery,
+      blockerCompletion: async ({ key }) => ({
+        kind: 'not-completed',
+        detail: `${key} is in "To Do", not the configured done status "Done"`,
+      }),
+    });
+
+    // The blocker really ran, and it did not get where the plan needs it: the
+    // interrupted work is not resumed, and the incident asks for a person
+    // instead of starting a worker that would do the same thing again.
+    expect(requests).toEqual(['HARN-51', 'HARN-77']);
+    expect(summary.outcome).toBe('attention');
+    expect(summary.problem).toContain('completion is not verified');
+    expect(summary.problem).toContain('HARN-77');
+    const incident = await storedIncident(workDir);
+    expect(incident?.stage).toBe('help');
+    expect(incident?.conclusion?.outcome).toBe('help');
+    expect(incident?.sequence).toBeNull();
+    expect(incident?.resumedAt).toBeNull();
+    // The incident was reported like any other: the person reading it has the
+    // same evidence in Jira as everywhere else.
+    expect(incident?.report.commentId).toBe('10042');
+  }, 30_000);
+
+  it('holds that plan while the blocker’s own status cannot be read at all', async () => {
+    const { workDir, repoPath, configPath } = await workspace();
+    const recovery = scriptedRecovery([
+      {
+        status: 'blocked',
+        summary: 'the shared module is broken',
+        cause: 'HARN-77 has not landed',
+        resolution: 'HARN-77 was returned to its ready status',
+        preserved: [],
+        resume: 'HARN-51 resumes once HARN-77 is done',
+        blocker: { key: 'HARN-77', reason: 'it repairs the shared module' },
+      },
+    ]);
+    const requests: (string | null)[] = [];
+    const summary = await runSupervision({
+      workDir,
+      repoPath,
+      configPath,
+      scope: 'HARN-51',
+      worker: async (request) => {
+        requests.push(request.scope);
+        return requests.length === 1 ? ended(1) : ended(0);
+      },
+      recoveryTurn: recovery,
+      blockerCompletion: async ({ key }) => ({
+        kind: 'unknown',
+        problem: `the ticket ${key} could not be read (the site refused the request)`,
+      }),
+    });
+
+    expect(requests).toEqual(['HARN-51', 'HARN-77']);
+    expect(summary.outcome).toBe('attention');
+    expect(summary.problem).toContain('could not be read');
+    const incident = await storedIncident(workDir);
+    expect(incident?.stage).toBe('help');
+    expect(incident?.resumedAt).toBeNull();
   }, 30_000);
 
   it('carries an interrupted blocker to its confirmed result before resuming', async () => {

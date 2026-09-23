@@ -40,6 +40,7 @@ import { confirmOwnedTreeEnded } from '../process/stop.js';
 import { phaseStop } from '../runs/stops.js';
 import { messageOf } from '../shared/errors.js';
 import type { RecoveryConfig } from '../shared/types.js';
+import type { BlockerCompletionTake } from './completion.js';
 import {
   incidentDir,
   incidentFilePath,
@@ -84,6 +85,12 @@ export interface SuperviseIo {
 
 /** One recovery turn, as the supervisor invokes it. */
 export type RecoveryTurn = (request: RecoveryTurnRequest) => Promise<RecoveryTurnResult>;
+
+/** One read of a blocker's own completion, as the connected project answers it. */
+export type BlockerCompletion = (request: {
+  readonly key: string;
+  readonly stop: AbortSignal;
+}) => Promise<BlockerCompletionTake>;
 
 /**
  * The connected project's Jira side, as it can be read at one moment: the
@@ -153,6 +160,14 @@ export interface SuperviseRequest {
   /** The recovery turn's own boundaries, supplied by the command that composes it. */
   readonly recoveryTurn: RecoveryTurn;
   readonly reporter: IncidentReporter;
+  /**
+   * What the connected project says about the completion of the ticket a
+   * blocker plan ranked ahead of the interrupted work, read through the
+   * project's own Jira connection. A worker's exit code is never that evidence:
+   * only the ticket's own status is, and only the configured done status counts
+   * as completion (`supervisor/completion.ts`).
+   */
+  readonly blockerCompletion: BlockerCompletion;
   /** Stood in for by a test; the real worker starts the Nexus CLI. */
   readonly worker?: ((request: WorkerRequest) => Promise<WorkerOutcome>) | undefined;
   readonly isAlive?: LivenessProbe | undefined;
@@ -185,6 +200,12 @@ export interface SupervisorParts {
   readonly worker: (request: WorkerRequest) => Promise<WorkerOutcome>;
   readonly recoveryTurn: RecoveryTurn;
   readonly reporter: IncidentReporter;
+  /**
+   * The read of a blocker's own completion, when a caller needs to stand in for
+   * the connected project's Jira side. The real one when a caller gives none:
+   * nothing in production substitutes it.
+   */
+  readonly blockerCompletion?: BlockerCompletion;
   /** The CLI entry the worker runs; the same file this process is. */
   readonly entry: string;
   readonly interpreter: string;
@@ -451,10 +472,30 @@ export async function supervise(request: SuperviseRequest): Promise<SuperviseSum
       const verdict = classifyWorkerStop(outcome);
       if (verdict === 'settled') {
         if (step.plan !== null && step.plan.blocker) {
-          // The blocker's own worker really settled: that is the confirmed
-          // result the plan waits for, and it is recorded before anything the
-          // plan owes next is started.
-          await recordBlockerSettled(request, root, step.plan.known, io);
+          // A settled worker is not a settled blocker: the queue reports a
+          // completed run with nothing completed when the ticket is not in a
+          // status it carries, so the ticket itself is read before the plan
+          // advances. Only the configured done status advances it, and a
+          // blocker that did not get there — or could not be read at all —
+          // leaves the interrupted work where it is and asks for a person.
+          const completion = await blockerCompletion(request, step.scope, stop);
+          if (completion.kind === 'completed') {
+            await recordBlockerSettled(request, root, step.plan.known, io, completion.detail);
+            continue;
+          }
+          const detail =
+            `the blocker ${step.scope ?? 'the judgment named'} was started and its worker ` +
+            `settled, but its completion is not verified: ` +
+            (completion.kind === 'not-completed' ? completion.detail : completion.problem) +
+            '. The interrupted work does not resume behind a blocker that never got there, and ' +
+            'another pass would start the same worker for the same result: a person decides ' +
+            `whether ${step.scope ?? 'that ticket'} is complete or has to return to the queue, ` +
+            'then acknowledges this request on the incident.';
+          io.err(`supervisor: incident ${step.plan.known.record.id}: ${detail}`);
+          const concluded = await updateIncident(root, step.plan.known.record.id, (latest) =>
+            conclude(latest, 'help', detail, request.now),
+          );
+          carried = concluded;
           continue;
         }
         if (owedWork(await readSupervisionState(root)).length > 0) {
@@ -739,6 +780,7 @@ async function recordBlockerSettled(
   root: string,
   known: KnownIncident,
   io: SuperviseIo,
+  evidence: string,
 ): Promise<void> {
   // The record is read back before it is written: the blocker's own start was
   // recorded when its worker was registered, and this write must not take that
@@ -757,8 +799,8 @@ async function recordBlockerSettled(
   };
   await writeIncident(file, updated);
   io.out(
-    `supervisor: incident ${updated.id}: the blocker ${plan.blocker.key} settled, so the ` +
-      'interrupted work runs next.',
+    `supervisor: incident ${updated.id}: the blocker ${plan.blocker.key} is confirmed complete ` +
+      `(${evidence}), so the interrupted work runs next.`,
   );
 }
 
@@ -1693,6 +1735,37 @@ async function finishOutstandingReports(
     problem = published.reportProblem ?? problem;
   }
   return problem;
+}
+
+/**
+ * Whether the blocker a plan ranked ahead of the interrupted work has really
+ * reached the configured done status, as the connected project's own Jira side
+ * answers it. A read that could not be made at all is `unknown` rather than an
+ * answer either way: a blocker that cannot be shown complete does not advance a
+ * plan, and it is not read as an incomplete one either.
+ */
+async function blockerCompletion(
+  request: SuperviseRequest,
+  key: string | null,
+  stop: AbortSignal,
+): Promise<BlockerCompletionTake> {
+  if (key === null) {
+    return {
+      kind: 'unknown',
+      problem:
+        'the blocker this plan ranked first names no ticket, so its completion cannot be read',
+    };
+  }
+  try {
+    return await request.blockerCompletion({ key, stop });
+  } catch (cause) {
+    return {
+      kind: 'unknown',
+      problem:
+        `the completion of the blocker ${key} could not be read: ${messageOf(cause)}. ` +
+        'Inspect the connected project and its Jira connection by hand.',
+    };
+  }
 }
 
 /** The connected project's Jira side, as its configuration stands right now. */

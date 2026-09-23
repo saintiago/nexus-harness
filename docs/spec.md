@@ -772,7 +772,13 @@ as its own scoped `queue run --ticket <KEY>` worker, whatever intent the inciden
 the interrupted work runs after it. The resumption is recorded when that interrupted work really
 starts, and never before — and the plan advances on the blocker's confirmed result, never on its
 start: a blocker whose own worker was started but never seen to settle is still owed, and a restart
-carries it out again before the interrupted work may run. An incident that ended in a request for
+carries it out again before the interrupted work may run. A settled worker is not a settled blocker
+either: a scoped run reports a completed run with nothing completed when its ticket is not in a
+status the queue carries, so the parent reads the ticket itself through the connected project's own
+Jira connection, and only the configured done status advances the plan. A blocker that ended
+somewhere else — and one whose status could not be read — leaves the interrupted work where it is
+and ends in an actionable request for a person, rather than resuming behind a blocker that never
+ran or starting the same worker again for the same result. An incident that ended in a request for
 human help is not resumed: it is reported and the supervision stops, and a restart is not an answer
 to it — the unresolved request keeps the queue stopped until a person does what it asks and
 acknowledges it in the incident record (`"acknowledgement": { "at": …, "note": … }`).

@@ -64,6 +64,8 @@ import { incidentDir, supervisorRoot } from '../supervisor/incident.js';
 import type { IncidentRecord } from '../supervisor/incident.js';
 import { createRecoveryTurn } from '../supervisor/recovery.js';
 import { createIncidentReporter } from '../supervisor/report.js';
+import { readTicketCompletion } from '../supervisor/completion.js';
+import type { BlockerCompletionTake } from '../supervisor/completion.js';
 import { supervise } from '../supervisor/supervise.js';
 import type {
   JiraBoundaryTake,
@@ -388,6 +390,62 @@ async function superviseCommand(
     }
   };
 
+  /**
+   * Whether a blocker the recovery agent ranked ahead of the interrupted work
+   * has really reached the configured done status.
+   *
+   * It is read from the same two files as everything else, at the moment the
+   * plan would advance: the connected project's source names the Jira side and
+   * the credential, and its completion policy names the status that counts as
+   * done. Nothing is claimed, transitioned, or written here — one read-only
+   * issue read — and a project whose configuration or credential cannot be read
+   * answers `unknown`, which never advances a plan.
+   */
+  const blockerCompletion = async ({
+    key,
+    stop: completionStop,
+  }: {
+    readonly key: string;
+    readonly stop: AbortSignal;
+  }): Promise<BlockerCompletionTake> => {
+    let config: HarnessConfig;
+    try {
+      config = (await loadConfiguration(options.configPath, projectPath)).config;
+    } catch (cause) {
+      return {
+        kind: 'unknown',
+        problem:
+          `the connected project's configuration could not be read, so whether ${key} is ` +
+          `complete cannot be told: ${messageOf(cause)}`,
+      };
+    }
+    const source = config.source as JiraSourceConfig | undefined;
+    const doneStatus = config.delivery?.completion?.doneStatus;
+    if (source === undefined || doneStatus === undefined) {
+      return {
+        kind: 'unknown',
+        problem:
+          `the connected project declares ${source === undefined ? 'no Jira source' : 'no completion done status'}, ` +
+          `so whether ${key} is complete cannot be told`,
+      };
+    }
+    let token: string;
+    try {
+      token = resolveJiraToken(source, process.env);
+    } catch (cause) {
+      return {
+        kind: 'unknown',
+        problem: `the connected project's Jira credential could not be read: ${messageOf(cause)}`,
+      };
+    }
+    const http = createHttpClient(
+      source,
+      token,
+      context.fetch === undefined ? {} : { fetch: context.fetch },
+    );
+    return await readTicketCompletion({ http, key, doneStatus, stop: completionStop });
+  };
+
   const stop = new AbortController();
   const pane = createActivityDisplay(io);
   const activeIo: CliIo = {
@@ -482,6 +540,7 @@ async function superviseCommand(
       jiraBoundary,
       recoveryTurn: composed.recoveryTurn,
       reporter: composed.reporter,
+      blockerCompletion: context.supervisorParts?.blockerCompletion ?? blockerCompletion,
       worker: composed.worker,
       isAlive: composed.isAlive,
     });

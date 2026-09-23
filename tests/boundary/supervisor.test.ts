@@ -30,6 +30,7 @@ import {
   processIsAlive,
 } from '../../src/supervisor/owner.js';
 import { createIncidentReporter } from '../../src/supervisor/report.js';
+import { readTicketCompletion } from '../../src/supervisor/completion.js';
 import { createRecoveryTurn } from '../../src/supervisor/recovery.js';
 import type { RecoveryBrief } from '../../src/supervisor/recovery.js';
 import { runNexusWorker, WORKER_STOP_GRACE_MS } from '../../src/supervisor/worker.js';
@@ -711,6 +712,76 @@ describe('the incident report’s publication boundaries', () => {
       }
     } finally {
       await service.close();
+    }
+  }, 30_000);
+
+  it('reads a blocker’s completion from the ticket itself, never from an exit code', async () => {
+    /** One issue answer in the documented shape, with the status it reports. */
+    const issueAnswer = (key: string, status: string): unknown => ({
+      id: `id-${key}`,
+      key,
+      fields: {
+        summary: `${key} summary`,
+        description: null,
+        status: { name: status },
+        labels: [],
+        project: { key: JIRA_CONFIG.projectKey },
+        issuetype: { name: 'Task' },
+        updated: '2026-09-23T00:00:00.000Z',
+      },
+    });
+    const service = await startLocalService((request) => {
+      if (request.url.includes('/issue/HARN-77')) {
+        return { status: 200, body: JSON.stringify(issueAnswer('HARN-77', 'Done')) };
+      }
+      if (request.url.includes('/issue/HARN-78')) {
+        return { status: 200, body: JSON.stringify(issueAnswer('HARN-78', 'To Do')) };
+      }
+      return { status: 404, body: JSON.stringify({ errorMessages: ['no such issue'] }) };
+    });
+    try {
+      const http = createHttpClient(JIRA_CONFIG, 'token', { fetch: serviceFetch(service.origin) });
+      const stop = new AbortController().signal;
+      // The configured done status is completion, and nothing else is.
+      expect(
+        await readTicketCompletion({ http, key: 'HARN-77', doneStatus: 'Done', stop }),
+      ).toMatchObject({ kind: 'completed' });
+      const moved = await readTicketCompletion({ http, key: 'HARN-78', doneStatus: 'Done', stop });
+      expect(moved.kind).toBe('not-completed');
+      if (moved.kind === 'not-completed') {
+        expect(moved.detail).toContain('To Do');
+      }
+      // A ticket that is not there never reached the done status either.
+      const missing = await readTicketCompletion({
+        http,
+        key: 'HARN-999',
+        doneStatus: 'Done',
+        stop,
+      });
+      expect(missing.kind).toBe('not-completed');
+    } finally {
+      await service.close();
+    }
+
+    // A read the connected project refuses is an answer either way: the plan
+    // holds rather than advancing on a guess.
+    const refused = await startLocalService(() => ({ status: 503, body: '{}' }));
+    try {
+      const http = createHttpClient(JIRA_CONFIG, 'token', {
+        fetch: serviceFetch(refused.origin),
+      });
+      const take = await readTicketCompletion({
+        http,
+        key: 'HARN-77',
+        doneStatus: 'Done',
+        stop: new AbortController().signal,
+      });
+      expect(take.kind).toBe('unknown');
+      if (take.kind === 'unknown') {
+        expect(take.problem).toContain('could not be read');
+      }
+    } finally {
+      await refused.close();
     }
   }, 30_000);
 
