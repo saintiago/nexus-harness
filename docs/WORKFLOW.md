@@ -1416,7 +1416,11 @@ instead (and, until its configuration can be read, there is no lock to read).
 
 The claims are the lock, and a claim is the rank it was published under: a start reads the highest
 rank any claim carries and creates the next one exclusively, so two simultaneous starts cannot hold
-one claim, and a claim published later always outranks every claim already there. The
+one claim, and a claim published from the directory as it stands always outranks every claim
+already there. The rank is read again before every publication, and a claim that was published
+below one already there — the rank it named was cleared away in between, so a claim published
+meanwhile outranks it — is withdrawn and published again above what is really there: a delayed
+contender never publishes below a claim that has already decided. The
 lowest-ranking live claim owns the queue, and every other invocation refuses by name. A claim whose
 process is gone cannot own anything: it is ignored while the ownership is decided and cleared away
 by the invocation that wins, which is what makes a restart continue the incident instead of starting

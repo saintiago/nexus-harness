@@ -23,6 +23,14 @@
  * only claim a contender ever takes away is one whose process is gone, and a
  * live holder's claim is never touched by anyone but its holder.
  *
+ * A rank read from the directory is only an order while it stands above every
+ * claim really there: a claim that has since been cleared away — its holder
+ * released it, or its process was gone and the invocation that won took it
+ * away — would otherwise let a contender publish *below* a claim that is
+ * already deciding, and both would own the queue. So a publication is checked
+ * again once it is on the filesystem, and one that is outranked is withdrawn
+ * and published again above what is really there.
+ *
  * The lowest-ranking live claim owns the queue. A contender that is not that
  * claim refuses by name, and a claim whose process is gone cannot own anything:
  * it is ignored while ownership is decided and cleared away by the invocation
@@ -84,6 +92,20 @@ const HOLDER_NAME = /^holder-([0-9]{1,18})\.json$/;
 
 /** How many ranks one acquisition tries before it gives up. */
 const MAX_PUBLISH_ATTEMPTS = 8;
+
+/**
+ * How long a claim waits for the claims above it to resolve themselves, and how
+ * often that wait looks at the directory again.
+ *
+ * A claim above this one was published after this one's rank was read, and it
+ * is either a contender that is still deciding — its own decision sees this
+ * claim below it and refuses, which takes a handful of file operations — or a
+ * holder that already owns the queue and keeps its claim for its whole run.
+ * The bound only has to cover the first kind; what is left after it is decided
+ * by the ordinary rules.
+ */
+const CLAIM_SETTLE_MS = 1_000;
+const CLAIM_SETTLE_POLL_MS = 20;
 
 /** The rank a claim file's own name carries, or `null` when it carries none. */
 function rankOfName(file: string): number | null {
@@ -223,6 +245,15 @@ export interface OwnershipRequest {
   readonly now: () => Date;
   readonly isAlive?: LivenessProbe;
   /**
+   * Reported with the rank one attempt is about to publish, before the
+   * exclusive create. Acquisition itself never passes one: like
+   * {@link OwnershipRequest.onClaimPublished} it is the seam that lets a test
+   * interleave the schedule ownership is really exposed to — a contender
+   * delayed between reading the directory and publishing its claim, chiefly —
+   * with no filesystem substitute.
+   */
+  readonly beforeClaimPublish?: (rank: number) => Promise<void> | void;
+  /**
    * Reported once this invocation's own claim is published and before the
    * ownership is decided, with the claim it published. Acquisition itself never
    * passes one: it is the seam that lets a test interleave a second contender
@@ -264,10 +295,18 @@ function unreadableClaimProblem(file: string, problem: string): string {
  * Takes the supervisor's own claim: refused while a live claim outranks this
  * invocation's, and owned once nothing live does. Publishing is the exclusive
  * creation of a rank file, so two simultaneous starts can never hold one rank,
- * and a claim published later can never take a rank from a claim already there:
- * a contender's rank is above every claim that exists when it publishes, and
- * ranks are never reused. That is what makes "the lowest live claim owns the
- * queue" a decision every contender reaches alike.
+ * and a rank is read again before every publication, so a claim published from
+ * the directory as it stands is above every claim already there. That is not
+ * enough on its own: a rank whose file was cleared away between an earlier
+ * listing and this publication can be published *below* a claim published
+ * afterwards, which may have decided the ownership before this claim existed.
+ * A claim therefore never decides while one stands above it: the claims above
+ * are awaited, the ones whose process is gone are cleared away as usual, and
+ * what remains after the wait refuses this invocation — because a claim above
+ * it was published later than its rank was read, so it may already own the
+ * queue. That is what makes "the lowest live claim owns the queue" a decision
+ * every contender reaches alike: a claim that decides is never below a claim
+ * that may already have decided.
  */
 export async function acquireSupervisorOwnership(
   request: OwnershipRequest,
@@ -279,9 +318,11 @@ export async function acquireSupervisorOwnership(
   const token = randomUUID();
   const startedAt = now().toISOString();
   let claim: HeldClaim | null = null;
-  let next = (await highestHeldRank(root)) + 1;
-  for (let attempt = 0; attempt < MAX_PUBLISH_ATTEMPTS; attempt += 1) {
-    const rank = next;
+  for (let attempt = 0; attempt < MAX_PUBLISH_ATTEMPTS && claim === null; attempt += 1) {
+    // The rank is read from the directory as it stands now, on every attempt:
+    // a rank worked out from an older listing is not an order of publication,
+    // and it can name a file another invocation has since cleared away.
+    const rank = (await highestHeldRank(root)) + 1;
     const file = holderFilePath(root, rank);
     const record: OwnerRecord = {
       version: 1,
@@ -292,6 +333,7 @@ export async function acquireSupervisorOwnership(
       repoPath,
       rank,
     };
+    await request.beforeClaimPublish?.(rank);
     try {
       // The exclusive create is the lock: the creation itself decides the rank,
       // so two invocations that reach for the same rank cannot both hold it.
@@ -299,13 +341,10 @@ export async function acquireSupervisorOwnership(
         encoding: 'utf8',
         flag: 'wx',
       });
-      claim = { rank, file, record };
-      break;
     } catch (cause) {
       if ((cause as NodeJS.ErrnoException).code === 'EEXIST') {
         // Another contender published exactly this rank a moment ago: the next
-        // rank is above it, and above every claim already there.
-        next = Math.max(next, await highestHeldRank(root)) + 1;
+        // attempt reads the directory again and publishes above it.
         continue;
       }
       return {
@@ -313,6 +352,20 @@ export async function acquireSupervisorOwnership(
         problem: `the supervisor's own claim "${file}" could not be written: ${messageOf(cause)}`,
       };
     }
+    const published: HeldClaim = { rank, file, record };
+    await request.onClaimPublished?.(published);
+    const above = await unresolvedClaimsAbove(root, rank, isAlive);
+    const holder = above.held[0];
+    if (holder !== undefined) {
+      await removeClaim(published);
+      return { ok: false, problem: liveOwnerProblem(holder) };
+    }
+    const unreadable = above.unreadable[0];
+    if (unreadable !== undefined) {
+      await removeClaim(published);
+      return { ok: false, problem: unreadableClaimProblem(unreadable.file, unreadable.problem) };
+    }
+    claim = published;
   }
   if (claim === null) {
     return {
@@ -323,8 +376,6 @@ export async function acquireSupervisorOwnership(
         'supervisor runs one queue; run the supervisor again to take it over.',
     };
   }
-
-  await request.onClaimPublished?.(claim);
 
   const claims = await readHeldClaims(root);
   const unreadableOutranking = claims.unreadable.filter((candidate) => {
@@ -385,6 +436,64 @@ async function removeStaleClaim(claim: HeldClaim): Promise<void> {
     return;
   }
   await rm(claim.file, { force: true }).catch(() => undefined);
+}
+
+/**
+ * The claims above one rank that have not resolved themselves yet, awaited for
+ * a bounded moment.
+ *
+ * A claim above this one was published after this claim's rank was read — the
+ * rank named a directory state that claim has changed — so it is either a
+ * contender that is still deciding, or a holder that may have decided the
+ * ownership before this claim existed. Nothing is decided beside it either way:
+ * this waits for it, and a contender resolves itself by refusing, which is what
+ * makes a contended start still end with one owner. A claim whose process is
+ * gone cannot own anything, exactly as everywhere else, and is cleared away
+ * while the wait goes on; the files are read again before the answer is given,
+ * so a claim that resolved itself away is never reported as still there.
+ */
+async function unresolvedClaimsAbove(
+  root: string,
+  rank: number,
+  isAlive: LivenessProbe,
+): Promise<{
+  readonly held: readonly HeldClaim[];
+  readonly unreadable: readonly { readonly file: string; readonly problem: string }[];
+}> {
+  const deadline = Date.now() + CLAIM_SETTLE_MS;
+  for (;;) {
+    const above = (await claimFiles(root)).filter((candidate) => candidate.rank > rank);
+    if (above.length === 0) {
+      return { held: [], unreadable: [] };
+    }
+    const held: HeldClaim[] = [];
+    const unreadable: { file: string; problem: string }[] = [];
+    for (const candidate of above) {
+      const read = await readClaim(candidate.file);
+      if (read.kind === 'absent') {
+        // Resolved itself between the listing and the read: not a claim.
+        continue;
+      }
+      if (read.kind === 'unreadable') {
+        unreadable.push({ file: candidate.file, problem: read.problem });
+        continue;
+      }
+      if (isAlive(read.record.pid)) {
+        held.push({ rank: candidate.rank, file: candidate.file, record: read.record });
+        continue;
+      }
+      await removeStaleClaim({ rank: candidate.rank, file: candidate.file, record: read.record });
+    }
+    if (held.length === 0 && unreadable.length === 0) {
+      // Every claim above this one resolved itself away. The wait ends, and
+      // the caller reads the directory again as part of its own decision.
+      return { held, unreadable };
+    }
+    if (Date.now() >= deadline) {
+      return { held, unreadable };
+    }
+    await new Promise((resolve) => setTimeout(resolve, CLAIM_SETTLE_POLL_MS));
+  }
 }
 
 /**

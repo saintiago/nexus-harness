@@ -255,6 +255,101 @@ describe('the supervisor’s own ownership', () => {
     expect(await heldClaims(root)).toEqual([]);
   }, 30_000);
 
+  it('withdraws a claim a delayed contender publishes below one already deciding', async () => {
+    const root = await tempDir();
+    const now = (): Date => new Date('2026-09-23T00:00:00Z');
+    const isAlive = (pid: number): boolean => pid === process.pid;
+
+    // A reads the empty directory and is delayed before it publishes: the rank
+    // it worked out is stale the moment another start takes that rank.
+    let releaseA: () => void = () => undefined;
+    const aHeld = new Promise<void>((resolve) => {
+      releaseA = resolve;
+    });
+    let aPublished: () => void = () => undefined;
+    const aAtPublication = new Promise<void>((resolve) => {
+      aPublished = resolve;
+    });
+    let aPaused = false;
+    let readRank: number | null = null;
+    const a = acquireSupervisorOwnership({
+      root,
+      intent: 'run',
+      repoPath: 'C:/target',
+      now,
+      isAlive,
+      beforeClaimPublish: async (rank) => {
+        if (aPaused) {
+          return;
+        }
+        aPaused = true;
+        readRank = rank;
+        aPublished();
+        await aHeld;
+      },
+    });
+    await aAtPublication;
+    // A read an empty directory: the rank it is holding on to is the first one.
+    expect(readRank).toBe(1);
+
+    // B takes the queue under that rank while A is still delayed.
+    const b = await acquireSupervisorOwnership({
+      root,
+      intent: 'run',
+      repoPath: 'C:/target',
+      now,
+      isAlive,
+    });
+    expect(b.ok).toBe(true);
+
+    // C publishes the rank above B's and is delayed before it decides. B then
+    // releases, so C's own decision no longer sees a live claim below it: C
+    // really owns the queue, under a rank A's stale listing never held.
+    let releaseC: () => void = () => undefined;
+    const cHeld = new Promise<void>((resolve) => {
+      releaseC = resolve;
+    });
+    let cPublished: () => void = () => undefined;
+    const cAtPublication = new Promise<void>((resolve) => {
+      cPublished = resolve;
+    });
+    const c = acquireSupervisorOwnership({
+      root,
+      intent: 'watch',
+      repoPath: 'C:/target',
+      now,
+      isAlive,
+      onClaimPublished: async (claim) => {
+        expect(claim.rank).toBe(2);
+        cPublished();
+        await cHeld;
+      },
+    });
+    await cAtPublication;
+    if (b.ok) {
+      await b.ownership.release();
+    }
+    releaseC();
+    const cResult = await c;
+    expect(cResult.ok).toBe(true);
+
+    // A resumes. The rank it named is free again, so its publication lands
+    // below C's — and it must not read that as owning the queue beside the
+    // invocation that really does.
+    releaseA();
+    const aResult = await a;
+    expect(aResult.ok).toBe(false);
+    if (!aResult.ok) {
+      expect(aResult.problem).toContain('another supervisor already runs');
+    }
+    // Exactly one claim is held: C's, above the rank A's stale listing named.
+    expect(await heldClaims(root)).toEqual(['holder-000002.json']);
+    if (cResult.ok) {
+      await cResult.ownership.release();
+    }
+    expect(await heldClaims(root)).toEqual([]);
+  }, 30_000);
+
   it('refuses a live owner and adopts one whose process is gone', async () => {
     const root = await tempDir();
     const now = (): Date => new Date('2026-09-23T00:00:00Z');

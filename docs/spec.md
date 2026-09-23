@@ -669,7 +669,11 @@ exclusivity rules are untouched.
 Ownership is a claim, and publication is exclusive: each invocation publishes its own claim under
 the next free rank, so two starts cannot both take one rank and a claim published later can never
 overtake one already there — the lowest-ranking live claim owns the queue, and every other
-invocation refuses by name. Nothing renames, replaces, or removes a claim a live holder may own: a
+invocation refuses by name. The rank is read again before every publication, and a publication that
+no longer stands above every claim really there — the rank it named was cleared away before it was
+published, and a claim published meanwhile outranks it — is withdrawn and published again above
+what is really there, so a delayed contender never publishes below a claim that has already
+decided. Nothing renames, replaces, or removes a claim a live holder may own: a
 claim whose process is gone is ignored while the ownership is decided and cleared away by the
 invocation that wins, so a crash between publishing a claim and deciding leaves the next start a
 queue it can safely take. The supervisor's own state is keyed by the
