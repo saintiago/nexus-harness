@@ -24,7 +24,14 @@
  * publishes nothing and keeps its receipt and the lock, a confirmed stop still
  * gets its one bounded feedback under a deadline of its own, a pending diagnosis
  * whose reviewer was not confirmed stopped stops discovery and polling alike
- * while a diagnosis that stopped cleanly is reported and stepped past, a passed
+ * while a diagnosis that stopped cleanly is reported and stepped past, a
+ * completed red baseline is handed to the configured diagnosis — an actionable
+ * finding returns the ticket for the repair its next claim continues with
+ * nothing else about the attempt published or delivered, and a finding with
+ * nothing actionable stops intake — a workspace returned for a baseline repair
+ * is told the complete recorded finding whatever the item's own thread
+ * supplies, and starts no developer, records the problem and tells the claimed
+ * ticket when that required finding cannot be read back, a passed
  * attempt is delivered before its result is published and failed or cancelled
  * work never reaches delivery, a delivery failure is published beside the
  * outcome the run produced before intake stops, one claim climbs the configured
@@ -62,6 +69,11 @@ import type {
   TerminationOutcome,
 } from '../../src/shared/types.js';
 import type {
+  BaselineDiagnosis,
+  BaselineDiagnosisOutcome,
+  BaselineDiagnosisRequest,
+  BaselineFinding,
+  BaselineReviewedFinding,
   BaselineResumeOutcome,
   PublishedComment,
   SourceCandidate,
@@ -73,7 +85,12 @@ import type {
   TaskSource,
 } from '../../src/sources/contract.js';
 import { SourceError, SourceFeedbackError } from '../../src/sources/contract.js';
-import { runSource, WATCH_BACKOFF_BASE_MS, watchSource } from '../../src/sources/coordinator.js';
+import {
+  runSource,
+  takeOneItem,
+  WATCH_BACKOFF_BASE_MS,
+  watchSource,
+} from '../../src/sources/coordinator.js';
 import type { SourceWatchOptions } from '../../src/sources/coordinator.js';
 import type { SourceReceipt } from '../../src/sources/receipts.js';
 import {
@@ -1041,6 +1058,309 @@ describe('a pending baseline diagnosis a previous invocation left', () => {
     expect(harness.calls.lists).toBe(1);
     expect(harness.calls.runs).toEqual([REF.key]);
     expect(harness.calls.outputs.join('\n')).toContain('needs a person');
+    expect(existsSync(intakeLockPath(workDir, NAMESPACE))).toBe(false);
+  });
+});
+
+/**
+ * The reviewed finding a claim that continues a returned workspace may not
+ * start without: the retained evidence beside the workspace says whether a
+ * repair is required and which finding it carries, so the complete recorded
+ * finding reaches the run even when the item's own thread cannot supply it, and
+ * a required finding that cannot be read back starts no developer — the claimed
+ * ticket is told why and taken out of the running status, with the same problem
+ * recorded in its receipt (docs/WORKFLOW.md §11).
+ */
+describe('the reviewed finding a continued workspace was returned for', () => {
+  const FINDING: BaselineFinding = {
+    outcome: 'repair',
+    failingCheck: '["npm", "run", "check"]',
+    evidence: 'the check exits 1 because the fixture file is missing',
+    likelyCause: 'the fixture file was never added',
+    repairGuidance: 'add the fixture file the check reads',
+  };
+  const EVIDENCE_ID = 'e'.repeat(32);
+
+  /** The diagnosis boundary, with only the reviewed finding the case supplies. */
+  function diagnosisReviewing(result: BaselineReviewedFinding | Error): BaselineDiagnosis {
+    return {
+      diagnose: async () => {
+        throw new Error('nothing on this path diagnoses fresh evidence');
+      },
+      resume: async () => null,
+      reviewedFinding: async () => {
+        if (result instanceof Error) {
+          throw result;
+        }
+        return result;
+      },
+    };
+  }
+
+  /** One claim over the item's own retained workspace, as its pointer names it. */
+  function continuationHarness(
+    workDir: string,
+    workspace: { readonly workspaceId: string; readonly sourceRoot: string },
+    diagnosis: BaselineDiagnosis,
+    commentsSince?: (item: SourceTask) => Promise<readonly SourceComment[]>,
+  ) {
+    return coordinatorHarness(workDir, {
+      candidates: [candidate()],
+      baselineDiagnosis: diagnosis,
+      prepare: (found) => ({
+        ref: found.ref,
+        task: { ...TASK, id: found.ref.key },
+        pointers: [workspace.workspaceId],
+      }),
+      preflight: async () => ({ sourceRoot: workspace.sourceRoot, baseCommit: BASE }),
+      ...(commentsSince === undefined ? {} : { commentsSince }),
+    });
+  }
+
+  it('tells the run the complete recorded finding when the thread cannot supply it', async () => {
+    const workDir = await createTempDir();
+    // The workspace the red baseline's own attempt left: its ledger records that
+    // attempt, and its thread has nothing it could supply.
+    const workspace = await retainedWorkspace(workDir, [
+      {
+        runId: 'run-1',
+        outcome: 'failed',
+        reason: 'the baseline checks did not pass',
+        endedAt: '2026-09-22T09:00:00.000Z',
+        reportPath: path.join(workDir, 'runs', 'run-1', 'result.json'),
+      },
+    ]);
+    const harness = continuationHarness(
+      workDir,
+      workspace,
+      diagnosisReviewing({ kind: 'finding', evidenceId: EVIDENCE_ID, finding: FINDING }),
+      async () => {
+        throw new Error('the comment read timed out');
+      },
+    );
+
+    const summary = await runSource(harness.context, null);
+
+    expect(summary).toMatchObject({ outcome: 'completed', attempted: 1, passed: 1 });
+    expect(harness.calls.requests).toHaveLength(1);
+    expect(harness.calls.requests[0]?.continuedWorkspace).toMatchObject({
+      workspaceId: workspace.workspaceId,
+      attempt: 2,
+    });
+    // Nothing of the thread is available here, and the finding is the one the
+    // retained record holds: each field whole, in the order it must be acted
+    // on, with nothing cut and nothing replaced by ordinary thread context.
+    expect(harness.calls.requests[0]?.guidance).toEqual([
+      'reviewed baseline finding — repair the baseline before continuing the original task',
+      'reviewed baseline finding — failing check: ["npm", "run", "check"]',
+      'reviewed baseline finding — evidence: the check exits 1 because the fixture file is missing',
+      'reviewed baseline finding — likely cause: the fixture file was never added',
+      'reviewed baseline finding — repair guidance: add the fixture file the check reads',
+      'attempt 1 failed: the baseline checks did not pass',
+    ]);
+    // The read that failed is said out loud; the attempt goes on anyway, because
+    // the finding it may not start without came from the retained evidence.
+    expect(harness.calls.outputs.join('\n')).toContain(
+      'its comments could not be read: the comment read timed out',
+    );
+  });
+
+  it('starts no developer and tells the claimed ticket when the required finding cannot be read back', async () => {
+    const workDir = await createTempDir();
+    const workspace = await retainedWorkspace(workDir);
+    const detail =
+      'the finding kept beside its evidence cannot be read back: it is not there at all';
+    const harness = continuationHarness(
+      workDir,
+      workspace,
+      diagnosisReviewing({ kind: 'unreadable', detail }),
+      async () => {
+        throw new Error('the comment read timed out');
+      },
+    );
+
+    const summary = await runSource(harness.context, null);
+
+    expect(summary).toMatchObject({ outcome: 'stopped', attempted: 1, cleanupConfirmed: true });
+    expect(summary.problem).toContain('could not be read back');
+    // No developer was started and nothing was published. The claimed ticket is
+    // told on its own thread why — the unreadable required finding, with the
+    // thread problem beside it — and taken out of the running status; its
+    // receipt keeps the same problem and answers that the ticket was told.
+    expect(harness.calls.claims).toEqual([REF.key]);
+    expect(harness.calls.runs).toEqual([]);
+    expect(harness.calls.completions).toEqual([]);
+    expect(harness.calls.refusals).toHaveLength(1);
+    expect(harness.calls.refusals[0]).toContain(`${REF.key}: attention: `);
+    expect(harness.calls.refusals[0]).toContain('could not be read back');
+    expect(harness.calls.refusals[0]).toContain('the comment read timed out');
+    const kept = await receipt(workDir);
+    expect(kept?.problem).toBe(`baseline: ${detail}`);
+    expect(kept?.feedback).toBe('sent');
+    expect(existsSync(intakeLockPath(workDir, NAMESPACE))).toBe(false);
+  });
+
+  it('starts no developer and tells the claimed ticket when reading the required finding fails', async () => {
+    const workDir = await createTempDir();
+    const workspace = await retainedWorkspace(workDir);
+    const harness = continuationHarness(
+      workDir,
+      workspace,
+      diagnosisReviewing(new Error('the evidence record cannot be read')),
+    );
+
+    const summary = await runSource(harness.context, null);
+
+    // The thread was read and supplied nothing; that is not what is missing —
+    // the record that says a repair is required could not be read, so no
+    // ordinary continuation may start with the original task alone.
+    expect(summary).toMatchObject({ outcome: 'stopped', attempted: 1, cleanupConfirmed: true });
+    expect(harness.calls.claims).toEqual([REF.key]);
+    expect(harness.calls.runs).toEqual([]);
+    expect(harness.calls.completions).toEqual([]);
+    expect(harness.calls.refusals).toHaveLength(1);
+    expect(harness.calls.refusals[0]).toContain(`${REF.key}: attention: `);
+    expect(harness.calls.refusals[0]).toContain('the evidence record cannot be read');
+    const kept = await receipt(workDir);
+    expect(kept?.problem).toBe('baseline: the evidence record cannot be read');
+    expect(kept?.feedback).toBe('sent');
+    expect(existsSync(intakeLockPath(workDir, NAMESPACE))).toBe(false);
+  });
+});
+
+/**
+ * The pre-delivery diagnosis of one completed red baseline on a fresh
+ * workspace: the run, the reviewer turn and the delivery step are the case's
+ * stand-ins, and what is asserted is the coordinator's own handoff — the item,
+ * the fresh workspace and the red round the configured diagnosis is handed, the
+ * repair marker a serial step reports back so the now-ready ticket is claimed
+ * again for its repair, that nothing else about the attempt is published or
+ * delivered, and that a diagnosis with nothing actionable stops intake with the
+ * claimed ticket named (docs/WORKFLOW.md §11).
+ */
+describe('the pre-delivery diagnosis of a completed red baseline', () => {
+  /** The run one fresh attempt produced: its baseline is red before any coding turn. */
+  function redBaselineRun(workDir: string): RunTaskResult {
+    return { ...runResult(workDir, 'failed'), baseline: checkRound('failed', 1) };
+  }
+
+  /** The diagnosis boundary, with only the outcome the case supplies. */
+  function diagnosisDeciding(
+    outcome: BaselineDiagnosisOutcome,
+    diagnosed: BaselineDiagnosisRequest[],
+  ): BaselineDiagnosis {
+    return {
+      diagnose: async (request) => {
+        diagnosed.push(request);
+        return outcome;
+      },
+      resume: async () => null,
+      reviewedFinding: async () => {
+        throw new Error('nothing on this path reads a finding back');
+      },
+    };
+  }
+
+  it('returns the ticket for its baseline repair instead of publishing the red attempt', async () => {
+    const workDir = await createTempDir();
+    const diagnosed: BaselineDiagnosisRequest[] = [];
+    const delivered: DeliveryRequest[] = [];
+    const harness = coordinatorHarness(workDir, {
+      delivery: {
+        deliver: async (request) => {
+          delivered.push(request);
+          return null;
+        },
+      },
+      baselineDiagnosis: diagnosisDeciding(
+        {
+          kind: 'repair',
+          detail: 'the finding is published; back in "To Do"',
+          commentId: 'c1',
+        },
+        diagnosed,
+      ),
+      run: () => redBaselineRun(workDir),
+    });
+
+    const take = await takeOneItem(harness.context);
+
+    // The marker travels back to the serial loop as this ticket's own next work:
+    // a queue resumes the same ticket for its baseline repair, before anything
+    // else it could take.
+    expect(take.outcome).toBe('taken');
+    expect(take.ticket?.ref.key).toBe(REF.key);
+    expect(take.run?.returnedForBaselineRepair).toEqual({
+      detail: 'the finding is published; back in "To Do"',
+    });
+    // The configured diagnosis saw the item, the fresh retained workspace and
+    // the red round itself: the configured commands and the results they
+    // produced, which is what its finding was made from.
+    expect(harness.calls.runs).toEqual([REF.key]);
+    expect(diagnosed).toHaveLength(1);
+    expect(diagnosed[0]?.item.ref.key).toBe(REF.key);
+    expect(diagnosed[0]?.item.task).toEqual(TASK);
+    expect(diagnosed[0]?.workspace).toEqual({
+      workspaceId: REF.key,
+      workspacePath: workspacePathFor(workDir, REF.key),
+      branch: `harness/${REF.key}`,
+      baseCommit: BASE,
+    });
+    expect(diagnosed[0]?.baseline).toEqual(checkRound('failed', 1));
+    // Nothing else about the attempt happened: no ordinary result comment, no
+    // rung's comment, and no delivery of a red baseline.
+    expect(harness.calls.completions).toEqual([]);
+    expect(harness.calls.progresses).toEqual([]);
+    expect(delivered).toEqual([]);
+    expect(harness.calls.outputs.join('\n')).toContain(
+      'the issue holds the finding and is back in its ready status',
+    );
+    // The receipt records that the issue was told, so a restart reads a sent
+    // outcome rather than a pending one.
+    expect(await receipt(workDir)).toMatchObject({
+      outcome: 'failed',
+      runId: 'run-1',
+      feedback: 'sent',
+      commentId: 'c1',
+    });
+  });
+
+  it('stops for a person when the diagnosis found nothing actionable', async () => {
+    const workDir = await createTempDir();
+    const diagnosed: BaselineDiagnosisRequest[] = [];
+    const harness = coordinatorHarness(workDir, {
+      candidates: [candidate()],
+      baselineDiagnosis: diagnosisDeciding(
+        {
+          kind: 'attention',
+          detail: `${REF.key}: no baseline repair is actionable (comment c1), so the issue holds the evidence`,
+          commentId: 'c1',
+          cleanupConfirmed: true,
+        },
+        diagnosed,
+      ),
+      run: () => redBaselineRun(workDir),
+    });
+
+    const summary = await runSource(harness.context, null);
+
+    expect(summary).toMatchObject({ outcome: 'stopped', attempted: 1, cleanupConfirmed: true });
+    expect(summary.problem).toContain('no baseline repair is actionable');
+    expect(diagnosed).toHaveLength(1);
+    expect(diagnosed[0]?.baseline).toEqual(checkRound('failed', 1));
+    // The red attempt was not published as an ordinary failure, nothing was
+    // delivered, and the item waits In Review with what a person must do.
+    expect(harness.calls.completions).toEqual([]);
+    expect(harness.calls.progresses).toEqual([]);
+    const kept = await receipt(workDir);
+    expect(kept).toMatchObject({
+      outcome: 'failed',
+      runId: 'run-1',
+      feedback: 'sent',
+      commentId: 'c1',
+    });
+    expect(kept?.problem).toContain('baseline: ');
+    // The diagnosis stopped cleanly, so the lock is released as usual.
     expect(existsSync(intakeLockPath(workDir, NAMESPACE))).toBe(false);
   });
 });

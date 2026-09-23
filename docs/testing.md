@@ -59,8 +59,10 @@ explicit inputs and realizes no effect — configuration and input validation, q
 transitions, repair, escalation and baseline-diagnosis decisions, review, watch and completion
 decisions, and conversation-history rules; `tests/boundary/` verifies this host's real contracts —
 processes, Git and filesystem behavior, the intake receipts and lock, the coordinator's escalation
-handoff and its response to a pending diagnosis, the pre-delivery diagnosis's reviewer turn, and
-the Jira and GitHub adapters against controlled services and stand-in programs; and
+handoff, its response to a pending diagnosis, its handoff of a completed red baseline to the
+configured diagnosis and of the required repair finding to a returned workspace's next claim, the
+pre-delivery diagnosis's reviewer turn, and the Jira and GitHub adapters against controlled
+services and stand-in programs; and
 `tests/workflow/` proves the four assembled connections above. A suite outside every layer, and
 a layer with no suite, fail `tests/unit/layers.test.ts`: validation has no empty-suite acceptance,
 and a layer that stops being discovered stops being a failure rather than passing.
@@ -77,11 +79,13 @@ repair, records and history, and the serial queue's own decisions. Every require
 names is carried by an active suite: the terminal presentation is
 `tests/unit/activity-display.test.ts`; the source coordinator's receipts, claims, publication,
 delivery decisions, lock, unconfirmed Git stops, escalation handoff, response to a pending
-diagnosis and its watch cadence are `tests/boundary/source-coordinator.test.ts`; the
-pre-delivery baseline diagnosis is `tests/boundary/baseline-review.test.ts` for the one reviewer
-turn's own record and `tests/unit/baseline-diagnosis.test.ts` for what the diagnosis publishes,
-resumes and refuses; and the review scan's evidence, its publication refusals, and the review
-watch's timing are `tests/unit/reviews.test.ts`. No archived file
+diagnosis, handoff of a completed red baseline to the configured diagnosis, the required repair
+finding a continuation is told, and its watch cadence are
+`tests/boundary/source-coordinator.test.ts`; the pre-delivery baseline diagnosis is
+`tests/boundary/baseline-review.test.ts` for the one reviewer turn's own record and
+`tests/unit/baseline-diagnosis.test.ts` for what the diagnosis publishes, resumes and refuses; and
+the review scan's evidence, its publication refusals, and the review watch's timing are
+`tests/unit/reviews.test.ts`. No archived file
 is the only record of a required behavior; what the archive keeps is the whole-command surfaces and
 the shared fixtures those behaviors are assembled into, which the active layers prove at their own
 layer.

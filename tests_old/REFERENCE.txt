@@ -57,11 +57,18 @@ below is kept for the behavior named beside the active suite that now carries it
   connected project one piece of evidence belongs to (tests/unit/baseline-diagnosis.test.ts); and
   the one reviewer turn's record — the rejection a failed turn is recorded as, the restart that
   reuses it, the finding it refuses to read from the turn's own file, and the incomplete evidence
-  it refuses to run past (tests/boundary/baseline-review.test.ts); and the intake's own response to
-  a pending diagnosis — a reviewer stop it could not confirm stopping discovery and the watch's
+  it refuses to run past (tests/boundary/baseline-review.test.ts); the intake's own response to a
+  pending diagnosis — a reviewer stop it could not confirm stopping discovery and the watch's
   polling alike while its lock is kept, and a diagnosis that stopped cleanly but needs a person
-  being reported and stepped past — (tests/boundary/source-coordinator.test.ts) — with the retained
-  workspace the next attempt continues in tests/workflow/continuation.test.ts.
+  being reported and stepped past — the fresh diagnosis of a completed red baseline — the item,
+  the workspace and the red round handed to the configured diagnosis, the repair marker a serial
+  step returns so the same ticket is claimed for its repair with nothing else published or
+  delivered, and the stop a diagnosis with nothing actionable produces — and the required repair
+  finding a continuation is told: the complete recorded finding reaching the run when the item's
+  own thread cannot supply it, and no developer starting, the claimed ticket being told and the
+  problem being recorded when that finding cannot be read back
+  (tests/boundary/source-coordinator.test.ts) — with the retained workspace the next attempt
+  continues in tests/workflow/continuation.test.ts.
 - cli-run.integration.test.ts, local-run.integration.test.ts — a run through the built command,
   its clone, its checks, its repair and its report (tests/workflow/execution-repair.test.ts), on
   top of the real process, Git and filesystem contracts (tests/boundary/process.test.ts,
