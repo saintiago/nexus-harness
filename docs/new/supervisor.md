@@ -66,7 +66,7 @@ requests this format; this component parses it. A malformed report is a failed r
 | Recovery | [AgentRuntime.run](agent-runtime/architecture.md#provided-interface) | Recovery profile, WorkspaceRef, context text and agent output |
 | Notification | [Notifications adapter](adapters/notifications.md#interface) | Subject, report body and publication result |
 
-The [worker startup contract](high-level-architecture.md#configuration-and-startup) accepts the
+The [Application worker entry point](application.md#worker-entry-point) accepts the
 project filepath and any recovery target. Pass these on each launch. The worker binds its dependencies,
 subscribes to events and calls run. Resume uses retained workflow state and action storage.
 

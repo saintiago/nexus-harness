@@ -2,12 +2,14 @@
 
 ## Composition
 
-Nexus consists of five logical components: OperatorInterface, Supervisor, TaskEngine,
-AgentRuntime and Adapters. Each has a public contract and can be designed, implemented and tested
+Nexus consists of Application, OperatorInterface, Supervisor, TaskEngine, AgentRuntime and Adapters. Each has a public contract and can be designed, implemented and tested
 independently against it.
 
 ```text
 Nexus
+├── Application
+│   ├── Commands and configuration loading
+│   └── Parent and worker component wiring
 ├── OperatorInterface
 │   ├── Event subscriptions
 │   └── Progress, activity pane and result presentation
@@ -38,58 +40,35 @@ Nexus
     └── Notifications
 ```
 
-Supervisor is the parent of the Nexus worker process. Worker startup constructs TaskEngine and its
-dependencies. Actions use AgentRuntime for development/review; Supervisor uses it for recovery.
+Supervisor is the parent of the Nexus worker process. Application constructs TaskEngine and its
+dependencies in the worker. Actions use AgentRuntime for development/review; Supervisor uses it for recovery.
 Adapters are modules at external boundaries, not a registry or additional service.
 
 Workspace and configuration are data designs. Workspace defines a fixed directory hierarchy and a
 reference to an instance.
 
-## Configuration and startup
+## Application and configuration
 
-The command entry point parses `nexus queue run --project-config <file>` or `nexus --help`.
-It resolves the project filepath, wires presentation subscriptions before starting execution, calls
-Supervisor.execute and stops presentation after execution finishes. Help and completed execution
-exit with 0, execution requiring attention with 1, and invalid command input with 2.
-Launch shortcuts call this same entry point; they contain no execution policy.
+[Application](application.md) owns the command entry point, configuration loading, component wiring
+and process exit. It connects presentation before starting supervised execution.
 
-Project configuration lives in the target project's root. It defines repository source,
-preparation and CI/check commands, task source and delivery requirements. Nexus configuration owns
-workflows, workspace storage, profiles, runtime instructions and operational policy.
+Project configuration defines the target project. Nexus configuration defines the workflow, storage,
+profiles and operational policy. Their settings and path rules are defined in
+[Configuration](configuration.md).
 
 ```text
-Supervisor(projectConfigPath)
-    → Nexus worker(projectConfigPath)
-        → read project configuration and Nexus configuration
-        → construct components and actions with their relevant settings
-        → execute the Nexus-configured workflow
+Application: parent entry
+    → connect OperatorInterface to Supervisor events
+    → Supervisor.execute(projectConfigPath)
+        → Application: worker entry
+            → load configurations and workflow
+            → construct actions and TaskEngine
+            → TaskEngine.run()
 ```
 
-Supervisor retains and forwards the project filepath on restart. Its recovery settings are available
-before child startup. Worker startup reads both configurations and validates the selected workflow.
-Relative paths resolve against their owning configuration file's directory.
-
-| Consumer | Inputs |
-| --- | --- |
-| TaskEngine / ExecutionRunner | Selected workflow, bound actions and workflow-state filepath |
-| Task actions | Selection-file location and relevant project settings; selection identifies the active WorkspaceRef |
-| PrepareWorkspace | Selection and project repository/preparation settings |
-| Verify | Project CI/check definitions and WorkspaceRef |
-| AgentRuntime | Nexus profiles, instructions, tool/provider settings, limits and activity observer |
-| Agent-backed actions | AgentRuntime capability, profile selection and WorkspaceRef |
-| Source/delivery actions | Relevant project settings and adapter capabilities |
-| Supervisor | Lifecycle/recovery settings and projectConfigPath |
-
-Startup supplies each component with the values and capabilities it needs. Project commands run
-in the prepared worktree. Credential references resolve through host settings; secret values do not
-become agent context.
-
-TaskEngine exposes run() and subscribe(listener). Source and remote repository settings are bound
-to the relevant actions. Restart reconnects the saved workflow state and action storage.
-
-Agent-backed actions call AgentRuntime.run(profile, workspaceRef, additionalContext). The action
-reads the artifacts it needs and supplies context. The runtime combines this with its base/profile
-instructions. Other actions receive only the capabilities they use.
+Supervisor retains the execution request and launches the worker again when recovery requests it.
+Each launch reconnects retained workflow state and action storage. Application supplies relevant
+settings and capabilities; it does not make workflow or recovery decisions.
 
 ## Execution model
 
@@ -104,6 +83,7 @@ invocation ends. Cancellation and coordination between multiple writers are not 
 
 | Component | Owns | Does not own |
 | --- | --- | --- |
+| Application | Commands, configuration loading, component wiring and process exit | Workflow decisions, recovery policy or task artifacts |
 | OperatorInterface | Event subscriptions, display state and terminal presentation | Commands, execution startup, queue decisions or recovery policy |
 | Supervisor | Work process lifecycle, execution intent and recovery decisions supplied by the agent | Task phases or judging the adequacy of a recovery repair |
 | TaskEngine | Sequential workflow execution, bound actions, persisted state and event subscriptions | Interpreting action artifacts or operational recovery policy |
@@ -111,7 +91,7 @@ invocation ends. Cancellation and coordination between multiple writers are not 
 | Adapters | External protocols, authentication and observed results | Business lifecycle or recovery decisions |
 
 ExecutionRunner follows XState workflow definitions. Actions perform task-specific operations and
-exchange persistent artifacts through their contracts. Startup binds dependencies and storage.
+exchange persistent artifacts through their contracts. Application binds dependencies and storage.
 The runner has no knowledge of artifact contents or task semantics.
 
 Profile permissions are configured independently. Recovery can investigate and repair operational
@@ -120,14 +100,14 @@ recovery permissions. Agent reports do not replace checks required for completio
 
 ## Relationships and contracts
 
-OperatorInterface observes events; it does not call execution methods. Startup wires its subscriptions
+OperatorInterface observes events; it does not call execution methods. Application wires its subscriptions
 and starts Supervisor. Supervisor runs TaskEngine without knowing its internal orchestration.
 It forwards producer events unchanged and adds its own lifecycle events. This combined stream carries
 both components' events to presentation without duplicate subscriptions.
 
 | Caller or producer | Receiver | Contract boundary |
 | --- | --- | --- |
-| Command entry point | Supervisor | Execute the finite queue with project filepath |
+| Application | Supervisor | Execute the finite queue with project filepath |
 | Supervisor | Nexus worker / TaskEngine | Launch configured workflow and receive events/result |
 | TaskEngine, through Supervisor | OperatorInterface | Unchanged worker event stream |
 | Supervisor | OperatorInterface | Lifecycle events, including the final execution result |
@@ -165,24 +145,20 @@ Observer errors do not change execution decisions.
 
 ### Process boundary
 
-Worker startup receives the project filepath and any recovery target as arguments. The worker sends
-newline-delimited JSON records on stdout: { kind: 'event', event } or { kind: 'result', result }.
-Diagnostics use stderr. The parent forwards events and waits for the final result and process exit.
+The [Application worker protocol](application.md#worker-entry-point) carries events and the final
+workflow result to the parent. Supervisor observes these alongside process exit. A failed exit,
+missing result or invalid result is an execution failure. Terminal text is not a control protocol.
 
-A failed exit, missing result or invalid result is an execution failure. The bridge carries records
-and process outcomes; it does not evaluate task or recovery policy. Terminal text is not a control
-protocol.
-
-Startup binds the actions and event publisher before calling TaskEngine.run(). Any action and the
-runner can emit events. TaskEngine forwards them without interpreting payloads.
+Application connects event publishing before execution. TaskEngine forwards events unchanged;
+Supervisor forwards them and emits its own lifecycle events. OperatorInterface presents the stream.
 
 ## Finite Run
 
 Finite Run processes eligible work serially until a fresh source inspection finds no eligible tasks.
 It does not reserve a fixed batch at startup.
 
-1. Startup connects presentation to events and sends Supervisor the project filepath.
-2. Supervisor starts the worker; startup reads configuration and constructs the selected workflow.
+1. Application connects presentation to events and sends Supervisor the project filepath.
+2. Supervisor starts the worker; Application reads configuration and constructs the selected workflow.
 3. TaskEngine executes selection, implementation, repair, review, delivery and completion actions
    according to the workflow, then selects again.
 4. Supervisor forwards progress and adds lifecycle events for OperatorInterface to display.

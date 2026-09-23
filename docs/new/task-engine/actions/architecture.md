@@ -118,7 +118,7 @@ errors. Neither form is silently treated as successful work.
 ticket's workspace. Consumers import these record declarations and read them directly; they are not
 resolved through the current-round helper. StartRound owns the current-round record.
 
-Startup binds the selection-file location to the actions that need it. Each invocation reads the
+Application binds the selection-file location to the actions that need it. Each invocation reads the
 current selection to obtain its task workspace; it does not retain another ticket's workspace between
 calls. The runner's configured state filepath stays fixed for the queue and the runner does not read
 the selection. Each ticket retains its own worktree and round history across queue runs.

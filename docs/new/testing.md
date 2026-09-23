@@ -14,6 +14,7 @@ Cover decisions, meaningful variations and failure outcomes here.
 
 | Subject | Behavior to verify | Supplied dependencies |
 | --- | --- | --- |
+| Application | Command interpretation, configuration paths and exit-code mapping | Arguments, configuration values and execution results |
 | SelectTask | Source ordering, eligibility and continuation decisions | Issue data and retained selection |
 | SelectRepair | Repair counting, profile escalation and exhaustion | Round history and policy |
 | Review | Verdict interpretation and rejection of approval with unresolved blocking findings | Agent result and repository observations |

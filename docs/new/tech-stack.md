@@ -13,7 +13,7 @@ Use Zod for external input validation, ESLint for linting and Prettier for forma
 Use Dependency Cruiser in validation to enforce component import boundaries. Cross-component imports
 use public interfaces; actions may import other actions' artifact declarations, not their implementations.
 Keep ExecutionRunner independent of concrete actions and adapters, and adapters independent of
-orchestration implementations. Startup wiring assembles implementations. Contract tests verify behavior.
+orchestration implementations. Application wiring assembles implementations. Contract tests verify behavior.
 
 Use Turborepo for local validation caching and tool-native caches where appropriate. Cache only
 deterministic validation results with their inputs declared. Live service operations and completion

@@ -20,8 +20,8 @@ interface OperatorInterface {
 ```
 
 start subscribes to the supplied streams. stop unsubscribes, finalizes the visible pane and restores
-terminal styling. Neither method starts or stops execution. Startup owns command parsing, execution
-startup and process exit codes.
+terminal styling. Neither method starts or stops execution.
+[Application](application.md#interface) owns command parsing, execution startup and process exit codes.
 
 When Supervisor forwards worker events, subscribe to that combined stream once; do not also subscribe
 to the same worker events separately. Agent invocation boundaries and activity arrive through these
