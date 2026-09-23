@@ -371,6 +371,66 @@ describe('a supervised queue', () => {
     expect(incident?.resumedAt).not.toBeNull();
   }, 30_000);
 
+  it('carries an interrupted blocker to its confirmed result before resuming', async () => {
+    const { workDir, repoPath, configPath } = await workspace();
+    const root = supervisorRoot(workDir, 'namespace');
+    // The state a crash *during the blocker* leaves: the incident is concluded
+    // `blocked`, its blocker was started, no result of that blocker was ever
+    // observed — and the pointer names the worker that died with the crash.
+    const incident = await seedIncident(root);
+    const seeded = await readIncident(incidentFilePath(root, incident.id));
+    if (seeded === null) {
+      throw new Error('the seeded incident is gone');
+    }
+    await writeIncident(incidentFilePath(root, incident.id), {
+      ...seeded,
+      scope: 'HARN-51',
+      ticket: { key: 'HARN-51', url: null },
+      conclusion: {
+        outcome: 'blocked',
+        detail: 'HARN-77 has to land first',
+        at: '2026-09-23T00:03:00.000Z',
+      },
+      sequence: {
+        intent: 'ticket',
+        scope: 'HARN-51',
+        blocker: { key: 'HARN-77', reason: 'it repairs the shared module' },
+        blockerStartedAt: '2026-09-23T00:04:00.000Z',
+        blockerSettledAt: null,
+      },
+    });
+    await writeCurrentIncident(root, {
+      version: 1,
+      id: incident.id,
+      workerPid: 4242,
+      launch: { token: 'the-blocker', at: '2026-09-23T00:04:00.000Z' },
+    });
+    const requests: (string | null)[] = [];
+    const recovery = scriptedRecovery([{ status: 'repaired', summary: 's', cause: 'c' }]);
+    const summary = await runSupervision({
+      workDir,
+      repoPath,
+      configPath,
+      scope: 'HARN-51',
+      isAlive: () => false,
+      worker: async (request) => {
+        requests.push(request.scope);
+        return ended(0);
+      },
+      recoveryTurn: recovery,
+    });
+
+    // The blocker runs again: its start alone was never its result. Only after
+    // it really settles does the interrupted work run.
+    expect(requests).toEqual(['HARN-77', 'HARN-51']);
+    expect(summary.outcome).toBe('settled');
+    expect(recovery.calls).toBe(0);
+    const stored = await readIncident(incidentFilePath(root, incident.id));
+    expect(stored?.sequence?.blockerStartedAt).not.toBeNull();
+    expect(stored?.sequence?.blockerSettledAt).not.toBeNull();
+    expect(stored?.resumedAt).not.toBeNull();
+  }, 30_000);
+
   it('bounds the attempts one incident may spend', async () => {
     const { workDir, repoPath, configPath } = await workspace();
     const recovery = scriptedRecovery([null]);
@@ -629,7 +689,217 @@ describe('a supervised queue', () => {
       expect(stored?.pending).not.toBeNull();
     }, 30_000);
 
-    it('finishes a report an earlier invocation could not publish, without recovering again', async () => {
+  it('does not read an unfinished run directory as the queue doing work', async () => {
+    const { workDir, repoPath, configPath } = await workspace();
+    // The reviewer's failure: a worker that creates its run directory and then
+    // stops on the same operational problem would otherwise look like progress
+    // on every pass, so the unchanged failure would never be bounded.
+    let created = 0;
+    const recovery = scriptedRecovery([
+      {
+        status: 'repaired',
+        summary: 'the lock was explained',
+        cause: 'a stale lock',
+        resolution: 'the lock was explained and the work returned',
+        preserved: [],
+        resume: 'the queue resumes',
+      },
+    ]);
+    const summary = await runSupervision({
+      workDir,
+      repoPath,
+      configPath,
+      scope: 'HARN-51',
+      maxAttempts: 2,
+      worker: async () => {
+        created += 1;
+        await mkdir(path.join(workDir, 'runs', `run-${String(created)}`), { recursive: true });
+        return ended(1);
+      },
+      recoveryTurn: recovery,
+    });
+
+    expect(summary.outcome).toBe('attention');
+    expect(summary.problem).toContain('unchanged');
+    // One investigation, then a person: the second stop repeats the failure the
+    // first recovery reported repaired, with nothing done in between.
+    expect(summary.recoveries).toBe(1);
+    expect(recovery.calls).toBe(1);
+    expect(created).toBe(2);
+    const incident = await storedIncident(workDir);
+    expect(incident?.stage).toBe('help');
+  }, 30_000);
+
+  it('asks for a person when the same investigated cause returns after real work', async () => {
+    const { workDir, repoPath, configPath } = await workspace();
+    let created = 0;
+    const recovery = scriptedRecovery([
+      {
+        status: 'repaired',
+        summary: 'the intake lock was explained',
+        cause: 'the intake lock was stale',
+        resolution: 'the lock was explained and the work returned',
+        preserved: [],
+        resume: 'the queue resumes',
+        ticket: { key: 'HARN-51' },
+      },
+    ]);
+    const summary = await runSupervision({
+      workDir,
+      repoPath,
+      configPath,
+      maxAttempts: 2,
+      worker: async () => {
+        created += 1;
+        // A run that really finished, whatever it concluded: that is the queue's
+        // own evidence that it did something between the two stops.
+        const dir = path.join(workDir, 'runs', `run-${String(created)}`);
+        await mkdir(dir, { recursive: true });
+        await writeFile(path.join(dir, 'result.json'), '{}', 'utf8');
+        return ended(1);
+      },
+      recoveryTurn: recovery,
+    });
+
+    expect(summary.outcome).toBe('attention');
+    expect(summary.problem).toContain('the same failure returned unchanged');
+    expect(summary.problem).toContain('the intake lock was stale');
+    // Both incidents were really investigated: the repetition is read from what
+    // the two recoveries found, not from an exit code.
+    expect(summary.recoveries).toBe(2);
+    expect(created).toBe(2);
+  }, 30_000);
+
+  it('keeps a request for human help stopped until a person acknowledges it', async () => {
+    const { workDir, repoPath, configPath } = await workspace();
+    const root = supervisorRoot(workDir, 'namespace');
+    const incident = await seedIncident(root);
+    const seeded = await readIncident(incidentFilePath(root, incident.id));
+    if (seeded === null) {
+      throw new Error('the seeded incident is gone');
+    }
+    // The state an invocation leaves when it stops right after persisting an
+    // exhausted conclusion: the incident asks for a person.
+    await writeIncident(incidentFilePath(root, incident.id), {
+      ...seeded,
+      stage: 'help',
+      sequence: null,
+      conclusion: {
+        outcome: 'help',
+        detail: 'the shared module has to be repaired by hand',
+        at: '2026-09-23T00:04:00.000Z',
+      },
+    });
+    const recovery = scriptedRecovery([{ status: 'repaired', summary: 's', cause: 'c' }]);
+    const stopped = await runSupervision({
+      workDir,
+      repoPath,
+      configPath,
+      isAlive: () => false,
+      worker: scriptedWorker([ended(0)]),
+      recoveryTurn: recovery,
+    });
+
+    expect(stopped.outcome).toBe('attention');
+    expect(stopped.problem).toContain('human help');
+    expect(stopped.workerRuns).toBe(0);
+    expect(recovery.calls).toBe(0);
+
+    // A person did what the request asked for and acknowledged it in the record:
+    // the queue starts again, and nothing else about the incident is repeated.
+    const held = await readIncident(incidentFilePath(root, incident.id));
+    await writeIncident(incidentFilePath(root, incident.id), {
+      ...(held ?? seeded),
+      acknowledgement: {
+        at: '2026-09-23T00:10:00.000Z',
+        note: 'the shared module was repaired by hand',
+      },
+    });
+    const resumed = await runSupervision({
+      workDir,
+      repoPath,
+      configPath,
+      isAlive: () => false,
+      worker: scriptedWorker([ended(0)]),
+      recoveryTurn: recovery,
+    });
+
+    expect(resumed.outcome).toBe('settled');
+    expect(resumed.workerRuns).toBe(1);
+    expect(recovery.calls).toBe(0);
+  }, 30_000);
+
+  it('holds for reconciliation when a recovery runtime could not be confirmed stopped', async () => {
+    const { workDir, repoPath, configPath } = await workspace();
+    const recovery: RecoveryTurn = async ({ dir, onStarted }) => {
+      await mkdir(dir, { recursive: true });
+      await onStarted?.(5252);
+      return {
+        judgment: null,
+        problem:
+          'the recovery turn was stopped before it produced a judgment — its time limit expired.',
+        shutdown: {
+          termination: 'unconfirmed',
+          problem: 'the coding runtime had not ended 5000 ms after it was stopped',
+        },
+        dir,
+        logPath: null,
+      };
+    };
+    const held = await runSupervision({
+      workDir,
+      repoPath,
+      configPath,
+      worker: scriptedWorker([ended(1)]),
+      recoveryTurn: recovery,
+    });
+
+    // Nothing else runs beside a process that may still be repairing the
+    // workspace, and the incident keeps owning it.
+    expect(held.outcome).toBe('attention');
+    expect(held.problem).toContain('could not be confirmed stopped');
+    expect(held.recoveries).toBe(1);
+    expect(held.workerRuns).toBe(1);
+    const incident = await storedIncident(workDir);
+    expect(incident?.stage).toBe('open');
+    expect(incident?.attempts).toHaveLength(0);
+    expect(incident?.pending?.turnPid).toBe(5252);
+    expect(incident?.pending?.problem).toContain('could not be confirmed stopped');
+
+    // A restart that finds that runtime gone reconciles the attempt: it counts
+    // as spent, and the incident goes on from there.
+    const scripted = scriptedRecovery([
+      {
+        status: 'repaired',
+        summary: 'the workspace was returned to its recorded branch',
+        cause: 'the worker was killed mid-run',
+        resolution: 'the workspace was returned',
+        preserved: [],
+        resume: 'the queue resumes',
+        ticket: { key: 'HARN-51' },
+      },
+    ]);
+    const resumed = await runSupervision({
+      workDir,
+      repoPath,
+      configPath,
+      isAlive: () => false,
+      worker: scriptedWorker([ended(0)]),
+      recoveryTurn: scripted,
+    });
+
+    expect(resumed.outcome).toBe('settled');
+    // The reconciled attempt is spent, the incident's remaining bound is spent
+    // on the repair, and the resumed worker settles.
+    expect(resumed.workerRuns).toBe(1);
+    expect(resumed.recoveries).toBe(1);
+    const stored = await readIncident(incidentFilePath(supervisorRoot(workDir, 'namespace'), incident?.id ?? ''));
+    expect(stored?.pending).toBeNull();
+    expect(stored?.attempts).toHaveLength(2);
+    expect(stored?.attempts[0]?.problem).toContain('could not be confirmed stopped');
+  }, 30_000);
+
+  it('finishes a report an earlier invocation could not publish, without recovering again', async () => {
     const { workDir, repoPath, configPath } = await workspace();
     const root = supervisorRoot(workDir, 'namespace');
     const incident = await seedIncident(root);

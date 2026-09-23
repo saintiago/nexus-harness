@@ -881,6 +881,31 @@ async function activationProblem(
     });
   }
 
+  /**
+   * One incident, changed from the newest state on disk rather than from a
+   * snapshot a caller read earlier. Two writers of one incident — the loop's own
+   * step records and the report's publication, chiefly — must never take each
+   * other's evidence away, and an older snapshot reaching the file last is
+   * exactly how that would happen.
+   */
+  async function updateIncident(
+    root: string,
+    id: string,
+    change: (latest: IncidentRecord) => IncidentRecord,
+  ): Promise<KnownIncident> {
+    const file = incidentFilePath(root, id);
+    const latest = await readIncident(file);
+    if (latest === null) {
+      throw new Error(
+        `incident ${id} has no record at "${file}" to write back to; inspect the supervision ` +
+          'state by hand.',
+      );
+    }
+    const updated = change(latest);
+    await writeIncident(file, updated);
+    return { record: updated, path: file };
+  }
+
 /**
  * The incident an earlier supervisor left open, when one is really still being
  * handled. A record whose worker is genuinely still running is a refusal, not
@@ -1195,17 +1220,18 @@ async function startAttempt(
         'nothing else runs beside it. Wait for it, or stop it by hand, and run the supervisor ' +
         'again; the attempt is then reconciled and counted as spent.';
       io.err(`supervisor: incident ${current.id}: ${detail}`);
-      if (current.pending !== null) {
-        await writeIncident(incidentFilePath(root, current.id), {
-          ...current,
-          pending: { ...current.pending, problem: detail },
-          updatedAt: endedAt,
-        });
+      // The record is read back before it is written: the attempt's own PID was
+      // recorded when the turn's runtime was registered, and this write keeps
+      // it — the incident goes on owning exactly that process.
+      const file = incidentFilePath(root, current.id);
+      const latest = (await readIncident(file)) ?? current;
+      const pending = latest.pending;
+      let incident = latest;
+      if (pending !== null) {
+        incident = { ...latest, pending: { ...pending, problem: detail }, updatedAt: endedAt };
+        await writeIncident(file, incident);
       }
-      return {
-        incident: { record: { ...current, updatedAt: endedAt }, path: known.path },
-        hold: detail,
-      };
+      return { incident: { record: incident, path: known.path }, hold: detail };
     }
     const judgment = outcome.result.judgment;
     const recorded: RecoveryAttempt = {
@@ -1357,12 +1383,11 @@ async function publish(
       checkpoint: async (report) => {
         // The publication state is written down before it crosses the network,
         // so a restart reads an in-flight send as in-flight rather than as an
-        // unattempted one, and one incident is never published twice.
-        await writeIncident(incidentFilePath(root, incident.id), {
-          ...incident,
-          report,
-          updatedAt: request.now().toISOString(),
-        });
+        // unattempted one, and one incident is never published twice. The
+        // newest record is the one written back: the step this incident was
+        // carried through must not be taken away by a state older than it.
+        const at = request.now().toISOString();
+        await updateIncident(root, incident.id, (latest) => ({ ...latest, report, updatedAt: at }));
       },
     });
   } catch (cause) {
@@ -1373,13 +1398,11 @@ async function publish(
       reportProblem: detail,
     };
   }
-  const updated: IncidentRecord = {
-    ...incident,
+  const known = await updateIncident(root, incident.id, (latest) => ({
+    ...latest,
     report: outcome.report,
     updatedAt: request.now().toISOString(),
-  };
-  await writeIncident(incidentFilePath(root, incident.id), updated);
-  const known: KnownIncident = { record: updated, path: incidentFilePath(root, incident.id) };
+  }));
   if (outcome.problem !== null) {
     request.io.err(`supervisor: ${outcome.problem}`);
     return { incident: known, reportProblem: outcome.problem };
