@@ -34,6 +34,7 @@ of the target project's directory. Relative paths are relative to the Nexus conf
 | Execution policy | Invocation limits, repair/escalation policies and maximum recovery attempts per supervised execution |
 | Notifications | Destination and provider configuration |
 | Credentials | Host credential-resolution settings |
+| Nexus Lens | GitHub App identity and installation credential references for review publication |
 
 The workspace storage root is configurable. The [workspace layout](workspace.md#layout-and-reference)
 is fixed and has no configuration overrides.
@@ -45,6 +46,9 @@ Workflow and escalation profile references identify entries in the same Nexus co
 The developer ladder lists profiles in escalation order and the repair allowance for each profile.
 Both failed implementation/checks and review-requested changes consume that policy; starting another
 review round does not reset it. The reviewer profile is configured separately.
+
+The target repository's merge rules require the configured Nexus Lens review check from that App,
+alongside its required CI checks. Project delivery settings identify that required check.
 
 ## Value constraints
 

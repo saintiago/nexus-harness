@@ -16,7 +16,8 @@ checks are never replaced by cached validation results.
 
 ## Integrations
 
-Use Git for repository operations and the operator's authenticated `gh` CLI for GitHub operations.
+Use Git for repository operations and the operator's authenticated `gh` CLI for PR creation and
+auto-merge. Publish reviews and the required review check through the Nexus Lens GitHub App identity.
 Use the operator's configured Jira API token for Jira. Credentials remain in host configuration.
 
 Use maintained libraries or existing tools for established infrastructure. Keep integration glue
