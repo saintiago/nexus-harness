@@ -57,8 +57,11 @@ below is kept for the behavior named beside the active suite that now carries it
   connected project one piece of evidence belongs to (tests/unit/baseline-diagnosis.test.ts); and
   the one reviewer turn's record — the rejection a failed turn is recorded as, the restart that
   reuses it, the finding it refuses to read from the turn's own file, and the incomplete evidence
-  it refuses to run past (tests/boundary/baseline-review.test.ts) — with the retained workspace
-  the next attempt continues in tests/workflow/continuation.test.ts.
+  it refuses to run past (tests/boundary/baseline-review.test.ts); and the intake's own response to
+  a pending diagnosis — a reviewer stop it could not confirm stopping discovery and the watch's
+  polling alike while its lock is kept, and a diagnosis that stopped cleanly but needs a person
+  being reported and stepped past — (tests/boundary/source-coordinator.test.ts) — with the retained
+  workspace the next attempt continues in tests/workflow/continuation.test.ts.
 - cli-run.integration.test.ts, local-run.integration.test.ts — a run through the built command,
   its clone, its checks, its repair and its report (tests/workflow/execution-repair.test.ts), on
   top of the real process, Git and filesystem contracts (tests/boundary/process.test.ts,
@@ -70,16 +73,19 @@ below is kept for the behavior named beside the active suite that now carries it
   anything remote or paid, the retention of an uncertain claim, the release of a claim that sent
   no mutation, the local result a failed publication keeps, the run whose own stop could not be
   confirmed — at the item's own preflight before any run result exists, wrapped by the run
-  preflight, and after one alike — publishing nothing and keeping its receipt and lock while a
-  confirmed stop still gets its one bounded feedback, the published checks line of a stopped
-  final turn naming the last round that really ran rather than the baseline, the delivery
-  decisions — a passed attempt delivered before its result is published, failed and cancelled
-  attempts never delivered, and a delivery failure published beside the passed outcome before
-  intake stops — and the per-project lock that is never broken or adopted; and the watch cadence
-  over that state — the poll interval, the server-directed retry delay, the backoff a read that
-  reserved nothing gets, and the fatal failure that stops the loop instead
-  (tests/boundary/source-coordinator.test.ts) — with the four-field task and claim contracts
-  themselves in tests/boundary/jira-connector.test.ts.
+  preflight, at the verification of a retained workspace a continuation would reopen, and after
+  one alike — publishing nothing and keeping its receipt and lock while a confirmed stop still
+  gets its one bounded feedback, the published checks line of a stopped final turn naming the last
+  round that really ran rather than the baseline, the escalation ladder's handoff — one claim
+  climbing to the configured next tier in the same retained workspace, the intermediate rung's
+  comment published before the ladder's own result, and a ticket that came back to work starting
+  at the first tier again with its guidance — the delivery decisions — a passed attempt delivered
+  before its result is published, failed and cancelled attempts never delivered, and a delivery
+  failure published beside the passed outcome before intake stops — and the per-project lock that
+  is never broken or adopted; and the watch cadence over that state — the poll interval, the
+  server-directed retry delay, the backoff a read that reserved nothing gets, and the fatal
+  failure that stops the loop instead (tests/boundary/source-coordinator.test.ts) — with the
+  four-field task and claim contracts themselves in tests/boundary/jira-connector.test.ts.
 - activity.test.ts — the activity pane's presentation: the lines one invocation draws, the
   message and latest-work bound, the boundary that opens a pane, and the control characters and
   escape sequences a runtime's text may never carry into the terminal
