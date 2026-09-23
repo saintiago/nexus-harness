@@ -98,6 +98,14 @@ function entryOfComment(
     round: null,
     commit: comment.commit ?? parts.commit,
     state: comment.state ?? null,
+    // A reply belongs to the conversation, not to the review's own findings, so
+    // only a comment published as part of its review keeps the parent identity.
+    ...(parts.kind === 'pr-review-comment' &&
+    comment.reviewId !== undefined &&
+    comment.reviewId !== null &&
+    (comment.inReplyToId === undefined || comment.inReplyToId === null)
+      ? { reviewId: comment.reviewId }
+      : {}),
     url: comment.url,
     sourceId: comment.sourceId,
     text: comment.text,
@@ -458,6 +466,12 @@ interface ReviewRoundCandidate {
    * conversation only, and settles nothing (docs/spec.md §9).
    */
   readonly published: boolean;
+  /**
+   * Whether GitHub has since dismissed the review this round states. A
+   * dismissed review is not an active decision: it settles nothing it read and
+   * its approval clears nothing, whichever decision its own report stated.
+   */
+  readonly dismissed: boolean;
 }
 
 /**
@@ -487,9 +501,13 @@ interface OutstandingReview {
  * change request never silently resolves an earlier defect. A round's own
  * verifications settle exactly the identities they name — `verified` clears one
  * finding, `unverified` and `regressed` leave it outstanding — but only when
- * the round is a review the pull request itself carries: a verdict refused
- * publication settles nothing it read, and only an approval by that reviewer at
- * the current head clears what they still hold. Comment-only and inconclusive
+ * the round is an eligible, active review the pull request itself carries: a
+ * verdict refused publication settles nothing it read, a review GitHub
+ * dismissed settles nothing, and only an approval by that reviewer at the
+ * current head clears what they still hold. A dismissed review keeps the
+ * decision its own report stated, so the findings it raised still stand until a
+ * later review verifies them: dismissal withdraws GitHub's blocking state,
+ * never the defect the review recorded. Comment-only and inconclusive
  * rounds decide nothing. The reviewer's latest
  * change request stands as a round of its own as well, so a native review that
  * states no finding — only its decision and its body — is still an outstanding
@@ -513,20 +531,30 @@ function unresolvedRound(parts: {
 
   /** The inline comments one native review published, by the review's own id. */
   const inlineOf = (reviewId: string): readonly Candidate[] =>
-    candidates.filter((candidate) => {
-      if (candidate.entry.kind !== 'pr-review-comment') {
-        return false;
-      }
-      const comment = candidate.comment;
-      if (comment === null || comment.reviewId === undefined || comment.reviewId === null) {
-        return false;
-      }
-      if (comment.inReplyToId !== undefined && comment.inReplyToId !== null) {
-        // A reply is a response to a finding, not part of the review itself.
-        return false;
-      }
-      return String(comment.reviewId) === reviewId;
-    });
+    candidates
+      .filter((candidate) => {
+        if (candidate.entry.kind !== 'pr-review-comment') {
+          return false;
+        }
+        const comment = candidate.comment;
+        if (comment === null || comment.reviewId === undefined || comment.reviewId === null) {
+          return false;
+        }
+        if (comment.inReplyToId !== undefined && comment.inReplyToId !== null) {
+          // A reply is a response to a finding, not part of the review itself.
+          return false;
+        }
+        return String(comment.reviewId) === reviewId;
+      })
+      // A finding's identity is its position among the review's own comments.
+      // Ordering them the way the snapshot orders their entries keeps that
+      // identity reproducible from the snapshot alone, after the round that
+      // raised the finding was settled and no report states it any more.
+      .toSorted(
+        (a, b) =>
+          compareHistoryTime(a.entry.createdAt, b.entry.createdAt) ||
+          a.entry.id.localeCompare(b.entry.id),
+      );
 
   for (const report of reports) {
     if (report.kind !== 'reviewer-report') {
@@ -540,7 +568,15 @@ function unresolvedRound(parts: {
         candidate.entry.kind === 'pr-review' &&
         candidate.entry.sourceId === String(report.nativeReviewId),
     );
-    const decision = native?.entry.state?.toLowerCase() ?? (report.decision ?? '').toLowerCase();
+    const nativeState = native?.entry.state?.toLowerCase() ?? null;
+    // A review GitHub dismissed is not an active decision: it settles nothing
+    // it read, and its approval clears nothing. The decision its own report
+    // stated is what the round keeps, so a dismissed change request's findings
+    // still stand and an approval keeps the head restriction it was made with
+    // (docs/WORKFLOW.md §9).
+    const dismissed = nativeState === 'dismissed';
+    const decision =
+      nativeState === null || dismissed ? (report.decision ?? '').toLowerCase() : nativeState;
     // Whether this verdict became a review GitHub published: the report's own
     // digest records the publication identity once the scan noted it, and the
     // attempt's review record names the review it published even when that note
@@ -571,6 +607,7 @@ function unresolvedRound(parts: {
       summary: report,
       ownEntryIds: own,
       published,
+      dismissed,
     });
   }
 
@@ -625,6 +662,9 @@ function unresolvedRound(parts: {
       // This round is a native review the pull request carries: it was read
       // back from its own conversation, so it was published to exist.
       published: true,
+      // Its state is all this round states, so a dismissal leaves it no active
+      // decision of its own to stand under.
+      dismissed: (entry.state ?? '').toLowerCase() === 'dismissed',
     });
   }
 
@@ -635,13 +675,16 @@ function unresolvedRound(parts: {
   for (const round of rounds) {
     const owner = held.get(round.owner) ?? { request: null, findings: new Map(), head: null };
     const approving = round.decision === 'approve' || round.decision === 'approved';
-    // A round settles what it read only when it is a review the pull request
-    // itself carries: an approval decides at the head it was made on, and a
-    // verdict refused publication decides nothing at all. Then only a
+    // A round settles what it read only when it is an eligible, active review
+    // the pull request itself carries: an approval decides at the head it was
+    // made on, a verdict refused publication decides nothing at all, and a
+    // review GitHub dismissed decides nothing at all either. Then only a
     // `verified` reading settles an identity; `unverified` and `regressed` are
     // a reviewer's own statement that the defect is still there.
     const settles =
-      round.published && (!approving || round.summary.head === (currentHead ?? owner.head));
+      round.published &&
+      !round.dismissed &&
+      (!approving || round.summary.head === (currentHead ?? owner.head));
     if (settles) {
       for (const verification of round.summary.verifications ?? []) {
         if (verification.state === 'verified') {
