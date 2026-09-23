@@ -58,6 +58,21 @@ Contract tests verify a provider's observable promises and its consumer's expect
 alone does not establish compatibility. Use the real provider behavior relevant to the contract and
 test the consumer's handling of its results.
 
+For action artifacts, the producer exports one Zod schema with its artifact declaration. Derive the
+TypeScript type from that schema; consumers import the declaration rather than defining their own
+shape. The artifact reader validates persisted JSON with that schema. Static types alone do not
+validate file contents.
+
+Verify compatibility using actual producer output. For example, run Develop with a supplied agent
+response and repository observations, let it write development.json through the real artifact helper,
+then exercise Review's real input handling against the same round. Supply its other required inputs
+and verify that its assembled review context contains the development summary, revision and finding
+responses. This requires no live agent, GitHub access or full workflow.
+
+Do not replace both sides with independently handcrafted fixtures. Test malformed JSON and missing
+required fields at the artifact-reading boundary without repeating that matrix for every consumer.
+Vitest runs these tests; Zod supplies runtime shape validation.
+
 Contract and workflow describe what a test proves, not additional pyramid layers. Classify them by
 the scope and dependencies they exercise. Test Nexus's XState definition and integration, not XState's
 internal implementation.
