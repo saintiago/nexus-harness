@@ -98,7 +98,7 @@ storage, then calls run again.
 | Commands | [Processes](../adapters/processes.md#interface) | Run configured setup/check commands and return exit codes and output |
 
 Dependencies are supplied to actions at construction; ExecutionRunner receives none of these ports.
-Local task files are an owned input format. Actions normalize source documents, construct role inputs
+Actions read task details and locally saved conversation, construct role inputs
 and verify role claims against observed evidence. No presentation or supervisor dependency is required.
 An agent-backed action calls run(profile, workspaceRef, additionalContext). The action reads the
 artifacts it needs and supplies invocation instructions/context directly. The runtime does not read

@@ -7,7 +7,7 @@ Perform explicitly requested GitHub operations and return observed repository an
 ## Interface
 
 Follow the [adapter contract](architecture.md#interface).
-Construction supplies the repository connection and authorized credentials. Consumers supply target
+Construction supplies access to the operator's authenticated gh CLI. Consumers supply target
 identities, revisions and requested changes.
 
 Expose pull-request, review, check and workflow operations as required by consumers. Read metadata,
@@ -30,7 +30,8 @@ that operation; it does not combine the decision into ensurePullRequest.
 | Request auto-merge | PR and expected head → provider acceptance | Deliver |
 | Read workflow runs and jobs | Merge revision and configured workflow identities → statuses, conclusions and revisions | CompleteTask |
 
-Use the configured credential identity for each operation, including the designated check publisher.
+Use the CLI's authenticated identity for operations. Report unsupported or unauthorized operations
+as errors.
 Queries return observations; the caller decides whether the expected gate or publication is satisfied.
 
 ## Behavior

@@ -38,13 +38,13 @@ Only completed produces a usable completionArtifact. Provider access failures ar
 Require approval of the delivered head. Read current PR state and checks from their configured
 producers. If the head changed, do not transfer the old approval.
 
-Observe the actual merge and run results for the merge revision. Pending work remains pending within the configured completion
-wait; failed checks or expiry cannot produce completed.
+Observe the actual merge and require every configured post-merge check to succeed for that merge
+revision. Those successful results are the completion evidence. Pending work remains pending within
+the configured completion wait; failed checks or expiry cannot produce completed.
 
 Write completion evidence after the merge and checks are confirmed. Transition the ticket to Done
 only after those conditions hold. Finish the configured source update before returning completed.
-Local tasks retain the completion record without a Jira transition. Do not directly merge or bypass
-repository gates.
+Do not directly merge or bypass repository gates.
 
 On repetition, read the current PR and ticket state. A merged PR or already-completed ticket does
 not by itself establish that required post-merge checks passed. Reuse confirmed evidence and finish

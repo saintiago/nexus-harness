@@ -5,7 +5,8 @@ If code contradicts documentation, correct the code.
 
 ## Purpose and design
 
-- [High-level architecture](docs/new/high-level-architecture.md): target composition, component contracts and execution modes.
+- [Tech stack](docs/new/tech-stack.md): Linux platform, WSL development, language, tooling and integrations.
+- [High-level architecture](docs/new/high-level-architecture.md): target composition, component contracts and finite execution.
 - [OperatorInterface design](docs/new/operator-interface.md): commands, execution presentation and terminal ownership.
 - [Supervisor design](docs/new/supervisor.md): execution lifecycle, recovery and restart decisions.
 - [TaskEngine design](docs/new/task-engine/architecture.md): declarative execution, action composition and event subscriptions.

@@ -10,7 +10,7 @@ explicit; its filename is unrestricted. Relative paths are relative to that file
 
 | Settings | Definition |
 | --- | --- |
-| Repository | Source location and base branch |
+| Repository | Source location; new task branches start from updated main |
 | Preparation | Commands required to prepare the repository for work |
 | CI/checks | Named commands and criteria used to verify repository changes |
 | Task source | Project identity, source selection and source field/workflow mappings |
@@ -28,7 +28,7 @@ of the target project's directory. Relative paths are relative to the Nexus conf
 
 | Settings | Definition |
 | --- | --- |
-| Workflows | Workflow definition paths and the definition selected for each execution mode |
+| Workflow | Workflow definition path for finite queue execution |
 | Workspace | Storage root |
 | Agent runtime | Base instructions, profile catalogue, provider connections and tool configuration |
 | Execution policy | Invocation limits, repair/escalation policies and maximum recovery attempts per supervised execution |
@@ -53,7 +53,7 @@ shell executable. Credential references contain identifiers, not secret values.
 
 Required paths and identifiers are nonempty. Duration values state their unit and are nonnegative.
 Recovery allowances are positive integers. Workflow definitions, profile references and configured
-provider settings must be valid for the selected mode.
+provider settings must be valid for the selected workflow.
 
 Project and Nexus configuration have disjoint ownership. They are not merged through generic override
 precedence. A setting supplied under the wrong owner is invalid.

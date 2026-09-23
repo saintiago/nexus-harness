@@ -48,7 +48,7 @@ reference to an instance.
 
 ## Configuration and startup
 
-Project configuration lives in the target project's root. It defines repository source/base,
+Project configuration lives in the target project's root. It defines repository source,
 preparation and CI/check commands, task source and delivery requirements. Nexus configuration owns
 workflows, workspace storage, profiles, runtime instructions and operational policy.
 
@@ -149,7 +149,7 @@ recovery permissions. Agent reports do not replace checks required for completio
 
 | Caller or producer | Receiver | Contract boundary |
 | --- | --- | --- |
-| OperatorInterface | Supervisor | Execute with project filepath, mode and target |
+| OperatorInterface | Supervisor | Execute the finite queue with project filepath |
 | Supervisor | Nexus worker / TaskEngine | Launch configured workflow and receive events/result |
 | Supervisor | OperatorInterface | Forwarded events, lifecycle events and final result |
 | TaskEngine actions | AgentRuntime | run(profile, workspaceRef, additionalContext) |
@@ -186,7 +186,7 @@ Observer errors do not change execution decisions.
 
 ### Process boundary
 
-Worker startup receives the project filepath, mode and target as arguments. The worker sends
+Worker startup receives the project filepath and any recovery target as arguments. The worker sends
 newline-delimited JSON records on stdout: { kind: 'event', event } or { kind: 'result', result }.
 Diagnostics use stderr. The parent forwards events and waits for the final result and process exit.
 
@@ -202,7 +202,7 @@ runner can emit events. TaskEngine forwards them without interpreting payloads.
 Finite Run processes eligible work serially until a fresh source inspection finds no eligible tasks.
 It does not reserve a fixed batch at startup.
 
-1. OperatorInterface sends Supervisor the project filepath and finite mode.
+1. OperatorInterface sends Supervisor the project filepath.
 2. Supervisor starts the worker; startup reads configuration and constructs the selected workflow.
 3. TaskEngine executes selection, implementation, repair, review, delivery and completion actions
    according to the workflow, then selects again.
@@ -217,7 +217,7 @@ Recovery investigates, performs repairs and decides whether to resume, run a blo
 operator attention. Supervisor applies that decision within its configured recovery allowance.
 Required task checks and completion gates still belong to the normal actions.
 
-Watch and single-ticket modes use the same components with their configured workflows.
+The defined workflow includes development, verification, delivery, review and completion.
 
 ## Verification boundaries
 

@@ -2,7 +2,7 @@
 
 ## Responsibility
 
-Run a work process, retain the requested execution mode and coordinate recovery when work fails.
+Run a work process, retain the execution request and coordinate recovery when work fails.
 Apply the recovery decision and enforce the configured recovery allowance.
 
 The public module is `src/supervisor/index.ts`. Its production host is the parent of the work process.
@@ -21,15 +21,8 @@ interface Supervisor {
   ): Promise<ExecutionResult>;
 }
 
-type ExecutionMode =
-  | { kind: 'finite' }
-  | { kind: 'watch' }
-  | { kind: 'single-ticket'; key: string }
-  | { kind: 'single-task'; file: string };
-
 type ExecutionRequest = {
   projectConfigPath: string;
-  mode: ExecutionMode;
 };
 
 type ExecutionEvent = EngineEvent;
@@ -52,7 +45,7 @@ type RecoveryReport = {
 ```
 
 One execute call supervises one execution. The request contains the absolute project configuration
-filepath and execution mode. Completed means the configured workflow finished successfully;
+filepath. Completed means the configured workflow finished successfully;
 needs-attention means execution could not continue. The report identifies the saved recovery report
 when recovery occurred.
 
@@ -72,7 +65,7 @@ requests this format; this component parses it. A malformed report is a failed r
 | Notification | [Notifications adapter](adapters/notifications.md#interface) | Subject, report body and publication result |
 
 The [worker startup contract](high-level-architecture.md#configuration-and-startup) accepts the
-project filepath, mode and target. Pass these on each launch. The worker binds its dependencies,
+project filepath and any recovery target. Pass these on each launch. The worker binds its dependencies,
 subscribes to events and calls run. Resume uses retained workflow state and action storage.
 
 Prepare recovery context from the original request, failure, available output and
@@ -88,7 +81,7 @@ A recovery report does not replace task verification or completion gates.
 
 Construction supplies work/recovery/notification capabilities and lifecycle settings from
 [Nexus configuration](configuration.md#nexus-configuration), available before the first child starts.
-Successful terminal outcomes are supplied with the selected execution mode.
+Successful terminal outcomes are supplied with the selected workflow.
 
 ## Execution and recovery
 

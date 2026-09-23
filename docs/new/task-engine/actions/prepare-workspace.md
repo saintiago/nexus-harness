@@ -38,8 +38,9 @@ reasons for recovery. Launch and filesystem errors are execution errors.
 
 ## Behavior
 
-Create missing workspace directories. For new work, obtain the configured repository and base revision
-and create the task branch. Record that identity for later actions.
+Create missing workspace directories. For new work, obtain the repository in worktree/, check out
+main and pull its latest remote changes with a fast-forward. Create and check out the task's development
+branch from that updated main. Record the branch and base revision for later actions.
 
 For retained work, inspect the repository and saved identity. Reuse the matching worktree, preserving
 local commits and uncommitted changes for implementation to inspect. Do not reset, clean or silently
@@ -50,3 +51,4 @@ nonzero command produces failed. Retain the repository and original comparison b
 preparation must not turn a continuation into a fresh checkout.
 
 This action does not select a round or inspect subsequent action artifact schemas.
+Baseline verification is not part of preparation.

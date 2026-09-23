@@ -51,7 +51,8 @@ Each outcome writes reviewArtifact before publication. Unusable agent output is 
 ## Behavior
 
 Confirm that the delivered head, development result, verification result and retained worktree describe
-the same revision. Read the full task and PR conversations. Give the reviewer complete prior findings
+the same revision. Read the locally saved task conversation and round history; save refreshed task
+and PR conversations locally. Give the reviewer complete prior findings
 and developer responses, not shortened Jira summaries.
 
 Read the comparison diff for the recorded base/head and include that revision range in the review

@@ -7,7 +7,7 @@ Perform explicitly requested Jira operations and return provider data.
 ## Interface
 
 Follow the [adapter contract](architecture.md#interface).
-Construction supplies the Jira connection, credentials, project and field/workflow mappings.
+Construction supplies the Jira connection, the operator's API token, project and field/workflow mappings.
 Consumers supply the issue identity, query or requested change.
 
 Expose issue reads, field changes, transitions, comments and ranking operations as required by consumers.

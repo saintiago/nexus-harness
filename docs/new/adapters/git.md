@@ -21,6 +21,7 @@ The adapter does not combine these decisions into a prepare operation.
 | Inspect repository | Worktree path → repository/remote identity, branch, head and tracked/untracked status | [PrepareWorkspace](../task-engine/actions/prepare-workspace.md#interface), Develop, Verify, Deliver, Review |
 | Clone repository | Source and destination → checkout identity | PrepareWorkspace |
 | Fetch and resolve revision | Repository, remote and branch/ref → commit revision | PrepareWorkspace |
+| Pull branch | Repository and remote branch → fast-forwarded branch/head | PrepareWorkspace |
 | Create/check out branch | Repository, branch and explicit starting revision → resulting branch/head | PrepareWorkspace |
 | Read diff | Repository and base/head revisions → diff data | Review |
 | Push branch | Repository, branch and expected local head → push result | Deliver |
