@@ -1155,19 +1155,35 @@ record is created exclusively, so two simultaneous starts cannot both own it. A 
 incident its predecessor left instead of starting a second worker; a recorded worker PID, or a
 recovery turn's runtime PID, that is still alive refuses a supervisor that would put a second one
 beside it; and an attempt that was left in flight is reconciled from its own `outcome.json` rather
-than launched again, counted toward `recovery.maxAttempts` either way. Starting the supervisor
+than launched again, counted toward `recovery.maxAttempts` either way. A stale owner record is taken
+over only by the invocation that read it as dead: a contender that loses that race puts the winner's
+own record back rather than deleting it. Every worker is launched through a handshake — the launch's
+token is written down first, the child does nothing until that record names its PID, and a
+registration that fails stops the child where it waits — so a restart that finds a launch naming no
+process refuses it by name instead of starting a second worker beside a process it cannot name. A
+recovery runtime the harness could not confirm stopped keeps the incident's ownership of it: the
+attempt stays in flight and nothing else runs until a later invocation reconciles that process.
+Starting the supervisor
 while a raw `queue` consumer still runs is refused with the intake lock and its owner named — stop
 that consumer first; a lock is never broken automatically.
 
 An incident's report survives a restart without repeating itself. The Jira comment is looked for in
 the ticket's thread before another is posted, and the email summary is written down as `pending`
 before the publisher runs, so a restart can tell an unattempted send from one that was in flight:
-the publisher's own output is read back, an acknowledged `MessageId` is adopted, and a send that was
-never acknowledged is recorded as `interrupted` and left to a person to check rather than sent
-again. A publication that failed is retried by the next invocation without repeating the recovery
-that succeeded, wherever the incident record sits. A blocker a judgment ranked ahead of the
+the publisher's own output is read back, an acknowledged `MessageId` is adopted — even from a
+publisher that then timed out, was signalled, or could not have its log closed — and a send that
+was never acknowledged is recorded as `interrupted` and left to a person to check rather than sent
+again. Only a publisher that could not be started, or one that ran and refused, is a failure the
+next invocation may retry, without repeating the recovery that succeeded, wherever the incident
+record sits. The Jira connection the comment is written through is read from the connected
+project's configuration at that moment, so a report that could not be written while the file was
+broken goes into the thread a repair restored. A blocker a judgment ranked ahead of the
 interrupted ticket really runs first — as its own scoped `queue run --ticket <KEY>` worker — and the
-resumption is recorded when the interrupted work is really started again.
+resumption is recorded when the interrupted work is really started again; a blocker that was
+started but never seen to settle is still owed, and a restart runs it again. An incident that ended
+in a request for human help keeps the queue stopped until a person does what it asks and records the
+acknowledgement in the incident record (`"acknowledgement": { "at": …, "note": … }`): a restart is
+not an answer to that request.
 
 Exit codes are the queue's own with the supervision added: `0` when the worker settled, `1` when an
 incident needs a person or an input, configuration, or publication error stopped the supervision,
