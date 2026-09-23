@@ -119,6 +119,48 @@ describe('the supervisor’s incident state', () => {
     await writeFile(file, JSON.stringify({ version: 2 }), 'utf8');
     await expect(readIncident(file)).rejects.toThrow(/not a record this harness wrote/);
   });
+
+  it('reads the log an in-flight publication names, and none for a record that names none', async () => {
+    const root = await tempDir();
+    const incident = openIncident('ns', 'run', null, 2, () => new Date('2026-09-23T00:00:00Z'));
+    const file = incidentFilePath(root, incident.id);
+    await mkdir(path.dirname(file), { recursive: true });
+    const notification = {
+      topicArn: 'arn:aws:sns:eu-north-1:698643713254:nexus-recovery-notifications',
+      email: 'saint282@gmail.com',
+      state: 'pending',
+      messageId: null,
+      problem: null,
+    };
+    // A record written before an attempt kept its own log identity: the state
+    // names none, and that is what a restart reads it as.
+    await writeFile(
+      file,
+      JSON.stringify({ ...incident, report: { ...incident.report, notification } }),
+      'utf8',
+    );
+    expect((await readIncident(file))?.report.notification).toMatchObject({
+      state: 'pending',
+      messageId: null,
+      log: null,
+    });
+    // The identity an attempt wrote down is read back as it was kept.
+    await writeFile(
+      file,
+      JSON.stringify({
+        ...incident,
+        report: {
+          ...incident.report,
+          notification: { ...notification, log: 'recovery-notification-2' },
+        },
+      }),
+      'utf8',
+    );
+    expect((await readIncident(file))?.report.notification).toMatchObject({
+      state: 'pending',
+      log: 'recovery-notification-2',
+    });
+  });
 });
 
 /** Every claim file one supervision's root currently holds, by name. */
