@@ -1,9 +1,0 @@
-{
-  "id": "example-001",
-  "title": "Add a greeting function",
-  "description": "Implement a greeting function using the target project's existing conventions.",
-  "acceptanceCriteria": [
-    "Returns a greeting containing the supplied name.",
-    "Includes tests for the documented behavior."
-  ]
-}

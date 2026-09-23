@@ -4,8 +4,9 @@ Repository templates:
 
 - [nexus-flash](../../../profiles/codex/nexus-flash.config.toml): DeepSeek Flash, maximum effort.
 - [nexus-astra](../../../profiles/codex/nexus-astra.config.toml): Astra, high effort.
+- [nexus-recovery](../../../profiles/codex/nexus-recovery.config.toml): Astra, high effort, selected for recovery.
 
-Both configure OpenAI Docs, Context7 and Tavily. They disable connector apps by default,
+All configure OpenAI Docs, Context7 and Tavily. They disable connector apps by default,
 explicitly disable the existing GitHub connector, and exclude personal-service plugins.
 Shell and file permissions come from the runtime invocation; neither profile imposes read-only
 reviewer access. Role instructions are supplied separately.
@@ -20,7 +21,9 @@ mkdir -p "$nexus_codex_home"
 cp profiles/codex/nexus-*.config.toml "$nexus_codex_home/"
 ```
 
-Select with `codex --profile nexus-flash` or `codex --profile nexus-astra`.
+Select with `codex --profile nexus-flash`, `codex --profile nexus-astra` or
+`codex --profile nexus-recovery`. Recovery's project-management tools use authenticated shell
+commands as defined in [RecoveryRole](recovery-role.md#tools).
 The installed CLI must support named profile files alongside its base configuration.
 Saving a template in the repository does not install or activate it.
 
@@ -39,4 +42,3 @@ the default app exclusion.
 
 Verify connectivity to each research service and provider authentication on the execution host.
 Keep credentials and machine-specific settings out of the repository.
-

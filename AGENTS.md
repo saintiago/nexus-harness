@@ -67,25 +67,8 @@ A multi-component flow does not create a special shared contract.
 - [Notifications adapter](docs/new/adapters/notifications.md): notification publication.
 - [Workspace design](docs/new/workspace.md): directory layout and concrete workspace references.
 - [Configuration design](docs/new/configuration.md): project/Nexus setting ownership, file locations and value constraints.
-- [Long-term vision](docs/LONG_TERM_VISION.md): future purpose and direction; not current behavior.
-- [Architecture](docs/architecture.md): design principles, ownership, testing and tech stack.
-- [Components](docs/components.md): responsibilities and required behavior.
-
-## Behavior and operation
-
-- [Specification](docs/spec.md): required behavior and limits.
-- [Workflow](docs/WORKFLOW.md): configuration and command contracts.
-- [Operations](docs/operations.md): installation, commands and examples.
-- [Connect a project](docs/connect-a-project.md): project onboarding.
-- [Agent tools](docs/nexus-agent-tools.md): runtime profiles and tool setup.
-- [Harness configuration example](docs/nexus.config.example.json): installation settings.
-- [Project configuration example](docs/nexus.project.example.json): connected-project settings.
 
 ## Development
 
-- [Testing architecture](docs/new/testing.md): test scopes, real and substituted dependencies, contracts and system journeys.
-- [Development guide](docs/development.md): implementation, verification and role boundaries.
-- [Git workflow](docs/GIT-WORKFLOW.md): branches, pull requests and integration.
-- [Testing](docs/testing.md): test pyramid, boundaries and coverage restoration.
-- [Validation caching](docs/validation-caching.md): cache eligibility, invalidation and execution guarantees.
-- [Documentation guide](docs/documentation.md): document ownership and maintenance.
+- [Testing architecture](docs/new/testing.md): test scopes, contracts and system journeys.
+- [Documentation guide](docs/new/documentation.md): document ownership and maintenance.

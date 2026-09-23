@@ -160,8 +160,8 @@ Nexus registers its operations as promise actors. XState invokes them and follow
 outcome transitions. Unexpected outcomes and rejected operations are execution faults.
 
 The definition can be opened in Stately's visual editor. Git stores the authoritative definition;
-visualization does not require a separately maintained workflow. This definition is not yet
-connected to the existing Nexus runtime. State persistence remains the runner's responsibility.
+visualization does not require a separately maintained workflow. State persistence remains the
+runner's responsibility.
 
 Restart loads the supplied workflow and its saved state. A saved state absent from that workflow is
 an input error. Required task checks and completion evidence remain action contracts.
