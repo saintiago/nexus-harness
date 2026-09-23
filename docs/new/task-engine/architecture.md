@@ -79,6 +79,11 @@ The workflow, bound actions and workflow-state filepath are supplied before run.
 Source and remote repository settings are supplied to the actions that use them, together with the
 workspace reference and other required capabilities. They are not repeated in a run request.
 
+For queue execution, actions read the current selection from a shared selection-file location bound
+at startup. That record supplies the current ticket's workspace. The runner state filepath remains
+fixed for the queue; switching tickets does not make the runner interpret task data or change files.
+Bootstrap record ownership and round/history reads follow the general action contract.
+
 One instance executes one workflow at a time. Restart reconnects the same workflow state and action
 storage, then calls run again.
 

@@ -8,8 +8,9 @@ Preserve earlier round directories in place.
 ## Interface
 
 Follow the [general action design](architecture.md). Construction supplies the
-[workspace reference](../../workspace.md#layout-and-reference) and filesystem access. No agent or
-subsequent action's artifact declarations are required.
+[workspace reference](../../workspace.md#layout-and-reference) from the current
+[Selection](select-task.md#output) and filesystem access. No agent or subsequent action's artifact
+declarations are required.
 
 ### Input
 
@@ -36,17 +37,6 @@ round artifacts. StartRound declares no development, review or other business ou
 
 Return started after the directory exists and the current-round record has been saved.
 Filesystem or input errors fail the action. The action does not select the next workflow state.
-
-### Artifact-helper contract
-
-Workspace-bound artifact helpers read CurrentRound on each call and resolve a declaration as:
-
-```text
-<workspace root>/artifacts/<number>/<pathFromArtifactsRoot>
-```
-
-They do not cache the round between calls or search earlier rounds when a file is missing.
-Missing or invalid current-round state fails the read or write.
 
 ## Execution
 

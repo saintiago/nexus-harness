@@ -42,7 +42,7 @@ export const finiteDelivery = createMachine(
           src: 'Develop',
           onDone: [
             { guard: ({ event }) => event.output === 'completed', target: 'verify' },
-            { guard: ({ event }) => event.output === 'failed', target: 'blocked' },
+            { guard: ({ event }) => event.output === 'failed', target: 'repair' },
             { actions: 'unexpectedOutcome' },
           ],
         },

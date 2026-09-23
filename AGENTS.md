@@ -12,7 +12,15 @@ If code contradicts documentation, correct the code.
 - [ExecutionRunner design](docs/new/task-engine/execution-runner.md): XState binding, persisted execution state and progress events.
 - [Finite workflow](workflows/finite-delivery.ts): XState definition for the target TaskEngine and Stately visualization.
 - [Action design](docs/new/task-engine/actions/architecture.md): action structure, typed input/output artifacts and repeated-round handoffs.
+- [SelectTask design](docs/new/task-engine/actions/select-task.md): source selection, task input and retained workspace reference.
+- [PrepareWorkspace design](docs/new/task-engine/actions/prepare-workspace.md): repository preparation and retained-work continuation.
 - [StartRound design](docs/new/task-engine/actions/start-round.md): round directories, current-round state and artifact-root selection.
+- [Develop design](docs/new/task-engine/actions/develop.md): implementation context, profile selection and developer output.
+- [Verify design](docs/new/task-engine/actions/verify.md): configured checks and persisted command results.
+- [Deliver design](docs/new/task-engine/actions/deliver.md): verified branch publication and developer reporting.
+- [Review design](docs/new/task-engine/actions/review.md): revision-specific review, complete findings and review publication.
+- [SelectRepair design](docs/new/task-engine/actions/select-repair.md): shared repair allowance and profile escalation.
+- [CompleteTask design](docs/new/task-engine/actions/complete-task.md): merge/check evidence and task completion.
 - [AgentRuntime design](docs/new/agent-runtime.md): profiles, supplied context and agent invocation.
 - [Adapters design](docs/new/adapters/architecture.md): shared external-boundary responsibilities and contract conventions.
 - [Jira adapter](docs/new/adapters/jira.md): issue data, comments, changes and ranking.

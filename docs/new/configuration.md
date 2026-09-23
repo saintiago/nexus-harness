@@ -14,7 +14,7 @@ explicit; its filename is unrestricted. Relative paths are relative to that file
 | Preparation | Commands required to prepare the repository for work |
 | CI/checks | Named commands and criteria used to verify repository changes |
 | Task source | Project identity, source selection and source field/workflow mappings |
-| Delivery and completion | Target repository/branch, required checks and post-merge requirements |
+| Delivery and completion | Target repository/branch, required checks, post-merge requirements and completion polling/wait limits |
 | Credential references | Names of the credentials required by project integrations |
 
 Project configuration contains no harness workflow definitions, workspace layout overrides, agent
@@ -41,6 +41,10 @@ is fixed and has no configuration overrides.
 Profiles conform to [AgentProfile](agent-runtime.md#provided-interface). Profile IDs are unique.
 The initial recovery profile is nexus-recovery, with model gpt-6-astra and high reasoning effort.
 Workflow and escalation profile references identify entries in the same Nexus configuration.
+
+The developer ladder lists profiles in escalation order and the repair allowance for each profile.
+Both failed implementation/checks and review-requested changes consume that policy; starting another
+review round does not reset it. The reviewer profile is configured separately.
 
 ## Value constraints
 

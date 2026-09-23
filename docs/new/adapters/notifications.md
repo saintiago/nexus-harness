@@ -13,6 +13,11 @@ The consumer supplies the subject and body.
 Return the provider's publication result. The initial provider is SNS.
 The consumer owns report content, persistence and decisions about further notification attempts.
 
+### Required capability
+
+publish(subject, body) sends one message to the configured destination and returns its provider
+message identity. [Supervisor](../supervisor.md#required-interfaces) uses this for recovery reports.
+
 ## Behavior
 
 Provider acceptance is not confirmation of inbox delivery.

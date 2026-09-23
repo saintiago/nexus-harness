@@ -61,10 +61,17 @@ Artifact helpers are bound to the current workspace. readInputArtifacts accepts 
 and returns their typed contents in argument order. writeOutputArtifact accepts an owned declaration
 and content of its declared type. Structured contents are stored as JSON.
 
-On each call, resolve the current root through the
-[StartRound artifact-helper contract](start-round.md#artifact-helper-contract). A declaration such as
-development.json therefore resolves to artifacts/<current round>/development.json. Missing current
-inputs never fall back to earlier rounds.
+On each call, read state/current-round.json from the selected workspace and resolve the artifact as
+artifacts/<number>/<pathFromArtifactsRoot>. Missing or invalid round state fails the operation.
+Do not cache the current round between calls. Missing current inputs never fall back to earlier rounds.
+
+The current-round record is owned by [StartRound](start-round.md#output). These path-resolution rules
+belong to the helpers, not to that action.
+
+History reads are explicit: readArtifactHistory(declaration) returns the available earlier-round
+values with their round numbers, in order. A missing artifact in a round that did not produce it is
+normal; an unreadable existing artifact is an error. Consumers import the same producer declaration
+for current and historical reads. History readers do not copy, archive or rewrite prior artifacts.
 
 The interaction is:
 
@@ -99,6 +106,22 @@ the next state.
 Actions own their business decisions, agent output interpretation and external effects. They may
 execute again after interruption and decide whether existing work can be reused. Detailed results
 are artifacts; the returned outcome is only the workflow's transition key.
+
+A declared failure outcome emits its reason through the action's event publisher and preserves any
+output defined for that outcome. Unexpected invocation, provider or storage failures remain execution
+errors. Neither form is silently treated as successful work.
+
+## Inputs before a round exists
+
+[SelectTask](select-task.md#output) owns selection.json beside the queue's workflow-state file.
+[PrepareWorkspace](prepare-workspace.md#output) owns state/prepared-workspace.json in the selected
+ticket's workspace. Consumers import these record declarations and read them directly; they are not
+resolved through the current-round helper. StartRound owns the current-round record.
+
+Startup binds the selection-file location to the actions that need it. Each invocation reads the
+current selection to obtain its task workspace; it does not retain another ticket's workspace between
+calls. The runner's configured state filepath stays fixed for the queue and the runner does not read
+the selection. Each ticket retains its own worktree and round history across queue runs.
 
 ## Repeated rounds
 

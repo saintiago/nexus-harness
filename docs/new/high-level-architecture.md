@@ -67,7 +67,8 @@ Relative paths resolve against their owning configuration file's directory.
 | Consumer | Inputs |
 | --- | --- |
 | TaskEngine / ExecutionRunner | Selected workflow, bound actions and workflow-state filepath |
-| PrepareWorkspace | WorkspaceRef and project repository settings |
+| Task actions | Selection-file location and relevant project settings; selection identifies the active WorkspaceRef |
+| PrepareWorkspace | Selection and project repository/preparation settings |
 | Verify | Project CI/check definitions and WorkspaceRef |
 | AgentRuntime | Nexus profiles, instructions, tool/provider settings, limits and activity observer |
 | Agent-backed actions | AgentRuntime capability, profile selection and WorkspaceRef |
