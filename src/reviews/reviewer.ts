@@ -110,6 +110,40 @@ function describeChecks(evidence: ReviewEvidence): string {
 }
 
 /**
+ * The verdict example the prompt shows. It is one {@link parseVerdict} really
+ * accepts — a reviewer that follows the shape writes valid JSON, and one that
+ * copies it verbatim publishes an ordinary request for changes that verifies
+ * nothing. Its wording, its `"new"` finding and its `"unverified"` readings are
+ * placeholders: the verifications it shows cover every outstanding identity,
+ * exactly as a real verdict has to, and are meant to be replaced by what the
+ * reviewer itself read.
+ */
+function exampleVerdict(outstanding: readonly string[]): Record<string, unknown> {
+  return {
+    verdict: 'request_changes',
+    summary: 'one short paragraph for the pull request',
+    findings: [
+      {
+        path: 'src/example.ts',
+        line: 42,
+        body: 'what is wrong and why it matters',
+        kind: 'new',
+        related: [{ path: 'src/other.ts', line: 12 }],
+      },
+    ],
+    ...(outstanding.length === 0
+      ? {}
+      : {
+          verifications: outstanding.map((finding) => ({
+            finding,
+            state: 'unverified',
+            evidence: 'what you read at the place the defect lived',
+          })),
+        }),
+  };
+}
+
+/**
  * The prompt one reviewer turn receives: who it is, the ticket, the pull
  * request's identity, the repository view it inspects, the CI evidence at the
  * head, the ticket's own conversation history — the same organization and local
@@ -281,29 +315,14 @@ export function reviewPrompt(
       `Write exactly one JSON file at \`${verdictPath}\`, and`,
       'nothing else. Its shape is exactly:',
       '',
-      '{',
-      '  "verdict": "approve" | "request_changes" | "inconclusive",',
-      '  "summary": "one short paragraph for the pull request",',
-      '  "findings": [',
-      '    {',
-      '      "path": "src/example.ts",',
-      '      "line": 42,',
-      '      "body": "what is wrong and why it matters",',
-      '      "kind": "new",',
-      '      "continues": "R2-F1",',
-      '      "related": [',
-      '        { "path": "src/other.ts", "line": 12 }',
-      '      ]',
-      '    }',
-      '  ],',
-      ...(outstanding.length === 0
-        ? []
-        : [
-            '  "verifications": [',
-            `    { "finding": "${outstanding[0]}", "state": "verified", "evidence": "what you read, and where" }`,
-            '  ]',
-          ]),
-      '}',
+      '```json',
+      JSON.stringify(exampleVerdict(outstanding), null, 2),
+      '```',
+      '',
+      'Every field above is a placeholder for its shape. Write your own summary, findings and',
+      'evidence; the example’s "new" finding and its "unverified" readings are placeholders, not',
+      'readings you may keep, and "verified" is only for a repair you read yourself at the place',
+      'the defect lived.',
       '',
       '- Write "approve" only after completing the review with sufficient evidence and no',
       '  blocking findings. Findings are blocking: an approval must have an empty findings list.',
@@ -454,15 +473,19 @@ function verdictFinding(
           'scan will not publish a continuation nothing ties to an earlier finding.',
       );
     }
-    continues = rawContinues.trim();
-    if (!outstanding.includes(continues)) {
+    const named = rawContinues.trim();
+    // The identity is the one the history named, whatever case the reviewer
+    // wrote it in: the defect keeps the identity it was raised with.
+    const canonical = outstanding.find((id) => id.toUpperCase() === named.toUpperCase());
+    if (canonical === undefined) {
       throw new ReviewError(
         'inconclusive',
         `finding ${String(index + 1)} of the reviewer's ${REVIEW_VERDICT_FILE} continues ` +
-          `"${continues}", which is not one of the outstanding findings the history named ` +
+          `"${named}", which is not one of the outstanding findings the history named ` +
           `(${outstanding.length === 0 ? 'there were none' : outstanding.join(', ')}).`,
       );
     }
+    continues = canonical;
   } else if (rawContinues !== undefined && rawContinues !== null && rawContinues !== '') {
     throw new ReviewError(
       'inconclusive',
@@ -493,16 +516,20 @@ function verdictVerification(
     );
   }
   const verification = value as Record<string, unknown>;
-  const finding = verdictString(verification['finding'], 'finding', 200);
-  if (!outstanding.includes(finding)) {
+  const stated = verdictString(verification['finding'], 'finding', 200);
+  // The identity is the one the history named, whatever case the reviewer
+  // wrote it in: a verification and a continuation of one disposition are
+  // tied together by that one identity.
+  const finding = outstanding.find((id) => id.toUpperCase() === stated.toUpperCase());
+  if (finding === undefined) {
     throw new ReviewError(
       'inconclusive',
       outstanding.length === 0
         ? `verification ${String(index + 1)} of the reviewer's ${REVIEW_VERDICT_FILE} verifies ` +
-            `"${finding}" although no change request was outstanding, so there is nothing that ` +
+            `"${stated}" although no change request was outstanding, so there is nothing that ` +
             'verification can stand for.'
         : `verification ${String(index + 1)} of the reviewer's ${REVIEW_VERDICT_FILE} names ` +
-            `"${finding}", which is not one of the outstanding findings the history named ` +
+            `"${stated}", which is not one of the outstanding findings the history named ` +
             `(${outstanding.join(', ')}).`,
     );
   }
@@ -599,6 +626,33 @@ export function parseVerdict(
       );
     }
     named.add(verification.finding);
+  }
+  // One defect keeps one identity however many rounds it reached, so a verdict
+  // raises a continuation once and groups the other places it reached under
+  // "related"; a second continuation would be a second name for one defect.
+  const continued = new Set<string>();
+  for (const finding of findings) {
+    if (finding.continues === undefined || finding.continues === null) {
+      continue;
+    }
+    if (continued.has(finding.continues)) {
+      throw new ReviewError(
+        'inconclusive',
+        `the reviewer's ${where} raises a second finding continuing ` +
+          `"${finding.continues}"; one defect keeps one identity, so raise it once and group the ` +
+          'other confirmed occurrences under "related".',
+      );
+    }
+    continued.add(finding.continues);
+    const reading = verifications.find((one) => one.finding === finding.continues);
+    if (reading !== undefined && reading.state === 'verified') {
+      throw new ReviewError(
+        'inconclusive',
+        `the reviewer's ${where} verifies "${finding.continues}" as verified and continues it ` +
+          'with a finding in the same verdict, so the disposition would be published as both ' +
+          'settled and still present. State one reading of it.',
+      );
+    }
   }
   const missing = outstanding.filter((finding) => !named.has(finding));
   // An inconclusive verdict decides nothing — it clears no change request and

@@ -171,6 +171,12 @@ function describeFinding(
   if (classification !== null) {
     lines.push(classification);
   }
+  if (finding.occurrence !== undefined) {
+    lines.push(
+      `  This review recorded the occurrence at ${finding.occurrence}; the defect keeps the ` +
+        `identity ${finding.id}.`,
+    );
+  }
   lines.push(finding.body.trim());
   if (finding.related !== undefined && finding.related.length > 0) {
     lines.push(
@@ -214,9 +220,14 @@ function describeUnresolvedRound(unresolved: HistoryReportSummary): string {
     '',
     'Findings, each with the identity it keeps (a developer answer and a later',
     'verification both name the finding by that identity):',
-    ...unresolved.findings.map((finding, index) =>
-      describeFinding(finding, index, unresolved.responses ?? []),
-    ),
+    ...(unresolved.findings.length === 0
+      ? [
+          '(This review states no finding of its own — no inline finding was recorded with it —',
+          'so there is no identity to answer or verify here; its decision above still stands.)',
+        ]
+      : unresolved.findings.map((finding, index) =>
+          describeFinding(finding, index, unresolved.responses ?? []),
+        )),
   ];
   if (verifications !== null) {
     lines.push('', verifications);

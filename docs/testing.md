@@ -55,7 +55,8 @@ protocol the boundary layer owns.
 The review handoff's case also proves the refusal that keeps a claim from passing as a
 verification: over a ticket history whose review left a finding outstanding, a stand-in reviewer
 that publishes a verdict without verifying that disposition publishes nothing, and the report is
-kept as the incomplete exchange it is.
+kept as the incomplete exchange it is. So does the finding an earlier round raised: a verdict that
+verifies only the newer one publishes nothing while the carried identity is still outstanding.
 
 ## Validation and restoration
 
@@ -116,7 +117,8 @@ completion, where a build/test change is authorized, the integration point a rep
 at, and the answer every outstanding finding receives — is `tests/unit/developer-prompt.test.ts`;
 the classifications, the verifications and the refusals a verdict is held to are
 `tests/unit/reviews.test.ts`; and the identity, answer and verification a snapshot keeps across
-refreshes and restarts, with the prompt that renders them, are `tests/unit/history.test.ts`.
+refreshes and restarts, with the prompt that renders them and the reconciliation that carries an
+unverified disposition forward into the next round, are `tests/unit/history.test.ts`.
 
 Cache deterministic unit results only when all their inputs are declared. Checks of real process
 or host behavior run fresh — the boundary and workflow layers run on every validation. Maintain

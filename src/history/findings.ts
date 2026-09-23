@@ -7,9 +7,10 @@
  * findings, so every snapshot, prompt and report names the same finding the same
  * way without storing a second name anywhere. A later review that finds the same
  * defect again classifies its own finding as `unresolved` or `regression` and
- * names the earlier identity it continues, which is how one defect is followed
- * across rounds instead of being raised as an unconnected new finding
- * (docs/WORKFLOW.md §9).
+ * names the earlier identity it continues; that earlier identity is the one the
+ * defect keeps, and the later review's own occurrence is recorded beside it, so
+ * one defect is followed across rounds instead of being renamed or raised as an
+ * unconnected new finding (docs/WORKFLOW.md §9).
  *
  * The answer shape is what the harness reads from the developer's own complete
  * report — never from prose a person would have to interpret — and it is the
@@ -20,6 +21,7 @@
  *
  * This module is pure: it reads text, decides, and writes nothing.
  */
+import { createHash } from 'node:crypto';
 import type {
   FindingAnswer,
   HistoryBrief,
@@ -58,13 +60,33 @@ export function findingIdOf(round: number | null, index: number, scope?: string)
   return token === '' ? `F${String(index + 1)}` : `N${token}-F${String(index + 1)}`;
 }
 
+/** How long a readable scope token may grow before it is shortened. */
+const SCOPE_TOKEN_CHARS = 24;
+/** How much of a long scope stays readable in front of its digest. */
+const SCOPE_PREFIX_CHARS = 16;
+/** How many hexadecimal characters of the scope's digest distinguish it. */
+const SCOPE_DIGEST_CHARS = 8;
+
 /** A bounded, readable token for the review one unnumbered finding came from. */
 function scopeToken(scope: string): string {
   const token = scope
     .replace(/[^A-Za-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
     .toUpperCase();
-  return token.length <= 24 ? token : token.slice(0, 24);
+  if (token.length <= SCOPE_TOKEN_CHARS) {
+    return token;
+  }
+  // A scope this harness cannot number apart is often long because it carries
+  // the evidence that distinguishes it — a baseline diagnosis's project
+  // namespace and its evidence identity, for example. Truncation would collapse
+  // two such scopes into one token and give two different defects the same
+  // identity, so a readable prefix is followed by a digest of the whole scope.
+  const digest = createHash('sha256')
+    .update(scope, 'utf8')
+    .digest('hex')
+    .slice(0, SCOPE_DIGEST_CHARS)
+    .toUpperCase();
+  return `${token.slice(0, SCOPE_PREFIX_CHARS)}-${digest}`;
 }
 
 /**
@@ -73,31 +95,56 @@ function scopeToken(scope: string): string {
  * the round it was raised in and its position there. The identity is assigned
  * once, at recording time, so later snapshots, prompts and verifications read
  * the same name back from the report instead of deriving a new one.
+ *
+ * A finding that continues an earlier one is the exception, because the
+ * identity a defect keeps is the identity it was first raised with: the
+ * continuation keeps the identity it names in `continues` and records this
+ * round's own occurrence — the round and position this review states it at —
+ * beside it. A later reviewer therefore verifies the same identity it read in
+ * the brief, and the occurrence only says where this review recorded the defect
+ * again.
  */
 export function identifyFindings(
   findings: readonly UnidentifiedFinding[],
   round: number | null,
   scope?: string,
 ): readonly HistoryFinding[] {
-  return findings.map((finding, index) => ({
-    ...finding,
-    id:
-      finding.id === undefined || finding.id.trim() === ''
-        ? findingIdOf(round, index, scope)
-        : finding.id.trim(),
-  }));
+  return findings.map((finding, index) => {
+    const occurrence = findingIdOf(round, index, scope);
+    const stated = finding.id === undefined ? '' : finding.id.trim();
+    const continued =
+      finding.kind === 'unresolved' || finding.kind === 'regression'
+        ? (finding.continues ?? '').trim()
+        : '';
+    if (continued !== '') {
+      return { ...finding, id: continued.toUpperCase(), occurrence };
+    }
+    return { ...finding, id: stated === '' ? occurrence : stated };
+  });
 }
 
 /**
  * Every finding identity that is still outstanding, in the order the rounds
  * state them. Both roles name these identities — the developer answers them,
  * and the reviewer verifies them — so the set is derived from the one snapshot
- * both roles were handed rather than assembled twice.
+ * both roles were handed rather than assembled twice. One defect is one
+ * identity however many rounds it reached: an identity a later round states
+ * again is the one already listed, not a second entry.
  */
 export function outstandingFindingIds(
   rounds: readonly { readonly findings: readonly HistoryFinding[] }[],
 ): readonly string[] {
-  return rounds.flatMap((round) => round.findings.map((finding) => finding.id));
+  const ids: string[] = [];
+  const seen = new Set<string>();
+  for (const round of rounds) {
+    for (const finding of round.findings) {
+      if (!seen.has(finding.id)) {
+        seen.add(finding.id);
+        ids.push(finding.id);
+      }
+    }
+  }
+  return ids;
 }
 
 /**

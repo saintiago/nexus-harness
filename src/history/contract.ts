@@ -110,6 +110,15 @@ export interface HistoryOccurrence {
 export interface HistoryFinding {
   /** Stable identity within the ticket, for example `R2-F3`. */
   readonly id: string;
+  /**
+   * Where this review's own report recorded the finding, when that is not the
+   * identity above: the round and position (`R2-F1`) this review states the
+   * occurrence at. A finding that continues an earlier one keeps the earlier
+   * identity — one defect, one identity — and this records the occurrence
+   * separately, so the review's own position is not lost and is not mistaken
+   * for a second defect.
+   */
+  readonly occurrence?: string;
   readonly path: string;
   readonly line: number | null;
   readonly body: string;

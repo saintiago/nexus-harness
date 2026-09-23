@@ -65,10 +65,27 @@ describe('the identity one finding keeps', () => {
     // Anything that is not a letter or digit is a separator, and the token is
     // bounded, so an identity stays readable in a prompt.
     expect(findingIdOf(null, 0, 'a / b')).toBe('NA-B-F1');
-    expect(findingIdOf(null, 0, 'x'.repeat(40))).toBe(`N${'X'.repeat(24)}-F1`);
+    expect(findingIdOf(null, 0, 'x'.repeat(40))).toMatch(/^NX{16}-[0-9A-F]{8}-F1$/);
     expect(identifyFindings([{ path: 'a', line: null, body: 'b' }], null, '77')).toEqual([
       { id: 'N77-F1', path: 'a', line: null, body: 'b' },
     ]);
+  });
+
+  it('keeps two unnumbered reviews of one project apart, whatever their evidence', () => {
+    // A baseline diagnosis's identity is `baseline-<64-character project
+    // namespace>-<32-character evidence id>`: the whole evidence identity is
+    // what tells two diagnoses in one project apart, so a bounded token keeps a
+    // digest of it rather than dropping it at the length bound.
+    const project = 'f'.repeat(64);
+    const one = findingIdOf(null, 0, `baseline-${project}-${'1'.repeat(32)}`);
+    const two = findingIdOf(null, 0, `baseline-${project}-${'2'.repeat(32)}`);
+    expect(one).not.toBe(two);
+    // The readable prefix stays and the digest of the whole identity follows
+    // it, so the identity is still short enough to name in a prompt.
+    expect(one).toMatch(/^NBASELINE-F{7}-[0-9A-F]{8}-F1$/);
+    // The same identity reads back the same way, so answers and verifications
+    // written against it keep matching across snapshots and restarts.
+    expect(findingIdOf(null, 0, `baseline-${project}-${'1'.repeat(32)}`)).toBe(one);
   });
 
   it('assigns the identity once, keeping one a caller already supplied', () => {
@@ -87,6 +104,59 @@ describe('the identity one finding keeps', () => {
     // A blank identity is no identity: the round's own name stands.
     expect(identifyFindings([{ id: '  ', path: 'a', line: null, body: 'b' }], 1)).toEqual([
       { id: 'R1-F1', path: 'a', line: null, body: 'b' },
+    ]);
+  });
+
+  it('keeps the earlier identity when a later review raises the same defect again', () => {
+    // A continuation is not a new defect: the identity the defect keeps is the
+    // one it was raised with, and this round's own position is recorded beside
+    // it as the occurrence, so a developer answer and a reviewer verification
+    // name the same finding they named in the round before.
+    expect(
+      identifyFindings(
+        [
+          {
+            path: 'src/greeting.ts',
+            line: 2,
+            body: 'the argument is still ignored',
+            kind: 'unresolved',
+            continues: 'r1-f1',
+            related: [{ path: 'src/salutation.ts', line: 4 }],
+          },
+        ],
+        2,
+      ),
+    ).toEqual([
+      {
+        id: 'R1-F1',
+        occurrence: 'R2-F1',
+        path: 'src/greeting.ts',
+        line: 2,
+        body: 'the argument is still ignored',
+        kind: 'unresolved',
+        continues: 'r1-f1',
+        related: [{ path: 'src/salutation.ts', line: 4 }],
+      },
+    ]);
+    // A new finding beside a continuation keeps the round's own identity, and
+    // the continuation's own round position is not reused for it.
+    expect(
+      identifyFindings(
+        [
+          {
+            path: 'a',
+            line: 1,
+            body: 'still broken',
+            kind: 'regression',
+            continues: 'R1-F1',
+          },
+          { path: 'b', line: 2, body: 'a defect found for the first time' },
+        ],
+        2,
+      ).map((finding) => [finding.id, finding.occurrence ?? null]),
+    ).toEqual([
+      ['R1-F1', 'R2-F1'],
+      ['R2-F2', null],
     ]);
   });
 
@@ -127,6 +197,13 @@ describe('the identity one finding keeps', () => {
       unresolvedReviews: [summary(['R1-F1']), summary(['R2-F1', 'R2-F2'])],
     };
     expect(outstandingFindingIds(unresolvedRounds(plural))).toEqual(['R1-F1', 'R2-F1', 'R2-F2']);
+    // One defect is one identity: the same identity stated again by a later
+    // round is the one already listed, not a second entry to answer.
+    const repeated: HistoryBrief = {
+      ...legacy,
+      unresolvedReviews: [summary(['R1-F1']), summary(['R1-F1', 'R2-F1'])],
+    };
+    expect(outstandingFindingIds(unresolvedRounds(repeated))).toEqual(['R1-F1', 'R2-F1']);
   });
 });
 

@@ -840,20 +840,35 @@ reached while following pagination, or a complete report is missing, the prompt 
 it knows about, so a turn is never told the history is complete when it is not; a snapshot that
 cannot be written at all stops the turn before it starts.
 
-Outstanding findings are reconciled across retained and native reviews, independently by reviewer.
-A later published approval from that reviewer at the current head clears their request; another reviewer's
-approval, an old-head approval, a comment-only review or an inconclusive verdict cannot clear it.
-Published findings without a retained report remain visible with an explicit provenance gap.
-Responses include older comments edited after the review.
+Outstanding findings are reconciled across retained and native reviews, independently by reviewer,
+finding by finding as well as round by round. A later published approval from that reviewer at the
+current head clears their request; another reviewer's approval, an old-head approval, a comment-only
+review or an inconclusive verdict cannot clear it. A round that requests changes adds the findings
+it raises and clears nothing: a new change request never silently resolves an earlier defect. A
+round's own verifications settle exactly the identities they name — `verified` clears that one
+finding, `unverified` and `regressed` leave it outstanding for the next round to answer and verify —
+and that reviewer's latest change request stands as a round of its own, so a native review that
+states no finding of its own is still an outstanding request. Published findings without a retained
+report remain visible with an explicit provenance gap. Responses include older comments edited after
+the review.
 
 Every finding keeps the identity it is rendered with: the round that raised it and its position
 there, `R3-F2`, derived from the retained report rather than stored twice — so the brief, a
 developer's answer and a later reviewer's verification all name the same finding the same way, and
-the identity is reproduced rather than re-derived when a snapshot is rebuilt or a run restarts.
+the identity is reproduced rather than re-derived when a snapshot is rebuilt or a run restarts. A
+finding a later review raises again is not a new identity: it is classified `unresolved` or
+`regression`, names the identity it continues, and keeps it for as long as it is outstanding, while
+the review's own occurrence — its own round and position — is recorded and rendered beside it, so
+the latest wording of the defect is not lost. Two reviews this harness kept no round number for are
+named apart by a bounded digest of the identity that scopes them, so two baseline diagnoses of one
+project cannot share one finding identity.
 The brief renders each outstanding finding whole, with that identity and how the round classified
-it, and under the finding the answer a developer turn gave it: the newest complete developer report
-recorded after the review is the claim the reviewer is shown, named with the run and the round it
-came from, and an earlier answer stays readable in the report it was recorded in. The harness reads
+it, and under the finding the answer a developer turn gave it: the newest developer report recorded
+after the review is the claim the reviewer is shown, named with the run and the round it came from,
+and an earlier answer stays readable in the report it was recorded in. The newest attempt stands,
+whatever it holds: a report that is missing, or one that comes back incomplete, keeps its answers
+incomplete with that provenance attached, and an older complete claim is never read as the current
+attempt's response. The harness reads
 those answers out of the developer's own summary — one `### Finding <identity>` section per
 finding, with `Cause`, `Affected scope`, `Repair`, `Verification` and `Remaining uncertainty` each
 stated, and a wrapped value indented under the line that names it. A finding with no such section, and

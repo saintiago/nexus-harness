@@ -26,10 +26,11 @@ import type {
   PublishedDeveloperReport,
   RecordedReport,
   ReviewerReportRequest,
+  UnidentifiedFinding,
 } from './contract.js';
 import { HistoryError } from './contract.js';
 import { readBaselineReports } from './baseline.js';
-import { findingIdOf, identifyFindings } from './findings.js';
+import { identifyFindings } from './findings.js';
 import { historyReportsDir } from './paths.js';
 import { compareHistoryTime } from './time.js';
 
@@ -323,6 +324,12 @@ function reviewerReportText(request: ReviewerReportFields): string {
       '',
       `- Identity: ${finding.id} — name it by this in a response or a verification.`,
     ];
+    if (finding.occurrence !== undefined) {
+      entries.push(
+        `- Occurrence: ${finding.occurrence} — where this review recorded the defect again; ` +
+          `the identity above (${finding.id}) is the one it keeps.`,
+      );
+    }
     const classified = findingKindLine(finding);
     if (classified !== null) {
       entries.push(classified);
@@ -1295,7 +1302,7 @@ async function readRetainedVerdict(parts: {
       problem: `the reviewer's own verdict "${file}" carries no list of findings`,
     };
   }
-  const findings: HistoryFinding[] = [];
+  const stated: UnidentifiedFinding[] = [];
   for (const [index, raw] of rawFindings.entries()) {
     if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
       return {
@@ -1331,8 +1338,7 @@ async function readRetainedVerdict(parts: {
       };
     }
     const related = relatedOccurrences(finding['related']);
-    findings.push({
-      id: findingIdOf(parts.round, index),
+    stated.push({
       path: where.trim(),
       line: line === undefined || line === null ? null : line,
       body,
@@ -1345,6 +1351,10 @@ async function readRetainedVerdict(parts: {
       ...(related === null ? {} : { related }),
     });
   }
+  // The identity is assigned the same way a directly recorded report's is: a
+  // continuation keeps the identity it names, so a restart reads the same
+  // defects back under the same names the brief and the answers used.
+  const findings = identifyFindings(stated, parts.round);
   const verifications: HistoryFindingVerification[] = [];
   const rawVerifications = record['verifications'];
   if (Array.isArray(rawVerifications)) {

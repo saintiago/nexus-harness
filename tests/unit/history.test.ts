@@ -31,14 +31,17 @@ import {
 } from '../../src/history/store.js';
 import type { SnapshotContent } from '../../src/history/store.js';
 import { createTicketHistory } from '../../src/history/sync.js';
-import { textSha256 } from '../../src/history/reports.js';
+import { notePublishedReview, textSha256 } from '../../src/history/reports.js';
 import { renderHistorySection } from '../../src/history/prompt.js';
+import { outstandingFindingIds, unresolvedRounds } from '../../src/history/findings.js';
+import { parseVerdict } from '../../src/reviews/reviewer.js';
 import {
   incidentFilePath,
   openIncident,
   supervisorRoot,
   writeIncident,
 } from '../../src/supervisor/incident.js';
+import { sourceItemFor, writeWorkspaceState } from '../../src/workspace/state.js';
 import type { SourceRef, Task } from '../../src/shared/types.js';
 import { createTempDir } from '../support.js';
 
@@ -744,6 +747,340 @@ describe('one ticket history', () => {
       'R2-F1',
       'R2-F2',
     ]);
+  });
+
+  it('carries an unverified disposition forward until a later review verifies it', async () => {
+    const workDir = await createTempDir();
+    const ticketHistory = history(workDir);
+    /** One developer report whose repair turn answers `findings` in its summary. */
+    const developerReport = async (parts: {
+      readonly runId: string;
+      readonly round: number;
+      readonly at: string;
+      readonly answers: readonly string[];
+    }): Promise<void> => {
+      await ticketHistory.recordDeveloperReport?.({
+        ref: REF,
+        workspaceId: 'HARN-11',
+        task: TASK,
+        round: parts.round,
+        runId: parts.runId,
+        reportPath: `/work/runs/${parts.runId}/result.json`,
+        status: 'in-progress',
+        reason: 'Coding turn reports retained.',
+        repairsUsed: 0,
+        attempts: [
+          {
+            turn: 1,
+            kind: 'repair',
+            agentSummary: ['I repaired the greeting.', '', ...parts.answers].join('\n'),
+            checks: 'passed',
+          },
+        ],
+        pullRequest: null,
+        deliveryFailure: null,
+        now: new Date(parts.at),
+      });
+    };
+    /** One answer section for one identity, complete in every field. */
+    const answer = (finding: string, repair: string): readonly string[] => [
+      `### Finding ${finding}`,
+      `- Cause: the shared helper ignored the argument it was given.`,
+      '- Affected scope: src/greeting.ts and src/salutation.ts share the helper.',
+      `- Repair: ${repair}`,
+      '- Verification: exercised it through the exported function.',
+      '- Remaining uncertainty: none.',
+    ];
+
+    // Round 1 raises one defect, and the next attempt answers it.
+    await ticketHistory.recordReviewerReport?.({
+      ref: REF,
+      workspaceId: 'HARN-11',
+      task: TASK,
+      reviewId: 'review-1',
+      round: 1,
+      head: HEAD,
+      decision: 'request_changes',
+      summary: 'the greeting ignores the argument it is given',
+      findings: [{ path: 'src/greeting.ts', line: 2, body: 'the argument is ignored' }],
+      now: new Date('2026-09-16T10:00:00.000Z'),
+    });
+    expect(
+      (await prepare(ticketHistory, 'reviewer', 2)).brief.unresolvedReviews?.map((round) =>
+        round.findings.map((finding) => finding.id),
+      ),
+    ).toEqual([['R1-F1']]);
+    await developerReport({
+      runId: 'run-2',
+      round: 2,
+      at: '2026-09-16T10:30:00.000Z',
+      answers: answer('R1-F1', 'the helper now returns the greeting it was given.'),
+    });
+
+    // Round 2 raises an independent defect and records its own reading of
+    // R1-F1 as unverified: the new change request must not clear it.
+    await ticketHistory.recordReviewerReport?.({
+      ref: REF,
+      workspaceId: 'HARN-11',
+      task: TASK,
+      reviewId: 'review-2',
+      round: 2,
+      head: HEAD,
+      decision: 'request_changes',
+      summary: 'one repair did not hold and another defect is new',
+      findings: [{ path: 'src/salutation.ts', line: 3, body: 'the salutation is wrong' }],
+      verifications: [
+        { finding: 'R1-F1', state: 'unverified', evidence: 'the helper still ignores it' },
+      ],
+      now: new Date('2026-09-16T10:40:00.000Z'),
+    });
+
+    const carried = await prepare(ticketHistory, 'reviewer', 3);
+    expect(
+      carried.brief.unresolvedReviews?.map((round) => round.findings.map((one) => one.id)),
+    ).toEqual([['R1-F1'], ['R2-F1']]);
+    expect(outstandingFindingIds(unresolvedRounds(carried.brief))).toEqual(['R1-F1', 'R2-F1']);
+    // The carried finding is rendered under the round that raised it, with the
+    // answer the developer recorded afterwards.
+    expect(carried.brief.unresolvedReviews?.[0]?.responses?.[0]).toMatchObject({
+      finding: 'R1-F1',
+      complete: true,
+      repair: 'the helper now returns the greeting it was given.',
+    });
+    // The newer finding has no answer recorded after its own review yet, and
+    // the prompt says exactly that instead of leaving the gap implicit.
+    expect(carried.brief.unresolvedReviews?.[1]?.responses).toBeUndefined();
+    const prompt = renderHistorySection(carried, 'reviewer');
+    expect(prompt).toContain('R1-F1 — unverified: the helper still ignores it');
+    expect(prompt).toContain('R2-F1 has no answer the harness can read as a complete response');
+
+    // An approval that verifies only the newer identity leaves the carried
+    // disposition unverified, so the next reviewer's verdict is refused.
+    expect(() =>
+      parseVerdict(
+        JSON.stringify({
+          verdict: 'approve',
+          summary: 'the newer repair holds',
+          findings: [],
+          verifications: [
+            { finding: 'R2-F1', state: 'verified', evidence: 'read src/salutation.ts:3' },
+          ],
+        }),
+        'verdict.json',
+        outstandingFindingIds(unresolvedRounds(carried.brief)),
+      ),
+    ).toThrow(/does not verify R1-F1/);
+
+    // The next attempt answers both, and a review that verifies both
+    // dispositions approves at the current head, which clears the request.
+    await developerReport({
+      runId: 'run-3',
+      round: 3,
+      at: '2026-09-16T11:00:00.000Z',
+      answers: [
+        ...answer('R1-F1', 'the helper now returns the greeting it was given.'),
+        ...answer('R2-F1', 'the salutation now reads the greeting it is given.'),
+      ],
+    });
+    await ticketHistory.recordReviewerReport?.({
+      ref: REF,
+      workspaceId: 'HARN-11',
+      task: TASK,
+      reviewId: 'review-3',
+      round: 3,
+      head: HEAD,
+      decision: 'approve',
+      summary: 'both repairs hold and the change does what the ticket asks',
+      findings: [],
+      verifications: [
+        { finding: 'R1-F1', state: 'verified', evidence: 'read src/greeting.ts:2' },
+        { finding: 'R2-F1', state: 'verified', evidence: 'read src/salutation.ts:3' },
+      ],
+      now: new Date('2026-09-16T11:10:00.000Z'),
+    });
+    // The approval was published as a native review; only an approval that
+    // really reached the pull request is evidence that the request was cleared.
+    await notePublishedReview(workspaceHistoryRoot(workDir, 'HARN-11'), 'review-3', {
+      id: 81,
+      url: 'https://github.com/owner/name/pull/7#pullrequestreview-81',
+      body: 'Nexus Lens review — HARN-11: both repairs hold',
+    });
+
+    const settled = await prepare(history(workDir), 'reviewer', 4);
+    expect(settled.brief.unresolved).toBeNull();
+    expect(settled.brief.unresolvedReviews).toEqual([]);
+  });
+
+  it('keeps a continued defect’s identity through recording and the next prompt', async () => {
+    const workDir = await createTempDir();
+    const ticketHistory = history(workDir);
+    await ticketHistory.recordReviewerReport?.({
+      ref: REF,
+      workspaceId: 'HARN-11',
+      task: TASK,
+      reviewId: 'review-1',
+      round: 1,
+      head: HEAD,
+      decision: 'request_changes',
+      summary: 'the greeting ignores the argument it is given',
+      findings: [{ path: 'src/greeting.ts', line: 2, body: 'the argument is ignored' }],
+      now: new Date('2026-09-16T10:00:00.000Z'),
+    });
+    // The same defect is found again by the next review: it is a continuation
+    // of R1-F1, not a new finding, and the review's own occurrence is recorded
+    // beside the identity the defect keeps.
+    await ticketHistory.recordReviewerReport?.({
+      ref: REF,
+      workspaceId: 'HARN-11',
+      task: TASK,
+      reviewId: 'review-2',
+      round: 2,
+      head: HEAD,
+      decision: 'request_changes',
+      summary: 'the repair did not hold',
+      findings: [
+        {
+          path: 'src/greeting.ts',
+          line: 2,
+          body: 'the argument is still ignored',
+          kind: 'unresolved',
+          continues: 'R1-F1',
+        },
+      ],
+      verifications: [
+        { finding: 'R1-F1', state: 'unverified', evidence: 'the helper still ignores it' },
+      ],
+      now: new Date('2026-09-16T10:40:00.000Z'),
+    });
+
+    const snapshot = await prepare(ticketHistory, 'reviewer', 3);
+    const [round] = snapshot.brief.unresolvedReviews ?? [];
+    expect(round?.findings.map((finding) => [finding.id, finding.occurrence])).toEqual([
+      ['R1-F1', 'R2-F1'],
+    ]);
+    expect(round?.findings.map((finding) => finding.continues)).toEqual(['R1-F1']);
+    expect(outstandingFindingIds(unresolvedRounds(snapshot.brief))).toEqual(['R1-F1']);
+    const prompt = renderHistorySection(snapshot, 'reviewer');
+    expect(prompt).toContain(
+      'This review recorded the occurrence at R2-F1; the defect keeps the identity R1-F1.',
+    );
+    // The complete report on disk names the same identity, so a restart reads
+    // the same defect back rather than a renamed one.
+    const report = await readFile(
+      path.join(workspaceHistoryRoot(workDir, 'HARN-11'), 'reports', 'reviewer-review-2.md'),
+      'utf8',
+    );
+    expect(report).toContain('### Finding R1-F1: src/greeting.ts:2');
+    expect(report).toContain('- Occurrence: R2-F1');
+    const restarted = await prepare(history(workDir), 'reviewer', 4);
+    expect(restarted.brief.unresolvedReviews?.[0]?.findings.map((finding) => finding.id)).toEqual([
+      'R1-F1',
+    ]);
+  });
+
+  it('keeps a missing or incomplete developer report from reading as a complete response', async () => {
+    const workDir = await createTempDir();
+    const root = workspaceHistoryRoot(workDir, 'HARN-11');
+    const ticketHistory = history(workDir);
+    await ticketHistory.recordReviewerReport?.({
+      ref: REF,
+      workspaceId: 'HARN-11',
+      task: TASK,
+      reviewId: 'review-1',
+      round: 1,
+      head: HEAD,
+      decision: 'request_changes',
+      summary: 'the greeting ignores the argument it is given',
+      findings: [{ path: 'src/greeting.ts', line: 2, body: 'the argument is ignored' }],
+      now: new Date('2026-09-16T10:00:00.000Z'),
+    });
+    const answer = [
+      '### Finding R1-F1',
+      '- Cause: the shared helper ignored the argument it was given.',
+      '- Affected scope: src/greeting.ts.',
+      '- Repair: the helper now returns the greeting it was given.',
+      '- Verification: exercised it through the exported function.',
+      '- Remaining uncertainty: none.',
+    ];
+    const report = async (runId: string, at: string): Promise<void> => {
+      await ticketHistory.recordDeveloperReport?.({
+        ref: REF,
+        workspaceId: 'HARN-11',
+        task: TASK,
+        round: 2,
+        runId,
+        reportPath: `/work/runs/${runId}/result.json`,
+        status: 'in-progress',
+        reason: 'Coding turn reports retained.',
+        repairsUsed: 0,
+        attempts: [
+          {
+            turn: 1,
+            kind: 'repair',
+            agentSummary: ['I repaired the greeting.', '', ...answer].join('\n'),
+            checks: 'passed',
+          },
+        ],
+        pullRequest: null,
+        deliveryFailure: null,
+        now: new Date(at),
+      });
+    };
+
+    await report('run-2', '2026-09-16T10:30:00.000Z');
+    const answered = await prepare(ticketHistory, 'reviewer', 2);
+    expect(answered.brief.unresolvedReviews?.[0]?.responses?.[0]).toMatchObject({
+      finding: 'R1-F1',
+      complete: true,
+    });
+
+    // A later attempt whose own complete text is gone: the older answer is not
+    // the current claim, and the attempt that is missing states no answer.
+    await report('run-3', '2026-09-16T11:00:00.000Z');
+    await rm(path.join(root, 'reports', 'developer-run-3.md'), { force: true });
+    const unreadable = await prepare(history(workDir), 'reviewer', 3);
+    const [response] = unreadable.brief.unresolvedReviews?.[0]?.responses ?? [];
+    expect(response?.finding).toBe('R1-F1');
+    expect(response?.complete).toBe(false);
+    expect(response?.problem).toMatch(/not complete/);
+    expect(response?.problem).toMatch(/could not be read/);
+    expect(response?.repair).toBeNull();
+    expect(unreadable.brief.unresolvedReviews?.[0]?.responses?.[0]?.entryId).toBe(
+      'harness:developer-report:run-3',
+    );
+    const prompt = renderHistorySection(unreadable, 'reviewer');
+    expect(prompt).toMatch(/[Nn]othing here is complete remediation/);
+
+    // An attempt the ledger records whose report is missing entirely is the
+    // newest developer evidence too, and states no complete response either.
+    await writeWorkspaceState(workDir, {
+      version: 1,
+      workspaceId: 'HARN-11',
+      sourceRoot: workDir,
+      baseCommit: HEAD,
+      branch: 'harness/HARN-11',
+      createdAt: '2026-09-16T10:00:00.000Z',
+      sourceItem: sourceItemFor(REF),
+      attempts: [
+        {
+          runId: 'run-4',
+          reportPath: path.join(workDir, 'runs', 'run-4', 'result.json'),
+          outcome: 'passed',
+          reason: 'every configured check passed',
+          endedAt: '2026-09-16T11:30:00.000Z',
+        },
+      ],
+    });
+    const missing = await prepare(history(workDir), 'reviewer', 4);
+    const [unavailable] = missing.brief.unresolvedReviews?.[0]?.responses ?? [];
+    expect(unavailable?.finding).toBe('R1-F1');
+    expect(unavailable?.complete).toBe(false);
+    expect(unavailable?.problem).toMatch(/not complete/);
+    expect(unavailable?.entryId).toBe('harness:developer-report:run-4');
+    expect(missing.entries.find((entry) => entry.sourceId === 'run-4')?.kind).toBe(
+      'missing-report',
+    );
+    expect(missing.gaps.join('\n')).toMatch(/complete developer report/);
   });
 
   it('keeps a turn’s input stable while a later refresh moves on', async () => {

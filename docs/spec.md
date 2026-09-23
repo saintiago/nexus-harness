@@ -99,27 +99,37 @@ validated requirement to repair an accepted baseline finding is still passed to 
 Runs without a prepared history keep their existing guidance behavior.
 
 Outstanding change requests are tracked independently by reviewer across retained and native
-reviews. A later published approval by that reviewer at the current head clears their request;
-another author's approval, an approval of an old head, a comment-only review or an inconclusive
-verdict cannot hide it. Responses include edits to older comments after the outstanding review.
-Chronological ordering and response selection compare parsed instants across Jira timezone offsets
-and UTC timestamps; the original timestamp strings remain provenance. An unavailable or invalid
-timestamp is an explicit gap, and possible responses are retained conservatively.
+reviews, finding by finding as well as round by round. A later published approval by that reviewer
+at the current head clears their request; another author's approval, an approval of an old head, a
+comment-only review or an inconclusive verdict cannot hide it. A round that requests changes adds
+the findings it raises and clears nothing, so a new change request never silently resolves an
+earlier defect, and that reviewer's latest change request stands as a round of its own — a native
+review that states no finding of its own is still an outstanding request. Responses include edits to
+older comments after the outstanding review. Chronological ordering and response selection compare
+parsed instants across Jira timezone offsets and UTC timestamps; the original timestamp strings
+remain provenance. An unavailable or invalid timestamp is an explicit gap, and possible responses
+are retained conservatively.
 
 Remediation of an outstanding finding is explicit rather than inferred from the discussion. Every
 finding a review raises keeps a stable identity — the round that raised it and its position there,
-for example `R3-F2` — and both roles name it by that identity. A developer turn whose brief carries
-outstanding findings answers each of them in its own final summary, one section per identity,
-stating the cause, the affected scope (the related paths it checked included), the repair, how that
-repair was verified at the integration point it affects, and what remains uncertain. The harness
-reads those sections out of the complete developer report it already retains; the newest report
-recorded after the review is the claim the reviewer is given, and an earlier attempt's answer
-stays readable in the report it was recorded in. A finding no answer names, an answer that leaves
-a field out, and a turn that answered nothing are all kept as an incomplete response for that
-finding: none of them is presented as complete remediation, and the prompt says so before the turn
-starts. An answer field past the brief's own rendering bound is cut for that prompt only, with the
-report it was read from named where the cut is: the retained developer report is what both roles
-can read in full.
+for example `R3-F2` — and both roles name it by that identity. A later review that finds the same
+defect again does not rename it: the finding is classified `unresolved` or `regression`, names the
+identity it continues, keeps it, and records its own occurrence beside it, so the latest wording is
+not lost while the defect keeps one name from the round that raised it. A disposition a review read
+as `unverified` or `regressed` stays outstanding until a later round verifies it, whatever else that
+round decides. A developer turn whose brief carries outstanding findings answers each of them in its
+own final summary, one section per identity, stating the cause, the affected scope (the related
+paths it checked included), the repair, how that repair was verified at the integration point it
+affects, and what remains uncertain. The harness reads those sections out of the complete developer
+report it already retains; the newest attempt recorded after the review is the claim the reviewer is
+given — a latest attempt whose complete report is missing or comes back incomplete keeps its answers
+incomplete with that provenance attached, and an older complete claim is never read in its place —
+and an earlier attempt's answer stays readable in the report it was recorded in. A finding no answer
+names, an answer that leaves a field out, and a turn that answered nothing are all kept as an
+incomplete response for that finding: none of them is presented as complete remediation, and the
+prompt says so before the turn starts. An answer field past the brief's own rendering bound is cut
+for that prompt only, with the report it was read from named where the cut is: the retained
+developer report is what both roles can read in full.
 
 A claimed fix is never a verified fix. Only the reviewer's own verification, made on the reviewed
 revision at the place the defect lived, says a disposition is resolved, and it is recorded with the

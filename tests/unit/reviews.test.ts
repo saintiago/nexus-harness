@@ -20,7 +20,7 @@ import type {
   ReviewViewSource,
   ReviewWatchOptions,
 } from '../../src/reviews/contract.js';
-import type { HistorySnapshot } from '../../src/history/contract.js';
+import type { HistoryReportSummary, HistorySnapshot } from '../../src/history/contract.js';
 import { ReviewError } from '../../src/reviews/contract.js';
 import { diffPosition, positionFindings } from '../../src/reviews/diff.js';
 import { parseVerdict, reviewEvidenceProblem, reviewPrompt } from '../../src/reviews/reviewer.js';
@@ -379,6 +379,56 @@ describe('the dispositions and the verification of a verdict', () => {
       ),
     ).toThrow(/occurrence 1 of finding 1 "path"/);
   });
+
+  it('raises one defect once, and never as both verified and still present', () => {
+    const verdict = (findings: readonly unknown[], verifications: readonly unknown[]): string =>
+      JSON.stringify({ verdict: 'request_changes', summary: 'x', findings, verifications });
+    const continuation = (path: string): Record<string, unknown> => ({
+      path,
+      line: 1,
+      body: 'the same argument is still ignored',
+      kind: 'unresolved',
+      continues: 'R2-F1',
+    });
+    const unverified = {
+      finding: 'R2-F1',
+      state: 'unverified',
+      evidence: 'read src/greeting.ts:2',
+    };
+
+    // One defect keeps one identity: the other places it reached are grouped
+    // under the finding, not raised as a second continuation of it.
+    expect(() =>
+      parseVerdict(
+        verdict([continuation('src/greeting.ts'), continuation('src/salutation.ts')], [unverified]),
+        'verdict.json',
+        ['R2-F1'],
+      ),
+    ).toThrow(/raises a second finding continuing "R2-F1"/);
+    // A disposition cannot be published as settled and still present at once.
+    expect(() =>
+      parseVerdict(
+        verdict([continuation('src/greeting.ts')], [{ ...unverified, state: 'verified' }]),
+        'verdict.json',
+        ['R2-F1'],
+      ),
+    ).toThrow(/both settled and still present/);
+    // The continuation and the verification are tied to the identity the
+    // history named, whatever case the reviewer wrote it in.
+    expect(
+      parseVerdict(
+        verdict(
+          [{ ...continuation('src/greeting.ts'), continues: 'r2-f1' }],
+          [{ ...unverified, finding: 'r2-f1' }],
+        ),
+        'verdict.json',
+        ['R2-F1'],
+      ),
+    ).toMatchObject({
+      findings: [{ kind: 'unresolved', continues: 'R2-F1' }],
+      verifications: [{ finding: 'R2-F1', state: 'unverified' }],
+    });
+  });
 });
 
 describe('where a finding lands in the diff', () => {
@@ -560,6 +610,73 @@ describe('the reviewer prompt', () => {
     // The answer itself is rendered with the finding, as a claim.
     expect(prompt).toContain('Developer response (a claim, not a verification');
     expect(prompt).toContain('the helper returns what it was given');
+  });
+
+  it('shows a verdict example that a reviewer can really write, before and after a change request', () => {
+    /** The one JSON example the prompt states, parsed the way the scan reads it. */
+    const exampleOf = (prompt: string): string => {
+      const block = /```json\n([\s\S]*?)\n```/.exec(prompt);
+      expect(block, 'the prompt states its verdict example as one JSON block').not.toBeNull();
+      return block?.[1] ?? '';
+    };
+    const view = { path: '/evidence/repo', head: HEAD, base: PULL_REQUEST.baseSha };
+
+    // The initial review: no change request is outstanding, so the example is
+    // a request for changes with one new finding — no "continues", no
+    // "verifications" — and the parser accepts it as written.
+    const initialExample = exampleOf(reviewPrompt(evidence, view, '/evidence/review-1'));
+    expect(initialExample).not.toContain('continues');
+    expect(initialExample).not.toContain('verifications');
+    const initial = parseVerdict(initialExample, 'verdict.json');
+    expect(initial).toMatchObject({
+      decision: 'request_changes',
+      findings: [{ path: 'src/example.ts', line: 42 }],
+    });
+    // A finding stated as "new" continues nothing, so nothing is published
+    // beside it that a later review would have to follow.
+    expect(initial.findings[0]).not.toHaveProperty('continues');
+    expect(initial).not.toHaveProperty('verifications');
+
+    // The follow-up review: the example covers every outstanding identity
+    // exactly once, which is what the parser requires of a real verdict.
+    const followUp = historyWithOutstandingFinding();
+    const second = followUp.brief.unresolvedReviews?.[0];
+    expect(second).toBeDefined();
+    if (second === undefined) {
+      throw new Error('the fixture carries one outstanding review');
+    }
+    const earlier: HistoryReportSummary = {
+      ...second,
+      entryId: 'harness:reviewer-report:review-1',
+      sourceId: 'review-1',
+      round: 1,
+      summary: 'the greeting ignores the argument it is given',
+      findings: [
+        {
+          id: 'R1-F1',
+          path: 'src/greeting.ts',
+          line: 2,
+          body: 'the greeting ignores the argument it is given',
+        },
+      ],
+      responses: [],
+    };
+    const carrying: HistorySnapshot = {
+      ...followUp,
+      brief: {
+        ...followUp.brief,
+        unresolved: second,
+        unresolvedReviews: [earlier, second],
+      },
+    };
+    const followUpExample = exampleOf(reviewPrompt(evidence, view, '/evidence/review-2', carrying));
+    expect(parseVerdict(followUpExample, 'verdict.json', ['R1-F1', 'R2-F1'])).toMatchObject({
+      decision: 'request_changes',
+      verifications: [
+        { finding: 'R1-F1', state: 'unverified' },
+        { finding: 'R2-F1', state: 'unverified' },
+      ],
+    });
   });
 });
 

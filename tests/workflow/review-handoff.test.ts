@@ -33,6 +33,7 @@ import type {
 import { createReviewerTurn } from '../../src/reviews/reviewer.js';
 import { scanReviews } from '../../src/reviews/scan.js';
 import type { HistorySnapshot, TicketHistory } from '../../src/history/contract.js';
+import { createTicketHistory } from '../../src/history/sync.js';
 import { REVIEW_VIEW_DIRECTORY, reviewViews } from '../../src/reviews/view.js';
 import type { SourceTask } from '../../src/sources/contract.js';
 import type { SourceRef } from '../../src/shared/types.js';
@@ -471,6 +472,194 @@ describe('the review handoff', () => {
         ),
       ) as { readonly verifications: readonly { readonly finding: string }[] };
       expect(record.verifications.map((verification) => verification.finding)).toEqual(['R2-F1']);
+    },
+  );
+
+  it(
+    'requires a verdict to verify a finding carried forward from an earlier round',
+    { timeout: WORKFLOW_CASE_TIMEOUT_MS },
+    async () => {
+      const project = await createTargetProject();
+      const run = await runTicket({
+        project,
+        ref: REF,
+        workspaceId: WORKSPACE_ID,
+        turn: implementTurn,
+      });
+      const workspace = run.workspace;
+      const head = await branchHead(workspace?.workspacePath ?? '', workspace?.branch ?? '');
+      expect(run.status).toBe('passed');
+
+      const pullRequest: OpenPullRequest = {
+        number: 42,
+        url: 'https://github.com/example/target/pull/42',
+        title: 'HARN-77: Finish the greeting',
+        headSha: head,
+        headBranch: `harness/${WORKSPACE_ID}`,
+        baseBranch: BASE_BRANCH,
+        baseSha: workspace?.baseCommit ?? '',
+        draft: false,
+        author: 'nexus-agent',
+      };
+      const task = await loadTask(project.taskPath);
+      const github = standInGitHub(pullRequest, {
+        ref: REF,
+        task,
+        pullRequest,
+        files: [
+          {
+            path: TARGET_RESULT_FILE,
+            patch: `@@ -0,0 +1 @@\n+implemented\n`,
+            additions: 1,
+            deletions: 0,
+          },
+        ],
+        truncated: false,
+        checks: [],
+        combinedStatus: null,
+        fetchedAt: '2026-03-01T11:00:00.000Z',
+      });
+
+      // The ticket's retained history, read back by the real synchronization:
+      // round 1 raised R1-F1 and the next attempt answered it, and round 2
+      // asked for changes over an independent defect while recording R1-F1 as
+      // still unverified. The second change request must not clear it.
+      const history = createTicketHistory({
+        workDir: project.workDir,
+        harnessAuthors: [LOGIN],
+        now: () => new Date('2026-03-01T10:00:00.000Z'),
+        readers: {
+          jiraThread: async () => ({ comments: [], truncated: false }),
+          pullRequestConversation: async () => null,
+        },
+      });
+      await history.recordReviewerReport?.({
+        ref: REF,
+        workspaceId: WORKSPACE_ID,
+        task,
+        reviewId: 'review-1',
+        round: 1,
+        head,
+        decision: 'request_changes',
+        summary: 'the greeting ignores the argument it is given',
+        findings: [
+          {
+            path: TARGET_RESULT_FILE,
+            line: 1,
+            body: 'the greeting ignores the argument it is given',
+          },
+        ],
+        now: new Date('2026-03-01T09:00:00.000Z'),
+      });
+      await history.recordDeveloperReport?.({
+        ref: REF,
+        workspaceId: WORKSPACE_ID,
+        task,
+        round: 2,
+        runId: 'run-2',
+        reportPath: path.join(project.workDir, 'runs', 'run-2', 'result.json'),
+        status: 'in-progress',
+        reason: 'Coding turn reports retained.',
+        repairsUsed: 0,
+        attempts: [
+          {
+            turn: 1,
+            kind: 'repair',
+            agentSummary: [
+              'I repaired the greeting.',
+              '',
+              '### Finding R1-F1',
+              '- Cause: the shared helper ignored the argument it was given.',
+              `- Affected scope: ${TARGET_RESULT_FILE}.`,
+              '- Repair: the helper now returns the greeting it was given.',
+              '- Verification: exercised it through the exported function.',
+              '- Remaining uncertainty: none.',
+            ].join('\n'),
+            checks: 'passed',
+          },
+        ],
+        pullRequest: null,
+        deliveryFailure: null,
+        now: new Date('2026-03-01T09:30:00.000Z'),
+      });
+      await history.recordReviewerReport?.({
+        ref: REF,
+        workspaceId: WORKSPACE_ID,
+        task,
+        reviewId: 'review-2',
+        round: 2,
+        head,
+        decision: 'request_changes',
+        summary: 'one repair did not hold and another defect is new',
+        findings: [{ path: TARGET_RESULT_FILE, line: 1, body: 'the result file is still wrong' }],
+        verifications: [
+          {
+            finding: 'R1-F1',
+            state: 'unverified',
+            evidence: `read ${TARGET_RESULT_FILE} at the reviewed head`,
+          },
+        ],
+        now: new Date('2026-03-01T09:45:00.000Z'),
+      });
+
+      const standIn = await installStandIn('reviewer-runtime-carried', STAND_IN_REVIEWER);
+      const recorded = recordingIo();
+      const summary = await scanReviews({
+        queue: {
+          list: async () => [{ ref: REF, title: task.title }],
+          prepare: async () => ({ ref: REF, task, pointers: [WORKSPACE_ID] }),
+        },
+        repository: github.repository,
+        reviewer: createReviewerTurn({
+          selection: { runtime: 'codex', command: [process.execPath, standIn.scriptPath] },
+          // The verdict verifies the newer identity and ignores the one
+          // carried forward: nothing may be published for it.
+          environment: {
+            ...process.env,
+            NEXUS_STAND_IN_VERDICT: JSON.stringify({
+              verdict: 'approve',
+              summary: 'the newer defect is gone',
+              findings: [],
+              verifications: [
+                {
+                  finding: 'R2-F1',
+                  state: 'verified',
+                  evidence: `read ${TARGET_RESULT_FILE} at the reviewed head`,
+                },
+              ],
+            }),
+          },
+        }),
+        history,
+        views: reviewViews(),
+        workDir: project.workDir,
+        sourceRoot: canonicalPath(project.repo),
+        login: LOGIN,
+        checkName: CHECK_NAME,
+        reviewerTimeoutMs: 60_000,
+        io: recorded.io,
+        stop: new AbortController().signal,
+        now: () => new Date('2026-03-01T11:05:00.000Z'),
+        sleep: async () => undefined,
+      });
+
+      // The carried finding was still outstanding in the brief, so the verdict
+      // that leaves it unverified publishes nothing at all.
+      expect(summary.items.map((entry) => entry.disposition)).toEqual(['attention']);
+      expect(github.reviews).toEqual([]);
+      expect(github.checks).toEqual([]);
+      expect(recorded.text()).toMatch(/does not verify R1-F1/);
+      const [reviewId] = (await readdir(path.join(project.workDir, 'reviews'))).filter((entry) =>
+        entry.startsWith('review-'),
+      );
+      const prompt = await readFile(
+        path.join(project.workDir, 'reviews', reviewId ?? '', 'input.md'),
+        'utf8',
+      );
+      expect(prompt).toContain('Outstanding identities you must verify: R1-F1, R2-F1.');
+      expect(prompt).toContain(
+        'The ticket history above lists every review round whose change request is still',
+      );
     },
   );
 });

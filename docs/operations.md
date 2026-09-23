@@ -493,6 +493,10 @@ answers a finding by naming that identity in its own summary and stating the cau
 scope, the repair, how the repair was verified at the integration point it affects, and what
 remains uncertain. The prompt shows the exact shape; a finding with no answer section, or one whose
 section leaves out a field, is shown as an incomplete response and never as complete remediation.
+A finding a later review raises again keeps the identity of the finding it continues rather than
+being renamed, and a disposition an earlier review read as unverified or regressed stays
+outstanding until a later review verifies it: a new change request adds its own findings and clears
+none.
 A developer's answer is a claim: the reviewer's own reading of the reviewed revision is what makes
 a repair verified, and it is recorded with the verdict as `verified`, `unverified` or `regressed`.
 The coding prompt also says that a passing check is not the task's completion, that a change to the

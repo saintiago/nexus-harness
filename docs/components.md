@@ -36,16 +36,20 @@ findings and responses, distinguish new feedback from previously consumed materi
 missing evidence. Keep a turn's input stable while later conversation updates arrive. Keep every
 outstanding finding's identity stable, render it with the answer it received and the verification
 it was given, and keep a developer's claim apart from a reviewer's verification: a finding with no
-complete answer, or one whose repair was never verified, is never presented as resolved.
+complete answer — or one whose latest report is missing or incomplete — and a finding whose repair
+was never verified are never presented as resolved. A finding a later review raises again keeps the
+identity it continues and records its own occurrence beside it, and a new change request adds the
+findings it raises without clearing the ones already outstanding.
 
 ## Review
 
 Evaluate the delivered revision against the task and required behavior. Give the reviewer a
 consistent repository view and complete prior findings. Validate and retain its verdict before
 publication. Verify each outstanding disposition in the reviewed revision itself and record that
-verification with the verdict; classify and group confirmed related occurrences rather than
-reporting one example at a time; and keep reviewing the whole change against the requested outcome.
-Approval applies to the reviewed revision, not to later changes.
+verification with the verdict — only a `verified` reading settles one, while `unverified` and
+`regressed` leave it outstanding for the next round; classify and group confirmed related
+occurrences rather than reporting one example at a time; and keep reviewing the whole change against
+the requested outcome. Approval applies to the reviewed revision, not to later changes.
 
 ## Delivery and completion
 

@@ -452,9 +452,41 @@ interface ReviewRoundCandidate {
 }
 
 /**
- * Reconciles retained and native reviews independently by reviewer. Only an
- * approval by that reviewer at the current head clears their outstanding
- * request; comment-only and inconclusive rounds decide nothing.
+ * What one reviewer still holds: the round that last stated each outstanding
+ * finding, their latest change request as a round of its own, and the head that
+ * request was made on.
+ */
+interface OutstandingReview {
+  /**
+   * The latest change request this reviewer made, until an approval by the same
+   * reviewer at the current head clears it. A round that raises no finding of
+   * its own — a native review whose only record is its decision — still stands:
+   * nothing may read its request as resolved.
+   */
+  request: ReviewRoundCandidate | null;
+  /** Outstanding finding identity → the round that last stated it. */
+  readonly findings: Map<string, ReviewRoundCandidate>;
+  /** The head of this reviewer's latest change request, for the check below. */
+  head: string | null;
+}
+
+/**
+ * Reconciles retained and native reviews independently by reviewer, finding by
+ * finding rather than round by round.
+ *
+ * A round that requests changes adds its own findings and clears nothing: a new
+ * change request never silently resolves an earlier defect. A round's own
+ * verifications settle exactly the identities they name — `verified` clears one
+ * finding, `unverified` and `regressed` leave it outstanding — and only an
+ * approval by that reviewer at the current head clears what they still hold.
+ * Comment-only and inconclusive rounds decide nothing. The reviewer's latest
+ * change request stands as a round of its own as well, so a native review that
+ * states no finding — only its decision and its body — is still an outstanding
+ * request and never reads as resolved by the round that came after it.
+ *
+ * Each identity is held under the round that last stated it, so the brief
+ * renders the finding with its latest wording and, in a continuation, the
+ * occurrence that round recorded beside the identity the defect keeps.
  */
 function unresolvedRound(
   reports: readonly HistoryReportSummary[],
@@ -575,20 +607,58 @@ function unresolvedRound(
   rounds.sort(
     (a, b) => compareHistoryTime(a.at, b.at) || a.summary.entryId.localeCompare(b.summary.entryId),
   );
-  const outstanding = new Map<string, ReviewRoundCandidate>();
+  const held = new Map<string, OutstandingReview>();
   for (const round of rounds) {
+    const owner = held.get(round.owner) ?? { request: null, findings: new Map(), head: null };
+    // What this round itself read of the dispositions before it. Only a
+    // `verified` reading settles an identity; `unverified` and `regressed` are
+    // a reviewer's own statement that the defect is still there.
+    for (const verification of round.summary.verifications ?? []) {
+      if (verification.state === 'verified') {
+        owner.findings.delete(verification.finding);
+      }
+    }
     if (requestsChanges(round.decision)) {
-      outstanding.set(round.owner, round);
+      // A change request adds the findings it raises; it never clears one.
+      for (const finding of round.summary.findings) {
+        owner.findings.set(finding.id, round);
+      }
+      owner.request = round;
+      owner.head = round.summary.head ?? owner.head;
     } else if (
       (round.decision === 'approve' || round.decision === 'approved') &&
-      round.summary.head === (currentHead ?? outstanding.get(round.owner)?.summary.head)
+      round.summary.head === (currentHead ?? owner.head)
     ) {
-      outstanding.delete(round.owner);
+      owner.findings.clear();
+      owner.request = null;
+      owner.head = null;
     }
     // COMMENTED and inconclusive rounds cannot resolve a change request.
     // DISMISSED reviews are not added as outstanding in the first place.
+    held.set(round.owner, owner);
   }
-  return [...outstanding.values()];
+  // Each outstanding identity is rendered under the round that last stated it,
+  // with that round's verifications; a round nothing maps to has been resolved
+  // whole and is no longer outstanding.
+  const stated = new Map<string, ReviewRoundCandidate>();
+  for (const owner of held.values()) {
+    for (const [finding, round] of owner.findings) {
+      stated.set(finding, round);
+    }
+  }
+  const outstanding = new Set<ReviewRoundCandidate>([
+    ...[...held.values()].flatMap((owner) => (owner.request === null ? [] : [owner.request])),
+    ...stated.values(),
+  ]);
+  return rounds
+    .filter((round) => outstanding.has(round))
+    .map((round) => ({
+      ...round,
+      summary: {
+        ...round.summary,
+        findings: round.summary.findings.filter((finding) => stated.get(finding.id) === round),
+      },
+    }));
 }
 
 /**
@@ -599,11 +669,14 @@ function unresolvedRound(
  * answers nothing, is kept as the incomplete response it is — never rounded up
  * to complete remediation (docs/WORKFLOW.md §9).
  *
- * The newest report is the current claim: an earlier attempt's answer stays in
- * the snapshot as its own entry, but the work as it now stands is what the
- * latest attempt said about it. Deriving the answers from the retained reports
- * each time is what makes a complete exchange survive further turns and
- * restarts without a second store.
+ * The newest attempt is the current claim, whatever it holds: an earlier
+ * attempt's answer stays in the snapshot as its own entry, but the work as it
+ * now stands is what the latest attempt said about it, and a latest attempt
+ * whose report is missing or comes back incomplete keeps its answers
+ * incomplete with that provenance attached. An older complete claim is never
+ * read as the current attempt's response, and no attempt at all is no response.
+ * Deriving the answers from the retained reports each time is what makes a
+ * complete exchange survive further turns and restarts without a second store.
  */
 function responsesOf(
   round: ReviewRoundCandidate,
@@ -616,7 +689,9 @@ function responsesOf(
   const newest = entries
     .filter(
       (entry) =>
-        entry.kind === 'developer-report' && compareHistoryTime(entry.createdAt, round.at) >= 0,
+        (entry.kind === 'developer-report' ||
+          (entry.kind === 'missing-report' && entry.role === 'developer')) &&
+        compareHistoryTime(entry.createdAt, round.at) >= 0,
     )
     .toSorted(
       (a, b) => compareHistoryTime(b.createdAt, a.createdAt) || b.id.localeCompare(a.id),
@@ -624,8 +699,21 @@ function responsesOf(
   if (newest === undefined) {
     return [];
   }
+  // A report the harness could not read in full is not a complete claim: its
+  // answers stay incomplete, with the report's own problem attached, so an
+  // unusable attempt can never read as complete remediation.
+  const source = newest.complete
+    ? null
+    : `the newest developer report of this attempt (${newest.id}) is not complete — ` +
+      `${newest.problem ?? 'the harness could not read it in full'}`;
   return parseFindingAnswers(newest.text, findings).map((answer) => ({
     ...answer,
+    complete: answer.complete && source === null,
+    problem:
+      source === null
+        ? answer.problem
+        : `${source}. Nothing here is a complete response` +
+          (answer.problem === null ? '' : `: ${answer.problem}`),
     entryId: newest.id,
     runId: newest.sourceId,
     round: newest.round,
