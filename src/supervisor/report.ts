@@ -121,7 +121,9 @@ export function incidentReportText(
           `${attempt.blocker?.reason ?? 'no reason was given.'}`,
       );
       paragraphs.push(
-        `Resumption recorded: ${attempt.resume ?? 'the interrupted work resumes after that blocker.'}`,
+        `Resumption: ${attempt.resume ?? 'the interrupted work resumes after that blocker'}. The ` +
+          'parent starts that blocker first and records the moment the interrupted work itself ' +
+          'is started again.',
       );
     } else if (attempt.outcome === 'unrecoverable') {
       paragraphs.push(

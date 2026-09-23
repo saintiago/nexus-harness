@@ -442,7 +442,10 @@ describe('the incident report', () => {
     expect(report.text).toContain('ended on signal SIGKILL');
     expect(report.text).toContain('a shared module is broken');
     expect(report.text).toContain('Blocker ranked first: HARN-77 — it repairs the shared module');
-    expect(report.text).toContain('Resumption recorded: HARN-51 resumes after HARN-77');
+    expect(report.text).toContain('Resumption: HARN-51 resumes after HARN-77');
+    expect(report.text).toContain(
+      'records the moment the interrupted work itself is started again',
+    );
     expect(report.text).toContain('workspace HARN-51 kept on its recorded branch');
     expect(report.text).toContain('not confirmed');
     expect(report.text).toContain('Reporting problem: the summary could not be published');

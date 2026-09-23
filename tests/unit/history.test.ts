@@ -251,10 +251,18 @@ describe('the supervised recoveries a ticket’s history carries', () => {
     const ticketHistory = history(workDir, {
       jira: async () => ({ comments, truncated: false }),
     });
-    const snapshot = await prepare(ticketHistory, 'reviewer');
+    // Both roles read the same recovery context: it is the account's own record
+    // of what happened to the ticket, not one role's private view.
+    const reviewer = await prepare(ticketHistory, 'reviewer');
+    const developer = await prepare(ticketHistory, 'developer');
+    const snapshot = reviewer;
 
     const entry = snapshot.entries.find((candidate) => candidate.kind === 'recovery-report');
+    const developerEntry = developer.entries.find(
+      (candidate) => candidate.kind === 'recovery-report',
+    );
     expect(entry?.complete).toBe(true);
+    expect(developerEntry?.text).toBe(entry?.text);
     expect(entry?.text).toContain('a stale intake lock');
     expect(entry?.text).toContain('the lock was explained');
     expect(entry?.text).toContain('committed work on harness/HARN-11');
