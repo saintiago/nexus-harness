@@ -686,6 +686,10 @@ describe('a supervised queue', () => {
       repoPath,
       configPath,
       isAlive: () => false,
+      // The attempt was interrupted while its runtime ran, and nothing recorded
+      // how that runtime's own stop went: the tree it led has to be shown ended
+      // before its judgment is adopted.
+      treeLiveness: () => 'gone',
       worker: scriptedWorker([ended(0)]),
       recoveryTurn: recovery,
     });
@@ -810,24 +814,13 @@ describe('a supervised queue', () => {
       turnPid: 5252,
       unconfirmedStop: { at: '2026-09-23T00:02:30.000Z', pid: 5252 },
     });
-    const acknowledge = async (at: string): Promise<void> => {
-      const file = incidentFilePath(root, incident.id);
-      const record = await readIncident(file);
-      if (record === null) {
-        throw new Error('the seeded incident is gone');
-      }
-      await writeIncident(file, {
-        ...record,
-        acknowledgement: { at, note: 'checked this host by hand' },
-      });
-    };
     const recovery = scriptedRecovery([
       { status: 'repaired', summary: 'this turn should never run', cause: 'c' },
     ]);
 
     // An acknowledgement that predates the hold answered something else, so the
     // hold stands: nothing here infers that a person answered this one.
-    await acknowledge('2026-09-23T00:02:00.000Z');
+    await acknowledge(root, incident.id, '2026-09-23T00:02:00.000Z', 'checked by hand');
     const older = await runSupervision({
       workDir,
       repoPath,
@@ -844,7 +837,7 @@ describe('a supervised queue', () => {
     // A host that cannot show the tree ended — a Windows root that is already
     // gone, chiefly — leaves the question to a person; once they say what they
     // checked, the attempt is reconciled against its own judgment.
-    await acknowledge('2026-09-23T00:05:00.000Z');
+    await acknowledge(root, incident.id, '2026-09-23T00:05:00.000Z', 'checked by hand');
     const answered = await runSupervision({
       workDir,
       repoPath,
@@ -860,6 +853,141 @@ describe('a supervised queue', () => {
     expect(stored?.pending).toBeNull();
     expect(stored?.attempts).toHaveLength(1);
     expect(stored?.attempts[0]).toMatchObject({ outcome: 'repaired', cause: 'a half-written run' });
+  }, 30_000);
+
+  it('does not read the acknowledgement of a hold as an answer to a later help request', async () => {
+    const { workDir, repoPath, configPath } = await workspace();
+    const root = supervisorRoot(workDir, 'namespace');
+    const incident = await seedIncident(root);
+    const dir = path.join(incidentDir(root, incident.id), 'attempt-1');
+    await mkdir(dir, { recursive: true });
+    // The interrupted attempt's own judgment: the queue cannot go on until a
+    // person restores what it needs.
+    await writeFile(
+      path.join(dir, RECOVERY_OUTCOME_FILE),
+      JSON.stringify({
+        status: 'unrecoverable',
+        summary: 'the queue cannot reach Jira at all',
+        cause: 'the Jira credential expired',
+        help: 'restore the queue’s Jira credential and run the supervisor again',
+      }),
+      'utf8',
+    );
+    await seedPending(root, incident.id, {
+      attempt: 2,
+      dir,
+      turnPid: 5252,
+      unconfirmedStop: { at: '2026-09-23T00:02:30.000Z', pid: 5252 },
+    });
+    // A person answered the *hold* the unconfirmed stop produced, at 00:05.
+    await acknowledge(root, incident.id, '2026-09-23T00:05:00.000Z', 'checked this host');
+    const recovery = scriptedRecovery([
+      { status: 'repaired', summary: 'this turn should never run', cause: 'c' },
+    ]);
+
+    // The reconciliation adopts that attempt's judgment, and the incident ends
+    // in a request for help the earlier acknowledgement never answered.
+    const concluded = await runSupervision({
+      workDir,
+      repoPath,
+      configPath,
+      isAlive: () => false,
+      now: () => new Date('2026-09-23T00:15:00.000Z'),
+      worker: scriptedWorker([ended(0)]),
+      recoveryTurn: recovery,
+    });
+    expect(concluded.outcome).toBe('attention');
+    expect(concluded.workerRuns).toBe(0);
+    expect(concluded.problem).toContain('restore the queue’s Jira credential');
+
+    // A restart is not an answer to the new request either: the acknowledgement
+    // predates the conclusion it would have had to resolve, so nothing runs
+    // until a person answers this one.
+    const restart = await runSupervision({
+      workDir,
+      repoPath,
+      configPath,
+      isAlive: () => false,
+      now: () => new Date('2026-09-23T00:20:00.000Z'),
+      worker: scriptedWorker([ended(0)]),
+      recoveryTurn: recovery,
+    });
+    expect(restart.outcome).toBe('attention');
+    expect(restart.workerRuns).toBe(0);
+    expect(restart.recoveries).toBe(0);
+    expect(restart.problem).toContain('not resolved yet');
+    expect(restart.problem).toContain('restore the queue’s Jira credential');
+  }, 30_000);
+
+  it('holds an interrupted attempt whose shutdown was never recorded until its tree is gone', async () => {
+    const { workDir, repoPath, configPath } = await workspace();
+    const root = supervisorRoot(workDir, 'namespace');
+    const incident = await seedIncident(root);
+    const dir = path.join(incidentDir(root, incident.id), 'attempt-1');
+    await mkdir(dir, { recursive: true });
+    await writeFile(
+      path.join(dir, RECOVERY_OUTCOME_FILE),
+      JSON.stringify({
+        status: 'repaired',
+        summary: 'the interrupted turn left a judgment',
+        cause: 'a half-written run',
+        resolution: 'the workspace was returned to its recorded branch',
+        preserved: [],
+        resume: 'the queue resumes',
+      }),
+      'utf8',
+    );
+    // The invocation that started this attempt stopped before it could record
+    // anything about the turn's own stop. Its runtime is gone, and something the
+    // turn started may outlive it: nothing has shown the tree it led ended.
+    await seedPending(root, incident.id, { attempt: 2, dir, turnPid: 5252 });
+    const recovery = scriptedRecovery([
+      { status: 'repaired', summary: 'this turn should never run', cause: 'c' },
+    ]);
+    const requests: (string | null)[] = [];
+
+    const held = await runSupervision({
+      workDir,
+      repoPath,
+      configPath,
+      isAlive: () => false,
+      treeLiveness: () => 'running',
+      worker: async (request) => {
+        requests.push(request.scope);
+        return ended(0);
+      },
+      recoveryTurn: recovery,
+    });
+    expect(held.outcome).toBe('attention');
+    expect(held.problem).toContain('never recorded how its shutdown went');
+    expect(held.workerRuns).toBe(0);
+    expect(recovery.calls).toBe(0);
+    expect(requests).toEqual([]);
+    const stillHeld = await readIncident(incidentFilePath(root, incident.id));
+    expect(stillHeld?.pending).not.toBeNull();
+    expect(stillHeld?.attempts).toHaveLength(1);
+
+    // Once the tree is shown ended, the judgment it left is adopted whole and
+    // the attempt is counted as spent.
+    const resumed = await runSupervision({
+      workDir,
+      repoPath,
+      configPath,
+      isAlive: () => false,
+      treeLiveness: () => 'gone',
+      worker: async (request) => {
+        requests.push(request.scope);
+        return ended(0);
+      },
+      recoveryTurn: recovery,
+    });
+    expect(resumed.outcome).toBe('settled');
+    expect(recovery.calls).toBe(0);
+    expect(requests).toEqual([null]);
+    const stored = await readIncident(incidentFilePath(root, incident.id));
+    expect(stored?.pending).toBeNull();
+    expect(stored?.attempts).toHaveLength(2);
+    expect(stored?.attempts[1]).toMatchObject({ outcome: 'repaired' });
   }, 30_000);
 
   it('counts an interrupted attempt toward the bound and asks for a person when it is spent', async () => {
@@ -878,6 +1006,7 @@ describe('a supervised queue', () => {
       repoPath,
       configPath,
       isAlive: () => false,
+      treeLiveness: () => 'gone',
       worker: scriptedWorker([ended(0)]),
       recoveryTurn: recovery,
       maxAttempts: 2,
@@ -1497,6 +1626,19 @@ describe('a supervised queue', () => {
     expect(summary.recoveries).toBe(0);
   }, 30_000);
 });
+
+/**
+ * A person's own, by-hand acknowledgement: the one thing that resolves a hold
+ * or a request for help, and only for the thing it is newer than.
+ */
+async function acknowledge(root: string, id: string, at: string, note: string): Promise<void> {
+  const file = incidentFilePath(root, id);
+  const record = await readIncident(file);
+  if (record === null) {
+    throw new Error('the seeded incident is gone');
+  }
+  await writeIncident(file, { ...record, acknowledgement: { at, note } });
+}
 
 /**
  * Replaces the seeded incident with one whose attempt is still in flight, as an

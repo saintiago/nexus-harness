@@ -767,14 +767,17 @@ that produced no judgment when it is not — and either way the attempt counts t
 because it was really spent. Nothing is handed to a recovery runtime before its PID is recorded, so
 an attempt that names no process is one whose turn never began: a restart refuses it by name for a
 person to reconcile instead of rounding it into an attempt that produced nothing. A turn whose
-runtime could not be confirmed stopped keeps its ownership: the attempt stays in flight, its
-recorded PID stays the incident's, and the stop itself is recorded as what it was — the tree's own
-root, and what could not be confirmed — rather than as prose a restart would have to interpret. No
-second attempt or worker starts beside a process nobody has accounted for, and a later invocation
+runtime may still be repairing the workspace keeps its ownership: that covers a stop that could not
+be confirmed and a turn whose shutdown no invocation ever recorded, because the supervisor itself
+stopped inside it. The attempt stays in flight, its recorded PID stays the incident's, and what the
+invocation learned is recorded as what it was — the tree's own root and what could not be confirmed,
+or that nothing recorded it — rather than as prose a restart would have to interpret. No second
+attempt or worker starts beside a process nobody has accounted for, and a later invocation
 reconciles that hold only on evidence: the tree the attempt's runtime led has to be shown ended,
 which a missing root PID is not — an owned tool outliving its runtime is exactly what a failed tree
-stop leaves behind — and where the host cannot answer that question at all, a person who has
-checked the host says so by recording an acknowledgement on the incident, newer than the hold.
+stop leaves behind — and where the host cannot answer that question at all, a person who has checked
+the host says so by recording an acknowledgement on the incident, newer than the hold or than the
+attempt's own start when no hold could be recorded.
 
 **Resumption.** A `repaired` or `blocked` conclusion returns the queue to work: the parent starts
 the worker again and records the moment that really happened, so a blocker ranked ahead of the
@@ -792,7 +795,10 @@ and ends in an actionable request for a person, rather than resuming behind a bl
 ran or starting the same worker again for the same result. An incident that ended in a request for
 human help is not resumed: it is reported and the supervision stops, and a restart is not an answer
 to it — the unresolved request keeps the queue stopped until a person does what it asks and
-acknowledges it in the incident record (`"acknowledgement": { "at": …, "note": … }`).
+acknowledges it in the incident record (`"acknowledgement": { "at": …, "note": … }`). An
+acknowledgement resolves the thing it is newer than and nothing else: one a person made for an
+earlier hold is never read as an answer to a request the incident concluded after it, so a restart
+cannot bypass a request nobody has answered.
 
 **Reporting.** Each incident publishes one concise report into the ticket's own Jira thread,
 written by the same service account that wrote the ticket, so the next developer turn and the next

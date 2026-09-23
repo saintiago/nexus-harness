@@ -680,10 +680,19 @@ function newestOpen(incidents: readonly KnownIncident[]): KnownIncident | null {
  * The newest incident that ended in a request for human help nobody has
  * acknowledged yet, or `null` when there is none. It stops everything the
  * queue would otherwise start, whichever invocation finds it.
+ *
+ * The acknowledgement resolves the conclusion it answers, and no other: it has
+ * to be newer than the request it resolves, so an acknowledgement that answered
+ * an earlier hold — the process-tree reconciliation, chiefly — is never read as
+ * a person's answer to a request that was made after it, and a restart cannot
+ * bypass a request it has not answered.
  */
 function unresolvedHelp(incidents: readonly KnownIncident[]): KnownIncident | null {
   const asking = incidents.filter(
-    (known) => known.record.stage === 'help' && known.record.acknowledgement === null,
+    (known) =>
+      known.record.stage === 'help' &&
+      (known.record.conclusion === null ||
+        !acknowledgedAfter(known.record, known.record.conclusion.at)),
   );
   return asking.at(-1) ?? null;
 }
@@ -1561,35 +1570,44 @@ async function reconcilePendingAttempt(
     );
   }
   // The runtime's own process being gone is not the same as the tree it led
-  // being gone: a tool the turn started can outlive the runtime, and a stop
-  // that could not be confirmed is exactly the state that leaves behind. Until
-  // that tree is shown ended — or a person says it is — nothing of this attempt
-  // is adopted, and no second attempt or worker starts beside it.
-  const stop = pending.unconfirmedStop;
-  if (stop !== null && !acknowledgedAfter(known.record, stop.at)) {
-    const ending = confirmOwnedTreeEnded(stop.pid, request.treeLiveness);
-    if (ending.kind === 'unconfirmed') {
-      throw new Error(
-        `incident ${known.record.id}: the stop of the recovery turn started ${pending.startedAt} ` +
-          `was never confirmed, and nothing has shown that the tree it owned has ended since ` +
-          `(${ending.problem}). Nothing else runs beside a process nobody has accounted for: ` +
-          'check the processes on this host, stop what that turn left, and run the supervisor ' +
-          'again — its judgment is then adopted and the attempt counted as spent. On a host that ' +
-          'cannot show the tree ended (a Windows root that is already gone, chiefly) a person ' +
-          'who has checked the host resolves this by recording an acknowledgement on the ' +
-          `incident: add "acknowledgement": { "at": …, "note": … } to "${known.path}".`,
-      );
-    }
-    io.out(
-      `supervisor: incident ${known.record.id}: the tree the unconfirmed stop left behind is ` +
-        'shown ended now, so attempt ' +
-        `${String(pending.attempt)} is reconciled against the judgment it left.`,
-    );
-  } else if (stop !== null) {
+  // being gone: a tool the turn started can outlive the runtime, and every
+  // interrupted attempt is in that state — the invocation that watched it
+  // stopped before it could record how its stop went, or recorded that the stop
+  // itself could not be confirmed. Until that tree is shown ended — or a person
+  // says it is — nothing of this attempt is adopted, and no second attempt or
+  // worker starts beside it.
+  const held = pending.unconfirmedStop;
+  const heldAt = held?.at ?? pending.startedAt;
+  const tree = held === null ? pending.turnPid : held.pid;
+  if (acknowledgedAfter(known.record, heldAt)) {
     io.out(
       `supervisor: incident ${known.record.id}: a person acknowledged that nothing of the ` +
         `recovery turn started ${pending.startedAt} is left, so attempt ` +
         `${String(pending.attempt)} is reconciled against the judgment it left.`,
+    );
+  } else {
+    const ending = confirmOwnedTreeEnded(tree, request.treeLiveness);
+    if (ending.kind === 'unconfirmed') {
+      throw new Error(
+        `incident ${known.record.id}: ` +
+          (held === null
+            ? `the recovery turn started ${pending.startedAt} was interrupted, and the ` +
+              'invocation that watched it never recorded how its shutdown went'
+            : `the stop of the recovery turn started ${pending.startedAt} was never confirmed`) +
+          `, so nothing has shown that the tree it owned has ended since (${ending.problem}). ` +
+          'Nothing else runs beside a process nobody has accounted for: check the processes on ' +
+          'this host, stop what that turn left, and run the supervisor again — its judgment is ' +
+          'then adopted and the attempt counted as spent. On a host that cannot show the tree ' +
+          'ended (a Windows root that is already gone, chiefly) a person who has checked the ' +
+          'host resolves this by recording an acknowledgement on the incident, newer than ' +
+          `"${heldAt}": add "acknowledgement": { "at": …, "note": … } to "${known.path}".`,
+      );
+    }
+    io.out(
+      `supervisor: incident ${known.record.id}: the tree ` +
+        (held === null ? 'the interrupted turn led is' : 'the unconfirmed stop left behind is') +
+        ` shown ended now, so attempt ${String(pending.attempt)} is reconciled against the ` +
+        'judgment it left.',
     );
   }
   const outcomePath = path.join(pending.dir, RECOVERY_OUTCOME_FILE);
@@ -1792,13 +1810,15 @@ async function recordAttempt(
 }
 
 /**
- * Whether a person answered, by hand, a hold the incident recorded at `at`.
+ * Whether a person answered, by hand, the hold or request the incident recorded
+ * at `at`.
  *
  * The incident's acknowledgement is the one place a person says something was
- * really done, and it is read here for the hold an unconfirmed stop produces:
- * that hold is resolved by a person, and the acknowledgement has to be newer
- * than the hold, so an acknowledgement that answered something else — an
- * earlier request for help, or an earlier hold already resolved — is never
+ * really done, and it is read here for both things a person resolves: the hold
+ * an unconfirmed stop produces, and the request for help an incident ends in.
+ * Either has to be newer than the thing it answers, so an acknowledgement that
+ * answered something else — an earlier request for help, an earlier hold
+ * already resolved, a hold resolved before the incident concluded — is never
  * read as an answer to this one. Nothing here infers that a person acted.
  */
 function acknowledgedAfter(incident: IncidentRecord, at: string): boolean {

@@ -261,14 +261,18 @@ export interface IncidentRecord {
   stage: 'open' | 'settled' | 'help';
   /**
    * A person's acknowledgement of the request for human help this incident
-   * ended in, or `null` while the request is unresolved.
+   * ended in — or of the unconfirmed process-tree stop it held — or `null`
+   * while nothing has been answered by hand.
    *
    * A `help` conclusion stops the supervision, and a restart is not an answer
    * to it: the incident keeps the queue stopped until a person says the thing it
    * asked for was really done. That acknowledgement is this field, written into
    * the record by hand — `{ "at": …, "note": … }` — because nothing here may
-   * infer that a person acted. It is `null` for every incident that never asked
-   * for help.
+   * infer that a person acted. It answers the thing it is newer than and
+   * nothing else: a hold or a request that was recorded after an acknowledgement
+   * is not resolved by it, so one person's answer to one hold never lets a
+   * restart start work beside a later request. It is `null` for every incident
+   * that neither held on a process nor asked for help.
    */
   acknowledgement: { readonly at: string; readonly note: string | null } | null;
   /** Every worker stop this incident observed, oldest first. */

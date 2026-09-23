@@ -1463,16 +1463,18 @@ Before a restarted supervisor starts anything, it reads every incident record ba
   — the prompt it would act on — before its PID is written down; an attempt that names no process is
   therefore one whose turn never began, and a restart refuses it by name for a person to reconcile
   instead of rounding it into an attempt that produced nothing.
-- **holds for a runtime that could not be confirmed stopped.** A turn whose runtime may still be
-  repairing the workspace keeps its ownership: the attempt stays in flight, its recorded PID stays
-  the incident's, and nothing else — no second attempt, no worker — starts beside a process nobody
-  has accounted for. The hold is named when it happens, and what it is made of is recorded: the
-  tree's own root and what the stop could not confirm. A later invocation reconciles it only on
-  evidence that the tree the turn's runtime led has ended — a missing root PID is not that evidence,
-  because a tool the turn started can outlive the runtime a failed tree stop left behind — and where
-  this host cannot answer that question at all (a Windows root that is already gone, chiefly), the
-  incident waits for a person who has checked the host and records an acknowledgement newer than
-  the hold.
+- **holds for a runtime that may still be repairing the workspace.** A turn whose stop could not be
+  confirmed, and one whose shutdown no invocation ever recorded — the supervisor itself stopped
+  inside the turn — keep the incident's ownership of the runtime's tree: the attempt stays in
+  flight, its recorded PID stays the incident's, and nothing else — no second attempt, no worker —
+  starts beside a process nobody has accounted for. The hold is named when it happens, and what it
+  is made of is recorded: the tree's own root, and what could not be confirmed, or that nothing
+  recorded it. A later invocation reconciles it only on evidence that the tree the turn's runtime
+  led has ended — a missing root PID is not that evidence, because a tool the turn started can
+  outlive the runtime a failed tree stop left behind — and where this host cannot answer that
+  question at all (a Windows root that is already gone, chiefly), the incident waits for a person
+  who has checked the host and records an acknowledgement newer than the hold, or — for a shutdown
+  nothing recorded — newer than the attempt's own start.
 - **finishes a report that is unfinished.** Every concluded incident whose comment or email summary
   is still outstanding is published again, wherever it sits, however many times the pointer has
   moved since: a failed publication is never lost, and never repeats the recovery that succeeded.
@@ -1504,7 +1506,9 @@ Before a restarted supervisor starts anything, it reads every incident record ba
 - **keeps an unresolved request for human help stopped.** A `help` conclusion is not answered by a
   restart: the incident keeps the queue stopped until a person does what it asks and acknowledges it
   in the record (`"acknowledgement": { "at": …, "note": … }`), so a restart neither starts a fresh
-  worker nor silently resets the bound the incident already spent.
+  worker nor silently resets the bound the incident already spent. An acknowledgement answers the
+  thing it is newer than and nothing else, so one a person made for an earlier hold — the
+  process-tree reconciliation, chiefly — never resolves a request the incident concluded after it.
 
 ### What an incident records, and what it publishes
 
