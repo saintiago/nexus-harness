@@ -1532,9 +1532,9 @@ async function recoveredReviewRound(parts: {
     round: null,
     from: null,
     problem:
-      'nothing of this review states the round it was recorded with: neither the history ' +
-      'snapshot its turn was prepared with nor the report verdict saved beside its digest ' +
-      'survived, and the review attempts that remain are not evidence of its round',
+      'neither the history snapshot its turn was prepared with nor the report verdict saved ' +
+      'beside its digest survived, and the review attempts that remain are no evidence of a ' +
+      'round none of them states',
   };
 }
 
