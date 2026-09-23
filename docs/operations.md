@@ -1144,7 +1144,8 @@ The supervisor keeps only:
 <workDir>/.supervisor/<supervision-id>/     # a hash of the checkout and the harness configuration
   holders/holder-000001.json        # one claim per invocation, named by the rank it published
   current.json                      # the incident being carried, the worker's PID, and the work
-                                    #   its launch was started for
+                                    #   its launch was started for — and, once its worker ended,
+                                    #   how it ended, kept until that ending is recorded
   incidents/<incident-id>/incident.json   # stops, origin, attempts, pending attempt, resume plan,
                                           # conclusion, resumption, report ids and states
   incidents/<incident-id>/attempt-1/{input.md,recovery.log,outcome.json}
@@ -1154,7 +1155,11 @@ The supervisor keeps only:
 One supervisor runs per supervision — one checkout and one harness configuration — and the owner
 claim is published exclusively under the next free rank, so two simultaneous starts cannot both own
 it: the lowest-ranking live claim owns the queue, a contender that is not it is refused by name,
-and a claim is never renamed, replaced, or removed while its holder may be alive. A restart adopts the
+and a claim is never renamed, replaced, or removed while its holder may be alive. The rank is read
+again before every publication, and a claim that ends up below one that is already there — the rank
+it named was cleared away in between — never decides the ownership: it awaits that claim for a
+bounded moment, clears away what is really gone, and refuses while a claim above it is still there,
+because that one may have decided first. A restart adopts the
 incident its predecessor left instead of starting a second worker; a recorded worker PID, or a
 recovery turn's runtime PID, that is still alive refuses a supervisor that would put a second one
 beside it; and an attempt that was left in flight is reconciled from its own `outcome.json` rather
@@ -1164,9 +1169,16 @@ that wins, so a crash between publishing a claim and deciding leaves nothing tha
 start. Every worker is launched through a handshake — the launch's
 token is written down first, the child does nothing until that record names its PID, and a
 registration that fails stops the child where it waits — so a restart that finds a launch naming no
-process refuses it by name instead of starting a second worker beside a process it cannot name. A
-recovery runtime the harness could not confirm stopped keeps the incident's ownership of it: the
-attempt stays in flight and nothing else runs until a later invocation reconciles that process.
+process refuses it by name instead of starting a second worker beside a process it cannot name. The
+launch is kept until its ending is durable: the invocation that watched the worker end writes that
+ending down beside it, and a restart decides on it exactly as that invocation would have — a settled
+worker and the operator's own stop owe nothing, every other ending is the incident that invocation
+was about to open, and an ending nobody recorded is an unexpected stop investigated the same way,
+including a worker that was carrying out a step a held plan still owes. A recovery runtime the
+harness could not confirm stopped keeps the incident's ownership of it: the attempt stays in flight
+and nothing else runs until a later invocation shows the tree it led ended — or a person who checked
+the host records an acknowledgement, newer than the hold or than the attempt's own start — the same
+hold an interrupted attempt whose shutdown nothing recorded is kept under.
 Starting the supervisor
 while a raw `queue` consumer still runs is refused with the intake lock and its owner named — stop
 that consumer first; a lock is never broken automatically.
@@ -1183,7 +1195,11 @@ person, because its ending alone never proves the topic refused the summary — 
 recovery that succeeded, wherever the incident
 record sits. The Jira connection the comment is written through is read from the connected
 project's configuration at that moment, so a report that could not be written while the file was
-broken goes into the thread a repair restored. A blocker a judgment ranked ahead of the
+broken goes into the thread a repair restored. A report describes one conclusion: an incident that
+concludes again — the blocker whose completion could not be verified, chiefly — has the conclusion it
+now holds published on its own, as a comment whose identity names it and as a summary of its own
+carrying what a person has to do, while what the earlier conclusion published is kept as what it was.
+A blocker a judgment ranked ahead of the
 interrupted ticket really runs first — as its own scoped `queue run --ticket <KEY>` worker — and the
 resumption is recorded when the interrupted work is really started again, and only after the
 blocker's own ticket is read back as complete: a blocker whose worker settled without reaching the
@@ -1191,7 +1207,8 @@ configured done status ends in a request for a person instead of advancing the p
 that ended
 in a request for human help keeps the queue stopped until a person does what it asks and records the
 acknowledgement in the incident record (`"acknowledgement": { "at": …, "note": … }`): a restart is
-not an answer to that request.
+not an answer to that request, and an acknowledgement answers only what it is newer than — one made
+for an earlier hold never resolves a request the incident concluded after it.
 
 Exit codes are the queue's own with the supervision added: `0` when the worker settled, `1` when an
 incident needs a person or an input, configuration, or publication error stopped the supervision,

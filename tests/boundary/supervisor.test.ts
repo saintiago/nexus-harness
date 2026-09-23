@@ -819,6 +819,17 @@ describe('the incident report’s publication boundaries', () => {
     // find the first comment — the same incident, an earlier conclusion — and
     // post the new conclusion anyway, under its own identity.
     const thread: { readonly id: string; readonly body: unknown }[] = [];
+    const publisher = path.join(directory, 'publish.mjs');
+    await writeFile(
+      publisher,
+      'process.stdout.write(JSON.stringify({ MessageId: "abc-123", TopicArn: "arn:aws:sns:eu-north-1:698643713254:nexus-recovery-notifications" }));\n',
+      'utf8',
+    );
+    const notification = {
+      topicArn: 'arn:aws:sns:eu-north-1:698643713254:nexus-recovery-notifications',
+      email: 'saint282@gmail.com',
+      publisher: [process.execPath, publisher],
+    };
     const service = await startLocalService((request) => {
       if (request.method === 'GET' && request.url.includes('/comment')) {
         return {
@@ -845,9 +856,10 @@ describe('the incident report’s publication boundaries', () => {
     });
     try {
       const incident = reportIncident('ns');
+      const logsDir = incidentDir(directory, incident.id);
       const reporter = createIncidentReporter({
-        notification: null,
-        logsDir: () => path.join(directory, 'logs'),
+        notification,
+        logsDir: () => logsDir,
         cwd: directory,
         now: () => new Date('2026-09-23T00:04:00.000Z'),
       });
@@ -893,12 +905,23 @@ describe('the incident report’s publication boundaries', () => {
         conclusion: { outcome: 'repaired', at: '2026-09-23T00:03:00.000Z' },
         commentId: '10041',
       });
+      // The earlier conclusion's summary was really sent, and it is kept as
+      // that: the request's own summary goes through the topic in its turn,
+      // which is a second publication and not a second copy of the first.
+      expect(second.report.superseded[0]?.notification?.state).toBe('sent');
+      expect(second.report.notification).toMatchObject({ state: 'sent', messageId: 'abc-123' });
+      const summaries = async (): Promise<readonly string[]> =>
+        (await readdir(logsDir).catch(() => [] as string[])).filter((name) =>
+          name.endsWith('.stdout.log'),
+        );
+      expect(await summaries()).toHaveLength(2);
 
       // And a restart of the same conclusion adopts the comment it finds in the
-      // thread rather than posting a third one for the same request.
+      // thread rather than posting a third one for the same request, and sends
+      // no second copy of the request's summary.
       const restart = await createIncidentReporter({
-        notification: null,
-        logsDir: () => path.join(directory, 'logs'),
+        notification,
+        logsDir: () => logsDir,
         cwd: directory,
         now: () => new Date('2026-09-23T00:20:00.000Z'),
       })({
@@ -907,7 +930,9 @@ describe('the incident report’s publication boundaries', () => {
         jira,
       });
       expect(restart.report.commentId).toBe('10042');
+      expect(restart.report.notification?.state).toBe('sent');
       expect(service.requests.filter((request) => request.method === 'POST')).toHaveLength(2);
+      expect(await summaries()).toHaveLength(2);
     } finally {
       await service.close();
     }

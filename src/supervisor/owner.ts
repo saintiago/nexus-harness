@@ -26,10 +26,13 @@
  * A rank read from the directory is only an order while it stands above every
  * claim really there: a claim that has since been cleared away — its holder
  * released it, or its process was gone and the invocation that won took it
- * away — would otherwise let a contender publish *below* a claim that is
- * already deciding, and both would own the queue. So a publication is checked
- * again once it is on the filesystem, and one that is outranked is withdrawn
- * and published again above what is really there.
+ * away — would otherwise let a contender publish *below* a claim published
+ * afterwards, which may already have decided the ownership, and both would own
+ * the queue. A claim therefore never decides while one stands above its own:
+ * it awaits that claim for a bounded moment — a contender above resolves itself
+ * by refusing, a holder keeps its claim and is then refused by name — and the
+ * claims whose process is gone are cleared away while it waits, exactly as they
+ * are everywhere else.
  *
  * The lowest-ranking live claim owns the queue. A contender that is not that
  * claim refuses by name, and a claim whose process is gone cannot own anything:
