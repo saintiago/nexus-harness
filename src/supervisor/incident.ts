@@ -280,11 +280,6 @@ export function supervisorRoot(workDir: string, namespace: string): string {
   return path.join(workDir, '.supervisor', namespace);
 }
 
-/** The owner record one supervisor invocation holds while it runs. */
-export function ownerFilePath(root: string): string {
-  return path.join(root, 'owner.json');
-}
-
 /** The pointer at the incident this supervisor is handling. */
 export function currentIncidentPath(root: string): string {
   return path.join(root, 'current.json');

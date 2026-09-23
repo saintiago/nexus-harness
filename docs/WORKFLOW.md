@@ -1398,7 +1398,7 @@ commands change no timeout.
 
 ```text
 <workDir>/.supervisor/<supervision-id>/     # a hash of the checkout and the harness configuration
-  owner.json                                # the live supervisor: pid, token, intent, checkout
+  holders/holder-000001.json                # one claim per invocation: pid, token, intent, checkout
   current.json                              # the incident being carried, and the worker's pid
   incidents/<incident-id>/
   incident.json                           # stops, origin, attempts, pending attempt, resume plan,
@@ -1413,19 +1413,19 @@ broken project configuration is exactly what is being repaired, so it cannot be 
 configuration; the connected project's own lock namespace of §1 is what the activation check reads
 instead (and, until its configuration can be read, there is no lock to read).
 
-The owner record is the lock: it is created exclusively, so one live owner refuses a second
-supervisor for the same supervision, and two simultaneous starts cannot both take it. A record
-whose process is gone is adopted, which is what makes a restart continue the incident instead of
-starting a second worker; and a recorded worker PID — or a recovery turn's own runtime PID — that
-is still alive refuses a supervisor that would put a second one beside it. Activating the
+The claims are the lock, and a claim is the rank it was published under: a start reads the highest
+rank any claim carries and creates the next one exclusively, so two simultaneous starts cannot hold
+one claim, and a claim published later always outranks every claim already there. The
+lowest-ranking live claim owns the queue, and every other invocation refuses by name. A claim whose
+process is gone cannot own anything: it is ignored while the ownership is decided and cleared away
+by the invocation that wins, which is what makes a restart continue the incident instead of starting
+a second worker. Nothing renames, replaces, or removes a claim a live holder may own — no contender
+ever touches another's record — so a contender cannot lose a race it has already won, and a crash
+between publishing a claim and deciding leaves the next start a queue it can take safely. A
+recorded worker PID — or a recovery turn's own runtime PID — that is still alive refuses a
+supervisor that would put a second one beside it. Activating the
 supervisor beside a raw `queue` consumer that is really running is refused with the intake lock and
 its owner named — stop that consumer first. A lock is never broken automatically, here included.
-
-A stale record is never taken over on the strength of a name alone: the record is read, its process
-is probed, and the file that a takeover renames away is read back before anything is deleted. An
-invocation that inspected a stale record and then lost the race to another contender — whose own,
-live record then stood under the very name it had inspected — puts that record back untouched
-instead of removing it, and a record it cannot put back is refused by name rather than discarded.
 
 Every worker is launched through a handshake, because spawning a process and writing down which
 process it is are two steps and a supervisor can die between them. The launch's own token is written

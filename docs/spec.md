@@ -666,15 +666,17 @@ worker beside it. Activation beside a raw queue consumer that is really running 
 lock and its owner named. Nothing here breaks, adopts or deletes a lock: the queue's own
 exclusivity rules are untouched.
 
-Ownership is the exclusive creation of that record, so two starts that both read an absent record
-cannot both become the owner; a stale record is renamed away before the record is created again, so
-simultaneous takeovers still leave exactly one owner. The supervisor's own state is keyed by the
+Ownership is a claim, and publication is exclusive: each invocation publishes its own claim under
+the next free rank, so two starts cannot both take one rank and a claim published later can never
+overtake one already there — the lowest-ranking live claim owns the queue, and every other
+invocation refuses by name. Nothing renames, replaces, or removes a claim a live holder may own: a
+claim whose process is gone is ignored while the ownership is decided and cleared away by the
+invocation that wins, so a crash between publishing a claim and deciding leaves the next start a
+queue it can safely take. The supervisor's own state is keyed by the
 supervision itself — the connected checkout and the harness configuration it was started with —
 never by the connected project's configuration, which has to stay repairable while it is broken;
 the project's own lock namespace is what the activation check reads while that configuration can be
-read. A takeover removes only the record it inspected as dead: a contender that loses the race and
-finds another contender's own, live record under the name it inspected puts that record back
-untouched rather than deleting it.
+read.
 
 Every worker is launched through a handshake. The launch's token is written down — with no PID yet —
 before the child is spawned, the child is started with that token and does nothing until the same

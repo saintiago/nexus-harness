@@ -24,6 +24,8 @@ import {
 } from '../../src/supervisor/incident.js';
 import {
   acquireSupervisorOwnership,
+  holderFilePath,
+  holdersDir,
   intakeConsumerProblem,
   processIsAlive,
 } from '../../src/supervisor/owner.js';
@@ -113,12 +115,17 @@ describe('the supervisor’s incident state', () => {
   });
 });
 
+/** Every claim file one supervision's root currently holds, by rank. */
+async function heldClaims(root: string): Promise<readonly string[]> {
+  return (await readdir(holdersDir(root)).catch(() => [] as string[])).sort();
+}
+
 describe('the supervisor’s own ownership', () => {
-  it('lets exactly one of two starts own the queue, whoever creates the record first', async () => {
+  it('lets exactly one of two starts own the queue, whoever publishes its claim first', async () => {
     const root = await tempDir();
     const now = (): Date => new Date('2026-09-23T00:00:00Z');
-    // The record is the lock: the exclusive creation itself decides, so two
-    // invocations that both read an absent record cannot both become owner.
+    // The claim is the lock: the exclusive publication of a rank decides, so
+    // two invocations that both read an unclaimed root cannot both own it.
     const isAlive = (pid: number): boolean => pid === process.pid;
     const [first, second] = await Promise.all([
       acquireSupervisorOwnership({ root, intent: 'run', repoPath: 'C:/target', now, isAlive }),
@@ -134,72 +141,70 @@ describe('the supervisor’s own ownership', () => {
         await take.ownership.release();
       }
     }
-    expect(await readFile(path.join(root, 'owner.json'), 'utf8').catch(() => null)).toBeNull();
+    expect(await heldClaims(root)).toEqual([]);
   }, 30_000);
 
-  it('takes one stale record over exactly once when two invocations race for it', async () => {
+  it('adopts a claim an interrupted start left behind, exactly once', async () => {
     const root = await tempDir();
     const now = (): Date => new Date('2026-09-23T00:00:00Z');
-    // An earlier supervisor that is really gone: its PID is nobody's.
-    await writeFile(
-      path.join(root, 'owner.json'),
-      JSON.stringify({
-        version: 1,
-        pid: 4242,
-        token: 'stale',
-        startedAt: 't',
-        intent: 'run',
-        repoPath: 'C:/target',
-      }),
-      'utf8',
-    );
+    // An invocation that published its claim and then died before deciding:
+    // its process is nobody's, so the claim cannot own anything and the next
+    // start takes the queue over rather than refusing beside a dead claim.
+    const stale = JSON.stringify({
+      version: 1,
+      pid: 4242,
+      token: 'stale',
+      startedAt: 't',
+      intent: 'run',
+      repoPath: 'C:/target',
+      rank: 1,
+    });
+    await mkdir(holdersDir(root), { recursive: true });
+    await writeFile(holderFilePath(root, 1), stale, 'utf8');
     const isAlive = (pid: number): boolean => pid === process.pid;
     const takes = await Promise.all([
       acquireSupervisorOwnership({ root, intent: 'run', repoPath: 'C:/target', now, isAlive }),
       acquireSupervisorOwnership({ root, intent: 'run', repoPath: 'C:/target', now, isAlive }),
     ]);
     expect(takes.filter((take) => take.ok)).toHaveLength(1);
-    const recorded = JSON.parse(await readFile(path.join(root, 'owner.json'), 'utf8')) as {
-      pid: number;
-    };
-    expect(recorded.pid).toBe(process.pid);
-    for (const take of takes) {
-      if (take.ok) {
-        await take.ownership.release();
-      }
+    const owner = takes.find((take) => take.ok);
+    if (owner?.ok !== true) {
+      throw new Error('nobody owned the queue');
     }
+    expect(owner.ownership.record.pid).toBe(process.pid);
+    // The dead claim was taken away, and only the live one is left.
+    expect(await heldClaims(root)).toEqual(['holder-000002.json']);
+    await owner.ownership.release();
+    expect(await heldClaims(root)).toEqual([]);
   }, 30_000);
 
-  it('never removes the live record a second takeover created under a stale observation', async () => {
+  it('refuses a second and a third start beside a live claim, and removes nothing', async () => {
     const root = await tempDir();
     const now = (): Date => new Date('2026-09-23T00:00:00Z');
-    const file = path.join(root, 'owner.json');
-    // The record an earlier supervisor left behind: its process is gone, so
-    // both contenders below read it as stale.
-    await writeFile(
-      file,
-      JSON.stringify({
-        version: 1,
-        pid: 4242,
-        token: 'stale',
-        startedAt: 't',
-        intent: 'run',
-        repoPath: 'C:/target',
-      }),
-      'utf8',
-    );
     const isAlive = (pid: number): boolean => pid === process.pid;
 
-    // B inspects the dead record and is held exactly there — the schedule the
-    // race turns on — while A takes the record over and creates its own, live
-    // one under the very name B inspected.
+    // A acquires the queue and owns it.
+    const a = await acquireSupervisorOwnership({
+      root,
+      intent: 'run',
+      repoPath: 'C:/target',
+      now,
+      isAlive,
+    });
+    expect(a.ok).toBe(true);
+    const aFile = holderFilePath(root, 1);
+    const aRecord = JSON.parse(await readFile(aFile, 'utf8')) as { token: string };
+
+    // B publishes its own claim and is held exactly there — the schedule the
+    // race turns on: its rank is above A's, so it can never overtake A, and it
+    // must not remove anything of A's while it decides.
     let releaseB: () => void = () => undefined;
     const bHeld = new Promise<void>((resolve) => {
       releaseB = resolve;
     });
-    let bInspected: () => void = () => undefined;
-    const inspected = new Promise<void>((resolve) => {
-      bInspected = resolve;
+    let bPublished: () => void = () => undefined;
+    const published = new Promise<void>((resolve) => {
+      bPublished = resolve;
     });
     const b = acquireSupervisorOwnership({
       root,
@@ -207,41 +212,44 @@ describe('the supervisor’s own ownership', () => {
       repoPath: 'C:/target',
       now,
       isAlive,
-      onStaleInspection: async (record) => {
-        expect(record.token).toBe('stale');
-        bInspected();
+      onClaimPublished: async (claim) => {
+        expect(claim.rank).toBe(2);
+        bPublished();
         await bHeld;
       },
     });
-    await inspected;
+    await published;
 
-    const a = await acquireSupervisorOwnership({
+    // C starts beside the two claims already there. Whatever it does, it can
+    // never end up owning the queue beside A: A's claim is live and below it.
+    const c = await acquireSupervisorOwnership({
       root,
       intent: 'watch',
       repoPath: 'C:/target',
       now,
       isAlive,
     });
-    expect(a.ok).toBe(true);
-    const aRecord = JSON.parse(await readFile(file, 'utf8')) as { token: string };
-    expect(aRecord.token).not.toBe('stale');
+    expect(c.ok).toBe(false);
+    if (!c.ok) {
+      expect(c.problem).toContain('another supervisor already runs');
+    }
+    expect(JSON.parse(await readFile(aFile, 'utf8'))).toEqual(aRecord);
 
-    // B resumes with its stale observation. It must not remove the record A
-    // holds: what B renames away is not the record it inspected, so it goes
-    // back untouched and B is refused by name instead.
+    // B resumes with its claim published before C's attempt and after A's
+    // ownership: it refuses by name, and A's claim is exactly as it was.
     releaseB();
     const bResult = await b;
     expect(bResult.ok).toBe(false);
     if (!bResult.ok) {
       expect(bResult.problem).toContain('another supervisor already runs');
     }
-    expect(JSON.parse(await readFile(file, 'utf8'))).toEqual(aRecord);
-    expect((await readdir(root)).filter((name) => name.includes('taken'))).toEqual([]);
+    expect(JSON.parse(await readFile(aFile, 'utf8'))).toEqual(aRecord);
+    expect(await heldClaims(root)).toEqual(['holder-000001.json']);
 
     if (a.ok) {
       await a.ownership.release();
     }
-    expect(await readFile(file, 'utf8').catch(() => null)).toBeNull();
+    expect(await heldClaims(root)).toEqual([]);
   }, 30_000);
 
   it('refuses a live owner and adopts one whose process is gone', async () => {
@@ -254,6 +262,8 @@ describe('the supervisor’s own ownership', () => {
       now,
     });
     expect(first.ok).toBe(true);
+    const file = holderFilePath(root, 1);
+    const held = JSON.parse(await readFile(file, 'utf8')) as { token: string };
     const second = await acquireSupervisorOwnership({
       root,
       intent: 'watch',
@@ -265,8 +275,10 @@ describe('the supervisor’s own ownership', () => {
     if (!second.ok) {
       expect(second.problem).toContain('another supervisor already runs');
     }
-    // The record names a dead process (this test's own id is never used as a
-    // live one): a restart adopts it rather than refusing.
+    // The live claim was not touched by the refused invocation.
+    expect(JSON.parse(await readFile(file, 'utf8'))).toEqual(held);
+    // The same claim with its process gone cannot own anything: a restart
+    // adopts the queue, and the dead claim is cleared away with it.
     const adopted = await acquireSupervisorOwnership({
       root,
       intent: 'watch',
@@ -276,13 +288,15 @@ describe('the supervisor’s own ownership', () => {
     });
     expect(adopted.ok).toBe(true);
     if (first.ok) {
-      // The first holder no longer owns the record, so it leaves it in place.
+      // The first holder's claim is gone, so its release leaves the holder in
+      // place: it no longer owns the queue.
       await first.ownership.release();
     }
     if (adopted.ok) {
+      expect(await heldClaims(root)).toEqual([path.basename(adopted.ownership.file)]);
       await adopted.ownership.release();
     }
-    expect(await readFile(path.join(root, 'owner.json'), 'utf8').catch(() => null)).toBeNull();
+    expect(await heldClaims(root)).toEqual([]);
   });
 
   it('refuses to activate beside a live raw queue consumer', async () => {

@@ -3,40 +3,37 @@
  *
  * Two facts decide whether a `supervise` invocation may start a worker at all:
  *
- * - the supervisor's own owner record, so a restart of the supervisor adopts
+ * - the supervisor's own claim, so a restart of the supervisor adopts
  *   the state it left instead of starting a second worker beside a live one —
- *   a live owner is refused by name, and a record whose process is gone is
- *   taken over with a fresh token, which is what makes a plain restart safe;
+ *   a live claim is refused by name, and a claim whose process is gone is
+ *   ignored and cleared away, which is what makes a plain restart safe;
  * - the connected project's intake lock, so activating the supervisor over an
  *   existing raw `queue` consumer is refused while that consumer is really
  *   running. Nothing here breaks a lock: the queue's own exclusivity rules are
  *   untouched, and an owner that is gone leaves the harness's own recovery
  *   judgment to the incident (docs/WORKFLOW.md §12).
  *
- * The owner record is the lock itself, and it is never written by replace: the
- * file is created exclusively, so exactly one invocation can hold it, and
- * "read an absent record, then rename one over it" can never let two starts
- * both believe they own the queue. A record whose process is gone is taken
- * over by renaming it away first — an atomic step only one contender can win —
- * and then creating the record exclusively again, so two simultaneous
- * takeovers still leave exactly one owner.
+ * Ownership is held by a claim: one small file per invocation under the
+ * supervision's own root, named by the rank the claim was published under. The
+ * rank is the order of publication, and the filesystem decides it: a contender
+ * reads the highest rank any claim file carries and creates the next one
+ * exclusively, so exactly one invocation can hold a rank, and a claim published
+ * later always outranks — never overtakes — every claim already there. Nothing
+ * here renames, replaces, or removes a record another invocation may hold: the
+ * only claim a contender ever takes away is one whose process is gone, and a
+ * live holder's claim is never touched by anyone but its holder.
  *
- * A takeover never removes a record it did not itself see as dead. The record
- * is read, its process is probed, and only then is the file renamed away; what
- * the rename really moved is read back before it is deleted, so an invocation
- * that inspected a stale record and lost the race to another contender — whose
- * own, live record then stood under the name — puts that live record back
- * instead of deleting it. A stale observation cannot take a live owner's record
- * away, and a record that cannot be put back is refused by name rather than
- * discarded.
+ * The lowest-ranking live claim owns the queue. A contender that is not that
+ * claim refuses by name, and a claim whose process is gone cannot own anything:
+ * it is ignored while ownership is decided and cleared away by the invocation
+ * that wins, so a crash between publishing and deciding leaves nothing that
+ * blocks the next start and nothing that could be read as a second owner.
  */
 import { randomUUID } from 'node:crypto';
-import { constants } from 'node:fs';
-import { copyFile, readFile, mkdir, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { messageOf } from '../shared/errors.js';
 import { intakeLockPath } from '../sources/receipts.js';
-import { ownerFilePath } from './incident.js';
 
 /** The record one supervisor invocation holds under its project's root. */
 export interface OwnerRecord {
@@ -46,6 +43,8 @@ export interface OwnerRecord {
   readonly startedAt: string;
   readonly intent: string;
   readonly repoPath: string;
+  /** The rank this claim was published under: the order of publication. */
+  readonly rank: number;
 }
 
 /** Whether one recorded process is still running, as this host reports it. */
@@ -70,53 +69,147 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-/** Reads the owner record; an unreadable one is refused, never ignored. */
-async function readOwner(file: string): Promise<OwnerRecord | null> {
+/** The directory one supervision's own claims live in. */
+export function holdersDir(root: string): string {
+  return path.join(root, 'holders');
+}
+
+/** The file one claim lives in, named by the rank it was published under. */
+export function holderFilePath(root: string, rank: number): string {
+  return path.join(holdersDir(root), `holder-${String(rank).padStart(6, '0')}.json`);
+}
+
+/** One claim file's name, and the rank it carries. */
+const HOLDER_NAME = /^holder-([0-9]{1,18})\.json$/;
+
+/** How many ranks one acquisition tries before it gives up. */
+const MAX_PUBLISH_ATTEMPTS = 8;
+
+/** The rank a claim file's own name carries, or `null` when it carries none. */
+function rankOfName(file: string): number | null {
+  const match = HOLDER_NAME.exec(path.basename(file));
+  return match?.[1] === undefined ? null : Number(match[1]);
+}
+
+/** One claim, as it was read back from its own file. */
+interface HeldClaim {
+  readonly rank: number;
+  readonly file: string;
+  readonly record: OwnerRecord;
+}
+
+/** One claim file, as reading it went. */
+type ClaimRead =
+  | { readonly kind: 'held'; readonly record: OwnerRecord }
+  | { readonly kind: 'absent' }
+  | { readonly kind: 'unreadable' };
+
+/**
+ * One claim, as read back from its own file. A claim file that cannot be read
+ * as a whole is never treated as an absent claim — another invocation may be
+ * publishing exactly that claim right now — and nothing here deletes what it
+ * could not read.
+ */
+async function readClaim(file: string): Promise<ClaimRead> {
   let text: string;
   try {
     text = await readFile(file, 'utf8');
   } catch (cause) {
     if ((cause as NodeJS.ErrnoException).code === 'ENOENT') {
-      return null;
+      // The claim was cleared away between the listing and this read: it is
+      // gone, which is not the same as unreadable.
+      return { kind: 'absent' };
     }
-    throw new Error(
-      `the supervisor's owner record "${file}" could not be read: ${messageOf(cause)}`,
-      { cause },
-    );
+    throw new Error(`the supervisor's own claim "${file}" could not be read: ${messageOf(cause)}`, {
+      cause,
+    });
   }
   let value: unknown;
   try {
     value = JSON.parse(text);
+  } catch {
+    // A claim that is being written is not readable yet.
+    return { kind: 'unreadable' };
+  }
+  if (
+    !isRecord(value) ||
+    value['version'] !== 1 ||
+    typeof value['pid'] !== 'number' ||
+    typeof value['token'] !== 'string'
+  ) {
+    return { kind: 'unreadable' };
+  }
+  return { kind: 'held', record: value as unknown as OwnerRecord };
+}
+
+/** Every claim file under one supervision's root, by the rank in its name. */
+async function claimFiles(root: string): Promise<readonly { rank: number; file: string }[]> {
+  const dir = holdersDir(root);
+  let names: readonly string[];
+  try {
+    names = await readdir(dir);
   } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code === 'ENOENT') {
+      return [];
+    }
     throw new Error(
-      `the supervisor's owner record "${file}" is not valid JSON (${messageOf(cause)}). Inspect ` +
-        'it by hand before starting another supervisor.',
+      `the supervisor's own claims under "${dir}" could not be read: ${messageOf(cause)}`,
       { cause },
     );
   }
-  if (!isRecord(value) || typeof value['pid'] !== 'number' || typeof value['token'] !== 'string') {
-    throw new Error(
-      `the supervisor's owner record "${file}" names no owning process, so this invocation will ` +
-        'not take it over. Inspect it by hand.',
-    );
+  const ranked: { rank: number; file: string }[] = [];
+  for (const name of names) {
+    const match = HOLDER_NAME.exec(name);
+    if (match?.[1] === undefined) {
+      continue;
+    }
+    ranked.push({ rank: Number(match[1]), file: path.join(dir, name) });
   }
-  return value as unknown as OwnerRecord;
+  return ranked.sort((left, right) => left.rank - right.rank);
+}
+
+/** Every claim the root holds, whole, oldest rank first. */
+async function readHeldClaims(
+  root: string,
+): Promise<{ readonly held: readonly HeldClaim[]; readonly unreadable: readonly string[] }> {
+  const held: HeldClaim[] = [];
+  const unreadable: string[] = [];
+  for (const candidate of await claimFiles(root)) {
+    const read = await readClaim(candidate.file);
+    if (read.kind === 'held') {
+      held.push({ rank: candidate.rank, file: candidate.file, record: read.record });
+    } else if (read.kind === 'unreadable') {
+      unreadable.push(candidate.file);
+    }
+  }
+  return { held, unreadable };
+}
+
+/** The highest rank any claim file carries, or `0` when none is held. */
+async function highestHeldRank(root: string): Promise<number> {
+  let highest = 0;
+  for (const candidate of await claimFiles(root)) {
+    highest = Math.max(highest, candidate.rank);
+  }
+  return highest;
 }
 
 /** The supervisor's own lock, which only its holder removes. */
 export interface SupervisorOwnership {
   readonly root: string;
+  /** The claim file this invocation holds. */
   readonly file: string;
-  /** Removes the record only while this invocation still owns it. */
+  /** The rank the claim was published under. */
+  readonly rank: number;
+  /** The record this invocation published. */
+  readonly record: OwnerRecord;
+  /** Removes the claim only while this invocation still owns it. */
   release(): Promise<void>;
 }
 
 export type OwnershipTake =
   | { readonly ok: true; readonly ownership: SupervisorOwnership }
   | { readonly ok: false; readonly problem: string };
-
-/** How many takeover races one acquisition loses before it gives up. */
-const MAX_TAKEOVER_ROUNDS = 8;
 
 /** Everything one acquisition is asked for. */
 export interface OwnershipRequest {
@@ -126,206 +219,163 @@ export interface OwnershipRequest {
   readonly now: () => Date;
   readonly isAlive?: LivenessProbe;
   /**
-   * Reported once a record was read and probed as one whose process is gone,
-   * before the takeover does anything about it. Acquisition itself never passes
-   * one: it is the seam that lets a test interleave a second takeover with this
-   * one — the race a takeover is really exposed to — and drive that schedule
-   * directly, with no filesystem substitute.
+   * Reported once this invocation's own claim is published and before the
+   * ownership is decided, with the claim it published. Acquisition itself never
+   * passes one: it is the seam that lets a test interleave a second contender
+   * with this one — the schedule ownership is really exposed to — and drive
+   * that interleaving directly, with no filesystem substitute.
    */
-  readonly onStaleInspection?: (record: OwnerRecord) => Promise<void> | void;
+  readonly onClaimPublished?: (claim: {
+    readonly rank: number;
+    readonly file: string;
+    readonly record: OwnerRecord;
+  }) => Promise<void> | void;
 }
 
-/** What one takeover of a stale record did, or why it refused to do anything. */
-type TakeoverOutcome =
-  | { readonly kind: 'removed' }
-  /** Another contender took the record first: read again what it left. */
-  | { readonly kind: 'beaten' }
-  | { readonly kind: 'refused'; readonly problem: string };
-
-/** Why a live owner refuses a second invocation, by name. */
-function liveOwnerProblem(file: string, record: OwnerRecord): string {
+/** Why a live claim refuses a second invocation, by name. */
+function liveOwnerProblem(claim: HeldClaim): string {
   return (
-    `another supervisor already runs this connected project (pid ${String(record.pid)}, ` +
-    `started ${record.startedAt}, record "${file}"). Only one supervisor may run a ` +
-    'worker for one project and workDir at a time. Stop that supervisor, or let it ' +
-    'finish, before starting another; a live owner is never taken over.'
+    `another supervisor already runs this connected project (pid ${String(claim.record.pid)}, ` +
+    `started ${claim.record.startedAt}, claim "${claim.file}"). Only one supervisor may run a ` +
+    'worker for one project and workDir at a time. Stop that supervisor, or let it finish, ' +
+    'before starting another; a live owner is never taken over.'
   );
 }
 
 /**
- * Takes the supervisor's own owner record: refused while a live supervisor
- * holds it, adopted when the recorded process is gone. Acquisition is the
- * exclusive creation of the record itself, so two starts can never both take
- * it: whichever creates the file owns the queue, and the other reads the
- * record it finds — a live owner, refused by name — instead of overwriting it.
- * The adopted record names its own invocation, so a person reading it can see
- * which one holds the queue now.
+ * Why a claim that cannot be read refuses the invocation: it outranks this one,
+ * and nothing here takes over a claim it could not read. Another invocation may
+ * be publishing exactly that claim right now.
+ */
+function unreadableClaimProblem(file: string): string {
+  return (
+    `another invocation may be acquiring this supervision right now: its claim "${file}" is ` +
+    'published and could not be read as a whole, so nothing is taken over beside it. Run the ' +
+    'supervisor again in a moment; if the claim is still unreadable then, inspect it by hand.'
+  );
+}
+
+/**
+ * Takes the supervisor's own claim: refused while a live claim outranks this
+ * invocation's, and owned once nothing live does. Publishing is the exclusive
+ * creation of a rank file, so two simultaneous starts can never hold one rank,
+ * and a claim published later can never take a rank from a claim already there:
+ * a contender's rank is above every claim that exists when it publishes, and
+ * ranks are never reused. That is what makes "the lowest live claim owns the
+ * queue" a decision every contender reaches alike.
  */
 export async function acquireSupervisorOwnership(
   request: OwnershipRequest,
 ): Promise<OwnershipTake> {
   const { root, intent, repoPath, now } = request;
   const isAlive = request.isAlive ?? processIsAlive;
-  const file = ownerFilePath(root);
-  await mkdir(root, { recursive: true });
+  await mkdir(holdersDir(root), { recursive: true });
 
-  for (let round = 0; round < MAX_TAKEOVER_ROUNDS; round += 1) {
-    const token = randomUUID();
+  const token = randomUUID();
+  const startedAt = now().toISOString();
+  let claim: HeldClaim | null = null;
+  let next = (await highestHeldRank(root)) + 1;
+  for (let attempt = 0; attempt < MAX_PUBLISH_ATTEMPTS; attempt += 1) {
+    const rank = next;
+    const file = holderFilePath(root, rank);
     const record: OwnerRecord = {
       version: 1,
       pid: process.pid,
       token,
-      startedAt: now().toISOString(),
+      startedAt,
       intent,
       repoPath,
+      rank,
     };
-    // The exclusive create is the lock: the creation itself decides, so two
-    // invocations reading the same absent record cannot both become the owner.
     try {
+      // The exclusive create is the lock: the creation itself decides the rank,
+      // so two invocations that reach for the same rank cannot both hold it.
       await writeFile(file, `${JSON.stringify(record, null, 2)}\n`, {
         encoding: 'utf8',
         flag: 'wx',
       });
+      claim = { rank, file, record };
+      break;
     } catch (cause) {
-      if ((cause as NodeJS.ErrnoException).code !== 'EEXIST') {
-        return {
-          ok: false,
-          problem: `the supervisor's owner record "${file}" could not be written: ${messageOf(cause)}`,
-        };
+      if ((cause as NodeJS.ErrnoException).code === 'EEXIST') {
+        // Another contender published exactly this rank a moment ago: the next
+        // rank is above it, and above every claim already there.
+        next = Math.max(next, await highestHeldRank(root)) + 1;
+        continue;
       }
-      // The record the create found is inspected and, when its process is
-      // gone, taken away — one record, once — and the next round's exclusive
-      // create decides between simultaneous takeovers.
-      const outcome = await takeOverStaleRecord(request, file, isAlive);
-      if (outcome.kind === 'refused') {
-        return { ok: false, problem: outcome.problem };
-      }
-      continue;
+      return {
+        ok: false,
+        problem: `the supervisor's own claim "${file}" could not be written: ${messageOf(cause)}`,
+      };
     }
-
+  }
+  if (claim === null) {
     return {
-      ok: true,
-      ownership: {
-        root,
-        file,
-        release: async () => {
-          const recorded = await readOwner(file).catch(() => null);
-          if (recorded === null || recorded.token !== token) {
-            // Not this invocation's record any more: it is left in place for a
-            // person rather than removed from under whoever holds it.
-            return;
-          }
-          await rm(file, { force: true });
-        },
-      },
+      ok: false,
+      problem:
+        `the supervisor's own claim under "${holdersDir(root)}" could not be published: ` +
+        `${String(MAX_PUBLISH_ATTEMPTS)} attempts lost the rank to another invocation. Only one ` +
+        'supervisor runs one queue; run the supervisor again to take it over.',
     };
   }
 
+  await request.onClaimPublished?.(claim);
+
+  const claims = await readHeldClaims(root);
+  const unreadableOutranking = claims.unreadable.filter((file) => {
+    const rank = rankOfName(file);
+    return rank !== null && rank < claim.rank;
+  });
+  if (unreadableOutranking.length > 0) {
+    await removeClaim(claim);
+    const file = unreadableOutranking[0] ?? '';
+    return { ok: false, problem: unreadableClaimProblem(file) };
+  }
+  const live = claims.held.filter(
+    (candidate) => candidate.rank < claim.rank && isAlive(candidate.record.pid),
+  );
+  const holder = live[0];
+  if (holder !== undefined) {
+    await removeClaim(claim);
+    return { ok: false, problem: liveOwnerProblem(holder) };
+  }
+
+  // This invocation owns the queue. Claims whose processes are gone cannot own
+  // anything, and they are cleared away now rather than read again on every
+  // later start: removing a claim of a process that is gone never takes a
+  // record from a live holder, and never drops below the rank a live claim
+  // holds, so the next acquisition still publishes above every live one.
+  for (const stale of claims.held) {
+    if (stale.rank !== claim.rank && !isAlive(stale.record.pid)) {
+      await rm(stale.file, { force: true }).catch(() => undefined);
+    }
+  }
+
   return {
-    ok: false,
-    problem:
-      `the supervisor's owner record "${file}" could not be acquired: ${String(MAX_TAKEOVER_ROUNDS)} ` +
-      'attempts lost the takeover to another invocation. Only one supervisor runs one queue; ' +
-      'inspect the record by hand before trying again.',
+    ok: true,
+    ownership: {
+      root,
+      file: claim.file,
+      rank: claim.rank,
+      record: claim.record,
+      release: async () => {
+        await removeClaim(claim);
+      },
+    },
   };
 }
 
 /**
- * Takes the record that stands under the owner's name away from it, and never
- * anything else.
- *
- * The record is read and its process probed; a live one is refused by name. A
- * record whose process is gone is renamed away — an atomic step exactly one
- * contender wins, so simultaneous takeovers cannot both claim the same record —
- * and what the rename really moved is read back before it is deleted:
- *
- * - the very record this invocation inspected as dead, and still dead, is the
- *   takeover's to remove;
- * - another contender's own, live record — created in the window between this
- *   invocation's read and its rename — is put back under the name it belongs to
- *   and left alone, because a stale observation never removes a live owner's
- *   record;
- * - a record that cannot be put back is kept where it was moved to and refused
- *   by name, because nothing here deletes a record it did not see as dead.
+ * Removes one claim only while it is still the claim this invocation
+ * published: a record somebody else put under that name is left alone, for a
+ * person to inspect, rather than removed from under whoever holds it.
  */
-async function takeOverStaleRecord(
-  request: OwnershipRequest,
-  file: string,
-  isAlive: LivenessProbe,
-): Promise<TakeoverOutcome> {
-  const { root } = request;
-  let inspected: OwnerRecord | null;
-  try {
-    inspected = await readOwner(file);
-  } catch (cause) {
-    return { kind: 'refused', problem: messageOf(cause) };
+async function removeClaim(claim: HeldClaim): Promise<void> {
+  const recorded = await readClaim(claim.file);
+  if (recorded.kind !== 'held' || recorded.record.token !== claim.record.token) {
+    return;
   }
-  if (inspected === null) {
-    // Another contender removed the record between the failed create and this
-    // read: read again what it left behind.
-    return { kind: 'beaten' };
-  }
-  // A live owner is refused whether or not it is this process: a second
-  // invocation in one process is a second supervisor like any other.
-  if (isAlive(inspected.pid)) {
-    return { kind: 'refused', problem: liveOwnerProblem(file, inspected) };
-  }
-  await request.onStaleInspection?.(inspected);
-  // The recorded process is gone. The stale record is renamed away first — an
-  // atomic step exactly one contender wins — and the file that was really moved
-  // is what this invocation decides about, never the name it was moved from.
-  const taken = path.join(root, `owner.json.taken-${randomUUID()}`);
-  try {
-    await rename(file, taken);
-  } catch (cause) {
-    if ((cause as NodeJS.ErrnoException).code === 'ENOENT') {
-      // Another contender took the record first: read what it left.
-      return { kind: 'beaten' };
-    }
-    return {
-      kind: 'refused',
-      problem:
-        `the supervisor's owner record "${file}" could not be taken over after its process ` +
-        `was gone: ${messageOf(cause)}. Inspect it by hand.`,
-    };
-  }
-  const moved = await readOwner(taken).catch(() => null);
-  if (moved === null || moved.token !== inspected.token || isAlive(moved.pid)) {
-    // Not the record this invocation inspected, or a record whose process is
-    // not gone after all: it belongs to someone, and it goes back.
-    const problem = await putRecordBack(taken, file);
-    return problem === null ? { kind: 'beaten' } : { kind: 'refused', problem };
-  }
-  await rm(taken, { force: true }).catch(() => undefined);
-  return { kind: 'removed' };
-}
-
-/**
- * Puts a record that was taken away back under its own name, without replacing
- * anything: the copy is created exclusively, so a record another contender
- * created in the meantime is never overwritten. A record that cannot go back —
- * the name is taken again — is kept where it was moved to and named, rather
- * than deleted or dropped.
- */
-async function putRecordBack(taken: string, file: string): Promise<string | null> {
-  try {
-    await copyFile(taken, file, constants.COPYFILE_EXCL);
-  } catch (cause) {
-    if ((cause as NodeJS.ErrnoException).code === 'EEXIST') {
-      return (
-        `another invocation created its own owner record at "${file}" while this takeover was in ` +
-        `flight, so the record this invocation had taken away is kept at "${taken}" and is not ` +
-        'removed. Only one supervisor may run one queue: inspect both records by hand before ' +
-        'starting another.'
-      );
-    }
-    return (
-      `the supervisor's owner record "${file}" could not be put back after it was taken away ` +
-      `(${messageOf(cause)}); the record itself is kept at "${taken}". Inspect it by hand.`
-    );
-  }
-  await rm(taken, { force: true }).catch(() => undefined);
-  return null;
+  await rm(claim.file, { force: true });
 }
 
 /**

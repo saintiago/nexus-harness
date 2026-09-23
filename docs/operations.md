@@ -1142,7 +1142,7 @@ The supervisor keeps only:
 
 ```text
 <workDir>/.supervisor/<supervision-id>/     # a hash of the checkout and the harness configuration
-  owner.json                        # the live supervisor, created exclusively; a second start is refused
+  holders/holder-000001.json        # one claim per invocation, named by the rank it published
   current.json                      # the incident being carried, and the worker's PID
   incidents/<incident-id>/incident.json   # stops, origin, attempts, pending attempt, resume plan,
                                           # conclusion, resumption, report ids and states
@@ -1151,13 +1151,16 @@ The supervisor keeps only:
 ```
 
 One supervisor runs per supervision — one checkout and one harness configuration — and the owner
-record is created exclusively, so two simultaneous starts cannot both own it. A restart adopts the
+claim is published exclusively under the next free rank, so two simultaneous starts cannot both own
+it: the lowest-ranking live claim owns the queue, a contender that is not it is refused by name,
+and a claim is never renamed, replaced, or removed while its holder may be alive. A restart adopts the
 incident its predecessor left instead of starting a second worker; a recorded worker PID, or a
 recovery turn's runtime PID, that is still alive refuses a supervisor that would put a second one
 beside it; and an attempt that was left in flight is reconciled from its own `outcome.json` rather
-than launched again, counted toward `recovery.maxAttempts` either way. A stale owner record is taken
-over only by the invocation that read it as dead: a contender that loses that race puts the winner's
-own record back rather than deleting it. Every worker is launched through a handshake — the launch's
+than launched again, counted toward `recovery.maxAttempts` either way. A claim whose process is gone
+cannot own anything: it is ignored while the ownership is decided and cleared away by the invocation
+that wins, so a crash between publishing a claim and deciding leaves nothing that blocks the next
+start. Every worker is launched through a handshake — the launch's
 token is written down first, the child does nothing until that record names its PID, and a
 registration that fails stops the child where it waits — so a restart that finds a launch naming no
 process refuses it by name instead of starting a second worker beside a process it cannot name. A
@@ -1173,14 +1176,18 @@ before the publisher runs, so a restart can tell an unattempted send from one th
 the publisher's own output is read back, an acknowledged `MessageId` is adopted — even from a
 publisher that then timed out, was signalled, or could not have its log closed — and a send that
 was never acknowledged is recorded as `interrupted` and left to a person to check rather than sent
-again. Only a publisher that could not be started, or one that ran and refused, is a failure the
-next invocation may retry, without repeating the recovery that succeeded, wherever the incident
+again. Only a publisher that could not be started at all is a failure the next invocation may
+retry — a publisher that ran and acknowledged nothing is recorded as `interrupted` and left to a
+person, because its ending alone never proves the topic refused the summary — without repeating the
+recovery that succeeded, wherever the incident
 record sits. The Jira connection the comment is written through is read from the connected
 project's configuration at that moment, so a report that could not be written while the file was
 broken goes into the thread a repair restored. A blocker a judgment ranked ahead of the
 interrupted ticket really runs first — as its own scoped `queue run --ticket <KEY>` worker — and the
-resumption is recorded when the interrupted work is really started again; a blocker that was
-started but never seen to settle is still owed, and a restart runs it again. An incident that ended
+resumption is recorded when the interrupted work is really started again, and only after the
+blocker's own ticket is read back as complete: a blocker whose worker settled without reaching the
+configured done status ends in a request for a person instead of advancing the plan. An incident
+that ended
 in a request for human help keeps the queue stopped until a person does what it asks and records the
 acknowledgement in the incident record (`"acknowledgement": { "at": …, "note": … }`): a restart is
 not an answer to that request.
