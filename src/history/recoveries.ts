@@ -36,6 +36,12 @@ export interface RecoveryHistory {
   readonly entries: readonly HistoryEntry[];
   /** One window per incident, for recognizing the account's own comments. */
   readonly windows: readonly RecoveryWindow[];
+  /**
+   * The comment ids the incidents' own concise reports were published as. They
+   * are the harness's own text whatever display name the service account
+   * carries, so they are recognized by identity rather than by author.
+   */
+  readonly commentIds: readonly string[];
   /** Why the read is incomplete; empty when every record was read whole. */
   readonly problems: readonly string[];
 }
@@ -159,6 +165,9 @@ export async function readRecoveryHistory(request: {
       from: stored.record.createdAt,
       to: stored.record.updatedAt,
     })),
+    commentIds: kept
+      .map((stored) => stored.record.report.commentId)
+      .filter((id): id is string => typeof id === 'string' && id !== ''),
     problems,
   };
 }

@@ -222,15 +222,30 @@ describe('the supervised recoveries a ticket’s history carries', () => {
           logPath: null,
         },
       ],
+      report: {
+        publishedAt: '2026-09-16T11:00:00.000Z',
+        commentId: 'comment-report',
+        commentText: 'Harness recovery report (incident seeded).',
+        notification: null,
+        problem: null,
+      },
     });
     // A comment the same service account wrote while the recovery ran: it is
-    // that incident's own comment, not a person's feedback.
+    // that incident's own comment, not a person's feedback — and the incident's
+    // published report is recognized by the identity the record kept, whatever
+    // display name the account carries.
     const comments = [
+      jiraComment({
+        sourceId: 'comment-report',
+        author: 'Nexus Service Account',
+        createdAt: '2026-09-16T10:20:00.000Z',
+        text: 'Harness recovery report (incident seeded). The supervised queue stopped.',
+      }),
       jiraComment({
         sourceId: 'comment-recovery',
         author: 'nexus-lens[bot]',
         createdAt: '2026-09-16T10:30:00.000Z',
-        text: 'Harness recovery report (incident seeded). The supervised queue stopped.',
+        text: 'the lock was explained and the ticket returned to its ready status',
       }),
     ];
     const ticketHistory = history(workDir, {
@@ -244,11 +259,21 @@ describe('the supervised recoveries a ticket’s history carries', () => {
     expect(entry?.text).toContain('the lock was explained');
     expect(entry?.text).toContain('committed work on harness/HARN-11');
     expect(snapshot.brief.recovery?.map((candidate) => candidate.id)).toEqual(
-      expect.arrayContaining([entry?.id, 'jira:jira-comment:comment-recovery']),
+      expect.arrayContaining([
+        entry?.id,
+        'jira:jira-comment:comment-recovery',
+        'jira:jira-comment:comment-report',
+      ]),
     );
     // Neither the incident nor the account's comment was offered to the
     // reviewer as a person's feedback.
     expect(snapshot.brief.newHumanFeedback).toEqual([]);
+    // The report the incident published is the harness's own text, whatever the
+    // service account is called in the thread.
+    expect(
+      snapshot.entries.find((candidate) => candidate.id === 'jira:jira-comment:comment-report')
+        ?.role,
+    ).toBe('harness');
 
     // Both roles read the same recovery section, and it says what it is.
     const prompt = renderHistorySection(snapshot, 'reviewer');

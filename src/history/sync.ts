@@ -840,9 +840,15 @@ export function createTicketHistory(parts: TicketHistoryParts): TicketHistory {
         }
       }
 
+      const publishedRecoveryComments = new Set(recoveries.commentIds);
       const entries = [...byId.values()]
         .map((candidate) => candidate.entry)
         .map((entry) => {
+          // The concise report one incident published is the harness's own
+          // text, whatever display name the service account carries: it is
+          // recognized by the identity the incident recorded, never by its
+          // wording or its author alone.
+          const owned = entry.source === 'jira' && publishedRecoveryComments.has(entry.sourceId);
           // Completion mirrors keep separate context text in the conversation.
           // Its wording is intentionally different from the original rendering,
           // whose hash was already verified above; that is not a remote edit.
@@ -870,7 +876,7 @@ export function createTicketHistory(parts: TicketHistoryParts): TicketHistory {
             (before !== undefined &&
               before.source !== 'harness' &&
               (before.edited || before.text !== entry.text));
-          return { ...entry, edited };
+          return { ...entry, ...(owned ? { role: 'harness' as const } : {}), edited };
         })
         .toSorted(
           (a, b) => compareHistoryTime(a.createdAt, b.createdAt) || a.id.localeCompare(b.id),
@@ -978,6 +984,7 @@ export function createTicketHistory(parts: TicketHistoryParts): TicketHistory {
         .filter(
           (entry) =>
             entry.kind === 'recovery-report' ||
+            (entry.source === 'jira' && publishedRecoveryComments.has(entry.sourceId)) ||
             (isHarnessAuthor(entry.author, harnessAuthors) &&
               entry.source === 'jira' &&
               insideRecoveryWindow(recoveries.windows, entry.createdAt)),

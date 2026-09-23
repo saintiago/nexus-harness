@@ -767,7 +767,9 @@ succeeded; an unfinished publication stays reachable and is finished by the next
 wherever the incident sits, however many times the pointer has moved since. The complete incident
 — every stop, every attempt with its cause and preserved work, the conclusion and what resumes —
 reaches both roles through the local history of §2, beside the comments the same service account
-made while handling it, as context that is never an approval or a verification.
+made while handling it — its published report recognized by the identity the incident recorded,
+its other comments by its configured author name and the window the incident covered — as context
+that is never an approval or a verification.
 
 **Restart and deduplication.** The supervisor's state is one owner record, one current-incident
 pointer, and one record per incident under the supervision's own id; nothing survives in a database

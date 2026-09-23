@@ -780,7 +780,14 @@ organization and the same layout, beside the retained workspace the ticket's poi
 
 The prompt carries the current brief (the ticket's title, description and acceptance criteria), the
 latest delivery, every complete unresolved review finding with the discussion that answered it, and
-the human feedback this role's last consumed snapshot did not hold. The two role cursors advance
+the human feedback this role's last consumed snapshot did not hold. It also carries the ticket's
+**recovery context** (see §12): every supervised recovery incident of this ticket whole — the stop,
+each attempt with its cause and the work it preserved, the conclusion and what resumes — together
+with the comments the same service account made while handling it: the concise report an incident
+published is recognized by the comment identity that incident recorded, and the account's other
+comments by its configured author name and the window the incident covered. The records themselves
+are read from the supervisor's own state under `<workDir>/.supervisor`. Both roles receive it, independently of either cursor, as
+context like any other entry: it is never an approval, a verification, or a finished state. The two role cursors advance
 only after a turn returns usable output; preparation and the other role never consume feedback.
 An absent legacy cursor replays feedback, and a restart reads the cursor from disk. Requirements
 are re-read before each turn, including repairs, and every task section uses that reading. Invalid
@@ -794,7 +801,8 @@ directory>`), so no Jira or GitHub call of its own is needed or wanted. Findings
 are rendered whole: the history section is bounded only by dropping whole entries from the inline
 block. Responses and new feedback each have a 60,000-character inline budget, selecting newest
 whole entries first. Overflow points to the complete `brief.responses` or `brief.newHumanFeedback`
-array in that snapshot's `index.json` and requires the turn to read it
+array — recovery context uses the same budget and the same `brief.recovery` — in that snapshot's
+`index.json` and requires the turn to read it
 before acting or report an input gap. If a source could not be read, a page bound was
 reached while following pagination, or a complete report is missing, the prompt opens with the gaps
 it knows about, so a turn is never told the history is complete when it is not; a snapshot that

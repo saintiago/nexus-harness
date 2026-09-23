@@ -24,6 +24,12 @@
  *
  * Which of the composed pieces ran, and in what order, belongs to the
  * supervisor (docs/WORKFLOW.md §12).
+ *
+ * It lives beside the CLI's own modules because it presents that same surface —
+ * the option tables, the usage text, the exit codes, the interrupt handling and
+ * the activity display — and because the dependency boundary is one-way: the
+ * CLI may depend on the supervisor, and nothing under `supervisor/` may reach
+ * back into `cli/` (docs/architecture.md §3).
  */
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
