@@ -36,6 +36,7 @@ afterEach(async () => {
 type RecordedInvocation = {
   readonly args: readonly string[];
   readonly directory: string;
+  readonly stdin: string;
   readonly marker: string | null;
 };
 
@@ -44,12 +45,13 @@ const profile = 'nexus-fixture';
 
 /** The recording prelude every controlled provider runs before it reports anything. */
 const recordInvocation = `
-import { writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 writeFileSync(
   process.env.NEXUS_FIXTURE_RECORD,
   JSON.stringify({
     args: process.argv.slice(2),
     directory: process.cwd(),
+    stdin: readFileSync(0, 'utf8'),
     marker: process.env.NEXUS_FIXTURE_MARKER ?? null,
   }),
 );
@@ -198,9 +200,9 @@ describe('Coding runtime adapter', () => {
       'deepseek-flash',
       '-c',
       'model_reasoning_effort="max"',
-      '--',
-      prompt,
+      '-',
     ]);
+    expect(invocation?.stdin).toBe(prompt);
     expect(invocation?.directory).toBe(directory);
     expect(invocation?.marker).toBe('marker-value');
   });
@@ -310,16 +312,50 @@ describe('Coding runtime adapter', () => {
     const { result } = await execute(fixture, { effort: null, model: 'gpt-6-astra' });
 
     expect(result).toEqual({ ok: true, value: { output: 'done' } });
-    expect((await fixture.invocation())?.args).toEqual([
+    const invocation = await fixture.invocation();
+    expect(invocation?.args).toEqual([
       'exec',
       '--json',
       '--profile',
       profile,
       '--model',
       'gpt-6-astra',
-      '--',
-      'Complete the supplied task.',
+      '-',
     ]);
+    expect(invocation?.stdin).toBe('Complete the supplied task.');
+  });
+
+  it('passes a large Unicode prompt through standard input instead of an argument', async () => {
+    const fixture = await providerFixture(`${recordInvocation}
+process.stdout.write(${literal(
+      `${protocol([
+        { type: 'thread.started', thread_id: 'thread-1' },
+        { type: 'item.completed', item: { id: 'item_1', type: 'agent_message', text: 'done' } },
+        { type: 'turn.completed' },
+      ])}\n`,
+    )});
+`);
+    const unit = 'Revisión completa — diff ✓ 你好\n';
+    const prompt = unit.repeat(Math.ceil(150_000 / unit.length) + 1);
+
+    const { result, activities } = await execute(fixture, { prompt });
+
+    expect(prompt.length).toBeGreaterThan(150_000);
+    expect(result).toEqual({ ok: true, value: { output: 'done' } });
+    expect(activities).toEqual([{ type: 'message', text: 'done' }]);
+    const invocation = await fixture.invocation();
+    expect(invocation?.args).toEqual([
+      'exec',
+      '--json',
+      '--profile',
+      profile,
+      '--model',
+      'deepseek-flash',
+      '-c',
+      'model_reasoning_effort="max"',
+      '-',
+    ]);
+    expect(invocation?.stdin).toBe(prompt);
   });
 
   it('reports a launch error for a profile that is not installed without starting it', async () => {

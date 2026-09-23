@@ -7,8 +7,8 @@ Execute a supplied command and report its output and exit.
 ## Interface
 
 Follow the [adapter contract](architecture.md#interface).
-Input consists of an executable, argument array, working directory, environment and optional time limit.
-The consumer supplies an output observer.
+Input consists of an executable, argument array, working directory, environment, optional standard
+input and optional time limit. The consumer supplies an output observer.
 
 Stream stdout and stderr with their stream identity and return the exit code.
 The consumer decides whether to preserve output and what the command result means for its work.
@@ -27,6 +27,9 @@ the emitted streams where their own output contracts require them.
 
 Pass executable and arguments separately. A shell command requires an explicit shell executable.
 Use the supplied environment and necessary host settings without inheriting unrelated credentials.
+When supplied, deliver the standard input as UTF-8 text and end the stream. Consumers pass large
+text here rather than as an argument, which the operating system bounds per argument.
 
-Nonzero exit is a command result. Launch failures and timeouts are execution errors.
+Nonzero exit is a command result. Launch failures, failed standard-input delivery and timeouts are
+execution errors.
 Apply the supplied time limit and end owned processes on timeout.

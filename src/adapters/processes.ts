@@ -8,6 +8,11 @@ export type ProcessCommand = {
   readonly directory: string;
   readonly environment: Readonly<Record<string, string>>;
   readonly timeLimitMs?: number;
+  /**
+   * Text to deliver as UTF-8 on the command's standard input, which ends after it. Absent
+   * leaves the command without standard input, as commands that read none require.
+   */
+  readonly input?: string;
 };
 
 /** One chunk of output and the stream that produced it. */
@@ -38,22 +43,22 @@ function endProcessGroup(pid: number | undefined): void {
 
 /**
  * Run a supplied command, emit its stdout and stderr chunks and resolve with its exit code.
- * A nonzero exit is a command result; a launch failure, a time limit or a signal termination
- * is a fault.
+ * A nonzero exit is a command result; a launch failure, a time limit, a signal termination or
+ * a command that did not consume its supplied standard input is a fault.
  */
 export function run(
   command: ProcessCommand,
   onOutput: ProcessOutputObserver,
 ): Promise<ProcessResult> {
   return new Promise((resolve) => {
-    const { executable, timeLimitMs } = command;
+    const { executable, timeLimitMs, input } = command;
     let child: ChildProcess;
     try {
       child = spawn(executable, [...command.args], {
         cwd: command.directory,
         env: command.environment,
         detached: true,
-        stdio: ['ignore', 'pipe', 'pipe'],
+        stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
       });
     } catch (error) {
       resolve(fault(`Cannot start "${executable}": ${messageOf(error)}`));
@@ -62,6 +67,7 @@ export function run(
 
     let settled = false;
     let timedOut = false;
+    let inputFailure: string | null = null;
     let timer: NodeJS.Timeout | undefined;
 
     const finish = (result: ProcessResult): void => {
@@ -88,6 +94,20 @@ export function run(
       emit('stderr', chunk);
     });
 
+    if (input !== undefined && child.stdin !== null) {
+      // A command that ends before it reads its input breaks the pipe, and the pending write
+      // reports that as an error event. Reading it here keeps an early exit a fault instead of
+      // an unhandled exception, and the close handler reports it rather than a command result.
+      child.stdin.on('error', (error) => {
+        inputFailure ??= error.message;
+      });
+      try {
+        child.stdin.end(input, 'utf8');
+      } catch (error) {
+        inputFailure ??= messageOf(error);
+      }
+    }
+
     child.on('error', (error) => {
       finish(fault(`Cannot start "${executable}": ${error.message}`));
     });
@@ -95,6 +115,14 @@ export function run(
     child.on('close', (code, signal) => {
       if (timedOut) {
         finish(fault(`Command "${executable}" exceeded its ${timeLimitMs} ms time limit`));
+      } else if (inputFailure !== null) {
+        finish(
+          fault(
+            `Command "${executable}" did not receive its complete standard input: ${inputFailure}`,
+          ),
+        );
+      } else if (input !== undefined && child.stdin?.writableFinished === false) {
+        finish(fault(`Command "${executable}" ended before consuming its supplied standard input`));
       } else if (code !== null) {
         finish({ ok: true, value: { exitCode: code } });
       } else {

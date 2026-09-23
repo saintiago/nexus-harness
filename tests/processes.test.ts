@@ -1,8 +1,9 @@
 /**
  * Focused integration tests: the real Processes adapter runs small controlled child processes
- * to establish arguments, output, exit and timeout behavior.
+ * to establish arguments, standard input, output, exit and timeout behavior.
  */
 
+import { createHash } from 'node:crypto';
 import { mkdtemp, realpath, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -129,6 +130,79 @@ describe('Processes adapter', () => {
     );
 
     expect(result).toEqual({ ok: true, value: { exitCode: 3 } });
+  });
+
+  it('leaves standard input unconnected when the command supplies none', async () => {
+    const outputs: ProcessOutput[] = [];
+
+    const result = await run(
+      {
+        executable: process.execPath,
+        args: [
+          '-e',
+          'const { readFileSync } = require("node:fs"); console.log(JSON.stringify({ stdin: readFileSync(0, "utf8") }));',
+        ],
+        directory: await temporaryDirectory(),
+        environment: {},
+      },
+      collect(outputs),
+    );
+
+    expect(result).toEqual({ ok: true, value: { exitCode: 0 } });
+    expect(JSON.parse(text(outputs, 'stdout'))).toEqual({ stdin: '' });
+  });
+
+  it('delivers large Unicode standard input intact and ends the stream', async () => {
+    const directory = await temporaryDirectory();
+    const outputs: ProcessOutput[] = [];
+    const input = 'Revisión completa ✓ 你好 — '.repeat(8000);
+    const script = `
+      const { createHash } = require('node:crypto');
+      const { readFileSync } = require('node:fs');
+      const received = readFileSync(0, 'utf8');
+      console.log(JSON.stringify({
+        received: received.length,
+        digest: createHash('sha256').update(received, 'utf8').digest('hex'),
+      }));
+    `;
+
+    const result = await run(
+      {
+        executable: process.execPath,
+        args: ['-e', script],
+        directory,
+        environment: {},
+        input,
+      },
+      collect(outputs),
+    );
+
+    expect(input.length).toBeGreaterThan(150_000);
+    expect(result).toEqual({ ok: true, value: { exitCode: 0 } });
+    expect(JSON.parse(text(outputs, 'stdout'))).toEqual({
+      received: input.length,
+      digest: createHash('sha256').update(input, 'utf8').digest('hex'),
+    });
+  });
+
+  it('faults without hanging when the command ends before consuming supplied input', async () => {
+    const input = 'Revisión completa ✓ 你好 — '.repeat(8000);
+
+    const result = await run(
+      {
+        executable: process.execPath,
+        args: ['-e', 'process.exit(0)'],
+        directory: await temporaryDirectory(),
+        environment: {},
+        input,
+      },
+      () => {},
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      fault: { message: expect.stringMatching(/standard input/) },
+    });
   });
 
   it('returns a fault excluding secrets when the command cannot start', async () => {

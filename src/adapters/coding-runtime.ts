@@ -131,9 +131,9 @@ async function profileInstallationProblem(configurationPath: string): Promise<st
 }
 
 /**
- * The complete argument vector one Codex invocation runs with. The prompt is one argument after
- * `--`, so its text is passed through unchanged even when it begins with an option; the provider
- * reads instructions from the argument and, with no piped standard input, appends nothing to them.
+ * The complete argument vector one Codex invocation runs with. The prompt argument is `-`, which
+ * the provider reads as "take the instructions from standard input"; the adapter then delivers the
+ * complete prompt on that stream, clear of the operating system's per-argument size limit.
  */
 function invocationArguments(profile: string, request: CodingRuntimeRequest): readonly string[] {
   return [
@@ -144,8 +144,7 @@ function invocationArguments(profile: string, request: CodingRuntimeRequest): re
     '--model',
     request.model,
     ...(request.effort === null ? [] : ['-c', `model_reasoning_effort="${request.effort}"`]),
-    '--',
-    request.prompt,
+    '-',
   ];
 }
 
@@ -432,6 +431,7 @@ export function createCodingRuntime(settings: CodingRuntimeSettings): CodingRunt
           directory: request.directory,
           environment: settings.environment,
           timeLimitMs: request.timeLimitMs,
+          input: request.prompt,
         },
         (chunk: ProcessOutput) => {
           if (chunk.stream === 'stdout') {

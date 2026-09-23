@@ -31,7 +31,9 @@ installs that configuration; launch selects it without changing personal default
 
 For the Codex provider, select an installed native profile with --profile. That profile configures
 the research MCP servers, enabled tools and connector exclusions. Pass model and effort using the
-provider's supported invocation settings.
+provider's supported invocation settings. Deliver the complete prompt on the provider's standard
+input by asking it to read instructions there (`codex exec` does so for a `-` prompt argument), so
+prompt size does not depend on the operating system's per-argument limit.
 
 The provider connects to MCP servers, exposes their tools to the model and executes tool calls.
 The adapter launches and observes the invocation; it adds no tool registry, MCP client or tool-call
