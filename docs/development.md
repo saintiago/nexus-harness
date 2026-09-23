@@ -26,7 +26,9 @@ scripts do not require a measurement campaign in every task: gather the evidence
 A Nexus coding turn works in its retained workspace and leaves local commits. The configured
 harness integration path owns publication and completion; the turn does not push, merge or change
 Jira. Authorized target build/test changes do not authorize changing the external harness or host
-configuration. Planned recovery-agent permissions are separate from developer/reviewer permissions.
+configuration. The supervised recovery agent's permissions are separate from developer and
+reviewer permissions: it may repair the Nexus installation itself, and it still may not weaken a
+project's tests or checks, approve, merge, or mark a ticket Done (docs/spec.md §12).
 
 Tests use temporary resources, not live agents, Jira or credentials. Provider exercises and
 publication require explicit task authorization. Report changes, checks, outcomes and gaps

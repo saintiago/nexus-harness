@@ -152,6 +152,13 @@ Nexus works the queue one ticket at a time and needs no further project-side set
 `queue run` stops when no eligible ticket remains. `queue watch` is the same loop as one visible
 foreground process that waits for the next ticket; it starts no agent while it is idle.
 
+An installation may also run that queue under its supervisor (`supervise run`, `supervise watch`,
+or `supervise ticket <KEY>`), which is installation behavior and not a project field: after an
+unexpected stop it invokes a separate recovery agent and reports the incident in the ticket's
+thread and by email. Nothing about the project's own file changes, and a supervised run of this
+project is exercised exactly like a `queue run` of it
+([WORKFLOW.md](WORKFLOW.md) §12).
+
 ## If setup is incomplete
 
 Any missing installation prerequisite discovered by these commands is a **Nexus environment/setup

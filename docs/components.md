@@ -49,6 +49,16 @@ Carry one ticket through execution, review and completion before selecting anoth
 returned repair in its retained workspace. Prepare the source checkout for the next task without
 discarding work. Finite mode exits when no eligible work remains; watch mode waits for more work.
 
+## Supervision and recovery
+
+Run the queue as a worker under a small parent that owns one worker at a time, detects an
+unexpected stop without inventing one from an intentional cancellation, and records one incident
+per stopped episode. Invoke the configured recovery agent with unattended operational access, keep
+its judgment, bound the attempts one incident may spend, and end a repeated unchanged failure in an
+actionable request for human help. Preserve committed and uncommitted work, record the resumption
+that really happened, and publish one concise report per incident without duplicating it across
+restarts. Recovery context never substitutes for approval or verification.
+
 ## Records and presentation
 
 Retain enough execution and publication evidence to explain outcomes and resume safely. Keep

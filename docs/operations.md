@@ -77,6 +77,12 @@ archived file's required behavior and the active suite that carries it are named
 `npm start -- --help` prints the full usage text, and `npm start -- run` with a missing option
 prints a usage error and exits `2`.
 
+The supervised commands are the exception to "nothing leaves the machine beyond the configured
+delivery and completion steps": an incident's one concise report is written into the ticket's
+thread, and its summary is published to the configured SNS topic, which is what delivers the email
+to the configured address. Both are exactly what the `recovery.notifications` policy names, and a
+configuration that names none is refused by the supervised commands.
+
 ## Configuration: one harness file, one file per connected project
 
 Configuration is **two files**, and each field has exactly one owner
@@ -163,6 +169,8 @@ check-config: /home/you/project/docs/nexus.config.example.json is valid
   reviewer               github app 5001141 installation 163007360 as nexus-lens[bot], check "Nexus Lens review", key path environment variable NEXUS_LENS_PRIVATE_KEY_PATH
   reviewer launch        codex codex --profile nexus-astra --model gpt-6-astra
   completion             reviewer nexus-lens[bot] (App 5001141), check "Nexus Lens review", credential environment variable NEXUS_LENS_TOKEN, poll 30s, deadline 1800s
+  recovery               codex codex --profile nexus-recovery --model gpt-6-astra -c model_reasoning_effort=high, at most 2 attempt(s) per incident
+  recovery reporting     arn:aws:sns:eu-north-1:698643713254:nexus-recovery-notifications -> saint282@gmail.com, publisher aws sns publish
 check-config: /home/you/project/nexus.project.json is valid
   setup                  1 command
   checks                 1 command
@@ -1033,6 +1041,105 @@ single In Review ticket through its scoped review and completion phases. Multipl
 tickets stop for attention. A merged pull request must still pass the existing admission and native
 GitHub checks. Ready tickets with retained workspace pointers resume before unrelated new work;
 Done tickets are never rerun. The queue never adopts or resets a workspace.
+
+### One ticket at a time, by identity
+
+```powershell
+npm run dev -- queue run --repo ../target-project --config nexus.config.json --ticket HARN-51
+```
+
+`--ticket` narrows a finite queue run to one ticket. The run reads that ticket's own status and
+follows it by identity — a ticket in review resumes its scoped review and completion, a ready
+ticket with a workspace pointer continues that workspace, and a ready ticket without one is the
+claim. Nothing else is discovered, claimed, or reported on. A scoped ticket that is in none of the
+configured statuses leaves the run with nothing to do and exits `0`, like an empty queue; a scoped
+ticket still in the running status is refused by name, because something else may still be working
+on it.
+
+## `supervise`: run the queue under a recovery agent
+
+```powershell
+npm run dev -- supervise run --repo ../target-project --config nexus.config.json
+npm run dev -- supervise watch --repo ../target-project --config nexus.config.json
+npm run dev -- supervise ticket HARN-51 --repo ../target-project --config nexus.config.json
+```
+
+The supervisor is a small parent around `queue run` and `queue watch`. It starts the queue as a
+worker of its own — the same CLI, the same two files, and the worker's activity display intact —
+and watches how that process ended. A plain zero exit settles the supervision. An ending the
+operator asked for with Ctrl+C stays stopped: the worker is stopped, its evidence is kept, and
+nothing is recovered from an intentional stop. Any other ending — a nonzero exit, a process killed
+by a signal, a crash that left no report at all, a worker that could not be started — opens one
+incident and starts the separate recovery agent described in
+[docs/WORKFLOW.md](../docs/WORKFLOW.md#12-supervision--supervise-run-supervise-watch-supervise-ticket)
+§12 and [docs/spec.md](../docs/spec.md#12-supervised-recovery) §12.
+
+The recovery agent's own judgment investigates the cause, preserves committed and uncommitted work,
+repairs the harness or the working copy, reconciles the ticket and the workspace, and says what
+resumes. A ticket that has to come first may be ranked ahead of the interrupted one, and its
+resumption is recorded on the incident. One incident spends at most `recovery.maxAttempts` recovery
+turns; the same failure returning unchanged after a repair ends in an actionable request for human
+help. Recovery may repair the Nexus installation itself — including its own code — and runs the
+installation's checks when it does. It never weakens a project's tests or checks, never approves,
+merges or pushes, and never marks a ticket Done: its report is context for the next developer and
+reviewer turn, and the configured checks, the Nexus Lens review and the completion path stay the
+only things that decide whether work is done.
+
+Each incident publishes one concise report into the ticket's own Jira thread — written by the same
+service account that wrote the ticket, so both the next developer turn and the next reviewer turn
+read it in the shared history — and one email summary through the configured SNS topic to the
+configured address (in the shipped example,
+`arn:aws:sns:eu-north-1:698643713254:nexus-recovery-notifications` to `saint282@gmail.com`). Both
+publications survive a supervisor restart without repeating: an acknowledged comment is never
+posted twice, an interrupted one is looked for in the thread before another is sent, and an
+acknowledged summary is never published again. A failed publication is recorded as the incident's
+reporting problem and never repeats a recovery that succeeded.
+
+The configuration needs a `recovery` object with its notification policy, and the notification
+publisher (the AWS CLI by default) needs to be able to publish to that topic:
+
+```json
+"recovery": {
+  "agent": {
+    "runtime": "codex",
+    "command": ["codex", "--profile", "nexus-recovery", "--model", "gpt-6-astra", "-c", "model_reasoning_effort=high"]
+  },
+  "maxAttempts": 2,
+  "notifications": {
+    "topicArn": "arn:aws:sns:eu-north-1:698643713254:nexus-recovery-notifications",
+    "email": "saint282@gmail.com",
+    "publisher": ["aws", "sns", "publish"]
+  }
+}
+```
+
+The recovery launch is the `nexus-recovery` profile
+([docs/nexus-agent-tools.md](../docs/nexus-agent-tools.md) §5), which is what gives that turn its
+unattended operational access: the output directory's workspaces and processes, GitHub through the
+operator's own credentials, the ticket thread through the service account credential the
+supervisor's environment carries, and the notification topic above. A `supervise` invocation
+refuses a configuration that declares no `recovery` policy, no notification policy, or no
+composable queue, before it claims anything.
+
+The supervisor keeps only:
+
+```text
+<workDir>/.supervisor/<namespace>/
+  owner.json                        # the live supervisor; a live owner refuses a second one
+  current.json                      # the incident being carried, and the worker's PID
+  incidents/<incident-id>/incident.json
+  incidents/<incident-id>/attempt-1/{input.md,recovery.log,outcome.json}
+```
+
+One supervisor runs per connected project and `workDir`; a restart adopts the incident its
+predecessor left instead of starting a second worker, and a recorded worker PID that is still alive
+refuses a supervisor that would put a second worker beside it. Starting the supervisor while a raw
+`queue` consumer still runs is refused with the intake lock and its owner named — stop that
+consumer first; a lock is never broken automatically.
+
+Exit codes are the queue's own with the supervision added: `0` when the worker settled, `1` when an
+incident needs a person or an input, configuration, or publication error stopped the supervision,
+`2` for a usage error, and `130` for the operator's own interrupt.
 
 ## Example task
 

@@ -160,6 +160,15 @@ async function superviseCommand(
     io.err(`error: ${queueProblem}`);
     return EXIT_INPUT_ERROR;
   }
+  if (recovery.notifications === undefined) {
+    io.err(
+      `error: ${configPath} carries a "recovery" policy without "recovery.notifications", so an ` +
+        'incident could be recovered but its summary could not be emailed. A supervised run ' +
+        'reports every incident in Jira and by email: name the SNS topic and the address, as ' +
+        'docs/nexus.config.example.json shows (docs/WORKFLOW.md section 12).',
+    );
+    return EXIT_INPUT_ERROR;
+  }
 
   const workDir = resolveWorkDir(config, configPath);
   const namespace = projectLockNamespace(config);

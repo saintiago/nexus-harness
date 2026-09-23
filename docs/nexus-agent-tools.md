@@ -1,9 +1,11 @@
 # Nexus agent tools — GitHub, OpenAI Docs, Context7, and web search
 
-**What this is.** The native Codex configuration that gives the coding turns a Jira-driven run
-starts — Nexus turns — four research capabilities: the existing GitHub connector for reading, the
-OpenAI Docs MCP server, Context7, and Tavily for web search and page extraction. Two Codex profile
-files carry them, and the Nexus launch prefixes select those profiles with `--profile`.
+**What this is.** The native Codex configuration that gives the turns a Jira-driven run starts —
+Nexus turns — four research capabilities: the existing GitHub connector for reading, the
+OpenAI Docs MCP server, Context7, and Tavily for web search and page extraction. Three Codex
+profile files carry them: the two coding tiers, and the recovery tier of §5, which adds the
+unattended operational access a supervised recovery needs. The Nexus launch prefixes select those
+profiles with `--profile`.
 
 **What this is not.** It is not harness behaviour and not an access-control layer in this
 repository. The harness launches exactly the prefix the configuration names and records that
@@ -254,7 +256,42 @@ A green configuration check is not evidence that a live tool call works. An unse
 Context7 and keyless Tavily defaults, and only the services' rate limits change when a key is
 added.
 
-## 5. What was verified when this document was written, and what was not
+## 5. The recovery tier: `nexus-recovery`
+
+The supervised recovery turn of [WORKFLOW.md](WORKFLOW.md) §12 runs under its own profile,
+[examples/nexus-recovery.config.toml](../examples/nexus-recovery.config.toml), and the checked-in
+example selects it as `codex --profile nexus-recovery --model gpt-6-astra -c
+model_reasoning_effort=high`. It is the same native mechanism as the two coding tiers — one layer
+over the operator's own configuration, selected by the launch prefix, installed the same way —
+with two deliberate differences:
+
+- **Its tools are wider.** Recovery keeps the three research servers and the GitHub connector, and
+  unlike a coding turn it enables that connector's write surface: repairing a broken queue can mean
+  fixing a branch, a pull request state, or a ticket that a person could not get to first. It is
+  still not an authority — the profile grants tool access, and the recovery prompt's own contract
+  is what forbids approving, merging, publishing, or marking a ticket Done.
+- **Its environment is wider.** A coding or reviewer turn is launched with the Jira credential and
+  the App key path removed; the recovery turn is launched with the supervisor's own environment, so
+  the same service account that wrote the ticket can read and comment on its thread, and so the
+  configured notification publisher (the AWS CLI, by default) has the credential it needs. That
+  access is the point of this tier and is documented where the supervisor is
+  ([spec.md](spec.md) §12); nothing else that runs under this harness receives it.
+
+Install it beside the other two profiles, and point `recovery.agent` at it:
+
+```powershell
+$codexHome = Join-Path $env:USERPROFILE '.codex'
+Copy-Item examples\nexus-recovery.config.toml (Join-Path $codexHome 'nexus-recovery.config.toml')
+```
+
+The smoke procedure of §4 applies to it unchanged: `codex --profile nexus-recovery mcp list` must
+show the same three servers, and one new session must be able to read GitHub. Its write surface and
+the ticket-thread access are exercised by the recovery turn itself, which is why a supervised
+incident is also the live check for this tier. A missing profile file is silently ignored by the
+CLI, so the documented launch restates `--model gpt-6-astra` and the reasoning effort: a missing
+file then fails loudly rather than falling back to the personal defaults.
+
+## 6. What was verified when this document was written, and what was not
 
 Verified on 2026-09-19 with the CLI this machine runs (`codex-cli 0.154.0`), without touching the
 operator's Codex home:

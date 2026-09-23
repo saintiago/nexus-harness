@@ -53,6 +53,18 @@ The Nexus-wide harness configuration:
     "reviewerTokenEnv": "NEXUS_LENS_TOKEN",
     "pollIntervalSeconds": 30,
     "deadlineSeconds": 1800
+  },
+  "recovery": {
+    "agent": {
+      "runtime": "codex",
+      "command": ["codex", "--profile", "nexus-recovery", "--model", "gpt-6-astra", "-c", "model_reasoning_effort=high"]
+    },
+    "maxAttempts": 2,
+    "notifications": {
+      "topicArn": "arn:aws:sns:eu-north-1:698643713254:nexus-recovery-notifications",
+      "email": "saint282@gmail.com",
+      "publisher": ["aws", "sns", "publish"]
+    }
   }
 }
 ```
@@ -88,7 +100,7 @@ One connected repository's project configuration, in that repository's root:
 
 The two files are **composed, not layered**:
 
-- The harness configuration owns `workDir`, `maxRepairs`, `taskTimeoutMinutes`, `commandTimeoutMinutes`, `agent`, `escalation`, `reviewer`, and `completion`. It names no repository, no Jira connection, and no project command.
+- The harness configuration owns `workDir`, `maxRepairs`, `taskTimeoutMinutes`, `commandTimeoutMinutes`, `agent`, `escalation`, `reviewer`, `completion`, and `recovery`. It names no repository, no Jira connection, and no project command.
 - The project configuration owns `setup`, `checks`, `source`, and `delivery`. It carries no launch, no limit, no output directory, and no reviewer identity.
 - Every field is required or optional exactly where the tables below say. No field is defaulted from one file into the other, and **nothing is read from the single-file configuration the earlier revisions described**: a file carrying the other file's fields is refused field by field, with where each of them belongs.
 
@@ -1313,6 +1325,109 @@ short best-effort deadline, so it is never left in the running status with nothi
 
 `queue watch` never exits `0` on its own: while the queue is healthy and empty it stays one visible
 foreground process, printing an idle status and the wait before each fresh scan.
+
+### One ticket, by identity
+
+`queue run --ticket <key>` narrows the finite run to one ticket: the run reads that ticket's own
+status, follows it by identity, and claims, reviews, completes and reports on nothing else. A
+ticket in review resumes only its scoped lifecycle, a ready ticket with a workspace pointer
+continues that workspace, and a ready ticket without one is the claim. A scoped run whose ticket is
+in none of the configured statuses carries nothing and exits `0` like an empty queue; a scoped
+ticket still in the running status is refused by name, exactly as an unscoped scan refuses one.
+
+## 12. Supervision — `supervise run`, `supervise watch`, `supervise ticket`
+
+The supervisor is a small parent around the queue of §11. It runs that queue as a worker — the same
+CLI, the same two files, its own activity display untouched — and, when the worker stops
+unexpectedly, it invokes a separate recovery agent whose judgment investigates the cause,
+preserves the work it finds, repairs the situation, reconciles the ticket and the workspace, and
+says what resumes. The ordinary loop gains no branch for this: every exceptional recovery decision
+is the agent's, and the supervisor's own work is bounded and deterministic
+([spec.md](spec.md) §12).
+
+### Commands
+
+```text
+supervise run    --repo <checkout> --config <harness.json>   # finite: like queue run
+supervise watch  --repo <checkout> --config <harness.json>   # like queue watch
+supervise ticket <KEY> --repo <checkout> --config <harness.json>
+```
+
+`supervise ticket` runs the worker as `queue run --ticket <KEY>`; `supervise run` and `supervise
+watch` run `queue run` and `queue watch`. The three commands refuse a configuration that does not
+compose a queue, and one that carries no `recovery` policy or no `recovery.notifications`: an
+incident that could be recovered but not reported is not a supervised run.
+
+### Fields
+
+`recovery` is a Nexus-wide harness field; a project configuration that carries one is refused with
+where it belongs. It is optional as a whole — `run`, `source`, `review` and `queue` are unaffected
+— and required by the three supervised commands.
+
+| Field | What it is |
+| --- | --- |
+| `recovery.agent` | The recovery turn's launch prefix, resolved like `agent` (§1). Default: `codex --profile nexus-recovery --model gpt-6-astra -c model_reasoning_effort=high`, the tier [nexus-agent-tools.md](nexus-agent-tools.md) installs. |
+| `recovery.maxAttempts` | How many recovery turns one incident may spend. A positive integer, default `2`. |
+| `recovery.notifications` | Where the incident summary is emailed: `topicArn` (an SNS topic ARN), `email` (the address the topic's own subscription delivers to), and an optional `publisher` command, default `["aws", "sns", "publish"]`. The harness appends `--topic-arn`, `--subject` and `--message`; the publisher's own output is read for the acknowledged `MessageId`. |
+
+```json
+"recovery": {
+  "agent": {
+    "runtime": "codex",
+    "command": ["codex", "--profile", "nexus-recovery", "--model", "gpt-6-astra", "-c", "model_reasoning_effort=high"]
+  },
+  "maxAttempts": 2,
+  "notifications": {
+    "topicArn": "arn:aws:sns:eu-north-1:698643713254:nexus-recovery-notifications",
+    "email": "saint282@gmail.com",
+    "publisher": ["aws", "sns", "publish"]
+  }
+}
+```
+
+The configured `taskTimeoutMinutes` is the bound of one recovery turn as well; the supervised
+commands change no timeout.
+
+### What the supervisor keeps, and what a restart reads
+
+```text
+<workDir>/.supervisor/<namespace>/          # <namespace>: the project lock namespace of §1
+  owner.json                                # the live supervisor: pid, token, intent, checkout
+  current.json                              # the incident being carried, and the worker's pid
+  incidents/<incident-id>/
+    incident.json                           # stops, attempts, conclusion, resumption, report ids
+    attempt-1/input.md, recovery.log, outcome.json
+    recovery-notification.stdout.log, recovery-notification.stderr.log
+```
+
+One live owner refuses a second supervisor for the same connected project and `workDir`; a record
+whose process is gone is adopted, so a restart continues the incident instead of starting a second
+worker; and a recorded worker PID that is still alive refuses a supervisor that would put a second
+worker beside it. Activating the supervisor beside a raw `queue` consumer that is really running is
+refused with the intake lock and its owner named — stop that consumer first. A lock is never broken
+automatically, here included.
+
+### What an incident records, and what it publishes
+
+One incident is one stopped episode. It keeps the stop evidence (the exit code or signal, and the
+failure's identity), one entry per recovery attempt with the agent's own `outcome.json` behind it,
+the conclusion (`repaired`, `blocked`, or a request for human help), the moment the queue really
+resumed, and the publication identities of its one report. The report is written into the ticket's
+own thread by the same service account that wrote the ticket — so both the next developer turn and
+the next reviewer turn read it in the shared history of §9 — and one summary is published through
+the configured topic. A restart finishes what an interrupted invocation left: it never posts an
+acknowledged comment twice, looks for an interrupted one in the thread before sending another, and
+never publishes an acknowledged summary again. A failed publication is recorded as the incident's
+reporting problem; it never repeats a recovery that succeeded.
+
+### Exits
+
+| Exit | Meaning |
+| --- | --- |
+| `0` | The worker settled, or a watch-mode worker ended cleanly. |
+| `1` | An incident needs a person — an unrecoverable judgment, an exhausted bound, or the same failure returned unchanged after a repair — or an input, configuration, or publication error stopped the supervision. The incident record names what to fix. |
+| `2` | Usage error: unknown intent or option, a missing `--config`/`--repo`, or `supervise ticket` without a key. |
+| `130` | The operator interrupted the supervision. The worker was stopped, the evidence was kept, and nothing was recovered. |
 
 ## External references
 

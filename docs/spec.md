@@ -167,7 +167,7 @@ Final statuses remain:
 
 Missing/skipped checks cannot produce `passed`. Keep agent summaries separate from observed results. Invalid input before execution is a CLI error, not a fictional run.
 
-On cancellation/timeout, stop owned commands and agent execution before reporting a clean stop. If termination cannot be confirmed, report the limitation, prevent further checks/repairs, and do not reuse the working copy in that run. Do not claim control over arbitrary detached or unrelated processes. Automatic crash recovery remains out of scope.
+On cancellation/timeout, stop owned commands and agent execution before reporting a clean stop. If termination cannot be confirmed, report the limitation, prevent further checks/repairs, and do not reuse the working copy in that run. Do not claim control over arbitrary detached or unrelated processes. A run itself still recovers nothing: an unexpected end leaves its evidence where it is, and the supervised queue of §12 is what investigates it.
 
 A failure to retain the developer report never replaces cancellation or timeout evidence. The
 harness processes the runtime's shutdown result before finalizing that failure; an unconfirmed
@@ -646,6 +646,92 @@ standalone one-item commands are unchanged.
 This stays a small foreground control loop over existing modules: no database, durable queue, scheduler, detached background process, webhook system, workflow engine, multi-repository coordinator, or general dependency graph. One queue invocation holds the connected project's intake lock under its output directory for its whole life, including while it waits in watch mode, so a second consumer of the same connected project and `workDir` is refused rather than interleaved, while a queue for a different connected project may run under the same `workDir` and harness configuration; there is still no cross-machine coordination, and the storage root itself is not locked.
 
 One limitation is worth stating: a ticket whose pull request GitHub has already merged cannot be repaired in place, because the delivery step refuses to edit a merged pull request. A repair attempt after an unsuccessful post-merge workflow therefore ends with that refusal as an actionable stop rather than a second pull request; splitting such a repair into a new ticket is an operator decision.
+
+### One ticket, by identity
+
+`queue run --ticket <key>` narrows the same finite run to one ticket. The scoped run reads that
+ticket's own status and follows it by identity: a ticket in review resumes only its scoped review
+and completion lifecycle, a ready ticket carrying a workspace pointer continues that workspace, and
+a ready ticket without one is the claim itself. No other ticket is discovered, claimed, reported
+on, or counted, and a scoped run whose ticket is in none of the configured statuses carries
+nothing and claims nothing. A scoped ticket that is still in the running status is refused by name
+exactly as an unscoped scan refuses one, because something else may still be working on it. A
+scoped run holds the same intake lock and reports the same outcomes as an unscoped one.
+
+## 12. Supervised recovery
+
+`supervise run`, `supervise watch` and `supervise ticket <key>` put one small parent in front of
+the queue of §11. The parent runs the same CLI as a worker — the same two configuration files, the
+same activity display — and owns no ticket logic of its own: it watches how that process ended and
+starts a separate recovery agent when the ending was not the one the operator asked for. What used
+to be exceptional recovery policy inside the ordinary loop is the recovery agent's own judgment
+here, and the ordinary loop gains no branch for it.
+
+**What the parent owns.** One worker at a time for one connected project and `workDir`, enforced by
+its own owner record under `<workDir>/.supervisor/<namespace>/` as well as by the queue's existing
+intake lock. A live owner is refused by name; a record whose process is gone is adopted with a
+fresh token, which is what makes a supervisor restart resume the incident instead of starting a
+second worker; and a recorded worker PID that is really still running is a refusal, never a second
+worker beside it. Activation beside a raw queue consumer that is really running is refused with the
+lock and its owner named. Nothing here breaks, adopts or deletes a lock: the queue's own
+exclusivity rules are untouched.
+
+**How an ending is read.** A plain zero exit is the worker's own settled result. Any other ending
+that arrives under the operator's own interrupt is the operator's stop: the supervision stays
+stopped, recovers nothing, keeps the evidence where it is, and exits with the conventional
+cancellation code. Every other ending — a nonzero exit, a process killed by a signal, a crash that
+left no report at all, a worker that could not be started — is an unexpected stop, and the parent
+opens one incident for it.
+
+**One incident.** An incident records one stopped episode: the stop evidence, every recovery
+attempt it spent, its conclusion, the resumption it recorded, and the publication identities of
+its one report. The recovery agent runs with its own configured launch — initially the
+`nexus-recovery` profile with `gpt-6-astra` at high reasoning effort — and with unattended
+operational access: the output directory's runs, retained workspaces, receipts and processes, the
+ticket's thread through the service account credential, GitHub through the operator's own
+credentials, and the configured notification topic. It writes one judgment file: `repaired`,
+`blocked` or `unrecoverable`, with the cause, the committed and uncommitted work it preserved,
+what it repaired or reconciled, the work that resumes, an optional blocker ranked ahead of the
+interrupted ticket, and — when it could not repair the situation — exactly what a person must do.
+A judgment field that runs past its bound is refused rather than cut down, and the attempt is
+recorded as one that produced no judgment.
+
+**A recovery turn's permissions.** It is the one turn that may repair the Nexus installation
+itself, independently of the broken runtime, and it runs the installation's own configured checks
+when it does; it may repair the configuration and a broken working copy, stop the processes the
+worker left, and reconcile the ticket with its workspace. It may not weaken, skip or delete a
+project's tests, checks, linting or tooling; it may not push, approve, merge, publish or mark a
+ticket Done; and its report is context for the next developer and reviewer turn, never an approval
+or a verification.
+
+**Bounds.** One incident spends at most `recovery.maxAttempts` recovery turns, and a resumed worker
+that stops again with the very failure its recovery reported repaired ends in an actionable
+request for human help instead of another attempt. A recovery turn is bounded by the configured
+`taskTimeoutMinutes`, unchanged: no new timeout is introduced for it. An exhausted bound, an
+unchanged repetition, an `unrecoverable` judgment and an attempt that produced no judgment all end
+in the same actionable place — the incident record, the Jira report and the email summary kept,
+and a nonzero exit naming what a person must do.
+
+**Resumption.** A `repaired` or `blocked` conclusion returns the queue to work: the parent starts
+the worker again and records the moment that really happened, so a blocker ranked ahead of the
+interrupted ticket is a decision the incident record names rather than a promise. An incident that
+ended in a request for human help is not resumed: it is reported and the supervision stops.
+
+**Reporting.** Each incident publishes one concise report into the ticket's own Jira thread,
+written by the same service account that wrote the ticket, so the next developer turn and the next
+reviewer turn both read it in the shared history of §2; and one email summary through the
+configured SNS topic to the configured address. Publication survives a restart without repeating
+itself: an acknowledged comment is never posted twice, a comment whose own write was interrupted
+is looked for in the ticket's thread by its own identity before another is sent, and an
+acknowledged summary is never published again. A publication that failed is recorded as the
+incident's reporting problem and is never a reason to repeat a recovery that succeeded.
+
+**Restart and deduplication.** The supervisor's state is one owner record, one current-incident
+pointer, and one record per incident under the connected project's own namespace; nothing survives
+in a database or a service. A restart adopts the incident it finds, spends the attempts that
+record are missing, finishes its report if that is all that is left, and starts a worker again
+only where the record says the queue may resume. An incident record that cannot be read back is
+refused by name rather than treated as an absence.
 
 ## Jira API references
 
