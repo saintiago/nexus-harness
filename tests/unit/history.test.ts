@@ -154,6 +154,75 @@ function prepare(
   });
 }
 
+/**
+ * One review attempt's own record and the verdict its turn retained, as the
+ * scan leaves them under `<workDir>/reviews/<reviewId>`.
+ */
+async function writeReviewAttempt(
+  workDir: string,
+  request: {
+    readonly reviewId: string;
+    readonly startedAt: string;
+    readonly endedAt: string;
+    readonly summary: string;
+    readonly history?: string | null;
+    readonly findings?: readonly {
+      readonly path: string;
+      readonly line: number | null;
+      readonly body: string;
+      readonly kind?: 'unresolved' | 'regression';
+      readonly continues?: string;
+    }[];
+    readonly verifications?: readonly {
+      readonly finding: string;
+      readonly state: 'verified' | 'unverified' | 'regressed';
+      readonly evidence: string;
+    }[];
+  },
+): Promise<string> {
+  const dir = path.join(workDir, 'reviews', request.reviewId);
+  await mkdir(dir, { recursive: true });
+  await writeFile(
+    path.join(dir, 'review.json'),
+    JSON.stringify({
+      version: 1,
+      reviewId: request.reviewId,
+      ref: REF,
+      startedAt: request.startedAt,
+      endedAt: request.endedAt,
+      disposition: 'reviewed',
+      verdict: 'request_changes',
+      problem: null,
+      pullRequest: { headSha: HEAD, headBranch: 'harness/HARN-11' },
+      review: {
+        id: 72,
+        url: 'https://github.com/owner/name/pull/7#pullrequestreview-72',
+        state: 'CHANGES_REQUESTED',
+      },
+      history: request.history ?? null,
+    }),
+    'utf8',
+  );
+  await writeFile(
+    path.join(dir, 'verdict.json'),
+    JSON.stringify({
+      version: 1,
+      reviewId: request.reviewId,
+      ref: REF,
+      workspaceId: 'HARN-11',
+      task: { id: 'HARN-11', title: 'HARN-11' },
+      head: HEAD,
+      verdict: 'request_changes',
+      summary: request.summary,
+      findings: request.findings ?? [],
+      ...(request.verifications === undefined ? {} : { verifications: request.verifications }),
+      recordedAt: request.endedAt,
+    }),
+    'utf8',
+  );
+  return dir;
+}
+
 describe('the entry marker', () => {
   it('recognizes one developer or reviewer marker and nothing else', () => {
     expect(historyMarkerOf('nexus-history: developer run-1')).toEqual({
@@ -1368,6 +1437,279 @@ describe('one ticket history', () => {
         'verdict.json',
         outstandingFindingIds(rounds),
         retainedFindingIds(recovered),
+      ),
+    ).not.toThrow();
+  });
+
+  it('keeps a recovered report’s identity when the review records before it are gone', async () => {
+    const workDir = await createTempDir();
+    const ticketHistory = history(workDir);
+    // Round 1's complete report is retained while its own review record is
+    // gone; round 2's digest was lost, and its record and the reviewer's own
+    // verdict remain. Counting the surviving records alone would place round 2
+    // first and name its finding R1-F1 — the identity round 1 already holds.
+    await ticketHistory.recordReviewerReport?.({
+      ref: REF,
+      workspaceId: 'HARN-11',
+      task: TASK,
+      reviewId: 'review-1',
+      round: 1,
+      head: HEAD,
+      decision: 'request_changes',
+      summary: 'the greeting ignores the argument it is given',
+      findings: [{ path: 'src/greeting.ts', line: 2, body: 'the argument is ignored' }],
+      now: new Date('2026-09-16T10:00:00.000Z'),
+    });
+    await writeReviewAttempt(workDir, {
+      reviewId: 'review-2',
+      startedAt: '2026-09-16T10:50:00.000Z',
+      endedAt: '2026-09-16T10:55:00.000Z',
+      summary: 'the salutation is wrong too',
+      findings: [{ path: 'src/salutation.ts', line: 3, body: 'the salutation is wrong' }],
+    });
+    const answer = (finding: string): readonly string[] => [
+      `### Finding ${finding}`,
+      '- Cause: the shared helper ignored the argument it was given.',
+      '- Affected scope: src/greeting.ts and src/salutation.ts share the helper.',
+      '- Repair: the helper now returns the greeting it was given.',
+      '- Verification: exercised greet("hi") through the exported function.',
+      '- Remaining uncertainty: none.',
+    ];
+    await ticketHistory.recordDeveloperReport?.({
+      ref: REF,
+      workspaceId: 'HARN-11',
+      task: TASK,
+      round: 3,
+      runId: 'run-3',
+      reportPath: '/work/runs/run-3/result.json',
+      status: 'in-progress',
+      reason: 'Coding turn reports retained.',
+      repairsUsed: 0,
+      attempts: [
+        {
+          turn: 1,
+          kind: 'repair',
+          agentSummary: [
+            'I repaired the shared helper.',
+            '',
+            ...answer('R1-F1'),
+            '',
+            ...answer('R2-F1'),
+          ].join('\n'),
+          checks: 'passed',
+        },
+      ],
+      pullRequest: null,
+      deliveryFailure: null,
+      now: new Date('2026-09-16T11:00:00.000Z'),
+    });
+
+    const snapshot = await prepare(ticketHistory, 'reviewer', 3);
+    const rounds = unresolvedRounds(snapshot.brief);
+    expect(
+      rounds.map((round) => [round.sourceId, round.findings.map((finding) => finding.id)]),
+    ).toEqual([
+      ['review-1', ['R1-F1']],
+      ['review-2', ['R2-F1']],
+    ]);
+    const outstanding = outstandingFindingIds(rounds);
+    expect(outstanding).toEqual(['R1-F1', 'R2-F1']);
+    // The recovered finding keeps the identity the developer's answer and the
+    // next verdict name, so neither lookup is lost when the record before it
+    // was.
+    expect(rounds[1]?.responses?.[0]).toMatchObject({ finding: 'R2-F1', complete: true });
+    expect(() =>
+      parseVerdict(
+        JSON.stringify({
+          verdict: 'approve',
+          summary: 'both defects are gone',
+          findings: [],
+          verifications: [
+            { finding: 'r1-f1', state: 'verified', evidence: 'read src/greeting.ts:2' },
+          ],
+        }),
+        'verdict.json',
+        outstanding,
+        retainedFindingIds(snapshot),
+      ),
+    ).toThrow(/does not verify R2-F1/);
+    expect(() =>
+      parseVerdict(
+        JSON.stringify({
+          verdict: 'approve',
+          summary: 'both defects are gone',
+          findings: [],
+          verifications: [
+            { finding: 'R1-F1', state: 'verified', evidence: 'read src/greeting.ts:2' },
+            { finding: 'r2-f1', state: 'verified', evidence: 'read src/salutation.ts:3' },
+          ],
+        }),
+        'verdict.json',
+        outstanding,
+        retainedFindingIds(snapshot),
+      ),
+    ).not.toThrow();
+    // The round was established from the attempts that remain, so no identity
+    // gap is named, and the recovered report says where its round came from.
+    expect(snapshot.gaps.filter((gap) => gap.includes('could not be established'))).toEqual([]);
+    const recovered = snapshot.entries.find((entry) => entry.sourceId === 'review-2');
+    expect(recovered?.text).toContain('Original round: 2 — read back from');
+  });
+
+  it('reads a recovered report’s round back from the snapshot it was prepared with', async () => {
+    const workDir = await createTempDir();
+    const root = workspaceHistoryRoot(workDir, 'HARN-11');
+    // The conversation snapshot the review's own turn was prepared with states
+    // the round it was given. Two earlier attempts are gone entirely, so the
+    // position among the records that remain would call this review the first.
+    const snapshotDir = path.join(root, 'snapshots', 'b'.repeat(32));
+    await mkdir(snapshotDir, { recursive: true });
+    await writeFile(
+      path.join(snapshotDir, 'index.json'),
+      JSON.stringify({ version: 1, id: 'b'.repeat(32), role: 'reviewer', round: 5 }),
+      'utf8',
+    );
+    await writeReviewAttempt(workDir, {
+      reviewId: 'review-5',
+      startedAt: '2026-09-16T10:50:00.000Z',
+      endedAt: '2026-09-16T10:55:00.000Z',
+      history: snapshotDir,
+      summary: 'the salutation is wrong',
+      findings: [{ path: 'src/salutation.ts', line: 3, body: 'the salutation is wrong' }],
+    });
+
+    const snapshot = await prepare(history(workDir), 'reviewer', 6);
+    const rounds = unresolvedRounds(snapshot.brief);
+    expect(
+      rounds.map((round) => [round.sourceId, round.round, round.findings.map((f) => f.id)]),
+    ).toEqual([['review-5', 5, ['R5-F1']]]);
+    expect(snapshot.gaps.filter((gap) => gap.includes('could not be established'))).toEqual([]);
+  });
+
+  it('reads a lost digest’s round back from the report verdict saved beside it', async () => {
+    const workDir = await createTempDir();
+    const root = workspaceHistoryRoot(workDir, 'HARN-11');
+    const ticketHistory = history(workDir);
+    await ticketHistory.recordReviewerReport?.({
+      ref: REF,
+      workspaceId: 'HARN-11',
+      task: TASK,
+      reviewId: 'review-1',
+      round: 1,
+      head: HEAD,
+      decision: 'request_changes',
+      summary: 'the greeting ignores the argument it is given',
+      findings: [{ path: 'src/greeting.ts', line: 2, body: 'the argument is ignored' }],
+      now: new Date('2026-09-16T10:00:00.000Z'),
+    });
+    // Round 4's report was recorded before publication, so the verdict the
+    // harness saved beside the digest is still there, and the digest itself was
+    // lost — as a crash between the two writes leaves it. Round 4's position
+    // among the attempts that remain would call it the second.
+    await ticketHistory.recordReviewerReport?.({
+      ref: REF,
+      workspaceId: 'HARN-11',
+      task: TASK,
+      reviewId: 'review-4',
+      round: 4,
+      head: HEAD,
+      decision: 'request_changes',
+      summary: 'the salutation is wrong',
+      findings: [{ path: 'src/salutation.ts', line: 3, body: 'the salutation is wrong' }],
+      now: new Date('2026-09-16T11:30:00.000Z'),
+    });
+    await rm(path.join(root, 'reports', 'reviewer-review-4.json'), { force: true });
+    await writeReviewAttempt(workDir, {
+      reviewId: 'review-4',
+      startedAt: '2026-09-16T11:10:00.000Z',
+      endedAt: '2026-09-16T11:20:00.000Z',
+      summary: 'the salutation is wrong',
+      findings: [{ path: 'src/salutation.ts', line: 3, body: 'the salutation is wrong' }],
+    });
+
+    const snapshot = await prepare(ticketHistory, 'reviewer', 5);
+    const rounds = unresolvedRounds(snapshot.brief);
+    expect(
+      rounds.map((round) => [round.sourceId, round.round, round.findings.map((f) => f.id)]),
+    ).toEqual([
+      ['review-1', 1, ['R1-F1']],
+      ['review-4', 4, ['R4-F1']],
+    ]);
+    expect(snapshot.gaps.filter((gap) => gap.includes('could not be established'))).toEqual([]);
+    const recovered = snapshot.entries.find((entry) => entry.sourceId === 'review-4');
+    expect(recovered?.text).toContain('Original round: 4 — read back from');
+    expect(recovered?.text).toContain('### Finding R4-F1');
+  });
+
+  it('names a gap instead of renaming another review’s finding', async () => {
+    const workDir = await createTempDir();
+    const ticketHistory = history(workDir);
+    // Round 2's complete report is retained; round 3's digest and the verdict
+    // saved beside it are both gone, and nothing of its own states its round.
+    // Its position among the surviving attempts would name it round 2 — the
+    // identity round 2 already holds — so it is recovered under the review's
+    // own identity and the gap is named instead.
+    await ticketHistory.recordReviewerReport?.({
+      ref: REF,
+      workspaceId: 'HARN-11',
+      task: TASK,
+      reviewId: 'review-2',
+      round: 2,
+      head: HEAD,
+      decision: 'request_changes',
+      summary: 'the greeting ignores the argument it is given',
+      findings: [{ path: 'src/greeting.ts', line: 2, body: 'the argument is ignored' }],
+      now: new Date('2026-09-16T10:00:00.000Z'),
+    });
+    await writeReviewAttempt(workDir, {
+      reviewId: 'review-3',
+      startedAt: '2026-09-16T11:00:00.000Z',
+      endedAt: '2026-09-16T11:05:00.000Z',
+      summary: 'the salutation is wrong',
+      findings: [{ path: 'src/salutation.ts', line: 3, body: 'the salutation is wrong' }],
+    });
+
+    const snapshot = await prepare(ticketHistory, 'reviewer', 4);
+    const rounds = unresolvedRounds(snapshot.brief);
+    expect(
+      rounds.map((round) => [round.sourceId, round.round, round.findings.map((f) => f.id)]),
+    ).toEqual([
+      ['review-2', 2, ['R2-F1']],
+      ['review-3', null, ['NREVIEW-3-F1']],
+    ]);
+    expect(outstandingFindingIds(rounds)).toEqual(['R2-F1', 'NREVIEW-3-F1']);
+    const gaps = snapshot.gaps.filter(
+      (gap) => gap.includes('could not be established') && gap.includes('review-3'),
+    );
+    expect(gaps).toHaveLength(1);
+    const recovered = snapshot.entries.find((entry) => entry.sourceId === 'review-3');
+    expect(recovered?.text).toContain('Original round: could not be established');
+    expect(recovered?.text).toContain('### Finding NREVIEW-3-F1');
+    // The identity the recovered report keeps is the one a continuation and a
+    // verification can name; nothing silently overwrote round 2's finding.
+    expect(retainedFindingIds(snapshot)).toContain('NREVIEW-3-F1');
+    expect(() =>
+      parseVerdict(
+        JSON.stringify({
+          verdict: 'request_changes',
+          summary: 'the salutation defect is still there',
+          findings: [
+            {
+              path: 'src/salutation.ts',
+              line: 3,
+              body: 'the salutation is still wrong',
+              kind: 'unresolved',
+              continues: 'nreview-3-f1',
+            },
+          ],
+          verifications: [
+            { finding: 'R2-F1', state: 'verified', evidence: 'read src/greeting.ts:2' },
+            { finding: 'NREVIEW-3-F1', state: 'unverified', evidence: 'read src/salutation.ts:3' },
+          ],
+        }),
+        'verdict.json',
+        outstandingFindingIds(rounds),
+        retainedFindingIds(snapshot),
       ),
     ).not.toThrow();
   });
