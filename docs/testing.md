@@ -118,7 +118,9 @@ at, and the answer every outstanding finding receives — is `tests/unit/develop
 the classifications, the verifications and the refusals a verdict is held to are
 `tests/unit/reviews.test.ts`; and the identity, answer and verification a snapshot keeps across
 refreshes and restarts, with the prompt that renders them and the reconciliation that carries an
-unverified disposition forward into the next round, are `tests/unit/history.test.ts`.
+unverified disposition forward into the next round — settling nothing from a review GitHub
+dismissed, matching a retained report to the native review its own record published, and keeping a
+settled native review's identity nameable — are `tests/unit/history.test.ts`.
 
 Cache deterministic unit results only when all their inputs are declared. Checks of real process
 or host behavior run fresh — the boundary and workflow layers run on every validation. Maintain

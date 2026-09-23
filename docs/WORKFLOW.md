@@ -849,12 +849,16 @@ cannot be written at all stops the turn before it starts.
 Outstanding findings are reconciled across retained and native reviews, independently by reviewer,
 finding by finding as well as round by round. A later published approval from that reviewer at the
 current head clears their request; another reviewer's approval, an old-head approval, a comment-only
-review or an inconclusive verdict cannot clear it. A round that requests changes adds the findings
-it raises and clears nothing: a new change request never silently resolves an earlier defect. A
-round's own verifications settle exactly the identities they name — `verified` clears that one
-finding, `unverified` and `regressed` leave it outstanding for the next round to answer and verify —
-and that reviewer's latest change request stands as a round of its own, so a native review that
-states no finding of its own is still an outstanding request. Published findings without a retained
+review, an inconclusive verdict, and a review GitHub has since dismissed cannot clear it. A
+dismissed review is not an active decision: nothing it read is settled by it — the decision its own
+report stated is what its round keeps, so an approval keeps the head it was made on and a dismissed
+change request's findings still stand — and dismissal withdraws the blocking state the review had
+on the pull request, never the defect the review recorded. A round that requests changes adds the
+findings it raises and clears nothing: a new change request never silently resolves an earlier
+defect. A round's own verifications settle exactly the identities they name — `verified` clears that
+one finding, `unverified` and `regressed` leave it outstanding for the next round to answer and
+verify — and that reviewer's latest change request stands as a round of its own, so a native review
+that states no finding of its own is still an outstanding request. Published findings without a retained
 report remain visible with an explicit provenance gap. Responses include older comments edited after
 the review.
 
@@ -866,7 +870,11 @@ the identity is reproduced rather than re-derived when a snapshot is rebuilt or 
 finding a later review raises again is not a new identity: it is classified `unresolved` or
 `regression`, names the identity it continues, and keeps it for as long as it is outstanding, while
 the review's own occurrence — its own round and position — is recorded and rendered beside it, so
-the latest wording of the defect is not lost. Two reviews this harness kept no round number for are
+the latest wording of the defect is not lost. A native review the harness kept no complete report
+for is reconstructed from the review's own entry and its inline comments, and those identities are
+reproduced from the snapshot for as long as it holds the review: a defect an approval settled keeps
+the identity it was raised with, so a later revision that brings it back continues that finding
+instead of raising an unconnected new one. Two reviews this harness kept no round number for are
 named apart by a bounded digest of the identity that scopes them, so two baseline diagnoses of one
 project cannot share one finding identity.
 The brief renders each outstanding finding whole, with that identity and how the round classified
@@ -924,7 +932,12 @@ recorded publication identities is recognized only from a configured harness aut
 harness's own rendering shape — its run
 result line, the marker naming the same run, and its artifacts and repairs lines — which a comment
 that quotes a marker does not match. The inline findings of a native review published by the App are
-the retained report's own findings, mapped by the review's identity; a reply to one stays a reply.
+the retained report's own findings, mapped by the review's identity; a reply to one stays a reply. A
+publication note that failed after GitHub acknowledged the review is recovered from the attempt's
+own review record: the recorded native review id is what matches the retained report to the review
+it published, so the review's own state — an approval's head, a dismissal, a later change request —
+is what reconciliation reads, and one review is one round rather than a reconstructed second round
+beside the report that already holds it.
 
 The normal completion pass records its acknowledged Jira findings comment with the exact local
 reviewer's native review identity and head. Its review excerpt becomes a mirror; its distinct

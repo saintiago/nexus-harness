@@ -40,8 +40,10 @@ complete answer — or one whose latest report is missing or incomplete — and 
 was never verified are never presented as resolved. A finding a later review raises again keeps the
 identity it continues and records its own occurrence beside it, and a new change request adds the
 findings it raises without clearing the ones already outstanding. A continuation is resolved
-against every identity the history retained, so a defect an earlier review already settled keeps
-the identity it was raised with when a later revision brings it back.
+against every identity the history retained, so a defect an earlier review already settled keeps the
+identity it was raised with when a later revision brings it back: a native review the harness kept
+no report for is reconstructed from the review and its inline comments, and those identities
+survive the review that settled them.
 
 ## Review
 
@@ -53,7 +55,10 @@ verification with the verdict — only a `verified` reading settles one, while `
 occurrences rather than reporting one example at a time; and keep reviewing the whole change against
 the requested outcome. Approval applies to the reviewed revision, not to later changes. Only a
 review the pull request itself carries settles an earlier disposition: an approval clears one only
-at the head it was made on, and a verdict refused publication is conversation, not a settlement.
+at the head it was made on, a verdict refused publication is conversation, not a settlement, and a
+review GitHub has dismissed settles nothing — its approval clears nothing at any head, and the
+findings its own report raised stay outstanding because dismissal withdraws the blocking state,
+not the defect the review recorded.
 
 ## Delivery and completion
 

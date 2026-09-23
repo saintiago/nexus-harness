@@ -81,9 +81,14 @@ that rendering back as a mirror of the report by its recorded publication identi
 wording alone: a comment that quotes a marker, or a rendering edited after publication, stays an
 attributed conversational entry. The native review the harness published also names its inline
 findings, so those are the report rather than duplicates beside it, while a reply stays its own
-entry. Every snapshot is written under the hash of its own content: a refresh with nothing new reuses
-it, a refresh with something new writes a new directory, and the snapshot a running turn was handed
-is never rewritten. Feedback is compared with the last snapshot consumed by the same role,
+entry. A publication note that failed after GitHub acknowledged the review is recovered from the
+attempt's own review record: the recorded native review id is what matches the retained report to
+the review it published, so the review's own state — an approval's head, a dismissal, a later
+change request — is what reconciliation reads, and one review is one round rather than a
+reconstructed second round beside the report that already holds it. Every snapshot is written under
+the hash of its own content: a refresh with nothing new reuses it, a refresh with something new
+writes a new directory, and the snapshot a running turn was handed is never rewritten. Feedback is
+compared with the last snapshot consumed by the same role,
 recorded only after its turn returns a summary or verdict. Preparing a snapshot, a failed launch,
 or running the other role cannot consume that role's feedback. Missing legacy cursors replay all
 human feedback conservatively; a cursor write failure also permits replay. A restart uses these
@@ -101,7 +106,11 @@ Runs without a prepared history keep their existing guidance behavior.
 Outstanding change requests are tracked independently by reviewer across retained and native
 reviews, finding by finding as well as round by round. A later published approval by that reviewer
 at the current head clears their request; another author's approval, an approval of an old head, a
-comment-only review or an inconclusive verdict cannot hide it. A round that requests changes adds
+comment-only review, an inconclusive verdict, and a review GitHub has since dismissed cannot hide
+it. A dismissed review is not an active decision: nothing it read is settled by it — the decision
+its own report stated is what its round keeps, so an approval keeps the head it was made on and a
+dismissed change request's findings still stand — because dismissal withdraws the blocking state
+the review had, never the defect the review recorded. A round that requests changes adds
 the findings it raises and clears nothing, so a new change request never silently resolves an
 earlier defect, and that reviewer's latest change request stands as a round of its own — a native
 review that states no finding of its own is still an outstanding request. Responses include edits to
@@ -115,7 +124,11 @@ finding a review raises keeps a stable identity — the round that raised it and
 for example `R3-F2` — and both roles name it by that identity. A later review that finds the same
 defect again does not rename it: the finding is classified `unresolved` or `regression`, names the
 identity it continues, keeps it, and records its own occurrence beside it, so the latest wording is
-not lost while the defect keeps one name from the round that raised it. A disposition a review read
+not lost while the defect keeps one name from the round that raised it. A native review the harness
+kept no complete report for is reconstructed from the review's own entry and its inline comments,
+and those identities are reproduced from the snapshot for as long as it holds the review, so a
+defect an approval already settled keeps the identity it was raised with when a later revision
+brings it back. A disposition a review read
 as `unverified` or `regressed` stays outstanding until a later round verifies it, whatever else that
 round decides. A developer turn whose brief carries outstanding findings answers each of them in its
 own final summary, one section per identity, stating the cause, the affected scope (the related
