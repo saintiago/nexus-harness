@@ -121,7 +121,10 @@ function describeAnswerField(
  * recorded. It is never presented as a verification — only the reviewer's own
  * verification is one.
  */
-function describeResponse(finding: HistoryFinding, response: HistoryFindingResponse | null): string {
+function describeResponse(
+  finding: HistoryFinding,
+  response: HistoryFindingResponse | null,
+): string {
   if (response === null) {
     return (
       `  Developer response: none recorded after this review. ${finding.id} has no answer the ` +
@@ -133,7 +136,7 @@ function describeResponse(finding: HistoryFinding, response: HistoryFindingRespo
     `(run ${response.runId}, ${response.createdAt}) in ${response.entryId}`;
   if (!response.complete) {
     return (
-      `  Developer response: recorded ${where}, but it is not a complete response — ` +
+      `  Developer response: ${where}, but it is not a complete response — ` +
       `${response.problem ?? 'a required field is missing'}. Nothing here is complete remediation.`
     );
   }
@@ -144,10 +147,7 @@ function describeResponse(finding: HistoryFinding, response: HistoryFindingRespo
     describeAnswerField('verification', response.verification, response),
     describeAnswerField('remaining uncertainty', response.uncertainty, response),
   ].filter((line): line is string => line !== null);
-  return [
-    `  Developer response (a claim, not a verification; ${where}):`,
-    ...fields,
-  ].join('\n');
+  return [`  Developer response (a claim, not a verification; ${where}):`, ...fields].join('\n');
 }
 
 /** One finding, whole, with its identity and the answer it has so far. */
@@ -178,14 +178,19 @@ function describeFinding(
 }
 
 /** What one review verified about the dispositions raised before it. */
-function describeVerifications(verifications: readonly HistoryFindingVerification[]): string | null {
+function describeVerifications(
+  verifications: readonly HistoryFindingVerification[],
+): string | null {
   if (verifications.length === 0) {
     return null;
   }
   return (
     'Verification this review recorded — the reviewer’s own reading, not a developer claim:\n' +
     verifications
-      .map((verification) => `- ${verification.finding} — ${verification.state}: ${verification.evidence}`)
+      .map(
+        (verification) =>
+          `- ${verification.finding} — ${verification.state}: ${verification.evidence}`,
+      )
       .join('\n')
   );
 }

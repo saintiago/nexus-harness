@@ -32,6 +32,7 @@ import type {
 } from '../../src/reviews/contract.js';
 import { createReviewerTurn } from '../../src/reviews/reviewer.js';
 import { scanReviews } from '../../src/reviews/scan.js';
+import type { HistorySnapshot, TicketHistory } from '../../src/history/contract.js';
 import { REVIEW_VIEW_DIRECTORY, reviewViews } from '../../src/reviews/view.js';
 import type { SourceTask } from '../../src/sources/contract.js';
 import type { SourceRef } from '../../src/shared/types.js';
@@ -266,4 +267,192 @@ describe('the review handoff', () => {
       expect(await branchHead(workspacePath, workspace?.branch ?? '')).toBe(head);
     },
   );
+
+  it(
+    'refuses to publish a verdict that leaves an outstanding disposition unverified',
+    { timeout: WORKFLOW_CASE_TIMEOUT_MS },
+    async () => {
+      const project = await createTargetProject();
+      const run = await runTicket({
+        project,
+        ref: REF,
+        workspaceId: WORKSPACE_ID,
+        turn: implementTurn,
+      });
+      const workspace = run.workspace;
+      const head = await branchHead(workspace?.workspacePath ?? '', workspace?.branch ?? '');
+      expect(run.status).toBe('passed');
+
+      const pullRequest: OpenPullRequest = {
+        number: 42,
+        url: 'https://github.com/example/target/pull/42',
+        title: 'HARN-77: Finish the greeting',
+        headSha: head,
+        headBranch: `harness/${WORKSPACE_ID}`,
+        baseBranch: BASE_BRANCH,
+        baseSha: workspace?.baseCommit ?? '',
+        draft: false,
+        author: 'nexus-agent',
+      };
+      const task = await loadTask(project.taskPath);
+      const github = standInGitHub(pullRequest, {
+        ref: REF,
+        task,
+        pullRequest,
+        files: [
+          {
+            path: TARGET_RESULT_FILE,
+            patch: `@@ -0,0 +1 @@\n+implemented\n`,
+            additions: 1,
+            deletions: 0,
+          },
+        ],
+        truncated: false,
+        checks: [],
+        combinedStatus: null,
+        fetchedAt: '2026-03-01T11:00:00.000Z',
+      });
+      // The ticket history this revision's review starts from: one change
+      // request is outstanding, so the verdict has to verify its disposition or
+      // nothing is published.
+      const history = historyWithOutstandingFinding();
+      const standIn = await installStandIn('reviewer-runtime-unverified', STAND_IN_REVIEWER);
+      const recorded = recordingIo();
+      const summary = await scanReviews({
+        queue: {
+          list: async () => [{ ref: REF, title: task.title }],
+          prepare: async () => ({ ref: REF, task, pointers: [WORKSPACE_ID] }),
+        },
+        repository: github.repository,
+        reviewer: createReviewerTurn({
+          selection: { runtime: 'codex', command: [process.execPath, standIn.scriptPath] },
+          // The verdict the stand-in writes asks for changes and verifies
+          // nothing: the claimed repair is not a verified one.
+          environment: {
+            ...process.env,
+            NEXUS_STAND_IN_VERDICT: JSON.stringify({
+              verdict: 'request_changes',
+              summary: 'the same defect is still there',
+              findings: [{ path: TARGET_RESULT_FILE, line: 1, body: 'still missing' }],
+            }),
+          },
+        }),
+        history,
+        views: reviewViews(),
+        workDir: project.workDir,
+        sourceRoot: canonicalPath(project.repo),
+        login: LOGIN,
+        checkName: CHECK_NAME,
+        reviewerTimeoutMs: 60_000,
+        io: recorded.io,
+        stop: new AbortController().signal,
+        now: () => new Date('2026-03-01T11:05:00.000Z'),
+        sleep: async () => undefined,
+      });
+
+      // Nothing was published: an unverified disposition is not a published
+      // verdict, and the report is retained as the incomplete exchange it is.
+      expect(summary.items.map((entry) => entry.disposition)).toEqual(['attention']);
+      expect(summary.attention).toBe(1);
+      expect(github.reviews).toEqual([]);
+      expect(github.checks).toEqual([]);
+      expect(recorded.text()).toMatch(/does not verify R2-F1/);
+      expect(history.recorded).toEqual([]);
+      // The refusal is kept with the turn's own evidence for the coordinator.
+      const [reviewId] = (await readdir(path.join(project.workDir, 'reviews'))).filter((entry) =>
+        entry.startsWith('review-'),
+      );
+      const reviewDir = path.join(project.workDir, 'reviews', reviewId ?? '');
+      expect(
+        JSON.parse(await readFile(path.join(reviewDir, 'verdict.json'), 'utf8')),
+      ).toMatchObject({ verdict: 'request_changes' });
+    },
+  );
 });
+
+/**
+ * A ticket history that hands one review turn the same brief organization the
+ * real one does: a round whose change request is outstanding, one finding with
+ * the identity it keeps, and the developer's answer to it. The record it keeps
+ * is exposed for the case to assert what a refusal did — and did not — save.
+ */
+function historyWithOutstandingFinding(): TicketHistory & { readonly recorded: unknown[] } {
+  const recorded: unknown[] = [];
+  const dir = '/work/workspaces/HARN-77.history/snapshots/snapshot-1';
+  const review = {
+    entryId: 'harness:reviewer-report:review-2',
+    kind: 'reviewer-report' as const,
+    round: 2,
+    author: 'Nexus Lens',
+    createdAt: '2026-03-01T10:00:00.000Z',
+    sourceId: 'review-2',
+    complete: true,
+    problem: null,
+    status: null,
+    reason: null,
+    head: 'a'.repeat(40),
+    nativeReviewId: null,
+    decision: 'request_changes',
+    summary: 'the greeting is wrong',
+    findings: [
+      {
+        id: 'R2-F1',
+        path: TARGET_RESULT_FILE,
+        line: 1,
+        body: 'the greeting ignores the argument it is given',
+      },
+    ],
+    responses: [
+      {
+        finding: 'R2-F1',
+        complete: true,
+        problem: null,
+        cause: 'the helper ignored its argument',
+        scope: TARGET_RESULT_FILE,
+        repair: 'the helper returns what it was given',
+        verification: 'exercised it through the exported function',
+        uncertainty: 'none',
+        entryId: 'harness:developer-report:run-4',
+        runId: 'run-4',
+        round: 4,
+        createdAt: '2026-03-01T10:30:00.000Z',
+      },
+    ],
+    pullRequest: null,
+  };
+  const snapshot: HistorySnapshot = {
+    version: 1,
+    id: 'snapshot-1',
+    role: 'reviewer',
+    round: 3,
+    takenAt: '2026-03-01T11:00:00.000Z',
+    root: '/work/workspaces/HARN-77.history',
+    dir,
+    indexPath: `${dir}/index.md`,
+    indexJsonPath: `${dir}/index.json`,
+    entriesPath: `${dir}/entries.jsonl`,
+    reportsDir: '/work/workspaces/HARN-77.history/reports',
+    brief: {
+      ref: REF,
+      task: { id: REF.key, title: REF.key, description: '', acceptanceCriteria: [] },
+      latestDelivery: null,
+      unresolved: review,
+      unresolvedReviews: [review],
+      responses: [],
+      newHumanFeedback: [],
+    },
+    entries: [],
+    reports: [review],
+    gaps: [],
+    mirrors: [],
+    sources: [{ source: 'jira', problem: null }],
+  };
+  return {
+    recorded,
+    prepare: async () => snapshot,
+    recordReviewerReport: async (request) => {
+      recorded.push(request);
+      return { file: 'digest.json', completeFile: 'report.md', round: request.round };
+    },
+  };
+}

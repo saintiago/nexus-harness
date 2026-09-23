@@ -654,6 +654,98 @@ describe('one ticket history', () => {
     expect(approved.brief.unresolvedReviews).toEqual([]);
   });
 
+  it('keeps every outstanding finding’s identity, answer and verification across refreshes', async () => {
+    const workDir = await createTempDir();
+    const ticketHistory = history(workDir);
+    await ticketHistory.recordReviewerReport?.({
+      ref: REF,
+      workspaceId: 'HARN-11',
+      task: TASK,
+      reviewId: 'review-2',
+      round: 2,
+      head: HEAD,
+      decision: 'request_changes',
+      summary: 'the repair did not hold',
+      findings: [
+        { path: 'src/greeting.ts', line: 2, body: 'the argument is still ignored' },
+        { path: 'src/salutation.ts', line: null, body: 'the same helper is copied here' },
+      ],
+      // What this round verified of an earlier disposition: an unverified
+      // claim is a fact of its own, not a reason to read the finding as closed.
+      verifications: [
+        { finding: 'R1-F1', state: 'unverified', evidence: 'the helper still ignores it' },
+      ],
+      now: new Date('2026-09-16T10:00:00.000Z'),
+    });
+    await ticketHistory.recordDeveloperReport?.({
+      ref: REF,
+      workspaceId: 'HARN-11',
+      task: TASK,
+      round: 4,
+      runId: 'run-4',
+      reportPath: '/work/runs/run-4/result.json',
+      status: 'in-progress',
+      reason: 'Coding turn reports retained.',
+      repairsUsed: 0,
+      attempts: [
+        {
+          turn: 1,
+          kind: 'repair',
+          agentSummary: [
+            'I repaired the greeting.',
+            '',
+            '### Finding R2-F1',
+            '- Cause: the helper ignored the argument it was given.',
+            '- Affected scope: src/greeting.ts and src/salutation.ts share the helper.',
+            '- Repair: the helper now returns the greeting it was given.',
+            '- Verification: exercised greet("hi") through the exported function.',
+            '- Remaining uncertainty: none.',
+          ].join('\n'),
+          checks: 'passed',
+        },
+      ],
+      pullRequest: null,
+      deliveryFailure: null,
+      now: new Date('2026-09-16T11:00:00.000Z'),
+    });
+
+    const snapshot = await prepare(ticketHistory, 'reviewer', 3);
+    const round = snapshot.brief.unresolvedReviews?.[0];
+    // The identity is the round's own, and it is what an answer names.
+    expect(round?.findings.map((finding) => finding.id)).toEqual(['R2-F1', 'R2-F2']);
+    expect(round?.verifications).toEqual([
+      { finding: 'R1-F1', state: 'unverified', evidence: 'the helper still ignores it' },
+    ]);
+    const responses = round?.responses ?? [];
+    expect(responses.map((response) => [response.finding, response.complete])).toEqual([
+      ['R2-F1', true],
+      ['R2-F2', false],
+    ]);
+    expect(responses[0]?.entryId).toBe('harness:developer-report:run-4');
+    expect(responses[0]?.repair).toBe('the helper now returns the greeting it was given.');
+    expect(responses[1]?.problem).toMatch(/no answer to this finding is recorded/);
+
+    const prompt = renderHistorySection(snapshot, 'reviewer');
+    expect(prompt).toContain('R2-F1');
+    expect(prompt).toContain('R2-F2');
+    expect(prompt).toContain('the helper now returns the greeting it was given.');
+    expect(prompt).toContain('Developer response (a claim, not a verification');
+    // The finding with no answer says exactly that, and the verification this
+    // round recorded is rendered as verification rather than as a claim.
+    expect(prompt).toMatch(/[Nn]othing here is complete remediation/);
+    expect(prompt).toContain('R1-F1 — unverified: the helper still ignores it');
+
+    // A restart reads the same exchange back from the retained reports.
+    const restarted = await prepare(history(workDir), 'reviewer', 4);
+    expect(restarted.brief.unresolvedReviews?.[0]?.responses?.[0]?.repair).toBe(
+      'the helper now returns the greeting it was given.',
+    );
+    expect(restarted.brief.unresolvedReviews?.[0]?.findings.map((finding) => finding.id)).toEqual([
+      'R2-F1',
+      'R2-F2',
+    ]);
+  });
+
   it('keeps a turn’s input stable while a later refresh moves on', async () => {
     const workDir = await createTempDir();
     const ticketHistory = history(workDir, {

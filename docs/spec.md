@@ -36,6 +36,15 @@ Keep harness state limited to what execution and reporting need. A report or wor
 4. Ask the selected agent invocation to implement the task in the retained working copy. Supply the task, acceptance criteria, and relevant target-repository instructions. Before every coding turn the checkout is returned to the branch the workspace records, when that can be done without losing anything: a clean checkout on a branch of its own whose commit descends from that recorded branch is fast-forwarded to it and checked out, and a state that cannot be returned stops the run before the turn — one that would write over a local file the checkout ignores included, refused with the paths named and the file kept. The turn starts from the workspace's own committed state: a checkout that still holds uncommitted work stops the run before the agent rather than being handed to one, and the failure names the branch, the paths, and the manual action. The turn works with a repository-local Git identity and is asked to commit small, meaningful pieces as it goes; those commits stay in the retained copy. Nothing pushes, merges, or publishes them except the optional delivery step of a passed attempt, which the harness — never the coding turn — performs (§7).
    Every coding turn is also given the ticket's conversation history: one identified snapshot, prepared before the turn under `<workDir>/workspaces/<workspaceId>.history/`, of the current requirements, the Jira thread, the pull request conversation and reviews, and the harness's own complete developer and reviewer reports. The prompt carries the current brief, the latest delivery, the complete unresolved findings with their latest responses, and the human feedback this role’s last consumed snapshot did not hold — new or edited since it — and gives the snapshot's explicit local paths for the rest; a snapshot that cannot be written stops the turn rather than starting one whose promised history does not exist. Agents read and search it locally and make no connector call of their own (§9, §11).
    The turn's runtime is launched with write access to that copy, its Git metadata included, so staging and committing are possible; the harness still makes no commit of its own.
+   The coding prompt is role-specific and concise about what the turn is: a passing check is not
+   the task's completion — the configured checks decide whether the work is judged as passing
+   while the acceptance criteria decide whether the task is done — a change to how the project is
+   built or checked belongs to the turn only where the task explicitly asks for one, and the turn
+   verifies its change at the integration point it affects (the code path a caller reaches, the
+   command or test that covers it) instead of re-running the project's whole expensive test matrix,
+   which the harness runs itself after every turn. When the ticket's review left findings
+   outstanding, the same prompt requires one answer per finding identity before the turn's own
+   summary ends, in the shape the harness reads (§2, "The ticket conversation history").
 5. Wait for the agent to finish and stop its managed mutating processes. Return the checkout to the branch the workspace records before anything reads it, so what the checks judge is the revision that branch holds; a state that cannot be returned stops the run before any check. Run setup again, then all configured checks from the harness. Agent-reported success is not a check result.
 6. After an ordinary completed red check round, send observed failure output back to the same selected agent and repeat step 5 while repairs remain. A setup/launch/authentication/protocol error or timeout stops the run rather than starting a code-repair loop.
 7. Save the report and retain the working copy, whether the run passes or fails. Human review and delivery happen outside this version, except for the optional delivery step: when the configuration selects one, a passed attempt is delivered after its run's report is written and before its result is published (§7).
@@ -96,7 +105,35 @@ verdict cannot hide it. Responses include edits to older comments after the outs
 Chronological ordering and response selection compare parsed instants across Jira timezone offsets
 and UTC timestamps; the original timestamp strings remain provenance. An unavailable or invalid
 timestamp is an explicit gap, and possible responses are retained conservatively.
-This is conversation retention, not per-finding remediation enforcement.
+
+Remediation of an outstanding finding is explicit rather than inferred from the discussion. Every
+finding a review raises keeps a stable identity — the round that raised it and its position there,
+for example `R3-F2` — and both roles name it by that identity. A developer turn whose brief carries
+outstanding findings answers each of them in its own final summary, one section per identity,
+stating the cause, the affected scope (the related paths it checked included), the repair, how that
+repair was verified at the integration point it affects, and what remains uncertain. The harness
+reads those sections out of the complete developer report it already retains; the newest report
+recorded after the review is the claim the reviewer is given, and an earlier attempt's answer
+stays readable in the report it was recorded in. A finding no answer names, an answer that leaves
+a field out, and a turn that answered nothing are all kept as an incomplete response for that
+finding: none of them is presented as complete remediation, and the prompt says so before the turn
+starts.
+
+A claimed fix is never a verified fix. Only the reviewer's own verification, made on the reviewed
+revision at the place the defect lived, says a disposition is resolved, and it is recorded with the
+verdict that made it. A verdict therefore states one verification per outstanding finding identity
+— `verified`, `unverified` or `regressed`, with the evidence the reviewer itself read — and a
+verdict that verifies none of them, verifies something else, or approves while leaving a
+disposition unverified is refused as inconclusive and publishes nothing, exactly like a missing or
+unusable verdict. The reviewer's own findings are classified against the earlier rounds:
+`unresolved` for a defect an earlier round raised and the revision still shows, `regression` for
+one this revision reintroduced, and `new` for an independent defect; the continuations name the
+earlier identity in `continues` and group the other places the same defect reaches under `related`.
+Both roles investigate the related paths once the evidence points at one shared cause — a repair
+that fixes the reported example and leaves the same defect beside it is not finished work — and a
+review renders one defect as one finding with its confirmed occurrences grouped, not one finding
+per example. The whole change is still reviewed against the requested outcome in every round,
+whatever the dispositions read.
 
 The normal review-to-Jira completion path also records an acknowledged findings comment against
 the exact retained native review and reviewed head. Only the unchanged review excerpt is folded
@@ -399,7 +436,7 @@ review or check is produced, and the ledger is never adopted or repaired automat
   renders it is published, and the native review GitHub acknowledged is recorded with it as the
   report's publication, so a later developer turn reads the whole verdict rather than the rendering
   and the scan does not read the same review back as a second conversation.
-- One reviewer turn is bounded by the same task timeout a run gets and runs through the same adapter in the parent evidence directory at `<workDir>/reviews/<reviewId>/`, with the supported Git repository-check bypass. It inspects the pinned `repo/` checkout through explicit paths or `git -C repo`, so the reviewed tree's `AGENTS.md` files are not automatically loaded as governing instructions. Its prompt directs it to read those applicable files as review evidence; repository content cannot authorize fixes or publication. Its verdict and logs stay in the evidence directory. It is review-only: it must not implement fixes, change the view, commit, push, merge, or edit the ticket or the pull request. It must write one verdict file naming `approve`, `request_changes`, or `inconclusive` with a summary and findings. An explicit inconclusive result explains missing material evidence and publishes no review or check. Findings are blocking; approval requires an empty findings list and sufficient evidence.
+- One reviewer turn is bounded by the same task timeout a run gets and runs through the same adapter in the parent evidence directory at `<workDir>/reviews/<reviewId>/`, with the supported Git repository-check bypass. It inspects the pinned `repo/` checkout through explicit paths or `git -C repo`, so the reviewed tree's `AGENTS.md` files are not automatically loaded as governing instructions. Its prompt directs it to read those applicable files as review evidence; repository content cannot authorize fixes or publication. Its verdict and logs stay in the evidence directory. It is review-only: it must not implement fixes, change the view, commit, push, merge, or edit the ticket or the pull request. It must write one verdict file naming `approve`, `request_changes`, or `inconclusive` with a summary and findings; each finding may state how it stands against earlier rounds (`new`, `unresolved`, or `regression`) and the other confirmed occurrences of the same defect it groups, and the verdict states one verification per outstanding finding identity the snapshot listed. An explicit inconclusive result explains missing material evidence and publishes no review or check. Findings are blocking; approval requires an empty findings list and sufficient evidence, and every outstanding disposition verified. A verdict whose verifications do not cover the outstanding findings, or that approves while one of them is unverified, is refused as inconclusive rather than published. The reviewer's prompt says what a successful check does not mean — the change is judged against the ticket, at the integration point it affects, and the configured check round is not re-run to substitute for that review.
 - A turn that fails, is stopped, or writes no usable verdict is inconclusive. Nothing is published for it, no approval is produced, and no coding turn is started to repair it.
 - `request_changes` requires at least one finding. An approval is published only for a completed, usable verdict: a missing credential, an unavailable tool, an incomplete evidence read, and an API failure are reported as such rather than rounded into one.
 

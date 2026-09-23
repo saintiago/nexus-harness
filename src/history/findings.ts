@@ -158,12 +158,15 @@ function answerSections(text: string): readonly AnswerSection[] {
       }
       continue;
     }
-    // A line that is neither a label nor a heading continues the value above
-    // it: an answer may wrap, and the whole of it is kept.
-    if (field !== null && line.trim() !== '') {
+    // An indented line continues the value above it, so an answer may wrap and
+    // the whole of it is kept. Anything else — a check line, a blank, the next
+    // paragraph — ends the value: it is not part of the answer.
+    if (field !== null && /^[ \t]+\S/.test(line)) {
       const held = current.fields.get(field) ?? '';
       current.fields.set(field, held === '' ? line.trim() : `${held} ${line.trim()}`);
+      continue;
     }
+    field = null;
   }
   closeSection();
   return sections;

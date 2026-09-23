@@ -16,12 +16,7 @@
  * connector. `sync.ts` reads the sources, `store.ts` writes the snapshot, and
  * `prompt.ts` renders the one section both role prompts carry.
  */
-import type {
-  FindingKind,
-  FindingVerificationState,
-  SourceRef,
-  Task,
-} from '../shared/types.js';
+import type { FindingKind, FindingVerificationState, SourceRef, Task } from '../shared/types.js';
 
 /** Who produced one entry, as the index names it. */
 export type HistoryRole = 'human' | 'developer' | 'reviewer' | 'harness';

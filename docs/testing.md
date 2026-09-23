@@ -7,7 +7,8 @@ workflows. Each behavior should be proved at the lowest layer that can detect it
 
 Exercise real decision code with explicit inputs and supplied observations. Cover input and
 configuration validation, state transitions, repair and escalation, review and completion decisions,
-and conversation-history rules. Control time and external responses. Do not start real Git,
+conversation-history rules, and the finding identity and developer-answer rules that keep a claimed
+fix apart from a verified one. Control time and external responses. Do not start real Git,
 processes, network services or entire command workflows to test a decision.
 
 Keep policy separate from effects where doing so makes the production design clearer. Introduce
@@ -50,6 +51,11 @@ delivery step, the completion pass, the report and the ledger — and supplies o
 responses a workflow gets from outside: the agent turn, and the service answers of the configured
 integrations. Nothing in the layer repeats a decision matrix the unit layer owns or re-verifies a
 protocol the boundary layer owns.
+
+The review handoff's case also proves the refusal that keeps a claim from passing as a
+verification: over a ticket history whose review left a finding outstanding, a stand-in reviewer
+that publishes a verdict without verifying that disposition publishes nothing, and the report is
+kept as the incomplete exchange it is.
 
 ## Validation and restoration
 
@@ -102,6 +108,15 @@ assembled supervision is `tests/workflow/supervision.test.ts`. No archived file
 is the only record of a required behavior; what the archive keeps is the whole-command surfaces and
 the shared fixtures those behaviors are assembled into, which the active layers prove at their own
 layer.
+
+The per-finding remediation contract has suites of its own at the layer that owns each decision:
+the identity a finding keeps and the developer answers the harness reads are
+`tests/unit/findings.test.ts`; what the coding prompt tells a turn — a passing check is not
+completion, where a build/test change is authorized, the integration point a repair is verified
+at, and the answer every outstanding finding receives — is `tests/unit/developer-prompt.test.ts`;
+the classifications, the verifications and the refusals a verdict is held to are
+`tests/unit/reviews.test.ts`; and the identity, answer and verification a snapshot keeps across
+refreshes and restarts, with the prompt that renders them, are `tests/unit/history.test.ts`.
 
 Cache deterministic unit results only when all their inputs are declared. Checks of real process
 or host behavior run fresh — the boundary and workflow layers run on every validation. Maintain

@@ -467,7 +467,11 @@ function verdictFinding(
 }
 
 /** One verification of an earlier disposition, or a refusal naming what is wrong. */
-function verdictVerification(value: unknown, index: number, outstanding: readonly string[]): ReviewVerification {
+function verdictVerification(
+  value: unknown,
+  index: number,
+  outstanding: readonly string[],
+): ReviewVerification {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     throw new ReviewError(
       'inconclusive',
@@ -479,9 +483,13 @@ function verdictVerification(value: unknown, index: number, outstanding: readonl
   if (!outstanding.includes(finding)) {
     throw new ReviewError(
       'inconclusive',
-      `verification ${String(index + 1)} of the reviewer's ${REVIEW_VERDICT_FILE} names ` +
-        `"${finding}", which is not one of the outstanding findings the history named ` +
-        `(${outstanding.length === 0 ? 'there were none' : outstanding.join(', ')}).`,
+      outstanding.length === 0
+        ? `verification ${String(index + 1)} of the reviewer's ${REVIEW_VERDICT_FILE} verifies ` +
+            `"${finding}" although no change request was outstanding, so there is nothing that ` +
+            'verification can stand for.'
+        : `verification ${String(index + 1)} of the reviewer's ${REVIEW_VERDICT_FILE} names ` +
+            `"${finding}", which is not one of the outstanding findings the history named ` +
+            `(${outstanding.join(', ')}).`,
     );
   }
   const state = verification['state'];
@@ -556,9 +564,7 @@ export function parseVerdict(
       'the verdict has too many findings; none may be dropped.',
     );
   }
-  const findings = rawFindings.map((finding, index) =>
-    verdictFinding(finding, index, outstanding),
-  );
+  const findings = rawFindings.map((finding, index) => verdictFinding(finding, index, outstanding));
   const rawVerifications = record['verifications'];
   if (rawVerifications !== undefined && !Array.isArray(rawVerifications)) {
     throw new ReviewError(
@@ -587,13 +593,6 @@ export function parseVerdict(
       `the reviewer's ${where} does not verify ${missing.join(', ')}, so the disposition of an ` +
         'outstanding finding would be published unverified. Verify every outstanding finding by ' +
         'the identity the history gave it and write the review again.',
-    );
-  }
-  if (outstanding.length === 0 && verifications.length > 0) {
-    throw new ReviewError(
-      'inconclusive',
-      `the reviewer's ${where} verifies findings although no change request was outstanding; a ` +
-        'verification nothing raised is not evidence.',
     );
   }
   if (decision === 'approve' && findings.length > 0) {

@@ -526,21 +526,21 @@ function unresolvedRound(
     if (entry.kind !== 'pr-review' || coveredReviews.has(entry.sourceId)) {
       continue;
     }
-      const own = [entry.id];
-      const findings: HistoryFinding[] = [];
-      for (const [index, inline] of inlineOf(entry.sourceId).entries()) {
-        own.push(inline.entry.id);
-        const comment = inline.comment;
-        if (comment === null) {
-          continue;
-        }
-        findings.push({
-          id: findingIdOf(null, index),
-          path: comment.path ?? '(inline review comment)',
-          line: comment.line ?? null,
-          body: comment.body ?? comment.text,
-        });
+    const own = [entry.id];
+    const findings: HistoryFinding[] = [];
+    for (const [index, inline] of inlineOf(entry.sourceId).entries()) {
+      own.push(inline.entry.id);
+      const comment = inline.comment;
+      if (comment === null) {
+        continue;
       }
+      findings.push({
+        id: findingIdOf(null, index),
+        path: comment.path ?? '(inline review comment)',
+        line: comment.line ?? null,
+        body: comment.body ?? comment.text,
+      });
+    }
     const requested = requestsChanges(entry.state);
     rounds.push({
       at: entry.createdAt,
@@ -616,8 +616,7 @@ function responsesOf(
   const newest = entries
     .filter(
       (entry) =>
-        entry.kind === 'developer-report' &&
-        compareHistoryTime(entry.createdAt, round.at) >= 0,
+        entry.kind === 'developer-report' && compareHistoryTime(entry.createdAt, round.at) >= 0,
     )
     .toSorted(
       (a, b) => compareHistoryTime(b.createdAt, a.createdAt) || b.id.localeCompare(a.id),
@@ -980,9 +979,7 @@ export function createTicketHistory(parts: TicketHistoryParts): TicketHistory {
       // complete answer is rendered as exactly that (docs/WORKFLOW.md §9).
       const unresolvedReviews: HistoryReportSummary[] = unresolved.map((candidate) => {
         const responses = responsesOf(candidate, entries);
-        return responses.length === 0
-          ? candidate.summary
-          : { ...candidate.summary, responses };
+        return responses.length === 0 ? candidate.summary : { ...candidate.summary, responses };
       });
       const round = unresolvedReviews.at(-1) ?? null;
       const ownEntryIds = new Set(unresolved.flatMap((round) => round.ownEntryIds));

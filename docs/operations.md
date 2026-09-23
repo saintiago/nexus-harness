@@ -487,6 +487,18 @@ Developer turns with a history snapshot use it for conversation guidance, includ
 old comment excerpts collected at intake are not repeated alongside edited or consumed feedback.
 The accepted baseline-repair requirement still appears on every turn. Runs without a history
 snapshot retain their existing guidance behavior.
+Each outstanding finding is shown with the identity it keeps, such as `R3-F2`, the answer the
+developer recorded to it, and what an earlier review verified about the disposition. The developer
+answers a finding by naming that identity in its own summary and stating the cause, the affected
+scope, the repair, how the repair was verified at the integration point it affects, and what
+remains uncertain. The prompt shows the exact shape; a finding with no answer section, or one whose
+section leaves out a field, is shown as an incomplete response and never as complete remediation.
+A developer's answer is a claim: the reviewer's own reading of the reviewed revision is what makes
+a repair verified, and it is recorded with the verdict as `verified`, `unverified` or `regressed`.
+The coding prompt also says that a passing check is not the task's completion, that a change to the
+project's build or test configuration belongs to the turn only where the ticket explicitly asks for
+one, and that the change is verified at the integration point it affects rather than by repeating
+the project's whole test matrix, which the harness runs itself.
 `consumed-developer.json` and `consumed-reviewer.json` track feedback separately after usable turn
 output. A prepared snapshot never advances them; legacy workspaces without cursors replay feedback.
 Developer messages are retained in full through the runtime adapter. Old messages marked with the
@@ -892,6 +904,19 @@ reviewed commit, and one app-owned check run named `Nexus Lens review` on that s
 `success` only for an approval, `failure` for a requested change. A missing credential, an
 unavailable tool, an API failure, and incomplete evidence are reported as such, never as an
 approval, and never start a coding turn.
+
+The verdict also carries the dispositions of the findings that were still outstanding. The
+reviewer reads the reviewed revision itself, at the place each earlier defect lived, and records
+one verification per finding identity — `verified`, `unverified` or `regressed`, with the evidence
+it read. The harness refuses a verdict that verifies none of them, names an identity no review
+raised, or approves while a disposition is unverified: a developer's claim is never published as a
+verified fix, and only a verified disposition clears the change request a later approval clears.
+The verdict classifies the reviewer's own findings against the earlier rounds (`new`, `unresolved`,
+`regression`, the continuations naming the earlier identity) and groups the other confirmed
+occurrences of one defect under the finding that names the cause. The review prompt states what a
+green check does not mean — the change is judged against the ticket at the integration point it
+affects, rather than by re-running the project's whole test matrix — and treats a build or test
+change the ticket explicitly asked for as part of the change to review.
 
 The reviewer can explicitly return `inconclusive`, explaining missing material evidence and what
 the coordinator needs to provide. It publishes neither a native verdict nor a check. Known missing

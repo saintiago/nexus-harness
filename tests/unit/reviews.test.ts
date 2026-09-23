@@ -20,6 +20,7 @@ import type {
   ReviewViewSource,
   ReviewWatchOptions,
 } from '../../src/reviews/contract.js';
+import type { HistorySnapshot } from '../../src/history/contract.js';
 import { ReviewError } from '../../src/reviews/contract.js';
 import { diffPosition, positionFindings } from '../../src/reviews/diff.js';
 import { parseVerdict, reviewEvidenceProblem, reviewPrompt } from '../../src/reviews/reviewer.js';
@@ -201,6 +202,168 @@ describe('the reviewer verdict file', () => {
   });
 });
 
+describe('the dispositions and the verification of a verdict', () => {
+  it('keeps a continuation grouped under the identity the history gave it', () => {
+    expect(
+      parseVerdict(
+        JSON.stringify({
+          verdict: 'request_changes',
+          summary: 'the repair did not hold',
+          findings: [
+            {
+              path: 'src/greeting.ts',
+              line: 2,
+              body: 'the same argument is still ignored',
+              kind: 'unresolved',
+              continues: 'R2-F1',
+              related: [{ path: 'src/salutation.ts', line: 4 }],
+            },
+          ],
+          verifications: [
+            { finding: 'R2-F1', state: 'unverified', evidence: 'the helper still ignores it' },
+          ],
+        }),
+        'verdict.json',
+        ['R2-F1'],
+      ),
+    ).toEqual({
+      decision: 'request_changes',
+      summary: 'the repair did not hold',
+      findings: [
+        {
+          path: 'src/greeting.ts',
+          line: 2,
+          body: 'the same argument is still ignored',
+          kind: 'unresolved',
+          continues: 'R2-F1',
+          related: [{ path: 'src/salutation.ts', line: 4 }],
+        },
+      ],
+      verifications: [
+        { finding: 'R2-F1', state: 'unverified', evidence: 'the helper still ignores it' },
+      ],
+    });
+  });
+
+  it('publishes an approval only when every outstanding disposition is verified', () => {
+    const approve = (state: string): string =>
+      JSON.stringify({
+        verdict: 'approve',
+        summary: 'the repair holds',
+        findings: [],
+        verifications: [{ finding: 'R2-F1', state, evidence: 'read src/greeting.ts:2' }],
+      });
+    expect(parseVerdict(approve('verified'), 'verdict.json', ['R2-F1'])).toMatchObject({
+      decision: 'approve',
+      verifications: [{ finding: 'R2-F1', state: 'verified' }],
+    });
+    for (const state of ['unverified', 'regressed']) {
+      expect(() => parseVerdict(approve(state), 'verdict.json', ['R2-F1'])).toThrow(
+        /an approval cannot leave an outstanding finding unverified/,
+      );
+    }
+    // A verdict that verifies nothing while a finding is outstanding would
+    // publish the disposition unverified; it is refused instead.
+    expect(() =>
+      parseVerdict(
+        JSON.stringify({ verdict: 'approve', summary: 'fine', findings: [] }),
+        'verdict.json',
+        ['R2-F1'],
+      ),
+    ).toThrow(/does not verify R2-F1/);
+    // One reading per identity, and none for an identity nothing raised.
+    expect(() =>
+      parseVerdict(
+        JSON.stringify({
+          verdict: 'request_changes',
+          summary: 'still broken',
+          findings: [{ path: 'a', line: 1, body: 'b' }],
+          verifications: [
+            { finding: 'R2-F1', state: 'unverified', evidence: 'e' },
+            { finding: 'R2-F1', state: 'verified', evidence: 'e' },
+          ],
+        }),
+        'verdict.json',
+        ['R2-F1'],
+      ),
+    ).toThrow(/verifies "R2-F1" more than once/);
+    expect(() =>
+      parseVerdict(
+        JSON.stringify({
+          verdict: 'request_changes',
+          summary: 'still broken',
+          findings: [{ path: 'a', line: 1, body: 'b' }],
+          verifications: [{ finding: 'R9-F9', state: 'verified', evidence: 'e' }],
+        }),
+        'verdict.json',
+        ['R2-F1'],
+      ),
+    ).toThrow(/not one of the outstanding findings/);
+    expect(() =>
+      parseVerdict(
+        JSON.stringify({
+          verdict: 'approve',
+          summary: 'fine',
+          findings: [],
+          verifications: [{ finding: 'R2-F1', state: 'verified', evidence: 'e' }],
+        }),
+        'verdict.json',
+      ),
+    ).toThrow(/no change request was outstanding/);
+  });
+
+  it('refuses a continuation or a verification the history cannot resolve', () => {
+    const request = (finding: Record<string, unknown>): string =>
+      JSON.stringify({
+        verdict: 'request_changes',
+        summary: 'x',
+        findings: [finding],
+        verifications: [{ finding: 'R2-F1', state: 'unverified', evidence: 'e' }],
+      });
+    // An unresolved defect has to name what it continues.
+    expect(() =>
+      parseVerdict(request({ path: 'a', line: 1, body: 'b', kind: 'unresolved' }), 'verdict.json', [
+        'R2-F1',
+      ]),
+    ).toThrow(/without naming the earlier finding it continues/);
+    expect(() =>
+      parseVerdict(
+        request({ path: 'a', line: 1, body: 'b', kind: 'unresolved', continues: 'R7-F9' }),
+        'verdict.json',
+        ['R2-F1'],
+      ),
+    ).toThrow(/which is not one of the outstanding findings/);
+    // A new finding continues nothing.
+    expect(() =>
+      parseVerdict(request({ path: 'a', line: 1, body: 'b', continues: 'R2-F1' }), 'verdict.json', [
+        'R2-F1',
+      ]),
+    ).toThrow(/while being classified "new"/);
+    // A classification and a grouping have to be the ones this harness reads.
+    expect(() =>
+      parseVerdict(
+        request({ path: 'a', line: 1, body: 'b', kind: 'regression?' }),
+        'verdict.json',
+        ['R2-F1'],
+      ),
+    ).toThrow(/instead of "new", "unresolved" or "regression"/);
+    expect(() =>
+      parseVerdict(
+        request({ path: 'a', line: 1, body: 'b', related: 'src/other.ts' }),
+        'verdict.json',
+        ['R2-F1'],
+      ),
+    ).toThrow(/"related" that is not a list/);
+    expect(() =>
+      parseVerdict(
+        request({ path: 'a', line: 1, body: 'b', related: [{ path: '' }] }),
+        'verdict.json',
+        ['R2-F1'],
+      ),
+    ).toThrow(/occurrence 1 of finding 1 "path"/);
+  });
+});
+
 describe('where a finding lands in the diff', () => {
   it('numbers positions the way the review API reads them, later hunks included', () => {
     const patch = [
@@ -263,6 +426,79 @@ describe('the reviewer prompt', () => {
     fetchedAt: '2026-09-16T11:05:00.000Z',
   };
 
+  /** One snapshot whose review left `R2-F1` outstanding. */
+  function historyWithOutstandingFinding(): HistorySnapshot {
+    const dir = '/work/workspaces/HARN-11.history/snapshots/snapshot-1';
+    const review = {
+      entryId: 'harness:reviewer-report:review-2',
+      kind: 'reviewer-report' as const,
+      round: 2,
+      author: 'Nexus Lens',
+      createdAt: '2026-09-16T10:00:00.000Z',
+      sourceId: 'review-2',
+      complete: true,
+      problem: null,
+      status: null,
+      reason: null,
+      head: HEAD,
+      nativeReviewId: null,
+      decision: 'request_changes',
+      summary: 'the greeting is wrong',
+      findings: [
+        {
+          id: 'R2-F1',
+          path: 'src/greeting.ts',
+          line: 2,
+          body: 'the greeting ignores the argument it is given',
+        },
+      ],
+      responses: [
+        {
+          finding: 'R2-F1',
+          complete: true,
+          problem: null,
+          cause: 'the helper ignored its argument',
+          scope: 'src/greeting.ts',
+          repair: 'the helper returns what it was given',
+          verification: 'exercised greet("hi")',
+          uncertainty: 'none',
+          entryId: 'harness:developer-report:run-4',
+          runId: 'run-4',
+          round: 4,
+          createdAt: '2026-09-16T10:30:00.000Z',
+        },
+      ],
+      pullRequest: null,
+    };
+    return {
+      version: 1,
+      id: 'snapshot-1',
+      role: 'reviewer',
+      round: 3,
+      takenAt: '2026-09-16T11:00:00.000Z',
+      root: '/work/workspaces/HARN-11.history',
+      dir,
+      indexPath: `${dir}/index.md`,
+      indexJsonPath: `${dir}/index.json`,
+      entriesPath: `${dir}/entries.jsonl`,
+      reportsDir: '/work/workspaces/HARN-11.history/reports',
+      brief: {
+        ref: REF,
+        task: TASK,
+        latestDelivery: null,
+        unresolved: review,
+        unresolvedReviews: [review],
+        responses: [],
+        newHumanFeedback: [],
+      },
+      entries: [],
+      reports: [review],
+      gaps: [],
+      mirrors: [],
+      sources: [{ source: 'jira', problem: null }],
+    };
+  }
+
   it('names the view, the verdict file and the CI reading, and refuses no evidence', () => {
     const prompt = reviewPrompt(
       evidence,
@@ -286,6 +522,27 @@ describe('the reviewer prompt', () => {
       task: { ...TASK, description: 'x'.repeat(8_001) },
     };
     expect(reviewEvidenceProblem(tooLarge)).toMatch(/exceeds the reviewer input limit/);
+  });
+
+  it('lists the outstanding identities to verify and keeps claims apart from verifications', () => {
+    const prompt = reviewPrompt(
+      evidence,
+      { path: '/evidence/repo', head: HEAD, base: PULL_REQUEST.baseSha },
+      '/evidence/review-2',
+      historyWithOutstandingFinding(),
+    );
+
+    expect(prompt).toContain('## The outstanding findings and their answers');
+    expect(prompt).toContain('Outstanding identities you must verify: R2-F1.');
+    expect(prompt).toContain('"verifications"');
+    expect(prompt).toContain('a claim is never a verification');
+    expect(prompt).toContain('"kind"');
+    expect(prompt).toContain('"related"');
+    expect(prompt).toContain('still review the whole change against the requested');
+    expect(prompt).toContain('A successful check is not the change’s completion');
+    // The answer itself is rendered with the finding, as a claim.
+    expect(prompt).toContain('Developer response (a claim, not a verification');
+    expect(prompt).toContain('the helper returns what it was given');
   });
 });
 

@@ -295,6 +295,19 @@ A red baseline stops a **fresh attempt** before any coding turn; a **continuatio
 
 Before every coding turn the harness also prepares the ticket's **conversation history** — the current requirements, the Jira thread, the pull request conversation and the harness's own complete reports — and hands the turn its brief and local paths (§9, "The ticket conversation history"). A run whose task came from a file rather than a source has no such history and behaves exactly as before.
 
+The coding prompt is role-specific and says what this turn is and is not. A passing check is not
+the task's completion: the configured checks decide whether the work is judged as passing, and the
+acceptance criteria decide whether the task is done, so a turn makes the behavior right rather than
+the command quiet. A change to how the project is built or checked belongs to a turn only where the
+task explicitly asks for one — a new test, a changed command, new tooling — and the blanket rule
+against touching the project's tooling stands everywhere else. The turn verifies its change at the
+integration point it affects (the callers that reach it, or the command or test that covers it) and
+says how, rather than re-running the project's whole expensive test matrix, which the harness runs
+itself after every turn. When the ticket's review has left findings outstanding, the same prompt
+asks for one answer per finding identity — cause, affected scope, repair, verification, remaining
+uncertainty — in the turn's own summary, and the harness reads those answers out of the complete
+developer report it already retains (§9, "The ticket conversation history").
+
 The delivery step is **outside the run**: the run's own report is written first, and only a `passed` attempt is delivered. A delivery failure changes neither the run's status nor its evidence, and it never starts a coding turn (§8). A red baseline never reaches it either: for a fresh source attempt the ending is diagnosed locally first (§11, "The pre-delivery baseline diagnosis"), so an attempt is delivered only after a post-agent round passed every configured setup and check and the ticket's own work is on the recorded branch.
 
 Every working copy is given a **repository-local** Git identity (`Nexus Agent <nexus@local>`, commit signing disabled) before any check or coding turn runs, so a turn can make small local commits as it works; a turn is asked to finish with the work it wants built on committed, because the harness starts no further coding turn from a working copy that still holds uncommitted work. Those commits stay in the retained working copy: the harness itself never merges or integrates a target's changes and, without a configured delivery step, never pushes or publishes them either. A commit is not a check result, and anything a turn leaves uncommitted is kept — the round after the turn judges it, and a delivery step refuses to publish it — but it ends the run there rather than going to another agent. A continued workspace keeps the base commit its ledger recorded as the comparison base, so `changes` in the report is the whole diff against that base, committed and uncommitted parts alike. These settings are written with `git config --local`; the harness never writes global or system Git configuration.
@@ -722,12 +735,26 @@ The queue is the configured project, issue type, and label in the `source`'s **r
    reviewer reads from the view like any other file. It is instructed to review only: it must not
    change the view (including ignored files; no edits, commits, checkouts, fetches, or pushes),
    implement fixes, commit, push, merge, or edit the ticket or the pull request, and it must write one `verdict.json` (a
-   `verdict` of `approve`, `request_changes`, or `inconclusive`, a summary, and a findings array).
-   Findings are blocking; approval requires an empty findings array and sufficient evidence. The
+   `verdict` of `approve`, `request_changes`, or `inconclusive`, a summary, a findings array, and a
+   verifications array). Findings are blocking; approval requires an empty findings array and
+   sufficient evidence. The verdict also states how each finding stands against the earlier
+   rounds — `new`, `unresolved` (an earlier finding whose claimed repair did not hold) or
+   `regression` (one this revision reintroduced), the first two of those naming the earlier
+   identity in `continues` — and groups the other confirmed occurrences of one defect under
+   `related` instead of reporting one finding per example. When the snapshot carried outstanding
+   findings, the verdict states one verification per finding identity — `verified`, `unverified`
+   or `regressed`, with the evidence the reviewer itself read — and a verdict that verifies none
+   of them, names something else, or approves while leaving a disposition unverified is refused
+   as inconclusive: a developer's claim is never published as a verified fix, and an approval
+   clears a change request only when the reviewer verified its disposition itself. The
    reviewer must select `inconclusive` when material code/test context or tools are unavailable,
    explaining what the coordinator needs to provide in its summary. A turn that fails, is
    stopped, or writes no usable verdict is also **inconclusive**: nothing is published for it, and
-   no coding repair is started.
+   no coding repair is started. The prompt says what a successful check does not mean: the change
+   is judged against the ticket at the integration point it affects, the project's whole test
+   matrix is not re-run to stand in for that judgment, and a build or test change the ticket
+   explicitly asks for is part of the change — checked for what it does and for what it must not
+   weaken.
 7. Before anything is published, the view is re-checked: it must still be at the reviewed head
    with no changed path, or an edit, a new file, a commit, or a moved head publishes nothing. The
    pull request is then re-read and must still be open at that same head, and the ticket is
@@ -812,8 +839,34 @@ Outstanding findings are reconciled across retained and native reviews, independ
 A later published approval from that reviewer at the current head clears their request; another reviewer's
 approval, an old-head approval, a comment-only review or an inconclusive verdict cannot clear it.
 Published findings without a retained report remain visible with an explicit provenance gap.
-Responses include older comments edited after the review. This does not enforce remediation of
-individual findings.
+Responses include older comments edited after the review.
+
+Every finding keeps the identity it is rendered with: the round that raised it and its position
+there, `R3-F2`, derived from the retained report rather than stored twice — so the brief, a
+developer's answer and a later reviewer's verification all name the same finding the same way, and
+the identity is reproduced rather than re-derived when a snapshot is rebuilt or a run restarts.
+The brief renders each outstanding finding whole, with that identity and how the round classified
+it, and under the finding the answer a developer turn gave it: the newest complete developer report
+recorded after the review is the claim the reviewer is shown, named with the run and the round it
+came from, and an earlier answer stays readable in the report it was recorded in. The harness reads
+those answers out of the developer's own summary — one `### Finding <identity>` section per
+finding, with `Cause`, `Affected scope`, `Repair`, `Verification` and `Remaining uncertainty` each
+stated, a wrapped value indented under the line that names it. A finding with no such section, and
+a section that leaves a field out, is recorded as an incomplete response: the brief says so where
+the answer would be, and the answer is never presented as complete remediation, whatever the
+surrounding discussion reads. A turn that answers one finding never stands in for another, and the
+identities the prompt lists are the ones the developer is held to. Complete exchanges survive
+further turns and restarts because both halves are retained: the answers are read back out of the
+complete developer reports, and the verifications out of the complete reviewer reports, every time
+a snapshot is prepared.
+
+What one review verified about the dispositions before it is recorded with that review and rendered
+under its round: `verified`, `unverified` or `regressed`, with the reviewer's own evidence. A
+developer's answer is a claim and a verification is a fact, and the two are rendered and recorded
+as such; a later review that finds the defect still present raises its own finding classified
+`unresolved` or `regression` and naming the identity it continues, so one defect is followed across
+rounds instead of being re-raised as an unconnected new finding. Confirmed related occurrences of
+one defect are grouped under the finding that names the cause rather than repeated as examples.
 
 Native GitHub reviews have no edit timestamp. Synchronization compares their bodies against the
 recorded publication hash and marks changed renderings as edited, including when the prior snapshot

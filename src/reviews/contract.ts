@@ -11,12 +11,7 @@
  */
 import type { SourceCandidate, SourceOutcome, SourceTask } from '../sources/contract.js';
 import type { HistorySnapshot, TicketHistory } from '../history/contract.js';
-import type {
-  FindingKind,
-  FindingVerificationState,
-  SourceRef,
-  Task,
-} from '../shared/types.js';
+import type { FindingKind, FindingVerificationState, SourceRef, Task } from '../shared/types.js';
 
 /**
  * How the review path failed, in the few categories the scan acts on.
