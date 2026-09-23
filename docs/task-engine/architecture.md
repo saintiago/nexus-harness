@@ -5,8 +5,9 @@
 Execute a task workflow supplied as an XState definition. The workflow defines sequencing, ordinary functions perform
 the actions, and persistent artifacts carry data between actions. Process one action at a time.
 
-The public module is `src/task-engine/index.ts`. Its construction inputs are a workflow, bound action
-implementations and a workflow-state filepath.
+The public module is `src/task-engine/index.ts`. Its construction inputs are a workflow, an action
+binding that receives the engine's EventPublisher and produces the bound action implementations,
+and a workflow-state filepath.
 
 ## Composition
 
