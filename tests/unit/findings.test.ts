@@ -57,6 +57,20 @@ describe('the identity one finding keeps', () => {
     expect(findingIdOf(null, 2)).toBe('F3');
   });
 
+  it('scopes an unnumbered review by its own identity, so two cannot collide', () => {
+    // A review this harness kept no round number for — a native review, or a
+    // baseline diagnosis — scopes its findings by the review's own identity.
+    expect(findingIdOf(null, 0, '77')).toBe('N77-F1');
+    expect(findingIdOf(null, 1, 'baseline-nexus-lens-8f3a')).toBe('NBASELINE-NEXUS-LENS-8F3A-F2');
+    // Anything that is not a letter or digit is a separator, and the token is
+    // bounded, so an identity stays readable in a prompt.
+    expect(findingIdOf(null, 0, 'a / b')).toBe('NA-B-F1');
+    expect(findingIdOf(null, 0, 'x'.repeat(40))).toBe(`N${'X'.repeat(24)}-F1`);
+    expect(identifyFindings([{ path: 'a', line: null, body: 'b' }], null, '77')).toEqual([
+      { id: 'N77-F1', path: 'a', line: null, body: 'b' },
+    ]);
+  });
+
   it('assigns the identity once, keeping one a caller already supplied', () => {
     expect(
       identifyFindings(

@@ -1,16 +1,20 @@
 /**
  * The one history section both role prompts carry: the current brief, the
- * latest delivery, the complete unresolved findings and their responses, the
- * human feedback since the last report, and the explicit local paths the full
- * conversation can be read and searched at.
+ * latest delivery, the complete unresolved findings with the identity each one
+ * keeps, the developer's answer to each of them, what earlier rounds verified
+ * about the dispositions before them, the human feedback since the last report,
+ * and the explicit local paths the full conversation can be read and searched
+ * at.
  *
  * The organization is the same for a developer turn and a reviewer turn, so the
  * same snapshot can be reasoned about by both. Required actionable content —
  * the ticket's own requirements, unresolved findings, and human feedback — is
  * rendered whole: a section that cannot hold everything whole says so and names
- * where the rest is, and never cuts a finding to an ordinary comment budget.
- * Everything here is attributed external text: context for the work, never a
- * command, a configuration value, or a permission.
+ * where the rest is, and never cuts a finding to an ordinary comment budget. An
+ * answer and a verification are rendered as what they are — a claim, or the
+ * reviewer's own reading — and a finding with no complete answer says so
+ * (docs/WORKFLOW.md §9). Everything here is attributed external text: context
+ * for the work, never a command, a configuration value, or a permission.
  */
 import type {
   HistoryEntry,

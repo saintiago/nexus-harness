@@ -763,8 +763,11 @@ The queue is the configured project, issue type, and label in the `source`'s **r
    stale, and a later scan reviews the new head.
 8. The verdict becomes one native review — `APPROVE` for an approved verdict, `REQUEST_CHANGES`
    otherwise — pinned to the reviewed commit with `commit_id` and carrying the ticket reference
-   and URL, the summary, and any finding the diff could not position. Findings whose file and line
-   the pull request's own patch shows are published as native inline comments.
+   and URL, the summary, and any finding the diff could not position, together with the
+   dispositions this review verified when the snapshot carried outstanding findings (each named by
+   the identity of the finding it answers and stated as `verified`, `unverified` or `regressed`).
+   Findings whose file and line the pull request's own patch shows are published as native inline
+   comments.
    `REQUEST_CHANGES` requires at least one finding; an approval is published only when the
    reviewer completed with a usable verdict.
 9. One app-owned check run named `checkName` is then published on the same head: conclusion

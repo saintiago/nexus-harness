@@ -20,8 +20,8 @@
  *
  * This module is pure: it reads text, decides, and writes nothing.
  */
-import type { FindingAnswer } from './contract.js';
 import type {
+  FindingAnswer,
   HistoryBrief,
   HistoryFinding,
   HistoryReportSummary,
@@ -42,13 +42,29 @@ export type FindingAnswerField = (typeof FINDING_ANSWER_FIELDS)[number]['key'];
 
 /**
  * The stable identity of one finding: `R2-F3` is the third finding of round 2,
- * and `F3` is the third finding of a round whose number is not known (a legacy
- * record). The identity is derived, never invented per snapshot, so a finding
- * carries the same name in the brief, in the developer's answer and in the
- * reviewer's verification.
+ * and `N77-F3` is the third finding of a review whose round number is not known
+ * (a native review, or a baseline diagnosis, this harness kept no round number
+ * for) — its own review identity scopes the identity, so two reviews that
+ * cannot be numbered apart do not name two different findings the same way. The
+ * identity is derived, never invented per snapshot, so a finding carries the
+ * same name in the brief, in the developer's answer and in the reviewer's
+ * verification.
  */
-export function findingIdOf(round: number | null, index: number): string {
-  return round === null ? `F${String(index + 1)}` : `R${String(round)}-F${String(index + 1)}`;
+export function findingIdOf(round: number | null, index: number, scope?: string): string {
+  if (round !== null) {
+    return `R${String(round)}-F${String(index + 1)}`;
+  }
+  const token = scope === undefined ? '' : scopeToken(scope);
+  return token === '' ? `F${String(index + 1)}` : `N${token}-F${String(index + 1)}`;
+}
+
+/** A bounded, readable token for the review one unnumbered finding came from. */
+function scopeToken(scope: string): string {
+  const token = scope
+    .replace(/[^A-Za-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .toUpperCase();
+  return token.length <= 24 ? token : token.slice(0, 24);
 }
 
 /**
@@ -61,12 +77,13 @@ export function findingIdOf(round: number | null, index: number): string {
 export function identifyFindings(
   findings: readonly UnidentifiedFinding[],
   round: number | null,
+  scope?: string,
 ): readonly HistoryFinding[] {
   return findings.map((finding, index) => ({
     ...finding,
     id:
       finding.id === undefined || finding.id.trim() === ''
-        ? findingIdOf(round, index)
+        ? findingIdOf(round, index, scope)
         : finding.id.trim(),
   }));
 }
@@ -190,18 +207,14 @@ export function parseFindingAnswers(
   return findings.map((finding) => {
     const wanted = canonicalFindingId(finding);
     const section = sections.get(wanted);
-    const missing = (): readonly string[] => {
-      const held = FINDING_ANSWER_FIELDS.filter(
-        (field) => (section?.fields.get(field.key) ?? '').trim() === '',
-      );
-      return held.map((field) => field.label);
-    };
-    const fieldsMissing = section === undefined ? null : missing();
+    const fieldsMissing = FINDING_ANSWER_FIELDS.filter(
+      (field) => (section?.fields.get(field.key) ?? '').trim() === '',
+    ).map((field) => field.label);
     const problem =
       section === undefined
         ? 'no answer to this finding is recorded in the developer’s own report, so nothing here ' +
           'is a complete response'
-        : fieldsMissing !== null && fieldsMissing.length > 0
+        : fieldsMissing.length > 0
           ? `the answer in the developer’s own report leaves out ${fieldsMissing
               .map((label) => `“${label}”`)
               .join(', ')}, so it is not a complete response`

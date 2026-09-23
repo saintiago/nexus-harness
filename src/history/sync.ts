@@ -535,7 +535,7 @@ function unresolvedRound(
         continue;
       }
       findings.push({
-        id: findingIdOf(null, index),
+        id: findingIdOf(null, index, entry.sourceId),
         path: comment.path ?? '(inline review comment)',
         line: comment.line ?? null,
         body: comment.body ?? comment.text,

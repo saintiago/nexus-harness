@@ -368,6 +368,111 @@ describe('the review handoff', () => {
       ).toMatchObject({ verdict: 'request_changes' });
     },
   );
+
+  it(
+    'publishes a verified disposition as a verification, never as the developer’s claim',
+    { timeout: WORKFLOW_CASE_TIMEOUT_MS },
+    async () => {
+      const project = await createTargetProject();
+      const run = await runTicket({
+        project,
+        ref: REF,
+        workspaceId: WORKSPACE_ID,
+        turn: implementTurn,
+      });
+      const workspace = run.workspace;
+      const head = await branchHead(workspace?.workspacePath ?? '', workspace?.branch ?? '');
+      expect(run.status).toBe('passed');
+
+      const pullRequest: OpenPullRequest = {
+        number: 42,
+        url: 'https://github.com/example/target/pull/42',
+        title: 'HARN-77: Finish the greeting',
+        headSha: head,
+        headBranch: `harness/${WORKSPACE_ID}`,
+        baseBranch: BASE_BRANCH,
+        baseSha: workspace?.baseCommit ?? '',
+        draft: false,
+        author: 'nexus-agent',
+      };
+      const task = await loadTask(project.taskPath);
+      const github = standInGitHub(pullRequest, {
+        ref: REF,
+        task,
+        pullRequest,
+        files: [
+          {
+            path: TARGET_RESULT_FILE,
+            patch: `@@ -0,0 +1 @@\n+implemented\n`,
+            additions: 1,
+            deletions: 0,
+          },
+        ],
+        truncated: false,
+        checks: [],
+        combinedStatus: null,
+        fetchedAt: '2026-03-01T11:00:00.000Z',
+      });
+      const history = historyWithOutstandingFinding();
+      const standIn = await installStandIn('reviewer-runtime-verified', STAND_IN_REVIEWER);
+      const recorded = recordingIo();
+      const summary = await scanReviews({
+        queue: {
+          list: async () => [{ ref: REF, title: task.title }],
+          prepare: async () => ({ ref: REF, task, pointers: [WORKSPACE_ID] }),
+        },
+        repository: github.repository,
+        reviewer: createReviewerTurn({
+          selection: { runtime: 'codex', command: [process.execPath, standIn.scriptPath] },
+          environment: {
+            ...process.env,
+            NEXUS_STAND_IN_VERDICT: JSON.stringify({
+              verdict: 'approve',
+              summary: 'the repair holds and the change does what the ticket asks',
+              findings: [],
+              verifications: [
+                {
+                  finding: 'R2-F1',
+                  state: 'verified',
+                  evidence: `read ${TARGET_RESULT_FILE} at the reviewed head`,
+                },
+              ],
+            }),
+          },
+        }),
+        history,
+        views: reviewViews(),
+        workDir: project.workDir,
+        sourceRoot: canonicalPath(project.repo),
+        login: LOGIN,
+        checkName: CHECK_NAME,
+        reviewerTimeoutMs: 60_000,
+        io: recorded.io,
+        stop: new AbortController().signal,
+        now: () => new Date('2026-03-01T11:05:00.000Z'),
+        sleep: async () => undefined,
+      });
+
+      expect(summary.items.map((entry) => entry.disposition)).toEqual(['reviewed']);
+      expect(summary.approved).toBe(1);
+      // The published review says what the reviewer verified itself, so the
+      // claim and the verification are not the same sentence on GitHub either.
+      const body = github.reviews[0]?.body ?? '';
+      expect(body).toContain('Dispositions of earlier findings, as verified by this review:');
+      expect(body).toContain(`R2-F1 — verified: read ${TARGET_RESULT_FILE} at the reviewed head`);
+      // The review record keeps the recorded verification with the attempt.
+      const [reviewId] = (await readdir(path.join(project.workDir, 'reviews'))).filter((entry) =>
+        entry.startsWith('review-'),
+      );
+      const record = JSON.parse(
+        await readFile(
+          path.join(project.workDir, 'reviews', reviewId ?? '', 'review.json'),
+          'utf8',
+        ),
+      ) as { readonly verifications: readonly { readonly finding: string }[] };
+      expect(record.verifications.map((verification) => verification.finding)).toEqual(['R2-F1']);
+    },
+  );
 });
 
 /**

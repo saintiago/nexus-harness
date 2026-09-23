@@ -777,7 +777,7 @@ export function reportSummaryOf(report: LocalReport): HistoryReportSummary | nul
     nativeReviewId: digest.published?.id ?? null,
     decision: digest.decision,
     summary: digest.summary,
-    findings: identifyFindings(digest.findings, digest.round),
+    findings: identifyFindings(digest.findings, digest.round, digest.reviewId),
     ...(digest.verifications === undefined || digest.verifications.length === 0
       ? {}
       : { verifications: digest.verifications }),
