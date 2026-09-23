@@ -249,9 +249,38 @@ describe('Nexus configuration', () => {
     );
 
     const notifications = nexusConfiguration();
-    notifications.notifications.credential = 'missing';
+    notifications.notifications.credentials.secretAccessKey = 'missing';
     expect(() => parseNexusConfiguration(notifications, configurationDirectory)).toThrow(
-      /notifications\.credential/,
+      /notifications\.credentials\.secretAccessKey/,
+    );
+
+    const sessionToken = nexusConfiguration();
+    sessionToken.notifications.credentials.sessionToken = 'missing';
+    expect(() => parseNexusConfiguration(sessionToken, configurationDirectory)).toThrow(
+      /notifications\.credentials\.sessionToken/,
+    );
+  });
+
+  it('accepts notifications without a session token reference and requires the SNS Region', () => {
+    expect(
+      parseNexusConfiguration(nexusConfiguration(), configurationDirectory).notifications
+        .credentials,
+    ).toEqual({
+      accessKeyId: 'awsAccessKeyId',
+      secretAccessKey: 'awsSecretAccessKey',
+      sessionToken: 'awsSessionToken',
+    });
+
+    const withoutSession = nexusConfiguration();
+    delete withoutSession.notifications.credentials.sessionToken;
+    expect(
+      parseNexusConfiguration(withoutSession, configurationDirectory).notifications.credentials,
+    ).toEqual({ accessKeyId: 'awsAccessKeyId', secretAccessKey: 'awsSecretAccessKey' });
+
+    const blankRegion = nexusConfiguration();
+    blankRegion.notifications.region = '   ';
+    expect(() => parseNexusConfiguration(blankRegion, configurationDirectory)).toThrow(
+      /notifications\.region/,
     );
   });
 

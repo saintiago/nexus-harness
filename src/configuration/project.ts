@@ -33,7 +33,8 @@ const projectConfigurationSchema = z.strictObject({
   ),
   taskSource: z.strictObject({
     kind: z.literal('jira'),
-    siteUrl: identifier,
+    // The API base is used verbatim, so a cloud connection's gateway prefix is preserved.
+    apiBase: identifier,
     project: identifier,
     credential: identifier,
     selection: z.strictObject({

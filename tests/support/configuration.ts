@@ -11,7 +11,7 @@ export function projectConfiguration(): ProjectConfiguration {
     checks: [{ name: 'validate', command: { executable: 'npm', args: ['run', 'validate'] } }],
     taskSource: {
       kind: 'jira',
-      siteUrl: 'https://example.atlassian.net',
+      apiBase: 'https://api.atlassian.com/ex/jira/9337c4da-7d33-4c1d-b03c-db207e537f88',
       project: 'NEX',
       credential: 'jiraApiToken',
       selection: {
@@ -62,7 +62,7 @@ export function nexusConfiguration(): NexusConfiguration {
           id: 'nexus-flash',
           model: 'deepseek-flash',
           effort: 'max',
-          instructions: ['You are the Nexus development agent.'],
+          instructions: ['Prefer the repository contribution guide when it adds detail.'],
           toolSettings: { profile: 'nexus-flash' },
         },
         {
@@ -73,10 +73,17 @@ export function nexusConfiguration(): NexusConfiguration {
           toolSettings: { profile: 'nexus-astra' },
         },
         {
+          id: 'nexus-review',
+          model: 'gpt-6-astra',
+          effort: 'high',
+          instructions: [],
+          toolSettings: { profile: 'nexus-astra' },
+        },
+        {
           id: 'nexus-recovery',
           model: 'gpt-6-astra',
           effort: 'high',
-          instructions: ['You are the Nexus recovery agent.'],
+          instructions: [],
           toolSettings: { profile: 'nexus-recovery' },
         },
       ],
@@ -87,19 +94,26 @@ export function nexusConfiguration(): NexusConfiguration {
         { profile: 'nexus-flash', repairAllowance: 2 },
         { profile: 'nexus-astra', repairAllowance: 2 },
       ],
-      reviewerProfile: 'nexus-astra',
+      reviewerProfile: 'nexus-review',
       recoveryProfile: 'nexus-recovery',
       maxRecoveryAttempts: 1,
     },
     notifications: {
       provider: 'sns',
+      region: 'eu-west-1',
       destination: 'arn:aws:sns:eu-west-1:000000000000:nexus',
-      credential: 'nexusNotifications',
+      credentials: {
+        accessKeyId: 'awsAccessKeyId',
+        secretAccessKey: 'awsSecretAccessKey',
+        sessionToken: 'awsSessionToken',
+      },
     },
     credentials: {
       jiraApiToken: { environment: 'JIRA_API_TOKEN' },
-      nexusNotifications: { environment: 'NEXUS_NOTIFICATIONS_CREDENTIALS' },
-      nexusLensPrivateKey: { environment: 'NEXUS_LENS_PRIVATE_KEY_PATH' },
+      awsAccessKeyId: { environment: 'AWS_ACCESS_KEY_ID' },
+      awsSecretAccessKey: { environment: 'AWS_SECRET_ACCESS_KEY' },
+      awsSessionToken: { environment: 'AWS_SESSION_TOKEN' },
+      nexusLensPrivateKey: { environment: 'NEXUS_LENS_PRIVATE_KEY' },
     },
     nexusLens: {
       appId: 5001141,

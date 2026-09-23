@@ -14,6 +14,9 @@ const profileSchema = z.strictObject({
   toolSettings: z.record(z.string(), z.unknown()),
 });
 
+/** A credential reference names an entry in the Credentials settings; the host resolves its value. */
+const credentialReference = identifier;
+
 const nexusConfigurationSchema = z
   .strictObject({
     workflow: z.strictObject({
@@ -45,15 +48,21 @@ const nexusConfigurationSchema = z
     }),
     notifications: z.strictObject({
       provider: z.literal('sns'),
+      // The AWS Region that owns the destination topic.
+      region: identifier,
       destination: identifier,
-      credential: identifier,
+      credentials: z.strictObject({
+        accessKeyId: credentialReference,
+        secretAccessKey: credentialReference,
+        sessionToken: credentialReference.optional(),
+      }),
     }),
     credentials: z.record(identifier, z.strictObject({ environment: identifier })),
     nexusLens: z.strictObject({
       appId: z.number().int().positive(),
       installationId: z.number().int().positive(),
       login: identifier,
-      privateKey: identifier,
+      privateKey: credentialReference,
     }),
   })
   .superRefine((configuration, context) => {
@@ -77,6 +86,7 @@ const nexusConfigurationSchema = z
         message: 'At least one developer profile is required',
       });
     }
+
     developerLadder.forEach((entry, index) => {
       if (!profileIds.has(entry.profile)) {
         context.addIssue({
@@ -101,19 +111,29 @@ const nexusConfigurationSchema = z
       });
     }
 
-    if (!Object.hasOwn(configuration.credentials, configuration.notifications.credential)) {
-      context.addIssue({
-        code: 'custom',
-        path: ['notifications', 'credential'],
-        message: `Unknown credential reference "${configuration.notifications.credential}"`,
-      });
+    const credentialReferences: [string, (string | number)[]][] = [
+      [
+        configuration.notifications.credentials.accessKeyId,
+        ['notifications', 'credentials', 'accessKeyId'],
+      ],
+      [
+        configuration.notifications.credentials.secretAccessKey,
+        ['notifications', 'credentials', 'secretAccessKey'],
+      ],
+      [configuration.nexusLens.privateKey, ['nexusLens', 'privateKey']],
+    ];
+    const sessionToken = configuration.notifications.credentials.sessionToken;
+    if (sessionToken !== undefined) {
+      credentialReferences.push([sessionToken, ['notifications', 'credentials', 'sessionToken']]);
     }
-    if (!Object.hasOwn(configuration.credentials, configuration.nexusLens.privateKey)) {
-      context.addIssue({
-        code: 'custom',
-        path: ['nexusLens', 'privateKey'],
-        message: `Unknown credential reference "${configuration.nexusLens.privateKey}"`,
-      });
+    for (const [reference, location] of credentialReferences) {
+      if (!Object.hasOwn(configuration.credentials, reference)) {
+        context.addIssue({
+          code: 'custom',
+          path: [...location],
+          message: `Unknown credential reference "${reference}"`,
+        });
+      }
     }
   });
 
