@@ -45,6 +45,7 @@ import { runCommand } from './cli/run-command.js';
 import { sourceCli } from './cli/source-command.js';
 import { consoleContext } from './cli/terminal.js';
 import { superviseCli } from './cli/supervise.js';
+import { awaitLaunchRegistration, launchFromEnvironment } from './supervisor/launch.js';
 
 export { colorAllowed } from './cli/terminal.js';
 
@@ -124,10 +125,33 @@ function isEntryPoint(): boolean {
 }
 
 if (isEntryPoint()) {
+  const context = consoleContext();
   try {
-    process.exitCode = await runCli(process.argv.slice(2), consoleContext());
+    process.exitCode = await runSupervisedLaunch(context, process.argv.slice(2));
   } catch (cause) {
     process.stderr.write(`error: unexpected failure: ${String(cause)}\n`);
     process.exitCode = EXIT_INPUT_ERROR;
   }
+}
+
+/**
+ * The launch handshake, as the launched process sees it: a worker the
+ * supervisor started waits here until the supervisor's own record names it,
+ * and does nothing at all if that record never comes (`supervisor/launch.ts`).
+ * A process a person started directly carries no launch in its environment and
+ * runs the command unchanged — the handshake costs nothing when there is none.
+ */
+async function runSupervisedLaunch(
+  context: CliContext,
+  argv: readonly string[],
+): Promise<number> {
+  const launch = launchFromEnvironment(process.env);
+  if (launch !== null) {
+    const problem = await awaitLaunchRegistration({ ...launch, pid: process.pid });
+    if (problem !== null) {
+      context.io.err(`error: ${problem}`);
+      return EXIT_INPUT_ERROR;
+    }
+  }
+  return await runCli(argv, context);
 }

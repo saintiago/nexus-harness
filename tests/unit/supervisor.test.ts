@@ -10,6 +10,9 @@
  * (docs/testing.md, docs/WORKFLOW.md §12).
  */
 import { describe, expect, it } from 'vitest';
+import { mkdir, writeFile } from 'node:fs/promises';
+import path from 'node:path';
+import { createTempDir } from '../support.js';
 import {
   DEFAULT_RECOVERY_PUBLISHER,
   DEFAULT_RECOVERY_SELECTION,
@@ -24,6 +27,7 @@ import {
 import type { IncidentRecord } from '../../src/supervisor/incident.js';
 import { recoveryPrompt, parseRecoveryJudgment } from '../../src/supervisor/recovery.js';
 import type { RecoveryBrief } from '../../src/supervisor/recovery.js';
+import { awaitLaunchRegistration } from '../../src/supervisor/launch.js';
 import { incidentReportText } from '../../src/supervisor/report.js';
 import { reportNeedsPublication } from '../../src/supervisor/report.js';
 import { classifyWorkerStop, workerArguments } from '../../src/supervisor/worker.js';
@@ -66,12 +70,13 @@ function incidentWith(options: {
           },
           // A concluded incident that returned the queue to work owes the very
           // work the stop interrupted: that is what a repeated stop repeats.
-          sequence: {
-            intent: scope === null ? ('run' as const) : ('ticket' as const),
-            scope,
-            blocker: null,
-            blockerStartedAt: null,
-          },
+            sequence: {
+              intent: scope === null ? ('run' as const) : ('ticket' as const),
+              scope,
+              blocker: null,
+              blockerStartedAt: null,
+              blockerSettledAt: null,
+            },
         }
       : {}),
     stops: options.stops.map(([exitCode, signal]) => ({
@@ -105,6 +110,100 @@ function incidentWith(options: {
           ],
   };
 }
+
+describe('the launch handshake a supervised worker waits on', () => {
+  /** A clock a case drives, so the wait's own bound costs no real time. */
+  function hands(): {
+    readonly sleep: (ms: number) => Promise<void>;
+    readonly now: () => number;
+  } {
+    let clock = 0;
+    return {
+      sleep: async (ms: number) => {
+        clock += ms;
+      },
+      now: () => clock,
+    };
+  }
+
+  it('proceeds only on the record that names this launch and this process', async () => {
+    const directory = await createTempDir();
+    const file = path.join(directory, 'current.json');
+    const { sleep, now } = hands();
+
+    // Nothing is registered: the wait's bound is what ends it, and the problem
+    // it returns says that nothing was begun.
+    const missing = await awaitLaunchRegistration({
+      file,
+      token: 'token-1',
+      pid: 4242,
+      timeoutMs: 100,
+      sleep,
+      now,
+    });
+    expect(missing).toContain('never registered it');
+    expect(missing).toContain('nothing was begun');
+
+    // A record naming another launch, or another process, is not this launch's.
+    await writeFile(
+      file,
+      JSON.stringify({
+        version: 1,
+        id: null,
+        workerPid: 4242,
+        launch: { token: 'another-launch', at: 't' },
+      }),
+      'utf8',
+    );
+    expect(
+      await awaitLaunchRegistration({ file, token: 'token-1', pid: 4242, timeoutMs: 50, sleep, now }),
+    ).toContain('never registered it');
+
+    await writeFile(
+      file,
+      JSON.stringify({
+        version: 1,
+        id: null,
+        workerPid: 4243,
+        launch: { token: 'token-1', at: 't' },
+      }),
+      'utf8',
+    );
+    expect(
+      await awaitLaunchRegistration({ file, token: 'token-1', pid: 4242, timeoutMs: 50, sleep, now }),
+    ).toContain('never registered it');
+
+    // The record naming this launch's own process is what the worker waits for.
+    await writeFile(
+      file,
+      JSON.stringify({
+        version: 1,
+        id: null,
+        workerPid: 4242,
+        launch: { token: 'token-1', at: 't' },
+      }),
+      'utf8',
+    );
+    expect(
+      await awaitLaunchRegistration({ file, token: 'token-1', pid: 4242, timeoutMs: 50, sleep, now }),
+    ).toBeNull();
+  });
+
+  it('refuses by name when the record cannot be read at all', async () => {
+    const directory = await createTempDir();
+    await mkdir(path.join(directory, 'record.json'), { recursive: true });
+    const { sleep, now } = hands();
+    const problem = await awaitLaunchRegistration({
+      file: path.join(directory, 'record.json'),
+      token: 'token-1',
+      pid: 4242,
+      timeoutMs: 50,
+      sleep,
+      now,
+    });
+    expect(problem).toContain('could not be read');
+  });
+});
 
 describe('how a worker ending is read', () => {
   it('treats a plain zero exit as settled work', () => {

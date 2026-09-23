@@ -21,6 +21,7 @@ import type { ChildProcess } from 'node:child_process';
 import { requestTreeStop } from '../process/stop.js';
 import { messageOf } from '../shared/errors.js';
 import type { SupervisorIntent } from './incident.js';
+import { launchEnvironment } from './launch.js';
 
 /**
  * How long the supervisor waits after forwarding the operator's interrupt
@@ -54,15 +55,26 @@ export interface WorkerRequest {
   readonly cwd: string;
   /** The operator's stop request; an interrupt of the supervisor itself. */
   readonly stop: AbortSignal;
-  /** Where the supervisor's own lines about the worker go. */
-  readonly onLine?: (text: string) => void;
-  /**
-   * The PID of the process that was really started, as soon as it exists. The
-   * supervisor records it, so a restart can tell that a worker is still running
-   * instead of starting a second one beside it.
-   */
-  readonly onStarted?: (pid: number) => void;
-}
+    /** Where the supervisor's own lines about the worker go. */
+    readonly onLine?: (text: string) => void;
+    /**
+     * The PID of the process that was really started, as soon as it exists. The
+     * supervisor records it — durably, under the launch token the child was
+     * started with — so a restart can tell that a worker is still running
+     * instead of starting a second one beside it. This is the handshake's other
+     * half: the child waits for exactly that record before it begins any work,
+     * and the call is awaited here. A registration that fails rejects: the
+     * child began nothing, so it is stopped and the failure is let out rather
+     * than rounded into a worker that ran.
+     */
+    readonly onStarted?: (pid: number) => Promise<void> | void;
+    /**
+     * The launch record and token the child was started with, when it is a
+     * supervised worker: the child waits until that record names its PID, and
+     * the registration above is what writes it (`supervisor/launch.ts`).
+     */
+    readonly launch?: { readonly file: string; readonly token: string } | undefined;
+  }
 
 /** What one worker invocation left behind. */
 export interface WorkerOutcome {
@@ -150,6 +162,14 @@ export async function runNexusWorker(request: WorkerRequest): Promise<WorkerOutc
       stdio: 'inherit',
       windowsHide: true,
       detached: process.platform !== 'win32',
+      ...(request.launch === undefined
+        ? {}
+        : {
+            env: {
+              ...process.env,
+              ...launchEnvironment({ file: request.launch.file, token: request.launch.token }),
+            },
+          }),
     });
   } catch (cause) {
     return {
@@ -160,7 +180,21 @@ export async function runNexusWorker(request: WorkerRequest): Promise<WorkerOutc
     };
   }
   if (child.pid !== undefined) {
-    request.onStarted?.(child.pid);
+    try {
+      await request.onStarted?.(child.pid);
+    } catch (cause) {
+      // The launch was never registered, and the child is gated on exactly that
+      // record: it has done nothing, so its tree is stopped here — which also
+      // releases the child's own wait — and the launch's failure is what the
+      // caller is given. A worker that cannot be recorded is never run.
+      const stopProblem = await requestTreeStop(child.pid);
+      throw new Error(
+        `the launch of the worker (pid ${String(child.pid)}) could not be registered: ` +
+          `${messageOf(cause)}. The worker never began any work.` +
+          (stopProblem === null ? '' : ` Stopping it was not confirmed: ${stopProblem}`),
+        { cause },
+      );
+    }
   }
 
   let stopRequested = request.stop.aborted;

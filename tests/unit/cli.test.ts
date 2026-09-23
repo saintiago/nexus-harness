@@ -305,7 +305,7 @@ describe('the command line’s own surface', () => {
           },
           recoveryTurn: async ({ dir }) => {
             recoveries += 1;
-            return { judgment: null, problem: 'not reached', dir, logPath: null };
+            return { judgment: null, problem: 'not reached', shutdown: null, dir, logPath: null };
           },
           reporter: async ({ incident }) => ({
             report: incident.report,

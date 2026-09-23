@@ -10,6 +10,7 @@
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { loadConfiguration } from '../../src/config/load.js';
 import {
@@ -34,6 +35,7 @@ import { EXIT_INPUT_ERROR } from '../../src/cli/context.js';
 import { superviseCli } from '../../src/cli/supervise.js';
 import { createHttpClient } from '../../src/sources/jira/http.js';
 import { intakeLockPath } from '../../src/sources/receipts.js';
+import { repoRoot } from '../support.js';
 import {
   installStandIn,
   serviceFetch,
@@ -82,11 +84,17 @@ describe('the supervisor’s incident state', () => {
     const read = await readIncident(file);
     expect(read).toMatchObject({ id: incident.id, maxAttempts: 2, stage: 'open' });
     // The pointer is what a restart adopts from.
-    await writeCurrentIncident(root, { version: 1, id: incident.id, workerPid: null });
+    await writeCurrentIncident(root, {
+      version: 1,
+      id: incident.id,
+      workerPid: null,
+      launch: null,
+    });
     expect(await readCurrentIncident(root)).toEqual({
       version: 1,
       id: incident.id,
       workerPid: null,
+      launch: null,
     });
     await writeCurrentIncident(root, null);
     expect(await readCurrentIncident(root)).toBeNull();
@@ -324,7 +332,9 @@ describe('the worker process', () => {
       configPath: path.join(directory, 'nexus.config.json'),
       cwd: directory,
       stop: new AbortController().signal,
-      onStarted: (pid) => started.push(pid),
+      onStarted: (pid) => {
+        started.push(pid);
+      },
       onLine: () => undefined,
     });
     expect(outcome.exitCode).toBe(3);
@@ -355,6 +365,86 @@ describe('the worker process', () => {
     expect(outcome.signal !== null || outcome.exitCode !== 0).toBe(true);
     expect(WORKER_STOP_GRACE_MS).toBeGreaterThan(0);
   }, 30_000);
+
+  it('starts the worker it launched only once its launch is really recorded', async () => {
+    const directory = await tempDir();
+    const record = path.join(directory, 'current.json');
+    const marker = path.join(directory, 'proceeded.txt');
+    // The gate, as the real CLI carries it: a worker reads the launch out of its
+    // own environment and waits for the supervisor's record to name it before
+    // it does anything.
+    const entry = path.join(directory, 'gated.mts');
+    await writeFile(
+      entry,
+      [
+        "import { writeFile } from 'node:fs/promises';",
+        `import { awaitLaunchRegistration, launchFromEnvironment } from ${JSON.stringify(
+          pathToFileURL(path.join(repoRoot, 'src', 'supervisor', 'launch.js')).href,
+        )};`,
+        'const launch = launchFromEnvironment(process.env);',
+        'if (launch === null) { process.exit(4); }',
+        'const problem = await awaitLaunchRegistration({ ...launch, pid: process.pid, timeoutMs: 30_000 });',
+        'if (problem !== null) { process.exit(5); }',
+        `await writeFile(${JSON.stringify(marker)}, 'the worker proceeded');`,
+      ].join('\n'),
+      'utf8',
+    );
+    const launch = { file: record, token: 'launch-1' };
+
+    // The supervisor's half completes the record with the child's own PID: the
+    // child proceeds, and its work is what the record named.
+    const outcome = await runNexusWorker({
+      entry,
+      interpreter: process.execPath,
+      interpreterArgs: ['--import', 'tsx'],
+      intent: 'run',
+      scope: null,
+      repoPath: directory,
+      configPath: path.join(directory, 'nexus.config.json'),
+      cwd: repoRoot,
+      stop: new AbortController().signal,
+      launch,
+      onStarted: async (pid) => {
+        await writeFile(
+          record,
+          JSON.stringify({
+            version: 1,
+            id: null,
+            workerPid: pid,
+            launch: { token: launch.token, at: '2026-09-23T00:00:00.000Z' },
+          }),
+          'utf8',
+        );
+      },
+    });
+    expect(outcome.exitCode).toBe(0);
+    expect(outcome.launchProblem).toBeNull();
+    expect(await readFile(marker, 'utf8')).toContain('the worker proceeded');
+
+    // A registration that fails stops the child where it waits: it began
+    // nothing, and the launch's failure is what the supervisor is given rather
+    // than a worker that ran under a record nothing holds.
+    await rm(marker, { force: true });
+    await rm(record, { force: true });
+    await expect(
+      runNexusWorker({
+        entry,
+        interpreter: process.execPath,
+        interpreterArgs: ['--import', 'tsx'],
+        intent: 'run',
+        scope: null,
+        repoPath: directory,
+        configPath: path.join(directory, 'nexus.config.json'),
+        cwd: repoRoot,
+        stop: new AbortController().signal,
+        launch,
+        onStarted: async () => {
+          throw new Error('the pointer could not be written');
+        },
+      }),
+    ).rejects.toThrow(/could not be registered/);
+    expect(await readFile(marker, 'utf8').catch(() => null)).toBeNull();
+  }, 60_000);
 
   it('reports an entry that cannot be started at all', async () => {
     const directory = await tempDir();

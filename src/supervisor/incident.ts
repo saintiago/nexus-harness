@@ -81,7 +81,11 @@ export interface StopOrigin {
  * once its result is recorded, so a restart can see that a turn was in flight.
  * `supervisorPid` is the invocation that launched it; `turnPid` is the runtime
  * process itself, once it was started, because that process — not the
- * supervisor — is what may still be repairing a workspace.
+ * supervisor — is what may still be repairing a workspace. A `turnPid` that was
+ * never recorded is not a turn that produced nothing: the runtime is handed its
+ * prompt only once it is recorded, so nothing of that attempt ever ran, and
+ * nothing about it can be reconciled — which is exactly why a restart refuses
+ * it instead of starting another turn beside a process it cannot name.
  */
 export interface PendingRecovery {
   /** Counted from 1 within one incident. */
@@ -93,6 +97,12 @@ export interface PendingRecovery {
   readonly dir: string;
   /** The turn's own log, once it was opened. */
   readonly logPath: string | null;
+  /**
+   * Why this attempt was left in flight, when the invocation that spent it
+   * learned something a restart has to read: a runtime it could not confirm
+   * stopped, chiefly. `null` for an attempt an invocation simply died inside of.
+   */
+  readonly problem: string | null;
 }
 
 /** One recovery attempt, as the agent's own outcome file describes it. */
@@ -133,6 +143,12 @@ export interface RecoveryAttempt {
  * carried here so they are executed rather than promised: the blocker runs
  * first — as its own scoped worker, whatever intent this incident began with —
  * and only then does the interrupted work run again.
+ *
+ * The plan advances on a confirmed result, never on a start: a blocker that was
+ * started but never observed to settle is a step the queue still owes, and a
+ * restart carries it out again rather than skipping it. `blockerSettledAt` is
+ * that confirmed result, and `resumedAt` on the incident is the same evidence
+ * for the interrupted work.
  */
 export interface ResumePlan {
   /** The interrupted work, as the worker runs it again. */
@@ -142,6 +158,13 @@ export interface ResumePlan {
   readonly blocker: { readonly key: string; readonly reason: string } | null;
   /** When the blocker's own worker really started, or `null` while it has not. */
   readonly blockerStartedAt: string | null;
+  /**
+   * When the blocker's own worker was seen to settle — its confirmed result —
+   * or `null` while the plan has not got one. Only this advances the plan to
+   * the interrupted work: a start whose worker never settled, a crash included,
+   * leaves the blocker owed and it runs again.
+   */
+  readonly blockerSettledAt: string | null;
 }
 
 /** Where one incident's concise report was published. */
@@ -202,6 +225,18 @@ export interface IncidentRecord {
   resumedAt: string | null;
   /** `open` while it is being handled; `settled` or `help` once concluded. */
   stage: 'open' | 'settled' | 'help';
+  /**
+   * A person's acknowledgement of the request for human help this incident
+   * ended in, or `null` while the request is unresolved.
+   *
+   * A `help` conclusion stops the supervision, and a restart is not an answer
+   * to it: the incident keeps the queue stopped until a person says the thing it
+   * asked for was really done. That acknowledgement is this field, written into
+   * the record by hand — `{ "at": …, "note": … }` — because nothing here may
+   * infer that a person acted. It is `null` for every incident that never asked
+   * for help.
+   */
+  acknowledgement: { readonly at: string; readonly note: string | null } | null;
   /** Every worker stop this incident observed, oldest first. */
   readonly stops: WorkerStop[];
   /**
@@ -281,11 +316,12 @@ export function openIncident(
     intent,
     scope,
     maxAttempts,
-    createdAt: at,
-    updatedAt: at,
-    resumedAt: null,
-    stage: 'open',
-    stops: [],
+      createdAt: at,
+      updatedAt: at,
+      resumedAt: null,
+      stage: 'open',
+      acknowledgement: null,
+      stops: [],
     origin: null,
     attempts: [],
     pending: null,
@@ -348,17 +384,37 @@ export async function readIncident(file: string): Promise<IncidentRecord | null>
         'with stops, attempts and a report). Inspect it by hand.',
     );
   }
-  const record = value as unknown as IncidentRecord;
-  // A record written before these fields existed is one with nothing in
-  // flight and nothing owed: reading it as such keeps a restart's decisions
-  // explicit rather than leaving `undefined` to spread through them.
-  return {
-    ...record,
-    origin: isRecord(value['origin']) ? record.origin : null,
-    pending: isRecord(value['pending']) ? record.pending : null,
-    sequence: isRecord(value['sequence']) ? record.sequence : null,
-  };
-}
+    const record = value as unknown as IncidentRecord;
+    // A record written before these fields existed is one with nothing in
+    // flight and nothing owed: reading it as such keeps a restart's decisions
+    // explicit rather than leaving `undefined` to spread through them.
+    const pending = isRecord(value['pending']) ? (record.pending as PendingRecovery) : null;
+    const sequence = isRecord(value['sequence']) ? (record.sequence as ResumePlan) : null;
+    const acknowledgement = value['acknowledgement'];
+    return {
+      ...record,
+      acknowledgement:
+        isRecord(acknowledgement) && typeof acknowledgement['at'] === 'string'
+          ? {
+              at: acknowledgement['at'],
+              note: typeof acknowledgement['note'] === 'string' ? acknowledgement['note'] : null,
+            }
+          : null,
+      origin: isRecord(value['origin']) ? record.origin : null,
+      pending:
+        pending === null
+          ? null
+          : { ...pending, problem: typeof pending.problem === 'string' ? pending.problem : null },
+      sequence:
+        sequence === null
+          ? null
+          : {
+              ...sequence,
+              blockerSettledAt:
+                typeof sequence.blockerSettledAt === 'string' ? sequence.blockerSettledAt : null,
+            },
+    };
+  }
 
 /** Writes one incident record atomically, so a reader never sees half of one. */
 export async function writeIncident(file: string, incident: IncidentRecord): Promise<void> {
@@ -380,12 +436,27 @@ export async function writeIncident(file: string, incident: IncidentRecord): Pro
  * The pointer the supervisor keeps while it works: the incident it is handling,
  * and the worker it started for it. The worker's PID is what makes a restart
  * able to tell that a worker is still running rather than start a second one.
+ *
+ * The pointer is also the launch record of the worker that is being started:
+ * the launch's own token is written before the child exists — with no PID yet —
+ * and the PID is added once the child does. The child does not begin any work
+ * until the record names it (`supervisor/launch.ts`), so a pointer that names a
+ * launch and no PID is a launch whose child never did anything and whose
+ * process cannot be reconciled: a restart refuses it rather than starting a
+ * second worker beside it.
  */
 export interface CurrentIncident {
   readonly version: 1;
   /** The incident being handled, or `null` while a fresh worker runs. */
   readonly id: string | null;
   readonly workerPid: number | null;
+  /**
+   * The launch in flight, or `null` when no worker is being started or run.
+   * The token identifies one launch across its two writes; a restart reads it
+   * back to tell "a worker is being started and cannot be reconciled" from
+   * "no worker is running".
+   */
+  readonly launch: { readonly token: string; readonly at: string } | null;
 }
 
 /** Points the supervisor at the incident it is handling; `null` clears it. */
@@ -434,13 +505,18 @@ export async function readCurrentIncident(root: string): Promise<CurrentIncident
         'absence. Inspect it by hand.',
     );
   }
-  const workerPid = value['workerPid'];
-  return {
-    version: 1,
-    id: typeof value['id'] === 'string' ? value['id'] : null,
-    workerPid: typeof workerPid === 'number' && Number.isInteger(workerPid) ? workerPid : null,
-  };
-}
+    const workerPid = value['workerPid'];
+    const launch = value['launch'];
+    return {
+      version: 1,
+      id: typeof value['id'] === 'string' ? value['id'] : null,
+      workerPid: typeof workerPid === 'number' && Number.isInteger(workerPid) ? workerPid : null,
+      launch:
+        isRecord(launch) && typeof launch['token'] === 'string' && typeof launch['at'] === 'string'
+          ? { token: launch['token'], at: launch['at'] }
+          : null,
+    };
+  }
 
 /**
  * Whether a resumed worker stopped again with the very failure the recovery it

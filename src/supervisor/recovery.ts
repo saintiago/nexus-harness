@@ -20,10 +20,11 @@
  */
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { runCodexPrompt } from '../agents/codex/adapter.js';
+import { AgentError, runCodexPrompt } from '../agents/codex/adapter.js';
 import { selectedCodexRuntime } from '../agents/codex/runtime.js';
 import { openEvidenceLog } from '../reporting/logs.js';
 import type { AgentLog } from '../reporting/logs.js';
+import type { AgentTurnShutdown } from '../runs/contracts.js';
 import { messageOf } from '../shared/errors.js';
 import type { AgentActivity, AgentSelection } from '../shared/types.js';
 import type {
@@ -505,6 +506,13 @@ export interface RecoveryTurnResult {
   readonly judgment: RecoveryJudgment | null;
   /** Why the turn produced none — a failure, a stop, or an unusable file. */
   readonly problem: string | null;
+  /**
+   * How the turn's own stop of the runtime it started went, when it stopped
+   * one. `unconfirmed` means a process of this turn may still be running: the
+   * supervisor keeps the attempt's ownership of that process and stops for
+   * reconciliation instead of starting another turn or worker beside it.
+   */
+  readonly shutdown: AgentTurnShutdown | null;
   readonly dir: string;
   readonly logPath: string | null;
 }
@@ -563,14 +571,19 @@ async function recoveryTurn(
     return {
       judgment: null,
       problem: `the recovery turn's input could not be written in "${request.dir}": ${messageOf(cause)}`,
+      shutdown: null,
       dir: request.dir,
       logPath: null,
     };
   }
 
   let problem: string | null = null;
+  let shutdown: AgentTurnShutdown | null = null;
   try {
-    await runCodexPrompt(
+    // The turn's own ending is kept whole: how its stop of the runtime went is
+    // evidence the supervisor decides on, and a runtime that could not be
+    // confirmed ended is never rounded into one that did.
+    const turn = await runCodexPrompt(
       {
         prompt,
         label: `Nexus recovery turn for incident ${request.brief.incidentId}`,
@@ -583,7 +596,11 @@ async function recoveryTurn(
       },
       selectedCodexRuntime(parts.selection, { env: parts.environment }),
     );
+    shutdown = turn.shutdown ?? null;
   } catch (cause) {
+    if (cause instanceof AgentError) {
+      shutdown = cause.shutdown;
+    }
     problem = `the recovery turn did not complete: ${messageOf(cause)}`;
   }
   try {
@@ -596,8 +613,16 @@ async function recoveryTurn(
       'the recovery turn was stopped before it produced a judgment — its time limit expired, or ' +
       'the supervisor was interrupted — so nothing was repaired by it.';
   }
+  if (shutdown?.termination === 'unconfirmed') {
+    // The stop could not be confirmed: something of this turn may still be
+    // running in the workspace it was repairing, and no judgment of it is
+    // adopted. The supervisor holds the attempt and stops for reconciliation.
+    const detail = shutdown.problem ?? 'no reason was recorded for it';
+    const note = `its runtime could not be confirmed stopped (${detail}), so it may still be running`;
+    problem = problem === null ? `the recovery turn's runtime outlived the turn: ${note}.` : `${problem} ${note}.`;
+  }
   if (problem !== null) {
-    return { judgment: null, problem, dir: request.dir, logPath };
+    return { judgment: null, problem, shutdown, dir: request.dir, logPath };
   }
 
   let text: string;
@@ -609,13 +634,14 @@ async function recoveryTurn(
       problem:
         `the recovery turn completed but wrote no usable ${RECOVERY_OUTCOME_FILE}: ` +
         messageOf(cause),
+      shutdown,
       dir: request.dir,
       logPath,
     };
   }
   const parsed = parseRecoveryJudgment(text, RECOVERY_OUTCOME_FILE);
   if (isProblem(parsed)) {
-    return { judgment: null, problem: parsed.problem, dir: request.dir, logPath };
+    return { judgment: null, problem: parsed.problem, shutdown, dir: request.dir, logPath };
   }
-  return { judgment: parsed, problem: null, dir: request.dir, logPath };
+  return { judgment: parsed, problem: null, shutdown, dir: request.dir, logPath };
 }

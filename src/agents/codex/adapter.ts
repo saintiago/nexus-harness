@@ -17,7 +17,7 @@ import type { Readable, Writable } from 'node:stream';
 import { planLaunch } from '../../process/launch.js';
 import { within } from '../../process/stop.js';
 import type { AgentLog } from '../../reporting/logs.js';
-import type { AgentTurnRequest, AgentTurnResult } from '../../runs/contracts.js';
+import type { AgentTurnRequest, AgentTurnResult, AgentTurnShutdown } from '../../runs/contracts.js';
 import { messageOf } from '../../shared/errors.js';
 import type { AgentActivity, TerminationOutcome } from '../../shared/types.js';
 import { agentMessage, failureText, itemActivities, parseEvent } from './events.js';
@@ -31,9 +31,18 @@ const MAX_DIAGNOSTIC_CHARS = 400;
 
 /** A coding turn that could not complete. The runner treats it as a failed run. */
 export class AgentError extends Error {
-  constructor(message: string, options?: { cause?: unknown }) {
+  /**
+   * How the runtime's own stop went, when this failure is one the harness made
+   * — a turn whose runtime was stopped and could not be confirmed ended. A
+   * caller that supervises the turn keeps owning that process on `unconfirmed`
+   * rather than starting anything beside it.
+   */
+  readonly shutdown: AgentTurnShutdown | null;
+
+  constructor(message: string, options?: { cause?: unknown; shutdown?: AgentTurnShutdown }) {
     super(message, options);
     this.name = 'AgentError';
+    this.shutdown = options?.shutdown ?? null;
   }
 }
 
@@ -66,14 +75,18 @@ export interface CodexPromptRequest {
   readonly stop: AbortSignal;
   /** Where the runtime's own activity is reported, when a display is watching. */
   readonly onActivity?: (activity: AgentActivity) => void;
-  /**
-   * The runtime process itself, as soon as it exists. A caller that supervises
-   * the turn — the recovery turn's supervisor, for example — records this PID,
-   * so a restart can tell that the runtime is still running rather than start
-   * the same turn beside it.
-   */
-  readonly onStarted?: (pid: number) => void;
-}
+    /**
+     * The runtime process itself, as soon as it exists. A caller that supervises
+     * the turn — the recovery turn's supervisor, for example — records this PID,
+     * so a restart can tell that the runtime is still running rather than start
+     * the same turn beside it. The call is awaited before the turn's prompt is
+     * handed over: the runtime has nothing to act on until then, so a caller
+     * that fails to record the process leaves a runtime that never began the
+     * turn — and the failure is the turn's own failure rather than work that ran
+     * under a launch no record names.
+     */
+    readonly onStarted?: (pid: number) => Promise<void> | void;
+  }
 
 /**
  * Runs one top-level turn of the configured runtime with an explicit prompt and
@@ -300,9 +313,6 @@ export async function runCodexPrompt(
 
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
-    if (child.pid !== undefined) {
-      request.onStarted?.(child.pid);
-    }
     child.stdout.on('data', (chunk: string) => {
       log.write(chunk);
       buffered += chunk;
@@ -322,12 +332,6 @@ export async function runCodexPrompt(
         stderrHead += chunk;
       }
     });
-
-    // A runtime that exits without reading its prompt closes this pipe under the
-    // write: its own ending is the result of the turn, and an unread prompt is
-    // not a second failure to report.
-    child.stdin.on('error', () => undefined);
-    child.stdin.end(prompt);
 
     child.on('error', (cause) => {
       // Only a runtime that never started is a launch failure; one that already
@@ -359,7 +363,67 @@ export async function runCodexPrompt(
       // stopped the same way, rather than left running past the run.
       onStop();
     }
-  });
+
+    /**
+     * Stops a runtime whose launch was never registered. It was never handed its
+     * prompt, so nothing of the turn happened in it; it is stopped all the same —
+     * and how that stop went is read back — because a runtime this turn cannot
+     * account for is exactly what a supervisor must not start work beside.
+     */
+    const stopUnregisteredRuntime = async (): Promise<void> => {
+      if (settled || stopped) {
+        return;
+      }
+      const { pid } = child;
+      if (pid === undefined) {
+        // Nothing of this turn ever started, so there is nothing to stop.
+        termination = 'confirmed';
+        finish();
+        return;
+      }
+      stopped = true;
+      const stopProblem = await runtime.stopTree(pid);
+      const endedInTime = await within(endedOnce, runtime.stopGraceMs);
+      termination = stopProblem === null && endedInTime ? 'confirmed' : 'unconfirmed';
+      terminationProblem =
+        termination === 'confirmed'
+          ? null
+          : (stopProblem ??
+            `the coding runtime had not ended ${String(runtime.stopGraceMs)} ms after it was stopped`);
+      finish();
+    };
+
+    /**
+     * The launch handshake: the caller records this process before it is given
+     * anything to do, and a caller that cannot record it is never handed the
+     * turn. A runtime that was already stopped while the handshake was in
+     * flight is left exactly as it was: its ending is the stop's result.
+     */
+    const handOverThePrompt = async (): Promise<void> => {
+      if (child.pid !== undefined) {
+        try {
+          await request.onStarted?.(child.pid);
+        } catch (cause) {
+          launchError = `the launch of the coding runtime could not be registered durably: ${messageOf(cause)}`;
+          await stopUnregisteredRuntime();
+          return;
+        }
+        if (settled) {
+          return;
+        }
+      }
+      // A runtime that exits without reading its prompt closes this pipe under
+      // the write: its own ending is the result of the turn, and an unread
+      // prompt is not a second failure to report.
+      child.stdin.on('error', () => undefined);
+      child.stdin.end(prompt);
+    };
+    void handOverThePrompt().catch((cause: unknown) => {
+      launchError ??= `the coding runtime's launch could not be completed: ${messageOf(cause)}`;
+      finish();
+    });
+
+    });
 
   if (outcome.stopped) {
     // The run was stopped, so the turn was too. What the runtime managed to
@@ -384,7 +448,19 @@ export async function runCodexPrompt(
 
   if (outcome.launchError !== null) {
     log.write(`# the runtime could not be started: ${outcome.launchError}\n`);
-    throw new AgentError(`the coding runtime could not be started: ${outcome.launchError}`);
+    throw new AgentError(`the coding runtime could not be started: ${outcome.launchError}`, {
+      // A launch that had to be stopped on its way out is reported with how
+      // that went: a runtime this turn could not account for is a process a
+      // supervisor must not start work beside.
+      ...(outcome.termination === null || outcome.termination === 'confirmed'
+        ? {}
+        : {
+            shutdown: {
+              termination: outcome.termination,
+              problem: outcome.terminationProblem,
+            },
+          }),
+    });
   }
 
   if (parsed.failure !== null) {

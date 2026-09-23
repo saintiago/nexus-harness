@@ -33,7 +33,8 @@
  * ticket — is really started, innermost first. The pointer file carries only
  * what the records cannot: which worker is running right now.
  */
-import { readFile, readdir } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { readFile, readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { phaseStop } from '../runs/stops.js';
 import { messageOf } from '../shared/errors.js';
@@ -42,6 +43,7 @@ import type { HttpClient } from '../sources/jira/http.js';
 import {
   incidentDir,
   incidentFilePath,
+  currentIncidentPath,
   openIncident,
   readCurrentIncident,
   readIncident,
@@ -52,16 +54,23 @@ import {
   writeIncident,
 } from './incident.js';
 import type {
+  CurrentIncident,
   IncidentRecord,
   PendingRecovery,
   RecoveryAttempt,
   StopOrigin,
   SupervisorIntent,
 } from './incident.js';
+import { unreconciledLaunchProblem } from './launch.js';
 import { acquireSupervisorOwnership, intakeConsumerProblem, processIsAlive } from './owner.js';
 import type { LivenessProbe } from './owner.js';
 import { RECOVERY_OUTCOME_FILE, isProblem, parseRecoveryJudgment } from './recovery.js';
-import type { RecoveryBrief, RecoveryTurnRequest, RecoveryTurnResult } from './recovery.js';
+import type {
+  RecoveryBrief,
+  RecoveryJudgment,
+  RecoveryTurnRequest,
+  RecoveryTurnResult,
+} from './recovery.js';
 import { reportNeedsPublication } from './report.js';
 import type { IncidentReporter } from './report.js';
 import { classifyWorkerStop, runNexusWorker } from './worker.js';
@@ -273,10 +282,17 @@ export async function supervise(request: SuperviseRequest): Promise<SuperviseSum
           io.err(`supervisor: ${problem}`);
           return summary('attention', problem, carried.record);
         }
-        handled.add(carried.record.id);
-        carried = done.incident;
-        reportProblem = done.reportProblem ?? reportProblem;
-        if (carried.record.stage === 'help') {
+          handled.add(carried.record.id);
+          carried = done.incident;
+          reportProblem = done.reportProblem ?? reportProblem;
+          if (done.hold !== null) {
+            // A recovery runtime that could not be confirmed ended keeps the
+            // incident's ownership of it: nothing runs beside a process that
+            // may still be repairing the workspace.
+            io.err(`supervisor: ${done.hold}`);
+            return summary('attention', done.hold, carried.record);
+          }
+          if (carried.record.stage === 'help') {
           return summary(
             'attention',
             carried.record.conclusion?.detail ?? 'the incident needs human help',
@@ -288,13 +304,29 @@ export async function supervise(request: SuperviseRequest): Promise<SuperviseSum
         }
       }
 
-      incidents = await readSupervisionState(root);
-      const open = newestOpen(incidents);
-      if (open !== null && !handled.has(open.record.id)) {
-        carried = open;
-        continue;
-      }
-      const owed = owedWork(incidents);
+        incidents = await readSupervisionState(root);
+        const open = newestOpen(incidents);
+        if (open !== null && !handled.has(open.record.id)) {
+          carried = open;
+          continue;
+        }
+        // A conclusion that asked for a person keeps the queue stopped until
+        // that person really resolves it. Restarting the supervisor is not an
+        // answer to the request, and starting a fresh worker here would silently
+        // reset the bound the incident already spent.
+        const unresolved = unresolvedHelp(incidents);
+        if (unresolved !== null) {
+          const detail = unresolved.record.conclusion?.detail ?? 'the incident needs human help';
+          const problem =
+            `incident ${unresolved.record.id} ended in a request for human help that is not ` +
+            `resolved yet: ${detail} Nothing runs until a person does what it asks and ` +
+            `acknowledges it in "${unresolved.path}" — a top-level "acknowledgement": ` +
+            '{ "at": …, "note": … } — because only a person can say the thing it asked for was ' +
+            'really done. Run the supervisor again afterwards.';
+          io.err(`supervisor: ${problem}`);
+          return summary('attention', problem, unresolved.record);
+        }
+        const owed = owedWork(incidents);
       let step: WorkerStep;
       if (owed.length > 0) {
         const known = owed[0];
@@ -309,48 +341,70 @@ export async function supervise(request: SuperviseRequest): Promise<SuperviseSum
         carried = null;
       }
 
-      const mode = step.intent === 'watch' ? 'watch' : 'run';
-      workerRuns += 1;
-      io.out(
-        `supervisor: starting worker ${String(workerRuns)} (\`queue ${mode}\`` +
-          `${step.scope === null ? '' : ` --ticket ${step.scope}`})` +
-          (step.plan === null
-            ? ''
-            : ` for incident ${step.plan.known.record.id}` +
-              `${step.plan.blocker ? ', the blocker ranked ahead of the interrupted work' : ''}`),
-      );
-      const before = await runEvidence(request);
-      let started = false;
-      const outcome = await runWorker({
-        entry: request.entry,
-        interpreter: request.interpreter,
-        interpreterArgs: request.interpreterArgs,
-        intent: step.intent,
-        scope: step.scope,
-        repoPath: request.repoPath,
-        configPath: request.configPath,
-        cwd: request.cwd,
-        stop,
-        onLine: (text) => {
-          io.out(text);
-        },
-        onStarted: (pid) => {
-          started = true;
-          void recordWorkerStarted(request, root, step, pid, io).catch((cause: unknown) => {
-            io.err(
-              `supervisor: the running worker could not be recorded (${messageOf(cause)}), so a ` +
-                'restart cannot tell that it is still running.',
-            );
+        const mode = step.intent === 'watch' ? 'watch' : 'run';
+        workerRuns += 1;
+        io.out(
+          `supervisor: starting worker ${String(workerRuns)} (\`queue ${mode}\`` +
+            `${step.scope === null ? '' : ` --ticket ${step.scope}`})` +
+            (step.plan === null
+              ? ''
+              : ` for incident ${step.plan.known.record.id}` +
+                `${step.plan.blocker ? ', the blocker ranked ahead of the interrupted work' : ''}`),
+        );
+        const before = await runEvidence(request);
+        // The launch is written down before the child exists: its own token,
+        // and no PID yet. The child waits for the record to name it before it
+        // begins any work, so a supervisor that dies between spawning its
+        // worker and recording it leaves a worker that did nothing at all, and
+        // a restart refuses that launch instead of starting a second worker.
+        const launch = { token: randomUUID(), at: request.now().toISOString() };
+        await writeCurrentIncident(root, {
+          version: 1,
+          id: step.plan?.known.record.id ?? null,
+          workerPid: null,
+          launch,
+        });
+        let started = false;
+        let outcome: WorkerOutcome;
+        try {
+          outcome = await runWorker({
+            entry: request.entry,
+            interpreter: request.interpreter,
+            interpreterArgs: request.interpreterArgs,
+            intent: step.intent,
+            scope: step.scope,
+            repoPath: request.repoPath,
+            configPath: request.configPath,
+            cwd: request.cwd,
+            stop,
+            launch: { file: currentIncidentPath(root), token: launch.token },
+            onLine: (text) => {
+              io.out(text);
+            },
+            // The child begins nothing until this write is durable: the worker
+            // awaits it, and a registration that fails stops the child rather
+            // than letting it run under a launch nothing recorded.
+            onStarted: async (pid) => {
+              started = true;
+              await recordWorkerStarted(request, root, step, pid, io, launch);
+            },
           });
-        },
-      });
-      // A worker substitute may report no PID at all. One that started without
-      // reporting one is still work that ran, and the step it carries out — the
-      // blocker's start, or the resumption of the interrupted work — is
-      // recorded the same way, never before it really started.
-      if (!started && outcome.launchProblem === null) {
-        await recordWorkerStarted(request, root, step, null, io).catch(() => undefined);
-      }
+        } catch (cause) {
+          // The launch of this worker could not be registered durably. The child
+          // is gated on exactly that record, so it began nothing; this is the
+          // supervisor's own failure, not a worker's stop to recover from, and
+          // nothing else starts under it.
+          const problem = messageOf(cause);
+          io.err(`supervisor: ${problem}`);
+          return summary('attention', problem, carried?.record ?? null);
+        }
+        // A worker substitute may report no PID at all. One that started without
+        // reporting one is still work that ran, and the step it carries out — the
+        // blocker's start, or the resumption of the interrupted work — is
+        // recorded the same way, never before it really started.
+        if (!started && outcome.launchProblem === null) {
+          await recordWorkerStarted(request, root, step, null, io, null).catch(() => undefined);
+        }
       const after = await runEvidence(request);
       const progress = !before.ok || !after.ok || before.marker !== after.marker;
       await settlePointer(root);
@@ -358,13 +412,20 @@ export async function supervise(request: SuperviseRequest): Promise<SuperviseSum
       if (outcome.launchProblem !== null) {
         io.err(`supervisor: ${outcome.launchProblem}`);
       }
-      const verdict = classifyWorkerStop(outcome);
-      if (verdict === 'settled') {
-        if (owedWork(await readSupervisionState(root)).length > 0) {
-          // A blocker settled, or another incident's owed work is still open:
-          // the work it was ranked ahead of runs in the next pass of this loop.
-          continue;
-        }
+        const verdict = classifyWorkerStop(outcome);
+        if (verdict === 'settled') {
+          if (step.plan !== null && step.plan.blocker) {
+            // The blocker's own worker really settled: that is the confirmed
+            // result the plan waits for, and it is recorded before anything the
+            // plan owes next is started.
+            await recordBlockerSettled(request, root, step.plan.known, io);
+            continue;
+          }
+          if (owedWork(await readSupervisionState(root)).length > 0) {
+            // A blocker settled, or another incident's owed work is still open:
+            // the work it was ranked ahead of runs in the next pass of this loop.
+            continue;
+          }
         io.out(
           `supervisor: the worker finished its work (exit code 0) after ${String(workerRuns)} ` +
             'invocation(s); nothing is left to recover.',
@@ -503,11 +564,23 @@ async function readSupervisionState(root: string): Promise<readonly KnownInciden
   return incidents;
 }
 
-/** The newest incident that is still open, or `null` when none is. */
-function newestOpen(incidents: readonly KnownIncident[]): KnownIncident | null {
-  const open = incidents.filter((known) => known.record.stage === 'open');
-  return open.at(-1) ?? null;
-}
+  /** The newest incident that is still open, or `null` when none is. */
+  function newestOpen(incidents: readonly KnownIncident[]): KnownIncident | null {
+    const open = incidents.filter((known) => known.record.stage === 'open');
+    return open.at(-1) ?? null;
+  }
+
+  /**
+   * The newest incident that ended in a request for human help nobody has
+   * acknowledged yet, or `null` when there is none. It stops everything the
+   * queue would otherwise start, whichever invocation finds it.
+   */
+  function unresolvedHelp(incidents: readonly KnownIncident[]): KnownIncident | null {
+    const asking = incidents.filter(
+      (known) => known.record.stage === 'help' && known.record.acknowledgement === null,
+    );
+    return asking.at(-1) ?? null;
+  }
 
 /**
  * The work the queue is still owed, newest first: every concluded incident
@@ -526,72 +599,120 @@ function owedWork(incidents: readonly KnownIncident[]): readonly KnownIncident[]
     .toReversed();
 }
 
-/** What one incident's resume plan runs next. */
-function stepOf(known: KnownIncident): WorkerStep {
-  const plan = known.record.sequence;
-  if (plan === null) {
-    throw new Error(`incident ${known.record.id} owes no work, so no step belongs to it`);
+  /** What one incident's resume plan runs next. */
+  function stepOf(known: KnownIncident): WorkerStep {
+    const plan = known.record.sequence;
+    if (plan === null) {
+      throw new Error(`incident ${known.record.id} owes no work, so no step belongs to it`);
+    }
+    // The blocker is owed while it has no confirmed result: a start alone is not
+    // a settled blocker, and a crash during its worker leaves it owed too.
+    if (plan.blocker !== null && plan.blockerSettledAt === null) {
+      return { intent: 'ticket', scope: plan.blocker.key, plan: { known, blocker: true } };
+    }
+    return { intent: plan.intent, scope: plan.scope, plan: { known, blocker: false } };
   }
-  if (plan.blocker !== null && plan.blockerStartedAt === null) {
-    return { intent: 'ticket', scope: plan.blocker.key, plan: { known, blocker: true } };
-  }
-  return { intent: plan.intent, scope: plan.scope, plan: { known, blocker: false } };
-}
 
 /** One line naming what an owed incident's next step is for. */
-function planMessage(known: KnownIncident): string {
-  const plan = known.record.sequence;
-  if (plan === null) {
-    return `supervisor: incident ${known.record.id} owes no work.`;
+  function planMessage(known: KnownIncident): string {
+    const plan = known.record.sequence;
+    if (plan === null) {
+      return `supervisor: incident ${known.record.id} owes no work.`;
+    }
+    if (plan.blocker !== null && plan.blockerSettledAt === null) {
+      return (
+        `supervisor: incident ${known.record.id}: ${plan.blocker.key} is ranked ahead of the ` +
+        'interrupted work and has not settled yet, so its worker runs first.'
+      );
+    }
+    return `supervisor: incident ${known.record.id}: the interrupted work resumes now.`;
   }
-  if (plan.blocker !== null && plan.blockerStartedAt === null) {
-    return (
-      `supervisor: incident ${known.record.id}: ${plan.blocker.key} is ranked ahead of the ` +
-      'interrupted work, so it is started first.'
-    );
-  }
-  return `supervisor: incident ${known.record.id}: the interrupted work resumes now.`;
-}
 
-/**
- * Records, once, that one worker invocation really started: the pointer keeps
- * its PID so a restart never starts a second worker beside it, and the incident
- * whose plan this worker carries out records the step it was owed — the
- * blocker's start, or the resumption of the interrupted work itself, which is
- * recorded when that work really starts and never before.
- */
-async function recordWorkerStarted(
-  request: SuperviseRequest,
-  root: string,
-  step: WorkerStep,
-  pid: number | null,
-  io: SuperviseIo,
-): Promise<void> {
-  if (step.plan === null) {
-    await writeCurrentIncident(root, { version: 1, id: null, workerPid: pid });
-    return;
+  /**
+   * Records, once, that one worker invocation really started: the pointer keeps
+   * its PID — under the launch the child is waiting on — so a restart never
+   * starts a second worker beside it, and the incident whose plan this worker
+   * carries out records the step it was owed — the blocker's start, or the
+   * resumption of the interrupted work itself, which is recorded when that work
+   * really starts and never before.
+   *
+   * This is the child's own gate as well: nothing of the worker happens until
+   * this write is durable, so a failure here is a launch that never was, and it
+   * is raised to the caller rather than swallowed.
+   */
+  async function recordWorkerStarted(
+    request: SuperviseRequest,
+    root: string,
+    step: WorkerStep,
+    pid: number | null,
+    io: SuperviseIo,
+    launch: { readonly token: string; readonly at: string } | null,
+  ): Promise<void> {
+    const pointer = (id: string | null): CurrentIncident => ({
+      version: 1,
+      id,
+      workerPid: pid,
+      launch,
+    });
+    if (step.plan === null) {
+      await writeCurrentIncident(root, pointer(null));
+      return;
+    }
+    const known = step.plan.known;
+    const plan = known.record.sequence;
+    if (plan === null) {
+      await writeCurrentIncident(root, pointer(known.record.id));
+      return;
+    }
+    const at = request.now().toISOString();
+    const updated: IncidentRecord = step.plan.blocker
+      ? { ...known.record, sequence: { ...plan, blockerStartedAt: at }, updatedAt: at }
+      : { ...known.record, resumedAt: at, updatedAt: at };
+    await writeIncident(incidentFilePath(root, updated.id), updated);
+    await writeCurrentIncident(root, pointer(updated.id));
+    if (step.plan.blocker) {
+      io.out(
+        `supervisor: incident ${updated.id}: the blocker ${step.scope ?? ''} is running, and the ` +
+          'interrupted work follows it.',
+      );
+    } else {
+      io.out(`supervisor: incident ${updated.id}: the queue resumes now.`);
+    }
   }
-  const known = step.plan.known;
-  const plan = known.record.sequence;
-  if (plan === null) {
-    await writeCurrentIncident(root, { version: 1, id: known.record.id, workerPid: pid });
-    return;
-  }
-  const at = request.now().toISOString();
-  const updated: IncidentRecord = step.plan.blocker
-    ? { ...known.record, sequence: { ...plan, blockerStartedAt: at }, updatedAt: at }
-    : { ...known.record, resumedAt: at, updatedAt: at };
-  await writeIncident(incidentFilePath(root, updated.id), updated);
-  await writeCurrentIncident(root, { version: 1, id: updated.id, workerPid: pid });
-  if (step.plan.blocker) {
+
+  /**
+   * Records that the blocker a plan ranked ahead of the interrupted work really
+   * settled. The plan advances on this result and on nothing else: a started
+   * blocker that never settled — a crash during its worker included — leaves the
+   * step owed, and a restart carries it out again.
+   */
+  async function recordBlockerSettled(
+    request: SuperviseRequest,
+    root: string,
+    known: KnownIncident,
+    io: SuperviseIo,
+  ): Promise<void> {
+    // The record is read back before it is written: the blocker's own start was
+    // recorded when its worker was registered, and this write must not take that
+    // evidence away.
+    const file = incidentFilePath(root, known.record.id);
+    const latest = await readIncident(file);
+    const plan = latest?.sequence ?? null;
+    if (plan === null || plan.blocker === null || plan.blockerSettledAt !== null) {
+      return;
+    }
+    const at = request.now().toISOString();
+    const updated: IncidentRecord = {
+      ...(latest ?? known.record),
+      sequence: { ...plan, blockerSettledAt: at },
+      updatedAt: at,
+    };
+    await writeIncident(file, updated);
     io.out(
-      `supervisor: incident ${updated.id}: the blocker ${step.scope ?? ''} is running, and the ` +
-        'interrupted work follows it.',
+      `supervisor: incident ${updated.id}: the blocker ${plan.blocker.key} settled, so the ` +
+        'interrupted work runs next.',
     );
-  } else {
-    io.out(`supervisor: incident ${updated.id}: the queue resumes now.`);
   }
-}
 
 /**
  * Leaves the pointer describing what is left: the incident being carried next,
@@ -599,19 +720,25 @@ async function recordWorkerStarted(
  * restart adopts from when the records themselves are ambiguous about what was
  * running.
  */
-async function settlePointer(root: string): Promise<void> {
-  const incidents = await readSupervisionState(root);
-  const next = newestOpen(incidents) ?? owedWork(incidents)[0] ?? null;
-  if (next === null) {
-    await writeCurrentIncident(root, null).catch(() => undefined);
-    return;
+  async function settlePointer(root: string): Promise<void> {
+    const incidents = await readSupervisionState(root);
+    const next = newestOpen(incidents) ?? owedWork(incidents)[0] ?? null;
+    if (next === null) {
+      await writeCurrentIncident(root, null).catch(() => undefined);
+      return;
+    }
+    await writeCurrentIncident(root, {
+      version: 1,
+      id: next.record.id,
+      workerPid: null,
+      launch: null,
+    }).catch(() => undefined);
   }
-  await writeCurrentIncident(root, { version: 1, id: next.record.id, workerPid: null }).catch(
-    () => undefined,
-  );
-}
 
-/** The worker's own run evidence under the output directory. */
+  /**
+   * The worker's own run evidence under the output directory: the newest run
+   * that reached its own report (see the loop below for what that means).
+   */
 async function runEvidence(request: SuperviseRequest): Promise<RunEvidence> {
   const dir = path.join(request.workDir, 'runs');
   let names: readonly string[];
@@ -626,7 +753,21 @@ async function runEvidence(request: SuperviseRequest): Promise<RunEvidence> {
     return { ok: false, marker: null };
   }
   const runs = [...names].filter((name) => /^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(name)).sort();
-  return { ok: true, marker: runs.at(-1) ?? null };
+  // A run that was created and then abandoned — the worker died before the run
+  // reached its own report — is not evidence that the queue did anything: it is
+  // a bookkeeping artifact that a failure repeating unchanged produces again on
+  // every pass, which would make that failure look like progress forever. Only
+  // a run that finished, whatever it concluded, is work the queue really did.
+  for (const name of runs.toReversed()) {
+    const finished = await stat(path.join(dir, name, 'result.json')).then(
+      () => true,
+      () => false,
+    );
+    if (finished) {
+      return { ok: true, marker: name };
+    }
+  }
+  return { ok: true, marker: null };
 }
 
 /** The incident this stop repeats, when one names the same work. */
@@ -638,6 +779,54 @@ function previousIncidentFor(
     (known) => known.record.scope === step.scope && known.record.stage !== 'open',
   );
   return same.at(-1) ?? null;
+}
+
+/**
+ * The same investigated cause coming back, when that is what one stop is.
+ *
+ * "The same failure again" cannot be read from an exit code, and it cannot be
+ * read from a run directory either: a worker that creates its directory and
+ * then dies on the same operational problem leaves one behind every time. The
+ * comparison is therefore made on what the two recoveries investigated — the
+ * ticket both of them judged the work to belong to, and the cause each named —
+ * and only where the queue really ran something in between: the earlier
+ * incident concluded `repaired` or `blocked`, its work left a finished run
+ * behind, and this attempt investigates the very cause that recovery reported.
+ * Then another attempt would spend the same work for the same result.
+ */
+function repeatedInvestigatedCause(
+  current: IncidentRecord,
+  previous: KnownIncident | null,
+  judgment: RecoveryJudgment,
+): string | null {
+  if (previous === null || judgment.ticket === null) {
+    return null;
+  }
+  const conclusion = previous.record.conclusion;
+  if (conclusion === null || conclusion.outcome === 'help') {
+    return null;
+  }
+  if (current.origin === null || !current.origin.progress) {
+    return null;
+  }
+  if (previous.record.ticket?.key !== judgment.ticket.key) {
+    return null;
+  }
+  const earlier = previous.record.attempts.at(-1)?.cause ?? null;
+  if (earlier === null || normalizedCause(earlier) !== normalizedCause(judgment.cause)) {
+    return null;
+  }
+  return (
+    `the same failure returned unchanged: this attempt investigated the cause the recovery at ` +
+    `incident ${previous.record.id} reported repaired — "${judgment.cause}" — and the queue ` +
+    'stopped again after really running in between, so another attempt would spend the same ' +
+    'work for the same result. A person decides what happens next.'
+  );
+}
+
+/** One investigated cause, as two recoveries' own words compare. */
+function normalizedCause(text: string): string {
+  return text.trim().toLowerCase().replace(/\s+/g, ' ');
 }
 
 /**
@@ -681,11 +870,16 @@ async function activationProblem(
   });
 }
 
-/** Writes one incident record and points the supervisor at it. */
-async function persist(root: string, incident: IncidentRecord): Promise<void> {
-  await writeIncident(incidentFilePath(root, incident.id), incident);
-  await writeCurrentIncident(root, { version: 1, id: incident.id, workerPid: null });
-}
+  /** Writes one incident record and points the supervisor at it. */
+  async function persist(root: string, incident: IncidentRecord): Promise<void> {
+    await writeIncident(incidentFilePath(root, incident.id), incident);
+    await writeCurrentIncident(root, {
+      version: 1,
+      id: incident.id,
+      workerPid: null,
+      launch: null,
+    });
+  }
 
 /**
  * The incident an earlier supervisor left open, when one is really still being
@@ -693,18 +887,31 @@ async function persist(root: string, incident: IncidentRecord): Promise<void> {
  * an adoption: a restart must not put a second worker beside one that never
  * stopped.
  */
-async function adoptIncident(
-  request: SuperviseRequest,
-  incidents: readonly KnownIncident[],
-  io: SuperviseIo,
-  isAlive: LivenessProbe,
-): Promise<KnownIncident | null> {
-  const root = supervisorRoot(request.workDir, request.namespace);
-  const current = await readCurrentIncident(root);
-  const pid = current?.workerPid ?? null;
-  if (pid !== null && isAlive(pid)) {
-    throw new Error(
-      `a worker started by an earlier supervisor is still running (pid ${String(pid)}), so this ` +
+  async function adoptIncident(
+    request: SuperviseRequest,
+    incidents: readonly KnownIncident[],
+    io: SuperviseIo,
+    isAlive: LivenessProbe,
+  ): Promise<KnownIncident | null> {
+    const root = supervisorRoot(request.workDir, request.namespace);
+    const current = await readCurrentIncident(root);
+    const pid = current?.workerPid ?? null;
+    if (current?.launch !== null && current?.launch !== undefined && pid === null) {
+      // A launch that names no process cannot be reconciled: the worker it
+      // started may be there or not, and only the record that never came could
+      // have told. The child is gated on exactly that record — it has begun no
+      // work — and this invocation refuses rather than starting a second one.
+      throw new Error(
+        unreconciledLaunchProblem({
+          file: currentIncidentPath(root),
+          token: current.launch.token,
+          at: current.launch.at,
+        }),
+      );
+    }
+    if (pid !== null && isAlive(pid)) {
+      throw new Error(
+        `a worker started by an earlier supervisor is still running (pid ${String(pid)}), so this ` +
         'invocation will not start a second one beside it. Wait for it, or stop it by hand, and ' +
         'run the supervisor again.',
     );
@@ -721,11 +928,17 @@ async function adoptIncident(
   return open;
 }
 
-/** What handling one incident did, and what it left a person to fix. */
-interface HandledIncident {
-  readonly incident: KnownIncident;
-  readonly reportProblem: string | null;
-}
+  /** What handling one incident did, and what it left a person to fix. */
+  interface HandledIncident {
+    readonly incident: KnownIncident;
+    readonly reportProblem: string | null;
+    /**
+     * Set when the incident cannot go on for a person's own reconciliation: its
+     * recovery runtime could not be confirmed ended, so it may still be
+     * repairing the workspace. Nothing else may start until that is settled.
+     */
+    readonly hold: string | null;
+  }
 
 /** One recovery attempt's own ending, however it was obtained. */
 interface AttemptOutcome {
@@ -741,30 +954,42 @@ interface AttemptOutcome {
  * one finishes exactly what the interrupted invocation had left — the report,
  * and never another recovery.
  */
-async function handleIncident(
-  request: SuperviseRequest,
-  root: string,
-  known: KnownIncident,
-  incidents: readonly KnownIncident[],
-  io: SuperviseIo,
-  onRecovery: () => void,
-): Promise<HandledIncident> {
-  let current = known;
-  while (current.record.stage === 'open') {
+  async function handleIncident(
+    request: SuperviseRequest,
+    root: string,
+    known: KnownIncident,
+    incidents: readonly KnownIncident[],
+    io: SuperviseIo,
+    onRecovery: () => void,
+  ): Promise<HandledIncident> {
+    let current = known;
+    // The incident this one continues, when it continues one: the recovery of a
+    // repeated failure is judged against the very recovery that returned the
+    // queue to work before it.
+    const origin = known.record.origin?.incident ?? null;
+    const previous =
+      origin === null
+        ? null
+        : (incidents.find((candidate) => candidate.record.id === origin) ?? null);
+    while (current.record.stage === 'open') {
     if (request.stop.aborted) {
       // The operator asked the supervision to stop: the incident is left open
       // where it is, with no attempt spent, and the caller reports the
       // cancellation rather than a request for human help.
       break;
     }
-    if (current.record.pending !== null) {
-      // A turn an earlier invocation started and never finished recording:
-      // reconciled against its own process and its own judgment, and counted
-      // toward the bound, never started again blindly.
-      const reconciled = await reconcilePendingAttempt(request, current, io);
-      current = await recordAttempt(request, root, current, reconciled, io);
-      continue;
-    }
+      if (current.record.pending !== null) {
+        // A turn an earlier invocation started and never finished recording:
+        // reconciled against its own process and its own judgment, and counted
+        // toward the bound, never started again blindly.
+        const reconciled = await reconcilePendingAttempt(request, current, io);
+        const recorded = await recordAttempt(request, root, current, reconciled, io, previous);
+        current = recorded.incident;
+        if (recorded.hold !== null) {
+          return { incident: current, reportProblem: null, hold: recorded.hold };
+        }
+        continue;
+      }
     if (current.record.attempts.length >= current.record.maxAttempts) {
       const concluded = conclude(
         current.record,
@@ -780,12 +1005,16 @@ async function handleIncident(
       current = { record: concluded, path: current.path };
       await persist(root, concluded);
       break;
+      }
+      const started = await startAttempt(request, root, current, incidents, io, onRecovery);
+      const recorded = await recordAttempt(request, root, current, started, io, previous);
+      current = recorded.incident;
+      if (recorded.hold !== null) {
+        return { incident: current, reportProblem: null, hold: recorded.hold };
+      }
     }
-    const started = await startAttempt(request, root, current, incidents, io, onRecovery);
-    current = await recordAttempt(request, root, current, started, io);
+    return await finishIncident(request, root, current);
   }
-  return await finishIncident(request, root, current);
-}
 
 /**
  * One fresh recovery attempt: written down as pending before its turn is ever
@@ -801,99 +1030,135 @@ async function startAttempt(
   onRecovery: () => void,
 ): Promise<AttemptOutcome> {
   const current = known.record;
-  const attempt = current.attempts.length + 1;
-  const dir = path.join(incidentDir(root, current.id), `attempt-${String(attempt)}`);
-  const startedAt = request.now().toISOString();
-  const pending: PendingRecovery = {
-    attempt,
-    startedAt,
-    supervisorPid: process.pid,
-    turnPid: null,
-    dir,
-    logPath: null,
-  };
+    const attempt = current.attempts.length + 1;
+    const dir = path.join(incidentDir(root, current.id), `attempt-${String(attempt)}`);
+    const startedAt = request.now().toISOString();
+    const pending: PendingRecovery = {
+      attempt,
+      startedAt,
+      supervisorPid: process.pid,
+      turnPid: null,
+      dir,
+      logPath: null,
+      problem: null,
+    };
   const pendingRecord: IncidentRecord = { ...current, pending, updatedAt: startedAt };
   await writeIncident(incidentFilePath(root, current.id), pendingRecord);
   io.out(
     `supervisor: incident ${current.id}: starting recovery attempt ${String(attempt)} of at most ` +
       `${String(current.maxAttempts)}.`,
   );
-  onRecovery();
-  const bounded = phaseStop(request.recoveryTurnTimeoutMs, request.stop);
-  let recordedPid: Promise<void> = Promise.resolve();
-  let result: RecoveryTurnResult;
-  try {
-    result = await request.recoveryTurn({
-      brief: briefFor(request, root, pendingRecord, attempt, incidents),
-      dir,
-      stop: bounded.signal,
-      onStarted: (pid) => {
-        // The runtime's own PID, written beside the attempt: the process that
-        // may still be repairing a workspace is this one, not the supervisor.
-        recordedPid = writeIncident(incidentFilePath(root, current.id), {
-          ...pendingRecord,
-          pending: { ...pending, turnPid: pid },
-        }).catch(() => undefined);
-      },
-    });
-  } catch (cause) {
-    result = {
-      judgment: null,
-      problem: `the recovery turn could not be run: ${messageOf(cause)}`,
-      dir,
-      logPath: null,
-    };
+    onRecovery();
+    const bounded = phaseStop(request.recoveryTurnTimeoutMs, request.stop);
+    let recordedPid: Promise<void> = Promise.resolve();
+    let result: RecoveryTurnResult;
+    try {
+      result = await request.recoveryTurn({
+        brief: briefFor(request, root, pendingRecord, attempt, incidents),
+        dir,
+        stop: bounded.signal,
+        onStarted: (pid) => {
+          // The runtime's own PID, written beside the attempt: the process that
+          // may still be repairing a workspace is this one, not the supervisor.
+          // The turn's own launch waits on this write before it is handed its
+          // prompt, and a failure is let out — never swallowed — so nothing
+          // repairs a workspace under a launch no record names.
+          recordedPid = writeIncident(incidentFilePath(root, current.id), {
+            ...pendingRecord,
+            pending: { ...pending, turnPid: pid },
+          });
+          return recordedPid;
+        },
+      });
+    } catch (cause) {
+      result = {
+        judgment: null,
+        problem: `the recovery turn could not be run: ${messageOf(cause)}`,
+        shutdown: null,
+        dir,
+        logPath: null,
+      };
+    }
+    bounded.cancel();
+    await recordedPid.catch(() => undefined);
+    return { attempt, startedAt, result };
   }
-  bounded.cancel();
-  await recordedPid;
-  return { attempt, startedAt, result };
-}
 
-/**
- * The attempt an earlier supervisor started and never finished recording. A
- * turn whose runtime is still running is a refusal — it may still be repairing
- * the workspace — and one whose process is gone is reconciled against the
- * judgment it left behind: that judgment is adopted whole when it is there, and
- * an interrupted turn is recorded as an attempt that produced none. Either way
- * it counts toward the bound, because it was really spent.
- */
-async function reconcilePendingAttempt(
-  request: SuperviseRequest,
-  known: KnownIncident,
-  io: SuperviseIo,
-): Promise<AttemptOutcome> {
-  const pending = known.record.pending;
-  if (pending === null) {
-    throw new Error(`incident ${known.record.id} has no attempt to reconcile`);
-  }
-  const isAlive = request.isAlive ?? processIsAlive;
-  if (pending.turnPid !== null && isAlive(pending.turnPid)) {
-    throw new Error(
-      `incident ${known.record.id}: the recovery turn an earlier supervisor started is still ` +
-        `running (pid ${String(pending.turnPid)}), so this invocation will not start another one ` +
-        'beside it. Wait for it, or stop it by hand, and run the supervisor again.',
-    );
+  /**
+   * The attempt an earlier supervisor started and never finished recording. A
+   * turn whose runtime is still running is a refusal — it may still be repairing
+   * the workspace — and one whose process is gone is reconciled against the
+   * judgment it left behind: that judgment is adopted whole when it is there, and
+   * an interrupted turn is recorded as an attempt that produced none. Either way
+   * it counts toward the bound, because it was really spent.
+   *
+   * An attempt that names no process is neither of those: nothing is handed to a
+   * recovery runtime before it is recorded, so an attempt with no PID is one
+   * whose turn never began. Nothing about it can be reconciled — a restart
+   * cannot tell whether that runtime exists — and it is refused by name instead
+   * of being rounded into an attempt that produced nothing.
+   */
+  async function reconcilePendingAttempt(
+    request: SuperviseRequest,
+    known: KnownIncident,
+    io: SuperviseIo,
+  ): Promise<AttemptOutcome> {
+    const pending = known.record.pending;
+    if (pending === null) {
+      throw new Error(`incident ${known.record.id} has no attempt to reconcile`);
+    }
+    const isAlive = request.isAlive ?? processIsAlive;
+    if (pending.turnPid === null) {
+      throw new Error(
+        `incident ${known.record.id}: the recovery attempt an earlier supervisor started ` +
+          `(${pending.startedAt}) names no process, so nothing can tell whether its runtime is ` +
+          'still there. No turn is started beside it, and this attempt is not rounded into one ' +
+          'that ran: the attempt directory is ' +
+          `"${pending.dir}" — inspect it and the processes on this host, then run the supervisor ` +
+          'again.',
+      );
+    }
+    if (isAlive(pending.turnPid)) {
+      throw new Error(
+        `incident ${known.record.id}: the recovery turn an earlier supervisor started is still ` +
+          `running (pid ${String(pending.turnPid)}), so this invocation will not start another one ` +
+          'beside it. Wait for it, or stop it by hand, and run the supervisor again.',
+      );
   }
   const outcomePath = path.join(pending.dir, RECOVERY_OUTCOME_FILE);
   let result: RecoveryTurnResult;
   try {
     const text = await readFile(outcomePath, 'utf8');
-    const parsed = parseRecoveryJudgment(text, RECOVERY_OUTCOME_FILE);
-    result = isProblem(parsed)
-      ? { judgment: null, problem: parsed.problem, dir: pending.dir, logPath: pending.logPath }
-      : { judgment: parsed, problem: null, dir: pending.dir, logPath: pending.logPath };
-  } catch (cause) {
-    result = {
-      judgment: null,
-      problem:
-        `the recovery turn started at ${pending.startedAt} did not finish producing a judgment, ` +
-        `and its outcome could not be read back (${messageOf(cause)}). An interrupted attempt ` +
-        'counts as spent and is never repeated blindly; inspect ' +
-        `"${pending.dir}" before deciding what happens next.`,
-      dir: pending.dir,
-      logPath: pending.logPath,
-    };
-  }
+      const parsed = parseRecoveryJudgment(text, RECOVERY_OUTCOME_FILE);
+      result = isProblem(parsed)
+        ? {
+            judgment: null,
+            problem: parsed.problem,
+            shutdown: null,
+            dir: pending.dir,
+            logPath: pending.logPath,
+          }
+        : {
+            judgment: parsed,
+            problem: null,
+            shutdown: null,
+            dir: pending.dir,
+            logPath: pending.logPath,
+          };
+    } catch (cause) {
+      result = {
+        judgment: null,
+        problem:
+          pending.problem ??
+          `the recovery turn started at ${pending.startedAt} did not finish producing a judgment, ` +
+            `and its outcome could not be read back (${messageOf(cause)}). An interrupted attempt ` +
+            'counts as spent and is never repeated blindly; inspect ' +
+            `"${pending.dir}" before deciding what happens next.`,
+        shutdown: null,
+        dir: pending.dir,
+        logPath: pending.logPath,
+      };
+    }
   io.out(
     `supervisor: incident ${known.record.id}: attempt ${String(pending.attempt)} was left in ` +
       'flight by an earlier invocation and is reconciled now' +
@@ -902,18 +1167,48 @@ async function reconcilePendingAttempt(
   return { attempt: pending.attempt, startedAt: pending.startedAt, result };
 }
 
-/** Records one attempt from its own result and concludes the incident from it. */
-async function recordAttempt(
-  request: SuperviseRequest,
-  root: string,
-  known: KnownIncident,
-  outcome: AttemptOutcome,
-  io: SuperviseIo,
-): Promise<KnownIncident> {
-  const current = known.record;
-  const endedAt = request.now().toISOString();
-  const judgment = outcome.result.judgment;
-  const recorded: RecoveryAttempt = {
+  /**
+   * Records one attempt from its own result and concludes the incident from it.
+   *
+   * One result is not recorded like the others: a turn whose runtime could not
+   * be confirmed stopped may still be repairing the workspace it was given. That
+   * attempt stays in flight — the incident keeps owning the process it recorded
+   * — and the caller is handed a hold instead of another turn or a worker, so
+   * nothing runs beside a process nobody has accounted for.
+   */
+  async function recordAttempt(
+    request: SuperviseRequest,
+    root: string,
+    known: KnownIncident,
+    outcome: AttemptOutcome,
+    io: SuperviseIo,
+    previous: KnownIncident | null,
+  ): Promise<{ readonly incident: KnownIncident; readonly hold: string | null }> {
+    const current = known.record;
+    const endedAt = request.now().toISOString();
+    if (outcome.result.shutdown?.termination === 'unconfirmed') {
+      const shutdown = outcome.result.shutdown;
+      const detail =
+        `the recovery turn's runtime could not be confirmed stopped ` +
+        `(${shutdown.problem ?? 'no reason was recorded'}), so it may still be repairing the ` +
+        'workspace. The attempt stays in flight and this incident keeps owning that process: ' +
+        'nothing else runs beside it. Wait for it, or stop it by hand, and run the supervisor ' +
+        'again; the attempt is then reconciled and counted as spent.';
+      io.err(`supervisor: incident ${current.id}: ${detail}`);
+      if (current.pending !== null) {
+        await writeIncident(incidentFilePath(root, current.id), {
+          ...current,
+          pending: { ...current.pending, problem: detail },
+          updatedAt: endedAt,
+        });
+      }
+      return {
+        incident: { record: { ...current, updatedAt: endedAt }, path: known.path },
+        hold: detail,
+      };
+    }
+    const judgment = outcome.result.judgment;
+    const recorded: RecoveryAttempt = {
     attempt: outcome.attempt,
     startedAt: outcome.startedAt,
     endedAt,
@@ -956,10 +1251,18 @@ async function recordAttempt(
     );
   }
 
-  if (judgment !== null && judgment.status === 'unrecoverable') {
-    updated = conclude(
-      updated,
-      'help',
+    const repeatedCause = judgment === null ? null : repeatedInvestigatedCause(current, previous, judgment);
+    if (repeatedCause !== null) {
+      // The cause this attempt investigated is the cause an earlier one reported
+      // repaired, and the queue really ran something in between: another attempt
+      // would spend the same work for the same result, so this ends where a
+      // person decides instead.
+      updated = conclude(updated, 'help', repeatedCause, request.now);
+      io.err(`supervisor: incident ${updated.id}: ${repeatedCause}`);
+    } else if (judgment !== null && judgment.status === 'unrecoverable') {
+      updated = conclude(
+        updated,
+        'help',
       judgment.help ?? 'the recovery agent could not repair the situation',
       request.now,
     );
@@ -983,13 +1286,14 @@ async function recordAttempt(
         : null;
     updated = {
       ...updated,
-      sequence: {
-        intent: updated.intent,
-        scope: updated.scope,
-        blocker,
-        blockerStartedAt: null,
-      },
-    };
+        sequence: {
+          intent: updated.intent,
+          scope: updated.scope,
+          blocker,
+          blockerStartedAt: null,
+          blockerSettledAt: null,
+        },
+      };
     if (blocker !== null) {
       io.out(
         `supervisor: incident ${updated.id}: ${blocker.key} is ranked ahead of the interrupted ` +
@@ -997,11 +1301,11 @@ async function recordAttempt(
           (judgment.resume === null ? '.' : `, which resumes afterwards: ${judgment.resume}`),
       );
     }
+    }
+    const next: KnownIncident = { record: updated, path: known.path };
+    await persist(root, updated);
+    return { incident: next, hold: null };
   }
-  const next: KnownIncident = { record: updated, path: known.path };
-  await persist(root, updated);
-  return next;
-}
 
 /** One incident's conclusion, and the record it produces. */
 function conclude(
@@ -1027,16 +1331,17 @@ function conclude(
  * acknowledged. A report problem is returned rather than thrown: the recovery
  * itself is not repeated because its summary could not be sent.
  */
-async function finishIncident(
-  request: SuperviseRequest,
-  root: string,
-  known: KnownIncident,
-): Promise<HandledIncident> {
-  if (known.record.stage === 'open') {
-    return { incident: known, reportProblem: null };
+  async function finishIncident(
+    request: SuperviseRequest,
+    root: string,
+    known: KnownIncident,
+  ): Promise<HandledIncident> {
+    if (known.record.stage === 'open') {
+      return { incident: known, reportProblem: null, hold: null };
+    }
+    const published = await publish(request, root, known.record);
+    return { ...published, hold: null };
   }
-  return await publish(request, root, known.record);
-}
 
 /** One incident's publication, with what it left to fix. */
 async function publish(

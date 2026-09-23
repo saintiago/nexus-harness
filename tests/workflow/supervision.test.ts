@@ -97,20 +97,27 @@ function scriptedRecovery(
     calls += 1;
     await mkdir(dir, { recursive: true });
     if (judgment === null || judgment === undefined) {
-      return {
-        judgment: null,
-        problem: 'the scripted turn produced no judgment',
-        dir,
-        logPath: null,
-      };
+        return {
+          judgment: null,
+          problem: 'the scripted turn produced no judgment',
+          shutdown: null,
+          dir,
+          logPath: null,
+        };
     }
     const text = JSON.stringify(judgment);
     await writeFile(path.join(dir, 'outcome.json'), text, 'utf8');
     const parsed = parseRecoveryJudgment(text, 'outcome.json');
-    if ('problem' in parsed) {
-      return { judgment: null, problem: parsed.problem, dir, logPath: null };
-    }
-    return { judgment: parsed, problem: null, dir, logPath: path.join(dir, 'recovery.log') };
+      if ('problem' in parsed) {
+        return { judgment: null, problem: parsed.problem, shutdown: null, dir, logPath: null };
+      }
+      return {
+        judgment: parsed,
+        problem: null,
+        shutdown: null,
+        dir,
+        logPath: path.join(dir, 'recovery.log'),
+      };
   }) as unknown as RecoveryTurn & { readonly calls: number };
   Object.defineProperty(scripted, 'calls', { get: () => calls });
   return scripted;
@@ -478,7 +485,7 @@ describe('a supervised queue', () => {
       }),
       'utf8',
     );
-    await seedPending(root, incident.id, { attempt: 2, dir });
+      await seedPending(root, incident.id, { attempt: 2, dir, turnPid: 5252 });
 
     const recovery = scriptedRecovery([
       { status: 'repaired', summary: 'this turn should never run', cause: 'c' },
@@ -513,7 +520,7 @@ describe('a supervised queue', () => {
     const incident = await seedIncident(root);
     const dir = path.join(incidentDir(root, incident.id), 'attempt-1');
     await mkdir(dir, { recursive: true });
-    await seedPending(root, incident.id, { attempt: 2, dir });
+      await seedPending(root, incident.id, { attempt: 2, dir, turnPid: 5252 });
 
     const recovery = scriptedRecovery([
       { status: 'repaired', summary: 'this turn should never run', cause: 'c' },
@@ -541,11 +548,11 @@ describe('a supervised queue', () => {
     const { workDir, repoPath, configPath } = await workspace();
     const root = supervisorRoot(workDir, 'namespace');
     const incident = await seedIncident(root);
-    await seedPending(root, incident.id, {
-      attempt: 1,
-      dir: path.join(root, 'attempt-1'),
-      alive: true,
-    });
+      await seedPending(root, incident.id, {
+        attempt: 1,
+        dir: path.join(root, 'attempt-1'),
+        turnPid: 5252,
+      });
     const recovery = scriptedRecovery([{ status: 'repaired', summary: 's', cause: 'c' }]);
 
     const summary = await runSupervision({
@@ -560,10 +567,69 @@ describe('a supervised queue', () => {
     expect(summary.outcome).toBe('attention');
     expect(summary.problem).toContain('recovery turn');
     expect(summary.workerRuns).toBe(0);
-    expect(recovery.calls).toBe(0);
-  }, 30_000);
+      expect(recovery.calls).toBe(0);
+    }, 30_000);
 
-  it('finishes a report an earlier invocation could not publish, without recovering again', async () => {
+    it('refuses the crash window between spawning a worker and recording it', async () => {
+      const { workDir, repoPath, configPath } = await workspace();
+      const root = supervisorRoot(workDir, 'namespace');
+      // The pointer an invocation that died between spawning its worker and
+      // recording the PID leaves behind: a launch, and no process. The worker it
+      // started is gated on exactly that record, so it began nothing — and
+      // nothing here may start a second worker beside a process nobody can name.
+      await writeCurrentIncident(root, {
+        version: 1,
+        id: null,
+        workerPid: null,
+        launch: { token: 'never-registered', at: '2026-09-23T00:00:30.000Z' },
+      });
+      const recovery = scriptedRecovery([{ status: 'repaired', summary: 's', cause: 'c' }]);
+      const summary = await runSupervision({
+        workDir,
+        repoPath,
+        configPath,
+        worker: scriptedWorker([ended(0)]),
+        recoveryTurn: recovery,
+      });
+
+      expect(summary.outcome).toBe('attention');
+      expect(summary.problem).toContain('never finished recording');
+      expect(summary.problem).toContain('never-registered');
+      expect(summary.workerRuns).toBe(0);
+      expect(recovery.calls).toBe(0);
+    }, 30_000);
+
+    it('refuses the crash window between spawning a recovery turn and recording it', async () => {
+      const { workDir, repoPath, configPath } = await workspace();
+      const root = supervisorRoot(workDir, 'namespace');
+      const incident = await seedIncident(root);
+      const dir = path.join(incidentDir(root, incident.id), 'attempt-1');
+      await mkdir(dir, { recursive: true });
+      // An attempt with no runtime PID at all: nothing is handed to a recovery
+      // turn before it is recorded, so this one never began — and a restart
+      // cannot tell whether its runtime exists, so it refuses instead of
+      // counting it as an attempt that produced nothing.
+      await seedPending(root, incident.id, { attempt: 1, dir, turnPid: null });
+      const recovery = scriptedRecovery([{ status: 'repaired', summary: 's', cause: 'c' }]);
+      const summary = await runSupervision({
+        workDir,
+        repoPath,
+        configPath,
+        isAlive: () => true,
+        worker: scriptedWorker([ended(0)]),
+        recoveryTurn: recovery,
+      });
+
+      expect(summary.outcome).toBe('attention');
+      expect(summary.problem).toContain('names no process');
+      expect(summary.workerRuns).toBe(0);
+      expect(summary.recoveries).toBe(0);
+      expect(recovery.calls).toBe(0);
+      const stored = await readIncident(incidentFilePath(root, incident.id));
+      expect(stored?.pending).not.toBeNull();
+    }, 30_000);
+
+    it('finishes a report an earlier invocation could not publish, without recovering again', async () => {
     const { workDir, repoPath, configPath } = await workspace();
     const root = supervisorRoot(workDir, 'namespace');
     const incident = await seedIncident(root);
@@ -614,11 +680,17 @@ describe('a supervised queue', () => {
  * Replaces the seeded incident with one whose attempt is still in flight, as an
  * invocation that stopped mid-turn leaves it.
  */
-async function seedPending(
-  root: string,
-  id: string,
-  pending: { readonly attempt: number; readonly dir: string; readonly alive?: boolean },
-): Promise<void> {
+  async function seedPending(
+    root: string,
+    id: string,
+    pending: {
+      readonly attempt: number;
+      readonly dir: string;
+      /** The runtime PID the attempt records, or none for the crash window. */
+      readonly turnPid: number | null;
+      readonly problem?: string | null;
+    },
+  ): Promise<void> {
   const file = incidentFilePath(root, id);
   const incident = await readIncident(file);
   if (incident === null) {
@@ -629,16 +701,17 @@ async function seedPending(
     stage: 'open',
     conclusion: null,
     attempts: incident.attempts.slice(0, pending.attempt - 1),
-    pending: {
-      attempt: pending.attempt,
-      startedAt: '2026-09-23T00:02:00.000Z',
-      supervisorPid: 4242,
-      turnPid: pending.alive === true ? 5252 : null,
-      dir: pending.dir,
-      logPath: null,
-    },
-  });
-  await writeCurrentIncident(root, { version: 1, id, workerPid: null });
+      pending: {
+        attempt: pending.attempt,
+        startedAt: '2026-09-23T00:02:00.000Z',
+        supervisorPid: 4242,
+        turnPid: pending.turnPid,
+        dir: pending.dir,
+        logPath: null,
+        problem: pending.problem ?? null,
+      },
+    });
+    await writeCurrentIncident(root, { version: 1, id, workerPid: null, launch: null });
 }
 
 /** One concluded incident an earlier supervisor left behind, un-reported. */
@@ -689,7 +762,12 @@ async function seedIncident(root: string): Promise<IncidentRecord> {
     ],
   };
   await writeIncident(incidentFilePath(root, incident.id), seeded);
-  await writeCurrentIncident(root, { version: 1, id: incident.id, workerPid: 4242 });
+    await writeCurrentIncident(root, {
+      version: 1,
+      id: incident.id,
+      workerPid: 4242,
+      launch: null,
+    });
   await mkdir(incidentDir(root, incident.id), { recursive: true });
   return incident;
 }
