@@ -8,7 +8,7 @@ Implement the selected task or repair the preceding round's findings in its reta
 
 Follow the [action contract](architecture.md). Use the task input from
 [SelectTask](select-task.md#output), the prepared workspace from
-[PrepareWorkspace](prepare-workspace.md#output), [AgentRuntime](../../agent-runtime.md#provided-interface)
+[PrepareWorkspace](prepare-workspace.md#output), [AgentRuntime](../../agent-runtime/architecture.md#provided-interface)
 and the [Git adapter](../../adapters/git.md#interface). For a Jira task, use the
 [Jira adapter](../../adapters/jira.md#interface) to refresh task content and conversation.
 

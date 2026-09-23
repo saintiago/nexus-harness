@@ -91,7 +91,7 @@ storage, then calls run again.
 
 | Port | Provider contract | Use |
 | --- | --- | --- |
-| Agent execution | [AgentRuntime.run](../agent-runtime.md#provided-interface) | Profile ID, WorkspaceRef, AdditionalContext and AgentResult |
+| Agent execution | [AgentRuntime.run](../agent-runtime/architecture.md#provided-interface) | Profile ID, WorkspaceRef, AdditionalContext and AgentResult |
 | Task source | [Jira](../adapters/jira.md#interface) | Read source documents and ordering; update task state, fields and reports |
 | Repository | [Git](../adapters/git.md#interface) | Read repository state and perform Git operations selected by actions |
 | Delivery | [GitHub](../adapters/github.md#interface) | Publish and observe pull requests, review, checks and integration |

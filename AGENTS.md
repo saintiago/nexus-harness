@@ -52,7 +52,7 @@ A multi-component flow does not create a special shared contract.
 - [Review design](docs/new/task-engine/actions/review.md): revision-specific review, complete findings and review publication.
 - [SelectRepair design](docs/new/task-engine/actions/select-repair.md): shared repair allowance and profile escalation.
 - [CompleteTask design](docs/new/task-engine/actions/complete-task.md): merge/check evidence and task completion.
-- [AgentRuntime design](docs/new/agent-runtime.md): profiles, supplied context and agent invocation.
+- [AgentRuntime design](docs/new/agent-runtime/architecture.md): profiles, supplied context and agent invocation.
 - [Adapters design](docs/new/adapters/architecture.md): shared external-boundary responsibilities and contract conventions.
 - [Jira adapter](docs/new/adapters/jira.md): issue data, comments, changes and ranking.
 - [GitHub adapter](docs/new/adapters/github.md): pull requests, reviews, checks and workflow observations.

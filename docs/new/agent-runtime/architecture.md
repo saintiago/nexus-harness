@@ -7,10 +7,10 @@ Own profile selection, prompt assembly, agent invocation and collection of outpu
 
 ## Interface
 
-Use the [shared value types](high-level-architecture.md#shared-interface-vocabulary) and
-[WorkspaceRef](workspace.md#layout-and-reference). Construction supplies base instructions, profiles,
+Use the [shared value types](../high-level-architecture.md#shared-interface-vocabulary) and
+[WorkspaceRef](../workspace.md#layout-and-reference). Construction supplies base instructions, profiles,
 provider/tool settings, invocation limits and an activity observer from
-[Nexus configuration](configuration.md#nexus-configuration).
+[Nexus configuration](../configuration.md#nexus-configuration).
 
 ### Provided interface
 
@@ -64,7 +64,7 @@ invocation. Invocation failures and timeouts return a fault.
 
 ### Required interface
 
-Use the [coding runtime adapter](adapters/coding-runtime.md#interface) for provider communication. Supply the resolved
+Use the [coding runtime adapter](../adapters/coding-runtime.md#interface) for provider communication. Supply the resolved
 model, effort, tool settings, assembled prompt, configured time limit and working directory. The working
 directory is worktree/ within the supplied workspace root.
 

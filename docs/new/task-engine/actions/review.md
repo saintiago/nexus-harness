@@ -9,7 +9,7 @@ Evaluate the delivered change against the task and produce an actionable review 
 Follow the [action contract](architecture.md). Import [devArtifact](develop.md#output),
 [verificationArtifact](verify.md#output) and [deliveryArtifact](deliver.md#output).
 Use [Selection](select-task.md#output), earlier-round review/development history, configured reviewer profile,
-[AgentRuntime](../../agent-runtime.md#provided-interface), the
+[AgentRuntime](../../agent-runtime/architecture.md#provided-interface), the
 [Git adapter](../../adapters/git.md#interface), [GitHub adapter](../../adapters/github.md#interface)
 and [Jira adapter](../../adapters/jira.md#interface).
 

@@ -21,7 +21,7 @@ An action design specifies:
 - Required configuration and capabilities.
 
 Actions invoke capabilities through their public interfaces. Agent-backed actions use
-[AgentRuntime.run](../../agent-runtime.md#provided-interface), supplying context assembled from their inputs
+[AgentRuntime.run](../../agent-runtime/architecture.md#provided-interface), supplying context assembled from their inputs
 and interpreting the returned output themselves.
 
 ### Artifact declarations

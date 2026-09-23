@@ -61,7 +61,7 @@ requests this format; this component parses it. A malformed report is a failed r
 | Port | Provider contract | Values exchanged |
 | --- | --- | --- |
 | Work | [TaskEngine.run and subscribe](task-engine/architecture.md#provided-interface) | WorkflowResult and EngineEvent |
-| Recovery | [AgentRuntime.run](agent-runtime.md#provided-interface) | Recovery profile, WorkspaceRef, AdditionalContext and agent output |
+| Recovery | [AgentRuntime.run](agent-runtime/architecture.md#provided-interface) | Recovery profile, WorkspaceRef, AdditionalContext and agent output |
 | Notification | [Notifications adapter](adapters/notifications.md#interface) | Subject, report body and publication result |
 
 The [worker startup contract](high-level-architecture.md#configuration-and-startup) accepts the
