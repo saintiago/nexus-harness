@@ -37,7 +37,7 @@ import {
   readIncident,
   stopSignature,
   supervisorRoot,
-  unchangedFailure,
+  unchangedAfterRecovery,
   writeCurrentIncident,
   writeIncident,
 } from './incident.js';
@@ -230,7 +230,7 @@ export async function supervise(request: SuperviseRequest): Promise<SuperviseSum
         }
       }
 
-      const pointer = incident?.id ?? 'none';
+      const pointer = incident?.id ?? null;
       workerRuns += 1;
       io.out(
         `supervisor: starting worker ${String(workerRuns)} (\`queue ${
@@ -260,9 +260,16 @@ export async function supervise(request: SuperviseRequest): Promise<SuperviseSum
           );
         },
       });
-      await writeCurrentIncident(root, { version: 1, id: pointer, workerPid: null }).catch(
-        () => undefined,
-      );
+      if (pointer === null) {
+        // No incident is being handled: nothing is left behind for a restart to
+        // adopt, and the worker's own intake lock is what keeps a second
+        // consumer out while nothing is recorded here.
+        await writeCurrentIncident(root, null).catch(() => undefined);
+      } else {
+        await writeCurrentIncident(root, { version: 1, id: pointer, workerPid: null }).catch(
+          () => undefined,
+        );
+      }
 
       if (outcome.launchProblem !== null) {
         io.err(`supervisor: ${outcome.launchProblem}`);
@@ -295,21 +302,26 @@ export async function supervise(request: SuperviseRequest): Promise<SuperviseSum
         outcome.exitCode,
         outcome.signal,
       );
-      if (incident === null) {
-        incident = openIncident(
-          request.namespace,
-          request.intent,
-          request.scope,
-          request.recovery.maxAttempts,
-          request.now,
-        );
-      }
+      // Every stopped episode is its own incident with its own one report. A
+      // resumed worker that failed again therefore opens a new one — unless
+      // that failure is the very one its recovery reported repaired, which is
+      // the repetition that ends in an actionable request for human help
+      // instead of another recovery.
+      const previous = incident;
+      const repeated = previous !== null && unchangedAfterRecovery(previous, signature);
+      incident = openIncident(
+        request.namespace,
+        request.intent,
+        request.scope,
+        request.recovery.maxAttempts,
+        request.now,
+      );
       const ended =
         outcome.signal === null
           ? `exit code ${String(outcome.exitCode)}`
           : `signal ${outcome.signal}`;
       io.out(
-        incident.stops.length === 0
+        workerRuns === 1
           ? `supervisor: the worker stopped unexpectedly (${ended}), so incident ${incident.id} was opened.`
           : `supervisor: the resumed worker stopped unexpectedly again (${ended}), recorded on ` +
               `incident ${incident.id}.`,
@@ -317,9 +329,7 @@ export async function supervise(request: SuperviseRequest): Promise<SuperviseSum
       incident = {
         ...incident,
         updatedAt: at,
-        resumedAt: null,
         stops: [
-          ...incident.stops,
           {
             at,
             intent: request.intent,
@@ -329,6 +339,20 @@ export async function supervise(request: SuperviseRequest): Promise<SuperviseSum
             signature,
           },
         ],
+        ...(repeated
+          ? {
+              stage: 'help' as const,
+              conclusion: {
+                outcome: 'help' as const,
+                detail:
+                  'the same failure returned unchanged after a recovery attempt that reported ' +
+                  'the situation repaired, so another attempt would spend the same work for the ' +
+                  'same result. A person decides what happens next: ' +
+                  (previous?.attempts.at(-1)?.summary ?? 'see the earlier recovery turn log'),
+                at,
+              },
+            }
+          : {}),
       };
       await persist(root, incident);
     }
@@ -358,19 +382,22 @@ async function adoptIncident(
   if (current === null) {
     return null;
   }
-  const incident = await readIncident(incidentFilePath(root, current.id));
-  if (incident === null) {
-    throw new Error(
-      `the supervisor's current-incident pointer names "${current.id}", and its record is gone. ` +
-        'Inspect the output directory by hand; the supervisor will not guess what was spent.',
-    );
-  }
   const pid = current.workerPid;
   if (pid !== null && isAlive(pid)) {
     throw new Error(
       `a worker started by an earlier supervisor is still running (pid ${String(pid)}), so this ` +
         'invocation will not start a second one beside it. Wait for it, or stop it by hand, and ' +
         'run the supervisor again.',
+    );
+  }
+  if (current.id === null) {
+    return null;
+  }
+  const incident = await readIncident(incidentFilePath(root, current.id));
+  if (incident === null) {
+    throw new Error(
+      `the supervisor's current-incident pointer names "${current.id}", and its record is gone. ` +
+        'Inspect the output directory by hand; the supervisor will not guess what was spent.',
     );
   }
   io.out(
@@ -415,19 +442,6 @@ async function handleIncident(
       );
       break;
     }
-    if (unchangedFailure(current)) {
-      current = conclude(
-        current,
-        'help',
-        'the same failure returned unchanged after a recovery attempt that reported the situation ' +
-          'repaired, so another attempt would spend the same work for the same result. A person ' +
-          'decides what happens next: ' +
-          (current.attempts.at(-1)?.summary ?? 'see the recovery turn log'),
-        request.now,
-      );
-      break;
-    }
-
     const attempt = current.attempts.length + 1;
     const dir = path.join(incidentDir(root, current.id), `attempt-${String(attempt)}`);
     io.out(

@@ -16,7 +16,11 @@ import {
   harnessConfigSchema,
   RECOVERY_DEFAULTS,
 } from '../../src/config/schema.js';
-import { openIncident, stopSignature, unchangedFailure } from '../../src/supervisor/incident.js';
+import {
+  openIncident,
+  stopSignature,
+  unchangedAfterRecovery,
+} from '../../src/supervisor/incident.js';
 import type { IncidentRecord } from '../../src/supervisor/incident.js';
 import { recoveryPrompt, parseRecoveryJudgment } from '../../src/supervisor/recovery.js';
 import type { RecoveryBrief } from '../../src/supervisor/recovery.js';
@@ -43,6 +47,16 @@ function incidentWith(options: {
   const base = openIncident('namespace', 'run', null, 2, () => new Date('2026-09-23T00:00:00Z'));
   return {
     ...base,
+    ...(options.lastAttempt === 'repaired' || options.lastAttempt === 'blocked'
+      ? {
+          stage: 'settled' as const,
+          conclusion: {
+            outcome: options.lastAttempt,
+            detail: 'the recovery agent returned the queue to work',
+            at: '2026-09-23T00:03:00.000Z',
+          },
+        }
+      : {}),
     stops: options.stops.map(([exitCode, signal]) => ({
       at: '2026-09-23T00:01:00.000Z',
       intent: 'run' as const,
@@ -98,42 +112,33 @@ describe('how a worker ending is read', () => {
   });
 });
 
-describe('when two failures are the same failure', () => {
-  it('sees an identical stop as unchanged', () => {
-    const incident = incidentWith({
-      stops: [
-        [1, null],
-        [1, null],
-      ],
-      lastAttempt: 'repaired',
-    });
-    expect(unchangedFailure(incident)).toBe(true);
+describe('when a resumed worker fails with the very failure that was repaired', () => {
+  const repaired = incidentWith({ stops: [[1, null]], lastAttempt: 'repaired' });
+
+  it('sees the identical signature after a repair as unchanged', () => {
+    expect(unchangedAfterRecovery(repaired, stopSignature('run', null, 1, null))).toBe(true);
   });
 
-  it('does not see a different ending, or an attempt with no repair, as unchanged', () => {
+  it('does not see a different ending, an unrepaired attempt, or a help ending that way', () => {
+    expect(unchangedAfterRecovery(repaired, stopSignature('run', null, 2, null))).toBe(false);
     expect(
-      unchangedFailure(
-        incidentWith({
-          stops: [
-            [1, null],
-            [2, null],
-          ],
-          lastAttempt: 'repaired',
-        }),
+      unchangedAfterRecovery(
+        incidentWith({ stops: [[1, null]], lastAttempt: 'failed' }),
+        stopSignature('run', null, 1, null),
       ),
     ).toBe(false);
+    // An incident that already ended in a request for human help is reported,
+    // not recovered again.
     expect(
-      unchangedFailure(
-        incidentWith({
-          stops: [
-            [1, null],
-            [1, null],
-          ],
-          lastAttempt: 'failed',
-        }),
+      unchangedAfterRecovery(
+        {
+          ...repaired,
+          stage: 'help',
+          conclusion: { outcome: 'help', detail: 'a person is needed', at: 't' },
+        },
+        stopSignature('run', null, 1, null),
       ),
     ).toBe(false);
-    expect(unchangedFailure(incidentWith({ stops: [[1, null]] }))).toBe(false);
   });
 
   it('gives one ending one signature, and a ticket scope its own', () => {

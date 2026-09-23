@@ -283,7 +283,8 @@ export async function writeIncident(file: string, incident: IncidentRecord): Pro
  */
 export interface CurrentIncident {
   readonly version: 1;
-  readonly id: string;
+  /** The incident being handled, or `null` while a fresh worker runs. */
+  readonly id: string | null;
   readonly workerPid: number | null;
 }
 
@@ -327,39 +328,36 @@ export async function readCurrentIncident(root: string): Promise<CurrentIncident
       { cause },
     );
   }
-  if (!isRecord(value) || typeof value['id'] !== 'string') {
+  if (!isRecord(value) || (typeof value['id'] !== 'string' && value['id'] !== null)) {
     throw new Error(
-      `the supervisor's current-incident pointer under "${root}" names no incident. Inspect it ` +
-        'by hand.',
+      `the supervisor's current-incident pointer under "${root}" names no incident and no ` +
+        'absence. Inspect it by hand.',
     );
   }
   const workerPid = value['workerPid'];
   return {
     version: 1,
-    id: value['id'],
+    id: typeof value['id'] === 'string' ? value['id'] : null,
     workerPid: typeof workerPid === 'number' && Number.isInteger(workerPid) ? workerPid : null,
   };
 }
 
 /**
- * Whether the newest stop is the same failure the last recovery attempt
- * answered, unchanged: the attempt claimed a repair, and the worker stopped
- * again with the identical signature. That is the one repetition the supervisor
- * does not spend another attempt on — it ends in an actionable request for
- * human help instead (docs/WORKFLOW.md §12).
+ * Whether a resumed worker stopped again with the very failure the recovery it
+ * followed reported repaired: the same signature, after an attempt whose own
+ * judgment returned the queue to work. That is the one repetition the
+ * supervisor does not spend another recovery on — it ends in an actionable
+ * request for human help instead, and the earlier ending is what it names
+ * (docs/WORKFLOW.md §12).
  */
-export function unchangedFailure(incident: IncidentRecord): boolean {
-  if (incident.stops.length < 2 || incident.attempts.length === 0) {
+export function unchangedAfterRecovery(previous: IncidentRecord, signature: string): boolean {
+  const attempt = previous.attempts.at(-1);
+  const stop = previous.stops.at(-1);
+  if (previous.conclusion === null || previous.conclusion.outcome === 'help') {
     return false;
   }
-  const last = incident.stops.at(-1);
-  const previous = incident.stops.at(-2);
-  const attempt = incident.attempts.at(-1);
-  if (last === undefined || previous === undefined || attempt === undefined) {
+  if (attempt === undefined || (attempt.outcome !== 'repaired' && attempt.outcome !== 'blocked')) {
     return false;
   }
-  if (attempt.outcome !== 'repaired' && attempt.outcome !== 'blocked') {
-    return false;
-  }
-  return last.signature === previous.signature;
+  return stop !== undefined && stop.signature === signature;
 }
