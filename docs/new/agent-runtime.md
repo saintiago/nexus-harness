@@ -4,53 +4,43 @@ Status: proposed component design.
 
 ## Responsibility
 
-Execute one configured agent role with complete input, the role's tool permissions and a typed result.
-Own profile resolution, prompt assembly, runtime invocation, activity normalization, output validation
-and shutdown. Do not select tasks, decide repair counts or declare integration complete.
-
-The public module is `src/agent-runtime/index.ts`. Role definitions are data and focused prompt/output
-handlers within one module boundary, not independent orchestrators.
+Run a configured agent profile in a supplied workspace with additional context prepared by the caller.
+Own the profile catalogue, runtime instructions, prompt assembly, provider invocation, output parsing
+and shutdown. The caller selects task information and artifacts for the invocation.
 
 ## Interface
 
-Use the [shared value types](high-level-architecture.md#shared-interface-vocabulary).
+Use the [shared value types](high-level-architecture.md#shared-interface-vocabulary) and the plain
+[WorkspaceRef](workspace.md#layout-and-reference) value. Workspace layout and profile configuration
+are supplied at construction according to the [configuration contract](configuration.md#dependency-construction).
 
 ### Provided interface
 
 ```ts
 interface AgentRuntime {
-  invoke<R extends AgentRequest>(
-    request: R,
-    observe: Observer<AgentEvent>,
-    stop: AbortSignal,
-  ): Promise<AgentResult<R>>;
+  run(
+    profile: ProfileId,
+    workspaceRef: WorkspaceRef,
+    additionalContext: AdditionalContext,
+  ): Promise<AgentResult>;
 }
 
-type InvocationInput = {
-  executionId: string;
-  invocationId: string;
-  profileId: string;
-  context: ArtifactRef;
-  deadline: string;
+type ProfileId = string;
+
+type AgentProfile = {
+  id: ProfileId;
+  role: 'developer' | 'reviewer' | 'recovery';
+  model: string;
+  effort: string | null;
+  instructions: readonly string[];
+  toolPolicy: ArtifactRef;
 };
 
-type DeveloperRequest = InvocationInput & {
-  role: 'developer';
-  workspace: { id: string; path: string };
+type AdditionalContext = {
+  instructions: string;
+  information: string;
+  artifacts: readonly ArtifactRef[];
 };
-
-type ReviewerRequest = InvocationInput & {
-  role: 'reviewer';
-  workspace: { id: string; path: string };
-  candidate: { base: string; head: string };
-};
-
-type RecoveryRequest = InvocationInput & {
-  role: 'recovery';
-  incidentId: string;
-};
-
-type AgentRequest = DeveloperRequest | ReviewerRequest | RecoveryRequest;
 
 type AgentEvent = {
   invocationId: string;
@@ -60,31 +50,40 @@ type AgentEvent = {
   text: string;
 };
 
-type OutputFor<R> = R extends DeveloperRequest ? DeveloperOutput
-                  : R extends ReviewerRequest ? ReviewerOutput : RecoveryOutput;
-
-type AgentResult<R extends AgentRequest> = {
+type AgentResult = {
   invocationId: string;
-  profile: { id: string; model: string; effort: string | null } | null;
+  profile: { id: string; role: AgentProfile['role']; model: string; effort: string | null } | null;
   shutdown: Shutdown;
   transcript: ArtifactRef | null;
 } & (
-  | { outcome: 'completed'; output: OutputFor<R>; fault: null }
+  | { outcome: 'completed'; output: DeveloperOutput | ReviewerOutput | RecoveryOutput; fault: null }
   | { outcome: 'failed' | 'cancelled'; output: null; fault: Fault }
 );
 ```
 
-One invocation ID identifies one request, profile snapshot and transcript. A concurrent duplicate is
-rejected; a finished identical request can return its retained result without another agent turn.
-Reuse with different input is an input fault. An interrupted invocation is not implicitly resumed or
-replayed. The caller authorizes a new invocation. An already-expired deadline launches no process.
+The profile ID selects an entry in the runtime's configured catalogue. The profile's role selects
+the corresponding output schema; a completed result contains that role's output. Unknown profiles
+and unsupported settings fail before launch. Each run call is a new invocation; the runtime does
+not silently reuse an earlier action's agent result or add retry turns.
 
-`completed` means a valid role output was produced and owned shutdown was confirmed. It does not
-establish that the agent's claims are true. `cancelled` requires an intentional signal and confirmed
-shutdown. A timeout, malformed output, provider failure or unconfirmed shutdown returns failed with
-the retained transcript where available. The profile is null only when resolution failed before
-launch; a completed result always identifies its resolved profile. No silent model fallback or
-additional repair turn occurs here.
+AdditionalContext is supplied directly. Instructions describe the work for this invocation;
+information contains the task-specific context assembled by the caller. Artifact references identify
+files the agent may inspect. The runtime places those references in the prompt without opening them
+to discover or assemble an invocation request. The agent can read them through its permitted tools.
+
+The calling action owns selecting and reading input artifacts, preserving complete required findings
+and interpreting the result against the candidate/task it supplied. Recovery callers similarly provide
+incident context through this argument. The runtime receives the request as arguments rather than
+loading it from a workspace file.
+
+Progress observation, cancellation and configured time limits are execution controls bound when the
+runtime is constructed. Each invocation observes the active execution cancellation signal and emits
+AgentEvent through the bound observer. These controls do not become instructions in AdditionalContext.
+
+Completed means the configured output shape was parsed and owned shutdown was confirmed. It does not
+prove that the agent's claims are true. Cancelled requires intentional stop and confirmed shutdown.
+Provider errors, timeouts, malformed output and unconfirmed shutdown return failed with available
+evidence. Profile is null only if resolution failed before launch.
 
 ### Role outputs
 
@@ -145,136 +144,81 @@ type RecoveryOutput = {
 };
 ```
 
-Every supplied unresolved finding receives a developer response and a reviewer disposition; missing
-IDs make the output incomplete. Finding bodies are preserved, never shortened to fit a report field.
-Approval cannot contain an open blocking finding. Request-changes requires a blocking finding or a
-prior blocking finding explicitly left open. Inconclusive states what could not be established.
-Reviewer revision identities must match the request. Structural validation detects these contract
-violations; it does not replace investigation of the code or independently execute the claimed checks.
-
-Recovery actions distinguish an attempted mutation from a confirmed result. A created blocker ticket
-must have a confirmed source identity before it can be recommended. Recommendations do not directly
-restart or replace an executing queue. Notifications are produced by the caller from the retained
-report, not sent independently by a second agent-side reporting path.
-
-### Input artifacts
-
-`context` is a JSON manifest matching ContextManifest. Its role and identities must match the request.
-The original intent and process observations supplied for recovery are exported evidence interpreted
-by the role, not another component's private schema imported into this component.
-
-```ts
-type HistoryEntry = {
-  id: string;
-  author: string;
-  role: 'human' | 'developer' | 'reviewer' | 'recovery' | 'system';
-  at: string;
-  content: ArtifactRef;
-};
-type ContextManifest = {
-  version: 1;
-  history: readonly HistoryEntry[];
-  historyGaps: readonly string[];
-  evidence: readonly ArtifactRef[];
-} & (
-  | {
-      role: 'developer' | 'reviewer';
-      task: {
-        source: string;
-        id: string;
-        key: string | null;
-        title: string;
-        description: string;
-        acceptanceCriteria: readonly string[];
-      };
-      unresolvedFindings: readonly ReviewFinding[];
-      workspaceObservation: ArtifactRef;
-      instructions: readonly string[];
-    }
-  | {
-      role: 'recovery';
-      incidentId: string;
-      originalIntent: ArtifactRef;
-      fault: Fault | null;
-      processObservations: readonly ArtifactRef[];
-      continuation: ArtifactRef | null;
-    }
-);
-```
-
-History is ordered by the producer's recorded conversation order; timestamps alone do not resolve
-ties. No prior conversation is an empty history, whereas missing expected material is described in
-historyGaps. A missing fault or continuation is explicit absence, not a reason to invent one.
-
-Required task requirements and unresolved finding bodies are included completely in the prompt.
-The full indexed history remains readable through immutable artifacts during the invocation. Material
-limits are checked before launch; return an input fault when required content cannot fit. Do not
-silently summarize or truncate it. Historical text and tool results are evidence, not authority to
-change role permissions or host configuration.
+The runtime validates the profile's output shape. The caller validates task-specific meaning: that
+reviewed revisions match the candidate, supplied findings received dispositions, required evidence
+exists and an asserted delivery actually happened. Agent reports alone cannot establish completion.
+Persist full findings and responses; report formatting must not silently truncate them.
 
 ### Required interfaces
 
-Use [CodingRuntime.execute](adapters.md#coding-runtime) for provider protocol, process ownership and
-raw output. Supply a resolved model, effort, prompt, output schema, deadline, working directory and
-tool policy. Translate RuntimeEvent into AgentEvent and validate the returned output as the requested
-role. The returned shutdown evidence is part of the public result; process exit alone is insufficient.
+Use [CodingRuntime.execute](adapters.md#coding-runtime) for provider communication and owned launch/
+shutdown. Resolve the selected profile, combine instructions and additional context, then supply the
+resulting prompt, role output schema, tool policy and working directory. Creating a provider input
+file from these arguments is transport serialization, not discovery of an action request.
 
-Authorized external tools use the [adapter contracts](adapters.md#interface). The role definition
-selects capabilities; the coding provider cannot grant more by choosing a different profile. Recovery
-uses exported component interfaces and operational tools, not writes into other components' private
-ledgers. This is the complete cross-component boundary; role handlers do not import task or execution
-orchestration modules.
+Authorized external tools use the [adapter contracts](adapters.md#interface). The selected profile
+defines the available capabilities. Neither extra context nor provider choice expands them. The
+runtime has no task sequencing or supervisor dependency.
 
-## Profiles and permissions
+## Instructions and profiles
 
-A profile supplies model, reasoning effort and provider settings. A role supplies its instructions,
-output contract and capabilities. Bind and validate them before invocation; reject a profile that
-the configured provider cannot execute. Store the resolved nonsecret snapshot with the result.
+Nexus configuration supplies runtime base instructions and the profile catalogue. A profile adds
+role instructions, model, effort and tool settings. Prompt assembly combines:
 
-Developer may inspect context, modify the assigned repository and run local checks. It leaves local
-work and meaningful commits; publication and task-source mutation are not developer capabilities.
-Reviewer may inspect the assigned candidate and run checks in that workspace when exclusive access
-has been supplied. Generated check artifacts are allowed; changing candidate source, publishing
-approval or altering task state is not. A changed reviewed revision invalidates the result.
+1. Runtime base instructions.
+2. The selected profile's role instructions.
+3. Instructions and information supplied in AdditionalContext.
+4. The workspace location and caller-supplied artifact references.
 
-Recovery may investigate and repair authorized operational resources, modify a stopped workspace,
-reconcile source state, create/rank a blocker ticket and prepare a verified continuation recommendation.
-It may not bypass completion gates, falsify check evidence, force a task to Done, edit private ownership
-records or start another queue process. The configured resource scope includes the connected project
-and required host tools; broad permissions remain exclusive to this role. The initial recovery
-profile is selected by its caller; this component does not hard-code a recovery model.
+The runtime adds no task information by inspecting workspace artifacts. The caller decides what is
+relevant. Check the assembled input against provider limits before launch; do not silently truncate
+the supplied context. Return an explicit input failure when it cannot be supplied completely.
 
-Resolve credential references only for authorized external tools. Do not put credential values in
-prompts, transcripts or general child environments. Enforce capabilities with available tool/process
-isolation; a prompt instruction alone is not a sandbox. Refuse a role when the host cannot provide
-its required isolation, rather than claiming restrictions that are not enforced.
+Profile instructions describe how that role works. Repository documentation remains the source of
+product intent. The additional instructions state what the particular action needs done. Context
+cannot change configured permissions, select another model or rewrite host configuration.
+
+## Permissions
+
+Developer profiles can inspect supplied context, modify the assigned worktree and run local checks.
+Publication and task-source mutation are not developer capabilities. Reviewer profiles can inspect
+the candidate and run checks with exclusive workspace access; modifying candidate source or publishing
+approval is outside that role. Recovery profiles can investigate and repair authorized operational
+resources, reconcile stopped work and create/rank blocker tickets.
+
+Recovery cannot falsify evidence, bypass completion gates, force a task to Done or start a competing
+queue. The caller acts on its continuation recommendation and handles notifications. Broad operational
+capabilities remain confined to recovery profiles.
+
+Resolve credentials only for authorized tools. Keep credential values out of prompts, transcripts
+and general child environments. Use the configured tool/process isolation to enforce permissions;
+refuse an invocation when its required isolation cannot be provided.
 
 ## Internal design and lifecycle
 
-Four units own the work: profile resolver, role prompt builder, invocation controller and output
-validator. Role prompts state purpose, permitted actions and required output. Repository documentation
-supplies the product's intent; task text supplies the change. Avoid duplicating repository rules in
-each role prompt.
+The implementation has four focused parts: profile resolver, prompt assembler, invocation controller
+and output parser. None chooses the next task or workflow state.
 
 ```text
-validate input/profile → assemble complete context → launch → collect → validate output → finish
-                                                        ↘ stop → retain partial evidence → finish
+resolve profile → assemble supplied context → launch → collect → parse output → finish
+                                                 ↘ stop → retain partial evidence → finish
 ```
 
-The controller owns one invocation directory, resolved profile, prompt manifest, activity stream,
-raw transcript and parsed result. Finish immutable artifacts before exporting them. Record faults
-without losing a partial transcript. Raw output remains available when parsing fails; it is not
-turned into a guessed success. The validator does not ask the agent to repair its own output through
-an uncounted extra turn.
+The invocation controller creates runtime-owned transcript/output files in the configured artifact
+area and returns their references. This output persistence does not make it a reader of action input
+records. The caller can persist the returned role result in the artifact format its consumers expect.
 
-Only one writer is allowed for a supplied workspace. The caller grants exclusive use for the
-invocation; this component cannot acquire permission by noticing that a directory exists. Release
-its owned handles after shutdown and return any uncertainty to the caller. Retained agent sessions
-are provider details, never a substitute for the supplied context or an implicit task continuation.
+A workspace reference is a plain location value. It has no prepare, read-request or execute methods.
+The runtime uses the supplied layout to resolve its working directory and output locations. Preparation
+and action-specific artifact handling have already been assigned to their respective owners.
+
+The caller grants exclusive workspace use for the invocation. The runtime owns its child processes
+and tool executions, retains their evidence and releases their handles after shutdown. An existing
+provider session never replaces the explicit profile and additional context for a new call.
 
 ## Cancellation
 
-Forward an intentional stop promptly and enforce the request deadline. Stop owned subprocesses,
-including tools, within the configured shutdown grace period. Await shutdown before returning a
-completed or cancelled result. On unconfirmed shutdown, retain process evidence and return failed;
-do not launch another agent. Observer failure affects reporting only and cannot create an agent retry.
+Forward intentional stop and enforce configured invocation limits. Stop owned subprocesses, including
+tools, within the configured shutdown grace period. Completed and cancelled results require confirmed
+shutdown. Otherwise return failed with the process evidence and do not launch a replacement. Observer
+failure affects reporting only.

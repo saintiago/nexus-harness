@@ -32,6 +32,9 @@ Actions own task-specific behavior. Workflow definitions are executable input, n
 ## Interface
 
 Use the [shared value types](high-level-architecture.md#shared-interface-vocabulary).
+Actions use the [workspace data contract](workspace.md#layout-and-reference). Settings are supplied
+through the [configuration construction contract](configuration.md#dependency-construction): Nexus
+owns workflows and workspace layout; the project owns repository and preparation/CI commands.
 
 ### Provided interface
 
@@ -138,7 +141,7 @@ continuation for return. It does not rewrite the original workflow state.
 
 | Port | Provider contract | Use |
 | --- | --- | --- |
-| Role invocation | [AgentRuntime.invoke](agent-runtime.md#provided-interface) | DeveloperRequest, ReviewerRequest and their role results |
+| Agent execution | [AgentRuntime.run](agent-runtime.md#provided-interface) | Profile ID, WorkspaceRef, AdditionalContext and AgentResult |
 | Task source | [Jira](adapters.md#jira) | Read source documents and ordering; conditionally update task state, fields and reports |
 | Repository | [Git](adapters.md#git) | Observe and prepare revisions/workspaces; publish an observed branch |
 | Delivery | [GitHub](adapters.md#github) | Publish and observe pull requests, review, checks and integration |
@@ -147,6 +150,9 @@ continuation for return. It does not rewrite the original workflow state.
 Dependencies are supplied to actions at construction; ExecutionRunner receives none of these ports.
 Local task files are an owned input format. Actions normalize source documents, construct role inputs
 and verify role claims against observed evidence. No presentation or supervisor dependency is required.
+An agent-backed action calls run(profile, workspaceRef, additionalContext). The action reads the
+artifacts it needs and supplies invocation instructions/context directly. The runtime does not read
+an action request from the workspace. Actions without agent work do not receive AgentRuntime.
 
 ## ExecutionRunner
 
@@ -236,7 +242,7 @@ is persisted by that action, not returned through the runner as a data-routing m
 | Action | Owns |
 | --- | --- |
 | SelectTask | Read source ordering, validate eligibility and requirements, claim one task and persist its identity/input |
-| PrepareWorkspace | Prepare or reuse the task's working copy, preserve local changes and record preparation/baseline observations |
+| PrepareWorkspace | Materialize the supplied workspace layout/reference and prepare the working copy using supplied repository settings |
 | Develop | Read the task and prior feedback, invoke implementation and persist the candidate and developer response |
 | Verify | Run configured candidate checks and persist their results for the identified candidate |
 | Review | Assess the identified candidate, preserve complete findings and return the review decision |
@@ -273,3 +279,9 @@ Conversation history is persistent, attributed data used by actions, not another
 Its readers/writers retain complete requirements, findings, responses and human/recovery comments and
 provide the context needed for each invocation. Artifact schemas and their readers/writers are owned
 by the actions that exchange them.
+
+WorkspaceLayout and WorkspaceRef are plain data, with no methods or actions. The latter identifies
+the concrete workspace even before preparation. Construction supplies the layout and root from Nexus
+configuration and the repository source/base from project configuration. CI/check commands likewise
+come from the project and are bound to the actions that execute them. Workflow YAML is selected from
+Nexus configuration. No action independently locates either configuration file.

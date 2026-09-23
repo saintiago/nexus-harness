@@ -13,7 +13,7 @@ an explicit public contract and can be designed, implemented and tested independ
 Nexus
 ├── OperatorInterface
 │   ├── Commands and launch shortcuts
-│   ├── Configuration input
+│   ├── Project configuration filepath input
 │   └── Progress and result presentation
 ├── Supervisor
 │   ├── TaskEngine process lifecycle
@@ -30,9 +30,8 @@ Nexus
 │       ├── Deliver
 │       └── CompleteTask
 ├── AgentRuntime
-│   ├── DeveloperRole
-│   ├── ReviewerRole
-│   └── RecoveryRole
+│   ├── Profile catalogue and instructions
+│   └── Agent execution
 └── Adapters
     ├── Jira
     ├── GitHub
@@ -43,9 +42,36 @@ Nexus
 ```
 
 The five components are not five separately deployed services. Supervisor runs as the parent of
-the TaskEngine process. AgentRuntime is invoked by TaskEngine for development and review, and by
-Supervisor for recovery. Adapters are modules used at external boundaries; there is no adapter
-registry or additional service implied by this grouping.
+the Nexus worker process, whose startup constructs TaskEngine and its dependencies. AgentRuntime is
+called by task actions for development/review and by Supervisor for recovery. Adapters are modules
+used at external boundaries; there is no adapter registry or additional service implied by this grouping.
+
+Workspace and configuration are data designs, not additional active components. WorkspaceLayout
+defines the directory hierarchy; WorkspaceRef identifies a concrete instance. PrepareWorkspace
+creates directories and the working copy at that reference using the supplied repository settings.
+
+## Configuration and startup
+
+Project configuration lives in the target project's root and describes repository source/base,
+preparation and CI/check commands, task source and delivery requirements. Nexus configuration owns
+workflow definitions, workspace layout/storage, profiles, runtime instructions and operational policy.
+
+```text
+Supervisor(projectConfigPath)
+    → Nexus worker(projectConfigPath)
+        → read project configuration and Nexus configuration
+        → construct components and actions with their relevant settings
+        → execute the Nexus-configured workflow
+```
+
+Supervisor retains and forwards the project filepath on restart. Its own recovery configuration is
+available before child startup. The child loads both files; each component receives only the settings
+it needs. ExecutionRunner does not load project configuration or interpret workspace layout.
+
+Agent-backed actions call AgentRuntime.run(profile, workspaceRef, additionalContext). They select
+and read task artifacts and prepare the additional instructions/context. AgentRuntime combines these
+arguments with its configured base/profile instructions and executes the agent. It does not discover
+or read an action request file. Other actions receive only the capabilities they use.
 
 ## Low coupling and high cohesion
 
@@ -79,7 +105,7 @@ coupled.
 | OperatorInterface | Operator commands, configuration input, progress rendering and final presentation | Queue decisions, agent execution or recovery policy |
 | Supervisor | Execution intent, TaskEngine process lifecycle, incident records, recovery invocation and verified restart | Normal task-phase sequencing or code-review decisions |
 | TaskEngine | Serial task lifecycle, task/workspace ownership, execution evidence and conversation history | Terminal formatting or exceptional operational recovery policy |
-| AgentRuntime | Role profiles, role-specific input/output contracts, permissions, agent invocation and cancellation | Queue selection or authority to declare delivery complete |
+| AgentRuntime | Profile catalogue, base/profile instructions, agent execution, output shape and cancellation | Selecting action input artifacts, queue decisions or declaring delivery complete |
 | Adapters | External protocol translation, authentication and faithful operation results | Business lifecycle decisions or inferred success |
 
 TaskEngine's ExecutionRunner follows an executable YAML workflow and persists the next state after
@@ -96,12 +122,12 @@ AgentRuntime. A role's report does not replace the deterministic evidence requir
 
 | Caller or producer | Receiver | Contract boundary |
 | --- | --- | --- |
-| OperatorInterface | Supervisor | Start an execution with mode and target against a configuration-bound provider; request intentional cancellation |
-| Supervisor | TaskEngine | Start the engine with execution intent or a verified continuation; request shutdown |
+| OperatorInterface | Supervisor | Start with project configuration filepath, mode and target; request intentional cancellation |
+| Supervisor | Nexus worker / TaskEngine | Pass the project filepath to worker startup; invoke the engine with execution intent or continuation; request shutdown |
 | TaskEngine | Supervisor | Structured progress, terminal outcome and evidence of confirmed shutdown |
 | Supervisor | OperatorInterface | Execution progress, recovery progress, final outcome and requests for operator action |
-| TaskEngine | AgentRuntime | Invoke DeveloperRole or ReviewerRole with task context, workspace identity and cancellation |
-| Supervisor | AgentRuntime | Invoke RecoveryRole with incident evidence and the original execution intent |
+| TaskEngine actions | AgentRuntime | run(profile, workspaceRef, additionalContext) for development/review |
+| Supervisor | AgentRuntime | run(recoveryProfile, workspaceRef, additionalContext) with incident evidence and original intent |
 | AgentRuntime | Its caller | Structured role result, activity and execution/shutdown outcome |
 | TaskEngine and authorized role tools | Adapters | Explicit external operations with typed inputs and observed results |
 | AgentRuntime | Coding runtime adapter | Launch, communicate with and stop the configured coding runtime |
@@ -190,9 +216,9 @@ calls another component's internals or reads its private records to bypass the p
 Finite Run is a Nexus execution mode: process eligible work serially and finish when a fresh
 inspection establishes that no eligible work remains. It does not reserve a fixed batch at startup.
 
-1. Application startup binds configuration and dependencies. OperatorInterface sends Supervisor
-   a start command selecting Finite Run.
-2. Supervisor starts one TaskEngine with that execution intent.
+1. OperatorInterface sends Supervisor a start command with projectConfigPath and Finite Run mode.
+2. Supervisor starts the Nexus worker with that filepath. Worker startup reads both configurations,
+   binds the actions/components and starts TaskEngine with the selected Nexus workflow.
 3. TaskEngine selects one eligible task, carries it through implementation, ordinary repair,
    review, delivery and verified completion, then inspects the queue again.
 4. TaskEngine sends structured progress to Supervisor, which maps it into the execution view

@@ -41,10 +41,7 @@ type OperatorCommand =
   | { kind: 'help' }
   | {
       kind: 'execute';
-      configuration: {
-        harnessPath: string;
-        repositoryPath: string;
-      };
+      projectConfigPath: string;
       mode: ExecutionMode;
     };
 
@@ -56,7 +53,7 @@ type OperatorResult = {
 ```
 
 `Supervisor` and `ExecutionMode` are imported interface types, defined only in their provider's
-document. `OperatorCommand.configuration` contains absolute paths resolved against `cwd`; no
+document. `OperatorCommand.projectConfigPath` is an absolute filepath resolved against `cwd`; no
 environment expansion or shell interpretation is performed on task keys or other arguments.
 
 `parse` is pure: no source access, directory creation or task mutation. Missing values, unknown
@@ -64,25 +61,27 @@ options, duplicate conflicting options and a ticket key on an incompatible mode 
 `showHelp` performs no execution and needs no configured execution provider. Paths may contain
 spaces and are passed as individual arguments.
 
-`run` generates one execution ID and calls `execute` once. The supplied execution provider is
-already bound by application startup to the command's configuration. This component neither loads
-domain configuration sections nor constructs internal engine phases. Configuration-loading failure
-is presented as an input error before execution; credentials never enter OperatorCommand.
+`run` generates one execution ID and calls `execute` once with projectConfigPath and the selected
+mode. The provider is bound to Nexus lifecycle settings by startup. Follow the
+[configuration startup contract](configuration.md#startup-and-restart): the execution provider forwards
+the filepath to the worker, which reads both configurations and constructs its dependencies. This
+component parses the path and presents errors; it does not load domain settings. Credentials never
+enter OperatorCommand.
 
 The target command grammar is:
 
 ```text
-nexus queue run --config <file> --repo <directory>
-nexus queue watch --config <file> --repo <directory>
-nexus queue run --ticket <key> --config <file> --repo <directory>
-nexus run --task <file> --config <file> --repo <directory>
+nexus queue run --project-config <file>
+nexus queue watch --project-config <file>
+nexus queue run --ticket <key> --project-config <file>
+nexus run --task <file> --project-config <file>
 nexus --help
 ```
 
 `queue run` selects finite mode, `queue watch` selects watch mode, `queue run --ticket` selects
 single-ticket mode, and `run --task` selects single-task mode for a local task file. The local file
-path is resolved against the invocation directory. The explicit ticket selector is a proposed
-addition; these docs do not change the existing executable.
+path is resolved against the invocation directory. This is the target grammar for the new design;
+these docs do not change the existing executable.
 
 ### Outcomes
 

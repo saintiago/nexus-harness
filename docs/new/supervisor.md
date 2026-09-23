@@ -9,8 +9,8 @@ exclusive execution ownership while work runs, stops or is being recovered. Deci
 invocation may start; do not decide individual implementation, review or delivery steps.
 
 The public module is `src/supervisor/index.ts`. Its production host is the parent process of the
-work process. One instance is bound to one connected project and immutable configuration for an
-execution. Multiple projects can use separate instances and ownership namespaces.
+work process. One execution targets the project configuration filepath supplied by its caller.
+Multiple projects can use separate instances and ownership namespaces.
 
 ## Interface
 
@@ -35,6 +35,7 @@ type ExecutionMode =
 
 type ExecutionRequest = {
   executionId: string;
+  projectConfigPath: string;
   mode: ExecutionMode;
 };
 
@@ -82,12 +83,22 @@ or persistence itself failed; it is never fabricated from a missing record.
 | Port | Provider contract | Values exchanged |
 | --- | --- | --- |
 | Work | [TaskEngine.run and inspect](task-engine.md#provided-interface) | EngineRequest, EngineEvent, EngineResult, EngineInspection |
-| Recovery invocation | [AgentRuntime.invoke](agent-runtime.md#provided-interface) | RecoveryRequest and RecoveryOutput |
+| Recovery invocation | [AgentRuntime.run](agent-runtime.md#provided-interface) | Recovery profile ID, WorkspaceRef, AdditionalContext and RecoveryOutput in AgentResult |
 | Notification | [Notifications.publish](adapters.md#notifications) | NotificationRequest and publication receipt |
 
 These are constructor-injected dependencies. The work port's parent-side process bridge owns
 transport and process handles; this component decides when it is invoked and cancelled. The bridge
 must return observed shutdown, not trust a child's claim that cleanup succeeded.
+
+Follow the [configuration startup contract](configuration.md#startup-and-restart). projectConfigPath
+is an absolute filepath, retained as execution intent and forwarded to the Nexus worker on each
+launch. The worker entry point reads that file and its Nexus configuration before constructing the
+TaskEngine provider. The path is a process startup parameter, not configuration for ExecutionRunner.
+
+For recovery, use the [workspace data contract](workspace.md#layout-and-reference) and construct
+AdditionalContext from the incident and available evidence. Pass the reference and context directly
+to AgentRuntime.run; do not ask the runtime to discover an incident request file. A recovery invocation
+may use an operational workspace when preparation of the task's workspace itself failed.
 
 Map finite mode to queue selection with return-on-empty, watch to queue selection with wait-on-empty,
 single-ticket to the exact named selection, and single-task to the supplied file.
@@ -102,16 +113,17 @@ repeated progress events cannot lose or double-count completed tasks.
 
 ## Configuration and composition
 
-Application startup binds the three ports and supplies validated settings: canonical project
-identity, storage root, recovery profile ID, maximum recovery attempts per incident, and notification
-enablement. The maximum is a required positive integer; no implicit infinite recovery is permitted.
+Application startup binds the ports and supplies lifecycle, storage, recovery and notification
+settings from Nexus configuration. They are available before the worker starts, including when worker
+startup fails. The maximum recovery attempts per incident is a required positive integer.
 The initial recovery profile is `nexus-recovery`, configured as `gpt-6-astra` with high reasoning effort.
 Credentials are resolved by the bound providers, not copied into settings or execution records.
 
-Configuration is fixed for an admitted execution. It includes immutable exported configuration
-snapshots for launched children, with credential references rather than values. A verified runtime
-update may create a new invocation using the same intent; it does not silently change modes,
-timeouts, source selection or recovery allowance. Profile/model changes require configuration.
+Retain the original project configuration filepath, mode and target across child restarts. Each child
+startup reloads configuration and binds settings for that invocation, allowing an intentional correction
+to take effect. Preserve the recovery allowance and existing workflow checkpoint. A changed workflow
+definition is not silently applied to retained state. Configuration records contain credential
+references rather than values.
 
 ## Internal lifecycle
 
