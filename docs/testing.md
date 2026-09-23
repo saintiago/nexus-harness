@@ -64,7 +64,7 @@ explicit inputs and realizes no effect — configuration and input validation, q
 transitions, repair, escalation and baseline-diagnosis decisions, review, watch and completion
 decisions, and conversation-history rules; `tests/boundary/` verifies this host's real contracts —
 processes, Git and filesystem behavior, the intake receipts and lock, the coordinator's escalation
-handoff, its response to a pending diagnosis, its handoff of a completed red baseline to the
+handoff, its handoff of a completed red baseline to the
 configured diagnosis and of the required repair finding to a returned workspace's next claim, the
 pre-delivery diagnosis's reviewer turn, and the Jira and GitHub adapters against controlled
 services and stand-in programs; and

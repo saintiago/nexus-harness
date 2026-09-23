@@ -191,7 +191,7 @@ export function recoveryPrompt(brief: RecoveryBrief): string {
               '  repairing that configuration is part of what this turn is for.',
             ].join('\n')
           : '- The project has no Jira source, so no ticket thread belongs to this incident.',
-        "  Your environment carries the service account's credential, and the same service account's",
+      "  Your environment carries the service account's credential, and the same service account's",
       '  own actions in the thread are what a later developer or reviewer turn reads.',
       brief.previous === null
         ? '- No earlier incident is recorded for this work, so nothing here follows a recovery.'

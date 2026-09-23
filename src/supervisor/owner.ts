@@ -193,15 +193,15 @@ export async function acquireSupervisorOwnership(
           problem: `the supervisor's owner record "${file}" could not be written: ${messageOf(cause)}`,
         };
       }
-        // The record the create found is inspected and, when its process is
-        // gone, taken away — one record, once — and the next round's exclusive
-        // create decides between simultaneous takeovers.
-        const outcome = await takeOverStaleRecord(request, file, isAlive);
-        if (outcome.kind === 'refused') {
-          return { ok: false, problem: outcome.problem };
-        }
-        continue;
+      // The record the create found is inspected and, when its process is
+      // gone, taken away — one record, once — and the next round's exclusive
+      // create decides between simultaneous takeovers.
+      const outcome = await takeOverStaleRecord(request, file, isAlive);
+      if (outcome.kind === 'refused') {
+        return { ok: false, problem: outcome.problem };
       }
+      continue;
+    }
 
     return {
       ok: true,
@@ -226,7 +226,7 @@ export async function acquireSupervisorOwnership(
     problem:
       `the supervisor's owner record "${file}" could not be acquired: ${String(MAX_TAKEOVER_ROUNDS)} ` +
       'attempts lost the takeover to another invocation. Only one supervisor runs one queue; ' +
-    'inspect the record by hand before trying again.',
+      'inspect the record by hand before trying again.',
   };
 }
 

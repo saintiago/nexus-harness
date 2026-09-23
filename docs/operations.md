@@ -301,9 +301,9 @@ read from the checkout `--repo` names, so the repository a run clones describes 
    the launch's own arguments could take back; the ticket stays In Review with the reason and the
    required human action.
    A finding that is actionable carries the order it belongs in: the next claim is told, in its
-   prompt, to repair the baseline before continuing the original task. A diagnosis a stopped invocation left
-   pending is finished before anything else is discovered: the missing status move, or the
-   validated outcome the reviewer turn's invocation recorded — never a second turn or a second
+   prompt, to repair the baseline before continuing the original task. A diagnosis that finds the
+   same evidence again makes only the step the earlier pass had not made — the missing status move —
+   from the validated outcome that pass's reviewer turn recorded: never a second turn or a second
    comment for the same evidence, and never the finding file a turn that then failed left behind. A
    stop that lands while the reviewer turn is running is recorded rather than dropped: that one
    comment and that one move run under their own bounded best-effort deadline, so the claimed
@@ -316,8 +316,11 @@ read from the checkout `--repo` names, so the repository a run clones describes 
    intake lock is kept for inspection — and a record that cannot be read at all fails closed the
    same way. The diagnosis's
    own evidence lives under the connected project's namespace, so two projects sharing one output
-   directory never act on each other's pending diagnosis, and the claim that follows a repair
-   always carries the finding — from the thread, or read back from that evidence. Only a comment
+   directory never act on each other's evidence, and the claim that follows a repair
+   always carries the finding — from the thread, or read back from that evidence. A ticket an
+   invocation left in the running status is an interrupted episode the ordinary loop does not
+   finish: it stays In Progress with its retained evidence, and the supervised queue's recovery
+   agent reconciles it (docs/WORKFLOW.md §12). Only a comment
    that says the whole finding, names the exact evidence the retained record closed as a repair,
    and repeats every field of the finding that record holds counts as coming from the thread — a
    marker names the evidence, never the text, so an edited comment is not it; a partial, edited, or

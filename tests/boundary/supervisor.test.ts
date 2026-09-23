@@ -1078,150 +1078,150 @@ describe('the supervised command around a checkout it cannot read', () => {
   }, 60_000);
 });
 
-  describe('a project configuration the recovery agent repairs', () => {
-    it('writes the incident’s Jira report through the connection the repair restored', async () => {
-      const root = await tempDir();
-      const bin = await tempDir();
-      const target = path.join(root, 'target');
-      await mkdir(target, { recursive: true });
-      const projectFile = path.join(target, 'nexus.project.json');
-      const marker = path.join(target, '.worker-ran');
-      const tokenEnv = 'NEXUS_TEST_JIRA_TOKEN';
-      // The connected project's configuration cannot be read at all: the
-      // recovery agent is invoked to repair it, and the report this incident
-      // owes has to be written through the connection the repair restored.
-      await writeFile(projectFile, '{ this is not json', 'utf8');
-      const repaired = {
-        setup: [],
-        checks: [['node', 'check.mjs']],
-        source: {
-          type: 'jira',
-          siteUrl: 'https://site.atlassian.net',
-          cloudId: '9337c4da-7d33-4c1d-b03c-db207e537f88',
-          projectKey: 'HARN',
-          ...JIRA_SOURCE_DEFAULTS,
-          tokenEnv,
-        },
-      };
-      const publisher = path.join(bin, 'publish.mjs');
-      await writeFile(
-        publisher,
-        'process.stdout.write(JSON.stringify({ MessageId: "smoke-1", TopicArn: "arn:aws:sns:eu-north-1:698643713254:nexus-recovery-notifications" }));\n',
-        'utf8',
-      );
-      const harnessPath = path.join(root, 'harness.json');
-      await writeFile(
-        harnessPath,
-        JSON.stringify({
-          workDir: 'runs',
-          maxRepairs: 1,
-          taskTimeoutMinutes: 1,
-          commandTimeoutMinutes: 1,
-          recovery: {
-            agent: { runtime: 'codex', command: ['codex'] },
-            maxAttempts: 1,
-            notifications: {
-              topicArn: 'arn:aws:sns:eu-north-1:698643713254:nexus-recovery-notifications',
-              email: 'saint282@gmail.com',
-              publisher: [process.execPath, publisher],
-            },
+describe('a project configuration the recovery agent repairs', () => {
+  it('writes the incident’s Jira report through the connection the repair restored', async () => {
+    const root = await tempDir();
+    const bin = await tempDir();
+    const target = path.join(root, 'target');
+    await mkdir(target, { recursive: true });
+    const projectFile = path.join(target, 'nexus.project.json');
+    const marker = path.join(target, '.worker-ran');
+    const tokenEnv = 'NEXUS_TEST_JIRA_TOKEN';
+    // The connected project's configuration cannot be read at all: the
+    // recovery agent is invoked to repair it, and the report this incident
+    // owes has to be written through the connection the repair restored.
+    await writeFile(projectFile, '{ this is not json', 'utf8');
+    const repaired = {
+      setup: [],
+      checks: [['node', 'check.mjs']],
+      source: {
+        type: 'jira',
+        siteUrl: 'https://site.atlassian.net',
+        cloudId: '9337c4da-7d33-4c1d-b03c-db207e537f88',
+        projectKey: 'HARN',
+        ...JIRA_SOURCE_DEFAULTS,
+        tokenEnv,
+      },
+    };
+    const publisher = path.join(bin, 'publish.mjs');
+    await writeFile(
+      publisher,
+      'process.stdout.write(JSON.stringify({ MessageId: "smoke-1", TopicArn: "arn:aws:sns:eu-north-1:698643713254:nexus-recovery-notifications" }));\n',
+      'utf8',
+    );
+    const harnessPath = path.join(root, 'harness.json');
+    await writeFile(
+      harnessPath,
+      JSON.stringify({
+        workDir: 'runs',
+        maxRepairs: 1,
+        taskTimeoutMinutes: 1,
+        commandTimeoutMinutes: 1,
+        recovery: {
+          agent: { runtime: 'codex', command: ['codex'] },
+          maxAttempts: 1,
+          notifications: {
+            topicArn: 'arn:aws:sns:eu-north-1:698643713254:nexus-recovery-notifications',
+            email: 'saint282@gmail.com',
+            publisher: [process.execPath, publisher],
           },
-        }),
-        'utf8',
-      );
-      // A stand-in recovery runtime that repairs exactly what stopped the
-      // worker — the project configuration — and names the ticket it belongs to.
-      const standIn = await installStandIn(
-        'codex',
-        [
-          "import { writeFileSync } from 'node:fs';",
-          "import path from 'node:path';",
-          "let prompt = '';",
-          "process.stdin.setEncoding('utf8');",
-          "process.stdin.on('data', (chunk) => { prompt += chunk; });",
-          "process.stdin.on('end', () => {",
-          `  writeFileSync(${JSON.stringify(projectFile)}, JSON.stringify(${JSON.stringify(repaired)}));`,
-          '  writeFileSync(',
-          "    path.join(process.cwd(), 'outcome.json'),",
-          '    JSON.stringify({',
-          "      status: 'repaired',",
-          "      summary: 'the project configuration was written again',",
-          "      cause: 'nexus.project.json was not valid JSON',",
-          "      resolution: 'the configuration was written again from the repository copy',",
-          '      preserved: [],',
-          "      resume: 'the queue resumes',",
-          "      ticket: { key: 'HARN-51', url: 'https://malton-family.atlassian.net/browse/HARN-51' },",
-          '    }),',
-          '  );',
-          "  process.stdout.write(JSON.stringify({ type: 'turn.completed' }) + '\\n');",
-          '  process.exit(0);',
-          '});',
-        ].join('\n'),
-      );
-      // The worker stops on the unreadable configuration once; the resumed one
-      // — after the repair — settles.
-      const worker = path.join(bin, 'worker.mjs');
-      await writeFile(
-        worker,
-        [
-          "import { existsSync, writeFileSync } from 'node:fs';",
-          `if (existsSync(${JSON.stringify(marker)})) { process.exit(0); }`,
-          `writeFileSync(${JSON.stringify(marker)}, 'first');`,
-          "process.stderr.write('error: the project configuration is not valid JSON\\n');",
-          'process.exit(1);',
-        ].join('\n'),
-        'utf8',
-      );
-      const service = await startLocalService((request) => {
-        if (request.method === 'GET' && request.url.includes('/comment')) {
-          return { status: 200, body: JSON.stringify({ comments: [], total: 0 }) };
-        }
-        return { status: 201, body: JSON.stringify({ id: '10042' }) };
-      });
-      const lines: string[] = [];
-      const previousToken = process.env[tokenEnv];
-      process.env[tokenEnv] = 'test-token';
-      let code: number;
-      try {
-        code = await withPathPrefix(standIn.bin, () =>
-          superviseCli(['run', '--repo', target, '--config', harnessPath], {
-            cwd: root,
-            io: { out: (text) => lines.push(text), err: (text) => lines.push(text) },
-            supervisorParts: { entry: worker },
-            fetch: serviceFetch(service.origin),
-          }),
-        );
-      } finally {
-        if (previousToken === undefined) {
-          delete process.env[tokenEnv];
-        } else {
-          process.env[tokenEnv] = previousToken;
-        }
-        await service.close();
+        },
+      }),
+      'utf8',
+    );
+    // A stand-in recovery runtime that repairs exactly what stopped the
+    // worker — the project configuration — and names the ticket it belongs to.
+    const standIn = await installStandIn(
+      'codex',
+      [
+        "import { writeFileSync } from 'node:fs';",
+        "import path from 'node:path';",
+        "let prompt = '';",
+        "process.stdin.setEncoding('utf8');",
+        "process.stdin.on('data', (chunk) => { prompt += chunk; });",
+        "process.stdin.on('end', () => {",
+        `  writeFileSync(${JSON.stringify(projectFile)}, JSON.stringify(${JSON.stringify(repaired)}));`,
+        '  writeFileSync(',
+        "    path.join(process.cwd(), 'outcome.json'),",
+        '    JSON.stringify({',
+        "      status: 'repaired',",
+        "      summary: 'the project configuration was written again',",
+        "      cause: 'nexus.project.json was not valid JSON',",
+        "      resolution: 'the configuration was written again from the repository copy',",
+        '      preserved: [],',
+        "      resume: 'the queue resumes',",
+        "      ticket: { key: 'HARN-51', url: 'https://malton-family.atlassian.net/browse/HARN-51' },",
+        '    }),',
+        '  );',
+        "  process.stdout.write(JSON.stringify({ type: 'turn.completed' }) + '\\n');",
+        '  process.exit(0);',
+        '});',
+      ].join('\n'),
+    );
+    // The worker stops on the unreadable configuration once; the resumed one
+    // — after the repair — settles.
+    const worker = path.join(bin, 'worker.mjs');
+    await writeFile(
+      worker,
+      [
+        "import { existsSync, writeFileSync } from 'node:fs';",
+        `if (existsSync(${JSON.stringify(marker)})) { process.exit(0); }`,
+        `writeFileSync(${JSON.stringify(marker)}, 'first');`,
+        "process.stderr.write('error: the project configuration is not valid JSON\\n');",
+        'process.exit(1);',
+      ].join('\n'),
+      'utf8',
+    );
+    const service = await startLocalService((request) => {
+      if (request.method === 'GET' && request.url.includes('/comment')) {
+        return { status: 200, body: JSON.stringify({ comments: [], total: 0 }) };
       }
+      return { status: 201, body: JSON.stringify({ id: '10042' }) };
+    });
+    const lines: string[] = [];
+    const previousToken = process.env[tokenEnv];
+    process.env[tokenEnv] = 'test-token';
+    let code: number;
+    try {
+      code = await withPathPrefix(standIn.bin, () =>
+        superviseCli(['run', '--repo', target, '--config', harnessPath], {
+          cwd: root,
+          io: { out: (text) => lines.push(text), err: (text) => lines.push(text) },
+          supervisorParts: { entry: worker },
+          fetch: serviceFetch(service.origin),
+        }),
+      );
+    } finally {
+      if (previousToken === undefined) {
+        delete process.env[tokenEnv];
+      } else {
+        process.env[tokenEnv] = previousToken;
+      }
+      await service.close();
+    }
 
-      expect(code).toBe(EXIT_OK);
-      expect(lines.join('\n')).toContain('supervise run: settled');
-      // The comment really was written into the ticket's own thread, through
-      // the connection the repair restored — not silently omitted because the
-      // file could not be read when the supervision started.
-      const posted = service.requests.find((request) => request.method === 'POST');
-      expect(posted?.url).toContain('/rest/api/3/issue/HARN-51/comment');
-      expect(posted?.body).toContain('Harness recovery report');
-      const workDir = path.join(root, 'runs');
-      const namespaces = await readdir(path.join(workDir, '.supervisor'));
-      const supervisorRootDir = path.join(workDir, '.supervisor', namespaces[0] ?? '');
-      const ids = await readdir(path.join(supervisorRootDir, 'incidents'));
-      const incident = await readIncident(incidentFilePath(supervisorRootDir, ids[0] ?? ''));
-      expect(incident?.ticket?.key).toBe('HARN-51');
-      expect(incident?.report.commentId).toBe('10042');
-      expect(incident?.report.problem).toBeNull();
-      expect(incident?.report.notification).toMatchObject({ state: 'sent', messageId: 'smoke-1' });
-      expect(incident?.resumedAt).not.toBeNull();
-    }, 90_000);
-  });
+    expect(code).toBe(EXIT_OK);
+    expect(lines.join('\n')).toContain('supervise run: settled');
+    // The comment really was written into the ticket's own thread, through
+    // the connection the repair restored — not silently omitted because the
+    // file could not be read when the supervision started.
+    const posted = service.requests.find((request) => request.method === 'POST');
+    expect(posted?.url).toContain('/rest/api/3/issue/HARN-51/comment');
+    expect(posted?.body).toContain('Harness recovery report');
+    const workDir = path.join(root, 'runs');
+    const namespaces = await readdir(path.join(workDir, '.supervisor'));
+    const supervisorRootDir = path.join(workDir, '.supervisor', namespaces[0] ?? '');
+    const ids = await readdir(path.join(supervisorRootDir, 'incidents'));
+    const incident = await readIncident(incidentFilePath(supervisorRootDir, ids[0] ?? ''));
+    expect(incident?.ticket?.key).toBe('HARN-51');
+    expect(incident?.report.commentId).toBe('10042');
+    expect(incident?.report.problem).toBeNull();
+    expect(incident?.report.notification).toMatchObject({ state: 'sent', messageId: 'smoke-1' });
+    expect(incident?.resumedAt).not.toBeNull();
+  }, 90_000);
+});
 
-  describe('a project configuration that names the supervisable queue', () => {
+describe('a project configuration that names the supervisable queue', () => {
   it('composes the recovery policy with its launch and publisher resolved', async () => {
     const directory = await tempDir();
     await writeFile(

@@ -65,7 +65,11 @@ import type { IncidentRecord } from '../supervisor/incident.js';
 import { createRecoveryTurn } from '../supervisor/recovery.js';
 import { createIncidentReporter } from '../supervisor/report.js';
 import { supervise } from '../supervisor/supervise.js';
-import type { JiraBoundaryTake, SupervisorParts, SuperviseSummary } from '../supervisor/supervise.js';
+import type {
+  JiraBoundaryTake,
+  SupervisorParts,
+  SuperviseSummary,
+} from '../supervisor/supervise.js';
 import { runNexusWorker } from '../supervisor/worker.js';
 
 /** Which supervision the operator asked for, and what it was given. */
@@ -431,12 +435,12 @@ async function superviseCommand(
             pane.endInvocation();
           },
         }),
-        reporter:
-          substitute.reporter ??
-          createIncidentReporter({
-            notification: recovery.notifications ?? null,
-            logsDir: (incident: IncidentRecord) => incidentDir(root, incident.id),
-            cwd: workDir,
+      reporter:
+        substitute.reporter ??
+        createIncidentReporter({
+          notification: recovery.notifications ?? null,
+          logsDir: (incident: IncidentRecord) => incidentDir(root, incident.id),
+          cwd: workDir,
           now: () => new Date(),
         }),
       entry: substitute.entry ?? parts.entry,
@@ -473,10 +477,10 @@ async function superviseCommand(
       recovery,
       recoveryTurnTimeoutMs: recoveryTimeoutMs(supervision),
       io: { out: activeIo.out, err: activeIo.err },
-        stop: stop.signal,
-        now: () => new Date(),
-        jiraBoundary,
-        recoveryTurn: composed.recoveryTurn,
+      stop: stop.signal,
+      now: () => new Date(),
+      jiraBoundary,
+      recoveryTurn: composed.recoveryTurn,
       reporter: composed.reporter,
       worker: composed.worker,
       isAlive: composed.isAlive,

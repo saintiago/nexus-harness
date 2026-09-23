@@ -133,10 +133,10 @@ async function runSupervision(overrides: {
   readonly maxAttempts?: number;
   readonly stop?: AbortSignal;
   readonly isAlive?: SuperviseRequest['isAlive'];
-    readonly scope?: string | null;
-    readonly reporter?: SuperviseRequest['reporter'];
-    readonly jiraBoundary?: SuperviseRequest['jiraBoundary'];
-    readonly lines?: string[];
+  readonly scope?: string | null;
+  readonly reporter?: SuperviseRequest['reporter'];
+  readonly jiraBoundary?: SuperviseRequest['jiraBoundary'];
+  readonly lines?: string[];
 }): Promise<SuperviseSummary> {
   const lines = overrides.lines ?? [];
   const reports: IncidentRecord[] = [];
@@ -163,12 +163,12 @@ async function runSupervision(overrides: {
       out: (text) => lines.push(text),
       err: (text) => lines.push(text),
     },
-      stop: overrides.stop ?? new AbortController().signal,
-      now: () => new Date('2026-09-23T00:00:00.000Z'),
-      jiraBoundary:
-        overrides.jiraBoundary ??
-        (async () => ({ boundary: { kind: 'none' as const }, identity: null })),
-      recoveryTurn: overrides.recoveryTurn,
+    stop: overrides.stop ?? new AbortController().signal,
+    now: () => new Date('2026-09-23T00:00:00.000Z'),
+    jiraBoundary:
+      overrides.jiraBoundary ??
+      (async () => ({ boundary: { kind: 'none' as const }, identity: null })),
+    recoveryTurn: overrides.recoveryTurn,
     reporter:
       overrides.reporter ??
       (async ({ incident }) => {
@@ -870,8 +870,6 @@ describe('a supervised queue', () => {
     expect(incident?.pending?.turnPid).toBe(5252);
     expect(incident?.pending?.problem).toContain('could not be confirmed stopped');
 
-    // A restart that finds that runtime gone reconciles the attempt: it counts
-    // as spent, and the incident goes on from there.
     const scripted = scriptedRecovery([
       {
         status: 'repaired',
@@ -883,6 +881,24 @@ describe('a supervised queue', () => {
         ticket: { key: 'HARN-51' },
       },
     ]);
+    // While that runtime is alive, a restart starts neither another turn nor a
+    // worker: it refuses by name, which is the reconciliation a person has to
+    // make.
+    const refused = await runSupervision({
+      workDir,
+      repoPath,
+      configPath,
+      isAlive: () => true,
+      worker: scriptedWorker([ended(0)]),
+      recoveryTurn: scripted,
+    });
+    expect(refused.outcome).toBe('attention');
+    expect(refused.problem).toContain('still running');
+    expect(refused.workerRuns).toBe(0);
+    expect(scripted.calls).toBe(0);
+
+    // A restart that finds that runtime gone reconciles the attempt: it counts
+    // as spent, and the incident goes on from there.
     const resumed = await runSupervision({
       workDir,
       repoPath,
