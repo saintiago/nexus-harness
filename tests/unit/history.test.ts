@@ -8,7 +8,7 @@
  * The readers are stand-ins and the store is a temporary directory: no Jira,
  * GitHub, or agent call happens here (docs/testing.md).
  */
-import { readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type {
@@ -35,6 +35,7 @@ import { notePublishedReview, textSha256 } from '../../src/history/reports.js';
 import { renderHistorySection } from '../../src/history/prompt.js';
 import { outstandingFindingIds, unresolvedRounds } from '../../src/history/findings.js';
 import { parseVerdict } from '../../src/reviews/reviewer.js';
+import { baselineEvidenceId } from '../../src/sources/baseline.js';
 import {
   incidentFilePath,
   openIncident,
@@ -42,7 +43,7 @@ import {
   writeIncident,
 } from '../../src/supervisor/incident.js';
 import { sourceItemFor, writeWorkspaceState } from '../../src/workspace/state.js';
-import type { SourceRef, Task } from '../../src/shared/types.js';
+import type { CheckRoundResult, SourceRef, Task } from '../../src/shared/types.js';
 import { createTempDir } from '../support.js';
 
 const REF: SourceRef = {
@@ -1081,6 +1082,105 @@ describe('one ticket history', () => {
       'missing-report',
     );
     expect(missing.gaps.join('\n')).toMatch(/complete developer report/);
+  });
+
+  it('gives two baseline diagnoses under one project different identities', async () => {
+    const workDir = await createTempDir();
+    // The project namespace is the lock identity this harness derives for one
+    // connected project: a 64-character hash, whatever its content, so a token
+    // that keeps only its first characters cannot tell two diagnoses apart.
+    const project = 'f'.repeat(64);
+    const baseCommit = 'c'.repeat(40);
+    /** One completed red baseline round, as the evidence record holds it. */
+    const round = (check: string): CheckRoundResult => ({
+      outcome: 'failed',
+      setup: [],
+      checks: [
+        {
+          command: ['npm', check],
+          cwd: '/work/workspaces/HARN-11',
+          outcome: 'exited',
+          exitCode: 1,
+          signal: null,
+          startedAt: '2026-09-16T09:59:00.000Z',
+          endedAt: '2026-09-16T10:00:00.000Z',
+          launchError: null,
+          timeoutMs: 60_000,
+          termination: null,
+          terminationProblem: null,
+          stdoutPath: '/work/runs/run-1/logs/check.out',
+          stderrPath: '/work/runs/run-1/logs/check.err',
+        },
+      ],
+      problem: null,
+    });
+    for (const check of ['test:a', 'test:b']) {
+      const baseline = round(check);
+      const evidenceId = baselineEvidenceId(REF, baseCommit, baseline);
+      const dir = path.join(workDir, 'baseline', project, evidenceId);
+      await mkdir(dir, { recursive: true });
+      await writeFile(
+        path.join(dir, 'evidence.json'),
+        `${JSON.stringify(
+          {
+            version: 1,
+            evidenceId,
+            project,
+            ref: REF,
+            task: TASK,
+            workspace: {
+              workspaceId: 'HARN-11',
+              workspacePath: '/work/workspaces/HARN-11',
+              branch: 'harness/HARN-11',
+              baseCommit,
+            },
+            baseline,
+            closed: 'repair',
+            closedAt: '2026-09-16T10:00:00.000Z',
+          },
+          null,
+          2,
+        )}\n`,
+        'utf8',
+      );
+      await writeFile(
+        path.join(dir, 'outcome.json'),
+        `${JSON.stringify(
+          {
+            version: 1,
+            state: 'finding',
+            finding: {
+              outcome: 'repair',
+              failingCheck: check,
+              evidence: 'the check exited 1',
+              likelyCause: 'the greeting is unimplemented',
+              repairGuidance: 'implement the greeting',
+            },
+          },
+          null,
+          2,
+        )}\n`,
+        'utf8',
+      );
+    }
+
+    const snapshot = await prepare(history(workDir), 'reviewer', 2);
+    // Both diagnoses are outstanding findings of this project, each with the
+    // identity its own evidence keeps.
+    const ids = (snapshot.brief.unresolvedReviews ?? []).flatMap((review) =>
+      review.findings.map((finding) => finding.id),
+    );
+    expect(ids).toHaveLength(2);
+    expect(new Set(ids).size).toBe(2);
+    for (const id of ids) {
+      expect(id).toMatch(/^NBASELINE-F{7}-[0-9A-F]{8}-F1$/);
+    }
+    expect(
+      snapshot.reports
+        .flatMap((report) => report.findings)
+        .map((finding) => finding.id)
+        .sort(),
+    ).toEqual([...ids].sort());
   });
 
   it('keeps a turn’s input stable while a later refresh moves on', async () => {
