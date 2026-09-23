@@ -29,15 +29,16 @@ of the target project's directory. Relative paths are relative to the Nexus conf
 | Settings | Definition |
 | --- | --- |
 | Workflow | Workflow definition path for finite queue execution |
-| Workspace | Storage root |
+| Storage | Root for queue execution state, recovery and task workspaces |
 | Agent runtime | Base instructions, profile catalogue, provider connections and tool configuration |
 | Execution policy | Invocation limits, repair/escalation policies and maximum recovery attempts per supervised execution |
 | Notifications | Destination and provider configuration |
 | Credentials | Host credential-resolution settings |
 | Nexus Lens | GitHub App identity and installation credential references for review publication |
 
-The workspace storage root is configurable. The [workspace layout](workspace.md#layout-and-reference)
-is fixed and has no configuration overrides.
+The storage root is configurable. [Application](application.md#state-and-reports) defines execution
+and task-workspace locations. The [workspace layout](workspace.md#layout-and-reference) is fixed
+and has no configuration overrides.
 
 Profiles conform to [AgentProfile](agent-runtime/architecture.md#provided-interface). Profile IDs are unique.
 The initial recovery profile is nexus-recovery, with model gpt-6-astra and high reasoning effort.

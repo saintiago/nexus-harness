@@ -61,7 +61,8 @@ type EventPublisher = (event: EngineEvent) => void;
 run executes the configured workflow from the persisted state. A terminal state returns its declared
 outcome as the result value. Execution failure returns a fault. These are execution outcomes, not
 task reports or completion inventories.
-A persisted terminal state returns its outcome without executing another action.
+At run startup, reset a persisted terminal state to the workflow's initial state. Restore a nonterminal
+state. Reaching a terminal state during this run still returns its outcome and ends the run.
 
 subscribe registers a listener for subsequent events and returns a function that removes that
 listener. The runner and every action receive the same EventPublisher capability during construction.
@@ -101,6 +102,7 @@ workspace reference and other required capabilities. They are not repeated in a 
 For queue execution, actions read the current selection from a shared selection-file location bound
 at startup. That record supplies the current ticket's workspace. The runner state filepath remains
 fixed for the queue; switching tickets does not make the runner interpret task data or change files.
+Workflow state belongs to the queue execution directory, outside individual task workspaces.
 Bootstrap record ownership and round/history reads follow the general action contract.
 
 One instance executes one workflow at a time. Restart reconnects the same workflow state and action

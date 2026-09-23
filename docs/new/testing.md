@@ -14,7 +14,7 @@ Cover decisions, meaningful variations and failure outcomes here.
 
 | Subject | Behavior to verify | Supplied dependencies |
 | --- | --- | --- |
-| Application | Commands, configuration paths, exit codes and recovery decisions within the configured allowance | Arguments, configuration, work/recovery results and notification responses |
+| Application | Commands, configuration paths, exit codes, recovery invocation and resume/attention decisions within the allowance | Arguments, configuration, work/recovery results and notification responses |
 | SelectTask | Source ordering, eligibility and continuation decisions | Issue data and retained selection |
 | SelectRepair | Repair counting, profile escalation and exhaustion | Round history and policy |
 | Review | Verdict interpretation and rejection of approval with unresolved blocking findings | Agent result and repository observations |
@@ -33,7 +33,7 @@ Exercise one connection with its real implementation. Keep unrelated dependencie
 | Connection | Real parts | What it establishes |
 | --- | --- | --- |
 | Action artifacts | Producer output handling, artifact helpers and consumer input handling on temporary storage | The consumer can use the producer's actual saved output, including current-round and history selection |
-| Workflow persistence | ExecutionRunner, XState and temporary state files; supplied actions | Saved execution can be restored with the documented repetition behavior |
+| Workflow persistence | ExecutionRunner, XState and temporary state files; supplied actions | Active execution resumes; terminal execution resets on the next run; invalid state fails |
 | Git operations | Git adapter and temporary local repositories | Checkout, pull, branch creation and push behave as expected |
 | Process execution | Process adapter and a small controlled child process | Arguments, output, exit and timeout behavior |
 | Worker communication | Parent bridge and a controlled worker process | Events, terminal result and process failure cross the boundary correctly |

@@ -15,6 +15,8 @@ provider/tool settings, invocation limits and an activity observer from
 Developer and reviewer profiles include their respective
 [DevelopmentRole](development-role.md#constant-prompt) or [ReviewerRole](reviewer-role.md#constant-prompt)
 instructions once per invocation. Each role has one complete constant prompt.
+The recovery profile includes [RecoveryRole](recovery-role.md#constant-prompt) once per invocation,
+with its separately configured operational tools.
 
 ### Provided interface
 

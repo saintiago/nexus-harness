@@ -56,6 +56,7 @@ A multi-component flow does not create a special shared contract.
 - [Native Codex profiles](docs/new/agent-runtime/profiles.md): repository templates and Linux installation.
 - [DevelopmentRole design](docs/new/agent-runtime/development-role.md): constant developer instructions and task-specific input boundary.
 - [ReviewerRole design](docs/new/agent-runtime/reviewer-role.md): evidence-based review instructions and prior-finding evaluation.
+- [RecoveryRole design](docs/new/agent-runtime/recovery-role.md): current-project diagnosis, queue reconciliation and fresh task restart.
 - [Findings contract](docs/new/task-engine/actions/findings.md): finding, response and disposition shapes shared across rounds.
 - [Adapters design](docs/new/adapters/architecture.md): shared external-boundary responsibilities and contract conventions.
 - [Jira adapter](docs/new/adapters/jira.md): issue data, comments, changes and ranking.

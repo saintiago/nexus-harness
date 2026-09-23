@@ -41,6 +41,7 @@ reasons for recovery. Launch and filesystem errors are execution errors.
 Create missing workspace directories. For new work, obtain the repository in worktree/, check out
 main and pull its latest remote changes with a fast-forward. Create and check out the task's development
 branch from that updated main. Record the branch and base revision for later actions.
+After recovery discarded an attempt, use a new branch name rather than adopting its old remote branch.
 
 For retained work, inspect the repository and saved identity. Reuse the matching worktree, preserving
 local commits and uncommitted changes for implementation to inspect. Do not reset, clean or silently

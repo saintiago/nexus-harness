@@ -12,7 +12,6 @@ The workspace layout is:
 ├── artifacts/
 │   └── <roundNumber>/
 └── state/
-    ├── workflow.json
     ├── prepared-workspace.json
     ├── preparation/
     └── current-round.json
@@ -22,7 +21,6 @@ The workspace layout is:
 | --- | --- |
 | `worktree/` | The target repository working copy |
 | `artifacts/<roundNumber>/` | Persistent inputs and outputs for one round; earlier rounds form history |
-| `state/workflow.json` | The persisted workflow state |
 | `state/prepared-workspace.json` | Task, repository, branch and comparison-base identity |
 | `state/preparation/` | Preparation command output |
 | `state/current-round.json` | The current round number |

@@ -60,7 +60,8 @@ unchanged. Emit lifecycle events with source application and types starting, run
 finished. The finished event carries ExecutionResult. Listener failures do not affect execution.
 
 Recovery invocations emit the [agent activity events](task-engine/architecture.md#agent-activity-events)
-with role recovery. Request RecoveryReport in the recovery context and parse the returned output.
+with role recovery. Use the [RecoveryRole](agent-runtime/recovery-role.md#interface) prompt, context
+and tool contract. Request RecoveryReport in the recovery context and parse the returned output.
 A malformed report is a failed recovery invocation.
 
 ### Component wiring
@@ -77,10 +78,11 @@ and capabilities its contract requires.
 | Worker | Subscribe to TaskEngine events before calling run; send events and the final result through the worker protocol |
 
 OperatorInterface receives worker and parent events through one combined subscription.
-Prepare recovery context from the original request, failure, available output and
-[workspace reference](workspace.md#layout-and-reference). If the task workspace is unavailable,
-supply an operational workspace. Include the current project configuration and recovery scope in the
-context. Pass context to AgentRuntime.run with the configured recovery profile.
+Prepare recovery context from the original request, failure, available output, execution-state paths
+and task [workspace reference](workspace.md#layout-and-reference) when known. Always run recovery in
+a separate operational workspace, so it can delete a broken task workspace without deleting its own
+working directory. Include the current project configuration and recovery scope in the context.
+Pass context to AgentRuntime.run with the configured recovery profile.
 Use the [Notifications adapter](adapters/notifications.md#interface) to publish the recovery report.
 
 ### Worker entry point
@@ -134,16 +136,11 @@ launch a repair there or update the running Nexus installation.
 A resume decision restarts the worker with the same project configuration and the state reconciled
 by recovery.
 
-When a blocker must run first, recovery creates or reuses its ticket, makes it eligible and ranks it
-first in the current project's queue. Move the interrupted task to To Do and rank it immediately
-after the blocker. Use source rank, not priority. Preserve the interrupted task's workspace pointer,
-worktree and round artifacts.
-
-Before returning resume, recovery clears the queue's active selection and resets its persisted workflow
-to initial task selection. Changing source rank alone is insufficient: retained selection would
-otherwise continue the interrupted task. The normal workflow then selects the blocker and, after
-completing it, selects the interrupted task from its retained workspace. Application has no special
-blocker execution mode or return target.
+When a blocker must run first, recovery ranks it first and returns the interrupted ticket to To Do
+immediately after it. Recovery discards the broken task workspace, clears its source pointer and
+active selection, and resets queue execution to initial selection. The normal workflow processes the
+blocker, then starts the interrupted task anew from updated main. Cleanup of the discarded attempt
+follows the RecoveryRole contract. Application has no special blocker execution mode or return target.
 
 Each recovery invocation consumes the configured allowance for this execution. Worker restarts and
 queue reordering do not reset it. Exhaustion, failed recovery or a needs-attention decision ends execution
@@ -156,8 +153,24 @@ replace them.
 
 ## State and reports
 
-Retain the original request, recovery count and recovery reports as ordinary files under the
-configured storage root. The task source owns queue order.
+Application supplies a stable queue execution directory per configured project:
+
+```text
+<storage root>/executions/<project>/
+├── workflow.json
+├── selection.json
+└── recovery/
+```
+
+The runner owns workflow.json; SelectTask owns selection.json. These records are outside task
+workspaces. Application retains its request, recovery count and reports under recovery/, alongside
+the separate operational workspace. Task workspaces live under
+`<storage root>/workspaces/<project>/<task>/`. Project identity distinguishes execution directories.
+
+At worker startup the runner resets terminal workflow state before execution, as specified in
+[ExecutionRunner](task-engine/execution-runner.md#persistence). This does not erase an active task
+selection or workspace; recovery explicitly reconciles those when a fresh task restart is needed.
+Recovery allowance persists across worker restarts. The task source owns queue order.
 
 Publish the saved recovery report. Notification failure is reported separately and does not repeat
 recovery. Provider acceptance confirms submission, not inbox delivery.

@@ -39,8 +39,10 @@ XState executes it.
 
 ## Persistence
 
-Save the XState persisted snapshot as JSON at the supplied filepath. If the file is absent, start
-from the initial state; otherwise restore from it. Business artifacts stay outside the snapshot.
+Save the XState persisted snapshot as JSON at the supplied filepath. At the start of run, inspect the
+saved state. If absent, start from the initial state. If terminal, discard that snapshot and start
+from the initial state. Otherwise restore the active execution. Invalid or unreadable state is an
+error, not permission to discard it. Business artifacts stay outside the snapshot.
 
 Subscribe before starting the XState actor. On each state update, capture its persisted snapshot
 and save it. Serialize writes in notification order so an older save cannot overwrite a newer one.
@@ -49,8 +51,8 @@ XState proceeds without waiting for these writes. There is no persistence gate a
 Before returning a terminal outcome, wait for the pending writes, including the terminal snapshot,
 to finish.
 
-On restoration, XState restarts an active invocation. A terminal snapshot returns its output without
-running operations. Saved state may lag execution: a crash can cause one or more completed operations
+On restoration, XState restarts an active invocation. A terminal result ends the current run; it is
+reset only on the next run, not looped automatically. Saved state may lag execution: a crash can cause one or more completed operations
 to run again. Handling repeated execution and existing work belongs to those operations.
 
 Report state read/write failures as execution errors, not terminal outcomes. On an operation error,

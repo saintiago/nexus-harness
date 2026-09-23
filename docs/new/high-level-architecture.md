@@ -65,7 +65,8 @@ Application: parent entry
 ```
 
 Application retains the execution request and launches the worker again when recovery requests it.
-Each launch reconnects retained workflow state and action storage. Application supplies relevant
+Each launch reconnects queue execution state and action storage. Terminal workflow state resets at
+startup; an active state resumes. Task workspaces contain no workflow snapshots. Application supplies relevant
 settings and capabilities and applies recovery decisions. TaskEngine owns workflow execution;
 RecoveryRole investigates failures and chooses how to recover.
 
@@ -167,7 +168,8 @@ workflow's repair and escalation decisions.
 When work cannot continue, Application invokes recovery with the failure and available context.
 Recovery investigates, performs repairs and decides whether to resume or request operator attention.
 When a blocker must run first, recovery ranks it first, moves the interrupted task to To Do immediately
-after it, and reconciles queue state to restart task selection before resuming. Normal queue processing
+after it, deletes the broken task workspace and clears its pointer, and reconciles queue state to
+restart task selection before resuming. The interrupted task starts anew after the blocker. Normal queue processing
 handles both tasks. Recovery and blocker execution stay within the current project. Cross-project
 repair and Nexus installation changes require operator attention.
 Application applies the decision within its configured recovery allowance.

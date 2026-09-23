@@ -57,6 +57,7 @@ continue the same unfinished task before selecting unrelated work. A completed p
 fresh selection. Unexpected source state is reported rather than overwritten.
 
 With no saved active selection, select from the current source order. There is no special blocker
-target; a previously interrupted task can be selected again with its retained workspace and history.
+target. Reuse retained work only when it still exists. If recovery deleted the broken workspace and
+cleared its pointer, selection supplies a new workspace reference and preparation starts from updated main.
 
 The design assumes one queue consumer; no claim lease or distributed locking protocol is added here.
