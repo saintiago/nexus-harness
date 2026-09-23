@@ -4,25 +4,18 @@ Status: proposed component design.
 
 ## Responsibility
 
-Translate operator input into an execution request and present the resulting execution view.
-Own argument parsing, path normalization, terminal rendering and mapping final outcomes to exit
-codes. Do not decide which task to select, which agent to invoke or whether recovery is needed.
+Translate operator input into an execution request and present progress and results.
+Own argument parsing, path normalization, terminal rendering and exit codes.
 
-The component is an in-process TypeScript module with public entry point
-`src/operator-interface/index.ts`. Terminal capabilities are supplied at construction; the
-component does not inspect or mutate a task workspace.
+The public entry point is `src/operator-interface/index.ts`.
 
 ## Interface
 
 ### Required interface
 
-Use only [Supervisor.execute](supervisor.md#provided-interface), including its request, event and
-result types. This is the sole business-component dependency. No engine, agent, source-provider or
-private execution-record dependency is permitted.
-
+Use [Supervisor.execute](supervisor.md#provided-interface) and its request, event and result types.
 Use the [shared value types](high-level-architecture.md#shared-interface-vocabulary) at the boundary.
-Terminal output and operating-system interrupt registration are host capabilities supplied at
-construction. They do not make lifecycle decisions.
+Terminal output capabilities are supplied at construction.
 
 ### Provided interface
 
@@ -33,7 +26,6 @@ interface OperatorInterface {
   run(
     command: Extract<OperatorCommand, { kind: 'execute' }>,
     execution: Supervisor,
-    stop: AbortSignal,
   ): Promise<OperatorResult>;
 }
 
@@ -46,24 +38,17 @@ type OperatorCommand =
     };
 
 type OperatorResult = {
-  exitCode: 0 | 1 | 2 | 130;
-  executionId: string | null;
+  exitCode: 0 | 1 | 2;
   displayFault: string | null;
 };
 ```
 
-`Supervisor` and `ExecutionMode` are imported interface types, defined only in their provider's
-document. `OperatorCommand.projectConfigPath` is an absolute filepath resolved against `cwd`; no
-environment expansion or shell interpretation is performed on task keys or other arguments.
+Supervisor and ExecutionMode are imported contract types. Resolve projectConfigPath against cwd
+and pass it as an absolute filepath. Parsing performs no source access or task mutation. Reject
+missing arguments, unknown options and conflicting mode/target options.
 
-`parse` is pure: no source access, directory creation or task mutation. Missing values, unknown
-options, duplicate conflicting options and a ticket key on an incompatible mode are invalid input.
-`showHelp` performs no execution and needs no configured execution provider. Paths may contain
-spaces and are passed as individual arguments.
-
-`run` generates one execution ID and calls `execute` once with projectConfigPath and the selected
-mode. Its dependency is a configured Supervisor provider. Parse the filepath and present returned
-errors; do not load domain settings. OperatorCommand contains no credentials.
+run calls execute once with the filepath and selected mode, renders events as they arrive and
+presents the final result. It does not load project settings.
 
 The target command grammar is:
 
@@ -75,54 +60,28 @@ nexus run --task <file> --project-config <file>
 nexus --help
 ```
 
-`queue run` selects finite mode, `queue watch` selects watch mode, `queue run --ticket` selects
-single-ticket mode, and `run --task` selects single-task mode for a local task file. The local file
-path is resolved against the invocation directory. This is the target grammar for the new design;
-these docs do not change the existing executable.
+queue run selects finite mode, queue watch selects watch mode, queue run --ticket selects single-ticket
+mode, and run --task selects single-task mode for a local file. Resolve the local filepath against cwd.
+Paths and keys are individual arguments, without shell interpretation.
 
-### Outcomes
+Help and completed execution return exit code 0. Execution requiring attention or presentation failure
+returns 1. Invalid command input returns 2. Record presentation errors separately from execution results.
 
-| Condition | Exit code |
-| --- | --- |
-| Help or completed execution | 0 |
-| Execution requires attention, or presentation failed | 1 |
-| Invalid command, invalid configuration or rejected execution admission | 2 |
-| Intentional cancellation with confirmed shutdown | 130 |
+## Presentation
 
-A cancellation with unconfirmed shutdown is attention, not a clean cancellation. Display failure
-is recorded separately from the execution outcome; it must not turn completed work into failed
-work in the execution record. `executionId` is null when no execution was admitted.
+The parser produces a normalized command. The presenter maintains current progress and recent activity;
+the renderer draws it using the available terminal capabilities.
 
-## Internal design
+Render events according to their source, type and data. Producers own their event meanings.
+Unrecognized events can appear as diagnostic activity; they do not change execution decisions.
+The final result replaces an incomplete progress view.
 
-Three units are sufficient:
+Interactive output has a summary and activity pane. Render agent messages as text, wrap by display
+columns and neutralize terminal control characters. Redirected output is a timestamped linear stream
+without cursor controls. Terminal size and color choices affect presentation only.
 
-- Command parser: produces the normalized command.
-- Execution presenter: reduces execution-view events into the latest display model.
-- Terminal renderer: renders that model according to terminal capabilities.
+A broken output stream disables that rendering channel and records a display fault. Terminal cleanup
+restores cursor and style state. Display state is ephemeral; it is not persisted for execution recovery.
 
-The display model holds execution ID, last sequence number, current lifecycle state, task key,
-display stage, active role, recent activity and the final result. This is ephemeral presentation
-state. It is not a second queue ledger and is not used to resume execution.
-
-Ignore duplicate or older event sequence numbers and reject an event for another execution.
-A gap does not mean execution failed: progress is observational. The final returned execution
-result replaces any incomplete progress view.
-
-Interactive output has an execution summary and activity pane. Render agent messages as text,
-wrap by display columns and neutralize terminal control characters. Color and layout remain local
-presentation choices. Redirected output is a timestamped linear stream with no cursor controls.
-Changing terminal size or rendering mode does not change the execution request.
-
-The interrupt signal is forwarded without being reinterpreted as an operational failure. A closed
-or broken output stream disables that rendering channel and uses an available diagnostic channel;
-it does not request cancellation. Output errors are retained in OperatorResult.
-
-Launch shortcuts invoke the same command grammar. They provide mode and optional ticket key, use
-configured paths, and keep their visible terminal open after the command exits. They contain no
-credentials, model selection, task-state reconciliation or alternate execution loop.
-
-## State ownership
-
-Only the display model and terminal resources belong to this component. Terminal cleanup restores
-cursor and style state. No persistent task, incident, claim, workspace or agent state is owned here.
+Launch shortcuts invoke the same command grammar with configured paths, a mode and an optional ticket
+key. They keep the visible terminal open after exit and contain no separate execution logic.

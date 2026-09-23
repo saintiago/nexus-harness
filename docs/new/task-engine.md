@@ -8,7 +8,7 @@ Execute a task workflow supplied as YAML. The workflow defines sequencing, ordin
 the actions, and persistent artifacts carry data between actions. Process one action at a time.
 
 The public module is `src/task-engine/index.ts`. Its construction inputs are a workflow, bound action
-implementations and a checkpoint location.
+implementations and a workflow-state filepath.
 
 ## Composition
 
@@ -58,8 +58,8 @@ type EventPublisher = (event: EngineEvent) => void;
 ```
 
 run executes the configured workflow from the persisted state. A terminal state returns its declared
-outcome as the result value. Execution failure returns a fault; intentional cancellation uses the
-cancelled fault code. These are execution outcomes, not task reports or completion inventories.
+outcome as the result value. Execution failure returns a fault. These are execution outcomes, not
+task reports or completion inventories.
 A persisted terminal state returns its outcome without executing another action.
 
 subscribe registers a listener for subsequent events and returns a function that removes that
@@ -74,11 +74,11 @@ from actions and other listeners.
 
 ### Construction
 
-The workflow, bound actions, checkpoint location and cancellation control are supplied before run.
+The workflow, bound actions and workflow-state filepath are supplied before run.
 Source and remote repository settings are supplied to the actions that use them, together with the
 workspace reference and other required capabilities. They are not repeated in a run request.
 
-One instance executes one workflow at a time. Restart reconnects the same checkpoint and action
+One instance executes one workflow at a time. Restart reconnects the same workflow state and action
 storage, then calls run again.
 
 ### Required interfaces
@@ -86,10 +86,10 @@ storage, then calls run again.
 | Port | Provider contract | Use |
 | --- | --- | --- |
 | Agent execution | [AgentRuntime.run](agent-runtime.md#provided-interface) | Profile ID, WorkspaceRef, AdditionalContext and AgentResult |
-| Task source | [Jira](adapters.md#jira) | Read source documents and ordering; conditionally update task state, fields and reports |
+| Task source | [Jira](adapters.md#jira) | Read source documents and ordering; update task state, fields and reports |
 | Repository | [Git](adapters.md#git) | Observe and prepare revisions/workspaces; publish an observed branch |
 | Delivery | [GitHub](adapters.md#github) | Publish and observe pull requests, review, checks and integration |
-| Commands | [Processes](adapters.md#processes) | Run configured setup/check commands with owned shutdown and captured evidence |
+| Commands | [Processes](adapters.md#processes) | Run configured setup/check commands and return exit codes and output |
 
 Dependencies are supplied to actions at construction; ExecutionRunner receives none of these ports.
 Local task files are an owned input format. Actions normalize source documents, construct role inputs
@@ -106,22 +106,21 @@ The runner understands state names, action names, outcomes and transitions. Its 
 2. If the state is terminal, return its declared result.
 3. Invoke the action bound to that state.
 4. Select the next state using the action's returned outcome and the YAML transition table.
-5. Atomically persist the next state, then continue.
+5. Persist the next state, then continue.
 
-The checkpoint records the state to execute next. If execution crashes before the checkpoint advances,
-the same action starts again. If it crashes after the checkpoint advances, the next action starts.
-This is at-least-once action execution. There is no separate uncertain-action reconciliation phase
-inside the runner.
+The persisted state names the action to execute next. On restart, load the last successfully saved
+state and start that action anew. An unreadable state is a storage failure; the runner does not guess
+where to resume.
 
-The runner owns only its workflow checkpoint. It does not inspect, validate, route or copy action
+The runner owns only its workflow state. It does not inspect, validate, route or copy action
 artifacts; allocate their storage; decide repair policy; or discover and reconcile external effects.
 Its bound action functions require no execution identity or storage scope from the runner.
+An action completes its work before returning; the runner awaits it before invoking another.
 
 Before starting, validate the YAML structure, initial state, referenced transitions and action bindings.
-An undeclared outcome, action exception or checkpoint failure stops execution with a fault. The runner
-does not invent a transition or retry policy. Cancellation is forwarded to the active action and stops
-further dispatch; completed outcomes are checkpointed before returning. An action that exits without
-a completed outcome leaves the checkpoint unchanged. Actions own stopping their work and reporting it.
+An undeclared outcome, action exception or state read/write failure stops execution with a fault. The runner
+does not invent a transition or retry policy. An action that fails without an outcome leaves the
+persisted state unchanged.
 
 ## Workflow definition
 
@@ -171,9 +170,8 @@ supply review/check coordination. There are no additional coordinators choosing 
 Other workflows can reuse these actions: single-task execution ends after completion, while watch
 adds waiting and another selection when the source is empty. Waiting is an action, not runner policy.
 
-Workflow definitions are retained with their checkpoints so a restart uses the same definition.
-Adopting a changed definition for retained state is an explicit operation, never an implicit reinterpretation
-of a checkpoint. Required task checks and completion evidence remain action contracts.
+Restart loads the supplied workflow and its saved state. A saved state absent from that workflow is
+an input error. Required task checks and completion evidence remain action contracts.
 
 ## Actions
 
@@ -190,9 +188,8 @@ action data contracts. Workflow definitions contain no artifact mappings, and Ex
 not interpret those contracts.
 
 An action finishes writing its output artifacts before returning its outcome. Only then does the runner
-persist the next state. A crash can leave outputs without an advanced checkpoint; the action starts
-anew and decides whether to reuse those outputs. Atomic checkpoint replacement does not imply an
-atomic transaction over the action's files or external effects.
+persist the next state. A crash can leave outputs without an advanced workflow state; the action starts
+anew and decides whether to reuse those outputs.
 
 ExecutionRunner persists only control state. It neither maintains conversation history nor assembles
 agent context.

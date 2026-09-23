@@ -4,29 +4,20 @@ Status: proposed component design.
 
 ## Responsibility
 
-Translate explicit operations into external protocols and return observed facts. Own authentication,
-provider serialization, process handles and protocol errors. Do not choose tasks, decide repairs,
-infer completion or compensate for uncertain writes by repeating them.
+Translate explicit operations into external protocols and return observed results.
+Own authentication, provider serialization and protocol errors.
 
-Adapters is a family of independent modules under `src/adapters/`, each with its own public entry
-point. There is no universal adapter object, provider registry or service. Construction binds each
-module to a configured endpoint or host capability; ordinary dependency injection selects it.
+Adapters is a family of independent modules under `src/adapters/`. Each module has its own public
+entry point and configured connection or host capability.
 
 ## Interface
 
-Use the [shared value types](high-level-architecture.md#shared-interface-vocabulary). All operations
-below take an AbortSignal. Read operations return Result; write operations return Mutation. Inputs
-are validated before dispatch. All identifiers, revisions and receipts come from observations rather
-than being synthesized from display text.
+Use the [shared value types](high-level-architecture.md#shared-interface-vocabulary).
+Operations return their useful result or a fault. A failed request does not imply that a remote write
+was rolled back. Decisions about repeating an operation or reusing an existing artifact belong to
+the caller.
 
 ```ts
-type Operation = { id: string; deadline: string };
-type Receipt = { operationId: string; providerId: string; evidence: ArtifactRef };
-type Mutation<T> =
-  | { outcome: 'confirmed'; value: T; receipt: Receipt }
-  | { outcome: 'not-applied'; fault: Fault }
-  | { outcome: 'uncertain'; fault: Fault };
-
 type SourceDocument = { format: 'text' | 'adf'; value: string };
 type SourceComment = {
   id: string;
@@ -36,12 +27,6 @@ type SourceComment = {
 };
 ```
 
-Confirmed means the named operation's documented effect was observed. Not-applied requires evidence
-that no effect occurred; a timeout after dispatch is normally uncertain. Operation IDs correlate
-intent and receipts. They are not a promise that every provider supports idempotency. Read-back can
-resolve uncertainty only when it identifies this operation unambiguously. Never infer success from
-a similar comment, matching title or generic HTTP success after a partial response.
-
 ### Jira
 
 ```ts
@@ -49,7 +34,6 @@ type JiraIdentity = { site: string; issueId: string };
 type JiraTask = {
   identity: JiraIdentity;
   key: string;
-  revision: string;
   title: string;
   description: SourceDocument;
   status: string;
@@ -59,11 +43,10 @@ type JiraTask = {
 };
 
 interface Jira {
-  list(stop: AbortSignal): Promise<Result<readonly JiraIdentity[]>>;
-  read(target: JiraIdentity | { key: string }, stop: AbortSignal): Promise<Result<JiraTask>>;
+  list(): Promise<Result<readonly JiraIdentity[]>>;
+  read(target: JiraIdentity | { key: string }): Promise<Result<JiraTask>>;
   update(
     target: JiraIdentity,
-    expectedRevision: string,
     change: {
       title?: string;
       description?: SourceDocument;
@@ -71,38 +54,23 @@ interface Jira {
       workspaceRef?: string | null;
       pullRequestUrl?: string | null;
     },
-    operation: Operation,
-    stop: AbortSignal,
-  ): Promise<Mutation<JiraTask>>;
-  comment(target: JiraIdentity, body: SourceDocument, operation: Operation, stop: AbortSignal):
-    Promise<Mutation<SourceComment>>;
-  create(
-    input: { title: string; description: SourceDocument; issueType: string },
-    operation: Operation,
-    stop: AbortSignal,
-  ): Promise<Mutation<JiraTask>>;
-  rank(
-    target: JiraIdentity,
-    position: { before: JiraIdentity } | { after: JiraIdentity },
-    operation: Operation,
-    stop: AbortSignal,
-  ): Promise<Mutation<{ target: JiraIdentity; positionConfirmed: true }>>;
+  ): Promise<Result<JiraTask>>;
+  comment(target: JiraIdentity, body: SourceDocument): Promise<Result<SourceComment>>;
+  create(input: { title: string; description: SourceDocument; issueType: string }):
+    Promise<Result<JiraTask>>;
+  rank(target: JiraIdentity, position: { before: JiraIdentity } | { after: JiraIdentity }):
+    Promise<Result<void>>;
 }
 ```
 
-Configuration binds site, project, selection query with explicit ordering, workflow mappings and
-field mappings. `list` reads all pages in provider order or returns a fault; a partial page sequence
-is not a complete queue. `read` includes all comment pages, preserving attribution, full bodies and
-source order. ADF is supplied as complete serialized JSON; unsupported content is not flattened away.
-Requirements extraction and eligibility interpretation belong to the caller.
+Construction binds site, project, selection query with explicit ordering, workflow mappings and
+field mappings. list reads all pages in provider order. read includes all comments with complete
+bodies, attribution and source order. ADF remains serialized JSON. Pagination failure returns a fault,
+not a partial queue or conversation.
 
-`revision` is an opaque concurrency observation. Before an update, re-read and reject a changed
-revision before dispatch. Use an atomic precondition when supported; a read-before-write check alone
-is not atomic compare-and-swap. Confirm the requested state after the write; conflicts or partial
-multi-field effects remain explicit. This contract does not promise exclusion against an external
-writer racing between read and write. Workflow transition IDs come from configured mappings validated
-against the site's workflow. Ranking changes provider rank, never priority. Local execution ownership
-provides single-host exclusion; a distributed claim requires a separate boundary.
+update applies the supplied fields/transition and returns the observed task. It does not implement
+a claim lease or a read-before-write locking protocol. Eligibility and desired lifecycle changes
+belong to the caller. rank changes provider rank, not priority.
 
 ### GitHub
 
@@ -113,7 +81,6 @@ type CheckObservation = {
   producer: string;
   revision: string;
   state: 'pending' | 'passed' | 'failed' | 'cancelled' | 'skipped';
-  evidence: ArtifactRef;
 };
 type PullRequestState = {
   identity: PullRequest;
@@ -127,40 +94,36 @@ type PullRequestState = {
 };
 
 interface GitHub {
-  find(branch: string, stop: AbortSignal): Promise<Result<PullRequestState | null>>;
-  read(target: PullRequest, stop: AbortSignal): Promise<Result<PullRequestState>>;
-  ensurePullRequest(
-    input: { branch: string; baseBranch: string; expectedHead: string; title: string; body: string },
-    operation: Operation,
-    stop: AbortSignal,
-  ): Promise<Mutation<PullRequestState>>;
+  find(branch: string): Promise<Result<PullRequestState | null>>;
+  read(target: PullRequest): Promise<Result<PullRequestState>>;
+  ensurePullRequest(input: {
+    branch: string;
+    baseBranch: string;
+    expectedHead: string;
+    title: string;
+    body: string;
+  }): Promise<Result<PullRequestState>>;
   publishReview(
     target: PullRequest,
     input: { head: string; body: string; verdict: 'approve' | 'request-changes' | 'comment' },
-    operation: Operation,
-    stop: AbortSignal,
-  ): Promise<Mutation<{ reviewId: string; head: string }>>;
-  publishCheck(
-    input: { head: string; name: string; outcome: 'passed' | 'failed'; report: string },
-    operation: Operation,
-    stop: AbortSignal,
-  ): Promise<Mutation<CheckObservation>>;
-  requestAutoMerge(target: PullRequest, expectedHead: string, operation: Operation, stop: AbortSignal):
-    Promise<Mutation<{ enabledFor: string }>>;
-  workflows(revision: string, stop: AbortSignal): Promise<Result<readonly CheckObservation[]>>;
+  ): Promise<Result<{ reviewId: string; head: string }>>;
+  publishCheck(input: { head: string; name: string; outcome: 'passed' | 'failed'; report: string }):
+    Promise<Result<CheckObservation>>;
+  requestAutoMerge(target: PullRequest, expectedHead: string): Promise<Result<void>>;
+  workflows(revision: string): Promise<Result<readonly CheckObservation[]>>;
 }
 ```
 
-Bind repository and authorized credential identity at construction. Preserve check producer and
-revision identity so callers can distinguish a trusted gate from a similarly named check. Return
-all relevant observations, including skipped/cancelled checks and complete conversation. Pagination
-failure is a read fault. An ambiguous branch-to-PR lookup is a conflict, not the first match.
+Construction binds the repository and authorized credentials. Preserve check producer and revision
+so a caller can identify the required gate. Return complete conversations and relevant check results.
+An ambiguous branch lookup returns a fault.
 
-Publish review and checks for an explicit head. Request auto-merge conditionally for that head using
-provider support; confirmation means it was enabled, not that a merge happened. The configured
-branch rules remain authoritative at merge time. `read` observes actual merge and its revision;
-`workflows` observes executions for the specified revision. No direct merge or gate-bypass method
-is exposed. A provider race or partial write retains uncertainty for the caller to resolve.
+ensurePullRequest updates a matching open pull request or creates one for the supplied branch and head.
+Publish reviews and checks for the explicit revision. Request auto-merge for the expected head using
+the provider's supported precondition. Acceptance of that request does not mean a merge occurred.
+
+read reports the actual merge revision. workflows reports checks for the supplied revision.
+Branch protection remains authoritative; these operations do not bypass gates.
 
 ### Git
 
@@ -171,145 +134,111 @@ type RepositoryState = {
   branch: string | null;
   head: string;
   dirty: boolean;
-  changes: ArtifactRef;
+  changes: string;
 };
+
 interface Git {
-  inspect(path: string, stop: AbortSignal): Promise<Result<RepositoryState>>;
-  prepare(
-    input: { remote: string; path: string; branch: string; baseRevision: string },
-    operation: Operation,
-    stop: AbortSignal,
-  ): Promise<Mutation<RepositoryState>>;
-  diff(path: string, base: string, head: string, stop: AbortSignal): Promise<Result<ArtifactRef>>;
-  remoteRevision(path: string, branch: string, stop: AbortSignal): Promise<Result<string | null>>;
-  fastForward(path: string, expectedHead: string, target: string, operation: Operation, stop: AbortSignal):
-    Promise<Mutation<RepositoryState>>;
-  push(path: string, branch: string, expectedLocalHead: string, operation: Operation, stop: AbortSignal):
-    Promise<Mutation<{ remoteHead: string }>>;
+  inspect(path: string): Promise<Result<RepositoryState>>;
+  prepare(input: { remote: string; path: string; branch: string; baseRevision: string }):
+    Promise<Result<RepositoryState>>;
+  diff(path: string, base: string, head: string): Promise<Result<string>>;
+  remoteRevision(path: string, branch: string): Promise<Result<string | null>>;
+  fastForward(path: string, expectedHead: string, target: string): Promise<Result<RepositoryState>>;
+  push(path: string, branch: string, expectedLocalHead: string): Promise<Result<{ remoteHead: string }>>;
 }
 ```
 
-`prepare` creates a new checkout or observes a matching retained checkout. It never silently rewinds
-an existing branch to the supplied base. Mismatched identity or incompatible existing contents is
-a conflict. `changes` records tracked and untracked status without omitting preserved work.
-`fastForward` requires the observed local head, ancestry and no overwritten local work. `push` uses
-a normal non-forced update and confirms the remote head. No automatic stash, reset, clean, commit,
-force-push or rebase is part of these operations. Agent-authored commits remain explicit local work.
+prepare creates a checkout or returns a matching retained checkout. Existing work is preserved;
+incompatible contents return a fault. changes includes tracked and untracked status.
+
+fastForward requires the expected local head and a fast-forward that preserves local work. push uses
+a normal non-forced update and reports the remote head. These operations do not automatically stash,
+reset, clean or rewrite commits.
 
 ### Processes
 
 ```ts
 type ProcessRequest = {
-  invocationId: string;
   executable: string;
   args: readonly string[];
   cwd: string;
   environment: Readonly<Record<string, string>>;
-  stdin: ArtifactRef | null;
-  deadline: string;
-  shutdownGraceMs: number;
+  stdin: string | null;
+  timeoutMs: number | null;
 };
 type ProcessEvent = { stream: 'stdout' | 'stderr'; text: string };
-type ProcessResult = {
-  termination: 'exited' | 'cancelled' | 'timed-out' | 'launch-failed' | 'lost';
-  exitCode: number | null;
-  fault: Fault | null;
-  shutdown: Shutdown;
-  stdout: ArtifactRef | null;
-  stderr: ArtifactRef | null;
-};
+type ProcessResult = Result<{
+  exitCode: number;
+  stdout: ArtifactRef;
+  stderr: ArtifactRef;
+}>;
+
 interface Processes {
-  run(request: ProcessRequest, observe: Observer<ProcessEvent>, stop: AbortSignal):
-    Promise<ProcessResult>;
+  run(request: ProcessRequest, observe: Observer<ProcessEvent>): Promise<ProcessResult>;
 }
 ```
 
-Arguments are an array, never an implicitly concatenated shell command. An explicitly configured
-shell is an executable choice. Pass only the supplied environment plus documented host necessities;
-never inherit unrelated credentials. Environment values are not included in exported reports.
-Output is streamed and retained without unbounded in-memory accumulation. Exit zero is an observed
-process outcome; the caller decides what that proves.
+Pass executable and arguments separately. A shell command requires an explicit shell executable.
+Use the supplied environment plus necessary host settings; do not inherit unrelated credentials.
 
-Own the process and its descendants through the host's process-group or job facilities. A shutdown
-deadline bounds graceful stop followed by forced termination of owned processes. A child exit with
-live descendants is not confirmed shutdown. PID alone does not establish ownership; retain creation
-identity and group/job evidence. Hosts unable to contain the configured process report that limitation
-before launch. Intentional cancellation and timeout remain different termination reasons.
+Stream and retain output. Return the exit code after the command exits; nonzero is a command result,
+not a launch failure. Launch errors and timeouts return faults. On timeout, end the command's owned
+processes before returning. The caller decides what a command result means for its work.
 
 ### Coding runtime
 
 ```ts
 type RuntimeRequest = {
-  invocationId: string;
   model: string;
   effort: string | null;
   cwd: string;
-  prompt: ArtifactRef;
-  outputSchema: ArtifactRef;
-  toolPolicy: ArtifactRef;
-  deadline: string;
+  prompt: string;
+  toolSettings: Readonly<Record<string, unknown>>;
+  timeoutMs: number | null;
 };
-type RuntimeEvent = { kind: 'activity' | 'diagnostic'; text: string };
-type RuntimeResult = {
-  output: ArtifactRef | null;
+type RuntimeEvent = { type: string; text: string };
+type RuntimeResult = Result<{
+  output: string;
   transcript: ArtifactRef | null;
-  fault: Fault | null;
-  shutdown: Shutdown;
-};
+}>;
+
 interface CodingRuntime {
-  execute(request: RuntimeRequest, observe: Observer<RuntimeEvent>, stop: AbortSignal):
-    Promise<RuntimeResult>;
+  execute(request: RuntimeRequest, observe: Observer<RuntimeEvent>): Promise<RuntimeResult>;
 }
 ```
 
-Configuration binds one coding provider and its executable/endpoint. Validate model, effort and tool
-policy support before launch. Preserve complete prompts, structured final output and available
-activity; translate provider protocol events without inventing a role verdict. The output file holds
-the provider's final JSON candidate; role-schema validation belongs to the caller. Extra provider
-turns, silent profile substitution and autonomous retry are not adapter behavior.
+Construction binds a provider and executable or endpoint. Apply the supplied model, effort and tool
+settings. Unsupported settings return a fault. Preserve the full prompt, output and available activity.
 
-The local implementation requires the Processes contract above for owned launch and cancellation.
-Tool policy is a validated, versioned declaration of allowed tools and resource roots, interpreted
-by this provider binding. It contains credential references, never values. Failure to enforce the
-requested policy is a configuration fault. Cancellation of a remote provider must explicitly establish
-whether owned tool work stopped; losing a connection does not establish shutdown.
+Prompt and settings are passed as values; serialize to files only when required by the provider.
+Return final output without interpreting its business meaning. Profile substitution and extra repair
+turns are not adapter behavior.
 
 ### Notifications
 
 ```ts
 type NotificationRequest = { subject: string; body: string };
+
 interface Notifications {
-  publish(request: NotificationRequest, operation: Operation, stop: AbortSignal):
-    Promise<Mutation<{ acceptedMessageId: string }>>;
+  publish(request: NotificationRequest): Promise<Result<{ acceptedMessageId: string }>>;
 }
 ```
 
-The destination and credentials are configuration, not agent-supplied recipient fields. Confirmation
-records provider acceptance; it does not claim inbox delivery. Provider size limits produce a validation
-fault before dispatch, not silent report truncation. The initial provider is SNS; additional providers
-can implement this same small contract when needed.
+Destination and credentials are configured. The initial provider is SNS.
+Success means provider acceptance, not inbox delivery. Reject oversized messages rather than silently
+truncating the report.
 
 ### Required capabilities
 
-Construction supplies HTTP transport, credential resolution, clock and local filesystem/process
-facilities to the adapters that need them. Git uses Processes for explicit Git commands. Coding runtime
-uses Processes for a local executable. Other ports do not depend on one another. No business-component
-dependency or access to a caller's private records is required.
+Construction supplies HTTP transport, credential resolution and filesystem/process facilities where
+needed. Git and a local coding provider use Processes for command execution. No business-component
+internals are required.
 
 ## Internal design
 
-Each module has an input validator, protocol translator and response normalizer. Keep provider wire
-types inside that module. Configured field mappings and credentials belong to the connection, not
-global mutable state. Reuse the process or transport boundary without introducing a generic workflow
-framework across adapters.
+Keep provider wire types, authentication and response translation within each module.
+Return useful provider errors without exposing credential values. Preserve identifiers, revision
+associations and complete paginated results.
 
-Retain only operation evidence, provider receipts and owned process/output resources. A receipt
-does not become a task ledger or a queue decision. Bounded retry of safe reads may respect provider
-backoff within the original deadline. Retry a mutation only with an actual provider idempotency
-guarantee for the same operation; otherwise return uncertainty. Cancellation during dispatch follows
-the same rule.
-
-Validate all returned identities, page completeness and revision associations before returning them.
-Scrub credential values from diagnostics and exported evidence. Preserve useful provider error codes
-and request IDs. Cleanup is scoped to resources this operation owns; never kill a process or remove
-a directory merely because its name resembles a previous invocation.
+Each operation owns its local resources and releases them on completion. Adapters do not maintain a
+task ledger, decide recovery policy or add a shared transaction protocol.

@@ -9,7 +9,7 @@ If code contradicts documentation, correct the code.
 - [Proposed OperatorInterface design](docs/new/operator-interface.md): commands, execution presentation and terminal ownership.
 - [Proposed Supervisor design](docs/new/supervisor.md): execution lifecycle, recovery and restart decisions.
 - [Proposed TaskEngine design](docs/new/task-engine.md): declarative execution, action composition and event subscriptions.
-- [Proposed AgentRuntime design](docs/new/agent-runtime.md): role interfaces, profiles, permissions and invocation lifecycle.
+- [Proposed AgentRuntime design](docs/new/agent-runtime.md): profiles, supplied context and agent invocation.
 - [Proposed Adapters design](docs/new/adapters.md): external operations, protocol translation and observed outcomes.
 - [Proposed Workspace design](docs/new/workspace.md): directory layout and concrete workspace references.
 - [Proposed configuration design](docs/new/configuration.md): project/Nexus setting ownership, file locations and value constraints.

@@ -33,7 +33,7 @@ of the target project's directory. Relative paths are relative to the Nexus conf
 | Workflows | Workflow definition paths and the definition selected for each execution mode |
 | Workspace | Storage root |
 | Agent runtime | Base instructions, profile catalogue, provider connections and tool configuration |
-| Execution policy | Invocation limits, repair/escalation policies and recovery allowance |
+| Execution policy | Invocation limits, repair/escalation policies and maximum recovery attempts per supervised execution |
 | Notifications | Destination and provider configuration |
 | Credentials | Host credential-resolution settings |
 
@@ -58,4 +58,4 @@ precedence. A setting supplied under the wrong owner is invalid.
 
 An execution's resolved settings are immutable values. Reloading creates a new settings value; it
 does not mutate an existing one. Configuration data contains no action instances, runtime process
-handles, artifact contents or workflow checkpoint state.
+handles, artifact contents or saved workflow state.
