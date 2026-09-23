@@ -707,8 +707,11 @@ function unresolvedRound(parts: {
       owner.request = null;
       owner.head = null;
     }
-    // COMMENTED and inconclusive rounds cannot resolve a change request.
-    // DISMISSED reviews are not added as outstanding in the first place.
+    // COMMENTED and inconclusive rounds cannot resolve a change request, and a
+    // native review whose own state is a dismissal raises nothing of its own:
+    // no report states a decision for it, so its dismissal is conversation
+    // only — the identities it recorded stay nameable for a later regression,
+    // and it settles nothing (docs/WORKFLOW.md §9).
     held.set(round.owner, owner);
   }
   // Each outstanding identity is rendered under the round that last stated it,
