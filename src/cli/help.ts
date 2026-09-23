@@ -160,6 +160,10 @@ topic; those publications survive a supervisor restart without being repeated.
 Recovery attempts are bounded, the same failure returning unchanged after a
 repair ends in an actionable request for human help, and recovery context never
 substitutes for a passed check, a review verdict, or the completion gate.
+The parent has an entry point of its own,
+\`node dist/cli/supervise.js <intent> --repo <checkout> --config <harness.json>\`,
+which loads no ordinary command: use it when the CLI this help comes from will not
+start, and let the recovery agent repair the installation.
 The command \`supervise ticket <key>\` scopes the worker with
 \`queue run --ticket <key>\`: only
 that ticket is discovered, claimed, and reported on.

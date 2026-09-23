@@ -127,10 +127,10 @@ function entryOfIncident(stored: StoredIncident): HistoryEntry {
 /**
  * Every supervised recovery of one ticket, as the entries its history carries.
  *
- * An incident belongs to the ticket its own recovery identified, and — until a
- * recovery has identified one — to the ticket a scoped worker was following. An
- * incident that names neither cannot be attributed to this ticket's thread and
- * is left to the incident's own record and its email summary.
+ * An incident belongs to the ticket it was scoped to, or — when an unscoped
+ * worker stopped — to the ticket its own recovery named after investigating.
+ * An incident that names neither cannot be attributed to this ticket's thread
+ * and is left to its own record and its email summary.
  */
 export async function readRecoveryHistory(request: {
   readonly workDir: string;

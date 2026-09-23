@@ -95,7 +95,10 @@ export function incidentReportText(
   paragraphs.push(
     `What happened: ${ended}${stop === null ? '' : ` at ${stop.at}`}.` +
       (incident.scope === null ? '' : ` The worker was scoped to ${incident.scope}.`) +
-      (incident.ticket === null ? '' : ` The recovery identified ${incident.ticket.key}.`),
+      (incident.ticket === null
+        ? ''
+        : ` This report belongs to ${incident.ticket.key}, which is written into that item's ` +
+          'thread.'),
   );
   paragraphs.push(
     `Recovery: ${String(incident.attempts.length)} of at most ${String(incident.maxAttempts)} ` +

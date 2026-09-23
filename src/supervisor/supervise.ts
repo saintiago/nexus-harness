@@ -934,10 +934,14 @@ async function recordAttempt(
     pending: null,
     attempts: [...current.attempts, recorded],
     updatedAt: endedAt,
-    // The ticket this stop belonged to, as the turn investigated it: an
-    // unscoped `run`/`watch` incident has no scope of its own, and this is how
-    // its report gets a thread to be written into at all.
-    ...(judgment === null || judgment.ticket === null ? {} : { ticket: judgment.ticket }),
+    // The ticket this stop belonged to, as the turn investigated it. It is only
+    // taken up where the incident has no ticket of its own: an unscoped
+    // `run`/`watch` stop is how an incident gets a thread to be written into at
+    // all, while a scoped one already names the item the operator followed, and
+    // its report belongs in that item's thread.
+    ...(judgment === null || judgment.ticket === null || current.scope !== null
+      ? {}
+      : { ticket: judgment.ticket }),
   };
 
   if (judgment === null) {

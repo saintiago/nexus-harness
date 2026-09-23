@@ -32,7 +32,7 @@ import { pathToFileURL } from 'node:url';
 import { createActivityDisplay } from './activity.js';
 import { EXIT_CANCELLED, EXIT_INPUT_ERROR, EXIT_OK, EXIT_USAGE } from './context.js';
 import type { CliContext, CliIo } from './context.js';
-import { USAGE_HINT } from './help.js';
+import { HELP, USAGE_HINT } from './help.js';
 import {
   listOptions,
   parseOptions,
@@ -492,6 +492,13 @@ function recoveryTimeoutMs(supervision: SupervisionConfiguration): number {
 /** The three supervised intents, and the one positional a scoped run needs. */
 export async function superviseCli(args: readonly string[], context: CliContext): Promise<number> {
   const { cwd, io } = context;
+  // The same help contract the ordinary CLI has: a bare help flag prints the
+  // usage and succeeds, whether this command arrived through `cli.ts` or
+  // through the supervisor's own entry point.
+  if (args.includes('-h') || args.includes('--help')) {
+    io.out(HELP);
+    return EXIT_OK;
+  }
   const [subcommand, ...rest] = args;
 
   if (subcommand === undefined) {

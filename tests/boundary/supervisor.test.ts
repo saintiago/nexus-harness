@@ -30,6 +30,8 @@ import { createIncidentReporter } from '../../src/supervisor/report.js';
 import { createRecoveryTurn } from '../../src/supervisor/recovery.js';
 import type { RecoveryBrief } from '../../src/supervisor/recovery.js';
 import { runNexusWorker, WORKER_STOP_GRACE_MS } from '../../src/supervisor/worker.js';
+import { EXIT_INPUT_ERROR } from '../../src/cli/context.js';
+import { superviseCli } from '../../src/cli/supervise.js';
 import { createHttpClient } from '../../src/sources/jira/http.js';
 import { intakeLockPath } from '../../src/sources/receipts.js';
 import {
@@ -659,6 +661,111 @@ describe('the recovery turn’s own launch', () => {
     expect(await readFile(path.join(dir, 'input.md'), 'utf8')).toContain('incident-1');
     expect(result.logPath).toBe(path.join(dir, 'recovery.log'));
     expect(await readFile(result.logPath ?? '', 'utf8')).toContain('turn.completed');
+  }, 60_000);
+});
+
+describe('the supervised command around a checkout it cannot read', () => {
+  it('starts anyway, runs the real worker, and reports the incident a person has to fix', async () => {
+    const root = await tempDir();
+    const bin = await tempDir();
+    const target = path.join(root, 'target');
+    await mkdir(target, { recursive: true });
+    // The connected project's configuration is exactly what the recovery agent
+    // is here to repair: the supervisor has to start with it broken.
+    await writeFile(path.join(target, 'nexus.project.json'), '{ this is not json', 'utf8');
+    const publisher = path.join(bin, 'publish.mjs');
+    await writeFile(
+      publisher,
+      'process.stdout.write(JSON.stringify({ MessageId: "smoke-1", TopicArn: "arn:aws:sns:eu-north-1:698643713254:nexus-recovery-notifications" }));\n',
+      'utf8',
+    );
+    const harnessPath = path.join(root, 'harness.json');
+    await writeFile(
+      harnessPath,
+      JSON.stringify({
+        workDir: 'runs',
+        maxRepairs: 1,
+        taskTimeoutMinutes: 1,
+        commandTimeoutMinutes: 1,
+        recovery: {
+          agent: { runtime: 'codex', command: ['codex'] },
+          maxAttempts: 1,
+          notifications: {
+            topicArn: 'arn:aws:sns:eu-north-1:698643713254:nexus-recovery-notifications',
+            email: 'saint282@gmail.com',
+            publisher: [process.execPath, publisher],
+          },
+        },
+      }),
+      'utf8',
+    );
+    // A stand-in recovery runtime that answers with the judgment a broken
+    // project configuration deserves: a person has to fix it.
+    const standIn = await installStandIn(
+      'codex',
+      [
+        "import { writeFileSync } from 'node:fs';",
+        "import path from 'node:path';",
+        "let prompt = '';",
+        "process.stdin.setEncoding('utf8');",
+        "process.stdin.on('data', (chunk) => { prompt += chunk; });",
+        "process.stdin.on('end', () => {",
+        '  writeFileSync(',
+        "    path.join(process.cwd(), 'outcome.json'),",
+        '    JSON.stringify({',
+        "      status: 'unrecoverable',",
+        "      summary: 'the connected project has no readable configuration',",
+        "      cause: 'nexus.project.json is not valid JSON',",
+        "      help: 'write the project configuration again',",
+        '    }),',
+        '  );',
+        "  process.stdout.write(JSON.stringify({ type: 'turn.completed' }) + '\\n');",
+        '  process.exit(0);',
+        '});',
+      ].join('\n'),
+    );
+    // The worker stand-in stops exactly the way the ordinary CLI stops on a
+    // configuration it cannot read: a diagnostic on standard error and a
+    // nonzero exit. It is a real child process, started by the real worker
+    // launcher.
+    const worker = path.join(bin, 'worker.mjs');
+    await writeFile(
+      worker,
+      "process.stderr.write('error: the project configuration is not valid JSON\\n');\nprocess.exit(1);\n",
+      'utf8',
+    );
+    const lines: string[] = [];
+    const code = await withPathPrefix(standIn.bin, () =>
+      superviseCli(['run', '--repo', target, '--config', harnessPath], {
+        cwd: root,
+        io: { out: (text) => lines.push(text), err: (text) => lines.push(text) },
+        supervisorParts: { entry: worker },
+      }),
+    );
+
+    // The supervision reached the end a person owns: the worker really ran and
+    // stopped on the broken configuration, the recovery turn ran, and the
+    // incident was reported. The project's own problem was named, not rounded
+    // into a refusal before a worker ever existed.
+    expect(code).toBe(EXIT_INPUT_ERROR);
+    expect(lines.join('\n')).toContain('could not be read');
+    expect(lines.join('\n')).toContain('supervise run: attention');
+    const workDir = path.join(root, 'runs');
+    const namespaces = await readdir(path.join(workDir, '.supervisor'));
+    expect(namespaces).toHaveLength(1);
+    const supervisorRootDir = path.join(workDir, '.supervisor', namespaces[0] ?? '');
+    const ids = await readdir(path.join(supervisorRootDir, 'incidents'));
+    expect(ids).toHaveLength(1);
+    const incident = await readIncident(incidentFilePath(supervisorRootDir, ids[0] ?? ''));
+    expect(incident?.stage).toBe('help');
+    expect(incident?.stops).toHaveLength(1);
+    expect(incident?.attempts).toHaveLength(1);
+    expect(incident?.attempts[0]?.outcome).toBe('unrecoverable');
+    expect(incident?.conclusion?.detail).toContain('write the project configuration again');
+    // One attempt was the bound, and the summary really was published.
+    expect(incident?.report.notification).toMatchObject({ state: 'sent', messageId: 'smoke-1' });
+    // An incident about a ticket nobody could name yet is the email's to carry.
+    expect(incident?.ticket).toBeNull();
   }, 60_000);
 });
 
