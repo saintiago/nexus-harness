@@ -5,12 +5,8 @@ import { readRecord } from '../task-engine/actions/records.js';
 import { selectionDeclaration } from '../task-engine/actions/select-task/artifacts.js';
 import type { EngineEvent, Unsubscribe, WorkflowResult } from '../task-engine/index.js';
 import { executionPaths, workerProcessEnvironment } from './composition.js';
-import {
-  recoveryPending,
-  type RecoveryContext,
-  type RecoveryInvocation,
-  type TaskWorkspaceRef,
-} from './recovery.js';
+import { createRecovery, type RecoveryRuntimeFactory, type RecoverySelection } from './recovery.js';
+import { createRecoveryRuntime } from './recovery-runtime.js';
 import { loadWorkflow } from './workflow.js';
 
 /**
@@ -27,12 +23,8 @@ export type ExecutionRequest = {
 /** Application forwards worker events unchanged and adds its own lifecycle events. */
 export type ExecutionEvent = EngineEvent;
 
-export type RecoveryDecision = { readonly kind: 'resume' } | { readonly kind: 'needs-attention' };
-
-export type RecoveryReport = {
-  readonly summary: string;
-  readonly decision: RecoveryDecision;
-};
+/** The recovery decision and report from the Application provided interface. */
+export type { RecoveryDecision, RecoveryReport } from './recovery.js';
 
 /** The execution's final state: what happened, why, and the saved recovery report when one exists. */
 export type ExecutionResult = {
@@ -81,8 +73,12 @@ export type ApplicationSettings = {
   readonly environment: Readonly<Record<string, string | undefined>>;
   /** Launches one worker execution; the operator command supplies the process bridge. */
   readonly launchWorker: WorkerLaunch;
-  /** The recovery invocation; the deferred boundary stops for attention until it is implemented. */
-  readonly recovery?: RecoveryInvocation;
+  /**
+   * Builds the execution's recovery runtime; the default wires the configured recovery profile over
+   * the coding provider and the configured Notifications adapter. Tests substitute a controlled
+   * runtime so no provider, ticket or notification service is contacted.
+   */
+  readonly recovery?: RecoveryRuntimeFactory;
 };
 
 /** How one worker launch ended, as execution completion or a failure that needs recovery. */
@@ -142,10 +138,10 @@ function completionOf(
   return { kind: 'completed', outcome: completion.result.value };
 }
 
-/** Create the Application over its installation settings, worker launch and recovery boundary. */
+/** Create the Application over its installation settings, worker launch and recovery runtime. */
 export function createApplication(settings: ApplicationSettings): Application {
   const listeners = new Set<Observer<ExecutionEvent>>();
-  const recover = settings.recovery ?? recoveryPending;
+  const recoveryFactory = settings.recovery ?? createRecoveryRuntime;
 
   /** Forward one event to the observers; listener failures do not affect execution. */
   const publish = (event: ExecutionEvent): void => {
@@ -161,11 +157,13 @@ export function createApplication(settings: ApplicationSettings): Application {
     publish({ source: 'application', type, data });
   };
 
-  /** The workspace of the retained selection, or null when none is readable. */
-  async function retainedWorkspace(selectionFile: string): Promise<TaskWorkspaceRef | null> {
+  /** The retained selection's task and workspace, or null when the record is not readable. */
+  async function retainedSelection(selectionFile: string): Promise<RecoverySelection | null> {
     try {
       const selection = await readRecord(selectionFile, selectionDeclaration);
-      return selection === null ? null : selection.workspace;
+      return selection === null
+        ? null
+        : { task: selection.taskKey, workspace: selection.workspace };
     } catch {
       return null;
     }
@@ -183,52 +181,71 @@ export function createApplication(settings: ApplicationSettings): Application {
       const project = await loadProjectConfiguration(request.projectConfigPath);
       const workflow = await loadWorkflow(nexus.workflow.path);
       const paths = executionPaths(nexus, project);
-
-      emitLifecycle('running', null);
-      const completion = completionOf(
-        await settings.launchWorker(
-          {
-            projectConfigPath: request.projectConfigPath,
-            environment: workerProcessEnvironment(
-              nexus,
-              settings.environment,
-              settings.installationConfigPath,
-            ),
-          },
-          publish,
-        ),
-        workflow.successfulOutcomes,
-      );
-
+      const recovery = createRecovery({
+        nexus,
+        project,
+        workflow,
+        paths,
+        runtime: recoveryFactory({ nexus, environment: settings.environment }),
+        publish,
+      });
+      // One execute call manages one execution: its request and allowance are recorded before the
+      // first worker starts, so worker restarts cannot reset what recovery has already consumed.
+      await recovery.begin(request);
       const finished = (result: ExecutionResult): ExecutionResult => {
         emitLifecycle('finished', result);
         return result;
       };
-      if (completion.kind === 'completed') {
+      /** Delivery failures are reported separately; they never repeat or replace recovery. */
+      const deliveryNote = (): string => {
+        const problems = recovery.deliveryProblems();
+        return problems.length === 0
+          ? ''
+          : `\n${problems
+              .map((problem) => `Recovery report delivery failed: ${problem}`)
+              .join('\n')}`;
+      };
+
+      // Work and recovery run sequentially: each invocation finishes before the next starts.
+      for (;;) {
+        emitLifecycle('running', null);
+        const completion = completionOf(
+          await settings.launchWorker(
+            {
+              projectConfigPath: request.projectConfigPath,
+              environment: workerProcessEnvironment(
+                nexus,
+                settings.environment,
+                settings.installationConfigPath,
+              ),
+            },
+            publish,
+          ),
+          workflow.successfulOutcomes,
+        );
+        if (completion.kind === 'completed') {
+          return finished({
+            outcome: 'completed',
+            reason:
+              `The workflow finished with the successful outcome "${completion.outcome}".` +
+              deliveryNote(),
+            report: recovery.savedReport(),
+          });
+        }
+        const outcome = await recovery.recover({
+          failure: completion.failure,
+          output: completion.diagnostics,
+          selection: await retainedSelection(paths.selectionFile),
+        });
+        if (outcome.kind === 'resume') {
+          continue;
+        }
         return finished({
-          outcome: 'completed',
-          reason: `The workflow finished with the successful outcome "${completion.outcome}".`,
-          report: null,
+          outcome: 'needs-attention',
+          reason: `${completion.failure}\n${outcome.reason}${deliveryNote()}`,
+          report: recovery.savedReport(),
         });
       }
-
-      // Recovery integration is a separate pending task; until it exists the explicit boundary
-      // below stops the execution with needs-attention instead of claiming a recovery.
-      emitLifecycle('recovering', { reason: completion.failure });
-      const context: RecoveryContext = {
-        request,
-        project,
-        failure: completion.failure,
-        execution: paths,
-        workspace: await retainedWorkspace(paths.selectionFile),
-        output: completion.diagnostics,
-      };
-      const recovery = await recover(context);
-      return finished({
-        outcome: 'needs-attention',
-        reason: `${completion.failure}\n${recovery.summary}`,
-        report: null,
-      });
     },
 
     subscribe(listener: Observer<ExecutionEvent>): Unsubscribe {

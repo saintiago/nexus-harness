@@ -252,3 +252,23 @@ export function toolEnvironment(
     ]),
   );
 }
+
+/**
+ * The environment the recovery agent runs with: the host settings its tools need — the current
+ * project's Jira credential, the coding provider's credentials and the operator's Git and gh CLI
+ * configuration — without the Nexus Lens private key and the notification credentials, which
+ * recovery does not use. Recovery reads and changes tickets through its authenticated shell tools;
+ * it publishes no reviews and sends no notifications itself.
+ */
+export function recoveryEnvironment(
+  nexus: NexusConfiguration,
+  environment: Readonly<Record<string, string | undefined>>,
+): Record<string, string> {
+  return withoutSettings(
+    environment,
+    credentialSettings(nexus, [
+      ...notificationCredentialReferences(nexus),
+      nexus.nexusLens.privateKey,
+    ]),
+  );
+}

@@ -12,6 +12,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { createActionBinding } from '../src/application/action-bindings.js';
 import {
   executionPaths,
+  recoveryEnvironment,
   toolEnvironment,
   workerProcessEnvironment,
   workspaceRoot,
@@ -117,6 +118,20 @@ describe('credential isolation', () => {
     expect(environment['DEEPSEEK_API_KEY']).toBe('provider-key');
     expect(environment['PATH']).toBe('/usr/bin:/bin');
     expect(environment['HOME']).toBe('/home/operator');
+  });
+
+  it('gives the recovery agent the project credential and tool settings without Lens or SNS', () => {
+    const environment = recoveryEnvironment(nexus, hostEnvironment);
+
+    expect(environment['JIRA_API_TOKEN']).toBe('host-jira-token');
+    expect(environment['DEEPSEEK_API_KEY']).toBe('provider-key');
+    expect(environment['PATH']).toBe('/usr/bin:/bin');
+    expect(environment['HOME']).toBe('/home/operator');
+    expect(environment['NEXUS_LENS_PRIVATE_KEY']).toBeUndefined();
+    expect(environment['AWS_ACCESS_KEY_ID']).toBeUndefined();
+    expect(environment['AWS_SECRET_ACCESS_KEY']).toBeUndefined();
+    expect(environment['AWS_SESSION_TOKEN']).toBeUndefined();
+    expect(environment['UNSET_SETTING']).toBeUndefined();
   });
 });
 
