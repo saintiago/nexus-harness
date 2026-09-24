@@ -17,7 +17,7 @@ Apply these principles when shaping requirements, workflows, architecture, code 
   complexity to an architecture or implementation.
 - **Composition over inheritance:** Assemble focused behaviors through components and delegation
   instead of deep inheritance hierarchies. Use inheritance when a genuine subtype relationship is
-  simpler; avoid components that add no clarity. [Reference](https://dev.to/lovestaco/composition-over-inheritance-a-flexible-design-principle-4ehh).
+  simpler; avoid components that add no clarity.
 
 Use the smallest design that satisfies an explicit requirement or solves a demonstrated problem.
 Every contract field, abstraction, validation rule and persistent record must serve a concrete need.
