@@ -1,6 +1,6 @@
-import { readFile, writeFile } from 'node:fs/promises';
 import type { z } from 'zod';
 import { messageOf } from '../../result.js';
+import { describeIssues, parseDocument, readDocumentText, writeDocument } from './documents.js';
 
 /**
  * Pre-round records live outside the round artifact roots: the queue's selection record beside the
@@ -23,50 +23,42 @@ export async function readRecord<Declaration extends RecordDeclaration>(
   filePath: string,
   declaration: Declaration,
 ): Promise<RecordContent<Declaration> | null> {
-  let text: string;
-  try {
-    text = await readFile(filePath, 'utf8');
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-      return null;
-    }
-    throw new Error(`Record at "${filePath}" could not be read: ${messageOf(error)}`, {
-      cause: error,
-    });
+  const text = await readDocumentText(filePath, 'Record');
+  if (text === null) {
+    return null;
   }
 
-  let value: unknown;
-  try {
-    value = JSON.parse(text) as unknown;
-  } catch (error) {
-    throw new Error(`Record at "${filePath}" is not valid JSON: ${messageOf(error)}`, {
-      cause: error,
+  const parsed = parseDocument(text, declaration.schema);
+  if (parsed.kind === 'invalid-json') {
+    throw new Error(`Record at "${filePath}" is not valid JSON: ${messageOf(parsed.error)}`, {
+      cause: parsed.error,
     });
   }
-
-  const content = declaration.schema.safeParse(value);
-  if (!content.success) {
-    const issues = content.error.issues
-      .map((issue) => {
-        const location = issue.path.length > 0 ? issue.path.join('.') : '<record>';
-        return `${location}: ${issue.message}`;
-      })
-      .join('; ');
-    throw new Error(`Record at "${filePath}" does not match its declared content type: ${issues}`, {
-      cause: content.error,
-    });
+  if (parsed.kind === 'invalid-content') {
+    throw new Error(
+      `Record at "${filePath}" does not match its declared content type: ` +
+        describeIssues(parsed.error, '<record>'),
+      { cause: parsed.error },
+    );
   }
   // safeParse erases the generic schema's output type.
-  return content.data as RecordContent<Declaration>;
+  return parsed.content as RecordContent<Declaration>;
+}
+
+/** Read a declared record that must exist; a missing record is an execution error. */
+export async function readRequiredRecord<Declaration extends RecordDeclaration>(
+  filePath: string,
+  declaration: Declaration,
+  kind: string,
+): Promise<RecordContent<Declaration>> {
+  const content = await readRecord(filePath, declaration);
+  if (content === null) {
+    throw new Error(`${kind} at "${filePath}" does not exist.`);
+  }
+  return content;
 }
 
 /** Write a record as formatted JSON. */
 export async function writeRecord<Content>(filePath: string, content: Content): Promise<void> {
-  try {
-    await writeFile(filePath, `${JSON.stringify(content, null, 2)}\n`, 'utf8');
-  } catch (error) {
-    throw new Error(`Record at "${filePath}" could not be written: ${messageOf(error)}`, {
-      cause: error,
-    });
-  }
+  await writeDocument(filePath, content, 'Record');
 }

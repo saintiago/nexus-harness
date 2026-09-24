@@ -9,7 +9,7 @@ import type {
 import type { Command } from '../../../configuration/index.js';
 import { fault, messageOf, ok, type Result } from '../../../result.js';
 import type { BoundAction, EventPublisher } from '../../index.js';
-import { readRecord, writeRecord } from '../records.js';
+import { readRecord, readRequiredRecord, writeRecord } from '../records.js';
 import { selectionDeclaration, type Selection } from '../select-task/artifacts.js';
 import {
   preparedWorkspaceDeclaration,
@@ -251,10 +251,11 @@ export function createPrepareWorkspace(settings: PrepareWorkspaceSettings): Boun
   }
 
   return async () => {
-    const selection = await readRecord(settings.selectionFile, selectionDeclaration);
-    if (selection === null) {
-      throw new Error(`Selection at "${settings.selectionFile}" does not exist.`);
-    }
+    const selection = await readRequiredRecord(
+      settings.selectionFile,
+      selectionDeclaration,
+      'Selection',
+    );
     const root = selection.workspace.root;
     const worktree = path.join(root, 'worktree');
     await mkdir(path.join(root, 'artifacts'), { recursive: true });

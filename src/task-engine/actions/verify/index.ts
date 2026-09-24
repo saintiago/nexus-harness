@@ -14,7 +14,7 @@ import {
   preparedWorkspaceDeclaration,
   preparedWorkspaceFile,
 } from '../prepare-workspace/artifacts.js';
-import { readRecord } from '../records.js';
+import { readRequiredRecord } from '../records.js';
 import { currentRoundDeclaration, currentRoundFile } from '../start-round/artifacts.js';
 import { verificationArtifact, type VerificationOutput } from './artifacts.js';
 
@@ -106,10 +106,11 @@ export function createVerify(settings: VerifySettings): BoundAction {
     const [development] = await helpers.readInputArtifacts(devArtifact);
 
     const preparedFile = path.join(root, preparedWorkspaceFile);
-    const prepared = await readRecord(preparedFile, preparedWorkspaceDeclaration);
-    if (prepared === null) {
-      throw new Error(`Prepared workspace at "${preparedFile}" does not exist.`);
-    }
+    const prepared = await readRequiredRecord(
+      preparedFile,
+      preparedWorkspaceDeclaration,
+      'Prepared workspace',
+    );
     if (prepared.taskKey !== development.taskKey) {
       throw new Error(
         `The development result is for task "${development.taskKey}", not the prepared ` +
@@ -118,10 +119,7 @@ export function createVerify(settings: VerifySettings): BoundAction {
     }
 
     const recordFile = path.join(root, currentRoundFile);
-    const round = await readRecord(recordFile, currentRoundDeclaration);
-    if (round === null) {
-      throw new Error(`Current round at "${recordFile}" does not exist.`);
-    }
+    const round = await readRequiredRecord(recordFile, currentRoundDeclaration, 'Current round');
 
     // Checks run only against the work the development result describes: another revision or
     // already uncommitted tracked work is an operational inconsistency, not a failed assertion.

@@ -1,19 +1,21 @@
 import path from 'node:path';
 import type { AgentResult, AgentRuntime } from '../../../agent-runtime/index.js';
 import type { GitAdapter, RepositoryState } from '../../../adapters/git.js';
-import type { JiraAdapter, JiraComment, JiraIssue } from '../../../adapters/jira.js';
+import type { JiraAdapter } from '../../../adapters/jira.js';
 import { messageOf } from '../../../result.js';
 import type { BoundAction, EventPublisher } from '../../index.js';
 import { createArtifactHelpers, type ArtifactHistoryValue } from '../artifacts.js';
+import { describeIssues, parseDocument } from '../documents.js';
 import {
   preparedWorkspaceDeclaration,
   preparedWorkspaceFile,
   type PreparedWorkspace,
 } from '../prepare-workspace/artifacts.js';
-import { readRecord, writeRecord } from '../records.js';
+import { readRequiredRecord, writeRecord } from '../records.js';
 import { reviewArtifact, type Finding, type ReviewOutput } from '../review/artifacts.js';
 import { repairArtifact, type RepairOutput } from '../select-repair/artifacts.js';
 import { selectionDeclaration } from '../select-task/artifacts.js';
+import { readComments, readIssue } from '../source.js';
 import { verificationArtifact, type VerificationOutput } from '../verify/artifacts.js';
 import {
   devArtifact,
@@ -105,48 +107,22 @@ async function inspectRepository(git: GitAdapter, worktree: string): Promise<Rep
   return inspection.value;
 }
 
-/** Read the current source issue; a source access failure is an execution error. */
-async function readIssue(jira: JiraAdapter, issueId: string): Promise<JiraIssue> {
-  const result = await jira.readIssue(issueId);
-  if (!result.ok) {
-    throw new Error(result.fault.message);
-  }
-  return result.value;
-}
-
-/** Read the current source conversation; a source access failure is an execution error. */
-async function readConversation(jira: JiraAdapter, issueId: string): Promise<JiraComment[]> {
-  const result = await jira.readComments(issueId);
-  if (!result.ok) {
-    throw new Error(result.fault.message);
-  }
-  return [...result.value];
-}
-
 /** The agent's report, or an error naming why its output is unusable. */
 function parseResponse(output: string): DevelopmentResponse {
-  let value: unknown;
-  try {
-    value = JSON.parse(output) as unknown;
-  } catch (error) {
-    throw new Error(`The development agent returned unusable output: ${messageOf(error)}`, {
-      cause: error,
+  const parsed = parseDocument(output, developmentResponseSchema);
+  if (parsed.kind === 'invalid-json') {
+    throw new Error(`The development agent returned unusable output: ${messageOf(parsed.error)}`, {
+      cause: parsed.error,
     });
   }
-  const parsed = developmentResponseSchema.safeParse(value);
-  if (!parsed.success) {
-    const issues = parsed.error.issues
-      .map((issue) => {
-        const location = issue.path.length > 0 ? issue.path.join('.') : '<report>';
-        return `${location}: ${issue.message}`;
-      })
-      .join('; ');
+  if (parsed.kind === 'invalid-content') {
     throw new Error(
-      `The development agent's report does not match the response format: ${issues}`,
+      `The development agent's report does not match the response format: ` +
+        describeIssues(parsed.error, '<report>'),
       { cause: parsed.error },
     );
   }
-  return parsed.data;
+  return parsed.content;
 }
 
 /** Require exactly one response per supplied finding, with no unknown or repeated IDs. */
@@ -254,19 +230,21 @@ Include exactly one findingResponses entry for every supplied finding ID and no 
 /** Create Develop over the configured selection, profiles, developer runtime and adapters. */
 export function createDevelop(settings: DevelopSettings): BoundAction {
   return async () => {
-    const selection = await readRecord(settings.selectionFile, selectionDeclaration);
-    if (selection === null) {
-      throw new Error(`Selection at "${settings.selectionFile}" does not exist.`);
-    }
+    const selection = await readRequiredRecord(
+      settings.selectionFile,
+      selectionDeclaration,
+      'Selection',
+    );
     const root = selection.workspace.root;
     const worktree = path.join(root, 'worktree');
     const helpers = createArtifactHelpers({ root });
 
     const preparedFile = path.join(root, preparedWorkspaceFile);
-    const prepared = await readRecord(preparedFile, preparedWorkspaceDeclaration);
-    if (prepared === null) {
-      throw new Error(`Prepared workspace at "${preparedFile}" does not exist.`);
-    }
+    const prepared = await readRequiredRecord(
+      preparedFile,
+      preparedWorkspaceDeclaration,
+      'Prepared workspace',
+    );
 
     const histories: RoundHistories = {
       development: await helpers.readArtifactHistory(devArtifact),
@@ -292,7 +270,7 @@ export function createDevelop(settings: DevelopSettings): BoundAction {
     }
 
     const issue = await readIssue(settings.jira, selection.source.issueId);
-    const conversation = await readConversation(settings.jira, selection.source.issueId);
+    const conversation = await readComments(settings.jira, selection.source.issueId);
     // The selection owns the task and conversation; refresh them in place, preserving the selected
     // identity and the retained workspace reference.
     await writeRecord(settings.selectionFile, {

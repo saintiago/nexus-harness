@@ -1,7 +1,7 @@
-import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { z } from 'zod';
 import { messageOf } from '../../result.js';
+import { describeIssues, parseDocument, readDocumentText, writeDocument } from './documents.js';
 import { currentRoundFile, currentRoundSchema } from './start-round/artifacts.js';
 
 /**
@@ -64,47 +64,23 @@ export function createArtifactHelpers(workspace: { readonly root: string }): Art
   /** The current round number, read from the workspace on every call. */
   async function currentRoundNumber(): Promise<number> {
     const file = path.join(workspace.root, currentRoundFile);
-    let text: string;
-    try {
-      text = await readFile(file, 'utf8');
-    } catch (error) {
-      const message =
-        (error as NodeJS.ErrnoException).code === 'ENOENT'
-          ? `Current round at "${file}" does not exist.`
-          : `Current round at "${file}" could not be read: ${messageOf(error)}`;
-      throw new Error(message, { cause: error });
+    const text = await readDocumentText(file, 'Current round');
+    if (text === null) {
+      throw new Error(`Current round at "${file}" does not exist.`);
     }
 
-    let value: unknown;
-    try {
-      value = JSON.parse(text) as unknown;
-    } catch (error) {
-      throw new Error(`Current round at "${file}" is not valid JSON: ${messageOf(error)}`, {
-        cause: error,
+    const parsed = parseDocument(text, currentRoundSchema);
+    if (parsed.kind === 'invalid-json') {
+      throw new Error(`Current round at "${file}" is not valid JSON: ${messageOf(parsed.error)}`, {
+        cause: parsed.error,
       });
     }
-
-    const record = currentRoundSchema.safeParse(value);
-    if (!record.success) {
+    if (parsed.kind === 'invalid-content') {
       throw new Error(`Current round at "${file}" is not a current-round record.`, {
-        cause: record.error,
+        cause: parsed.error,
       });
     }
-    return record.data.number;
-  }
-
-  /** Read one artifact document, or null when that round produced no file at that path. */
-  async function readArtifactText(file: string): Promise<string | null> {
-    try {
-      return await readFile(file, 'utf8');
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-        return null;
-      }
-      throw new Error(`Artifact at "${file}" could not be read: ${messageOf(error)}`, {
-        cause: error,
-      });
-    }
+    return parsed.content.number;
   }
 
   /** Validate one stored artifact document against its declaration. */
@@ -113,29 +89,21 @@ export function createArtifactHelpers(workspace: { readonly root: string }): Art
     declaration: Declaration,
     text: string,
   ): ArtifactContent<Declaration> {
-    let value: unknown;
-    try {
-      value = JSON.parse(text) as unknown;
-    } catch (error) {
-      throw new Error(`Artifact at "${file}" is not valid JSON: ${messageOf(error)}`, {
-        cause: error,
+    const parsed = parseDocument(text, declaration.schema);
+    if (parsed.kind === 'invalid-json') {
+      throw new Error(`Artifact at "${file}" is not valid JSON: ${messageOf(parsed.error)}`, {
+        cause: parsed.error,
       });
     }
-
-    const content = declaration.schema.safeParse(value);
-    if (!content.success) {
-      const issues = content.error.issues
-        .map((issue) => {
-          const location = issue.path.length > 0 ? issue.path.join('.') : '<artifact>';
-          return `${location}: ${issue.message}`;
-        })
-        .join('; ');
-      throw new Error(`Artifact at "${file}" does not match its declared content type: ${issues}`, {
-        cause: content.error,
-      });
+    if (parsed.kind === 'invalid-content') {
+      throw new Error(
+        `Artifact at "${file}" does not match its declared content type: ` +
+          describeIssues(parsed.error, '<artifact>'),
+        { cause: parsed.error },
+      );
     }
     // safeParse erases the generic schema's output type.
-    return content.data as ArtifactContent<Declaration>;
+    return parsed.content as ArtifactContent<Declaration>;
   }
 
   async function readInputArtifacts<Declarations extends readonly ArtifactDeclaration[]>(
@@ -145,7 +113,7 @@ export function createArtifactHelpers(workspace: { readonly root: string }): Art
     const contents: unknown[] = [];
     for (const declaration of declarations) {
       const file = artifactFile(round, declaration.pathFromArtifactsRoot);
-      const text = await readArtifactText(file);
+      const text = await readDocumentText(file, 'Artifact');
       if (text === null) {
         throw new Error(`Required artifact at "${file}" does not exist.`);
       }
@@ -165,7 +133,7 @@ export function createArtifactHelpers(workspace: { readonly root: string }): Art
     const contents: unknown[] = [];
     for (const declaration of declarations) {
       const file = artifactFile(round, declaration.pathFromArtifactsRoot);
-      const text = await readArtifactText(file);
+      const text = await readDocumentText(file, 'Artifact');
       contents.push(text === null ? null : parseArtifact(file, declaration, text));
     }
     return contents as {
@@ -179,13 +147,7 @@ export function createArtifactHelpers(workspace: { readonly root: string }): Art
   ): Promise<void> {
     const round = await currentRoundNumber();
     const file = artifactFile(round, declaration.pathFromArtifactsRoot);
-    try {
-      await writeFile(file, `${JSON.stringify(content, null, 2)}\n`, 'utf8');
-    } catch (error) {
-      throw new Error(`Artifact at "${file}" could not be written: ${messageOf(error)}`, {
-        cause: error,
-      });
-    }
+    await writeDocument(file, content, 'Artifact');
   }
 
   async function readArtifactHistory<Declaration extends ArtifactDeclaration>(
@@ -195,7 +157,7 @@ export function createArtifactHelpers(workspace: { readonly root: string }): Art
     const history: ArtifactHistoryValue<ArtifactContent<Declaration>>[] = [];
     for (let number = 1; number < round; number += 1) {
       const file = artifactFile(number, declaration.pathFromArtifactsRoot);
-      const text = await readArtifactText(file);
+      const text = await readDocumentText(file, 'Artifact');
       if (text === null) {
         continue;
       }

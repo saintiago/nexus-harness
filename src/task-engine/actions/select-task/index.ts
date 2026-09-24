@@ -1,14 +1,17 @@
 import { mkdir, stat } from 'node:fs/promises';
 import path from 'node:path';
-import type {
-  JiraAdapter,
-  JiraComment,
-  JiraIssue,
-  JiraIssueQuery,
-} from '../../../adapters/jira.js';
+import type { JiraAdapter, JiraIssue, JiraIssueQuery } from '../../../adapters/jira.js';
 import { fault, messageOf, ok, type Result } from '../../../result.js';
 import type { BoundAction, EventPublisher } from '../../index.js';
 import { readRecord, writeRecord } from '../records.js';
+import {
+  applyTransition,
+  readComments,
+  readIssue,
+  statusNameOf,
+  transitionInto,
+  updateIssueFields,
+} from '../source.js';
 import { selectionDeclaration, type Selection } from './artifacts.js';
 
 /**
@@ -57,15 +60,6 @@ function hasDescription(fields: Readonly<Record<string, unknown>>): boolean {
   return typeof description !== 'string' || description.trim() !== '';
 }
 
-/** The issue's current status name, or null when the field cannot be read. */
-function statusNameOf(issue: JiraIssue): string | null {
-  const status = issue.fields.status;
-  if (typeof status !== 'object' || status === null) {
-    return null;
-  }
-  return text((status as { readonly name?: unknown }).name);
-}
-
 /** True for an issue satisfying the required details and the configured eligibility condition. */
 function isEligible(issue: JiraIssue, readyStatus: string): boolean {
   return (
@@ -99,24 +93,6 @@ export function createSelectTask(settings: SelectTaskSettings): BoundAction {
     return 'failed';
   }
 
-  /** Read one issue; a source access failure is an execution error. */
-  async function readIssue(issueId: string): Promise<JiraIssue> {
-    const result = await jira.readIssue(issueId);
-    if (!result.ok) {
-      throw new Error(result.fault.message);
-    }
-    return result.value;
-  }
-
-  /** Read one issue's complete conversation; a source access failure is an execution error. */
-  async function readConversation(issueId: string): Promise<JiraComment[]> {
-    const result = await jira.readComments(issueId);
-    if (!result.ok) {
-      throw new Error(result.fault.message);
-    }
-    return [...result.value];
-  }
-
   /** The stable project/task workspace path under the configured root. */
   function stableWorkspace(taskKey: string): string {
     return path.join(settings.workspaceRoot, settings.project, taskKey);
@@ -145,10 +121,7 @@ export function createSelectTask(settings: SelectTaskSettings): BoundAction {
     if (issue.fields[settings.workspacePointerField] === workspaceRoot) {
       return;
     }
-    const updated = await jira.updateFields(issue.id, { workspacePointer: workspaceRoot });
-    if (!updated.ok) {
-      throw new Error(updated.fault.message);
-    }
+    await updateIssueFields(jira, issue.id, { workspacePointer: workspaceRoot });
   }
 
   /**
@@ -157,24 +130,11 @@ export function createSelectTask(settings: SelectTaskSettings): BoundAction {
    */
   async function claim(issue: JiraIssue, workspaceRoot: string): Promise<string | null> {
     await retainWorkspace(issue, workspaceRoot);
-    const transitions = await jira.readTransitions(issue.id);
-    if (!transitions.ok) {
-      throw new Error(transitions.fault.message);
+    const transition = await transitionInto(jira, issue, settings.statuses.inProgress);
+    if (transition.kind === 'blocked') {
+      return transition.reason;
     }
-    const transition = transitions.value.find(
-      (candidate) => candidate.to.name === settings.statuses.inProgress,
-    );
-    if (transition === undefined) {
-      const from = statusNameOf(issue) ?? 'its current status';
-      return (
-        `No permitted Jira transition moves ${issue.key} from ${from} to ` +
-        `"${settings.statuses.inProgress}".`
-      );
-    }
-    const moved = await jira.transitionIssue(issue.id, transition.id);
-    if (!moved.ok) {
-      throw new Error(moved.fault.message);
-    }
+    await applyTransition(jira, issue.id, transition.transition);
     return null;
   }
 
@@ -216,14 +176,14 @@ export function createSelectTask(settings: SelectTaskSettings): BoundAction {
     }
 
     for (const candidate of candidates.value) {
-      const first = await readIssue(candidate.id);
+      const first = await readIssue(jira, candidate.id);
       if (!isEligible(first, settings.statuses.ready)) {
         continue;
       }
 
-      const conversation = await readConversation(candidate.id);
+      const conversation = await readComments(jira, candidate.id);
       // Re-read the issue before claiming so an intervening human change is preserved.
-      const current = await readIssue(candidate.id);
+      const current = await readIssue(jira, candidate.id);
       if (!isEligible(current, settings.statuses.ready)) {
         continue;
       }
@@ -255,7 +215,7 @@ export function createSelectTask(settings: SelectTaskSettings): BoundAction {
       return selectFresh();
     }
 
-    const issue = await readIssue(saved.source.issueId);
+    const issue = await readIssue(jira, saved.source.issueId);
     const status = statusNameOf(issue);
     if (status === settings.statuses.done) {
       // The retained task is complete; its workspace remains as history and selection starts over.

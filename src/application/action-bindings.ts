@@ -14,7 +14,7 @@ import { createCompleteTask } from '../task-engine/actions/complete-task/index.j
 import { createDeliver } from '../task-engine/actions/deliver/index.js';
 import { createDevelop } from '../task-engine/actions/develop/index.js';
 import { createPrepareWorkspace } from '../task-engine/actions/prepare-workspace/index.js';
-import { readRecord } from '../task-engine/actions/records.js';
+import { readRequiredRecord } from '../task-engine/actions/records.js';
 import { createReview } from '../task-engine/actions/review/index.js';
 import { createSelectRepair } from '../task-engine/actions/select-repair/index.js';
 import { selectionDeclaration } from '../task-engine/actions/select-task/artifacts.js';
@@ -79,10 +79,11 @@ export function createActionBinding(
       create: (workspace: { readonly root: string }) => BoundAction,
     ): BoundAction => {
       return async () => {
-        const selection = await readRecord(selectionFile, selectionDeclaration);
-        if (selection === null) {
-          throw new Error(`Selection at "${selectionFile}" does not exist.`);
-        }
+        const selection = await readRequiredRecord(
+          selectionFile,
+          selectionDeclaration,
+          'Selection',
+        );
         return create(selection.workspace)();
       };
     };

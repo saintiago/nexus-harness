@@ -9,18 +9,20 @@ import {
   type GitHubReview,
   type PullRequestConversation,
 } from '../../../adapters/github.js';
-import type { JiraAdapter, JiraComment, JiraDocument, JiraIssue } from '../../../adapters/jira.js';
+import type { JiraAdapter, JiraComment } from '../../../adapters/jira.js';
 import { messageOf } from '../../../result.js';
 import type { BoundAction, EventPublisher } from '../../index.js';
 import { createArtifactHelpers, type ArtifactHistoryValue } from '../artifacts.js';
 import { deliveryArtifact } from '../deliver/artifacts.js';
 import { devArtifact, type DevelopmentOutput } from '../develop/artifacts.js';
+import { describeIssues, parseDocument } from '../documents.js';
 import {
   preparedWorkspaceDeclaration,
   preparedWorkspaceFile,
 } from '../prepare-workspace/artifacts.js';
-import { readRecord, writeRecord } from '../records.js';
+import { readRequiredRecord, writeRecord } from '../records.js';
 import { selectionDeclaration } from '../select-task/artifacts.js';
+import { publishComment, readComments, readIssue } from '../source.js';
 import { currentRoundDeclaration, currentRoundFile } from '../start-round/artifacts.js';
 import { verificationArtifact } from '../verify/artifacts.js';
 import {
@@ -104,24 +106,6 @@ async function inspectRepository(git: GitAdapter, worktree: string): Promise<Rep
   return inspection.value;
 }
 
-/** Read the current source issue; a source access failure is an execution error. */
-async function readIssue(jira: JiraAdapter, issueId: string): Promise<JiraIssue> {
-  const result = await jira.readIssue(issueId);
-  if (!result.ok) {
-    throw new Error(result.fault.message);
-  }
-  return result.value;
-}
-
-/** Read the issue's complete conversation; a source access failure is an execution error. */
-async function readComments(jira: JiraAdapter, issueId: string): Promise<JiraComment[]> {
-  const result = await jira.readComments(issueId);
-  if (!result.ok) {
-    throw new Error(result.fault.message);
-  }
-  return [...result.value];
-}
-
 /** Read the checks observed for one revision; a provider failure is an execution error. */
 async function readChecks(
   github: GitHubAdapter,
@@ -133,21 +117,6 @@ async function readChecks(
     throw new Error(result.fault.message);
   }
   return result.value;
-}
-
-/** The Jira document carrying one Nexus comment as a single paragraph. */
-function commentDocument(text: string): JiraDocument {
-  return {
-    type: 'doc',
-    version: 1,
-    content: [{ type: 'paragraph', content: [{ type: 'text', text }] }],
-  };
-}
-
-/** True when the issue already carries this exact comment document. */
-function commentPublished(comments: readonly JiraComment[], document: JiraDocument): boolean {
-  const published = JSON.stringify(document);
-  return comments.some((comment) => JSON.stringify(comment.body) === published);
 }
 
 /** The most recent value of an artifact history, or null when it has none. */
@@ -200,25 +169,20 @@ function historySection(
 
 /** The reviewer's report, or an error naming why its output is unusable. */
 function parseResponse(output: string): ReviewResponse {
-  let value: unknown;
-  try {
-    value = JSON.parse(output) as unknown;
-  } catch (error) {
-    throw new Error(`The reviewer returned unusable output: ${messageOf(error)}`, { cause: error });
-  }
-  const parsed = reviewResponseSchema.safeParse(value);
-  if (!parsed.success) {
-    const issues = parsed.error.issues
-      .map((issue) => {
-        const location = issue.path.length > 0 ? issue.path.join('.') : '<report>';
-        return `${location}: ${issue.message}`;
-      })
-      .join('; ');
-    throw new Error(`The reviewer's report does not match the response format: ${issues}`, {
+  const parsed = parseDocument(output, reviewResponseSchema);
+  if (parsed.kind === 'invalid-json') {
+    throw new Error(`The reviewer returned unusable output: ${messageOf(parsed.error)}`, {
       cause: parsed.error,
     });
   }
-  return parsed.data;
+  if (parsed.kind === 'invalid-content') {
+    throw new Error(
+      `The reviewer's report does not match the response format: ` +
+        describeIssues(parsed.error, '<report>'),
+      { cause: parsed.error },
+    );
+  }
+  return parsed.content;
 }
 
 /**
@@ -302,17 +266,19 @@ Apply the verdict rules: approved requires sufficient evidence and no current bl
 /** Create Review over the selected workspace, reviewer runtime, publication and adapters. */
 export function createReview(settings: ReviewSettings): BoundAction {
   return async () => {
-    const selection = await readRecord(settings.selectionFile, selectionDeclaration);
-    if (selection === null) {
-      throw new Error(`Selection at "${settings.selectionFile}" does not exist.`);
-    }
+    const selection = await readRequiredRecord(
+      settings.selectionFile,
+      selectionDeclaration,
+      'Selection',
+    );
     const root = selection.workspace.root;
     const worktree = path.join(root, 'worktree');
     const preparedFile = path.join(root, preparedWorkspaceFile);
-    const prepared = await readRecord(preparedFile, preparedWorkspaceDeclaration);
-    if (prepared === null) {
-      throw new Error(`Prepared workspace at "${preparedFile}" does not exist.`);
-    }
+    const prepared = await readRequiredRecord(
+      preparedFile,
+      preparedWorkspaceDeclaration,
+      'Prepared workspace',
+    );
     if (prepared.taskKey !== selection.taskKey) {
       throw new Error(
         `The prepared workspace is for task "${prepared.taskKey}", not the selected ` +
@@ -385,13 +351,7 @@ export function createReview(settings: ReviewSettings): BoundAction {
           throw new Error(publishedCheck.fault.message);
         }
       }
-      const document = commentDocument(reviewComment(review));
-      if (!commentPublished(comments, document)) {
-        const added = await settings.jira.addComment(issueId, document);
-        if (!added.ok) {
-          throw new Error(added.fault.message);
-        }
-      }
+      await publishComment(settings.jira, issueId, comments, reviewComment(review));
     }
 
     // A saved report for the delivered head is the review of this revision: finish any missing
@@ -442,10 +402,7 @@ export function createReview(settings: ReviewSettings): BoundAction {
       throw new Error(conversation.fault.message);
     }
     const roundFile = path.join(root, currentRoundFile);
-    const round = await readRecord(roundFile, currentRoundDeclaration);
-    if (round === null) {
-      throw new Error(`Current round at "${roundFile}" does not exist.`);
-    }
+    const round = await readRequiredRecord(roundFile, currentRoundDeclaration, 'Current round');
     const conversationFile = path.join(
       root,
       'artifacts',

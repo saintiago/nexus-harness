@@ -1,7 +1,7 @@
 import path from 'node:path';
 import type { GitAdapter, RepositoryState } from '../../../adapters/git.js';
 import type { GitHubAdapter, PullRequest } from '../../../adapters/github.js';
-import type { JiraAdapter, JiraComment, JiraDocument, JiraIssue } from '../../../adapters/jira.js';
+import type { JiraAdapter, JiraTransition } from '../../../adapters/jira.js';
 import type { BoundAction, EventPublisher } from '../../index.js';
 import { createArtifactHelpers } from '../artifacts.js';
 import { devArtifact, type DevelopmentOutput } from '../develop/artifacts.js';
@@ -9,9 +9,18 @@ import {
   preparedWorkspaceDeclaration,
   preparedWorkspaceFile,
 } from '../prepare-workspace/artifacts.js';
-import { readRecord } from '../records.js';
+import { readRequiredRecord } from '../records.js';
 import { repairArtifact } from '../select-repair/artifacts.js';
 import { selectionDeclaration, type Selection } from '../select-task/artifacts.js';
+import {
+  applyTransition,
+  publishComment,
+  readComments,
+  readIssue,
+  statusNameOf,
+  transitionInto,
+  updateIssueFields,
+} from '../source.js';
 import { verificationArtifact } from '../verify/artifacts.js';
 import { deliveryArtifact, type DeliveryOutput } from './artifacts.js';
 
@@ -64,49 +73,6 @@ async function readPullRequest(
   return result.value;
 }
 
-/** Read the current source issue; a source access failure is an execution error. */
-async function readIssue(jira: JiraAdapter, issueId: string): Promise<JiraIssue> {
-  const result = await jira.readIssue(issueId);
-  if (!result.ok) {
-    throw new Error(result.fault.message);
-  }
-  return result.value;
-}
-
-/** Read the issue's complete conversation; a source access failure is an execution error. */
-async function readComments(jira: JiraAdapter, issueId: string): Promise<JiraComment[]> {
-  const result = await jira.readComments(issueId);
-  if (!result.ok) {
-    throw new Error(result.fault.message);
-  }
-  return [...result.value];
-}
-
-/** The issue's current status name, or null when the field cannot be read. */
-function statusNameOf(issue: JiraIssue): string | null {
-  const status = issue.fields.status;
-  if (typeof status !== 'object' || status === null) {
-    return null;
-  }
-  const name = (status as { readonly name?: unknown }).name;
-  return typeof name === 'string' && name.trim() !== '' ? name : null;
-}
-
-/** The Jira document carrying one Nexus comment as a single paragraph. */
-function commentDocument(text: string): JiraDocument {
-  return {
-    type: 'doc',
-    version: 1,
-    content: [{ type: 'paragraph', content: [{ type: 'text', text }] }],
-  };
-}
-
-/** True when the issue already carries this exact comment document. */
-function commentPublished(comments: readonly JiraComment[], document: JiraDocument): boolean {
-  const published = JSON.stringify(document);
-  return comments.some((comment) => JSON.stringify(comment.body) === published);
-}
-
 /** The pull request title: the task key with its source summary when one is readable. */
 function pullRequestTitle(selection: Selection): string {
   const task = selection.task;
@@ -146,17 +112,19 @@ function reportText(
 /** Create Deliver over the selected workspace, configured delivery target and adapters. */
 export function createDeliver(settings: DeliverSettings): BoundAction {
   return async () => {
-    const selection = await readRecord(settings.selectionFile, selectionDeclaration);
-    if (selection === null) {
-      throw new Error(`Selection at "${settings.selectionFile}" does not exist.`);
-    }
+    const selection = await readRequiredRecord(
+      settings.selectionFile,
+      selectionDeclaration,
+      'Selection',
+    );
     const root = selection.workspace.root;
     const worktree = path.join(root, 'worktree');
     const preparedFile = path.join(root, preparedWorkspaceFile);
-    const prepared = await readRecord(preparedFile, preparedWorkspaceDeclaration);
-    if (prepared === null) {
-      throw new Error(`Prepared workspace at "${preparedFile}" does not exist.`);
-    }
+    const prepared = await readRequiredRecord(
+      preparedFile,
+      preparedWorkspaceDeclaration,
+      'Prepared workspace',
+    );
     const taskBranch = prepared.branch;
     const repository = prepared.repository;
 
@@ -404,22 +372,13 @@ export function createDeliver(settings: DeliverSettings): BoundAction {
     const comments = await readComments(settings.jira, selection.source.issueId);
     const needsPullRequestField = issue.fields[settings.pullRequestField] !== pullRequestUrl;
     const status = statusNameOf(issue);
-    let transitionId: string | null = null;
+    let transition: JiraTransition | null = null;
     if (status !== settings.reviewStatus) {
-      const transitions = await settings.jira.readTransitions(issue.id);
-      if (!transitions.ok) {
-        throw new Error(transitions.fault.message);
+      const found = await transitionInto(settings.jira, issue, settings.reviewStatus);
+      if (found.kind === 'blocked') {
+        return fail(found.reason);
       }
-      const transition = transitions.value.find(
-        (candidate) => candidate.to.name === settings.reviewStatus,
-      );
-      if (transition === undefined) {
-        return fail(
-          `No permitted Jira transition moves ${selection.taskKey} from ` +
-            `${status ?? 'its current status'} to "${settings.reviewStatus}".`,
-        );
-      }
-      transitionId = transition.id;
+      transition = found.transition;
     }
 
     const output: DeliveryOutput = {
@@ -431,24 +390,17 @@ export function createDeliver(settings: DeliverSettings): BoundAction {
     await helpers.writeOutputArtifact(deliveryArtifact, output);
 
     if (needsPullRequestField) {
-      const updated = await settings.jira.updateFields(issue.id, { pullRequest: pullRequestUrl });
-      if (!updated.ok) {
-        throw new Error(updated.fault.message);
-      }
+      await updateIssueFields(settings.jira, issue.id, { pullRequest: pullRequestUrl });
     }
-    if (transitionId !== null) {
-      const moved = await settings.jira.transitionIssue(issue.id, transitionId);
-      if (!moved.ok) {
-        throw new Error(moved.fault.message);
-      }
+    if (transition !== null) {
+      await applyTransition(settings.jira, issue.id, transition);
     }
-    const document = commentDocument(reportText(development, turns.length, escalatedFrom));
-    if (!commentPublished(comments, document)) {
-      const added = await settings.jira.addComment(issue.id, document);
-      if (!added.ok) {
-        throw new Error(added.fault.message);
-      }
-    }
+    await publishComment(
+      settings.jira,
+      issue.id,
+      comments,
+      reportText(development, turns.length, escalatedFrom),
+    );
     return 'published';
   };
 }

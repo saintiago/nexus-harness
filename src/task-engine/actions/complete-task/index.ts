@@ -1,11 +1,12 @@
 import type { GitHubAdapter } from '../../../adapters/github.js';
-import type { JiraAdapter, JiraIssue } from '../../../adapters/jira.js';
+import type { JiraAdapter } from '../../../adapters/jira.js';
 import type { BoundAction, EventPublisher } from '../../index.js';
 import { createArtifactHelpers } from '../artifacts.js';
 import { deliveryArtifact } from '../deliver/artifacts.js';
-import { readRecord } from '../records.js';
+import { readRequiredRecord } from '../records.js';
 import { reviewArtifact } from '../review/artifacts.js';
 import { selectionDeclaration } from '../select-task/artifacts.js';
+import { applyTransition, readIssue, statusNameOf, transitionInto } from '../source.js';
 import { completionArtifact, type CompletionOutput } from './artifacts.js';
 
 /**
@@ -44,25 +45,6 @@ export type CompleteTaskSettings = {
   readonly wait: (milliseconds: number) => Promise<void>;
 };
 
-/** Read the current source issue; a source access failure is an execution error. */
-async function readIssue(jira: JiraAdapter, issueId: string): Promise<JiraIssue> {
-  const result = await jira.readIssue(issueId);
-  if (!result.ok) {
-    throw new Error(result.fault.message);
-  }
-  return result.value;
-}
-
-/** The issue's current status name, or null when the field cannot be read. */
-function statusNameOf(issue: JiraIssue): string | null {
-  const status = issue.fields.status;
-  if (typeof status !== 'object' || status === null) {
-    return null;
-  }
-  const name = (status as { readonly name?: unknown }).name;
-  return typeof name === 'string' && name.trim() !== '' ? name : null;
-}
-
 /** One observation of the publication's merge state. */
 type MergeObservation =
   | { readonly kind: 'merged'; readonly revision: string }
@@ -78,10 +60,11 @@ type PostMergeObservation =
 /** Create CompleteTask over the selected workspace, configured checks and adapters. */
 export function createCompleteTask(settings: CompleteTaskSettings): BoundAction {
   return async () => {
-    const selection = await readRecord(settings.selectionFile, selectionDeclaration);
-    if (selection === null) {
-      throw new Error(`Selection at "${settings.selectionFile}" does not exist.`);
-    }
+    const selection = await readRequiredRecord(
+      settings.selectionFile,
+      selectionDeclaration,
+      'Selection',
+    );
     const helpers = createArtifactHelpers(selection.workspace);
     const [delivery, review] = await helpers.readInputArtifacts(deliveryArtifact, reviewArtifact);
     const [recorded] = await helpers.readOptionalInputArtifacts(completionArtifact);
@@ -254,23 +237,11 @@ export function createCompleteTask(settings: CompleteTaskSettings): BoundAction 
       if (status === settings.doneStatus) {
         return 'completed';
       }
-      const transitions = await settings.jira.readTransitions(issue.id);
-      if (!transitions.ok) {
-        throw new Error(transitions.fault.message);
+      const transition = await transitionInto(settings.jira, issue, settings.doneStatus);
+      if (transition.kind === 'blocked') {
+        return fail(transition.reason);
       }
-      const transition = transitions.value.find(
-        (candidate) => candidate.to.name === settings.doneStatus,
-      );
-      if (transition === undefined) {
-        return fail(
-          `No permitted Jira transition moves ${taskKey} from ` +
-            `${status ?? 'its current status'} to "${settings.doneStatus}".`,
-        );
-      }
-      const moved = await settings.jira.transitionIssue(issue.id, transition.id);
-      if (!moved.ok) {
-        throw new Error(moved.fault.message);
-      }
+      await applyTransition(settings.jira, issue.id, transition.transition);
       return 'completed';
     }
 
