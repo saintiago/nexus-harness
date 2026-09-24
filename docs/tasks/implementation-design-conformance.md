@@ -1,0 +1,3 @@
+# Reconcile implementation with design
+
+Review and correct implementation behavior against [Develop](../task-engine/actions/develop.md), [CompleteTask](../task-engine/actions/complete-task.md), [Configuration](../configuration.md) and [Testing](../testing.md). Examine blanket untracked-file rejection, treatment of superseded check runs, restrictions on sharing profiles between roles, and test scopes and execution order. Remove unsupported restrictions where documented intent is clear. Report ambiguous product decisions instead of inventing requirements or changing documentation to justify existing code.

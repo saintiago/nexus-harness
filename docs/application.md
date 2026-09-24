@@ -166,6 +166,7 @@ Application supplies a stable queue execution directory per configured project:
 <storage root>/executions/<project>/
 ├── workflow.json
 ├── selection.json
+├── logs/
 └── recovery/
 ```
 
@@ -192,3 +193,22 @@ The parent exits with:
 
 Print command and parent initialization errors to stderr. Once presentation starts, stop it when
 execution ends, including failure.
+
+## Execution log
+
+Persist the combined execution event stream independently of terminal presentation. Each execute call
+creates one JSONL file at `<execution directory>/logs/<execution id>/events.jsonl`. Worker restarts
+and recovery within that execution use the same file; a new execution uses a new directory.
+
+Each line is `{ "timestamp": <ISO timestamp>, "event": <ExecutionEvent> }`. Timestamp events when
+received and preserve their order and complete payloads, including agent activity. Terminal formatting
+and display truncation do not change the saved events. Do not add configuration or credential values
+to events for logging.
+
+Application owns the logger subscription and file lifecycle. Open it before publishing starting, drain
+pending writes before recovery reads the log, and close it after finished on every exit path. Include
+the log filepath in recovery context. Logging is an ordinary file subscriber, with no logging framework,
+rotation policy or additional workflow state.
+
+A log write failure is reported to stderr once; execution continues. Do not invoke recovery solely for
+a logging failure. Initialization errors before a log can be opened remain stderr diagnostics.
