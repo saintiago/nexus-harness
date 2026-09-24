@@ -2,13 +2,16 @@
  * Component tests: the real Application loads installation and project configuration and the
  * configured workflow module, launches a controlled worker and drives the documented recovery
  * lifecycle over a controlled recovery runtime — the allowance, the operational workspace and
- * context, the report and its publication, resumption and the needs-attention decisions. No child
- * process beyond the controlled launch, service, credential or agent turn is involved.
+ * context, the report and its publication, resumption and the needs-attention decisions. The
+ * operational worktree's Git initialization is the only child process besides the controlled
+ * launch; no live service, credential or agent turn is involved.
  */
 
+import { execFile } from 'node:child_process';
 import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
@@ -44,6 +47,9 @@ import { nexusConfiguration, projectConfiguration } from './support/configuratio
 const workflowModule = fileURLToPath(
   new URL('./fixtures/workflow/start-round.mjs', import.meta.url),
 );
+
+/** Run one Git command to observe the operational worktree the provider receives. */
+const execFileAsync = promisify(execFile);
 
 /** One recovery report serialized as the agent returns it. */
 function report(summary: string, kind: 'resume' | 'needs-attention'): string {
@@ -142,6 +148,10 @@ async function harness(options: {
   const settings: ApplicationSettings = {
     installationConfigPath,
     environment: {
+      PATH: process.env.PATH ?? '',
+      HOME: process.env.HOME ?? '',
+      GIT_CONFIG_GLOBAL: '/dev/null',
+      GIT_CONFIG_NOSYSTEM: '1',
       AWS_ACCESS_KEY_ID: 'host-access-key',
       AWS_SECRET_ACCESS_KEY: 'host-secret-key',
       AWS_SESSION_TOKEN: 'host-session-token',
@@ -568,6 +578,30 @@ describe('Application execution', () => {
     expect(context).not.toContain('host-session-token');
     expect(context).not.toContain('host-jira-token');
     expect(context).not.toContain('host-lens-key');
+  });
+
+  it('runs recovery with an operational worktree inside a Git repository', async () => {
+    const executed = await harness({
+      completions: [
+        {
+          result: { ok: false, fault: { message: 'workflow state is invalid' } },
+          exitCode: 1,
+          problem: null,
+          diagnostics: 'worker diagnostic\n',
+        },
+      ],
+      agent: () => Promise.resolve(ok({ output: report('Recovered.', 'needs-attention') })),
+    });
+
+    await executed.application.execute({ projectConfigPath: executed.projectConfigPath });
+
+    // The configured Codex provider refuses a working directory outside a Git repository, so the
+    // operational worktree is initialized as one before the invocation starts.
+    const worktree = path.join(executed.invocations[0]!.workspace.root, 'worktree');
+    const observed = await execFileAsync('git', ['rev-parse', '--is-inside-work-tree'], {
+      cwd: worktree,
+    });
+    expect(observed.stdout.trim()).toBe('true');
   });
 
   it('treats unusable recovery output as a failed invocation', async () => {

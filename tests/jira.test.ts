@@ -145,7 +145,10 @@ describe('Jira adapter', () => {
           'content-type': 'application/json',
         },
       });
-      expect(bodyOf(server.requests[0])).toEqual({ jql: 'project = NEX order by Rank' });
+      expect(bodyOf(server.requests[0])).toEqual({
+        jql: 'project = NEX order by Rank',
+        fields: ['key'],
+      });
     } finally {
       await server.stop();
     }
@@ -207,10 +210,36 @@ describe('Jira adapter', () => {
     });
     expect(bodyOf(requests[0])).toEqual({
       jql: 'project = NEX AND status = "To Do" order by Rank',
+      fields: ['key'],
     });
     expect(bodyOf(requests[1])).toEqual({
       jql: 'project = NEX AND status = "To Do" order by Rank',
+      fields: ['key'],
       nextPageToken: 'page-2',
+    });
+  });
+
+  it('asks for the issue key explicitly and parses the returned identity', async () => {
+    // The search endpoint returned only the issue id until the key field was requested, which
+    // stopped selection before the issue could be claimed.
+    const { adapter, requests } = adapterOver([
+      json({ issues: [{ id: '10043', key: 'HARN-43' }], isLast: true }),
+    ]);
+
+    const result = await adapter.searchIssues({ query: 'project = HARN', orderBy: 'Rank' });
+
+    expect(bodyOf(requests[0])).toEqual({ jql: 'project = HARN order by Rank', fields: ['key'] });
+    expect(result).toEqual({ ok: true, value: [{ id: '10043', key: 'HARN-43' }] });
+  });
+
+  it('reports a search issue without its key instead of accepting an incomplete identity', async () => {
+    const { adapter } = adapterOver([json({ issues: [{ id: '10043' }], isLast: true })]);
+
+    const result = await adapter.searchIssues({ query: 'project = HARN', orderBy: 'Rank' });
+
+    expect(result).toMatchObject({
+      ok: false,
+      fault: { message: expect.stringContaining('unexpected response') },
     });
   });
 
