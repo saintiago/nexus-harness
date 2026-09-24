@@ -7,7 +7,8 @@ installation, builds, tests and Nexus execution. Native Windows execution is not
 
 ## Language and tooling
 
-Use Node.js, TypeScript ES modules and npm. Use XState for workflow execution and persisted snapshots.
+Use Node.js, TypeScript ES modules and npm. Use XState for workflow execution and persisted snapshots,
+including the planned idea refinement workflow's parallel regions and joins.
 Use Zod for external input validation, ESLint for linting and Prettier for formatting.
 
 Use Dependency Cruiser in validation to enforce component import boundaries. Cross-component imports

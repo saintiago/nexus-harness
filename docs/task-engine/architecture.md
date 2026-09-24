@@ -3,7 +3,8 @@
 ## Responsibility
 
 Execute a task workflow supplied as an XState definition. The workflow defines sequencing, ordinary functions perform
-the actions, and persistent artifacts carry data between actions. Process one action at a time.
+the actions, and persistent artifacts carry data between actions. Finite delivery uses sequential
+states; the planned idea refinement workflow uses independent parallel regions.
 
 The public module is `src/task-engine/index.ts`. Its construction inputs are a workflow, an action
 binding that receives the engine's EventPublisher and produces the bound action implementations,
@@ -78,24 +79,31 @@ from actions and other listeners.
 
 ### Agent activity events
 
-The caller of an agent invocation publishes these events using its own source. They travel through
-the ordinary event stream:
+The following is the planned unified invocation contract for finite delivery, recovery and idea
+refinement. The current sequential event form remains until this extension is implemented.
+
+The caller assigns each AgentRuntime invocation a role name, unique invocation ID and Unix
+start time in milliseconds. The same contract applies to one or several concurrent invocations,
+including recovery. Transported activity carries that identity so simultaneous roles remain
+attributable. The Application logger writes complete timestamped activity to one JSONL file per
+invocation. The main execution stream contains:
 
 | Type | Data |
 | --- | --- |
-| agent-started | `{ role: 'developer' \| 'reviewer' \| 'recovery', operation: string, profile: string, task?: string }` |
-| agent-activity | The runtime's AgentEvent: type and text |
-| agent-finished | `null` |
+| agent-started | `{ agentName, invocationId, startedAtUnixMs, operation, profile, task?, log: ArtifactRef }` |
+| agent-finished | `{ agentName, invocationId, startedAtUnixMs, log: ArtifactRef, result }` |
 
-Use role developer, reviewer or recovery. Activity types distinguish message, command, result and
-change. The caller forwards activity unchanged from
-[AgentRuntime](../agent-runtime/architecture.md#provided-interface). It emits agent-finished when
-the invocation ends, including failure; that event does not declare task success.
-
-Invocations are sequential, so activity belongs to the most recent agent-started until agent-finished.
-No display session IDs or separate activity transport are required.
+The log path includes the agent name, Unix start time and invocation ID. Agent messages and tool
+activity are absent from the main durable event file; they use the per-invocation activity channel
+for logging and live presentation. A finished event means the invocation ended, including failure,
+and never declares task success. [Application](../application.md#execution-log) owns storage; the
+[OperatorInterface](../operator-interface.md#agent-activity-pane) owns rendering.
 
 ### Action outcome events
+
+The following fields describe the current finite delivery action outcomes. Idea refinement actions
+preserve the same saved-artifact reference principle while using an idea key, cycle and brief
+revision where relevant, as defined in its specification.
 
 An action publishes one outcome event after it finishes writing the durable output for the outcome it
 returns. Its type is `outcome`, its source is the producing action, and its data is:
@@ -155,11 +163,11 @@ for the terminal save before returning the outcome. Detailed behavior belongs to
 
 ## Workflow definition
 
-A workflow is an XState machine definition with named states, one invoked operation per nonterminal
-state, transitions selected by outcomes and terminal results. Business operations and artifact handling
+A workflow is an XState machine definition with named states, invoked operations in sequential or
+parallel states, outcome transitions and terminal results. Business operations and artifact handling
 remain outside the definition.
 
-Each state names an action and maps its returned outcomes to the next state. A terminal state
+Sequential states name an action and map its returned outcomes to the next state. A terminal state
 declares the workflow result. For example, this state routes verification outcomes:
 
 ```ts
@@ -177,7 +185,9 @@ verify: {
 
 The complete finite workflow is defined in [finite-delivery.ts](../../workflows/finite-delivery.ts).
 Queue loops, round and repair loops and waits are workflow choices; the runner only follows
-transitions.
+transitions. The planned [idea refinement workflow](../idea-refinement/spec.md) expresses parallel
+regions, joins, verdict precedence and bounded correction loops in XState; operations retain their
+artifact and source-update responsibilities.
 
 The target finite workflow routes the initial prepared workspace and failed Develop, failed Verify
 and changesRequested Review to StartRound. StartRound returns started for another round or exhausted

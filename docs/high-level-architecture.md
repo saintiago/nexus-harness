@@ -41,8 +41,8 @@ Application is the parent of the Nexus worker process. Application constructs Ta
 dependencies in the worker. Actions use AgentRuntime for development/review; Application uses it for recovery.
 Adapters are modules at external boundaries, not a registry or additional service.
 
-Workspace and configuration are data designs. Workspace defines a fixed directory hierarchy and a
-reference to an instance.
+Workspace and configuration are data designs. WorkspaceRef identifies an instance; artifact layout
+is owned by the selected workflow.
 
 ## Application and configuration
 
@@ -75,8 +75,10 @@ Persisted workflow state is the checkpoint. Save and load it directly. The curre
 neither a separate checkpoint subsystem nor a filesystem transaction protocol. A future database
 does not require a storage framework now.
 
-Execution is sequential: an action finishes before the next starts, and recovery runs after the work
-invocation ends. Cancellation and coordination between multiple writers are not current features.
+Finite delivery executes actions sequentially. The planned [idea refinement workflow](idea-refinement/spec.md)
+uses XState parallel regions for independent purpose/research and council actions, then joins before
+writing or routing. Each parallel action owns separate artifacts. Application-level recovery starts
+after the worker invocation ends. Cancellation and shared-writer coordination are not current features.
 
 ## Component responsibilities
 
@@ -84,7 +86,7 @@ invocation ends. Cancellation and coordination between multiple writers are not 
 | --- | --- | --- |
 | Application | Commands, configuration loading, component wiring, worker lifecycle, recovery invocation and process exit | Task phases or judging the adequacy of a recovery repair |
 | OperatorInterface | Event subscriptions, display state and terminal presentation | Commands, execution startup, queue decisions or recovery policy |
-| TaskEngine | Sequential workflow execution, bound actions, persisted state and event subscriptions | Interpreting action artifacts or operational recovery policy |
+| TaskEngine | XState workflow execution, bound actions, persisted state and event subscriptions | Interpreting action artifacts or operational recovery policy |
 | AgentRuntime | Profiles, prompt assembly, invocation and output collection | Business output schemas, task selection or declaring completion |
 | Adapters | External protocols, authentication and observed results | Business lifecycle or recovery decisions |
 
@@ -176,3 +178,16 @@ Application applies the decision within its configured recovery allowance.
 Required task checks and completion gates still belong to the normal actions.
 
 The defined workflow includes development, verification, delivery, review and completion.
+
+## Planned idea refinement
+
+[Idea refinement](idea-refinement/spec.md) is a separate target workflow available to any connected
+project. Project configuration supplies purpose sources and idea-source mappings; Nexus configuration
+supplies the workflow and role profiles. Purpose and research run in parallel, followed by a brief
+writer and a parallel three-reviewer council. XState joins both groups and routes unanimous approval,
+minor correction, major rework or return to author. Approval produces a ready-for-design handoff for
+a later Requirements and Design workflow; finite delivery still starts from its own To Do queue.
+
+Every agent invocation uses the same identity, activity-log reference and terminal-pane contract,
+regardless of how many roles are active. The Application logger persists each agent's complete
+activity separately; the main execution stream carries lifecycle and artifact references.

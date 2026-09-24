@@ -1,10 +1,11 @@
 # Workspace
 
-Workspace consists of a fixed directory layout and a reference to one instance.
+WorkspaceRef identifies one workspace instance. Finite delivery and the planned idea refinement
+workflow each own a fixed layout for their different artifacts.
 
 ## Layout and reference
 
-The workspace layout is:
+The current finite delivery workspace layout is:
 
 ```text
 <workspace root>/
@@ -40,3 +41,12 @@ not imply that the directory exists.
 
 All layout paths are relative to root and remain within it. WorkspaceRef is a plain value with no
 methods, process handles, configuration loaders or lifecycle state.
+
+## Planned idea refinement layout
+
+The [idea refinement specification](idea-refinement/spec.md#artifacts-and-revision-binding)
+defines a separate workspace under
+`<storage root>/workspaces/<project>/<idea>/refinement/`. Its artifacts are keyed by council
+cycle and brief revision. It does not use finite delivery's current-round record or writable
+delivery worktree. The same WorkspaceRef value identifies the refinement workspace. Nexus owns
+artifact writes; agents read the project snapshot and supplied context.

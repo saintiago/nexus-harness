@@ -34,8 +34,7 @@ state does not imply task success: drained and blocked are both declared workflo
 | Progress | Subscribe and forward state observations as Nexus events | Publish snapshots of the running machine |
 | Completion | Return the outcome or execution error; release subscriptions | Report terminal output and machine errors |
 
-There is no Nexus loop that manually invokes successive actions. The workflow defines sequencing;
-XState executes it.
+There is no Nexus loop that manually invokes successive actions or joins parallel operations. The workflow defines sequencing and concurrency; XState executes it.
 
 ## Persistence
 
@@ -53,8 +52,8 @@ Before returning a terminal outcome, wait for the pending writes, including the 
 to finish.
 
 On restoration, XState restarts an active invocation. A terminal result ends the current run; it is
-reset only on the next run, not looped automatically. Saved state may lag execution: a crash can cause one or more completed operations
-to run again. Handling repeated execution and existing work belongs to those operations.
+reset only on the next run, not looped automatically. Saved state may lag execution: a crash can
+cause one or more completed operations, including parallel invocations, to run again. Handling repeated execution and existing work belongs to those operations.
 
 Report state read/write failures as execution errors, not terminal outcomes. On an operation error,
 retain the last saved runnable snapshot rather than replacing it with an errored machine snapshot.
@@ -62,10 +61,11 @@ Use ordinary file save/load, without a second checkpoint system or transaction p
 
 ## Progress and errors
 
-Subscribe to the XState actor and forward its state value:
+Subscribe to the XState actor and forward its state value. Preserve structured values for
+parallel states so all active regions remain observable:
 
 ```text
-{ source: "execution-runner", type: "state", data: { name: <state name> } }
+{ source: "execution-runner", type: "state", data: { value: <XState state value> } }
 ```
 
 This is an observation of XState, not another state store. Action activity uses the publisher bound

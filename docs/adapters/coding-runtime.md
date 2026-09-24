@@ -48,3 +48,10 @@ output and activity without silently truncating them.
 
 Use temporary transport files only when required by the provider. Do not persist Nexus artifacts,
 select another model or add repair turns.
+
+## Planned concurrent invocation use
+
+Purpose, research and council roles may invoke the same provider capability concurrently. Each
+execute call has its own activity callback and result. The adapter preserves the activity within
+that invocation; the caller supplies the identity used for logs and live presentation. Research
+profiles may use configured internet search tools. Provider output never selects council routing.
