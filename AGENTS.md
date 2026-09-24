@@ -9,8 +9,8 @@ Apply these principles when shaping requirements, workflows, architecture, code 
 
 - **KISS:** Prefer the simplest design that meets the need and is easy to understand, debug and
   maintain.
-- **DRY:** Keep each rule or contract in one authoritative place. Extract repeated behavior when
-  the cases truly share a responsibility; do not force unrelated cases into one abstraction.
+- **DRY:** Give each rule or contract one authoritative home. Extract repeated behavior only
+  when the cases share a responsibility.
 - **YAGNI:** Add a capability, setting, state or extension point only when a current requirement
   needs it.
 - **Avoid premature optimization:** Require evidence of a bottleneck before adding performance
@@ -19,26 +19,18 @@ Apply these principles when shaping requirements, workflows, architecture, code 
   instead of deep inheritance hierarchies. Use inheritance when a genuine subtype relationship is
   simpler; avoid components that add no clarity.
 
-Use the smallest design that satisfies an explicit requirement or solves a demonstrated problem.
-Every contract field, abstraction, validation rule and persistent record must serve a concrete need.
-Hypothetical failures and possible future extensions alone do not justify additional mechanisms.
+Account for the full cost of a design choice: implementation, validation, failure handling,
+persistence, tests, documentation and maintenance. Even a small field can create obligations across
+components. When removing a mechanism, remove its dependent validation, state and tests.
 
-Account for the full cost of a design choice: implementation, validation, failure handling, persistence,
-tests, documentation and maintenance. A small field can create obligations across many components.
-Requirements justify mechanisms; mechanisms do not create their own requirements.
-
-Keep specialized guarantees within the component or action that needs them. Shared contracts contain
-only what their consumers require. When a mechanism is unnecessary, remove its dependent validation,
-state and tests as well. Prefer removing the obligation to building machinery around it.
+Keep specialized guarantees within the component or action that needs them.
 
 ## Low coupling and high cohesion
 
-Each component owns a focused responsibility, its state and the behavior needed to fulfill it.
-Closely related decisions stay within that boundary.
+Keep related state and decisions within the owning component.
 
-Components depend only on public contracts. Each contract has one authoritative definition, owned
-by its provider; consumers reference it. Internal changes must not require consumer changes while
-the public contract remains compatible. Routine coordinated redesign indicates a boundary problem.
+Components depend on provider-owned public contracts. Compatible internal changes should not force
+consumer changes; routine coordinated redesign indicates a boundary problem.
 
 Each component architecture is independent. Its interface section is the only place that names other
 components, imports their contracts or defines interaction with them. Its internal design uses its
@@ -49,8 +41,7 @@ A multi-component flow does not create a special shared contract.
 
 ## SOLID principles
 
-Apply these to component responsibilities and public contracts as well as code. Do not introduce
-inheritance, interfaces or extension points solely to satisfy the acronym.
+Apply these to component responsibilities and public contracts as well as code.
 
 - **Single Responsibility:** Give a component, module or action one coherent reason to change.
 - **Open/Closed:** Keep stable public contracts when adding a supported variation; change the
