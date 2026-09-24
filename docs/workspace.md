@@ -16,7 +16,7 @@ uses the `refinement/` area. A later workflow adds its own area when its layout 
 ├── artifacts/<roundNumber>/     finite delivery round history
 ├── state/                       finite delivery working state
 └── refinement/
-    ├── worktree/                project snapshot or references
+    ├── worktree/                Git worktree for idea agents
     ├── artifacts/               submissions and council cycles
     └── state/                   idea round plan
 ```
@@ -59,6 +59,6 @@ reuses that area when present and adds a new numbered submission history. Artifa
 submission, council cycle and brief revision. Idea refinement's StartIdeaRound owns its own
 `state/current-round.json` plan with idea roles and cycle identity; it does not use finite
 delivery's developer ladder or writable delivery worktree. The same WorkspaceRef value identifies
-the refinement area. Nexus owns artifact writes; agents read the project snapshot and
-supplied context. A fresh finite delivery attempt may replace its root-level `worktree/`,
+the refinement area. Nexus owns artifact writes; agents use the prepared project worktree
+and supplied context. A fresh finite delivery attempt may replace its root-level `worktree/`,
 `artifacts/` and `state/` without removing `refinement/` or other retained workflow areas.
