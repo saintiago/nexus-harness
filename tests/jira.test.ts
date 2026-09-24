@@ -173,6 +173,7 @@ describe('Jira adapter', () => {
         url: `${apiBase}/rest/api/3/issue/NEX-1?fields=*all%2C-comment`,
         headers: {
           accept: 'application/json',
+          'accept-language': 'en-US',
           authorization: `Bearer ${apiToken}`,
         },
       },
@@ -344,6 +345,16 @@ describe('Jira adapter', () => {
     const { adapter } = adapterOver([json({ transitions })]);
 
     expect(await adapter.readTransitions('NEX-1')).toEqual({ ok: true, value: transitions });
+  });
+
+  it('requests English provider labels independently of the HTTP client locale', async () => {
+    const { adapter, requests } = adapterOver([
+      json({ transitions: [{ id: '31', name: 'Review', to: { id: '4', name: 'In Review' } }] }),
+    ]);
+
+    await adapter.readTransitions('NEX-1');
+
+    expect(requests[0]?.headers).toMatchObject({ 'accept-language': 'en-US' });
   });
 
   it('transitions through the explicit transition its caller selected', async () => {
