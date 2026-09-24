@@ -103,12 +103,13 @@ approval on one brief revision, mixed-verdict precedence, minor and major routes
 nonconvergence, and immediate return for an unworkable idea. Verify that each `Idea` entry
 uses the same selection path, reuses a retained workspace, and invokes StartIdeaRound to plan the
 initial, minor and major cycles from history without applying StartDevRound's repair policy.
-Verify that purpose documents are discovered without configured references and that absent
-documents produce cited, provisional inference from code and commits rather than an execution
-fault. At the action boundary, verify
-producer-owned artifacts and council binding to the current brief artifact, one Jira
-issue/comment capture per run,
-and the configured submitted-to-active, active-to-approved, active-to-waiting-for-feedback and
+Verify that every invocation receives the current captured idea and available saved history,
+including earlier briefs and feedback on resubmission, while council reviewers cannot read one
+another's pending verdicts. Verify that purpose documents are discovered without configured
+references and that absent documents produce cited, provisional inference from code and commits
+rather than an execution fault. At the action boundary, verify producer-owned artifacts,
+council binding to the current brief artifact, one Jira issue/comment capture per run, and the
+configured submitted-to-active, active-to-approved, active-to-waiting-for-feedback and
 waiting-for-feedback-to-submitted transitions, including capture of the complete relevant
 conversation on every entry. Verify that publication uses the captured input without a later
 Jira read, only human-facing feedback is posted to Jira, and internal feedback stays in
