@@ -14,7 +14,6 @@ import { devArtifact } from '../task-engine/actions/develop/artifacts.js';
 import { preparedWorkspaceDeclaration } from '../task-engine/actions/prepare-workspace/artifacts.js';
 import { readRecord, writeRecord, type RecordDeclaration } from '../task-engine/actions/records.js';
 import { reviewArtifact } from '../task-engine/actions/review/artifacts.js';
-import { repairArtifact } from '../task-engine/actions/select-repair/artifacts.js';
 import { selectionDeclaration } from '../task-engine/actions/select-task/artifacts.js';
 import { currentRoundDeclaration } from '../task-engine/actions/start-round/artifacts.js';
 import { verificationArtifact } from '../task-engine/actions/verify/artifacts.js';
@@ -248,7 +247,6 @@ function recoveryDeclarations(settings: RecoveryContextSettings): RecoveryDeclar
     roundArtifact('Verification output (Verify)', verificationArtifact),
     roundArtifact('Delivery output (Deliver)', deliveryArtifact),
     roundArtifact('Review output (Review)', reviewArtifact),
-    roundArtifact('Repair output (SelectRepair)', repairArtifact),
     roundArtifact('Completion output (CompleteTask)', completionArtifact),
     {
       title: 'Recovery execution record (Application)',

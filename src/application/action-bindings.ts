@@ -16,7 +16,6 @@ import { createDevelop } from '../task-engine/actions/develop/index.js';
 import { createPrepareWorkspace } from '../task-engine/actions/prepare-workspace/index.js';
 import { readRequiredRecord } from '../task-engine/actions/records.js';
 import { createReview } from '../task-engine/actions/review/index.js';
-import { createSelectRepair } from '../task-engine/actions/select-repair/index.js';
 import { selectionDeclaration } from '../task-engine/actions/select-task/artifacts.js';
 import { createSelectTask } from '../task-engine/actions/select-task/index.js';
 import { createStartRound } from '../task-engine/actions/start-round/index.js';
@@ -67,10 +66,6 @@ export function createActionBinding(
 ): (publish: EventPublisher) => Readonly<Record<string, BoundAction>> {
   const { project, nexus, paths } = settings;
   const { selectionFile } = paths;
-  const [initialDeveloper] = nexus.executionPolicy.developerLadder;
-  if (initialDeveloper === undefined) {
-    throw new Error('The Nexus configuration selects no developer profile.');
-  }
 
   return (publish) => {
     // One runtime per role: a profile selected for several roles carries only the invoked role's
@@ -119,10 +114,15 @@ export function createActionBinding(
         runCommand: settings.runCommand,
         publish,
       }),
-      StartRound: selectedWorkspace((workspace) => createStartRound({ workspace })),
+      StartRound: selectedWorkspace((workspace) =>
+        createStartRound({
+          workspace,
+          developerLadder: nexus.executionPolicy.developerLadder,
+          publish,
+        }),
+      ),
       Develop: createDevelop({
         selectionFile,
-        initialProfile: initialDeveloper.profile,
         runtime: developerRuntime,
         git: settings.git,
         jira: settings.jira,
@@ -150,9 +150,6 @@ export function createActionBinding(
         jira: settings.jira,
         publish,
       }),
-      SelectRepair: selectedWorkspace((workspace) =>
-        createSelectRepair({ workspace, developerLadder: nexus.executionPolicy.developerLadder }),
-      ),
       Deliver: createDeliver({
         selectionFile,
         repository: delivery.repository,

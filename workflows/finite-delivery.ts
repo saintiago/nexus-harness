@@ -33,6 +33,7 @@ export const finiteDelivery = createMachine(
           src: 'StartRound',
           onDone: [
             { guard: ({ event }) => event.output === 'started', target: 'develop' },
+            { guard: ({ event }) => event.output === 'exhausted', target: 'blocked' },
             { actions: 'unexpectedOutcome' },
           ],
         },
@@ -42,7 +43,7 @@ export const finiteDelivery = createMachine(
           src: 'Develop',
           onDone: [
             { guard: ({ event }) => event.output === 'completed', target: 'verify' },
-            { guard: ({ event }) => event.output === 'failed', target: 'repair' },
+            { guard: ({ event }) => event.output === 'failed', target: 'startRound' },
             { actions: 'unexpectedOutcome' },
           ],
         },
@@ -52,7 +53,7 @@ export const finiteDelivery = createMachine(
           src: 'Verify',
           onDone: [
             { guard: ({ event }) => event.output === 'passed', target: 'deliver' },
-            { guard: ({ event }) => event.output === 'failed', target: 'repair' },
+            { guard: ({ event }) => event.output === 'failed', target: 'startRound' },
             { actions: 'unexpectedOutcome' },
           ],
         },
@@ -72,18 +73,8 @@ export const finiteDelivery = createMachine(
           src: 'Review',
           onDone: [
             { guard: ({ event }) => event.output === 'approved', target: 'complete' },
-            { guard: ({ event }) => event.output === 'changesRequested', target: 'repair' },
+            { guard: ({ event }) => event.output === 'changesRequested', target: 'startRound' },
             { guard: ({ event }) => event.output === 'inconclusive', target: 'blocked' },
-            { actions: 'unexpectedOutcome' },
-          ],
-        },
-      },
-      repair: {
-        invoke: {
-          src: 'SelectRepair',
-          onDone: [
-            { guard: ({ event }) => event.output === 'selected', target: 'startRound' },
-            { guard: ({ event }) => event.output === 'exhausted', target: 'blocked' },
             { actions: 'unexpectedOutcome' },
           ],
         },

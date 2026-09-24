@@ -10,7 +10,6 @@ import {
   preparedWorkspaceFile,
 } from '../prepare-workspace/artifacts.js';
 import { readRequiredRecord } from '../records.js';
-import { repairArtifact } from '../select-repair/artifacts.js';
 import { selectionDeclaration, type Selection } from '../select-task/artifacts.js';
 import {
   applyTransition,
@@ -350,21 +349,16 @@ export function createDeliver(settings: DeliverSettings): BoundAction {
       }
     }
 
-    // The completed development turns count as executed repair turns. The repair decisions record
-    // the profile changes: when the repair policy selected this round's profile after the initial
-    // implementation ran another one, the report names the escalation.
-    const turns = await helpers.readArtifactHistory(devArtifact);
-    const decisions = await helpers.readArtifactHistory(repairArtifact);
-    const initialProfile = turns[0]?.value.profile ?? development.profile;
-    const latestSelection = decisions
-      .filter((decision) => decision.value.decision === 'selected')
-      .at(-1);
+    // Every retained development report is one executed turn and the first is the initial
+    // implementation: the earlier rounds hold every repair turn but this round's. Their recorded
+    // profiles show whether this round escalated from a weaker one.
+    const earlierReports = await helpers.readArtifactHistory(devArtifact);
+    const repairsUsed = earlierReports.length;
     const escalatedFrom =
-      initialProfile !== development.profile &&
-      latestSelection !== undefined &&
-      latestSelection.value.profile === development.profile
-        ? initialProfile
-        : null;
+      earlierReports
+        .map((report) => report.value.profile)
+        .filter((profile) => profile !== development.profile)
+        .at(-1) ?? null;
 
     // Read the ticket state before recording the publication, so a known completion condition
     // cannot leave a delivery artifact for an unpublished result.
@@ -399,7 +393,7 @@ export function createDeliver(settings: DeliverSettings): BoundAction {
       settings.jira,
       issue.id,
       comments,
-      reportText(development, turns.length, escalatedFrom),
+      reportText(development, repairsUsed, escalatedFrom),
     );
     return 'published';
   };

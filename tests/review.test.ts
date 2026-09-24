@@ -101,7 +101,7 @@ async function workspace(
   await mkdir(path.join(workspaceRoot, 'worktree'), { recursive: true });
   await writeFile(
     path.join(workspaceRoot, 'state', 'current-round.json'),
-    `${JSON.stringify({ number: round })}\n`,
+    `${JSON.stringify({ number: round, profile: 'dev-a', reason: 'Planned.' })}\n`,
     'utf8',
   );
   await writeFile(

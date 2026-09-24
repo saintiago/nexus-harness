@@ -63,7 +63,6 @@ import type {
   ReviewOutput,
   ReviewResponse,
 } from '../src/task-engine/actions/review/artifacts.js';
-import type { RepairOutput } from '../src/task-engine/actions/select-repair/artifacts.js';
 import type { VerificationOutput } from '../src/task-engine/actions/verify/artifacts.js';
 import { nexusConfiguration, projectConfiguration } from './support/configuration.js';
 import { scriptedGitHub } from './support/github.js';
@@ -136,6 +135,17 @@ async function gitCommand(args: readonly string[], directory: string): Promise<s
 async function commitAll(worktree: string, message: string): Promise<void> {
   await gitCommand(['add', '--all'], worktree);
   await gitCommand(['commit', '--quiet', '--message', message], worktree);
+}
+
+/** The text of one published comment document. */
+function commentText(document: unknown): string {
+  const content =
+    typeof document === 'object' && document !== null
+      ? (document as { readonly content?: readonly { readonly content?: unknown }[] }).content
+      : undefined;
+  const paragraph = content?.[0]?.content as readonly { readonly text?: unknown }[] | undefined;
+  const text = paragraph?.[0]?.text;
+  return typeof text === 'string' ? text : '';
 }
 
 /** One scripted agent turn: it inspects the invocation, acts and returns the provider result. */
@@ -264,9 +274,7 @@ type Journey = {
  * configuration, a controlled Jira source and GitHub service and the real operator command over
  * the real Application.
  */
-async function finiteJourney(
-  options: { readonly repairAllowance?: number } = {},
-): Promise<Journey> {
+async function finiteJourney(): Promise<Journey> {
   const root = await mkdtemp(path.join(os.tmpdir(), 'nexus-journey-'));
   temporaryDirectories.push(root);
 
@@ -289,9 +297,7 @@ async function finiteJourney(
   const nexus = nexusConfiguration();
   nexus.workflow.path = workflowPath;
   nexus.storage.root = './state';
-  nexus.executionPolicy.developerLadder = [
-    { profile: 'nexus-flash', repairAllowance: options.repairAllowance ?? 2 },
-  ];
+  nexus.executionPolicy.developerLadder = [{ profile: 'nexus-flash', repairAllowance: 2 }];
   const project = projectConfiguration();
   project.repository.source = origin;
   project.preparation = [{ executable: 'bash', args: ['-c', 'echo preparing'] }];
@@ -763,7 +769,6 @@ describe('finite execution journeys', () => {
       'verify',
       'deliver',
       'review',
-      'repair',
       'startRound',
       'develop',
       'verify',
@@ -774,13 +779,13 @@ describe('finite execution journeys', () => {
       'finished',
     ]);
 
-    // The repair policy selected the configured ladder profile without consuming a turn.
-    const repair = await journey.artifact<RepairOutput>(1, 'repair.json');
-    expect(repair).toEqual({
-      decision: 'selected',
+    // The rejection routed through StartRound, which continued the initial ladder profile.
+    expect(
+      JSON.parse(await readFile(path.join(journey.workspace, 'state/current-round.json'), 'utf8')),
+    ).toEqual({
+      number: 2,
       profile: 'nexus-flash',
-      repairsUsed: 0,
-      reason: expect.stringContaining('The repair continues with profile "nexus-flash"'),
+      reason: expect.stringContaining('continues with the initial profile "nexus-flash"'),
     });
     // Round 1 recorded the requested repair and its complete finding.
     const firstReview = await journey.artifact<ReviewOutput>(1, 'review.json');
@@ -804,6 +809,8 @@ describe('finite execution journeys', () => {
     // The pull request was updated in place rather than created again.
     expect(journey.githubCalls.filter((call) => call.startsWith('create:'))).toHaveLength(1);
     expect(journey.githubCalls.filter((call) => call.startsWith('update:'))).toHaveLength(1);
+    // The round-2 delivery report counts the one executed repair turn from the development history.
+    expect(commentText(journey.comments()[2]?.body)).toContain('Repairs used: 1.');
     expect(journey.comments()).toHaveLength(4);
   });
 
@@ -893,7 +900,13 @@ describe('finite execution journeys', () => {
     expect(development).toMatchObject({ taskKey: 'NEX-1', status: 'completed' });
     expect(
       JSON.parse(await readFile(path.join(journey.workspace, 'state/current-round.json'), 'utf8')),
-    ).toEqual({ number: 1 });
+    ).toEqual({
+      number: 1,
+      profile: 'nexus-flash',
+      reason: expect.stringContaining(
+        'initial implementation uses the first profile "nexus-flash"',
+      ),
+    });
     expect(await gitCommand(['ls-tree', '--name-only', 'HEAD'], journey.worktree)).toContain(
       'notes.txt',
     );
