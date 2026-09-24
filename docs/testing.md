@@ -99,8 +99,9 @@ or assertions that merely reproduce the implementation.
 At the workflow level, use the real XState definition to prove both parallel joins, unanimous
 approval on one brief revision, mixed-verdict precedence, minor and major routes, bounded
 nonconvergence, and immediate return for an unworkable idea. At the action boundary, verify
-producer-owned artifacts and revision/digest binding, source update idempotency, and that a stale
-or changed source item is not overwritten. A focused integration test should interleave two
+producer-owned artifacts and revision/digest binding, source update idempotency, the configured
+submitted-to-approved and submitted-to-needs-refinement transitions, and that a stale or
+changed source item is not overwritten. A focused integration test should interleave two
 agent activity streams and verify separate durable JSONL files, correct invocation references in
 main events, and independent 10-line panes. Reuse existing component and system test scopes; do
 not duplicate XState's own parallel-state tests.
