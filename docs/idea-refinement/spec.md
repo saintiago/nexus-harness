@@ -38,13 +38,19 @@ The workflow never silently waits for author input.
 ## Inputs and project context
 
 Each time an item enters `Idea`, selection captures one immutable input: source key, author,
-current text, links, revision and complete relevant Jira conversation. Every agent receives that
-input alongside the latest relevant artifacts. The entry path is the same every time. In
-this spec, `original idea` means the input captured for the current entry, not the first
-version ever submitted. Project configuration provides an idea selection query and submitted,
-active, approved and waiting-for-feedback status mappings on its existing Jira task source. Agents can read the connected project's repository, documents and commit
-history. Nexus configuration selects this workflow, the six role profiles, iteration limits
-and storage. Idea refinement uses the same Jira adapter as finite delivery with a separate
+current text, links, revision and complete relevant Jira conversation. Every agent receives
+that input and all saved workspace artifacts available when its stage starts, including earlier
+submissions, briefs and feedback when present, as content or readable references. The same
+context rule applies on first submission, resubmission and internal revision. The current
+captured input is authoritative for what the author now proposes; earlier artifacts supply history.
+In this spec, `original idea` means the input captured for the current entry, not the first
+version ever submitted. Council reviewers do not receive one another's pending verdicts from the
+current cycle.
+
+Project configuration provides an idea selection query and submitted, active, approved and
+waiting-for-feedback status mappings on its existing Jira task source. Agents can read the
+connected project's repository, documents and commit history. Nexus configuration selects
+this workflow, the six role profiles, iteration limits and storage. Idea refinement uses the same Jira adapter as finite delivery with a separate
 selection query. HARN selects Jira Task issues in `Idea`; `Idea Refinement` is the active status,
 `Draft` is the approved status and `Waiting for Feedback` awaits human input.
 
@@ -72,26 +78,26 @@ do not change source statuses. Nexus actions own artifacts and source updates.
 2. StartIdeaRound opens the first council cycle for this selection from the workspace history and
    records the selected role profiles. Each later correction enters StartIdeaRound again with the route
    chosen by XState. The configured council-cycle limit applies to this selection.
-3. Run Purpose Verifier and Researcher concurrently on the original idea. The Purpose Verifier
-   finds purpose documents itself and, where needed, infers purpose from code and commit history.
-   They work independently and write separate reports. The writer starts only after both reports
-   exist.
-4. Brief Writer creates revision 1. It sees the original idea, both reports, previous feedback when
-   revising, and every council criterion below. It records a short problem/value statement, project
-   fit, supporting evidence with links, alternatives, smallest useful scope, assumptions and open
-   questions for design. It must distinguish evidence from proposal.
+3. Run Purpose Verifier and Researcher concurrently with the current captured idea and the
+   available workspace history. The Purpose Verifier finds purpose documents itself and, where
+   needed, infers purpose from code and commit history. They work independently and write
+   separate reports. The writer starts only after both reports exist.
+4. Brief Writer creates revision 1. It sees the current captured idea, both reports, earlier
+   briefs and feedback when present, and every council criterion below. It records a short
+   problem/value statement, project fit, supporting evidence with links, alternatives, smallest
+   useful scope, assumptions and open questions for design. It must distinguish evidence from proposal.
 5. Three council reviewers run concurrently and independently on the same immutable brief revision.
-   They see the original idea and relevant evidence, but not one another's verdicts before submitting
-   their own. Each emits exactly one verdict: `approve`, `minor_corrections`, `major_rework` or
-   `idea_not_working`. A nonapproval names the failed criterion, evidence and actionable correction.
+   They see the current captured idea, brief and available history, but not one another's
+   current-cycle verdicts before submitting their own. Each emits exactly one verdict:
+   `approve`, `minor_corrections`, `major_rework` or `idea_not_working`. A nonapproval names the failed criterion, evidence and actionable correction.
 6. After all council results are saved, route by strongest verdict:
    `idea_not_working > major_rework > minor_corrections > approve`. Preserve all feedback in
    artifacts even when one result determines routing. Unanimous approval alone advances to the
    approved state. Do not post internal council feedback or revision requests to Jira.
 7. Minor corrections return to Brief Writer using existing purpose and research reports. Major rework
-   reruns Purpose Verifier and Researcher concurrently with the original idea, current brief and all
-   council feedback. Their next reports must address the objections; the writer then creates a new
-   brief revision. Any rewrite invalidates every earlier approval. The council reviews the new
+   reruns Purpose Verifier and Researcher concurrently with the current captured idea and all
+   available workspace artifacts, including the current brief and council feedback. Their next
+   reports must address the objections; the writer then creates a new brief revision. Any rewrite invalidates every earlier approval. The council reviews the new
    revision independently.
 8. The configured maximum number of council cycles bounds internal work. If another revision would
    exceed it, return to the author as unable to converge. An `idea_not_working` verdict returns
@@ -109,9 +115,9 @@ Disagreement is a finding, not a vote count; every reviewer has a veto until the
 ## Agents and constant prompts
 
 Each role is a configured AgentRuntime profile with a complete constant prompt plus invocation
-context. The prompts below are required role instructions. The action supplies original idea,
-project sources, artifact references, revision/cycle, output schema and prior feedback as relevant.
-Agent output is parsed and checked by the owning action; a role's claim never counts as a source
+context. The prompts below are required role instructions. Each action supplies the current
+captured idea, all available saved workspace artifacts, project sources, revision/cycle and output
+schema. Agent output is parsed and checked by the owning action; a role's claim never counts as a source
 status update. Profiles may use different models or tools, but all six are separately attributable
 invocations. Purpose and research must be able to run concurrently. Council roles must not read
 one another's pending outputs.
@@ -120,29 +126,30 @@ one another's pending outputs.
 
 > Find this project's purpose, charter and long-term vision in its documentation. If those
 > documents are absent or incomplete, inspect the connected project's code and commit history
-> and infer its direction as well as the evidence permits. Assess the submitted idea against the
-> discovered purpose or provisional inference. Identify where it supports or conflicts with the
-> project's direction and the smallest steering that would improve fit. Cite documents, files and
-> commits for each material claim; distinguish stated intent from inference and name uncertainty
+> and infer its direction as well as the evidence permits. Read the supplied prior briefs and
+> feedback when present; assess the current captured idea against the discovered purpose or
+> provisional inference. Identify where it supports or conflicts with the project's direction
+> and the smallest steering that would improve fit. Cite documents, files and commits for each
+> material claim; distinguish stated intent from inference and name uncertainty
 > or conflicts. Preserve the author's intent. Do not design architecture, write requirements or
 > decide implementation priority. Return a concise purpose assessment, conflicts, suggested
 > steering and source references.
 
 ### Researcher
 
-> Investigate the problem and proposal using the supplied project knowledge, existing work and
-> accessible internet sources. Check duplicates and established alternatives, relevant articles,
-> patterns and technologies. Give links and access dates for external sources. Separate facts,
-> opinions and your inference; explain evidence quality and tradeoffs. Search enough to challenge the
+> Investigate the current captured idea using the supplied workspace history, project knowledge,
+> existing work and accessible internet sources. Check duplicates and established alternatives,
+> relevant articles, patterns and technologies. Give links and access dates for external
+> sources. Separate facts, opinions and your inference; explain evidence quality and tradeoffs. Search enough to challenge the
 > premise and avoid repeating known work, then stop. Do not choose an architecture or claim novelty
 > without evidence. Return a concise research report with alternatives and open questions.
 
 ### Brief Writer
 
-> Write the smallest coherent idea brief from the immutable original idea, purpose assessment,
-> research and any council feedback. Preserve intent while applying justified steering. Include the
-> problem and expected value, project fit, supporting evidence and links, existing alternatives,
-> smallest useful scope, assumptions, and questions for the later design workflow. Address each
+> Write the smallest coherent idea brief from the current captured idea, purpose assessment,
+> research, and the supplied earlier briefs and feedback. Preserve intent while applying
+> justified steering. Include the problem and expected value, project fit, supporting evidence
+> and links, existing alternatives, smallest useful scope, assumptions, and questions for the later design workflow. Address each
 > prior objection explicitly. Do not turn this brief into requirements, architecture or an
 > implementation plan. The council will check fidelity, evidence and simplicity. Return a complete
 > brief revision and a short change summary.
@@ -220,9 +227,9 @@ type IdeaRoundPlan = {
 At each entry from `Idea`, it inspects the existing workspace history, opens the next
 submission and starts cycle 1 with all six configured roles. For a minor correction, it opens
 the next cycle with Brief Writer and the three council roles; for major rework, it includes Purpose
-Verifier and Researcher as well. Prior submissions remain
-available as context, but their approvals do not apply to the new input. StartIdeaRound does not decide
-the correction severity or final verdict: XState supplies the route after collecting all council
+Verifier and Researcher as well. All available prior artifacts enter the invocation context
+on every route, but earlier approvals do not apply to the new input. StartIdeaRound does not
+decide the correction severity or final verdict: XState supplies the route after collecting all council
 results. StartIdeaRound uses the shared round storage functions for history and plan persistence.
 Its role selection and cycle policy are idea-specific; it does not apply finite delivery's repair
 counters or developer ladder.
