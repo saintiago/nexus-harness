@@ -38,6 +38,7 @@ Exercise one connection with its real implementation. Keep unrelated dependencie
 | Git operations | Git adapter and temporary local repositories | Checkout, pull, branch creation and push behave as expected |
 | Process execution | Process adapter and a small controlled child process | Arguments, output, exit and timeout behavior |
 | Worker communication | Parent bridge and a controlled worker process | Events, terminal result and process failure cross the boundary correctly |
+| Agent activity | Logger, event transport and OperatorInterface with interleaved agent streams | Separate durable files, correct main-event references and independent panes for concurrent invocations |
 | External protocols | Adapter with controlled HTTP responses or CLI output | Requests, response interpretation and provider errors match the adapter contract |
 
 A simulated provider verifies Nexus's handling of the supplied protocol. It does not prove that live
@@ -105,12 +106,11 @@ initial, minor and major cycles from history without applying StartDevRound's re
 Verify that purpose documents are discovered without configured references and that absent
 documents produce cited, provisional inference from code and commits rather than an execution
 fault. At the action boundary, verify
-producer-owned artifacts and revision/digest binding, one Jira issue/comment capture per run,
+producer-owned artifacts and council binding to the current brief artifact, one Jira
+issue/comment capture per run,
 and the configured submitted-to-active, active-to-approved, active-to-waiting-for-feedback and
 waiting-for-feedback-to-submitted transitions, including capture of the complete relevant
 conversation on every entry. Verify that publication uses the captured input without a later
 Jira read, only human-facing feedback is posted to Jira, and internal feedback stays in
-artifacts. A focused integration test should interleave two agent activity streams and verify
-separate durable JSONL files, correct invocation references in main events, and independent
-10-line panes. Reuse existing component and system test scopes; do
-not duplicate XState's own parallel-state tests.
+artifacts. Reuse existing component and system test scopes; do not duplicate XState's own
+parallel-state tests.

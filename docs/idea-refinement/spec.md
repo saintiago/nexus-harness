@@ -48,7 +48,7 @@ and storage. Idea refinement uses the same Jira adapter as finite delivery with 
 selection query. HARN selects Jira Task issues in `Idea`; `Idea Refinement` is the active status,
 `Draft` is the approved status and `Waiting for Feedback` awaits human input.
 
-The action reads the Jira issue and its relevant comments once when selecting it, then moves it
+SelectIdea reads the Jira issue and its relevant comments once, then moves it
 to the active status. It uses a stable workspace path for the issue, reusing that workspace when
 it already exists. The captured content is the input for this run. Publication uses that
 snapshot and the run artifacts without another Jira read. The adapter owns Jira identity and
@@ -70,7 +70,7 @@ do not change source statuses. Nexus actions own artifacts and source updates.
    and move it to `Idea Refinement` before invoking agents. This path also handles an item
    returned to `Idea` after human feedback; no separate resubmission branch exists.
 2. StartIdeaRound opens the first council cycle for this selection from the workspace history and
-   records the six role profiles. Each later correction enters StartIdeaRound again with the route
+   records the selected role profiles. Each later correction enters StartIdeaRound again with the route
    chosen by XState. The configured council-cycle limit applies to this selection.
 3. Run Purpose Verifier and Researcher concurrently on the original idea. The Purpose Verifier
    finds purpose documents itself and, where needed, infers purpose from code and commit history.
@@ -199,23 +199,21 @@ artifacts/
 Submission and cycle numbers are positive integers. The submission number is a storage identity,
 not a different workflow path. Minor revision may reuse the current submission's preceding
 purpose/research reports by reference, never by falsely relabeling them as new work. Major revision
-writes new reports. Every brief is identified by its cycle and content digest; each council result names both, its
+writes new reports. Each council result names the immutable brief artifact it reviewed, its
 reviewer identity, verdict, criteria and feedback. A council set is valid only when all three
-results name the same current cycle and digest. Captured inputs, decisions and prior cycles are
+results name the current brief artifact. Captured inputs, decisions and prior cycles are
 retained in the workspace. The decision artifact records the route, strongest verdict, full
 feedback and source update evidence, including the human-facing Jira comment when applicable.
 These artifact paths are specific to idea refinement; finite delivery's round layout is unchanged.
 
-StartIdeaRound owns `state/current-round.json` with the active submission number, council cycle,
-route and selected profile for each role:
+StartIdeaRound owns `state/current-round.json` with the active submission number, council cycle
+and selected role profiles:
 
 ```ts
 type IdeaRoundPlan = {
   submission: number;
   cycle: number;
-  route: "new" | "minor" | "major";
-  roles: IdeaRole[];
-  profiles: Record<IdeaRole, string>;
+  profiles: Partial<Record<IdeaRole, string>>;
 };
 ```
 
@@ -242,7 +240,7 @@ named operations and return outcomes; XState owns parallelism, joins, guards and
 machine IdeaRefinement {
   context: { cycle, maxCycles, inputRef, roundPlanRef, currentBriefRef, verdictRefs: [] }
 
-  selectIdea -> captureInput -> markRefining -> startIdeaRound("new") // HARN: Idea -> Idea Refinement
+  selectIdea -> startIdeaRound("new") // captures input; HARN: Idea -> Idea Refinement
 
   state startIdeaRound(route) {
     invoke StartIdeaRound(route)
@@ -297,21 +295,10 @@ report in machine context.
 
 ## Agent activity and operator view
 
-Use one invocation contract for every agent, including finite delivery and recovery. The caller
-assigns a stable role name, unique invocation ID and Unix start time in milliseconds. The logger
-writes the complete timestamped activity for that invocation to its own JSONL file under the
-execution log directory, with the role name and start time in its filename. Main `events.jsonl`
-contains invocation start/finish events with identity and an ArtifactRef to that file, plus workflow,
-action outcome and other progress events. It does not duplicate agent messages, commands or tool
-results. Existing action outcome events continue to reference their saved business artifacts.
-Invocation identity accompanies activity in transport so concurrent output cannot be misattributed.
-
-OperatorInterface renders one named rolling 10-line pane for each active invocation, stacked in
-start order. Each pane updates independently, retains current message highlighting and condensed
-work entries, and leaves its final visible lines in scrollback. One active agent uses exactly the
-same pane and log path as several; no single-agent special case. Main progress stays concise.
-Terminal closure does not stop durable agent logs. Plain output uses attributable timestamped
-lines when interactive panes are unavailable.
+All six roles use the shared [agent activity events](../task-engine/architecture.md#agent-activity-events),
+[execution log](../application.md#execution-log) and
+[agent activity panes](../operator-interface.md#agent-activity-panes). Concurrent invocations
+remain individually attributable through those contracts.
 
 ## Verification criteria
 
@@ -334,6 +321,3 @@ lines when interactive panes are unavailable.
   with the rest of the conversation on the same entry path. Execution faults do not publish a
   council verdict or request human feedback. A run reads its Jira input only at selection and
   does not re-read it before publication.
-- Concurrent agent activity remains attributable in separate durable files and independent 10-line
-  terminal panes. Main events include invocation and business-artifact references without detailed
-  agent activity.
