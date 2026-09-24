@@ -48,9 +48,11 @@ English workflow mappings independently of the HTTP client default locale.
 ## Idea refinement use
 
 The [idea refinement workflow](../idea-refinement/spec.md) uses the same Jira adapter for
-configured `Idea` selection, issue revision/author reads, status transitions and
-author-facing feedback. In HARN, approval moves an idea to `Draft`; a returned idea moves to
-`Idea Refinement`. The shared Task workflow permits transitions to both from `Idea`. Idea and finite-delivery
-selectors are separate even when they use the same Jira project. Actions own eligibility,
-revision comparison, verdicts and desired statuses. The adapter preserves provider identity
+configured `Idea` selection, issue revision/author/comment reads, status transitions and
+author-facing Jira comments. In HARN, selection moves an idea to `Idea Refinement`; approval moves
+it to `Draft`; a returned idea receives a human-facing comment and moves to
+`Waiting for Feedback`. The author replies in a Jira comment and moves it back to `Idea`.
+Internal agent feedback stays in artifacts and logs. The shared Task workflow permits these
+transitions. Idea and finite-delivery selectors are separate even when they use the same Jira
+project. Actions own eligibility, revision comparison, verdicts and desired statuses. The adapter preserves provider identity
 and revision information needed to avoid overwriting an idea that changed after selection.

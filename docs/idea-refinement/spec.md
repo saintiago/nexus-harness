@@ -15,33 +15,39 @@ A separate Requirements and Design workflow may consume an approved brief later.
 
 ## Expected outcomes
 
-- **Ready for design:** every council reviewer approves the exact current brief revision. Publish
-  the original idea, approved brief, purpose assessment, research and sources, alternatives, council
-  decisions and unresolved design questions as one handoff. Move the source item to its configured approved state. For HARN Jira, this is `Draft`.
-  No automatic move to To Do.
+- **Ready for design:** every council reviewer approves the exact current brief revision. Save
+  the original idea, approved brief, purpose assessment, research and sources, alternatives,
+  council decisions and unresolved design questions as one handoff artifact. Publish the approved
+  brief to Jira for the next workflow; keep internal agent feedback in artifacts and logs. Move
+  the source item to its configured approved state. For HARN Jira, this is
+  `Idea Refinement -> Draft`. No automatic move to To Do.
 - **Returned to author:** at least one reviewer finds the idea unworkable, or bounded internal
-  revision cannot converge. Publish the original idea, latest brief, research and all actionable
-  feedback on the source item for the author, and move it to its configured needs-refinement
-  state. For HARN Jira, this is `Idea Refinement`. A human can revise and resubmit it by
-  returning it to `Idea`; this run ends.
+  revision cannot converge. Publish concise, actionable human-facing feedback in a Jira comment
+  and move the item to its configured waiting-for-feedback state. For HARN Jira, this is
+  `Idea Refinement -> Waiting for Feedback`. The author replies in a Jira comment with their
+  feedback or revised idea and moves the item back to `Idea` to resubmit it; this run ends.
+  The original idea, latest brief, research and complete council feedback remain in artifacts
+  and logs. Internal agent feedback is not published to Jira.
 - **Execution fault:** missing required project context, agent/tool failure, malformed output or
   source update failure is an operational fault, not a council verdict. Preserve artifacts and
   report it through Application's ordinary recovery/attention path. Never manufacture approval.
 
 Publish each terminal decision once; retries inspect the source before repeating a write. A
-needs-refinement item is excluded from automatic selection until explicit resubmission. The
+waiting-for-feedback item is excluded from automatic selection until explicit resubmission. The
 workflow never silently waits for author input.
 
 ## Inputs and project context
 
-The submitted idea is immutable within a run: source key, author, text, links and revision at
-selection. Every agent receives it alongside the latest relevant artifacts. Project configuration
-provides the authoritative purpose/charter/long-term vision references, an idea selection query
-and status mappings on its existing Jira task source, and repository/document sources available
+The submitted idea is immutable within a run: source key, author, text, links, revision and
+the author's most recent resubmission comment, when present, at selection. Every agent receives
+it alongside the latest relevant artifacts. Project configuration provides the authoritative
+purpose/charter/long-term vision references, an idea selection query and submitted, active,
+approved and waiting-for-feedback status mappings on its existing Jira task source, and
+repository/document sources available
 to agents. Nexus configuration selects this workflow, the six role profiles, iteration limits
 and storage. Idea refinement uses the same Jira adapter as finite delivery with a separate
-selection query. HARN selects Jira Task issues in `Idea`; `Draft` is the approved status and
-`Idea Refinement` is the needs-refinement status.
+selection query. HARN selects Jira Task issues in `Idea`; `Idea Refinement` is the active status,
+`Draft` is the approved status and `Waiting for Feedback` awaits human input.
 
 Before publishing a brief or feedback and changing status, the action re-reads the Jira issue
 and reconciles changes to its text or revision. The adapter owns Jira identity and transition
@@ -57,10 +63,12 @@ updates.
 ## Behavior
 
 1. Select one eligible submitted idea and capture its exact source revision. In HARN, select Jira
-   Task issues in `Idea`. Leave the source item in its submitted state during internal work.
-   Run at most one refinement execution per connected project so the same revision is not
-   selected twice. A source change before publication requires reconciliation, not overwriting
-   the author's new text.
+   Task issues in `Idea`. Move it to `Idea Refinement` before invoking agents. Run at most
+   one refinement execution per connected project so the same revision is not selected twice.
+   On restart, resume the active execution rather than selecting the active item as a fresh idea.
+   A source change before publication requires reconciliation, not overwriting the author's new
+   text. On resubmission, capture the author's response comment made after the prior feedback
+   request along with the current idea text and links as the new run's input.
 2. Run Purpose Verifier and Researcher concurrently on the original idea. They work independently
    and write separate reports. The writer starts only after both reports exist.
 3. Brief Writer creates revision 1. It sees the original idea, both reports, previous feedback when
@@ -72,17 +80,18 @@ updates.
    their own. Each emits exactly one verdict: `approve`, `minor_corrections`, `major_rework` or
    `idea_not_working`. A nonapproval names the failed criterion, evidence and actionable correction.
 5. After all council results are saved, route by strongest verdict:
-   `idea_not_working > major_rework > minor_corrections > approve`. Preserve all feedback even when
-   one result determines routing. Unanimous approval alone advances to the approved state.
+   `idea_not_working > major_rework > minor_corrections > approve`. Preserve all feedback in
+   artifacts even when one result determines routing. Unanimous approval alone advances to the
+   approved state. Do not post internal council feedback or revision requests to Jira.
 6. Minor corrections return to Brief Writer using existing purpose and research reports. Major rework
    restarts Purpose Verifier and Researcher concurrently with the original idea, current brief and all
    council feedback. Their next reports must address the objections; the writer then creates a new
    brief revision. Any rewrite invalidates every earlier approval. The council reviews the new
    revision independently.
 7. The configured maximum number of council cycles bounds internal work. If another revision would
-   exceed it, return to the author as unable to converge, with the full feedback. An
-   `idea_not_working` verdict returns immediately. Both routes publish feedback and set the
-   needs-refinement state; their decision artifacts retain distinct reasons.
+   exceed it, return to the author as unable to converge. An `idea_not_working` verdict returns
+   immediately. Both routes post the human-facing reason and requested action to Jira, then set
+   `Waiting for Feedback`; their decision artifacts retain distinct reasons and full feedback.
 8. An approved handoff is available to the Requirements and Design workflow from the approved
    source state. That workflow decides requirements and architecture and may ultimately produce
    a To Do implementation ticket.
@@ -179,8 +188,8 @@ Every brief is identified by its cycle and content digest; each council result n
 reviewer identity, verdict, criteria and feedback. A council set is valid only when all three
 results name the same current cycle and digest. Original input and prior cycles are retained
 for history. The decision artifact records the route, strongest verdict, full feedback and source
-update evidence. These artifact paths are specific to idea refinement; finite delivery's round
-layout is unchanged.
+update evidence, including the human-facing Jira comment when applicable. These artifact paths
+are specific to idea refinement; finite delivery's round layout is unchanged.
 
 Actions write complete outputs before returning a transition outcome. On restart, an action may
 reuse a validated artifact for the same source revision, cycle and inputs. A changed original idea
@@ -197,7 +206,7 @@ named operations and return outcomes; XState owns parallelism, joins, guards and
 machine IdeaRefinement {
   context: { cycle: 1, maxCycles, originalRef, currentBriefRef, verdictRefs: [] }
 
-  selectIdea -> captureOriginal -> assessAndResearch
+  selectIdea -> captureOriginal -> markRefining -> assessAndResearch // HARN: Idea -> Idea Refinement
 
   state assessAndResearch parallel {
     region purpose  { invoke PurposeVerifier; onDone -> final }
@@ -228,9 +237,9 @@ machine IdeaRefinement {
     ]
   }
 
-  publishApproved        -> final("approved")       // HARN: Idea -> Draft
-  returnToAuthor         -> final("needs-refinement") // HARN: Idea -> Idea Refinement
-  returnUnableToConverge -> final("needs-refinement")
+  publishApproved        -> final("approved")            // HARN: Idea Refinement -> Draft
+  returnToAuthor         -> final("waiting-for-feedback") // Jira comment; HARN: Idea Refinement -> Waiting for Feedback
+  returnUnableToConverge -> final("waiting-for-feedback") // same publication contract
 }
 ```
 
@@ -265,10 +274,13 @@ lines when interactive panes are unavailable.
 - Mixed verdicts follow the stated precedence and preserve every objection. Minor repeats only the
   writer and council; major repeats purpose, research, writer and council. Every rewrite invalidates
   earlier approvals. Limits and an unworkable verdict return a complete feedback package.
-- A source item reaches the approved state only after unanimous approval on one exact revision.
-  In HARN this means `Idea -> Draft`; rejection or exhaustion means
-  `Idea -> Idea Refinement`. Neither route moves the item to To Do. Resubmission requires
-  a human to revise the idea and move it back to `Idea`.
+- A selected HARN idea moves `Idea -> Idea Refinement` before agent work. It reaches `Draft`
+  only after unanimous approval on one exact revision. Rejection or exhaustion moves it to
+  `Waiting for Feedback` with a human-facing Jira comment; internal agent feedback stays in
+  artifacts and logs. Neither route moves the item to To Do. Resubmission requires the author to
+  reply in a Jira comment and move the item back to `Idea`. The next run reads that comment.
+  Execution faults leave an active item available for recovery without publishing a council
+  verdict or requesting human feedback.
 - Concurrent agent activity remains attributable in separate durable files and independent 10-line
   terminal panes. Main events include invocation and business-artifact references without detailed
   agent activity.
