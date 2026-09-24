@@ -54,5 +54,7 @@ it to `Draft`; a returned idea receives a human-facing comment and moves to
 `Waiting for Feedback`. The author replies in a Jira comment and moves it back to `Idea`.
 Internal agent feedback stays in artifacts and logs. The shared Task workflow permits these
 transitions. Idea and finite-delivery selectors are separate even when they use the same Jira
-project. Actions own eligibility, revision comparison, verdicts and desired statuses. The adapter preserves provider identity
-and revision information needed to avoid overwriting an idea that changed after selection.
+project. Actions own eligibility, verdicts and desired statuses. The adapter returns the
+issue and relevant comments for one capture at selection; the run uses that snapshot for all
+agent work and publication. It does not re-read the issue, comments or available transitions
+later in the run.
