@@ -61,19 +61,29 @@ Artifact helpers are bound to the current workspace. readInputArtifacts accepts 
 and returns their typed contents in argument order. writeOutputArtifact accepts an owned declaration
 and content of its declared type. Structured contents are stored as JSON.
 
-On each call, read state/current-round.json from the selected workspace and resolve the artifact as
-artifacts/<number>/<pathFromArtifactsRoot>. Missing or invalid round state fails the operation, except
-for [StartRound](start-round.md#input) planning the first round. StartRound reads the current round's
+For finite delivery, read state/current-round.json from the selected workspace on each call and
+resolve the artifact as artifacts/<number>/<pathFromArtifactsRoot>. Idea refinement uses its own
+submission/cycle layout and round plan. Missing or invalid round state fails the operation, except
+for [StartDevRound](start-dev-round.md#input) planning the first round. StartDevRound reads the current round's
 results before replacing that record. Do not cache the current round between calls. Missing current
 inputs never fall back to earlier rounds.
 
-The current-round record is owned by [StartRound](start-round.md#output). These path-resolution rules
-belong to the helpers, not to that action.
+For finite delivery, the current-round record is owned by
+[StartDevRound](start-dev-round.md#output). These path-resolution rules belong to the helpers, not
+to that action.
 
 History reads are explicit: readArtifactHistory(declaration) returns the available earlier-round
 values with their round numbers, in order. A missing artifact in a round that did not produce it is
 normal; an unreadable existing artifact is an error. Consumers import the same producer declaration
 for current and historical reads. History readers do not copy, archive or rewrite prior artifacts.
+
+StartDevRound and StartIdeaRound reuse small filesystem functions: `readCurrentPlan` validates
+the caller's record shape, `listNumberedHistory` enumerates retained rounds, `ensureRoundDirectory`
+creates the next artifact directory, and `saveCurrentPlan` persists the plan. The caller supplies
+fixed paths and record validation. These functions do not choose roles, count repairs, judge council
+feedback or decide workflow routes. StartDevRound owns the finite-delivery
+policy; [StartIdeaRound](../../idea-refinement/spec.md#artifacts-and-revision-binding) owns the
+idea-cycle role plan. No policy registry or second coordinator is introduced.
 
 The interaction is:
 
@@ -124,7 +134,7 @@ saved.
 [SelectTask](select-task.md#output) owns selection.json beside the queue's workflow-state file.
 [PrepareWorkspace](prepare-workspace.md#output) owns state/prepared-workspace.json in the selected
 ticket's workspace. Consumers import these record declarations and read them directly; they are not
-resolved through the current-round helper. [StartRound](start-round.md#output) owns the current-round
+resolved through the current-round helper. [StartDevRound](start-dev-round.md#output) owns the current-round
 record and the developer profile and reason in its round plan.
 
 Application binds the selection-file location to the actions that need it. Each invocation reads the
@@ -143,8 +153,8 @@ that need earlier findings or conversation use those directories explicitly as h
 context; ordinary input reads remain scoped to the current round.
 
 Workflow sequencing starts the initial round before implementation and routes each same-revision
-repair trigger back to StartRound. That action either opens another planned round or reports
-exhaustion; the round policy is part of StartRound, not a separate action or planner. Within a round,
+repair trigger back to StartDevRound. That action either opens another planned round or reports
+exhaustion; the round policy is part of StartDevRound, not a separate action or planner. Within a round,
 actions finish writing their outputs before returning. Workflow definitions contain states and
 transitions, not artifact paths or mappings.
 

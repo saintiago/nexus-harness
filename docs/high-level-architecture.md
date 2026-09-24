@@ -19,13 +19,13 @@ Nexus
 │   └── Actions
 │       ├── SelectTask
 │       ├── PrepareWorkspace
-│       ├── StartRound
+│       ├── StartDevRound
 │       ├── Develop
 │       ├── Verify
 │       ├── Review
 │       ├── Deliver
-│       └── CompleteTask
-│   └── Idea refinement actions
+│       ├── CompleteTask
+│       ├── StartIdeaRound
 │       ├── Purpose and research
 │       ├── Brief writing
 │       ├── Council review
@@ -168,7 +168,7 @@ It does not reserve a fixed batch at startup.
 5. The empty queue produces a drained result; the worker exits and the result is presented.
 
 A source failure is not an empty queue. Ordinary failed checks and review findings follow the
-workflow's round and profile decisions in StartRound. Approved Review proceeds to CompleteTask;
+workflow's round and profile decisions in StartDevRound. Approved Review proceeds to CompleteTask;
 inconclusive Review or exhausted round planning stops the task without beginning a repair.
 
 When work cannot continue, Application invokes recovery with the failure and available context.
@@ -189,10 +189,12 @@ The defined workflow includes development, verification, delivery, review and co
 project. Project configuration supplies an idea selection query and state mappings on its
 Jira task source; Nexus configuration supplies the workflow and role profiles. The Purpose
 Verifier discovers purpose documents in the connected project and infers direction from code
-and commits where documents are absent or incomplete. Purpose and research run in parallel,
-followed by a brief writer and a parallel three-reviewer council. XState joins both groups
-and routes unanimous approval, minor correction, major rework or return to author. Selection moves the idea to its active state before agents run. Approval
-publishes a ready-for-design handoff and moves it to the approved state. A nonapproval posts
+and commits where documents are absent or incomplete. Every entry from `Idea` uses the same
+selection path and stable issue workspace. StartIdeaRound opens a council cycle and records its role
+plan from that workspace's history. Purpose and research run in parallel, followed by a brief
+writer and a parallel three-reviewer council. XState joins both groups and routes unanimous
+approval, minor correction, major rework or return to author. Selection moves the idea to its
+active state before agents run. Approval publishes a ready-for-design handoff and moves it to the approved state. A nonapproval posts
 human-facing feedback to Jira and moves it to the waiting-for-feedback state; internal agent
 feedback remains in artifacts and logs. The author replies in a Jira comment and moves the idea
 back to the submitted state to resubmit it. For HARN Jira, the path is

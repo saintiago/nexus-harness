@@ -44,8 +44,11 @@ methods, process handles, configuration loaders or lifecycle state.
 ## Idea refinement layout
 
 The [idea refinement specification](idea-refinement/spec.md#artifacts-and-revision-binding)
-defines a separate workspace under
-`<storage root>/workspaces/<project>/<idea>/refinement/`. Its artifacts are keyed by council
-cycle and brief revision. It does not use finite delivery's current-round record or writable
-delivery worktree. The same WorkspaceRef value identifies the refinement workspace. Nexus owns
-artifact writes; agents read the project snapshot and supplied context.
+defines a stable workspace under
+`<storage root>/workspaces/<project>/<idea>/refinement/`. Each entry from `Idea` reuses that
+workspace when present and adds a new numbered submission history. Artifacts are keyed by
+submission, council cycle and brief revision. Idea refinement's StartIdeaRound owns its own
+`state/current-round.json` plan with idea roles and cycle identity; it does not use finite
+delivery's developer ladder or writable delivery worktree. The same WorkspaceRef value identifies
+the refinement workspace. Nexus owns artifact writes; agents read the project snapshot and
+supplied context.

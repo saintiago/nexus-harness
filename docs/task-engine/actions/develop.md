@@ -14,7 +14,7 @@ and the [Git adapter](../../adapters/git.md#interface). For a Jira task, use the
 
 Import the output declarations of [Verify](verify.md#output) and [Review](review.md#output) for
 historical context. These are earlier-round reads, not fallbacks for missing current-round inputs.
-Read [StartRound](start-round.md#output)'s current-round record for the developer profile selected
+Read [StartDevRound](start-dev-round.md#output)'s current-round record for the developer profile selected
 for this round. Develop does not choose or escalate profiles.
 
 Each invocation uses [DevelopmentRole](../../agent-runtime/development-role.md#interface). Supply
