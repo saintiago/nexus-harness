@@ -3,13 +3,18 @@
 Documentation is the law; code is not. Documentation states intent, and code is its embodiment.
 If code contradicts documentation, correct the code.
 
-## Core programming principles
+## Core design principles
 
-- **KISS:** Prefer straightforward code that is easy to understand, debug and maintain.
-- **DRY:** Extract genuinely repeated logic into one well-named function or module. Do not force
-  unrelated cases into one abstraction merely because they look similar.
-- **YAGNI:** Add a capability only when a current requirement needs it.
-- **Avoid premature optimization:** Measure a real bottleneck before adding performance complexity.
+Apply these principles when shaping requirements, workflows, architecture, code and tests.
+
+- **KISS:** Prefer the simplest design that meets the need and is easy to understand, debug and
+  maintain.
+- **DRY:** Keep each rule or contract in one authoritative place. Extract repeated behavior when
+  the cases truly share a responsibility; do not force unrelated cases into one abstraction.
+- **YAGNI:** Add a capability, setting, state or extension point only when a current requirement
+  needs it.
+- **Avoid premature optimization:** Require evidence of a bottleneck before adding performance
+  complexity to an architecture or implementation.
 
 Use the smallest design that satisfies an explicit requirement or solves a demonstrated problem.
 Every contract field, abstraction, validation rule and persistent record must serve a concrete need.
@@ -41,16 +46,17 @@ A multi-component flow does not create a special shared contract.
 
 ## SOLID principles
 
-Apply these where they clarify real module or object boundaries. Do not introduce inheritance,
-interfaces or extension points solely to satisfy the acronym.
+Apply these to component responsibilities and public contracts as well as code. Do not introduce
+inheritance, interfaces or extension points solely to satisfy the acronym.
 
-- **Single Responsibility:** Give a module one coherent reason to change.
+- **Single Responsibility:** Give a component, module or action one coherent reason to change.
 - **Open/Closed:** Keep stable public contracts when adding a supported variation; change the
-  implementation directly when that is simpler than an extension mechanism.
-- **Liskov Substitution:** A subtype must honor the behavior promised by the type it replaces.
-- **Interface Segregation:** Let consumers depend on focused interfaces containing only what they use.
-- **Dependency Inversion:** Depend on an owned public contract at an external boundary instead of
-  coupling policy to a concrete provider.
+  design directly when that is simpler than an extension mechanism.
+- **Liskov Substitution:** Any alternative implementation must honor the behavior promised by its
+  public contract.
+- **Interface Segregation:** Let consumers depend only on the focused capabilities they use.
+- **Dependency Inversion:** Make policy depend on owned public contracts at external boundaries,
+  not on concrete providers.
 
 ## Purpose and design
 
