@@ -8,9 +8,9 @@ configured repair turn is available.
 
 ## Interface
 
-Follow the [general action design](architecture.md). Construction supplies the
-[workspace reference](../../workspace.md#layout-and-reference), the configured developer ladder and
-filesystem access. Use the action's event publisher for the exhausted reason. Import
+Follow the [general action design](architecture.md). Construction supplies the selected task key,
+the [workspace reference](../../workspace.md#layout-and-reference), the configured developer ladder
+and filesystem access. Use the action's event publisher for the outcome and the exhausted reason. Import
 [devArtifact](develop.md#output), [verificationArtifact](verify.md#output) and
 [reviewArtifact](review.md#output) for current and historical round reads. No agent or external
 adapter is required.
@@ -51,6 +51,10 @@ output shapes, and it creates no repair decision artifact.
 - exhausted: no profile at or above the current position has a remaining repair allowance. No round is
   opened, the current-round pointer is unchanged and no artifact is written. The reason is emitted
   through the action's event publisher.
+
+started publishes the [action outcome event](architecture.md#action-outcome-events) referencing the
+saved current-round record and naming the round and profile. exhausted claims no output and publishes
+only its reason.
 
 Filesystem or input errors fail the action. A later invocation without a repair trigger is an
 execution error, not a new round or an exhausted policy.

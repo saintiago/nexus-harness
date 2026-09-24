@@ -69,6 +69,8 @@ listener. The runner and every action receive the same EventPublisher capability
 TaskEngine forwards emitted events without interpreting or rewriting their payloads. Producers own
 event types and data contracts; there is no fixed enumeration of task phases in this interface.
 Event data is JSON-serializable for transport across the process boundary.
+Actions share the [action outcome contract](#action-outcome-events) for the durable output each one
+saves.
 
 Subscriptions provide observation only. They do not replay history, recover artifacts or drive
 workflow transitions. Removing a listener does not stop execution. Listener failures are isolated
@@ -92,6 +94,26 @@ the invocation ends, including failure; that event does not declare task success
 
 Invocations are sequential, so activity belongs to the most recent agent-started until agent-finished.
 No display session IDs or separate activity transport are required.
+
+### Action outcome events
+
+An action publishes one outcome event after it finishes writing the durable output for the outcome it
+returns. Its type is `outcome`, its source is the producing action, and its data is:
+
+| Field | Meaning |
+| --- | --- |
+| task | The selected task key the action worked on |
+| round | The round whose record or directory holds the output, or null when the action runs before a round exists |
+| outcome | The action's returned workflow outcome |
+| detail | One short producer-owned phrase naming the useful fact the operator needs, such as branch, profile, check count or pull request, or null when the outcome adds none |
+| artifact | An [ArtifactRef](../high-level-architecture.md#shared-interface-vocabulary) to the saved file |
+
+The reference names the file the action saved for that outcome. An invocation that reuses an earlier
+saved output publishes the same truthful reference; no action names a file it did not save. Outcomes
+that save no output, such as selection finding no candidate or a repository condition preventing
+preparation, publish no outcome event: the existing failed and exhausted events keep carrying their
+reasons. Producers own the detail text; the runner forwards outcome events unchanged and reads no
+artifact.
 
 ### Construction
 

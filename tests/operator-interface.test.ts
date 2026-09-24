@@ -257,6 +257,63 @@ describe('OperatorInterface progress presentation', () => {
     expect(raw).not.toContain('\u001b[37m03:04:05');
     expect(raw).toContain('\u001b[37m03:04:06 execution-runner state develop\u001b[0m');
   });
+
+  it('renders action outcomes as milestones without artifact paths', () => {
+    const harness = createHarness();
+    harness.operatorInterface.start();
+    at(5);
+    harness.emit({
+      source: 'deliver',
+      type: 'outcome',
+      data: {
+        task: 'NEX-1',
+        round: 2,
+        outcome: 'published',
+        detail: 'PR #7',
+        artifact: { path: '/srv/nexus/workspaces/NEX/NEX-1/artifacts/2/delivery.json' },
+      },
+    });
+    at(6);
+    harness.emit({
+      source: 'verify',
+      type: 'outcome',
+      data: {
+        task: 'NEX-1',
+        round: 2,
+        outcome: 'passed',
+        detail: '2 checks',
+        artifact: { path: '/srv/nexus/workspaces/NEX/NEX-1/artifacts/2/verification.json' },
+      },
+    });
+    at(7);
+    harness.emit({
+      source: 'select-task',
+      type: 'outcome',
+      data: {
+        task: 'NEX-1',
+        round: null,
+        outcome: 'selected',
+        detail: null,
+        artifact: { path: '/srv/nexus/executions/NEX/selection.json' },
+      },
+    });
+    at(8);
+    harness.emit({
+      source: 'application',
+      type: 'recovered',
+      data: { decision: 'resume', report: { path: '/srv/nexus/recovery/1.json' } },
+    });
+
+    expect(harness.rows()).toEqual([
+      '03:04:05 deliver task NEX-1 · round 2 · published · PR #7',
+      '03:04:06 verify task NEX-1 · round 2 · passed · 2 checks',
+      '03:04:07 select-task task NEX-1 · selected',
+      '03:04:08 application recovered resume · report saved',
+    ]);
+    // The structured events keep their references; the live view never shows a path.
+    expect(harness.writes.join('')).not.toContain('/srv/nexus');
+    expect(harness.writes.join('')).not.toContain('artifact');
+  });
 });
 
 describe('OperatorInterface activity pane', () => {
@@ -717,12 +774,25 @@ describe('OperatorInterface terminal handling', () => {
     harness.emit(message('Implementing the parser change'));
     at(7);
     harness.emit(work('command', 'npm test -- --run'));
+    at(8);
+    harness.emit({
+      source: 'verify',
+      type: 'outcome',
+      data: {
+        task: 'NEX-7',
+        round: 1,
+        outcome: 'passed',
+        detail: '1 check',
+        artifact: { path: '/srv/nexus/artifacts/1/verification.json' },
+      },
+    });
 
     expect(harness.writes.join('')).not.toContain('\u001b');
     expect(harness.rows()).toEqual([
       '03:04:05 developer Develop · task NEX-7 · profile nexus-flash',
       '03:04:06 message Implementing the parser change',
       '03:04:07 command npm test -- --run',
+      '03:04:08 verify task NEX-7 · round 1 · passed · 1 check',
     ]);
   });
 });

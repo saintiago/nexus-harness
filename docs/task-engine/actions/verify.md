@@ -37,7 +37,9 @@ using the command's position in the configured check list.
 - passed: every required command completed successfully against the recorded revision.
 - failed: at least one completed command failed, or the checks left tracked implementation changes.
 
-Both outcomes write verificationArtifact and the command output. An inability to launch or complete
+Both outcomes write verificationArtifact and the command output, and publish the
+[action outcome event](architecture.md#action-outcome-events) referencing the verification result
+with the number of checks run. An inability to launch or complete
 a command is an execution error, not a failed assertion. So is a worktree that does not hold the
 development result's revision or that already holds tracked changes: no check runs and no verdict is
 written.

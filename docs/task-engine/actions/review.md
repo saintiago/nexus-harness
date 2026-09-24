@@ -43,7 +43,10 @@ the configured profile and observed reviewed head to create ReviewOutput. They a
 ### Outcomes
 
 Return the recorded verdict: approved, changesRequested or inconclusive.
-Each outcome writes reviewArtifact before publication. Unusable agent output is an execution error.
+Each outcome writes reviewArtifact before publication and publishes the
+[action outcome event](architecture.md#action-outcome-events) referencing it with the profile used.
+An invocation that reuses the saved report for the delivered head publishes the same reference.
+Unusable agent output is an execution error.
 
 ## Behavior
 

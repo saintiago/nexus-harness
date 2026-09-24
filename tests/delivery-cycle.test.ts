@@ -263,6 +263,7 @@ describe('delivery cycle', () => {
     });
 
     const startRound = createStartRound({
+      taskKey: 'NEX-1',
       workspace: { root: workspaceRoot },
       developerLadder: [{ profile: 'dev-a', repairAllowance: 1 }],
       publish: (event) => events.push(event),

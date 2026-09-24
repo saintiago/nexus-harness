@@ -127,10 +127,26 @@ function startRoundOver(
   developerLadder: readonly DeveloperProfileAllowance[],
 ): ReturnType<typeof createStartRound> {
   return createStartRound({
+    taskKey: 'NEX-1',
     workspace: { root },
     developerLadder,
     publish: (event) => events.push(event),
   });
+}
+
+/** The started outcome event referencing the saved current-round record. */
+function startedOutcome(round: number, profile: string): EngineEvent {
+  return {
+    source: 'start-round',
+    type: 'outcome',
+    data: {
+      task: 'NEX-1',
+      round,
+      outcome: 'started',
+      detail: `profile ${profile}`,
+      artifact: { path: path.join(root, 'state', 'current-round.json') },
+    },
+  };
 }
 
 const ladder: readonly DeveloperProfileAllowance[] = [
@@ -160,8 +176,8 @@ describe('StartRound', () => {
       reason: expect.stringContaining('initial implementation uses the first profile "dev-a"'),
     });
     expect((await stat(path.join(root, 'artifacts', '1'))).isDirectory()).toBe(true);
-    // A new round is ordinary progress, not a declared failure: nothing is published.
-    expect(events).toEqual([]);
+    // The published outcome references the saved plan, not a failure reason.
+    expect(events).toEqual([startedOutcome(1, 'dev-a')]);
   });
 
   it('starts the round root the artifact helpers resolve', async () => {
@@ -214,6 +230,8 @@ describe('StartRound', () => {
     // Repeating the action after the plan was saved but before development ran is still a reuse.
     await expect(startRound()).resolves.toBe('started');
     expect(await readCurrentRound()).toMatchObject({ number: 3, profile: 'dev-b' });
+    // Both invocations reference the same reused plan, which stays saved.
+    expect(events).toEqual([startedOutcome(3, 'dev-b'), startedOutcome(3, 'dev-b')]);
   });
 
   it('retains an existing next directory and its contents when it opens the round', async () => {
@@ -533,6 +551,8 @@ describe('StartRound', () => {
     await writeDevelopment(3, 'dev-b');
     await writeVerification(3, 'failed');
 
+    // The exhausted invocation opens no round: only its reason is published.
+    events = [];
     await expect(startRound()).resolves.toBe('exhausted');
 
     // No round is opened, the pointer is unchanged and the reason travels through the publisher.

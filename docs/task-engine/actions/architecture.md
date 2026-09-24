@@ -113,6 +113,12 @@ A declared failure outcome emits its reason through the action's event publisher
 output defined for that outcome. Unexpected invocation, provider or storage failures remain execution
 errors. Neither form is silently treated as successful work.
 
+After finishing the outputs required by its returned outcome, an action publishes the
+[action outcome event](../architecture.md#action-outcome-events) referencing the saved file. An
+outcome that saves no output publishes no outcome event. An invocation that reuses an output an
+earlier invocation saved publishes the same reference; an action never names a file that was not
+saved.
+
 ## Inputs before a round exists
 
 [SelectTask](select-task.md#output) owns selection.json beside the queue's workflow-state file.

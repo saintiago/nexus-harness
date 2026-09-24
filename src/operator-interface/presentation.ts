@@ -6,7 +6,7 @@
  * inventory never reach the live view.
  */
 
-import type { EngineEvent } from '../task-engine/index.js';
+import { actionOutcomeType, type EngineEvent } from '../task-engine/index.js';
 import { sanitize } from './text.js';
 
 /** A content color from the OperatorInterface design: the terminal default, or one of its colors. */
@@ -102,6 +102,28 @@ function textField(data: unknown, key: string): string | null {
   return text === '' ? null : text;
 }
 
+/** One supplied event's data field, when the data carries it as a positive whole number. */
+function roundField(data: unknown): number | null {
+  if (typeof data !== 'object' || data === null) {
+    return null;
+  }
+  const value = (data as Record<string, unknown>)['round'];
+  return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : null;
+}
+
+/** True when the data carries the named saved-artifact reference, whose path is never shown. */
+function hasArtifactRef(data: unknown, key: string): boolean {
+  if (typeof data !== 'object' || data === null) {
+    return false;
+  }
+  const value = (data as Record<string, unknown>)[key];
+  if (typeof value !== 'object' || value === null) {
+    return false;
+  }
+  const artifactPath = (value as Record<string, unknown>)['path'];
+  return typeof artifactPath === 'string' && artifactPath !== '';
+}
+
 /** One supplied event's data field, keeping empty text that is still a present value. */
 function activityField(data: unknown, key: string): string | null {
   if (typeof data !== 'object' || data === null) {
@@ -109,6 +131,38 @@ function activityField(data: unknown, key: string): string | null {
   }
   const value = (data as Record<string, unknown>)[key];
   return typeof value === 'string' ? sanitize(value) : null;
+}
+
+/**
+ * The milestone line an action outcome event renders as: task, round when the action names one,
+ * the returned outcome and the producer's short detail. The artifact path is never rendered.
+ */
+function outcomeMilestone(data: unknown): string | null {
+  const task = textField(data, 'task');
+  const outcome = textField(data, 'outcome');
+  if (task === null || outcome === null) {
+    return null;
+  }
+  const parts = [`task ${task}`];
+  const round = roundField(data);
+  if (round !== null) {
+    parts.push(`round ${String(round)}`);
+  }
+  parts.push(outcome);
+  const detail = textField(data, 'detail');
+  if (detail !== null) {
+    parts.push(detail);
+  }
+  return parts.join(' · ');
+}
+
+/** The milestone line a saved recovery report renders as; its path stays out of the terminal. */
+function recoveredMilestone(data: unknown): string | null {
+  const decision = textField(data, 'decision');
+  if (decision === null || !hasArtifactRef(data, 'report')) {
+    return null;
+  }
+  return `recovered ${decision} · report saved`;
 }
 
 /** The detail a progress event adds to its source and type, when it reports one. */
@@ -155,6 +209,16 @@ export function interpret(event: EngineEvent): Interpretation {
     }
   } else if (type === 'agent-finished') {
     return { kind: 'end' };
+  } else if (type === actionOutcomeType) {
+    const text = outcomeMilestone(event.data);
+    if (text !== null) {
+      return { kind: 'progress', label, text, style: 'white' };
+    }
+  } else if (type === 'recovered') {
+    const text = recoveredMilestone(event.data);
+    if (text !== null) {
+      return { kind: 'progress', label, text, style: 'default' };
+    }
   }
   return {
     kind: 'progress',

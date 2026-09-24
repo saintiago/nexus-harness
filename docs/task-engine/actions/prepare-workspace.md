@@ -33,7 +33,10 @@ not a requirement to reset retained work to that revision.
 - prepared: the directory layout, repository and configured preparation commands are ready.
 - failed: a repository condition or completed preparation command prevents readiness.
 
-prepared writes the record. Preserve preparation output under state/preparation/ and emit failure
+prepared writes the record and publishes the
+[action outcome event](architecture.md#action-outcome-events) referencing it, naming the task branch;
+reusing a retained workspace publishes the same reference. failed saves no record and publishes only
+its reason. Preserve preparation output under state/preparation/ and emit failure
 reasons for recovery. Launch and filesystem errors are execution errors.
 
 ## Behavior

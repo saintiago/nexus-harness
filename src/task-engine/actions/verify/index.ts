@@ -7,8 +7,8 @@ import type {
   ProcessResult,
 } from '../../../adapters/processes.js';
 import type { Command } from '../../../configuration/index.js';
-import type { BoundAction, EventPublisher } from '../../index.js';
-import { createArtifactHelpers } from '../artifacts.js';
+import { actionOutcomeEvent, type BoundAction, type EventPublisher } from '../../index.js';
+import { createArtifactHelpers, roundArtifactPath } from '../artifacts.js';
 import { devArtifact } from '../develop/artifacts.js';
 import {
   preparedWorkspaceDeclaration,
@@ -174,6 +174,17 @@ export function createVerify(settings: VerifySettings): BoundAction {
       settings.publish({ source: 'verify', type: 'failed', data: { reason: problems.join('; ') } });
     }
     await helpers.writeOutputArtifact(verificationArtifact, output);
+    settings.publish(
+      actionOutcomeEvent('verify', {
+        task: development.taskKey,
+        round: round.number,
+        outcome: output.status,
+        detail: `${String(checks.length)} check${checks.length === 1 ? '' : 's'}`,
+        artifact: {
+          path: roundArtifactPath(root, round.number, verificationArtifact.pathFromArtifactsRoot),
+        },
+      }),
+    );
     return output.status;
   };
 }

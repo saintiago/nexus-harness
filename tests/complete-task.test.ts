@@ -177,6 +177,21 @@ const inReviewIssue = {
   fields: { summary: 'Implement the retry guard', status: { id: '4', name: 'In Review' } },
 };
 
+/** The outcome event CompleteTask publishes for one workspace's saved completion evidence. */
+function completionOutcome(workspaceRoot: string, outcome: 'completed' | 'failed'): EngineEvent {
+  return {
+    source: 'complete-task',
+    type: 'outcome',
+    data: {
+      task: 'NEX-1',
+      round: 1,
+      outcome,
+      detail: 'PR #7',
+      artifact: { path: path.join(workspaceRoot, 'artifacts', '1', 'completion.json') },
+    },
+  };
+}
+
 /** The action under test, bound to the configured post-merge checks and controlled adapters. */
 function completeTaskAction(options: {
   readonly selectionFile: string;
@@ -253,7 +268,8 @@ describe('CompleteTask', () => {
     expect(waitCalls).toEqual([]);
     // The checks are confirmed before the ticket is marked Done.
     expect(order).toEqual(['checks', 'workflow', 'done']);
-    expect(events).toEqual([]);
+    // The saved evidence is what the completed outcome event references.
+    expect(events).toEqual([completionOutcome(workspaceRoot, 'completed')]);
   });
 
   it('requires a completed Nexus Lens check for the approved delivered head', async () => {
@@ -609,6 +625,8 @@ describe('CompleteTask', () => {
     expect(githubCalls).toEqual(['read:7']);
     expect(jiraCalls).toEqual(['read:1', 'transitions:1', 'transition:1:41']);
     expect(await readRoundArtifact(workspaceRoot, 'completion.json')).toEqual(completion);
+    // The reused evidence stays the saved file the outcome event references.
+    expect(events).toEqual([completionOutcome(workspaceRoot, 'completed')]);
 
     // An already-completed ticket needs no further transition.
     events = [];

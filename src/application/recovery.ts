@@ -543,6 +543,11 @@ export function createRecovery(settings: RecoverySettings): Recovery {
         return attention(`The recovery report could not be saved: ${messageOf(error)}`);
       }
       saved = reportRef;
+      publish({
+        source: 'application',
+        type: 'recovered',
+        data: { decision: report.decision.kind, report: reportRef },
+      });
       await deliver(reportRef, report, stop.failure);
       return report.decision.kind === 'resume' ? { kind: 'resume' } : attention(report.summary);
     },

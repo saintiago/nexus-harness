@@ -166,6 +166,21 @@ function worktreeOf(workspaceRoot: string): string {
   return path.join(workspaceRoot, 'worktree');
 }
 
+/** The prepared outcome event referencing one workspace's saved record. */
+function preparedOutcome(taskKey: string, workspaceRoot: string): EngineEvent {
+  return {
+    source: 'prepare-workspace',
+    type: 'outcome',
+    data: {
+      task: taskKey,
+      round: null,
+      outcome: 'prepared',
+      detail: `branch task/${taskKey}`,
+      artifact: { path: path.join(workspaceRoot, 'state', 'prepared-workspace.json') },
+    },
+  };
+}
+
 describe('PrepareWorkspace', () => {
   it('obtains the repository, branches from main and records the prepared identity', async () => {
     const { origin, revision } = await repositoryWithOrigin();
@@ -203,7 +218,8 @@ describe('PrepareWorkspace', () => {
     ).toBe('');
     // Preparation leaves the fixed workspace layout ready, including the artifact root.
     expect((await stat(path.join(workspace, 'artifacts'))).isDirectory()).toBe(true);
-    expect(events).toEqual([]);
+    // The recorded identity is what the outcome event references.
+    expect(events).toEqual([preparedOutcome('NEX-1', workspace)]);
   });
 
   it('fast-forwards main before starting the task branch in an existing worktree', async () => {
@@ -352,6 +368,11 @@ describe('PrepareWorkspace', () => {
     expect(await readFile(path.join(worktree, 'readme.md'), 'utf8')).toBe('uncommitted change\n');
     expect(await readFile(path.join(worktree, 'notes.txt'), 'utf8')).toBe('untracked\n');
     expect(await readFile(path.join(worktree, 'preparation-runs.txt'), 'utf8')).toBe('run\nrun\n');
+    // The repeated invocation reuses the saved record and publishes the same reference.
+    expect(events).toEqual([
+      preparedOutcome('NEX-5', workspace),
+      preparedOutcome('NEX-5', workspace),
+    ]);
   });
 
   it('reports a retained worktree that belongs to another repository', async () => {
@@ -406,6 +427,7 @@ describe('PrepareWorkspace', () => {
     await expect(prepareOver({ selectionFile, source: second.origin })()).resolves.toBe('failed');
 
     expect(events).toEqual([
+      preparedOutcome('NEX-12', workspace),
       {
         source: 'prepare-workspace',
         type: 'failed',
@@ -440,6 +462,7 @@ describe('PrepareWorkspace', () => {
     await expect(prepareOver({ selectionFile, source: origin })()).resolves.toBe('failed');
 
     expect(events).toEqual([
+      preparedOutcome('NEX-6', workspace),
       {
         source: 'prepare-workspace',
         type: 'failed',

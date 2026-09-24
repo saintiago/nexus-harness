@@ -57,13 +57,16 @@ Completed means the configured workflow finished successfully; needs-attention m
 continue. The report points to the saved recovery report when recovery occurred.
 
 subscribe observes subsequent events and returns an unsubscribe function. Forward worker events
-unchanged. Emit lifecycle events with source application and types starting, running, recovering and
-finished. The finished event carries ExecutionResult. Listener failures do not affect execution.
+unchanged. Emit lifecycle events with source application and types starting, running, recovering,
+recovered and finished. The finished event carries ExecutionResult. Listener failures do not affect
+execution.
 
 Recovery invocations emit the [agent activity events](task-engine/architecture.md#agent-activity-events)
 with role recovery. Use the [RecoveryRole](agent-runtime/recovery-role.md#interface) prompt, context
 and tool contract. Request RecoveryReport in the recovery context and parse the returned output.
-A malformed report is a failed recovery invocation.
+A malformed report is a failed recovery invocation. Once the report is saved, publish a recovered
+event carrying its decision and an [ArtifactRef](high-level-architecture.md#shared-interface-vocabulary)
+to the saved report, before applying the decision.
 
 ### Component wiring
 
@@ -203,9 +206,9 @@ creates one JSONL file at `<execution directory>/logs/<execution id>/events.json
 and recovery within that execution use the same file; a new execution uses a new directory.
 
 Each line is `{ "timestamp": <ISO timestamp>, "event": <ExecutionEvent> }`. Timestamp events when
-received and preserve their order and complete payloads, including agent activity. Terminal formatting
-and display truncation do not change the saved events. Do not add configuration or credential values
-to events for logging.
+received and preserve their order and complete payloads, including agent activity and the artifact
+references of action outcome events. Terminal formatting and display truncation do not change the
+saved events. Do not add configuration or credential values to events for logging.
 
 Application owns the logger subscription and file lifecycle. Open it before publishing starting, drain
 pending writes before recovery reads the log, and close it after finished on every exit path. Include

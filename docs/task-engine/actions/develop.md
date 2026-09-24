@@ -56,7 +56,10 @@ It is not a declaration that checks passed.
 - completed: the agent produced a usable implementation report and committed work is available for verification.
 - failed: the agent produced a usable report explaining why implementation could not be completed.
 
-Both outcomes write devArtifact. Invocation failures or unusable output are execution errors.
+Both outcomes write devArtifact and publish the
+[action outcome event](architecture.md#action-outcome-events) referencing it with the profile used.
+An invocation that reuses the current-round report publishes the same reference. Invocation failures
+or unusable output are execution errors.
 
 ## Behavior
 

@@ -38,7 +38,10 @@ The source connection is supplied configuration. Workspace paths distinguish pro
 - failed: an observed task condition prevents selection, with the reason emitted for recovery.
 
 Only selected supplies a task for subsequent actions. Source access failures are execution errors,
-not evidence of an empty queue.
+not evidence of an empty queue. selected publishes the
+[action outcome event](architecture.md#action-outcome-events) referencing the saved selection file,
+including when it continues a retained selection without rewriting it; empty and failed save no
+selection and publish no outcome event.
 
 ## Behavior
 
