@@ -28,7 +28,7 @@ A separate Requirements and Design workflow may consume an approved brief later.
   feedback or revised idea and moves the item back to `Idea` to resubmit it; this run ends.
   The original idea, latest brief, research and complete council feedback remain in artifacts
   and logs. Internal agent feedback is not published to Jira.
-- **Execution fault:** missing required project context, agent/tool failure, malformed output or
+- **Execution fault:** inaccessible project sources, agent/tool failure, malformed output or
   source update failure is an operational fault, not a council verdict. Preserve artifacts and
   report it through Application's ordinary recovery/attention path. Never manufacture approval.
 
@@ -40,11 +40,10 @@ workflow never silently waits for author input.
 
 The submitted idea is immutable within a run: source key, author, text, links, revision and
 the author's most recent resubmission comment, when present, at selection. Every agent receives
-it alongside the latest relevant artifacts. Project configuration provides the authoritative
-purpose/charter/long-term vision references, an idea selection query and submitted, active,
-approved and waiting-for-feedback status mappings on its existing Jira task source, and
-repository/document sources available
-to agents. Nexus configuration selects this workflow, the six role profiles, iteration limits
+it alongside the latest relevant artifacts. Project configuration provides an idea selection
+query and submitted, active, approved and waiting-for-feedback status mappings on its existing
+Jira task source. Agents can read the connected project's repository, documents and commit
+history. Nexus configuration selects this workflow, the six role profiles, iteration limits
 and storage. Idea refinement uses the same Jira adapter as finite delivery with a separate
 selection query. HARN selects Jira Task issues in `Idea`; `Idea Refinement` is the active status,
 `Draft` is the approved status and `Waiting for Feedback` awaits human input.
@@ -53,12 +52,14 @@ Before publishing a brief or feedback and changing status, the action re-reads t
 and reconciles changes to its text or revision. The adapter owns Jira identity and transition
 details; the workflow owns selection, verdicts and publication decisions.
 
-Purpose sources must be available and identifiable. If they are absent, return an operational
-needs-attention result asking for project context; agents must not invent a charter. The researcher
-may use configured web tools and must retain links, dates and the distinction between source facts
-and inference. Repository and internal-source reads are scoped to the connected project. Agent roles
-write no project code and do not change source statuses. Nexus actions own artifacts and source
-updates.
+The Purpose Verifier searches the connected project's documentation for its purpose, charter
+and long-term vision. If these are absent or incomplete, it examines code and commit history
+to infer the project's direction as well as the evidence permits. It cites the files and commits
+used, labels inferred claims as provisional, and states uncertainty or conflicts. Missing purpose
+documents alone are not an execution fault. The researcher may use configured web tools and must
+retain links, dates and the distinction between source facts and inference. Repository and
+internal-source reads are scoped to the connected project. Agent roles write no project code and
+do not change source statuses. Nexus actions own artifacts and source updates.
 
 ## Behavior
 
@@ -69,8 +70,10 @@ updates.
    A source change before publication requires reconciliation, not overwriting the author's new
    text. On resubmission, capture the author's response comment made after the prior feedback
    request along with the current idea text and links as the new run's input.
-2. Run Purpose Verifier and Researcher concurrently on the original idea. They work independently
-   and write separate reports. The writer starts only after both reports exist.
+2. Run Purpose Verifier and Researcher concurrently on the original idea. The Purpose Verifier
+   finds purpose documents itself and, where needed, infers purpose from code and commit history.
+   They work independently and write separate reports. The writer starts only after both reports
+   exist.
 3. Brief Writer creates revision 1. It sees the original idea, both reports, previous feedback when
    revising, and every council criterion below. It records a short problem/value statement, project
    fit, supporting evidence with links, alternatives, smallest useful scope, assumptions and open
@@ -113,12 +116,15 @@ one another's pending outputs.
 
 ### Purpose Verifier
 
-> Assess the submitted idea against this project's supplied charter, purpose and long-term vision.
-> Identify the outcome the project is meant to serve, where the idea supports or conflicts with it,
-> and the smallest steering that would improve fit. Cite the exact project source for each material
-> claim. Preserve the author's intent and state uncertainty. Do not design architecture, write
-> requirements, decide implementation priority or invent missing project purpose. Return a concise
-> purpose assessment, conflicts, suggested steering and source references.
+> Find this project's purpose, charter and long-term vision in its documentation. If those
+> documents are absent or incomplete, inspect the connected project's code and commit history
+> and infer its direction as well as the evidence permits. Assess the submitted idea against the
+> discovered purpose or provisional inference. Identify where it supports or conflicts with the
+> project's direction and the smallest steering that would improve fit. Cite documents, files and
+> commits for each material claim; distinguish stated intent from inference and name uncertainty
+> or conflicts. Preserve the author's intent. Do not design architecture, write requirements or
+> decide implementation priority. Return a concise purpose assessment, conflicts, suggested
+> steering and source references.
 
 ### Researcher
 
@@ -142,7 +148,8 @@ one another's pending outputs.
 ### Purpose Council Reviewer
 
 > Independently review the exact supplied brief revision against the original idea and the
-> project's purpose sources. Check project fit, coherent value and fidelity to the author's intent.
+> Purpose Verifier's cited documents or provisional inference from code and commits. Check project
+> fit, coherent value, evidence quality and fidelity to the author's intent.
 > Choose approve, minor_corrections, major_rework or idea_not_working using the workflow's severity
 > definitions. For any objection, name the criterion, cite evidence and give a concrete correction.
 > Do not review other council verdicts or design the solution.
@@ -274,6 +281,9 @@ lines when interactive panes are unavailable.
 - Mixed verdicts follow the stated precedence and preserve every objection. Minor repeats only the
   writer and council; major repeats purpose, research, writer and council. Every rewrite invalidates
   earlier approvals. Limits and an unworkable verdict return a complete feedback package.
+- The Purpose Verifier searches project documents. Missing purpose documents trigger code and commit
+  investigation, with cited provisional inferences and uncertainty, rather than an operational fault.
+  The purpose council evaluates that evidence without treating missing documents alone as a veto.
 - A selected HARN idea moves `Idea -> Idea Refinement` before agent work. It reaches `Draft`
   only after unanimous approval on one exact revision. Rejection or exhaustion moves it to
   `Waiting for Feedback` with a human-facing Jira comment; internal agent feedback stays in
