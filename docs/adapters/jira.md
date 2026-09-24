@@ -39,3 +39,6 @@ attribution and source ordering. Ranking changes rank, not priority.
 
 Translate requested fields and transitions through the configured mappings. Preserve Jira document
 structure rather than flattening it into a shared cross-provider document format.
+
+Request English provider labels with `Accept-Language: en-US` so status names match the configured
+English workflow mappings independently of the HTTP client default locale.

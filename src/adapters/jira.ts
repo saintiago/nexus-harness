@@ -236,6 +236,8 @@ export function createJiraAdapter(
         url: `${base}${path}`,
         headers: {
           accept: 'application/json',
+          // Status and transition labels stay in the configured English workflow mappings.
+          'accept-language': 'en-US',
           authorization,
           ...(body === undefined ? {} : { 'content-type': 'application/json' }),
         },
