@@ -56,7 +56,7 @@ export function createWorkerLaunch(settings: WorkerLaunchSettings): WorkerLaunch
     const execution = await run(
       {
         executable: settings.executable,
-        args: [settings.entry, request.projectConfigPath],
+        args: [settings.entry, request.projectConfigPath, request.workflow],
         directory: path.dirname(request.projectConfigPath),
         environment: request.environment,
       },

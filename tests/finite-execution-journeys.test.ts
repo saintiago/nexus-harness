@@ -211,13 +211,14 @@ function inProcessWorkerLaunch(input: {
   return async (request, onEvent) => {
     const nexus = await loadNexusConfiguration(input.installationConfigPath);
     const project = await loadProjectConfiguration(request.projectConfigPath);
-    const workflow = await loadWorkflow(nexus.workflow.path);
-    const paths = executionPaths(nexus, project);
+    const workflow = await loadWorkflow(nexus.workflow[request.workflow]);
+    const paths = executionPaths(nexus, project, request.workflow);
     await mkdir(paths.directory, { recursive: true });
     const engine = createTaskEngine({
       workflow: workflow.machine,
       stateFile: paths.workflowStateFile,
       bindActions: createActionBinding({
+        workflow: request.workflow,
         project,
         nexus,
         paths,
@@ -295,7 +296,7 @@ async function finiteJourney(): Promise<Journey> {
   await mkdir(projectDirectory, { recursive: true });
 
   const nexus = nexusConfiguration();
-  nexus.workflow.path = workflowPath;
+  nexus.workflow['finite-delivery'] = workflowPath;
   nexus.storage.root = './state';
   nexus.executionPolicy.developerLadder = [{ profile: 'nexus-flash', repairAllowance: 2 }];
   const project = projectConfiguration();
@@ -555,7 +556,8 @@ async function finiteJourney(): Promise<Journey> {
 function stateNames(events: readonly ExecutionEvent[]): string[] {
   return events
     .filter((event) => event.source === 'execution-runner' && event.type === 'state')
-    .map((event) => (event.data as { readonly name: string }).name);
+    .map((event) => (event.data as { readonly value: unknown }).value)
+    .filter((value): value is string => typeof value === 'string');
 }
 
 /** The saved JSONL execution-log entries of one journey, in receipt order. */

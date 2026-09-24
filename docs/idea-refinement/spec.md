@@ -227,6 +227,7 @@ artifacts/
       council/evidence.json
       council/simplicity.json
     decision.json
+  handoff.json
 ```
 
 Submission and cycle numbers are positive integers. The submission number is a storage identity,
@@ -237,17 +238,23 @@ reviewer identity, verdict, criteria and feedback. A council set is valid only w
 results name the current brief artifact. Captured inputs, decisions and prior cycles are
 retained in the workspace. The decision artifact records the route, strongest verdict, full
 feedback and source update evidence, including the human-facing Jira comment when applicable.
+An approval also writes the single `handoff.json` with the shared issue workspace and references to
+the captured input, approved brief, purpose assessment, research and council decisions. SelectIdea's
+selection record sits beside the idea-refinement execution's workflow state; StartIdeaRound writes
+the captured input's retained `input.json` copy when it opens the submission, and every role reads
+that copy as the current captured idea.
 These artifact paths are specific to idea refinement; finite delivery's round layout at the
 shared issue root is unchanged. Later workflows may read all retained artifacts in the issue
 workspace without changing refinement state.
 
 StartIdeaRound owns `state/current-round.json` with the active submission number, council cycle
-and selected role profiles:
+the route that opened it and the selected role profiles:
 
 ```ts
 type IdeaRoundPlan = {
   submission: number;
   cycle: number;
+  route: "new" | "minor" | "major";
   profiles: Partial<Record<IdeaRole, string>>;
 };
 ```
@@ -334,6 +341,8 @@ All six roles use the shared [agent activity events](../task-engine/architecture
 [execution log](../application.md#execution-log) and
 [agent activity panes](../operator-interface.md#agent-activity-panes). Concurrent invocations
 remain individually attributable through those contracts.
+An idea action's outcome event names the idea key, the council cycle and the artifact it saved, so
+the operator sees the same milestone line without internal paths.
 
 ## Verification criteria
 

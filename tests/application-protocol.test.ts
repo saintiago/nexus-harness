@@ -44,9 +44,16 @@ async function launch(scenario: string): Promise<{
   const completion = await createWorkerLaunch({
     executable: process.execPath,
     entry: controlledWorker,
-  })({ projectConfigPath, environment: { NEXUS_TEST_SCENARIO: scenario } }, (event) => {
-    events.push(event);
-  });
+  })(
+    {
+      projectConfigPath,
+      workflow: 'finite-delivery',
+      environment: { NEXUS_TEST_SCENARIO: scenario },
+    },
+    (event) => {
+      events.push(event);
+    },
+  );
   return { events, completion };
 }
 

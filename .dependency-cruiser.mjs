@@ -18,6 +18,13 @@ const actionDirectories = [
   'review',
   'deliver',
   'complete-task',
+  'select-idea',
+  'start-idea-round',
+  'purpose-verifier',
+  'researcher',
+  'brief-writer',
+  'review-council',
+  'publish-decision',
 ];
 
 /**

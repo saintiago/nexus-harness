@@ -57,7 +57,7 @@ async function configuredWorker(options?: {
   await mkdir(projectDirectory, { recursive: true });
 
   const nexus = nexusConfiguration();
-  nexus.workflow.path = options?.workflowPath ?? workflowModule;
+  nexus.workflow['finite-delivery'] = options?.workflowPath ?? workflowModule;
   nexus.storage.root = './state';
   const project = projectConfiguration();
   const installationConfigPath = path.join(installationDirectory, 'nexus.config.json');
@@ -89,6 +89,7 @@ async function configuredWorker(options?: {
     workspace,
     settings: {
       projectConfigPath,
+      workflow: 'finite-delivery',
       installationConfigPath,
       environment: { ...credentials, ...options?.environment },
       stdout: { write: (text) => stdout.push(text) },

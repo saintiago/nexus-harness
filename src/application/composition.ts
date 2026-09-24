@@ -1,8 +1,15 @@
 import path from 'node:path';
 import {
+  briefWriterRoleInstructions,
   developmentRoleInstructions,
+  evidenceCouncilRoleInstructions,
+  type IdeaRole,
+  purposeCouncilRoleInstructions,
+  purposeVerifierRoleInstructions,
   recoveryRoleInstructions,
+  researcherRoleInstructions,
   reviewerRoleInstructions,
+  simplicityCouncilRoleInstructions,
   type AgentEvent,
   type AgentProfile,
   type AgentRuntimeSettings,
@@ -14,6 +21,7 @@ import {
   resolveCredential,
   type NexusConfiguration,
   type ProjectConfiguration,
+  type WorkflowName,
 } from '../configuration/index.js';
 import { installationConfigSetting } from './installation.js';
 
@@ -28,19 +36,36 @@ import { installationConfigSetting } from './installation.js';
 type HostEnvironment = Readonly<Record<string, string | undefined>>;
 
 /** The role whose constant instructions one invocation carries, selected by the execution policy. */
-export type ProfileRole = 'developer' | 'reviewer' | 'recovery';
+export type ProfileRole = 'developer' | 'reviewer' | 'recovery' | IdeaRole;
 
 /** The complete constant instructions of each role, defined by the role contracts. */
 const roleInstructions: Record<ProfileRole, readonly string[]> = {
   developer: developmentRoleInstructions,
   reviewer: reviewerRoleInstructions,
   recovery: recoveryRoleInstructions,
+  'purpose-verifier': purposeVerifierRoleInstructions,
+  researcher: researcherRoleInstructions,
+  'brief-writer': briefWriterRoleInstructions,
+  'purpose-council': purposeCouncilRoleInstructions,
+  'evidence-council': evidenceCouncilRoleInstructions,
+  'simplicity-council': simplicityCouncilRoleInstructions,
+};
+
+/** The configured idea refinement profile of each role. */
+const ideaRoleSettings: Record<IdeaRole, keyof NexusConfiguration['ideaRefinement']['profiles']> = {
+  'purpose-verifier': 'purposeVerifier',
+  researcher: 'researcher',
+  'brief-writer': 'briefWriter',
+  'purpose-council': 'purposeCouncil',
+  'evidence-council': 'evidenceCouncil',
+  'simplicity-council': 'simplicityCouncil',
 };
 
 /**
  * The profiles the execution policy selects for one role: developer ladder entries identify
- * developer profiles, the reviewer profile identifies a reviewer profile and the recovery profile
- * identifies a recovery profile. One profile may be selected for more than one role.
+ * developer profiles, the reviewer profile identifies a reviewer profile, the recovery profile
+ * identifies a recovery profile and the idea refinement settings identify the six idea roles. One
+ * profile may be selected for more than one role.
  */
 function profilesForRole(
   configuration: NexusConfiguration,
@@ -54,6 +79,13 @@ function profilesForRole(
       return new Set([reviewerProfile]);
     case 'recovery':
       return new Set([recoveryProfile]);
+    case 'purpose-verifier':
+    case 'researcher':
+    case 'brief-writer':
+    case 'purpose-council':
+    case 'evidence-council':
+    case 'simplicity-council':
+      return new Set([configuration.ideaRefinement.profiles[ideaRoleSettings[role]]]);
   }
 }
 
@@ -148,12 +180,22 @@ export type ExecutionPaths = {
   readonly selectionFile: string;
 };
 
-/** The queue execution directory and record paths Application supplies for a project. */
+/**
+ * The execution directory and record paths Application supplies for one project and selected
+ * workflow. Idea refinement uses its own directory beside the finite delivery queue's, so the two
+ * workflows keep separate workflow state, selection and logs.
+ */
 export function executionPaths(
   nexus: NexusConfiguration,
   project: ProjectConfiguration,
+  workflow: WorkflowName,
 ): ExecutionPaths {
-  const directory = path.join(nexus.storage.root, 'executions', project.taskSource.project);
+  const directory = path.join(
+    nexus.storage.root,
+    'executions',
+    project.taskSource.project,
+    ...(workflow === 'idea-refinement' ? ['idea-refinement'] : []),
+  );
   return {
     directory,
     workflowStateFile: path.join(directory, 'workflow.json'),

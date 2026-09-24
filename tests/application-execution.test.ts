@@ -47,6 +47,11 @@ const workflowModule = fileURLToPath(
   new URL('./fixtures/workflow/start-round.mjs', import.meta.url),
 );
 
+/** A configured idea refinement definition with no operations, for the workflow-selection test. */
+const ideaWorkflowModule = fileURLToPath(
+  new URL('./fixtures/workflow/idea-approved.mjs', import.meta.url),
+);
+
 /** Run one Git command to observe the operational worktree the provider receives. */
 const execFileAsync = promisify(execFile);
 
@@ -118,7 +123,8 @@ async function harness(options: {
   await mkdir(projectDirectory, { recursive: true });
 
   const nexus = nexusConfiguration();
-  nexus.workflow.path = workflowModule;
+  nexus.workflow['finite-delivery'] = workflowModule;
+  nexus.workflow['idea-refinement'] = ideaWorkflowModule;
   nexus.storage.root = './state';
   nexus.executionPolicy.maxRecoveryAttempts = options.maxRecoveryAttempts ?? 1;
   const project = projectConfiguration();
@@ -263,11 +269,45 @@ function declaredFormats(
 }
 
 describe('Application execution', () => {
+  it('runs the explicitly selected idea refinement workflow in its own execution directory', async () => {
+    const executed = await harness({
+      completions: [
+        { result: { ok: true, value: 'approved' }, exitCode: 0, problem: null, diagnostics: '' },
+      ],
+    });
+
+    const result = await executed.application.execute({
+      projectConfigPath: executed.projectConfigPath,
+      workflow: 'idea-refinement',
+    });
+
+    expect(result).toEqual({
+      outcome: 'completed',
+      reason: 'The workflow finished with the successful outcome "approved".',
+      report: null,
+    });
+    // The launch names the selected workflow and the executions stay apart.
+    expect(executed.launches[0]?.workflow).toBe('idea-refinement');
+    await expect(
+      readFile(
+        path.join(
+          executed.executionDirectory,
+          'idea-refinement',
+          'logs',
+          ...(await readdir(path.join(executed.executionDirectory, 'idea-refinement', 'logs'))),
+          'events.jsonl',
+        ),
+        'utf8',
+      ),
+    ).resolves.toContain('"type":"finished"');
+  });
+
   it('completes on a successful terminal outcome and successful exit', async () => {
     const executed = await harness({ completions: [successful] });
 
     const result = await executed.application.execute({
       projectConfigPath: executed.projectConfigPath,
+      workflow: 'finite-delivery',
     });
 
     expect(result).toEqual({
@@ -303,7 +343,10 @@ describe('Application execution', () => {
       emit: (onEvent) => onEvent(workerEvent),
     });
 
-    await executed.application.execute({ projectConfigPath: executed.projectConfigPath });
+    await executed.application.execute({
+      projectConfigPath: executed.projectConfigPath,
+      workflow: 'finite-delivery',
+    });
 
     expect(executed.events).toEqual([
       { source: 'application', type: 'starting', data: null },
@@ -336,7 +379,10 @@ describe('Application execution', () => {
       },
     });
 
-    await executed.application.execute({ projectConfigPath: executed.projectConfigPath });
+    await executed.application.execute({
+      projectConfigPath: executed.projectConfigPath,
+      workflow: 'finite-delivery',
+    });
 
     const logs = await savedLogs(executed.executionDirectory);
     expect(logs).toHaveLength(1);
@@ -378,7 +424,10 @@ describe('Application execution', () => {
       },
     });
 
-    await executed.application.execute({ projectConfigPath: executed.projectConfigPath });
+    await executed.application.execute({
+      projectConfigPath: executed.projectConfigPath,
+      workflow: 'finite-delivery',
+    });
 
     const logs = await savedLogs(executed.executionDirectory);
     expect(logs).toHaveLength(1);
@@ -398,6 +447,7 @@ describe('Application execution', () => {
 
     const result = await executed.application.execute({
       projectConfigPath: executed.projectConfigPath,
+      workflow: 'finite-delivery',
     });
 
     expect(result.outcome).toBe('completed');
@@ -410,8 +460,14 @@ describe('Application execution', () => {
   it('starts a new log directory for each execute call', async () => {
     const executed = await harness({ completions: [successful, successful] });
 
-    await executed.application.execute({ projectConfigPath: executed.projectConfigPath });
-    await executed.application.execute({ projectConfigPath: executed.projectConfigPath });
+    await executed.application.execute({
+      projectConfigPath: executed.projectConfigPath,
+      workflow: 'finite-delivery',
+    });
+    await executed.application.execute({
+      projectConfigPath: executed.projectConfigPath,
+      workflow: 'finite-delivery',
+    });
 
     const logs = await savedLogs(executed.executionDirectory);
     expect(logs).toHaveLength(2);
@@ -436,6 +492,7 @@ describe('Application execution', () => {
 
     const result = await executed.application.execute({
       projectConfigPath: executed.projectConfigPath,
+      workflow: 'finite-delivery',
     });
 
     // Work and recovery run sequentially, and the resumed worker gets the same request.
@@ -501,6 +558,7 @@ describe('Application execution', () => {
 
     const result = await executed.application.execute({
       projectConfigPath: executed.projectConfigPath,
+      workflow: 'finite-delivery',
     });
 
     expect(result.outcome).toBe('needs-attention');
@@ -547,7 +605,10 @@ describe('Application execution', () => {
       }),
     );
 
-    await executed.application.execute({ projectConfigPath: executed.projectConfigPath });
+    await executed.application.execute({
+      projectConfigPath: executed.projectConfigPath,
+      workflow: 'finite-delivery',
+    });
 
     const invocation = executed.invocations[0];
     expect(invocation?.workspace.root).toBe(
@@ -573,6 +634,8 @@ describe('Application execution', () => {
     expect(context).toContain(taskWorkspace);
     expect(context).toContain('NEX-7');
     expect(context).toContain('recovery invocation 1 of 1');
+    // A fresh finite delivery attempt never removes the retained idea refinement area.
+    expect(context).toContain('refinement/ area retains idea refinement artifacts');
     // Reconciliation receives each producer-owned declaration's actual path and generated shape.
     for (const declaration of declaredFormats(executed.executionDirectory)) {
       expect(context, declaration.path).toContain(`Path: ${declaration.path}`);
@@ -591,6 +654,56 @@ describe('Application execution', () => {
     expect(context).not.toContain('host-lens-key');
   });
 
+  it('gives recovery the selected idea refinement workflow and its shared issue workspace', async () => {
+    const refinement = '/srv/nexus/workspaces/NEX/NEX-1/refinement';
+    const executed = await harness({
+      completions: [
+        {
+          result: { ok: false, fault: { message: 'idea agent failed' } },
+          exitCode: 1,
+          problem: null,
+          diagnostics: '',
+        },
+      ],
+      agent: () => Promise.resolve(ok({ output: report('Recovered.', 'needs-attention') })),
+    });
+    const ideaDirectory = path.join(executed.executionDirectory, 'idea-refinement');
+    await mkdir(ideaDirectory, { recursive: true });
+    await writeFile(
+      path.join(ideaDirectory, 'selection.json'),
+      JSON.stringify({
+        taskKey: 'NEX-1',
+        source: { kind: 'jira', issueId: '10518' },
+        issue: { id: '10518', key: 'NEX-1', fields: {} },
+        conversation: [],
+        transitions: { toActive: null, fromActive: [] },
+        claimed: true,
+        workspace: { root: refinement },
+        issueWorkspace: { root: path.dirname(refinement) },
+      }),
+    );
+
+    await executed.application.execute({
+      projectConfigPath: executed.projectConfigPath,
+      workflow: 'idea-refinement',
+    });
+
+    const context = executed.invocations[0]?.context ?? '';
+    expect(context).toContain('Name: idea-refinement');
+    expect(context).toContain(ideaWorkflowModule);
+    expect(context).toContain(`Selection file: ${path.join(ideaDirectory, 'selection.json')}`);
+    expect(context).toContain('Idea selection record (SelectIdea)');
+    expect(context).toContain('Idea round plan (StartIdeaRound)');
+    expect(context).toContain('artifacts/submissions/<submission>/cycles/<cycle>/');
+    // The shared issue workspace is named, and the refinement area is what the item retained.
+    expect(context).toContain(`shared issue workspace root is ${path.dirname(refinement)}`);
+    expect(context).toContain(`workflow area at ${refinement}`);
+    expect(context).toContain(refinement);
+    expect(executed.invocations[0]?.workspace.root).toBe(
+      path.join(executed.executionDirectory, 'idea-refinement', 'recovery', 'workspace'),
+    );
+  });
+
   it('runs recovery with an operational worktree inside a Git repository', async () => {
     const executed = await harness({
       completions: [
@@ -604,7 +717,10 @@ describe('Application execution', () => {
       agent: () => Promise.resolve(ok({ output: report('Recovered.', 'needs-attention') })),
     });
 
-    await executed.application.execute({ projectConfigPath: executed.projectConfigPath });
+    await executed.application.execute({
+      projectConfigPath: executed.projectConfigPath,
+      workflow: 'finite-delivery',
+    });
 
     // The configured Codex provider refuses a working directory outside a Git repository, so the
     // operational worktree is initialized as one before the invocation starts.
@@ -631,6 +747,7 @@ describe('Application execution', () => {
 
       const result = await executed.application.execute({
         projectConfigPath: executed.projectConfigPath,
+        workflow: 'finite-delivery',
       });
 
       expect(result.outcome, output).toBe('needs-attention');
@@ -652,6 +769,7 @@ describe('Application execution', () => {
 
     const result = await executed.application.execute({
       projectConfigPath: executed.projectConfigPath,
+      workflow: 'finite-delivery',
     });
 
     expect(result.outcome).toBe('needs-attention');
@@ -668,6 +786,7 @@ describe('Application execution', () => {
 
     const result = await executed.application.execute({
       projectConfigPath: executed.projectConfigPath,
+      workflow: 'finite-delivery',
     });
 
     // The resumed worker's failure consumes no further allowance: recovery ran only once.
@@ -699,6 +818,7 @@ describe('Application execution', () => {
 
     const result = await executed.application.execute({
       projectConfigPath: executed.projectConfigPath,
+      workflow: 'finite-delivery',
     });
 
     expect(executed.timeline).toEqual(['worker', 'recovery', 'worker', 'recovery']);
@@ -733,9 +853,11 @@ describe('Application execution', () => {
 
     const first = await executed.application.execute({
       projectConfigPath: executed.projectConfigPath,
+      workflow: 'finite-delivery',
     });
     const second = await executed.application.execute({
       projectConfigPath: executed.projectConfigPath,
+      workflow: 'finite-delivery',
     });
 
     // Each execute call resets the invocation numbering, but never the other execution's reports.
@@ -766,6 +888,7 @@ describe('Application execution', () => {
 
     const result = await executed.application.execute({
       projectConfigPath: executed.projectConfigPath,
+      workflow: 'finite-delivery',
     });
 
     expect(result.outcome).toBe('completed');
@@ -792,6 +915,7 @@ describe('Application execution', () => {
 
       const result = await executed.application.execute({
         projectConfigPath: executed.projectConfigPath,
+        workflow: 'finite-delivery',
       });
 
       expect(result.outcome, JSON.stringify(completion)).toBe('needs-attention');
@@ -807,6 +931,7 @@ describe('Application execution', () => {
 
     const result = await executed.application.execute({
       projectConfigPath: executed.projectConfigPath,
+      workflow: 'finite-delivery',
     });
 
     expect(result.outcome).toBe('completed');
@@ -816,7 +941,10 @@ describe('Application execution', () => {
     const executed = await harness({ completions: [successful] });
 
     await expect(
-      executed.application.execute({ projectConfigPath: 'project.config.json' }),
+      executed.application.execute({
+        projectConfigPath: 'project.config.json',
+        workflow: 'finite-delivery',
+      }),
     ).rejects.toThrow(/is not absolute/u);
   });
 });

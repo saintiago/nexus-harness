@@ -1,7 +1,12 @@
 import path from 'node:path';
-import { loadNexusConfiguration, loadProjectConfiguration } from '../configuration/index.js';
+import {
+  loadNexusConfiguration,
+  loadProjectConfiguration,
+  type WorkflowName,
+} from '../configuration/index.js';
 import type { ArtifactRef, Observer } from '../result.js';
 import { readRecord } from '../task-engine/actions/records.js';
+import { ideaSelectionDeclaration } from '../task-engine/actions/select-idea/artifacts.js';
 import { selectionDeclaration } from '../task-engine/actions/select-task/artifacts.js';
 import type { EngineEvent, Unsubscribe, WorkflowResult } from '../task-engine/index.js';
 import { executionPaths, toolEnvironment, workerProcessEnvironment } from './composition.js';
@@ -16,9 +21,10 @@ import { loadWorkflow } from './workflow.js';
  * contract this module implements.
  */
 
-/** One execution's request: the absolute project configuration filepath. */
+/** One execution's request: the absolute project configuration filepath and selected workflow. */
 export type ExecutionRequest = {
   readonly projectConfigPath: string;
+  readonly workflow: WorkflowName;
 };
 
 /** Application forwards worker events unchanged and adds its own lifecycle events. */
@@ -42,6 +48,7 @@ export interface Application {
 /** One worker launch request: the project filepath and the environment the worker runs with. */
 export type WorkerLaunchRequest = {
   readonly projectConfigPath: string;
+  readonly workflow: WorkflowName;
   readonly environment: Readonly<Record<string, string>>;
 };
 
@@ -161,13 +168,21 @@ export function createApplication(settings: ApplicationSettings): Application {
     publish({ source: 'application', type, data });
   };
 
-  /** The retained selection's task and workspace, or null when the record is not readable. */
-  async function retainedSelection(selectionFile: string): Promise<RecoverySelection | null> {
+  /** The retained selection's issue and workspace, or null when the record is not readable. */
+  async function retainedSelection(
+    selectionFile: string,
+    declaration: typeof selectionDeclaration | typeof ideaSelectionDeclaration,
+  ): Promise<RecoverySelection | null> {
     try {
-      const selection = await readRecord(selectionFile, selectionDeclaration);
+      const selection = await readRecord(selectionFile, declaration);
       return selection === null
         ? null
-        : { task: selection.taskKey, workspace: selection.workspace };
+        : {
+            task: selection.taskKey,
+            workspace: selection.workspace,
+            // Idea refinement retains the shared issue root its refinement area belongs to.
+            ...('issueWorkspace' in selection ? { issueWorkspace: selection.issueWorkspace } : {}),
+          };
     } catch {
       return null;
     }
@@ -182,8 +197,13 @@ export function createApplication(settings: ApplicationSettings): Application {
       }
       const nexus = await loadNexusConfiguration(settings.installationConfigPath);
       const project = await loadProjectConfiguration(request.projectConfigPath);
-      const workflow = await loadWorkflow(nexus.workflow.path);
-      const paths = executionPaths(nexus, project);
+      const workflowPath = nexus.workflow[request.workflow];
+      const workflow = await loadWorkflow(workflowPath);
+      const paths = executionPaths(nexus, project, request.workflow);
+      const selection = {
+        declaration:
+          request.workflow === 'idea-refinement' ? ideaSelectionDeclaration : selectionDeclaration,
+      };
       // Open the log before the starting event and close it after finished on every exit path.
       const logFile = executionLogFile(paths.directory);
       const log = await createExecutionLog({ file: logFile, diagnostics });
@@ -194,6 +214,8 @@ export function createApplication(settings: ApplicationSettings): Application {
           nexus,
           project,
           workflow,
+          workflowName: request.workflow,
+          workflowPath,
           paths,
           logFile,
           environment: toolEnvironment(project, nexus, settings.environment),
@@ -224,6 +246,7 @@ export function createApplication(settings: ApplicationSettings): Application {
             await settings.launchWorker(
               {
                 projectConfigPath: request.projectConfigPath,
+                workflow: request.workflow,
                 environment: workerProcessEnvironment(
                   nexus,
                   settings.environment,
@@ -248,7 +271,7 @@ export function createApplication(settings: ApplicationSettings): Application {
           const outcome = await recovery.recover({
             failure: completion.failure,
             output: completion.diagnostics,
-            selection: await retainedSelection(paths.selectionFile),
+            selection: await retainedSelection(paths.selectionFile, selection.declaration),
           });
           if (outcome.kind === 'resume') {
             continue;

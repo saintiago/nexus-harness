@@ -189,6 +189,19 @@ function developerTurn(task = 'NEX-7'): EngineEvent {
   };
 }
 
+/** The boundary event an idea refinement action publishes for one invocation. */
+function ideaTurn(
+  role: 'purpose-verifier' | 'purpose-council',
+  operation: string,
+  idea = 'NEX-1',
+): EngineEvent {
+  return {
+    source: operation.toLowerCase(),
+    type: 'agent-started',
+    data: { role, operation, profile: 'nexus-astra', idea },
+  };
+}
+
 /** One agent message as the invocation's caller forwards it. */
 function message(text: string, source = 'develop'): EngineEvent {
   return { source, type: 'agent-activity', data: { type: 'message', text } };
@@ -212,6 +225,26 @@ afterEach(() => {
 });
 
 describe('OperatorInterface progress presentation', () => {
+  it('names the idea on an invocation boundary and colors its role', () => {
+    const harness = createHarness();
+    harness.operatorInterface.start();
+    at(5);
+    harness.emit(ideaTurn('purpose-verifier', 'PurposeVerifier'));
+    at(6);
+    harness.emit(ideaTurn('purpose-council', 'PurposeCouncil'));
+    at(7);
+    harness.emit({ source: 'purpose-council', type: 'agent-finished', data: null });
+
+    expect(harness.rows()).toEqual([
+      '03:04:05 purpose-verifier PurposeVerifier · idea NEX-1 · profile nexus-astra',
+      '03:04:06 purpose-council PurposeCouncil · idea NEX-1 · profile nexus-astra',
+    ]);
+    const raw = harness.writes.join('');
+    // Purpose, research, the brief writer and the developer share yellow; council roles are blue.
+    expect(raw).toContain('\u001b[33m03:04:05');
+    expect(raw).toContain('\u001b[34m03:04:06');
+  });
+
   it('renders one chronological timeline with the receipt time of each entry', () => {
     const harness = createHarness();
     harness.operatorInterface.start();
@@ -219,7 +252,7 @@ describe('OperatorInterface progress presentation', () => {
     at(5);
     harness.emit({ source: 'application', type: 'starting', data: null });
     at(6);
-    harness.emit({ source: 'execution-runner', type: 'state', data: { name: 'select' } });
+    harness.emit({ source: 'execution-runner', type: 'state', data: { value: 'select' } });
     at(7);
     harness.emit({ source: 'develop', type: 'failed', data: { reason: 'the checks failed' } });
     at(8);
@@ -251,7 +284,7 @@ describe('OperatorInterface progress presentation', () => {
     at(5);
     harness.emit({ source: 'application', type: 'starting', data: null });
     at(6);
-    harness.emit({ source: 'execution-runner', type: 'state', data: { name: 'develop' } });
+    harness.emit({ source: 'execution-runner', type: 'state', data: { value: 'develop' } });
 
     const raw = harness.writes.join('');
     expect(raw).not.toContain('\u001b[37m03:04:05');
@@ -527,7 +560,7 @@ describe('OperatorInterface activity pane', () => {
     at(6);
     harness.emit(message('Starting the change'));
     at(7);
-    harness.emit({ source: 'execution-runner', type: 'state', data: { name: 'verify' } });
+    harness.emit({ source: 'execution-runner', type: 'state', data: { value: 'verify' } });
     at(8);
     harness.emit(message('Continuing after verification'));
 

@@ -15,11 +15,14 @@ interface ExecutionRunner {
   run(): Promise<WorkflowResult>;
 }
 
-type BoundAction = () => Promise<string>;
+type BoundAction = (input?: unknown) => Promise<string>;
 ```
 
 Construction supplies the XState workflow, action names mapped to bound functions, the state filepath
-and an event publisher. Action dependencies are already bound.
+and an event publisher. Action dependencies are already bound. A workflow state may supply a static
+input to the operation it invokes — for example the correction route StartIdeaRound opens — and the
+runner passes that value through unchanged; the action decides whether and how to use it. An action
+that needs no input ignores the argument.
 
 run returns a promise for the workflow's terminal outcome or an execution error. Reaching a terminal
 state does not imply task success: drained and blocked are both declared workflow outcomes.

@@ -15,8 +15,13 @@ import type { EngineEvent, EventPublisher, WorkflowResult } from './index.js';
  * actions, saves and restores snapshots and forwards state observations.
  */
 
-/** A bound action: it performs its operation and returns a workflow outcome. */
-export type BoundAction = () => Promise<string>;
+/**
+ * A bound action: it performs its operation and returns a workflow outcome. A workflow state may
+ * supply a static input to the operation it invokes; the runner passes that value through
+ * unchanged and the action decides whether and how to use it. An action that needs no input
+ * ignores the argument.
+ */
+export type BoundAction = (input?: unknown) => Promise<string>;
 
 /** Construction supplies the workflow, its bound actions, the state filepath and a publisher. */
 export type ExecutionRunnerSettings = {
@@ -114,16 +119,22 @@ function promiseActors(
   actions: Readonly<Record<string, BoundAction>>,
 ): Record<string, AnyActorLogic> {
   return Object.fromEntries(
-    Object.entries(actions).map(([name, action]) => [name, fromPromise(async () => action())]),
+    Object.entries(actions).map(([name, action]) => [
+      name,
+      fromPromise(async ({ input }: { readonly input?: unknown }) => action(input)),
+    ]),
   );
 }
 
-/** Publish one state observation. Presentation failures do not control execution. */
+/**
+ * Publish one state observation. The XState state value is forwarded as it is, so a parallel
+ * state's active regions stay observable. Presentation failures do not control execution.
+ */
 function publishState(publish: EventPublisher, value: unknown): void {
   const event: EngineEvent = {
     source: runnerSource,
     type: 'state',
-    data: { name: String(value) },
+    data: { value },
   };
   try {
     publish(event);

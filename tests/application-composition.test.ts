@@ -82,12 +82,30 @@ function selectionDocument(workspace: string): Record<string, unknown> {
 
 describe('execution paths', () => {
   it('places execution state and task workspaces under the configured storage root', () => {
-    const paths = executionPaths(nexus, project);
+    const paths = executionPaths(nexus, project, 'finite-delivery');
 
     expect(paths).toEqual({
       directory: path.join(nexus.storage.root, 'executions', 'NEX'),
       workflowStateFile: path.join(nexus.storage.root, 'executions', 'NEX', 'workflow.json'),
       selectionFile: path.join(nexus.storage.root, 'executions', 'NEX', 'selection.json'),
+    });
+    // Idea refinement keeps its own execution directory beside the finite delivery queue's.
+    expect(executionPaths(nexus, project, 'idea-refinement')).toEqual({
+      directory: path.join(nexus.storage.root, 'executions', 'NEX', 'idea-refinement'),
+      workflowStateFile: path.join(
+        nexus.storage.root,
+        'executions',
+        'NEX',
+        'idea-refinement',
+        'workflow.json',
+      ),
+      selectionFile: path.join(
+        nexus.storage.root,
+        'executions',
+        'NEX',
+        'idea-refinement',
+        'selection.json',
+      ),
     });
     expect(workspaceRoot(nexus)).toBe(path.join(nexus.storage.root, 'workspaces'));
   });
@@ -139,6 +157,7 @@ describe('worker action binding', () => {
   it('binds every workflow operation', async () => {
     const directory = await temporaryDirectory();
     const bind = createActionBinding({
+      workflow: 'finite-delivery',
       project,
       nexus,
       paths: {
@@ -169,6 +188,66 @@ describe('worker action binding', () => {
     );
   });
 
+  it('binds the idea refinement workflow operations and its captured selection', async () => {
+    const directory = await temporaryDirectory();
+    const refinement = await temporaryDirectory();
+    const selectionFile = path.join(directory, 'selection.json');
+    await writeFile(
+      selectionFile,
+      JSON.stringify({
+        taskKey: 'NEX-1',
+        source: { kind: 'jira', issueId: '10518' },
+        issue: { id: '10518', key: 'NEX-1', fields: {} },
+        conversation: [],
+        transitions: { toActive: null, fromActive: [] },
+        claimed: true,
+        workspace: { root: refinement },
+        issueWorkspace: { root: path.dirname(refinement) },
+      }),
+    );
+    const actions = createActionBinding({
+      workflow: 'idea-refinement',
+      project,
+      nexus,
+      paths: {
+        directory,
+        workflowStateFile: path.join(directory, 'workflow.json'),
+        selectionFile,
+      },
+      jira: unusedCapability<JiraAdapter>('Jira'),
+      github: unusedCapability<GitHubAdapter>('GitHub'),
+      git: unusedCapability<GitAdapter>('Git'),
+      codingRuntime: unusedCapability('coding runtime'),
+      runCommand: unusedCapability('processes'),
+      commandEnvironment: {},
+      wait: () => Promise.resolve(),
+    })(() => {});
+
+    expect(Object.keys(actions).sort()).toEqual(
+      [
+        'BriefWriter',
+        'EvidenceCouncil',
+        'PublishDecision',
+        'PurposeCouncil',
+        'PurposeVerifier',
+        'Researcher',
+        'SelectIdea',
+        'SimplicityCouncil',
+        'StartIdeaRound',
+      ].sort(),
+    );
+    // The bound planner carries the route XState supplied and the selection's captured input.
+    await expect(actions['StartIdeaRound']?.({ route: 'new' })).resolves.toBe('opened');
+    expect(
+      JSON.parse(await readFile(path.join(refinement, 'state/current-round.json'), 'utf8')),
+    ).toMatchObject({ submission: 1, cycle: 1, route: 'new' });
+    expect(
+      JSON.parse(
+        await readFile(path.join(refinement, 'artifacts/submissions/1/input.json'), 'utf8'),
+      ),
+    ).toMatchObject({ taskKey: 'NEX-1', source: { issueId: '10518' } });
+  });
+
   it('runs workspace-scoped actions in the workspace of the current selection', async () => {
     const directory = await temporaryDirectory();
     const firstWorkspace = await temporaryDirectory();
@@ -176,6 +255,7 @@ describe('worker action binding', () => {
     const selectionFile = path.join(directory, 'selection.json');
     await writeFile(selectionFile, JSON.stringify(selectionDocument(firstWorkspace)));
     const actions = createActionBinding({
+      workflow: 'finite-delivery',
       project,
       nexus,
       paths: {

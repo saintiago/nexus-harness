@@ -90,9 +90,9 @@ function suppliedActions(overrides: Readonly<Record<string, ActionStub>> = {}): 
   return { actions, calls };
 }
 
-/** The observed state names, in publication order. */
+/** The observed state values, in publication order. */
 function observedStates(events: readonly EngineEvent[]): unknown[] {
-  return events.map((event) => (event.data as { readonly name: unknown }).name);
+  return events.map((event) => (event.data as { readonly value: unknown }).value);
 }
 
 describe('TaskEngine over the finite workflow', () => {
@@ -341,8 +341,8 @@ describe('TaskEngine events', () => {
     await engine.run();
 
     expect(events).toEqual([
-      { source: 'execution-runner', type: 'state', data: { name: 'select' } },
-      { source: 'execution-runner', type: 'state', data: { name: 'finished' } },
+      { source: 'execution-runner', type: 'state', data: { value: 'select' } },
+      { source: 'execution-runner', type: 'state', data: { value: 'finished' } },
     ]);
 
     unsubscribe();
@@ -398,8 +398,8 @@ describe('TaskEngine events', () => {
     await expect(engine.run()).resolves.toEqual({ ok: true, value: 'drained' });
     expect(observed).toEqual([
       activity,
-      { source: 'execution-runner', type: 'state', data: { name: 'select' } },
-      { source: 'execution-runner', type: 'state', data: { name: 'finished' } },
+      { source: 'execution-runner', type: 'state', data: { value: 'select' } },
+      { source: 'execution-runner', type: 'state', data: { value: 'finished' } },
     ]);
     // The producer's event travels unchanged, not copied or rewritten by TaskEngine.
     expect(observed[0]).toBe(activity);
@@ -421,7 +421,7 @@ describe('ExecutionRunner persistence order', () => {
       bindActions: () => actions,
     });
     const observed: unknown[] = [];
-    engine.subscribe((event) => observed.push((event.data as { readonly name: unknown }).name));
+    engine.subscribe((event) => observed.push((event.data as { readonly value: unknown }).value));
 
     const run = engine.run();
     await vi.waitFor(() => {

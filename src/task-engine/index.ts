@@ -33,6 +33,8 @@ export type ActionOutcome = {
   readonly task: string;
   /** The round whose record or directory holds the output; null before a round exists. */
   readonly round: number | null;
+  /** The council cycle whose directory holds an idea refinement output, when one applies. */
+  readonly cycle?: number | null;
   /** The action's returned workflow outcome. */
   readonly outcome: string;
   /** One short producer-owned phrase naming the useful fact to show, or null when none applies. */
