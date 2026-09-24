@@ -245,7 +245,7 @@ for a logging failure. Initialization errors before a log can be opened remain s
 The [idea refinement workflow](idea-refinement/spec.md) is selected explicitly for a connected
 project. Application loads its XState definition and binds project-scoped actions; it does not
 provide a separate idea router. Source selection and updates use the project's Jira task-source
-adapter. An idea moved to the needs-refinement state is a successful terminal workflow outcome,
+adapter. An idea moved to the waiting-for-feedback state is a successful terminal workflow outcome,
 not an execution fault requiring recovery. A provider or agent failure remains an execution fault.
 
 Recovery receives the selected workflow, source item, snapshot and relevant log paths. It
