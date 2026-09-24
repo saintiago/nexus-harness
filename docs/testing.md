@@ -105,8 +105,7 @@ producer-owned artifacts and revision/digest binding, one Jira issue/comment cap
 and the configured submitted-to-active, active-to-approved, active-to-waiting-for-feedback and
 waiting-for-feedback-to-submitted transitions, including capture of the author's resubmission
 comment. Verify that publication uses the captured input without a later Jira read, only
-human-facing feedback is posted to Jira, internal feedback stays in artifacts, and an uncertain
-write is not automatically replayed. A focused integration test should interleave two agent
-activity streams and verify separate durable JSONL files, correct invocation references in main
+human-facing feedback is posted to Jira, and internal feedback stays in artifacts. A focused
+integration test should interleave two agent activity streams and verify separate durable JSONL files, correct invocation references in main
 events, and independent 10-line panes. Reuse existing component and system test scopes; do
 not duplicate XState's own parallel-state tests.

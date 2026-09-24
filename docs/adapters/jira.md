@@ -57,4 +57,4 @@ transitions. Idea and finite-delivery selectors are separate even when they use 
 project. Actions own eligibility, verdicts and desired statuses. The adapter returns the
 issue and relevant comments for one capture at selection; the run uses that snapshot for all
 agent work and publication. It does not re-read the issue, comments or available transitions
-later in the run, including on restart.
+later in the run.

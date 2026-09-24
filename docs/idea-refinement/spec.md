@@ -29,13 +29,11 @@ A separate Requirements and Design workflow may consume an approved brief later.
   The original idea, latest brief, research and complete council feedback remain in artifacts
   and logs. Internal agent feedback is not published to Jira.
 - **Execution fault:** inaccessible project sources, agent/tool failure, malformed output or
-  source update failure is an operational fault, not a council verdict. Preserve artifacts and
-  report it through Application's ordinary recovery/attention path. Never manufacture approval.
+  source update failure is an operational fault, not a council verdict. Application handles it
+  under the common execution-fault contract. Never manufacture approval.
 
-Publish each terminal decision once. Record the result of each Jira write in the run artifacts;
-an uncertain write outcome requires operational attention rather than another Jira read or an
-automatic replay. A waiting-for-feedback item is excluded from automatic selection until explicit
-resubmission. The workflow never silently waits for author input.
+A waiting-for-feedback item is excluded from automatic selection until explicit resubmission.
+The workflow never silently waits for author input.
 
 ## Inputs and project context
 
@@ -67,8 +65,7 @@ do not change source statuses. Nexus actions own artifacts and source updates.
 
 1. Select one eligible submitted idea. In HARN, select Jira Task issues in `Idea`. Read the
    issue and relevant comments once, capture that input, and move it to `Idea Refinement` before
-   invoking agents. On restart, resume from saved execution state and artifacts without
-   another Jira read. On resubmission, capture the author's response comment made after the prior
+   invoking agents. On resubmission, capture the author's response comment made after the prior
    feedback request along with the current idea text and links as the new run's input.
 2. Run Purpose Verifier and Researcher concurrently on the original idea. The Purpose Verifier
    finds purpose documents itself and, where needed, infers purpose from code and commit history.
@@ -87,7 +84,7 @@ do not change source statuses. Nexus actions own artifacts and source updates.
    artifacts even when one result determines routing. Unanimous approval alone advances to the
    approved state. Do not post internal council feedback or revision requests to Jira.
 6. Minor corrections return to Brief Writer using existing purpose and research reports. Major rework
-   restarts Purpose Verifier and Researcher concurrently with the original idea, current brief and all
+   reruns Purpose Verifier and Researcher concurrently with the original idea, current brief and all
    council feedback. Their next reports must address the objections; the writer then creates a new
    brief revision. Any rewrite invalidates every earlier approval. The council reviews the new
    revision independently.
@@ -198,11 +195,10 @@ for history. The decision artifact records the route, strongest verdict, full fe
 update evidence, including the human-facing Jira comment when applicable. These artifact paths
 are specific to idea refinement; finite delivery's round layout is unchanged.
 
-Actions write complete outputs before returning a transition outcome. On restart, an action may
-reuse a validated artifact for the captured source revision, cycle and inputs. A resubmitted idea
+Actions write complete outputs before returning a transition outcome. A resubmitted idea
 starts a new run; a changed brief invalidates all council results. Concurrent roles have distinct
-artifact paths and no shared writable output. The runner persists XState control state separately
-from these business artifacts.
+artifact paths and no shared writable output. XState control state is separate from these
+business artifacts.
 
 ## Workflow pseudocode
 
@@ -289,9 +285,8 @@ lines when interactive panes are unavailable.
   `Waiting for Feedback` with a human-facing Jira comment; internal agent feedback stays in
   artifacts and logs. Neither route moves the item to To Do. Resubmission requires the author to
   reply in a Jira comment and move the item back to `Idea`. The next run reads that comment.
-  Execution faults leave an active item available for recovery without publishing a council
-  verdict or requesting human feedback. A run reads its Jira input only at selection and does
-  not re-read it before publication or during restart.
+  Execution faults do not publish a council verdict or request human feedback. A run reads its
+  Jira input only at selection and does not re-read it before publication.
 - Concurrent agent activity remains attributable in separate durable files and independent 10-line
   terminal panes. Main events include invocation and business-artifact references without detailed
   agent activity.
