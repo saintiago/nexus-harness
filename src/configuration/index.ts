@@ -8,5 +8,7 @@ export {
   loadNexusConfiguration,
   parseNexusConfiguration,
   resolveCredential,
+  workflowNames,
   type NexusConfiguration,
+  type WorkflowName,
 } from './nexus.js';

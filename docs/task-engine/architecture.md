@@ -46,6 +46,7 @@ command settings conform to [project configuration](../configuration.md#project-
 interface TaskEngine {
   run(): Promise<WorkflowResult>;
   subscribe(listener: EventListener): Unsubscribe;
+  subscribeActivity(listener: ActivityListener): Unsubscribe;
 }
 
 type WorkflowResult = Result<string>;
@@ -57,6 +58,7 @@ type EngineEvent = {
 };
 
 type EventListener = (event: EngineEvent) => void;
+type ActivityListener = (activity: AgentActivity) => void;
 type Unsubscribe = () => void;
 type EventPublisher = (event: EngineEvent) => void;
 ```
@@ -79,20 +81,27 @@ Subscriptions provide observation only. They do not replay history, recover arti
 workflow transitions. Removing a listener does not stop execution. Listener failures are isolated
 from actions and other listeners.
 
+subscribeActivity observes attributable agent activity on its own channel: the caller-assigned
+activity entries described below, separate from the workflow's event stream. Application forwards
+them to live presentation and persists them per invocation.
+
 ### Agent activity events
 
 The caller assigns each AgentRuntime invocation a role name, unique invocation ID and Unix
-start time in milliseconds. The same contract applies to one or several concurrent invocations,
-including recovery. Transported activity carries that identity so simultaneous roles remain
-attributable. The Application logger writes complete timestamped activity to one JSONL file per
-invocation. The main execution stream contains:
+start time in milliseconds, and names the invocation's own activity log. The same contract applies
+to one or several concurrent invocations, including recovery. Transported activity carries that
+identity as `{ invocationId, timestamp, activity }` so simultaneous roles remain attributable. The
+Application logger writes complete timestamped activity to one JSONL file per invocation, opened
+from the start event's reference. The main execution stream contains:
 
 | Type | Data |
 | --- | --- |
-| agent-started | `{ agentName, invocationId, startedAtUnixMs, operation, profile, task?, log: ArtifactRef }` |
+| agent-started | `{ agentName, invocationId, startedAtUnixMs, operation, profile, task? or idea?, log: ArtifactRef }` |
 | agent-finished | `{ agentName, invocationId, startedAtUnixMs, log: ArtifactRef, result }` |
 
-The log path includes the agent name, Unix start time and invocation ID. Agent messages and tool
+The log path includes the agent name, Unix start time and invocation ID; `task` names a delivery
+task and `idea` the refined idea. `result` reports how the invocation ended without declaring task
+success. Agent messages and tool
 activity are absent from the main durable event file; they use the per-invocation activity channel
 for logging and live presentation. A finished event means the invocation ended, including failure,
 and never declares task success. [Application](../application.md#execution-log) owns storage; the

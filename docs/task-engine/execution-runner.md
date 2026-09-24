@@ -15,11 +15,14 @@ interface ExecutionRunner {
   run(): Promise<WorkflowResult>;
 }
 
-type BoundAction = () => Promise<string>;
+type BoundAction = (input?: unknown) => Promise<string>;
 ```
 
 Construction supplies the XState workflow, action names mapped to bound functions, the state filepath
-and an event publisher. Action dependencies are already bound.
+and an event publisher. Action dependencies are already bound. A workflow state may supply a static
+input to the operation it invokes — for example the correction route StartIdeaRound opens — and the
+runner passes that value through unchanged; the action decides whether and how to use it. An action
+that needs no input ignores the argument.
 
 run returns a promise for the workflow's terminal outcome or an execution error. Reaching a terminal
 state does not imply task success: drained and blocked are both declared workflow outcomes.
@@ -50,6 +53,11 @@ and save it. Serialize writes in notification order so an older save cannot over
 XState proceeds without waiting for these writes. There is no persistence gate around actions.
 Before returning a terminal outcome, wait for the pending writes, including the terminal snapshot,
 to finish.
+
+Started invocations also end before the terminal outcome is returned. When one parallel region
+fails, a sibling invocation may still be running after XState stops the actor: wait for every
+invoked operation to settle, so its activity and outcome events precede the workflow's final
+result. The terminal outcome of the workflow is unchanged by the drained siblings.
 
 On restoration, XState restarts an active invocation. A terminal result ends the current run; it is
 reset only on the next run, not looped automatically. Saved state may lag execution: a crash can

@@ -25,6 +25,7 @@ import { createStartRound } from '../src/task-engine/actions/start-round/index.j
 import { createVerify } from '../src/task-engine/actions/verify/index.js';
 import type { VerificationOutput } from '../src/task-engine/actions/verify/artifacts.js';
 import type { EngineEvent } from '../src/task-engine/index.js';
+import { runnerOf } from './support/agent-runner.js';
 import { scriptedJira } from './support/jira.js';
 
 /** Git and check commands run with a supplied environment; host Git configuration is disabled. */
@@ -206,7 +207,7 @@ function actions(runtime: AgentRuntime): {
     }),
     develop: createDevelop({
       selectionFile,
-      runtime,
+      runner: runnerOf(runtime),
       git,
       jira,
       publish: (event) => events.push(event),

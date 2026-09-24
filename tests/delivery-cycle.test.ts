@@ -26,6 +26,7 @@ import { createStartRound } from '../src/task-engine/actions/start-round/index.j
 import { createVerify } from '../src/task-engine/actions/verify/index.js';
 import type { CompletionOutput } from '../src/task-engine/actions/complete-task/artifacts.js';
 import type { EngineEvent } from '../src/task-engine/index.js';
+import { runnerOf } from './support/agent-runner.js';
 import { scriptedGitHub } from './support/github.js';
 import { scriptedJira } from './support/jira.js';
 
@@ -270,7 +271,7 @@ describe('delivery cycle', () => {
     });
     const develop = createDevelop({
       selectionFile,
-      runtime: developerRuntime,
+      runner: runnerOf(developerRuntime),
       git,
       jira: jiraSource.jira,
       publish: (event) => events.push(event),
@@ -305,7 +306,7 @@ describe('delivery cycle', () => {
       reviewCheck,
       nexusLens: { appId: lensAppId, login: 'nexus-lens[bot]' },
       reviewerProfile: 'nexus-review',
-      runtime: reviewerRuntime,
+      runner: runnerOf(reviewerRuntime),
       git,
       github: githubSource.github,
       jira: jiraSource.jira,

@@ -18,6 +18,12 @@ const progress = {
   event: { source: 'test', type: 'progress', data: { projectConfigPath } },
 };
 const drained = { kind: 'result', result: { ok: true, value: 'drained' } };
+const activity = {
+  kind: 'agent-activity',
+  invocationId: 'inv-1',
+  timestamp: '2026-09-24T22:00:00.000Z',
+  activity: { type: 'message', text: 'controlled activity' },
+};
 
 let exitCode = 0;
 switch (scenario) {
@@ -48,6 +54,14 @@ switch (scenario) {
   case 'late-event':
     send(drained);
     send(progress);
+    break;
+  case 'activity':
+    send(activity);
+    send(drained);
+    break;
+  case 'late-activity':
+    send(drained);
+    send(activity);
     break;
   case 'diagnostics':
     process.stderr.write('controlled diagnostic\n');

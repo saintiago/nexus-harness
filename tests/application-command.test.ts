@@ -99,6 +99,9 @@ function controlledApplication(outcome: ExecutionResult['outcome']): {
           listeners.delete(listener);
         };
       },
+      subscribeActivity() {
+        return () => undefined;
+      },
     },
   };
 }
@@ -108,6 +111,12 @@ describe('operator command parsing', () => {
     expect(parseOperatorCommand(['--help'])).toEqual({ kind: 'help' });
     expect(parseOperatorCommand(['queue', 'run', '--project-config', 'project.json'])).toEqual({
       kind: 'run',
+      workflow: 'finite-delivery',
+      projectConfigPath: 'project.json',
+    });
+    expect(parseOperatorCommand(['ideas', 'refine', '--project-config', 'project.json'])).toEqual({
+      kind: 'run',
+      workflow: 'idea-refinement',
       projectConfigPath: 'project.json',
     });
   });
@@ -123,6 +132,10 @@ describe('operator command parsing', () => {
       ['queue', 'run', '--project-config'],
       ['queue', 'run', '--project-config', '--help'],
       ['queue', 'run', '--project-config', 'one', '--project-config', 'two'],
+      ['ideas'],
+      ['ideas', 'run'],
+      ['ideas', 'refine'],
+      ['ideas', 'refine', '--project'],
       ['--help', 'extra'],
     ];
     for (const args of rejected) {
@@ -207,7 +220,10 @@ describe('operator command', () => {
 
     expect(code).toBe(0);
     expect(controlled.requests).toEqual([
-      { projectConfigPath: path.join(workingDirectory, 'configs/project.json') },
+      {
+        projectConfigPath: path.join(workingDirectory, 'configs/project.json'),
+        workflow: 'finite-delivery',
+      },
     ]);
     expect(received[0]?.installationConfigPath).toBe(
       path.join(workingDirectory, 'configs/nexus.json'),
@@ -238,6 +254,7 @@ describe('operator command', () => {
     const application: Application = {
       execute: () => Promise.reject(new Error('Cannot read Nexus configuration /missing.json')),
       subscribe: () => () => {},
+      subscribeActivity: () => () => {},
     };
 
     const code = await runOperatorCommand({
@@ -283,6 +300,9 @@ describe('operator command output failure', () => {
           unsubscriptions += 1;
         };
       },
+      subscribeActivity() {
+        return () => undefined;
+      },
     };
 
     const code = await runOperatorCommand({
@@ -322,6 +342,9 @@ describe('operator command output failure', () => {
         return () => {
           listeners.delete(listener);
         };
+      },
+      subscribeActivity() {
+        return () => undefined;
       },
     };
 
@@ -370,6 +393,9 @@ describe('operator command output failure', () => {
         return () => {
           listeners.delete(listener);
         };
+      },
+      subscribeActivity() {
+        return () => undefined;
       },
     };
 

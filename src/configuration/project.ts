@@ -51,6 +51,20 @@ const projectConfigurationSchema = z.strictObject({
       review: identifier,
       done: identifier,
     }),
+    // The idea refinement selection and status mappings are separate from the delivery queue's,
+    // so submitted ideas never enter the To Do queue.
+    ideas: z.strictObject({
+      selection: z.strictObject({
+        query: identifier,
+        orderBy: identifier,
+      }),
+      statuses: z.strictObject({
+        submitted: identifier,
+        active: identifier,
+        approved: identifier,
+        waitingForFeedback: identifier,
+      }),
+    }),
   }),
   delivery: z.strictObject({
     repository: identifier,

@@ -161,7 +161,7 @@ describe('AgentRuntime construction', () => {
         return Promise.resolve({ ok: true, value: { output: '{"status":"completed"}' } });
       },
     };
-    const settings = createAgentRuntimeSettings(configuration, role, codingRuntime, () => {});
+    const settings = createAgentRuntimeSettings(configuration, role, codingRuntime);
     return { runtime: createAgentRuntime(settings), settings, requests };
   }
 
@@ -191,7 +191,7 @@ describe('AgentRuntime construction', () => {
 
     for (const { role, profile, instructions } of selected) {
       const { runtime, settings, requests } = harness(configuration, role);
-      const result = await runtime.run(profile, { root: workspaceRoot }, context);
+      const result = await runtime.run(profile, { root: workspaceRoot }, context, () => undefined);
       expect(result.ok).toBe(true);
 
       const configured = configuration.agentRuntime.profiles.find(
@@ -247,7 +247,7 @@ describe('AgentRuntime construction', () => {
       'Close with the verification evidence.',
     ]);
 
-    await runtime.run(developer.id, { root: workspaceRoot }, context);
+    await runtime.run(developer.id, { root: workspaceRoot }, context, () => undefined);
     for (const instruction of developmentRoleInstructions) {
       expect(occurrences(requests[0]!.prompt, instruction)).toBe(1);
     }
@@ -264,7 +264,9 @@ describe('AgentRuntime construction', () => {
     )!;
 
     const developer = harness(configuration, 'developer');
-    await expect(developer.runtime.run(shared, { root: workspaceRoot }, context)).resolves.toEqual({
+    await expect(
+      developer.runtime.run(shared, { root: workspaceRoot }, context, () => undefined),
+    ).resolves.toEqual({
       ok: true,
       value: { output: '{"status":"completed"}' },
     });
@@ -278,7 +280,9 @@ describe('AgentRuntime construction', () => {
     }
 
     const reviewer = harness(configuration, 'reviewer');
-    await expect(reviewer.runtime.run(shared, { root: workspaceRoot }, context)).resolves.toEqual({
+    await expect(
+      reviewer.runtime.run(shared, { root: workspaceRoot }, context, () => undefined),
+    ).resolves.toEqual({
       ok: true,
       value: { output: '{"status":"completed"}' },
     });
@@ -302,7 +306,9 @@ describe('AgentRuntime construction', () => {
     )!;
 
     const reviewer = harness(configuration, 'reviewer');
-    await expect(reviewer.runtime.run(shared, { root: workspaceRoot }, context)).resolves.toEqual({
+    await expect(
+      reviewer.runtime.run(shared, { root: workspaceRoot }, context, () => undefined),
+    ).resolves.toEqual({
       ok: true,
       value: { output: '{"status":"completed"}' },
     });
@@ -313,7 +319,9 @@ describe('AgentRuntime construction', () => {
     expect(reviewerPrompt).not.toContain(recoveryRoleInstructions[0]!);
 
     const recovery = harness(configuration, 'recovery');
-    await expect(recovery.runtime.run(shared, { root: workspaceRoot }, context)).resolves.toEqual({
+    await expect(
+      recovery.runtime.run(shared, { root: workspaceRoot }, context, () => undefined),
+    ).resolves.toEqual({
       ok: true,
       value: { output: '{"status":"completed"}' },
     });
@@ -336,6 +344,7 @@ describe('AgentRuntime construction', () => {
       configuration.executionPolicy.reviewerProfile,
       { root: workspaceRoot },
       context,
+      () => undefined,
     );
 
     for (const value of Object.values(hostEnvironment)) {

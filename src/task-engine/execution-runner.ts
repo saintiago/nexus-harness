@@ -15,8 +15,13 @@ import type { EngineEvent, EventPublisher, WorkflowResult } from './index.js';
  * actions, saves and restores snapshots and forwards state observations.
  */
 
-/** A bound action: it performs its operation and returns a workflow outcome. */
-export type BoundAction = () => Promise<string>;
+/**
+ * A bound action: it performs its operation and returns a workflow outcome. A workflow state may
+ * supply a static input to the operation it invokes; the runner passes that value through
+ * unchanged and the action decides whether and how to use it. An action that needs no input
+ * ignores the argument.
+ */
+export type BoundAction = (input?: unknown) => Promise<string>;
 
 /** Construction supplies the workflow, its bound actions, the state filepath and a publisher. */
 export type ExecutionRunnerSettings = {
@@ -112,18 +117,35 @@ function invokedOperations(workflow: AnyStateMachine): string[] {
 /** Register each bound action as the promise actor its workflow state invokes. */
 function promiseActors(
   actions: Readonly<Record<string, BoundAction>>,
+  started: Set<Promise<unknown>>,
 ): Record<string, AnyActorLogic> {
   return Object.fromEntries(
-    Object.entries(actions).map(([name, action]) => [name, fromPromise(async () => action())]),
+    Object.entries(actions).map(([name, action]) => [
+      name,
+      fromPromise(async ({ input }: { readonly input?: unknown }) => {
+        const running = action(input);
+        // Track every invoked operation, so a terminal outcome waits for started siblings whose
+        // action promises outlive the XState actor.
+        started.add(running);
+        try {
+          return await running;
+        } finally {
+          started.delete(running);
+        }
+      }),
+    ]),
   );
 }
 
-/** Publish one state observation. Presentation failures do not control execution. */
+/**
+ * Publish one state observation. The XState state value is forwarded as it is, so a parallel
+ * state's active regions stay observable. Presentation failures do not control execution.
+ */
 function publishState(publish: EventPublisher, value: unknown): void {
   const event: EngineEvent = {
     source: runnerSource,
     type: 'state',
-    data: { name: String(value) },
+    data: { value },
   };
   try {
     publish(event);
@@ -140,9 +162,10 @@ export function createExecutionRunner(settings: ExecutionRunnerSettings): Execut
 }
 
 async function runWorkflow(settings: ExecutionRunnerSettings): Promise<WorkflowResult> {
+  const started = new Set<Promise<unknown>>();
   let workflow: AnyStateMachine;
   try {
-    workflow = settings.workflow.provide({ actors: promiseActors(settings.actions) });
+    workflow = settings.workflow.provide({ actors: promiseActors(settings.actions, started) });
   } catch (error) {
     return fault(`Cannot bind the workflow to its actions: ${messageOf(error)}`);
   }
@@ -197,6 +220,14 @@ async function runWorkflow(settings: ExecutionRunnerSettings): Promise<WorkflowR
       }
       settled = true;
       void (async () => {
+        // Started invocations end before the runner reports its outcome: a parallel sibling must
+        // not publish activity or an outcome after the workflow's final result. Their events and
+        // artifacts are drained; the terminal outcome of the workflow stays unchanged.
+        let running = [...started];
+        while (running.length > 0) {
+          await Promise.allSettled(running);
+          running = [...started];
+        }
         // The terminal snapshot and every earlier notification are saved before returning.
         await pendingWrite;
         actor.stop();

@@ -51,7 +51,11 @@ import type {
 import { loadWorkflow } from '../src/application/workflow.js';
 import { loadNexusConfiguration, loadProjectConfiguration } from '../src/configuration/index.js';
 import { fault, ok } from '../src/result.js';
-import { createTaskEngine, type EngineEvent } from '../src/task-engine/index.js';
+import {
+  createTaskEngine,
+  type AgentActivity,
+  type EngineEvent,
+} from '../src/task-engine/index.js';
 import type { CompletionOutput } from '../src/task-engine/actions/complete-task/artifacts.js';
 import type { DeliveryOutput } from '../src/task-engine/actions/deliver/artifacts.js';
 import type {
@@ -208,16 +212,17 @@ function inProcessWorkerLaunch(input: {
   readonly github: GitHubAdapter;
   readonly codingRuntime: CodingRuntime;
 }): WorkerLaunch {
-  return async (request, onEvent) => {
+  return async (request, onEvent, onActivity) => {
     const nexus = await loadNexusConfiguration(input.installationConfigPath);
     const project = await loadProjectConfiguration(request.projectConfigPath);
-    const workflow = await loadWorkflow(nexus.workflow.path);
-    const paths = executionPaths(nexus, project);
+    const workflow = await loadWorkflow(nexus.workflow[request.workflow]);
+    const paths = executionPaths(nexus, project, request.workflow);
     await mkdir(paths.directory, { recursive: true });
     const engine = createTaskEngine({
       workflow: workflow.machine,
       stateFile: paths.workflowStateFile,
       bindActions: createActionBinding({
+        workflow: request.workflow,
         project,
         nexus,
         paths,
@@ -227,17 +232,20 @@ function inProcessWorkerLaunch(input: {
         codingRuntime: input.codingRuntime,
         runCommand: run,
         commandEnvironment: toolEnvironment(project, nexus, input.environment),
+        activityDirectory: path.join(request.logDirectory, 'agents'),
         wait: () => Promise.resolve(),
       }),
     });
     const unsubscribe = engine.subscribe((event: EngineEvent) => {
       onEvent(event);
     });
+    const unsubscribeActivity = engine.subscribeActivity(onActivity);
     let result;
     try {
       result = await engine.run();
     } finally {
       unsubscribe();
+      unsubscribeActivity();
     }
     // Exactly what the worker protocol reports for this execution: the result and its exit code.
     return { result, exitCode: result.ok ? 0 : 1, problem: null, diagnostics: '' };
@@ -254,6 +262,7 @@ type Journey = {
   readonly workspace: string;
   readonly worktree: string;
   readonly events: readonly ExecutionEvent[];
+  readonly activity: readonly AgentActivity[];
   readonly prompts: readonly string[];
   readonly recoveries: readonly RecoveryInvocationRequest[];
   readonly notifications: readonly { readonly subject: string; readonly body: string }[];
@@ -295,7 +304,7 @@ async function finiteJourney(): Promise<Journey> {
   await mkdir(projectDirectory, { recursive: true });
 
   const nexus = nexusConfiguration();
-  nexus.workflow.path = workflowPath;
+  nexus.workflow['finite-delivery'] = workflowPath;
   nexus.storage.root = './state';
   nexus.executionPolicy.developerLadder = [{ profile: 'nexus-flash', repairAllowance: 2 }];
   const project = projectConfiguration();
@@ -470,6 +479,7 @@ async function finiteJourney(): Promise<Journey> {
   });
 
   const events: ExecutionEvent[] = [];
+  const activity: AgentActivity[] = [];
   const prompts: string[] = [];
   const recoveries: RecoveryInvocationRequest[] = [];
   const notifications: { readonly subject: string; readonly body: string }[] = [];
@@ -485,6 +495,7 @@ async function finiteJourney(): Promise<Journey> {
     workspace,
     worktree,
     events,
+    activity,
     prompts,
     recoveries,
     notifications,
@@ -544,6 +555,7 @@ async function finiteJourney(): Promise<Journey> {
         application: (settings: ApplicationSettings) => {
           const application = createApplication({ ...settings, launchWorker, recovery });
           application.subscribe((event) => events.push(event));
+          application.subscribeActivity((packet) => activity.push(packet));
           return application;
         },
       });
@@ -555,7 +567,8 @@ async function finiteJourney(): Promise<Journey> {
 function stateNames(events: readonly ExecutionEvent[]): string[] {
   return events
     .filter((event) => event.source === 'execution-runner' && event.type === 'state')
-    .map((event) => (event.data as { readonly name: string }).name);
+    .map((event) => (event.data as { readonly value: unknown }).value)
+    .filter((value): value is string => typeof value === 'string');
 }
 
 /** The saved JSONL execution-log entries of one journey, in receipt order. */
@@ -1033,6 +1046,22 @@ describe('finite execution journeys', () => {
       'notes.txt',
     );
     expect(journey.prompts).toHaveLength(3);
-    expect(journey.events.filter((event) => event.type === 'agent-activity')).toHaveLength(3);
+    // Agent activity travels on the attributable channel, not the main event stream.
+    expect(journey.events.filter((event) => event.type === 'agent-activity')).toEqual([]);
+    const startedIds = journey.events
+      .filter((event) => event.type === 'agent-started')
+      .map((event) => (event.data as { readonly invocationId: string }).invocationId);
+    // Every activity packet names an announced invocation, and no invocation is anonymous.
+    expect(journey.activity).toHaveLength(3);
+    for (const packet of journey.activity) {
+      expect(startedIds).toContain(packet.invocationId);
+    }
+    expect(new Set(journey.activity.map((packet) => packet.invocationId)).size).toBe(3);
+    // Each finish names the identity its start announced, including the recovery invocation.
+    expect(
+      journey.events
+        .filter((event) => event.type === 'agent-finished')
+        .map((event) => (event.data as { readonly invocationId: string }).invocationId),
+    ).toEqual(startedIds);
   });
 });

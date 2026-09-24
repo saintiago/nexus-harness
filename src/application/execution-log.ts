@@ -16,12 +16,17 @@ import type { ExecutionEvent } from './index.js';
 export type DiagnosticSink = { write(text: string): unknown };
 
 /**
- * The log filepath one execute call uses: its own directory under the execution directory's logs
- * directory. Worker restarts and recovery of that execution share the file; a new execution gets a
- * new directory.
+ * The log directory one execute call uses: its own directory under the execution directory's logs
+ * directory. Worker restarts and recovery of that execution share the directory; a new execution
+ * gets a new one. It holds the main event log and one activity log per agent invocation.
  */
-export function executionLogFile(executionDirectory: string): string {
-  return path.join(executionDirectory, 'logs', randomUUID(), 'events.jsonl');
+export function executionLogDirectory(executionDirectory: string): string {
+  return path.join(executionDirectory, 'logs', randomUUID());
+}
+
+/** The main event log of one execution's log directory. */
+export function executionLogFile(logDirectory: string): string {
+  return path.join(logDirectory, 'events.jsonl');
 }
 
 /** The execution log's lifecycle: record received events, drain pending writes and close. */

@@ -28,6 +28,18 @@ export function projectConfiguration(): ProjectConfiguration {
         review: 'In Review',
         done: 'Done',
       },
+      ideas: {
+        selection: {
+          query: 'project = NEX AND status = "Idea"',
+          orderBy: 'Rank ASC',
+        },
+        statuses: {
+          submitted: 'Idea',
+          active: 'Idea Refinement',
+          approved: 'Draft',
+          waitingForFeedback: 'Waiting for Feedback',
+        },
+      },
     },
     delivery: {
       repository: 'owner/repository',
@@ -46,7 +58,8 @@ export function projectConfiguration(): ProjectConfiguration {
 export function nexusConfiguration(): NexusConfiguration {
   return {
     workflow: {
-      path: './workflows/finite-delivery.ts',
+      'finite-delivery': './workflows/finite-delivery.ts',
+      'idea-refinement': './workflows/idea-refinement.ts',
     },
     storage: {
       root: './state',
@@ -97,6 +110,17 @@ export function nexusConfiguration(): NexusConfiguration {
       reviewerProfile: 'nexus-review',
       recoveryProfile: 'nexus-recovery',
       maxRecoveryAttempts: 1,
+    },
+    ideaRefinement: {
+      profiles: {
+        purposeVerifier: 'nexus-astra',
+        researcher: 'nexus-astra',
+        briefWriter: 'nexus-astra',
+        purposeCouncil: 'nexus-review',
+        evidenceCouncil: 'nexus-review',
+        simplicityCouncil: 'nexus-review',
+      },
+      maxCouncilCycles: 3,
     },
     notifications: {
       provider: 'sns',

@@ -1,11 +1,28 @@
 import path from 'node:path';
-import { loadNexusConfiguration, loadProjectConfiguration } from '../configuration/index.js';
+import {
+  loadNexusConfiguration,
+  loadProjectConfiguration,
+  type WorkflowName,
+} from '../configuration/index.js';
 import type { ArtifactRef, Observer } from '../result.js';
 import { readRecord } from '../task-engine/actions/records.js';
+import { ideaSelectionDeclaration } from '../task-engine/actions/select-idea/artifacts.js';
 import { selectionDeclaration } from '../task-engine/actions/select-task/artifacts.js';
-import type { EngineEvent, Unsubscribe, WorkflowResult } from '../task-engine/index.js';
+import {
+  agentInvocationOf,
+  type AgentActivity,
+  type EngineEvent,
+  type Unsubscribe,
+  type WorkflowResult,
+} from '../task-engine/index.js';
 import { executionPaths, toolEnvironment, workerProcessEnvironment } from './composition.js';
-import { createExecutionLog, executionLogFile, type DiagnosticSink } from './execution-log.js';
+import { createActivityLog } from './activity-log.js';
+import {
+  createExecutionLog,
+  executionLogDirectory,
+  executionLogFile,
+  type DiagnosticSink,
+} from './execution-log.js';
 import { createRecovery, type RecoveryRuntimeFactory, type RecoverySelection } from './recovery.js';
 import { createRecoveryRuntime } from './recovery-runtime.js';
 import { loadWorkflow } from './workflow.js';
@@ -16,9 +33,10 @@ import { loadWorkflow } from './workflow.js';
  * contract this module implements.
  */
 
-/** One execution's request: the absolute project configuration filepath. */
+/** One execution's request: the absolute project configuration filepath and selected workflow. */
 export type ExecutionRequest = {
   readonly projectConfigPath: string;
+  readonly workflow: WorkflowName;
 };
 
 /** Application forwards worker events unchanged and adds its own lifecycle events. */
@@ -37,12 +55,20 @@ export type ExecutionResult = {
 export interface Application {
   execute(request: ExecutionRequest): Promise<ExecutionResult>;
   subscribe(listener: Observer<ExecutionEvent>): Unsubscribe;
+  /**
+   * Observe attributable agent activity while it happens. Panes match activity to an invocation by
+   * its invocation ID; the complete activity is also written to the invocation's durable log.
+   */
+  subscribeActivity(listener: Observer<AgentActivity>): Unsubscribe;
 }
 
 /** One worker launch request: the project filepath and the environment the worker runs with. */
 export type WorkerLaunchRequest = {
   readonly projectConfigPath: string;
+  readonly workflow: WorkflowName;
   readonly environment: Readonly<Record<string, string>>;
+  /** The execution's log directory: the worker names each invocation's own activity log under it. */
+  readonly logDirectory: string;
 };
 
 /**
@@ -64,6 +90,7 @@ export type WorkerCompletion = {
 export type WorkerLaunch = (
   request: WorkerLaunchRequest,
   onEvent: (event: EngineEvent) => void,
+  onActivity: (activity: AgentActivity) => void,
 ) => Promise<WorkerCompletion>;
 
 /** What the parent needs to construct its dependencies and launch the worker. */
@@ -144,6 +171,7 @@ function completionOf(
 /** Create the Application over its installation settings, worker launch and recovery runtime. */
 export function createApplication(settings: ApplicationSettings): Application {
   const listeners = new Set<Observer<ExecutionEvent>>();
+  const activityListeners = new Set<Observer<AgentActivity>>();
   const recoveryFactory = settings.recovery ?? createRecoveryRuntime;
   const diagnostics = settings.diagnostics ?? process.stderr;
 
@@ -161,13 +189,32 @@ export function createApplication(settings: ApplicationSettings): Application {
     publish({ source: 'application', type, data });
   };
 
-  /** The retained selection's task and workspace, or null when the record is not readable. */
-  async function retainedSelection(selectionFile: string): Promise<RecoverySelection | null> {
+  /** Forward one activity packet to the live observers; listener failures do not affect work. */
+  const publishActivity = (activity: AgentActivity): void => {
+    for (const listener of [...activityListeners]) {
+      try {
+        listener(activity);
+      } catch {
+        // A listener failure is isolated from execution and from the other listeners.
+      }
+    }
+  };
+
+  /** The retained selection's issue and workspace, or null when the record is not readable. */
+  async function retainedSelection(
+    selectionFile: string,
+    declaration: typeof selectionDeclaration | typeof ideaSelectionDeclaration,
+  ): Promise<RecoverySelection | null> {
     try {
-      const selection = await readRecord(selectionFile, selectionDeclaration);
+      const selection = await readRecord(selectionFile, declaration);
       return selection === null
         ? null
-        : { task: selection.taskKey, workspace: selection.workspace };
+        : {
+            task: selection.taskKey,
+            workspace: selection.workspace,
+            // Idea refinement retains the shared issue root its refinement area belongs to.
+            ...('issueWorkspace' in selection ? { issueWorkspace: selection.issueWorkspace } : {}),
+          };
     } catch {
       return null;
     }
@@ -182,11 +229,41 @@ export function createApplication(settings: ApplicationSettings): Application {
       }
       const nexus = await loadNexusConfiguration(settings.installationConfigPath);
       const project = await loadProjectConfiguration(request.projectConfigPath);
-      const workflow = await loadWorkflow(nexus.workflow.path);
-      const paths = executionPaths(nexus, project);
+      const workflowPath = nexus.workflow[request.workflow];
+      const workflow = await loadWorkflow(workflowPath);
+      const paths = executionPaths(nexus, project, request.workflow);
+      const selection = {
+        declaration:
+          request.workflow === 'idea-refinement' ? ideaSelectionDeclaration : selectionDeclaration,
+      };
       // Open the log before the starting event and close it after finished on every exit path.
-      const logFile = executionLogFile(paths.directory);
+      const logDirectory = executionLogDirectory(paths.directory);
+      const logFile = executionLogFile(logDirectory);
       const log = await createExecutionLog({ file: logFile, diagnostics });
+      const activityLog = createActivityLog({
+        directory: path.join(logDirectory, 'agents'),
+        diagnostics,
+      });
+      /** Record and forward one activity packet, so live panes and the durable log both see it. */
+      const recordActivity = (activity: AgentActivity): void => {
+        activityLog.record(activity);
+        publishActivity(activity);
+      };
+      /**
+       * Receive one boundary or progress event: an invocation's activity file is opened before its
+       * first packet and closed after its last, then the event reaches the observers unchanged.
+       */
+      const receive = (event: EngineEvent): void => {
+        const invocation = agentInvocationOf(event);
+        if (invocation !== null) {
+          if (event.type === 'agent-started') {
+            activityLog.start(invocation);
+          } else {
+            activityLog.finish(invocation);
+          }
+        }
+        publish(event);
+      };
       listeners.add(log.record);
       try {
         emitLifecycle('starting', null);
@@ -194,11 +271,15 @@ export function createApplication(settings: ApplicationSettings): Application {
           nexus,
           project,
           workflow,
+          workflowName: request.workflow,
+          workflowPath,
           paths,
           logFile,
           environment: toolEnvironment(project, nexus, settings.environment),
           runtime: recoveryFactory({ nexus, environment: settings.environment }),
-          publish,
+          publish: receive,
+          publishActivity: recordActivity,
+          activityDirectory: path.join(logDirectory, 'agents'),
         });
         // One execute call manages one execution: its request and allowance are recorded before the
         // first worker starts, so worker restarts cannot reset what recovery has already consumed.
@@ -224,13 +305,16 @@ export function createApplication(settings: ApplicationSettings): Application {
             await settings.launchWorker(
               {
                 projectConfigPath: request.projectConfigPath,
+                workflow: request.workflow,
                 environment: workerProcessEnvironment(
                   nexus,
                   settings.environment,
                   settings.installationConfigPath,
                 ),
+                logDirectory,
               },
-              publish,
+              receive,
+              recordActivity,
             ),
             workflow.successfulOutcomes,
           );
@@ -245,10 +329,11 @@ export function createApplication(settings: ApplicationSettings): Application {
           }
           // Recovery reads the log, so writes pending before its invocation are drained.
           await log.drain();
+          await activityLog.drain();
           const outcome = await recovery.recover({
             failure: completion.failure,
             output: completion.diagnostics,
-            selection: await retainedSelection(paths.selectionFile),
+            selection: await retainedSelection(paths.selectionFile, selection.declaration),
           });
           if (outcome.kind === 'resume') {
             continue;
@@ -262,6 +347,7 @@ export function createApplication(settings: ApplicationSettings): Application {
       } finally {
         listeners.delete(log.record);
         await log.close();
+        await activityLog.close();
       }
     },
 
@@ -269,6 +355,13 @@ export function createApplication(settings: ApplicationSettings): Application {
       listeners.add(listener);
       return () => {
         listeners.delete(listener);
+      };
+    },
+
+    subscribeActivity(listener: Observer<AgentActivity>): Unsubscribe {
+      activityListeners.add(listener);
+      return () => {
+        activityListeners.delete(listener);
       };
     },
   };

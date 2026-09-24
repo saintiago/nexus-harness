@@ -9,6 +9,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createMachine } from 'xstate';
 import { createTaskEngine, type EngineEvent } from '../src/task-engine/index.js';
 import { finiteDelivery } from '../workflows/finite-delivery.js';
 
@@ -90,9 +91,9 @@ function suppliedActions(overrides: Readonly<Record<string, ActionStub>> = {}): 
   return { actions, calls };
 }
 
-/** The observed state names, in publication order. */
+/** The observed state values, in publication order. */
 function observedStates(events: readonly EngineEvent[]): unknown[] {
-  return events.map((event) => (event.data as { readonly name: unknown }).name);
+  return events.map((event) => (event.data as { readonly value: unknown }).value);
 }
 
 describe('TaskEngine over the finite workflow', () => {
@@ -327,6 +328,83 @@ describe('TaskEngine over the finite workflow', () => {
 });
 
 describe('TaskEngine events', () => {
+  /** A parallel workflow whose regions finish independently, like the idea refinement groups. */
+  const parallelProbe = createMachine({
+    id: 'parallel-probe',
+    initial: 'work',
+    output: ({ event }) => event.output,
+    states: {
+      work: {
+        type: 'parallel',
+        states: {
+          left: {
+            initial: 'run',
+            states: {
+              run: { invoke: { src: 'Left', onDone: 'done' } },
+              done: { type: 'final' },
+            },
+          },
+          right: {
+            initial: 'run',
+            states: {
+              run: { invoke: { src: 'Right', onDone: 'done' } },
+              done: { type: 'final' },
+            },
+          },
+        },
+        onDone: 'finished',
+      },
+      finished: { type: 'final', output: 'finished' },
+    },
+  });
+
+  it('waits for a started parallel invocation before reporting the workflow fault', async () => {
+    const stateFile = await temporaryStateFile();
+    const observed: EngineEvent[] = [];
+    let releaseRight: () => void = () => undefined;
+    const rightPending = new Promise<void>((resolve) => {
+      releaseRight = resolve;
+    });
+    const engine = createTaskEngine({
+      workflow: parallelProbe,
+      stateFile,
+      bindActions: (publish) => ({
+        Left: async () => {
+          publish({ source: 'Left', type: 'agent-finished', data: null });
+          throw new Error('the left invocation failed');
+        },
+        Right: async () => {
+          await rightPending;
+          publish({ source: 'Right', type: 'agent-finished', data: null });
+          return 'finished';
+        },
+      }),
+    });
+    engine.subscribe((event) => observed.push(event));
+
+    let settled = false;
+    const run = engine.run().then((result) => {
+      settled = true;
+      return result;
+    });
+    // The failing region's actor ends the workflow while the sibling invocation is still running.
+    await vi.waitFor(() => {
+      expect(observed.some((event) => event.source === 'Left')).toBe(true);
+    });
+    expect(settled).toBe(false);
+
+    releaseRight();
+    const result = await run;
+
+    // The original fault is reported after the sibling has ended, and its events precede the result.
+    expect(result.ok).toBe(false);
+    expect(result.ok ? '' : result.fault.message).toContain('the left invocation failed');
+    expect(observed.filter((event) => event.source !== 'execution-runner')).toEqual([
+      { source: 'Left', type: 'agent-finished', data: null },
+      { source: 'Right', type: 'agent-finished', data: null },
+    ]);
+  });
+
   it('publishes state observations to subscribers until they unsubscribe', async () => {
     const stateFile = await temporaryStateFile();
     const { actions } = suppliedActions();
@@ -341,8 +419,8 @@ describe('TaskEngine events', () => {
     await engine.run();
 
     expect(events).toEqual([
-      { source: 'execution-runner', type: 'state', data: { name: 'select' } },
-      { source: 'execution-runner', type: 'state', data: { name: 'finished' } },
+      { source: 'execution-runner', type: 'state', data: { value: 'select' } },
+      { source: 'execution-runner', type: 'state', data: { value: 'finished' } },
     ]);
 
     unsubscribe();
@@ -398,8 +476,8 @@ describe('TaskEngine events', () => {
     await expect(engine.run()).resolves.toEqual({ ok: true, value: 'drained' });
     expect(observed).toEqual([
       activity,
-      { source: 'execution-runner', type: 'state', data: { name: 'select' } },
-      { source: 'execution-runner', type: 'state', data: { name: 'finished' } },
+      { source: 'execution-runner', type: 'state', data: { value: 'select' } },
+      { source: 'execution-runner', type: 'state', data: { value: 'finished' } },
     ]);
     // The producer's event travels unchanged, not copied or rewritten by TaskEngine.
     expect(observed[0]).toBe(activity);
@@ -421,7 +499,7 @@ describe('ExecutionRunner persistence order', () => {
       bindActions: () => actions,
     });
     const observed: unknown[] = [];
-    engine.subscribe((event) => observed.push((event.data as { readonly name: unknown }).name));
+    engine.subscribe((event) => observed.push((event.data as { readonly value: unknown }).value));
 
     const run = engine.run();
     await vi.waitFor(() => {

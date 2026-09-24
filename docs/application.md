@@ -30,6 +30,7 @@ Launch shortcuts invoke this command; they contain no execution logic.
 interface Application {
   execute(request: ExecutionRequest): Promise<ExecutionResult>;
   subscribe(listener: Observer<ExecutionEvent>): Unsubscribe;
+  subscribeActivity(listener: Observer<AgentActivity>): Unsubscribe;
 }
 
 type ExecutionRequest = {
@@ -37,6 +38,12 @@ type ExecutionRequest = {
   workflow: 'finite-delivery' | 'idea-refinement';
 };
 type ExecutionEvent = EngineEvent;
+
+type AgentActivity = {
+  invocationId: string;
+  timestamp: string;
+  activity: AgentEvent;
+};
 
 type ExecutionResult = {
   outcome: 'completed' | 'needs-attention';
@@ -62,8 +69,9 @@ continue. The report points to the saved recovery report when recovery occurred.
 
 subscribe observes subsequent events and returns an unsubscribe function. Forward worker events
 unchanged. Emit lifecycle events with source application and types starting, running, recovering,
-recovered and finished. The finished event carries ExecutionResult. Listener failures do not affect
-execution.
+recovered and finished. The finished event carries ExecutionResult. subscribeActivity observes
+attributable agent activity, both the worker's and recovery's, while it happens. Listener failures
+do not affect execution.
 
 Recovery invocations use the [agent invocation contract](task-engine/architecture.md#agent-activity-events)
 with role recovery. Use the [RecoveryRole](agent-runtime/recovery-role.md#interface) prompt, context
@@ -80,7 +88,7 @@ and capabilities its contract requires.
 | Process | Construction and invocation |
 | --- | --- |
 | Parent | Construct recovery [AgentRuntime](agent-runtime/architecture.md#interface) and notification/process [Adapters](adapters/architecture.md#interface) |
-| Parent | Construct [OperatorInterface](operator-interface.md#interface) with the combined event subscription, attributable activity subscription and terminal capabilities; start presentation before execute and stop it afterward |
+| Parent | Construct [OperatorInterface](operator-interface.md#interface) with the combined event subscription, the attributable activity subscription and terminal capabilities; start presentation before execute and stop it afterward |
 | Worker | Construct adapters and AgentRuntime from their relevant settings |
 | Worker | Bind action capabilities, selection storage and event publishing; construct [TaskEngine](task-engine/architecture.md#interface) with the selected workflow and workflow-state filepath |
 | Worker | Subscribe to TaskEngine events before calling run; send events and the final result through the worker protocol |
@@ -102,7 +110,8 @@ Use the [Notifications adapter](adapters/notifications.md#interface) to publish 
 
 ### Worker entry point
 
-The internal worker entry receives the absolute project filepath and selected workflow.
+The internal worker entry receives the absolute project filepath, the selected workflow and the
+execution's log directory, which names where each invocation's own activity log is written.
 It uses the same installation configuration path as the parent. This is an internal launch contract,
 not an additional operator mode.
 
@@ -228,10 +237,11 @@ The caller assigns each agent invocation a role name, unique invocation ID and U
 Its start and finish events carry those values and an ArtifactRef to its own activity file under
 `<execution directory>/logs/<execution id>/agents/<agent name>-<unix ms>-<invocation id>.jsonl`.
 The worker sends activity packets with invocation identity, allowing simultaneous agents to
-interleave safely. Application timestamps and writes the complete activity to the matching file,
-then forwards it to OperatorInterface's live activity input. Open the file before the first
-packet, drain it before the finish event and keep logging after terminal presentation closes.
-The same contract applies to one or several agents and to recovery.
+interleave safely. Application writes each received entry with its timestamp to the matching file,
+then forwards it to OperatorInterface's live activity input. Each activity file line is
+`{ "timestamp": <ISO timestamp>, "activity": <AgentEvent> }`. Open the file before the first
+packet, drain it before recovery reads the logs and keep logging after terminal presentation
+closes. The same contract applies to one or several agents and to recovery.
 
 Application owns logger subscriptions and file lifecycle. Open the main log before publishing
 starting, drain pending writes before recovery reads logs, and close logs after finished on every

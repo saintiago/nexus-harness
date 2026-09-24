@@ -35,6 +35,22 @@ export async function readComments(jira: JiraAdapter, issueId: string): Promise<
   return [...(await requireSuccess(jira.readComments(issueId)))];
 }
 
+/**
+ * Narrow one captured Jira transition value. A captured selection stores provider values as they
+ * were read; applying the move later needs the transition's identity and destination.
+ */
+export function capturedTransition(value: unknown): JiraTransition | null {
+  if (typeof value !== 'object' || value === null) {
+    return null;
+  }
+  const candidate = value as { readonly id?: unknown; readonly to?: unknown };
+  const to = candidate.to as { readonly name?: unknown } | undefined;
+  if (typeof candidate.id !== 'string' || typeof to?.name !== 'string') {
+    return null;
+  }
+  return value as JiraTransition;
+}
+
 /** The issue's current status name, or null when the field cannot be read. */
 export function statusNameOf(issue: JiraIssue): string | null {
   const status = issue.fields.status;
@@ -87,6 +103,24 @@ export async function applyTransition(
   await requireSuccess(jira.transitionIssue(issueId, transition.id));
 }
 
+/**
+ * Publish one Nexus document as a comment unless the issue already carries the same comment. The
+ * existing or created comment is returned, so a caller can record the identity it published.
+ */
+export async function publishDocument(
+  jira: JiraAdapter,
+  issueId: string,
+  comments: readonly JiraComment[],
+  document: JiraDocument,
+): Promise<JiraComment> {
+  const published = JSON.stringify(document);
+  const existing = comments.find((comment) => JSON.stringify(comment.body) === published);
+  if (existing !== undefined) {
+    return existing;
+  }
+  return await requireSuccess(jira.addComment(issueId, document));
+}
+
 /** Publish one Nexus comment to the ticket unless the issue already carries the same comment. */
 export async function publishComment(
   jira: JiraAdapter,
@@ -99,9 +133,5 @@ export async function publishComment(
     version: 1,
     content: [{ type: 'paragraph', content: [{ type: 'text', text }] }],
   };
-  const published = JSON.stringify(document);
-  if (comments.some((comment) => JSON.stringify(comment.body) === published)) {
-    return;
-  }
-  await requireSuccess(jira.addComment(issueId, document));
+  await publishDocument(jira, issueId, comments, document);
 }

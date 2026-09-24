@@ -14,10 +14,14 @@ import { devArtifact } from '../task-engine/actions/develop/artifacts.js';
 import { preparedWorkspaceDeclaration } from '../task-engine/actions/prepare-workspace/artifacts.js';
 import { readRecord, writeRecord, type RecordDeclaration } from '../task-engine/actions/records.js';
 import { reviewArtifact } from '../task-engine/actions/review/artifacts.js';
+import { ideaSelectionDeclaration } from '../task-engine/actions/select-idea/artifacts.js';
 import { selectionDeclaration } from '../task-engine/actions/select-task/artifacts.js';
+import { ideaRoundPlanDeclaration } from '../task-engine/actions/start-idea-round/artifacts.js';
 import { currentRoundDeclaration } from '../task-engine/actions/start-round/artifacts.js';
 import { verificationArtifact } from '../task-engine/actions/verify/artifacts.js';
 import type { EngineEvent } from '../task-engine/index.js';
+import { beginAgentInvocation, type AgentActivityPublisher } from '../task-engine/index.js';
+import type { WorkflowName } from '../configuration/index.js';
 import { workspaceRoot, type ExecutionPaths } from './composition.js';
 import type { ExecutionRequest } from './index.js';
 import type { Workflow } from './workflow.js';
@@ -106,6 +110,8 @@ const worktreeDirectory = 'worktree';
 export type RecoverySelection = {
   readonly task: string;
   readonly workspace: TaskWorkspaceRef;
+  /** The shared issue workspace root, when the selected workflow retains one. */
+  readonly issueWorkspace?: TaskWorkspaceRef;
 };
 
 /** What one recovery agent invocation receives. */
@@ -173,14 +179,21 @@ export type RecoverySettings = {
   readonly nexus: NexusConfiguration;
   readonly project: ProjectConfiguration;
   readonly workflow: Workflow;
+  /** The selected workflow's name and configured definition path. */
+  readonly workflowName: WorkflowName;
+  readonly workflowPath: string;
   readonly paths: ExecutionPaths;
   /** The execution's event log, which recovery reads to see what happened. */
   readonly logFile: string;
+  /** The execution's agent activity directory the recovery invocation's own log lives under. */
+  readonly activityDirectory: string;
   /** The environment the operational workspace preparation runs with. */
   readonly environment: Readonly<Record<string, string>>;
   readonly runtime: RecoveryRuntime;
-  /** Publishes one event to Application's combined stream, including agent activity. */
+  /** Publishes one progress or agent boundary event to Application's combined stream. */
   readonly publish: (event: EngineEvent) => void;
+  /** Records and forwards one attributable activity entry through Application. */
+  readonly publishActivity: AgentActivityPublisher;
 };
 
 /** The context the recovery agent receives, assembled from the resolved configuration and stop. */
@@ -189,8 +202,11 @@ type RecoveryContextSettings = {
   readonly project: ProjectConfiguration;
   readonly nexus: NexusConfiguration;
   readonly workflow: Workflow;
+  readonly workflowName: WorkflowName;
+  readonly workflowPath: string;
   readonly paths: ExecutionPaths;
   readonly logFile: string;
+  readonly activityDirectory: string;
   readonly recoveryDirectory: string;
   readonly workspace: TaskWorkspaceRef;
   readonly reports: readonly string[];
@@ -226,7 +242,27 @@ function roundArtifact(title: string, declaration: ArtifactDeclaration): Recover
 
 /** The producer-owned records and round artifacts recovery reconciles, with their declared paths. */
 function recoveryDeclarations(settings: RecoveryContextSettings): RecoveryDeclaration[] {
-  const { paths, recoveryDirectory } = settings;
+  const { paths, recoveryDirectory, workflowName } = settings;
+  const execution: RecoveryDeclaration = {
+    title: 'Recovery execution record (Application)',
+    path: path.join(recoveryDirectory, recoveryExecutionDeclaration.file),
+    schema: recoveryExecutionSchema,
+  };
+  if (workflowName === 'idea-refinement') {
+    return [
+      {
+        title: 'Idea selection record (SelectIdea)',
+        path: paths.selectionFile,
+        schema: ideaSelectionDeclaration.schema,
+      },
+      {
+        title: 'Idea round plan (StartIdeaRound)',
+        path: ideaRoundPlanDeclaration.file,
+        schema: ideaRoundPlanDeclaration.schema,
+      },
+      execution,
+    ];
+  }
   return [
     {
       title: 'Task selection record (SelectTask)',
@@ -248,17 +284,14 @@ function recoveryDeclarations(settings: RecoveryContextSettings): RecoveryDeclar
     roundArtifact('Delivery output (Deliver)', deliveryArtifact),
     roundArtifact('Review output (Review)', reviewArtifact),
     roundArtifact('Completion output (CompleteTask)', completionArtifact),
-    {
-      title: 'Recovery execution record (Application)',
-      path: path.join(recoveryDirectory, recoveryExecutionDeclaration.file),
-      schema: recoveryExecutionSchema,
-    },
+    execution,
   ];
 }
 
 /** The complete context text one recovery invocation receives. */
 function recoveryContextText(settings: RecoveryContextSettings): string {
-  const { nexus, project, workflow, paths, logFile, stop, request, invocation } = settings;
+  const { nexus, project, workflow, paths, logFile, activityDirectory, stop, request, invocation } =
+    settings;
   const selection = stop.selection;
   const taskWorkspaceRoot = path.join(workspaceRoot(nexus), project.taskSource.project);
   return [
@@ -282,10 +315,13 @@ function recoveryContextText(settings: RecoveryContextSettings): string {
       `Workflow state file: ${paths.workflowStateFile} (the ExecutionRunner's persisted XState ` +
         'snapshot: JSON whose status is "active" or "done", whose value names the active state ' +
         'nodes and whose children map holds the invoked operations)',
-      `Task selection file: ${paths.selectionFile} (SelectTask's record, JSON matching the task ` +
-        'selection schema below)',
+      `Selection file: ${paths.selectionFile} (` +
+        `${settings.workflowName === 'idea-refinement' ? 'SelectIdea' : 'SelectTask'}'s record, ` +
+        'JSON matching the selection schema below)',
       `Execution event log: ${logFile} (newline-delimited JSON, one object per received event, ` +
         'each holding its ISO receipt timestamp and the event)',
+      `Agent activity logs: ${activityDirectory} (one JSONL file per invocation, named with the ` +
+        'agent name, Unix start time and invocation ID)',
       `Recovery directory: ${settings.recoveryDirectory}`,
       'Saved reports of this execution: ' +
         (settings.reports.length === 0 ? 'none yet' : settings.reports.join(', ')),
@@ -294,25 +330,42 @@ function recoveryContextText(settings: RecoveryContextSettings): string {
     ].join('\n'),
     [
       'Producer-owned record and artifact declarations',
-      'Paths are relative to the retained task workspace root unless absolute. Round artifacts ' +
-        'resolve within the current round directory artifacts/<roundNumber>/: the current-round ' +
-        'record selects the number, and earlier rounds remain as history.',
+      settings.workflowName === 'idea-refinement'
+        ? 'Paths are relative to the refinement area of the shared issue workspace unless ' +
+          'absolute: the idea round plan sits in its state/ directory and cycle artifacts resolve ' +
+          'within artifacts/submissions/<submission>/cycles/<cycle>/ for the plan it records.'
+        : 'Paths are relative to the retained task workspace root unless absolute. Round ' +
+          'artifacts resolve within the current round directory artifacts/<roundNumber>/: the ' +
+          'current-round record selects the number, and earlier rounds remain as history.',
       ...recoveryDeclarations(settings).map(declarationText),
     ].join('\n\n'),
     [
-      'Retained task workspace',
+      settings.workflowName === 'idea-refinement'
+        ? 'Retained issue workspace'
+        : 'Retained task workspace',
       selection === null
-        ? 'The task selection record was absent or unreadable, so no retained task workspace is ' +
-          'known.'
-        : `Task ${selection.task} retained the workspace at ${selection.workspace.root}.`,
-      `Task workspaces live under ${taskWorkspaceRoot}/<task>/ with the fixed layout worktree/, ` +
-        'artifacts/<roundNumber>/ and state/ (prepared-workspace.json, preparation/, ' +
-        'current-round.json). Confirm that a workspace you delete belongs to the interrupted task ' +
-        'under this root.',
+        ? 'The selection record was absent or unreadable, so no retained workspace is known.'
+        : (settings.workflowName === 'idea-refinement'
+            ? `Issue ${selection.task} retained the workflow area at ${selection.workspace.root}.`
+            : `Task ${selection.task} retained the workspace at ${selection.workspace.root}.`) +
+          (selection.issueWorkspace === undefined
+            ? ''
+            : ` Its shared issue workspace root is ${selection.issueWorkspace.root}.`),
+      settings.workflowName === 'idea-refinement'
+        ? `Issue workspaces live under ${taskWorkspaceRoot}/<issue>/ with the fixed layout ` +
+          'worktree/, artifacts/<roundNumber>/ and state/ for finite delivery and refinement/ ' +
+          '(worktree/, artifacts/submissions/, state/current-round.json) for idea refinement. ' +
+          'Confirm that a target you delete belongs to the interrupted issue under this root.'
+        : `Task workspaces live under ${taskWorkspaceRoot}/<task>/ with the fixed layout worktree/, ` +
+          'artifacts/<roundNumber>/ and state/ (prepared-workspace.json, preparation/, ' +
+          'current-round.json). Its refinement/ area retains idea refinement artifacts and is ' +
+          'preserved; confirm that a target you delete belongs to the interrupted task under ' +
+          'this root.',
     ].join('\n'),
     [
       'Selected workflow',
-      `Module: ${nexus.workflow.path}`,
+      `Name: ${settings.workflowName}`,
+      `Module: ${settings.workflowPath}`,
       'Definition (the loaded XState configuration; guard and action functions are code in the ' +
         'module above and are absent from this JSON):',
       JSON.stringify(workflow.machine.config, null, 2),
@@ -490,8 +543,11 @@ export function createRecovery(settings: RecoverySettings): Recovery {
         project,
         nexus,
         workflow,
+        workflowName: settings.workflowName,
+        workflowPath: settings.workflowPath,
         paths,
         logFile: settings.logFile,
+        activityDirectory: settings.activityDirectory,
         recoveryDirectory: directory,
         workspace,
         reports: earlierReports(invocation),
@@ -500,30 +556,33 @@ export function createRecovery(settings: RecoverySettings): Recovery {
       });
 
       publish({ source: 'application', type: 'recovering', data: { reason: stop.failure } });
-      publish({
-        source: 'application',
-        type: 'agent-started',
-        data: {
-          role: 'recovery',
-          operation: 'Recovery',
-          profile,
-          ...(stop.selection === null ? {} : { task: stop.selection.task }),
-        },
+      const agentInvocation = beginAgentInvocation({
+        agentName: 'recovery',
+        operation: 'Recovery',
+        profile,
+        task: stop.selection === null ? null : stop.selection.task,
+        directory: settings.activityDirectory,
+        publish: settings.publish,
+        publishActivity: settings.publishActivity,
       });
-      let result: AgentResult;
-      try {
-        result = await runtime.invoke({
-          context,
-          workspace,
-          onActivity: (activity) => {
-            publish({ source: 'application', type: 'agent-activity', data: activity });
-          },
-        });
-      } catch (error) {
-        result = { ok: false, fault: { message: messageOf(error) } };
-      } finally {
-        publish({ source: 'application', type: 'agent-finished', data: null });
-      }
+      /** One recovery invocation; a provider failure becomes the invocation's fault result. */
+      const invoke = async (): Promise<AgentResult> => {
+        try {
+          return await runtime.invoke({
+            context,
+            workspace,
+            onActivity: (activity) => {
+              agentInvocation.activity(activity);
+            },
+          });
+        } catch (error) {
+          return { ok: false, fault: { message: messageOf(error) } };
+        }
+      };
+      const result = await invoke();
+      agentInvocation.finish(
+        result.ok ? { outcome: 'finished' } : { outcome: 'failed', reason: result.fault.message },
+      );
       if (!result.ok) {
         return attention(`The recovery invocation failed: ${result.fault.message}`);
       }

@@ -49,6 +49,17 @@ describe('project configuration', () => {
     );
   });
 
+  it('requires the idea source selection and status mappings', () => {
+    const configuration = projectConfiguration() as unknown as {
+      taskSource: Record<string, unknown>;
+    };
+    delete configuration.taskSource['ideas'];
+
+    expect(() => parseProjectConfiguration(configuration, configurationDirectory)).toThrow(
+      /taskSource\.ideas/,
+    );
+  });
+
   it('requires commands to state an executable and an argument array', () => {
     const missingArguments = {
       ...projectConfiguration(),
@@ -136,10 +147,36 @@ describe('Nexus configuration', () => {
   it('resolves the workflow path and storage root against the configuration directory', () => {
     const configuration = parseNexusConfiguration(nexusConfiguration(), '/etc/nexus/installation');
 
-    expect(configuration.workflow.path).toBe(
+    expect(configuration.workflow['finite-delivery']).toBe(
       '/etc/nexus/installation/workflows/finite-delivery.ts',
     );
+    expect(configuration.workflow['idea-refinement']).toBe(
+      '/etc/nexus/installation/workflows/idea-refinement.ts',
+    );
     expect(configuration.storage.root).toBe('/etc/nexus/installation/state');
+  });
+
+  it('requires every idea refinement role profile to identify a configured profile', () => {
+    const configuration = nexusConfiguration();
+    configuration.ideaRefinement.profiles.researcher = 'nexus-missing';
+
+    expect(() => parseNexusConfiguration(configuration, configurationDirectory)).toThrow(
+      /ideaRefinement\.profiles\.researcher: Unknown profile "nexus-missing"/,
+    );
+  });
+
+  it('requires the idea refinement settings and a positive council-cycle bound', () => {
+    const missing = nexusConfiguration() as unknown as Record<string, unknown>;
+    delete missing['ideaRefinement'];
+    expect(() => parseNexusConfiguration(missing, configurationDirectory)).toThrow(
+      /ideaRefinement/,
+    );
+
+    const bounded = nexusConfiguration();
+    bounded.ideaRefinement.maxCouncilCycles = 0;
+    expect(() => parseNexusConfiguration(bounded, configurationDirectory)).toThrow(
+      /ideaRefinement\.maxCouncilCycles/,
+    );
   });
 
   it('resolves a relative provider executable and preserves bare and absolute ones', () => {

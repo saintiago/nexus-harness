@@ -9,8 +9,9 @@ Resolve the caller-selected profile, assemble the prompt, invoke the agent and r
 
 Use the [shared value types](../high-level-architecture.md#shared-interface-vocabulary) and
 [WorkspaceRef](../workspace.md#layout-and-reference). Construction supplies base instructions, profiles,
-provider/tool settings, invocation limits and an activity observer from
-[Nexus configuration](../configuration.md#nexus-configuration).
+provider/tool settings and invocation limits from
+[Nexus configuration](../configuration.md#nexus-configuration); each call supplies its own activity
+observer.
 
 Developer and reviewer profiles include their respective
 [DevelopmentRole](development-role.md#constant-prompt) or [ReviewerRole](reviewer-role.md#constant-prompt)
@@ -26,6 +27,7 @@ interface AgentRuntime {
     profile: ProfileId,
     workspaceRef: WorkspaceRef,
     additionalContext: string,
+    onActivity: (activity: AgentEvent) => void,
   ): Promise<AgentResult>;
 }
 
@@ -62,8 +64,9 @@ Success means the invocation finished and returned output. The caller defines th
 format, parses it and evaluates its claims. The runtime has no developer, reviewer or recovery output
 schemas. It does not declare a task complete.
 
-Activity is emitted through the observer bound at construction. Observer failures do not affect the
-invocation. Invocation failures and timeouts return a fault.
+Activity is emitted through the observer the caller supplies for that invocation, so concurrent
+calls keep independent observers. Observer failures do not affect the invocation. Invocation
+failures and timeouts return a fault.
 
 ### Required interface
 

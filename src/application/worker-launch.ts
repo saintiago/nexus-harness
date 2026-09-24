@@ -1,14 +1,14 @@
 import path from 'node:path';
 import { run } from '../adapters/processes.js';
-import type { EngineEvent, WorkflowResult } from '../task-engine/index.js';
+import type { AgentActivity, EngineEvent, WorkflowResult } from '../task-engine/index.js';
 import type { WorkerCompletion, WorkerLaunch, WorkerLaunchRequest } from './index.js';
 import { createWorkerLineReader, parseWorkerLine } from './protocol.js';
 
 /**
  * The parent side of the worker protocol: launch the internal worker entry as a child process,
- * forward the events it reports as they arrive and observe its final result, exit and diagnostics.
- * The parent never reads terminal text as a control protocol; only the protocol messages and the
- * process exit carry meaning.
+ * forward the events and attributable agent activity it reports as they arrive and observe its
+ * final result, exit and diagnostics. The parent never reads terminal text as a control protocol;
+ * only the protocol messages and the process exit carry meaning.
  */
 
 /** What the launch needs to run the worker entry. */
@@ -21,7 +21,11 @@ export type WorkerLaunchSettings = {
 
 /** Create the worker launch over the supplied Node executable and worker entry module. */
 export function createWorkerLaunch(settings: WorkerLaunchSettings): WorkerLaunch {
-  return async (request: WorkerLaunchRequest, onEvent: (event: EngineEvent) => void) => {
+  return async (
+    request: WorkerLaunchRequest,
+    onEvent: (event: EngineEvent) => void,
+    onActivity: (activity: AgentActivity) => void,
+  ) => {
     let result: WorkflowResult | null = null;
     let problem: string | null = null;
     const diagnostics: Uint8Array[] = [];
@@ -46,6 +50,19 @@ export function createWorkerLaunch(settings: WorkerLaunchSettings): WorkerLaunch
         }
         return;
       }
+      if (parsed.message.kind === 'agent-activity') {
+        if (result !== null) {
+          problem = 'The worker sent agent activity after its final result.';
+          return;
+        }
+        const { invocationId, timestamp, activity } = parsed.message;
+        try {
+          onActivity({ invocationId, timestamp, activity });
+        } catch {
+          // A listener failure is isolated from the launch and from execution decisions.
+        }
+        return;
+      }
       if (result !== null) {
         problem = 'The worker sent more than one final result.';
         return;
@@ -56,7 +73,7 @@ export function createWorkerLaunch(settings: WorkerLaunchSettings): WorkerLaunch
     const execution = await run(
       {
         executable: settings.executable,
-        args: [settings.entry, request.projectConfigPath],
+        args: [settings.entry, request.projectConfigPath, request.workflow, request.logDirectory],
         directory: path.dirname(request.projectConfigPath),
         environment: request.environment,
       },

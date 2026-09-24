@@ -23,7 +23,8 @@ import {
   type ReviewOutput,
 } from '../src/task-engine/actions/review/artifacts.js';
 import { verificationArtifact } from '../src/task-engine/actions/verify/artifacts.js';
-import type { EngineEvent } from '../src/task-engine/index.js';
+import type { AgentRoleRunner, EngineEvent } from '../src/task-engine/index.js';
+import { runnerOf } from './support/agent-runner.js';
 import { repositoryState, scriptedGit } from './support/git.js';
 import { scriptedGitHub } from './support/github.js';
 import { scriptedJira } from './support/jira.js';
@@ -300,7 +301,7 @@ function expectedComment(review: ReviewOutput): JiraDocument {
 /** The action under test, bound to the controlled runtime and source. */
 function reviewAction(options: {
   readonly selectionFile: string;
-  readonly runtime: AgentRuntime;
+  readonly runner: AgentRoleRunner;
   readonly git: ReturnType<typeof scriptedGit>['git'];
   readonly github: ReturnType<typeof scriptedGitHub>['github'];
   readonly jira: ReturnType<typeof scriptedJira>['jira'];
@@ -311,7 +312,7 @@ function reviewAction(options: {
     reviewCheck,
     nexusLens: { appId: lensAppId, login: lensLogin },
     reviewerProfile: 'nexus-review',
-    runtime: options.runtime,
+    runner: options.runner,
     git: options.git,
     github: options.github,
     jira: options.jira,
@@ -358,7 +359,7 @@ describe('Review', () => {
         return ok({ id: 'c9', body });
       },
     });
-    const review = reviewAction({ selectionFile, runtime, git, github, jira });
+    const review = reviewAction({ selectionFile, runner: runnerOf(runtime), git, github, jira });
 
     await expect(review()).resolves.toBe('approved');
 
@@ -420,19 +421,9 @@ describe('Review', () => {
       reviews: [],
       reviewComments: [],
     });
-    // The saved report is what the outcome event references.
+    // The saved report is what the outcome event references; the invocation boundaries belong to
+    // the caller's agent runner, not to the action.
     expect(events).toEqual([
-      {
-        source: 'review',
-        type: 'agent-started',
-        data: {
-          role: 'reviewer',
-          operation: 'Review',
-          profile: 'nexus-review',
-          task: 'NEX-1',
-        },
-      },
-      { source: 'review', type: 'agent-finished', data: null },
       {
         source: 'review',
         type: 'outcome',
@@ -508,7 +499,7 @@ describe('Review', () => {
       readComments: () => ok([]),
       addComment: (_issueId, body) => ok({ id: 'c9', body }),
     });
-    const review = reviewAction({ selectionFile, runtime, git, github, jira });
+    const review = reviewAction({ selectionFile, runner: runnerOf(runtime), git, github, jira });
 
     await expect(review()).resolves.toBe('approved');
 
@@ -648,7 +639,7 @@ describe('Review', () => {
         readIssue: () => ok(taskIssue),
         readComments: () => ok([]),
       });
-      const review = reviewAction({ selectionFile, runtime, git, github, jira });
+      const review = reviewAction({ selectionFile, runner: runnerOf(runtime), git, github, jira });
 
       await expect(review(), testCase.label).rejects.toThrow(testCase.expected);
       await expect(
@@ -664,7 +655,7 @@ describe('Review', () => {
     const movedGit = scriptedGit([repositoryState({ headRevision: otherRevision })]);
     const movedReview = reviewAction({
       selectionFile: moved.selectionFile,
-      runtime: unusedRuntime(),
+      runner: runnerOf(unusedRuntime()),
       git: movedGit.git,
       github: scriptedGitHub({}).github,
       jira: scriptedJira({}).jira,
@@ -688,7 +679,7 @@ describe('Review', () => {
     );
     const editedReview = reviewAction({
       selectionFile: edited.selectionFile,
-      runtime,
+      runner: runnerOf(runtime),
       git: editedGit.git,
       github: scriptedGitHub({
         readConversation: () => ok({ comments: [], reviews: [], reviewComments: [] }),
@@ -720,7 +711,7 @@ describe('Review', () => {
     await expect(
       reviewAction({
         selectionFile: finished.selectionFile,
-        runtime: unusedRuntime(),
+        runner: runnerOf(unusedRuntime()),
         git: scriptedGit([]).git,
         github: finishedHub.github,
         jira: finishedJira,
@@ -764,7 +755,7 @@ describe('Review', () => {
     await expect(
       reviewAction({
         selectionFile: unfinished.selectionFile,
-        runtime: unusedRuntime(),
+        runner: runnerOf(unusedRuntime()),
         git: scriptedGit([]).git,
         github: unfinishedHub.github,
         jira: unfinishedJira.jira,
@@ -801,7 +792,7 @@ describe('Review', () => {
     await expect(
       reviewAction({
         selectionFile: different.selectionFile,
-        runtime: unusedRuntime(),
+        runner: runnerOf(unusedRuntime()),
         git: scriptedGit([]).git,
         github: differentHub.github,
         jira: differentJira.jira,
@@ -847,7 +838,7 @@ describe('Review', () => {
     await expect(
       reviewAction({
         selectionFile,
-        runtime: unusedRuntime(),
+        runner: runnerOf(unusedRuntime()),
         git: scriptedGit([]).git,
         github,
         jira,
@@ -896,9 +887,9 @@ describe('Review', () => {
       addComment: (_issueId, body) => ok({ id: 'c9', body }),
     });
 
-    await expect(reviewAction({ selectionFile, runtime, git, github, jira })()).resolves.toBe(
-      'changesRequested',
-    );
+    await expect(
+      reviewAction({ selectionFile, runner: runnerOf(runtime), git, github, jira })(),
+    ).resolves.toBe('changesRequested');
 
     expect(requests).toHaveLength(1);
     expect(await readRoundArtifact(workspaceRoot, 1, 'review.json')).toMatchObject({
@@ -931,9 +922,9 @@ describe('Review', () => {
       addComment: (_issueId, body) => ok({ id: 'c9', body }),
     });
 
-    await expect(reviewAction({ selectionFile, runtime, git, github, jira })()).resolves.toBe(
-      'inconclusive',
-    );
+    await expect(
+      reviewAction({ selectionFile, runner: runnerOf(runtime), git, github, jira })(),
+    ).resolves.toBe('inconclusive');
 
     expect(githubCalls).toContain(`publishCheck:${headRevision}:${reviewCheck}:failure`);
     expect(await readRoundArtifact(workspaceRoot, 1, 'review.json')).toMatchObject({

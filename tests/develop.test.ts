@@ -21,6 +21,7 @@ import {
 import { createDevelop } from '../src/task-engine/actions/develop/index.js';
 import type { Finding, ReviewOutput } from '../src/task-engine/actions/review/artifacts.js';
 import type { EngineEvent } from '../src/task-engine/index.js';
+import { runnerOf } from './support/agent-runner.js';
 import { repositoryState, scriptedGit } from './support/git.js';
 import { scriptedJira } from './support/jira.js';
 
@@ -242,7 +243,7 @@ describe('Develop', () => {
     );
     const develop = createDevelop({
       selectionFile,
-      runtime,
+      runner: runnerOf(runtime),
       git,
       jira,
       publish: (event) => events.push(event),
@@ -293,15 +294,8 @@ describe('Develop', () => {
       summary: 'Implemented the retry guard.',
       findingResponses: [],
     });
-    expect(events).toEqual([
-      {
-        source: 'develop',
-        type: 'agent-started',
-        data: { role: 'developer', operation: 'Develop', profile: 'dev-a', task: taskKey },
-      },
-      { source: 'develop', type: 'agent-finished', data: null },
-      developmentOutcome(workspaceRoot, 'completed'),
-    ]);
+    // The invocation boundaries belong to the caller's agent runner, not to the action.
+    expect(events).toEqual([developmentOutcome(workspaceRoot, 'completed')]);
   });
 
   it('records failed with the agent summary when the turn reports incomplete work', async () => {
@@ -317,7 +311,7 @@ describe('Develop', () => {
     );
     const develop = createDevelop({
       selectionFile,
-      runtime,
+      runner: runnerOf(runtime),
       git,
       jira,
       publish: (event) => events.push(event),
@@ -332,12 +326,6 @@ describe('Develop', () => {
       summary: 'The parser change needs a decision that is missing from the task.',
     });
     expect(events).toEqual([
-      {
-        source: 'develop',
-        type: 'agent-started',
-        data: { role: 'developer', operation: 'Develop', profile: 'dev-a', task: 'NEX-1' },
-      },
-      { source: 'develop', type: 'agent-finished', data: null },
       {
         source: 'develop',
         type: 'failed',
@@ -367,7 +355,7 @@ describe('Develop', () => {
       );
       const develop = createDevelop({
         selectionFile,
-        runtime,
+        runner: runnerOf(runtime),
         git,
         jira,
         publish: (event) => events.push(event),
@@ -411,7 +399,7 @@ describe('Develop', () => {
     );
     const develop = createDevelop({
       selectionFile,
-      runtime,
+      runner: runnerOf(runtime),
       git,
       jira,
       publish: (event) => events.push(event),
@@ -428,15 +416,7 @@ describe('Develop', () => {
       summary: 'Implemented the retry guard.',
       findingResponses: [],
     });
-    expect(events).toEqual([
-      {
-        source: 'develop',
-        type: 'agent-started',
-        data: { role: 'developer', operation: 'Develop', profile: 'dev-a', task: 'NEX-1' },
-      },
-      { source: 'develop', type: 'agent-finished', data: null },
-      developmentOutcome(workspaceRoot, 'completed'),
-    ]);
+    expect(events).toEqual([developmentOutcome(workspaceRoot, 'completed')]);
   });
 
   it('carries the observed readiness failure into the next repair invocation', async () => {
@@ -456,7 +436,7 @@ describe('Develop', () => {
     await expect(
       createDevelop({
         selectionFile,
-        runtime: first.runtime,
+        runner: runnerOf(first.runtime),
         git: firstGit,
         jira,
         publish: (event) => events.push(event),
@@ -499,7 +479,7 @@ describe('Develop', () => {
     await expect(
       createDevelop({
         selectionFile,
-        runtime: repair.runtime,
+        runner: runnerOf(repair.runtime),
         git: repairGit,
         jira,
         publish: (event) => events.push(event),
@@ -553,7 +533,7 @@ describe('Develop', () => {
     );
     const develop = createDevelop({
       selectionFile,
-      runtime,
+      runner: runnerOf(runtime),
       git,
       jira,
       publish: (event) => events.push(event),
@@ -617,7 +597,7 @@ describe('Develop', () => {
       );
       const develop = createDevelop({
         selectionFile,
-        runtime,
+        runner: runnerOf(runtime),
         git,
         jira,
         publish: (event) => events.push(event),
@@ -649,7 +629,7 @@ describe('Develop', () => {
     });
     const develop = createDevelop({
       selectionFile,
-      runtime,
+      runner: runnerOf(runtime),
       git,
       jira,
       publish: (event) => events.push(event),
@@ -679,7 +659,7 @@ describe('Develop', () => {
     await expect(
       createDevelop({
         selectionFile: observed.selectionFile,
-        runtime,
+        runner: runnerOf(runtime),
         git,
         jira,
         publish: (event) => events.push(event),
@@ -703,7 +683,7 @@ describe('Develop', () => {
     await expect(
       createDevelop({
         selectionFile: wrong.selectionFile,
-        runtime: wrongRuntime,
+        runner: runnerOf(wrongRuntime),
         git,
         jira,
         publish: (event) => events.push(event),
@@ -737,7 +717,7 @@ describe('Develop', () => {
     );
     const develop = createDevelop({
       selectionFile,
-      runtime,
+      runner: runnerOf(runtime),
       git,
       jira,
       publish: (event) => events.push(event),
@@ -759,7 +739,7 @@ describe('Develop', () => {
     const { runtime } = scriptedRuntime(() => 'not a JSON report');
     const develop = createDevelop({
       selectionFile,
-      runtime,
+      runner: runnerOf(runtime),
       git,
       jira,
       publish: (event) => events.push(event),
@@ -775,7 +755,7 @@ describe('Develop', () => {
     });
     const second = createDevelop({
       selectionFile,
-      runtime,
+      runner: runnerOf(runtime),
       git,
       jira: unavailable.jira,
       publish: (event) => events.push(event),

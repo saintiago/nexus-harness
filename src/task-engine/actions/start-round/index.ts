@@ -1,10 +1,9 @@
-import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { actionOutcomeEvent, type BoundAction, type EventPublisher } from '../../index.js';
 import { createArtifactHelpers, type ArtifactHistoryValue } from '../artifacts.js';
 import { devArtifact, type DevelopmentOutput } from '../develop/artifacts.js';
-import { readRecord, writeRecord } from '../records.js';
 import { reviewArtifact, type ReviewOutput } from '../review/artifacts.js';
+import { ensureRoundDirectory, readCurrentPlan, saveCurrentPlan } from '../round-storage.js';
 import { verificationArtifact, type VerificationOutput } from '../verify/artifacts.js';
 import { currentRoundDeclaration, currentRoundFile } from './artifacts.js';
 
@@ -203,16 +202,15 @@ export function createStartRound(settings: StartRoundSettings): BoundAction {
   return async () => {
     const root = settings.workspace.root;
     const recordFile = path.join(root, currentRoundFile);
-    const current = await readRecord(recordFile, currentRoundDeclaration);
+    const current = await readCurrentPlan(recordFile, currentRoundDeclaration);
 
     /**
      * Create the round directory and replace the current-round pointer. Every policy read and
      * decision has completed before this runs.
      */
     async function openRound(number: number, profile: string, reason: string): Promise<'started'> {
-      await mkdir(path.join(root, 'artifacts', String(number)), { recursive: true });
-      await mkdir(path.join(root, 'state'), { recursive: true });
-      await writeRecord(recordFile, { number, profile, reason });
+      await ensureRoundDirectory(path.join(root, 'artifacts'), number);
+      await saveCurrentPlan(recordFile, { number, profile, reason });
       settings.publish(
         actionOutcomeEvent('start-round', {
           task: settings.taskKey,

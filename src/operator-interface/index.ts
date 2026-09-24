@@ -1,26 +1,22 @@
 /**
- * OperatorInterface presents execution events on the terminal: one chronological timeline, a
- * compact pane for the current agent invocation, role colors and a plain-stream fallback. It
- * observes the supplied event subscription for presentation only, keeps display state in memory
- * and reads no artifacts. Application owns commands, execution startup, recovery and process exit.
+ * OperatorInterface presents execution events on the terminal: one chronological timeline, one
+ * named rolling pane per active agent invocation, role colors and a plain-stream fallback. It
+ * observes the combined event subscription and the separate attributable activity subscription for
+ * presentation only, keeps display state in memory and reads no artifacts. Application owns
+ * commands, execution startup, recovery and process exit.
  *
  * See docs/operator-interface.md for the contract this module implements.
  */
 
-import type { EngineEvent, Unsubscribe } from '../task-engine/index.js';
-import {
-  createPaneSegment,
-  minimumPaneColumns,
-  paneHeight,
-  type PaneRow,
-  type PaneSegment,
-} from './pane.js';
+import type { AgentActivity, EngineEvent, Unsubscribe } from '../task-engine/index.js';
+import { createPanes, type PaneRow, type Panes } from './pane.js';
 import {
   boundaryText,
   interpret,
+  interpretActivity,
   roleStyle,
+  type ActivityInterpretation,
   type AgentRole,
-  type Interpretation,
   type Style,
 } from './presentation.js';
 import { truncate, wrap } from './text.js';
@@ -40,9 +36,13 @@ export type TerminalCapabilities = {
   write(text: string): void;
 };
 
-/** Construction: the combined execution-event subscription and the terminal to render to. */
+/**
+ * Construction: the combined execution-event subscription, the attributable activity subscription
+ * and the terminal to render to.
+ */
 export type OperatorInterfaceSettings = {
   readonly subscribe: (listener: (event: EngineEvent) => void) => Unsubscribe;
+  readonly subscribeActivity: (listener: (activity: AgentActivity) => void) => Unsubscribe;
   readonly terminal: TerminalCapabilities;
 };
 
@@ -66,16 +66,25 @@ function receiptTime(): string {
   return `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
 }
 
-/** Create the presentation over the supplied event subscription and terminal capabilities. */
+/** One active invocation: the role that styles its rows and the heading that names its pane. */
+type ActiveInvocation = {
+  readonly role: AgentRole;
+  /** The invocation's boundary line, without the current terminal's width applied. */
+  readonly heading: string;
+};
+
+/** Create the presentation over the supplied subscriptions and terminal capabilities. */
 export function createOperatorInterface(settings: OperatorInterfaceSettings): OperatorInterface {
   const { terminal } = settings;
   let started = false;
   let closed = false;
   let styledOutput = false;
   let unsubscribe: Unsubscribe | null = null;
-  let activeRole: AgentRole | null = null;
-  let segment: PaneSegment | null = null;
-  let segmentSize: TerminalSize | null = null;
+  let unsubscribeActivity: Unsubscribe | null = null;
+  let stack: Panes | null = null;
+  /** The terminal dimensions the live region was drawn at, or null while nothing is live. */
+  let drawnSize: TerminalSize | null = null;
+  const invocations = new Map<string, ActiveInvocation>();
 
   function write(text: string): void {
     if (closed) {
@@ -86,40 +95,82 @@ export function createOperatorInterface(settings: OperatorInterfaceSettings): Op
     } catch {
       // The output stream closed; presentation stops rendering to it.
       closed = true;
-      closeSegment();
+      stack?.close();
+      stack = null;
+      drawnSize = null;
     }
   }
 
-  function usablePane(): boolean {
-    if (!terminal.interactive || !terminal.color || closed) {
-      return false;
-    }
-    const size = terminal.size();
-    return size.columns >= minimumPaneColumns && paneHeight(size) >= 1;
+  /** The live panes, created on first use. */
+  function panes(): Panes {
+    stack ??= createPanes({ write, paint: painted, size: () => terminal.size() });
+    return stack;
   }
 
-  function styled(style: Style, text: string): string {
-    if (!usablePane() || style === 'default') {
+  /** Whether the terminal can carry the live panes right now. */
+  function panesUsable(): boolean {
+    return terminal.interactive && terminal.color && !closed && panes().usable();
+  }
+
+  /** One row's color; plain output never carries styling. */
+  function painted(style: Style, text: string): string {
+    if (style === 'default' || !terminal.interactive || !terminal.color || closed) {
       return text;
     }
     styledOutput = true;
     return `${styleCodes[style]}${text}${resetStyle}`;
   }
 
-  /** Write one timeline entry below the pane, timestamped on receipt. */
-  function writeEntry(label: string, text: string, style: Style): void {
-    const prefix = `${receiptTime()} ${label}`;
-    const indent = ' '.repeat(prefix.length + 1);
-    const lines = text.split('\n').map((line, index) => {
-      if (index === 0) {
-        return line === '' ? prefix : `${prefix} ${line}`;
-      }
-      return line === '' ? '' : `${indent}${line}`;
-    });
-    write(`${lines.map((line) => styled(style, line)).join('\n')}\n`);
+  /**
+   * Keep the live region consistent with the terminal: a resize reflows the physical rows, and a
+   * terminal without room has none. Either ends the live region without cursor movement; the rows
+   * already written stay in scrollback and later activity starts fresh below them.
+   */
+  function prepareRegion(): void {
+    if (drawnSize === null) {
+      return;
+    }
+    const size = terminal.size();
+    if (
+      size.columns !== drawnSize.columns ||
+      size.rows !== drawnSize.rows ||
+      !terminal.interactive ||
+      !terminal.color
+    ) {
+      panes().suspend();
+      drawnSize = null;
+    }
   }
 
-  /** One message's pane rows: the first carries the timestamp and label, later rows align under it. */
+  /** One timeline entry's rows: the first carries the timestamp and label, later rows align. */
+  function entryRows(label: string, text: string, style: Style): PaneRow[] {
+    const prefix = `${receiptTime()} ${label}`;
+    const indent = ' '.repeat(prefix.length + 1);
+    return text.split('\n').map((line, index) => ({
+      text:
+        index === 0
+          ? line === ''
+            ? prefix
+            : `${prefix} ${line}`
+          : line === ''
+            ? ''
+            : `${indent}${line}`,
+      style,
+    }));
+  }
+
+  /** Write one timeline entry above the live panes, or directly when no pane is live. */
+  function writeEntry(label: string, text: string, style: Style): void {
+    const rows = entryRows(label, text, style);
+    if (panesUsable()) {
+      panes().progress(rows);
+      drawnSize = terminal.size();
+      return;
+    }
+    write(`${rows.map((row) => row.text).join('\n')}\n`);
+  }
+
+  /** One message's pane rows: the first carries the timestamp and label, later rows align. */
   function messageRows(time: string, text: string, style: Style): PaneRow[] {
     const prefix = `${time} message `;
     const indent = ' '.repeat(prefix.length);
@@ -137,77 +188,103 @@ export function createOperatorInterface(settings: OperatorInterfaceSettings): Op
     return { text: `${prefix}${truncate(text.replaceAll('\n', ' '), width)}`, style: 'grey' };
   }
 
-  function closeSegment(): void {
-    segment?.close();
-    segment = null;
-    segmentSize = null;
+  /** The pane heading row at the terminal's current width. */
+  function headingRow(invocation: ActiveInvocation): PaneRow {
+    return {
+      text: truncate(invocation.heading, terminal.size().columns),
+      style: roleStyle(invocation.role),
+    };
   }
 
-  /** The active segment was started at dimensions the terminal no longer has. */
-  function segmentSizeChanged(): boolean {
-    if (segment === null || segmentSize === null) {
-      return false;
+  /** The invocation's live pane, opened again below scrollback when it has none. */
+  function ensurePane(invocationId: string, heading: PaneRow): boolean {
+    if (!panes().has(invocationId)) {
+      if (!panes().open(invocationId)) {
+        return false;
+      }
     }
-    const size = terminal.size();
-    return size.columns !== segmentSize.columns || size.rows !== segmentSize.rows;
+    // A pane suspended by a resize or a plain fallback gets its heading again at this width.
+    panes().heading(invocationId, heading);
+    return true;
   }
 
-  /** The segment for the current invocation, opened at the terminal's current dimensions. */
-  function activeSegment(): PaneSegment {
-    if (segment === null) {
-      segmentSize = terminal.size();
-      segment = createPaneSegment({ write, paint: styled, size: () => terminal.size() });
-    }
-    return segment;
-  }
-
-  function presentActivity(activity: Extract<Interpretation, { kind: 'activity' }>): void {
-    const style: Style = activity.activity === 'message' ? roleStyle(activeRole) : 'grey';
-    if (activeRole !== null && usablePane()) {
-      const active = activeSegment();
+  /** Present one attributable activity entry in its invocation's pane or as a plain line. */
+  function presentActivity(activity: ActivityInterpretation): void {
+    prepareRegion();
+    const known = invocations.get(activity.invocationId);
+    const style: Style = activity.activity === 'message' ? roleStyle(known?.role ?? null) : 'grey';
+    if (
+      known !== undefined &&
+      panesUsable() &&
+      ensurePane(activity.invocationId, headingRow(known))
+    ) {
       const time = receiptTime();
       if (activity.activity === 'message') {
-        active.message(messageRows(time, activity.text, style));
+        panes().message(activity.invocationId, messageRows(time, activity.text, style));
       } else {
-        active.work(workRow(time, activity.activity, activity.text));
+        panes().work(activity.invocationId, workRow(time, activity.activity, activity.text));
       }
-      active.render();
+      drawnSize = terminal.size();
       return;
     }
-    writeEntry(activity.activity, activity.text, style);
+    // Plain lines stay attributable: the agent name identifies the invocation's stream.
+    const label = known === undefined ? activity.activity : `${known.role} ${activity.activity}`;
+    writeEntry(label, activity.text, style);
   }
 
   function present(event: EngineEvent): void {
     if (!started || closed) {
       return;
     }
-    // A resized terminal reflows the pane's physical rows, so the old segment ends here without
-    // cursor movement and the next activity opens a fresh segment at the new dimensions.
-    if (segmentSizeChanged()) {
-      closeSegment();
-    }
+    prepareRegion();
     const interpretation = interpret(event);
     switch (interpretation.kind) {
-      case 'boundary':
-        closeSegment();
-        activeRole = interpretation.role;
+      case 'boundary': {
+        const invocation = {
+          role: interpretation.role,
+          heading: `${receiptTime()} ${interpretation.role} ${boundaryText(interpretation)}`,
+        };
+        const heading = headingRow(invocation);
+        invocations.set(interpretation.invocationId, invocation);
+        if (panesUsable() && ensurePane(interpretation.invocationId, heading)) {
+          drawnSize = terminal.size();
+          return;
+        }
         writeEntry(
           interpretation.role,
           boundaryText(interpretation),
           roleStyle(interpretation.role),
         );
         return;
-      case 'activity':
-        presentActivity(interpretation);
+      }
+      case 'end': {
+        const id = interpretation.invocationId;
+        invocations.delete(id);
+        if (!panes().has(id)) {
+          return;
+        }
+        if (panesUsable()) {
+          panes().finish(id);
+          drawnSize = terminal.size();
+        } else {
+          panes().drop(id);
+        }
         return;
-      case 'end':
-        closeSegment();
-        activeRole = null;
-        return;
+      }
       case 'progress':
-        closeSegment();
         writeEntry(interpretation.label, interpretation.text, interpretation.style);
         return;
+    }
+  }
+
+  /** Present one received activity packet for its invocation's pane. */
+  function presentPacket(packet: AgentActivity): void {
+    if (!started || closed) {
+      return;
+    }
+    const activity = interpretActivity(packet);
+    if (activity !== null) {
+      presentActivity(activity);
     }
   }
 
@@ -218,6 +295,7 @@ export function createOperatorInterface(settings: OperatorInterfaceSettings): Op
       }
       started = true;
       unsubscribe = settings.subscribe(present);
+      unsubscribeActivity = settings.subscribeActivity(presentPacket);
     },
     stop(): void {
       if (!started) {
@@ -226,8 +304,11 @@ export function createOperatorInterface(settings: OperatorInterfaceSettings): Op
       started = false;
       unsubscribe?.();
       unsubscribe = null;
-      closeSegment();
-      activeRole = null;
+      unsubscribeActivity?.();
+      unsubscribeActivity = null;
+      stack?.suspend();
+      drawnSize = null;
+      invocations.clear();
       if (styledOutput) {
         styledOutput = false;
         write(resetStyle);

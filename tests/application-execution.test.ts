@@ -15,7 +15,7 @@ import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import type { AgentEvent, AgentResult } from '../src/agent-runtime/index.js';
+import type { AgentResult } from '../src/agent-runtime/index.js';
 import {
   createApplication,
   type Application,
@@ -33,6 +33,7 @@ import {
 } from '../src/application/recovery.js';
 import { installationConfigSetting } from '../src/application/installation.js';
 import { fault, ok } from '../src/result.js';
+import type { AgentActivity } from '../src/task-engine/index.js';
 import { completionArtifact } from '../src/task-engine/actions/complete-task/artifacts.js';
 import { deliveryArtifact } from '../src/task-engine/actions/deliver/artifacts.js';
 import { devArtifact } from '../src/task-engine/actions/develop/artifacts.js';
@@ -45,6 +46,11 @@ import { nexusConfiguration, projectConfiguration } from './support/configuratio
 
 const workflowModule = fileURLToPath(
   new URL('./fixtures/workflow/start-round.mjs', import.meta.url),
+);
+
+/** A configured idea refinement definition with no operations, for the workflow-selection test. */
+const ideaWorkflowModule = fileURLToPath(
+  new URL('./fixtures/workflow/idea-approved.mjs', import.meta.url),
 );
 
 /** Run one Git command to observe the operational worktree the provider receives. */
@@ -94,6 +100,8 @@ type Harness = {
   readonly projectConfigPath: string;
   readonly executionDirectory: string;
   readonly events: ExecutionEvent[];
+  /** The attributable activity packets Application forwarded while it ran. */
+  readonly activity: AgentActivity[];
   /** The worker launches and recovery invocations, interleaved in the order they happened. */
   readonly timeline: string[];
   readonly launches: WorkerLaunchRequest[];
@@ -102,11 +110,19 @@ type Harness = {
   readonly diagnostics: string[];
 };
 
+/** What one controlled worker reports through the protocol boundaries Application supplies. */
+type ControlledWorker = {
+  readonly logDirectory: string;
+  event(event: ExecutionEvent): void;
+  activity(activity: AgentActivity): void;
+};
+
 /** One execution harness: a real Application over temp configuration and controlled capabilities. */
 async function harness(options: {
   /** The completions the worker launches report, in launch order; the last one repeats. */
   readonly completions: readonly WorkerCompletion[];
-  readonly emit?: (onEvent: (event: ExecutionEvent) => void) => void;
+  /** What the controlled worker reports: events, activity and its execution log directory. */
+  readonly emit?: (worker: ControlledWorker) => void;
   readonly agent?: (request: RecoveryInvocationRequest) => Promise<AgentResult>;
   readonly notify?: RecoveryNotifier;
   readonly maxRecoveryAttempts?: number;
@@ -118,7 +134,8 @@ async function harness(options: {
   await mkdir(projectDirectory, { recursive: true });
 
   const nexus = nexusConfiguration();
-  nexus.workflow.path = workflowModule;
+  nexus.workflow['finite-delivery'] = workflowModule;
+  nexus.workflow['idea-refinement'] = ideaWorkflowModule;
   nexus.storage.root = './state';
   nexus.executionPolicy.maxRecoveryAttempts = options.maxRecoveryAttempts ?? 1;
   const project = projectConfiguration();
@@ -128,6 +145,7 @@ async function harness(options: {
   await writeFile(projectConfigPath, JSON.stringify(project));
 
   const events: ExecutionEvent[] = [];
+  const activity: AgentActivity[] = [];
   const timeline: string[] = [];
   const launches: WorkerLaunchRequest[] = [];
   const invocations: RecoveryInvocationRequest[] = [];
@@ -138,10 +156,10 @@ async function harness(options: {
     (() => Promise.resolve(ok({ output: report('Recovery resumed the queue.', 'resume') })));
   const notify =
     options.notify ?? (() => Promise.resolve(ok({ messageId: 'controlled-message-identity' })));
-  const launchWorker: WorkerLaunch = (request, onEvent) => {
+  const launchWorker: WorkerLaunch = (request, onEvent, onActivity) => {
     launches.push(request);
     timeline.push('worker');
-    options.emit?.(onEvent);
+    options.emit?.({ logDirectory: request.logDirectory, event: onEvent, activity: onActivity });
     return Promise.resolve(options.completions[launches.length - 1] ?? stopped('no completion'));
   };
   const settings: ApplicationSettings = {
@@ -177,11 +195,13 @@ async function harness(options: {
   };
   const application = createApplication(settings);
   application.subscribe((event) => events.push(event));
+  application.subscribeActivity((packet) => activity.push(packet));
   return {
     application,
     projectConfigPath,
     executionDirectory: path.join(installationDirectory, 'state', 'executions', 'NEX'),
     events,
+    activity,
     timeline,
     launches,
     invocations,
@@ -263,11 +283,45 @@ function declaredFormats(
 }
 
 describe('Application execution', () => {
+  it('runs the explicitly selected idea refinement workflow in its own execution directory', async () => {
+    const executed = await harness({
+      completions: [
+        { result: { ok: true, value: 'approved' }, exitCode: 0, problem: null, diagnostics: '' },
+      ],
+    });
+
+    const result = await executed.application.execute({
+      projectConfigPath: executed.projectConfigPath,
+      workflow: 'idea-refinement',
+    });
+
+    expect(result).toEqual({
+      outcome: 'completed',
+      reason: 'The workflow finished with the successful outcome "approved".',
+      report: null,
+    });
+    // The launch names the selected workflow and the executions stay apart.
+    expect(executed.launches[0]?.workflow).toBe('idea-refinement');
+    await expect(
+      readFile(
+        path.join(
+          executed.executionDirectory,
+          'idea-refinement',
+          'logs',
+          ...(await readdir(path.join(executed.executionDirectory, 'idea-refinement', 'logs'))),
+          'events.jsonl',
+        ),
+        'utf8',
+      ),
+    ).resolves.toContain('"type":"finished"');
+  });
+
   it('completes on a successful terminal outcome and successful exit', async () => {
     const executed = await harness({ completions: [successful] });
 
     const result = await executed.application.execute({
       projectConfigPath: executed.projectConfigPath,
+      workflow: 'finite-delivery',
     });
 
     expect(result).toEqual({
@@ -300,10 +354,13 @@ describe('Application execution', () => {
     };
     const executed = await harness({
       completions: [successful],
-      emit: (onEvent) => onEvent(workerEvent),
+      emit: ({ event }) => event(workerEvent),
     });
 
-    await executed.application.execute({ projectConfigPath: executed.projectConfigPath });
+    await executed.application.execute({
+      projectConfigPath: executed.projectConfigPath,
+      workflow: 'finite-delivery',
+    });
 
     expect(executed.events).toEqual([
       { source: 'application', type: 'starting', data: null },
@@ -321,48 +378,96 @@ describe('Application execution', () => {
     ]);
   });
 
-  it('persists the combined event stream independently of terminal presentation', async () => {
-    const activity = { type: 'tool-call', text: `exploring ${'the repository '.repeat(30)}` };
+  it('writes each invocation activity to its own file and keeps the main stream free of it', async () => {
     const workerEvent: ExecutionEvent = {
       source: 'execution-runner',
       type: 'state',
       data: { name: 'select', payload: { nested: ['complete', 1, true] } },
     };
+    const invocationId = 'inv-1';
+    const startedAt = 1_767_325_445_000;
+    const entry = { type: 'message' as const, text: `exploring ${'the repository '.repeat(30)}` };
+    let activityFile = '';
     const executed = await harness({
       completions: [successful],
-      emit: (onEvent) => {
-        onEvent(workerEvent);
-        onEvent({ source: 'application', type: 'agent-activity', data: activity });
+      emit: ({ event, activity, logDirectory }) => {
+        activityFile = path.join(
+          logDirectory,
+          'agents',
+          `developer-${String(startedAt)}-${invocationId}.jsonl`,
+        );
+        const log = { path: activityFile };
+        event({
+          source: 'develop',
+          type: 'agent-started',
+          data: {
+            agentName: 'developer',
+            invocationId,
+            startedAtUnixMs: startedAt,
+            log,
+            operation: 'Develop',
+            profile: 'dev-a',
+            task: 'NEX-1',
+          },
+        });
+        event(workerEvent);
+        activity({ invocationId, timestamp: new Date(startedAt).toISOString(), activity: entry });
+        event({
+          source: 'develop',
+          type: 'agent-finished',
+          data: {
+            agentName: 'developer',
+            invocationId,
+            startedAtUnixMs: startedAt,
+            log,
+            result: { outcome: 'finished' },
+          },
+        });
       },
     });
 
-    await executed.application.execute({ projectConfigPath: executed.projectConfigPath });
+    await executed.application.execute({
+      projectConfigPath: executed.projectConfigPath,
+      workflow: 'finite-delivery',
+    });
 
+    // The live subscription carries the activity with its invocation identity.
+    expect(executed.activity).toEqual([
+      { invocationId, timestamp: new Date(startedAt).toISOString(), activity: entry },
+    ]);
     const logs = await savedLogs(executed.executionDirectory);
     expect(logs).toHaveLength(1);
     // Every received event is saved in order with its receipt timestamp and complete payload.
     expect(logs[0]!.entries.map((entry) => entry.event)).toEqual(executed.events);
-    for (const entry of logs[0]!.entries) {
-      expect(new Date(entry.timestamp).toISOString()).toBe(entry.timestamp);
+    for (const saved of logs[0]!.entries) {
+      expect(new Date(saved.timestamp).toISOString()).toBe(saved.timestamp);
     }
-    expect(
-      logs[0]!.entries.find((entry) => entry.event.type === 'agent-activity')?.event.data,
-    ).toEqual(activity);
-    // The saved stream carries events only, with no configuration or credential values.
-    const text = await readFile(logs[0]!.file, 'utf8');
-    for (const secret of [
-      'host-access-key',
-      'host-secret-key',
-      'host-session-token',
-      'host-jira-token',
-      'host-lens-key',
-    ]) {
-      expect(text).not.toContain(secret);
+    // The invocation's complete activity is in its own file, not in the main event stream.
+    const savedActivity = (await readFile(activityFile, 'utf8')).trimEnd().split('\n');
+    expect(savedActivity).toHaveLength(1);
+    expect(JSON.parse(savedActivity[0]!)).toEqual({
+      timestamp: new Date(startedAt).toISOString(),
+      activity: entry,
+    });
+    const mainLog = await readFile(logs[0]!.file, 'utf8');
+    expect(mainLog).not.toContain('exploring');
+    expect(mainLog).not.toContain('message');
+    // Neither stream carries configuration or credential values.
+    for (const text of [mainLog, savedActivity.join('\n')]) {
+      for (const secret of [
+        'host-access-key',
+        'host-secret-key',
+        'host-session-token',
+        'host-jira-token',
+        'host-lens-key',
+      ]) {
+        expect(text).not.toContain(secret);
+      }
     }
   });
 
   it('keeps one log file across worker restarts and drains it before recovery reads it', async () => {
-    const activity: AgentEvent = { type: 'message', text: 'investigating the state' };
+    const activity = { type: 'message' as const, text: 'investigating the state' };
     let logFile: string | null = null;
     let atRecovery = '';
     const executed = await harness({
@@ -378,7 +483,10 @@ describe('Application execution', () => {
       },
     });
 
-    await executed.application.execute({ projectConfigPath: executed.projectConfigPath });
+    await executed.application.execute({
+      projectConfigPath: executed.projectConfigPath,
+      workflow: 'finite-delivery',
+    });
 
     const logs = await savedLogs(executed.executionDirectory);
     expect(logs).toHaveLength(1);
@@ -388,6 +496,21 @@ describe('Application execution', () => {
     expect(atRecovery).toContain('"type":"starting"');
     expect(atRecovery).toContain('"type":"running"');
     expect(atRecovery).not.toContain('"type":"finished"');
+    // The recovery invocation's activity is attributable and separately persisted.
+    const started = executed.events.find(
+      (event) => event.type === 'agent-started' && event.source === 'Recovery',
+    );
+    const recoveryLog = (started?.data as { readonly log: { readonly path: string } }).log.path;
+    expect(executed.activity).toEqual([
+      {
+        invocationId: (started?.data as { readonly invocationId: string }).invocationId,
+        timestamp: expect.any(String),
+        activity,
+      },
+    ]);
+    const savedRecoveryActivity = await readFile(recoveryLog, 'utf8');
+    expect(savedRecoveryActivity).toContain('investigating the state');
+    expect(logs[0]!.entries.some((entry) => entry.event.type === 'agent-activity')).toBe(false);
   });
 
   it('reports a log failure once to stderr and continues execution without recovery', async () => {
@@ -398,6 +521,7 @@ describe('Application execution', () => {
 
     const result = await executed.application.execute({
       projectConfigPath: executed.projectConfigPath,
+      workflow: 'finite-delivery',
     });
 
     expect(result.outcome).toBe('completed');
@@ -410,8 +534,14 @@ describe('Application execution', () => {
   it('starts a new log directory for each execute call', async () => {
     const executed = await harness({ completions: [successful, successful] });
 
-    await executed.application.execute({ projectConfigPath: executed.projectConfigPath });
-    await executed.application.execute({ projectConfigPath: executed.projectConfigPath });
+    await executed.application.execute({
+      projectConfigPath: executed.projectConfigPath,
+      workflow: 'finite-delivery',
+    });
+    await executed.application.execute({
+      projectConfigPath: executed.projectConfigPath,
+      workflow: 'finite-delivery',
+    });
 
     const logs = await savedLogs(executed.executionDirectory);
     expect(logs).toHaveLength(2);
@@ -436,6 +566,7 @@ describe('Application execution', () => {
 
     const result = await executed.application.execute({
       projectConfigPath: executed.projectConfigPath,
+      workflow: 'finite-delivery',
     });
 
     // Work and recovery run sequentially, and the resumed worker gets the same request.
@@ -452,19 +583,31 @@ describe('Application execution', () => {
       'running',
       'finished',
     ]);
-    expect(executed.events.filter((event) => event.type === 'agent-activity')).toEqual([
+    // The recovery invocation's activity travels the attributable channel, not the event stream.
+    expect(executed.events.some((event) => event.type === 'agent-activity')).toBe(false);
+    expect(executed.activity).toEqual([
       {
-        source: 'application',
-        type: 'agent-activity',
-        data: { type: 'message', text: 'investigating the state' },
+        invocationId: expect.any(String),
+        timestamp: expect.any(String),
+        activity: { type: 'message', text: 'investigating the state' },
       },
     ]);
-    expect(executed.events.find((event) => event.type === 'agent-started')?.data).toMatchObject({
-      role: 'recovery',
+    const started = executed.events.find(
+      (event) => event.type === 'agent-started' && event.source === 'Recovery',
+    );
+    expect(started?.data).toMatchObject({
+      agentName: 'recovery',
       operation: 'Recovery',
       profile: 'nexus-recovery',
     });
-    expect(executed.events.find((event) => event.type === 'agent-finished')?.data).toBeNull();
+    expect(executed.activity[0]?.invocationId).toBe(
+      (started?.data as { readonly invocationId: string }).invocationId,
+    );
+    expect(
+      executed.events.find(
+        (event) => event.type === 'agent-finished' && event.source === 'Recovery',
+      )?.data,
+    ).toMatchObject({ result: { outcome: 'finished' } });
     expect(result.outcome).toBe('completed');
     expect(result.reason).toBe('The workflow finished with the successful outcome "started".');
     expect(await executionRecord(executed.executionDirectory)).toEqual({
@@ -501,6 +644,7 @@ describe('Application execution', () => {
 
     const result = await executed.application.execute({
       projectConfigPath: executed.projectConfigPath,
+      workflow: 'finite-delivery',
     });
 
     expect(result.outcome).toBe('needs-attention');
@@ -547,7 +691,10 @@ describe('Application execution', () => {
       }),
     );
 
-    await executed.application.execute({ projectConfigPath: executed.projectConfigPath });
+    await executed.application.execute({
+      projectConfigPath: executed.projectConfigPath,
+      workflow: 'finite-delivery',
+    });
 
     const invocation = executed.invocations[0];
     expect(invocation?.workspace.root).toBe(
@@ -573,6 +720,8 @@ describe('Application execution', () => {
     expect(context).toContain(taskWorkspace);
     expect(context).toContain('NEX-7');
     expect(context).toContain('recovery invocation 1 of 1');
+    // A fresh finite delivery attempt never removes the retained idea refinement area.
+    expect(context).toContain('refinement/ area retains idea refinement artifacts');
     // Reconciliation receives each producer-owned declaration's actual path and generated shape.
     for (const declaration of declaredFormats(executed.executionDirectory)) {
       expect(context, declaration.path).toContain(`Path: ${declaration.path}`);
@@ -591,6 +740,57 @@ describe('Application execution', () => {
     expect(context).not.toContain('host-lens-key');
   });
 
+  it('gives recovery the selected idea refinement workflow and its shared issue workspace', async () => {
+    const refinement = '/srv/nexus/workspaces/NEX/NEX-1/refinement';
+    const executed = await harness({
+      completions: [
+        {
+          result: { ok: false, fault: { message: 'idea agent failed' } },
+          exitCode: 1,
+          problem: null,
+          diagnostics: '',
+        },
+      ],
+      agent: () => Promise.resolve(ok({ output: report('Recovered.', 'needs-attention') })),
+    });
+    const ideaDirectory = path.join(executed.executionDirectory, 'idea-refinement');
+    await mkdir(ideaDirectory, { recursive: true });
+    await writeFile(
+      path.join(ideaDirectory, 'selection.json'),
+      JSON.stringify({
+        taskKey: 'NEX-1',
+        source: { kind: 'jira', issueId: '10518' },
+        issue: { id: '10518', key: 'NEX-1', fields: {} },
+        conversation: [],
+        transitions: { toActive: null, fromActive: [] },
+        claimed: true,
+        retainedSubmissions: 0,
+        workspace: { root: refinement },
+        issueWorkspace: { root: path.dirname(refinement) },
+      }),
+    );
+
+    await executed.application.execute({
+      projectConfigPath: executed.projectConfigPath,
+      workflow: 'idea-refinement',
+    });
+
+    const context = executed.invocations[0]?.context ?? '';
+    expect(context).toContain('Name: idea-refinement');
+    expect(context).toContain(ideaWorkflowModule);
+    expect(context).toContain(`Selection file: ${path.join(ideaDirectory, 'selection.json')}`);
+    expect(context).toContain('Idea selection record (SelectIdea)');
+    expect(context).toContain('Idea round plan (StartIdeaRound)');
+    expect(context).toContain('artifacts/submissions/<submission>/cycles/<cycle>/');
+    // The shared issue workspace is named, and the refinement area is what the item retained.
+    expect(context).toContain(`shared issue workspace root is ${path.dirname(refinement)}`);
+    expect(context).toContain(`workflow area at ${refinement}`);
+    expect(context).toContain(refinement);
+    expect(executed.invocations[0]?.workspace.root).toBe(
+      path.join(executed.executionDirectory, 'idea-refinement', 'recovery', 'workspace'),
+    );
+  });
+
   it('runs recovery with an operational worktree inside a Git repository', async () => {
     const executed = await harness({
       completions: [
@@ -604,7 +804,10 @@ describe('Application execution', () => {
       agent: () => Promise.resolve(ok({ output: report('Recovered.', 'needs-attention') })),
     });
 
-    await executed.application.execute({ projectConfigPath: executed.projectConfigPath });
+    await executed.application.execute({
+      projectConfigPath: executed.projectConfigPath,
+      workflow: 'finite-delivery',
+    });
 
     // The configured Codex provider refuses a working directory outside a Git repository, so the
     // operational worktree is initialized as one before the invocation starts.
@@ -631,6 +834,7 @@ describe('Application execution', () => {
 
       const result = await executed.application.execute({
         projectConfigPath: executed.projectConfigPath,
+        workflow: 'finite-delivery',
       });
 
       expect(result.outcome, output).toBe('needs-attention');
@@ -652,6 +856,7 @@ describe('Application execution', () => {
 
     const result = await executed.application.execute({
       projectConfigPath: executed.projectConfigPath,
+      workflow: 'finite-delivery',
     });
 
     expect(result.outcome).toBe('needs-attention');
@@ -668,6 +873,7 @@ describe('Application execution', () => {
 
     const result = await executed.application.execute({
       projectConfigPath: executed.projectConfigPath,
+      workflow: 'finite-delivery',
     });
 
     // The resumed worker's failure consumes no further allowance: recovery ran only once.
@@ -699,6 +905,7 @@ describe('Application execution', () => {
 
     const result = await executed.application.execute({
       projectConfigPath: executed.projectConfigPath,
+      workflow: 'finite-delivery',
     });
 
     expect(executed.timeline).toEqual(['worker', 'recovery', 'worker', 'recovery']);
@@ -733,9 +940,11 @@ describe('Application execution', () => {
 
     const first = await executed.application.execute({
       projectConfigPath: executed.projectConfigPath,
+      workflow: 'finite-delivery',
     });
     const second = await executed.application.execute({
       projectConfigPath: executed.projectConfigPath,
+      workflow: 'finite-delivery',
     });
 
     // Each execute call resets the invocation numbering, but never the other execution's reports.
@@ -766,6 +975,7 @@ describe('Application execution', () => {
 
     const result = await executed.application.execute({
       projectConfigPath: executed.projectConfigPath,
+      workflow: 'finite-delivery',
     });
 
     expect(result.outcome).toBe('completed');
@@ -792,6 +1002,7 @@ describe('Application execution', () => {
 
       const result = await executed.application.execute({
         projectConfigPath: executed.projectConfigPath,
+        workflow: 'finite-delivery',
       });
 
       expect(result.outcome, JSON.stringify(completion)).toBe('needs-attention');
@@ -807,6 +1018,7 @@ describe('Application execution', () => {
 
     const result = await executed.application.execute({
       projectConfigPath: executed.projectConfigPath,
+      workflow: 'finite-delivery',
     });
 
     expect(result.outcome).toBe('completed');
@@ -816,7 +1028,10 @@ describe('Application execution', () => {
     const executed = await harness({ completions: [successful] });
 
     await expect(
-      executed.application.execute({ projectConfigPath: 'project.config.json' }),
+      executed.application.execute({
+        projectConfigPath: 'project.config.json',
+        workflow: 'finite-delivery',
+      }),
     ).rejects.toThrow(/is not absolute/u);
   });
 });

@@ -10,6 +10,8 @@ import {
   loadNexusConfiguration,
   loadProjectConfiguration,
   resolveCredential,
+  workflowNames,
+  type WorkflowName,
 } from '../configuration/index.js';
 import { messageOf } from '../result.js';
 import { createTaskEngine } from '../task-engine/index.js';
@@ -30,6 +32,10 @@ import { loadWorkflow } from './workflow.js';
 export type WorkerSettings = {
   /** The absolute project configuration filepath. */
   readonly projectConfigPath: string;
+  /** The workflow this invocation runs. */
+  readonly workflow: WorkflowName;
+  /** The execution's log directory: the worker names each invocation's activity log under it. */
+  readonly logDirectory: string;
   readonly installationConfigPath: string;
   readonly environment: Readonly<Record<string, string | undefined>>;
   readonly stdout: OutputSink;
@@ -48,8 +54,8 @@ export async function runWorker(settings: WorkerSettings): Promise<number> {
   try {
     const nexus = await loadNexusConfiguration(settings.installationConfigPath);
     const project = await loadProjectConfiguration(settings.projectConfigPath);
-    const workflow = await loadWorkflow(nexus.workflow.path);
-    const paths = executionPaths(nexus, project);
+    const workflow = await loadWorkflow(nexus.workflow[settings.workflow]);
+    const paths = executionPaths(nexus, project, settings.workflow);
     await mkdir(paths.directory, { recursive: true });
 
     // Commands, Git, the operator's gh CLI and the coding provider run without the credential
@@ -73,6 +79,7 @@ export async function runWorker(settings: WorkerSettings): Promise<number> {
       workflow: workflow.machine,
       stateFile: paths.workflowStateFile,
       bindActions: createActionBinding({
+        workflow: settings.workflow,
         project,
         nexus,
         paths,
@@ -85,6 +92,7 @@ export async function runWorker(settings: WorkerSettings): Promise<number> {
         }),
         runCommand: run,
         commandEnvironment: environment,
+        activityDirectory: path.join(settings.logDirectory, 'agents'),
         wait: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
       }),
     });
@@ -98,6 +106,9 @@ export async function runWorker(settings: WorkerSettings): Promise<number> {
     engine.subscribe((event) => {
       protocol.event(event);
     });
+    engine.subscribeActivity((activity) => {
+      protocol.activity(activity);
+    });
     const result = await engine.run();
     protocol.result(result);
     return result.ok ? 0 : 1;
@@ -109,10 +120,24 @@ export async function runWorker(settings: WorkerSettings): Promise<number> {
 const entryPath = process.argv[1];
 if (entryPath !== undefined && import.meta.url === pathToFileURL(entryPath).href) {
   const projectConfigPath = process.argv[2];
+  const workflowName = process.argv[3];
+  const logDirectory = process.argv[4];
   const installationConfigPath = process.env[installationConfigSetting];
+  const workflow = workflowNames.find((name) => name === workflowName);
   if (projectConfigPath === undefined || !path.isAbsolute(projectConfigPath)) {
     process.stderr.write(
       'The Nexus worker requires the absolute project configuration filepath as its argument.\n',
+    );
+    process.exitCode = 1;
+  } else if (workflow === undefined) {
+    process.stderr.write(
+      `The Nexus worker requires a workflow name; the configured workflows are ` +
+        `${workflowNames.map((name) => `"${name}"`).join(', ')}.\n`,
+    );
+    process.exitCode = 1;
+  } else if (logDirectory === undefined || !path.isAbsolute(logDirectory)) {
+    process.stderr.write(
+      'The Nexus worker requires the absolute execution log directory argument.\n',
     );
     process.exitCode = 1;
   } else if (installationConfigPath === undefined || installationConfigPath.trim() === '') {
@@ -123,6 +148,8 @@ if (entryPath !== undefined && import.meta.url === pathToFileURL(entryPath).href
   } else {
     process.exitCode = await runWorker({
       projectConfigPath,
+      workflow,
+      logDirectory: path.resolve(logDirectory),
       installationConfigPath: path.resolve(installationConfigPath),
       environment: process.env,
       stdout: process.stdout,

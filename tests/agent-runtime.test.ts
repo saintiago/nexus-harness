@@ -65,7 +65,6 @@ function harness(
   options: {
     readonly result?: CodingRuntimeResult;
     readonly activity?: readonly AgentEvent[];
-    readonly onActivity?: (activity: AgentEvent) => void;
   } = {},
 ): Harness {
   const requests: CodingRuntimeRequest[] = [];
@@ -84,10 +83,6 @@ function harness(
     baseInstructions: ['Base instructions for every profile.'],
     profiles,
     invocationLimitMinutes: 45,
-    onActivity: (activity) => {
-      events.push(activity);
-      options.onActivity?.(activity);
-    },
   });
   return { runtime, requests, events };
 }
@@ -101,7 +96,12 @@ describe('AgentRuntime', () => {
   it('runs the selected profile with its model, effort, tool settings, worktree and time limit', async () => {
     const fixture = harness();
 
-    const result = await fixture.runtime.run('nexus-flash', { root: workspaceRoot }, 'Task.');
+    const result = await fixture.runtime.run(
+      'nexus-flash',
+      { root: workspaceRoot },
+      'Task.',
+      (activity) => fixture.events.push(activity),
+    );
 
     expect(fixture.requests).toHaveLength(1);
     expect(fixture.requests[0]).toMatchObject({
@@ -117,7 +117,9 @@ describe('AgentRuntime', () => {
   it('uses only the selected profile and passes an absent effort through as null', async () => {
     const fixture = harness();
 
-    await fixture.runtime.run('nexus-astra', { root: workspaceRoot }, 'Review.');
+    await fixture.runtime.run('nexus-astra', { root: workspaceRoot }, 'Review.', (activity) =>
+      fixture.events.push(activity),
+    );
 
     const prompt = fixture.requests[0]?.prompt ?? '';
     expect(fixture.requests[0]).toMatchObject({ model: 'gpt-6-astra', effort: null });
@@ -134,7 +136,12 @@ describe('AgentRuntime', () => {
   it('assembles base instructions, the complete role constant, the context and the workspace in order', async () => {
     const fixture = harness();
 
-    await fixture.runtime.run('nexus-flash', { root: workspaceRoot }, additionalContext);
+    await fixture.runtime.run(
+      'nexus-flash',
+      { root: workspaceRoot },
+      additionalContext,
+      (activity) => fixture.events.push(activity),
+    );
 
     const prompt = fixture.requests[0]?.prompt ?? '';
     const parts = [
@@ -155,7 +162,12 @@ describe('AgentRuntime', () => {
     for (const profile of profiles) {
       const fixture = harness();
 
-      await fixture.runtime.run(profile.id, { root: workspaceRoot }, additionalContext);
+      await fixture.runtime.run(
+        profile.id,
+        { root: workspaceRoot },
+        additionalContext,
+        (activity) => fixture.events.push(activity),
+      );
 
       const prompt = fixture.requests[0]?.prompt ?? '';
       expect(profile.instructions, `${profile.id} has one complete prompt`).toHaveLength(1);
@@ -178,7 +190,12 @@ describe('AgentRuntime', () => {
   it('returns a fault for an unknown profile without invoking the provider', async () => {
     const fixture = harness();
 
-    const result = await fixture.runtime.run('nexus-missing', { root: workspaceRoot }, 'Task.');
+    const result = await fixture.runtime.run(
+      'nexus-missing',
+      { root: workspaceRoot },
+      'Task.',
+      (activity) => fixture.events.push(activity),
+    );
 
     expect(result.ok).toBe(false);
     expect(result.ok ? '' : result.fault.message).toContain('nexus-missing');
@@ -190,7 +207,12 @@ describe('AgentRuntime', () => {
       result: { ok: false, fault: { message: 'The Codex provider reported a failed turn.' } },
     });
 
-    const result = await fixture.runtime.run('nexus-flash', { root: workspaceRoot }, 'Task.');
+    const result = await fixture.runtime.run(
+      'nexus-flash',
+      { root: workspaceRoot },
+      'Task.',
+      (activity) => fixture.events.push(activity),
+    );
 
     expect(result).toEqual({
       ok: false,
@@ -198,7 +220,7 @@ describe('AgentRuntime', () => {
     });
   });
 
-  it('streams provider activity to the observer bound at construction', async () => {
+  it("streams provider activity to the invocation's own observer", async () => {
     const activity: readonly AgentEvent[] = [
       { type: 'message', text: 'Working on the parser.' },
       { type: 'command', text: 'npm ci' },
@@ -207,7 +229,9 @@ describe('AgentRuntime', () => {
     ];
     const fixture = harness({ activity });
 
-    await fixture.runtime.run('nexus-flash', { root: workspaceRoot }, 'Task.');
+    await fixture.runtime.run('nexus-flash', { root: workspaceRoot }, 'Task.', (activity) =>
+      fixture.events.push(activity),
+    );
 
     expect(fixture.events).toEqual(activity);
   });
@@ -215,12 +239,16 @@ describe('AgentRuntime', () => {
   it('completes the invocation when the observer fails', async () => {
     const fixture = harness({
       activity: [{ type: 'message', text: 'First entry.' }],
-      onActivity: () => {
-        throw new Error('observer failed');
-      },
     });
 
-    const result = await fixture.runtime.run('nexus-flash', { root: workspaceRoot }, 'Task.');
+    const result = await fixture.runtime.run(
+      'nexus-flash',
+      { root: workspaceRoot },
+      'Task.',
+      () => {
+        throw new Error('observer failed');
+      },
+    );
 
     expect(result).toEqual({ ok: true, value: { output: providerOutput } });
   });

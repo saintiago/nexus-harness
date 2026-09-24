@@ -13,7 +13,7 @@ import {
   type OperatorInterface,
   type TerminalCapabilities,
 } from '../src/operator-interface/index.js';
-import type { EngineEvent } from '../src/task-engine/index.js';
+import type { AgentActivity, EngineEvent } from '../src/task-engine/index.js';
 
 /**
  * A recording screen: enough of CR, LF, erase-line and cursor-up to read rendered output, with the
@@ -39,6 +39,9 @@ function createScreen(): { write(text: string): void; lines(): string[] } {
         if (escape !== null) {
           if (escape.final === 'A') {
             row = Math.max(0, row - (escape.parameter === '' ? 1 : Number(escape.parameter)));
+          } else if (escape.final === 'B') {
+            row += escape.parameter === '' ? 1 : Number(escape.parameter);
+            ensureLine();
           } else if (escape.final === 'K') {
             lines[row] = '';
           }
@@ -107,7 +110,7 @@ type HarnessOptions = {
   readonly rows?: number;
 };
 
-/** A presentation over a controlled subscription, terminal size and recording output sink. */
+/** A presentation over controlled subscriptions, terminal size and a recording output sink. */
 function createHarness(options: HarnessOptions = {}) {
   let columns = options.columns ?? 80;
   let rows = options.rows ?? 24;
@@ -115,7 +118,9 @@ function createHarness(options: HarnessOptions = {}) {
   const screen = createScreen();
   const writes: string[] = [];
   const listeners = new Set<(event: EngineEvent) => void>();
+  const activityListeners = new Set<(activity: AgentActivity) => void>();
   let subscriptions = 0;
+  let activitySubscriptions = 0;
   let unsubscriptions = 0;
 
   const terminal: TerminalCapabilities = {
@@ -140,6 +145,14 @@ function createHarness(options: HarnessOptions = {}) {
         unsubscriptions += 1;
       };
     },
+    subscribeActivity: (listener) => {
+      activitySubscriptions += 1;
+      activityListeners.add(listener);
+      return () => {
+        activityListeners.delete(listener);
+        unsubscriptions += 1;
+      };
+    },
     terminal,
   });
 
@@ -151,9 +164,15 @@ function createHarness(options: HarnessOptions = {}) {
         listener(event);
       }
     },
+    emitActivity(activity: AgentActivity): void {
+      for (const listener of [...activityListeners]) {
+        listener(activity);
+      }
+    },
     subscriptions: (): number => subscriptions,
+    activitySubscriptions: (): number => activitySubscriptions,
     unsubscriptions: (): number => unsubscriptions,
-    listeners: (): number => listeners.size,
+    listeners: (): number => listeners.size + activityListeners.size,
     resize: (nextColumns: number, nextRows: number = rows): void => {
       columns = nextColumns;
       rows = nextRows;
@@ -173,34 +192,106 @@ function at(second: number): void {
   vi.setSystemTime(new Date(2026, 0, 2, 3, 4, second));
 }
 
-/** The cursor-up distances among recorded writes; redrawing the pane in place writes them. */
+/** The cursor-up distances among recorded writes; redrawing the live panes writes them. */
 function cursorUps(writes: readonly string[]): number[] {
   return writes
     .filter((write) => write.startsWith('\u001b[') && write.endsWith('A'))
     .map((write) => Number(write.slice(2, -1)));
 }
 
-/** The boundary event a development action publishes for one invocation. */
-function developerTurn(task = 'NEX-7'): EngineEvent {
+/**
+ * The boundary event an agent-backed action publishes for one invocation. The caller assigned the
+ * invocation's identity; Application opens the invocation's own activity log from the reference.
+ */
+function boundary(options: {
+  readonly agentName: string;
+  readonly operation: string;
+  readonly invocationId: string;
+  readonly profile?: string;
+  readonly task?: string;
+  readonly idea?: string;
+  readonly source?: string;
+}): EngineEvent {
   return {
-    source: 'develop',
+    source: options.source ?? options.agentName,
     type: 'agent-started',
-    data: { role: 'developer', operation: 'Develop', profile: 'nexus-flash', task },
+    data: {
+      agentName: options.agentName,
+      invocationId: options.invocationId,
+      startedAtUnixMs: 1_767_325_445_000,
+      log: { path: `/srv/nexus/logs/agents/${options.agentName}-1-${options.invocationId}.jsonl` },
+      operation: options.operation,
+      profile: options.profile ?? 'nexus-flash',
+      ...(options.task === undefined ? {} : { task: options.task }),
+      ...(options.idea === undefined ? {} : { idea: options.idea }),
+    },
   };
 }
 
-/** One agent message as the invocation's caller forwards it. */
-function message(text: string, source = 'develop'): EngineEvent {
-  return { source, type: 'agent-activity', data: { type: 'message', text } };
+/** The finish event the same caller publishes when the invocation ends. */
+function finished(invocationId: string, agentName = 'developer'): EngineEvent {
+  return {
+    source: agentName,
+    type: 'agent-finished',
+    data: {
+      agentName,
+      invocationId,
+      startedAtUnixMs: 1_767_325_445_000,
+      log: { path: `/srv/nexus/logs/agents/${agentName}-1-${invocationId}.jsonl` },
+      result: { outcome: 'finished' },
+    },
+  };
 }
 
-/** One work entry as the invocation's caller forwards it. */
+/** The boundary event a development action publishes for one invocation. */
+function developerTurn(task = 'NEX-7', invocationId = 'dev-1'): EngineEvent {
+  return boundary({
+    agentName: 'developer',
+    operation: 'Develop',
+    invocationId,
+    profile: 'nexus-flash',
+    task,
+    source: 'develop',
+  });
+}
+
+/** The boundary event an idea refinement action publishes for one invocation. */
+function ideaTurn(
+  role: 'purpose-verifier' | 'purpose-council',
+  operation: string,
+  idea = 'NEX-1',
+  invocationId = `${role}-1`,
+): EngineEvent {
+  return boundary({
+    agentName: role,
+    operation,
+    invocationId,
+    profile: 'nexus-astra',
+    idea,
+    source: operation.toLowerCase(),
+  });
+}
+
+/** One attributed activity entry, as the invocation's caller publishes it. */
+function activity(
+  invocationId: string,
+  entry: { readonly type: 'message' | 'command' | 'result' | 'change'; readonly text: string },
+): AgentActivity {
+  return { invocationId, timestamp: new Date().toISOString(), activity: entry };
+}
+
+/** One agent message as the invocation's caller reports it. */
+function message(text: string, invocationId = 'dev-1'): AgentActivity {
+  return activity(invocationId, { type: 'message', text });
+}
+
+/** One work entry as the invocation's caller reports it. */
 function work(
   kind: 'command' | 'result' | 'change',
   text: string,
-  source = 'develop',
-): EngineEvent {
-  return { source, type: 'agent-activity', data: { type: kind, text } };
+  invocationId = 'dev-1',
+): AgentActivity {
+  return activity(invocationId, { type: kind, text });
 }
 
 beforeEach(() => {
@@ -212,6 +303,26 @@ afterEach(() => {
 });
 
 describe('OperatorInterface progress presentation', () => {
+  it('names the idea on an invocation boundary and colors its role', () => {
+    const harness = createHarness();
+    harness.operatorInterface.start();
+    at(5);
+    harness.emit(ideaTurn('purpose-verifier', 'PurposeVerifier'));
+    at(6);
+    harness.emit(ideaTurn('purpose-council', 'PurposeCouncil'));
+    at(7);
+    harness.emit(finished('purpose-council-1', 'purpose-council'));
+
+    expect(harness.rows()).toEqual([
+      '03:04:05 purpose-verifier PurposeVerifier · idea NEX-1 · profile nexus-astra',
+      '03:04:06 purpose-council PurposeCouncil · idea NEX-1 · profile nexus-astra',
+    ]);
+    const raw = harness.writes.join('');
+    // Purpose, research, the brief writer and the developer share yellow; council roles are blue.
+    expect(raw).toContain('\u001b[33m03:04:05');
+    expect(raw).toContain('\u001b[34m03:04:06');
+  });
+
   it('renders one chronological timeline with the receipt time of each entry', () => {
     const harness = createHarness();
     harness.operatorInterface.start();
@@ -219,7 +330,7 @@ describe('OperatorInterface progress presentation', () => {
     at(5);
     harness.emit({ source: 'application', type: 'starting', data: null });
     at(6);
-    harness.emit({ source: 'execution-runner', type: 'state', data: { name: 'select' } });
+    harness.emit({ source: 'execution-runner', type: 'state', data: { value: 'select' } });
     at(7);
     harness.emit({ source: 'develop', type: 'failed', data: { reason: 'the checks failed' } });
     at(8);
@@ -251,7 +362,7 @@ describe('OperatorInterface progress presentation', () => {
     at(5);
     harness.emit({ source: 'application', type: 'starting', data: null });
     at(6);
-    harness.emit({ source: 'execution-runner', type: 'state', data: { name: 'develop' } });
+    harness.emit({ source: 'execution-runner', type: 'state', data: { value: 'develop' } });
 
     const raw = harness.writes.join('');
     expect(raw).not.toContain('\u001b[37m03:04:05');
@@ -323,15 +434,15 @@ describe('OperatorInterface activity pane', () => {
     at(5);
     harness.emit(developerTurn());
     at(6);
-    harness.emit(message('Implementing the parser change'));
+    harness.emitActivity(message('Implementing the parser change'));
     at(7);
-    harness.emit(work('command', 'rg --files src'));
+    harness.emitActivity(work('command', 'rg --files src'));
     at(8);
-    harness.emit(work('result', '12 files'));
+    harness.emitActivity(work('result', '12 files'));
     at(9);
-    harness.emit(work('change', 'src/parser.ts'));
+    harness.emitActivity(work('change', 'src/parser.ts'));
     at(10);
-    harness.emit(work('command', 'npm test'));
+    harness.emitActivity(work('command', 'npm test'));
 
     expect(harness.rows()).toEqual([
       '03:04:05 developer Develop · task NEX-7 · profile nexus-flash',
@@ -352,7 +463,7 @@ describe('OperatorInterface activity pane', () => {
     at(5);
     harness.emit(developerTurn());
     at(6);
-    harness.emit(
+    harness.emitActivity(
       work('command', 'rg --files-with-matches --glob "*.ts" --max-count 5 src tests workflows'),
     );
 
@@ -362,14 +473,15 @@ describe('OperatorInterface activity pane', () => {
     expect(entry.endsWith('…')).toBe(true);
     expect(stringWidth(entry)).toBeLessThanOrEqual(60);
     expect(rows.filter((line) => line.startsWith('03:04:06 command '))).toHaveLength(1);
-    expect(rows.at(-2)).toBe('03:04:05 developer Develop · task NEX-7 · profile nexus-flash');
+    // The pane's heading is one row, fitted to the terminal width like its activity rows.
+    expect(rows.at(-2)).toBe('03:04:05 developer Develop · task NEX-7 · profile nexus-fla…');
 
     at(7);
-    harness.emit(work('result', '12 matches\nin 3 files'));
+    harness.emitActivity(work('result', '12 matches\nin 3 files'));
     expect(harness.rows().at(-1)).toBe('03:04:07 result 12 matches in 3 files');
 
     at(8);
-    harness.emit(work('change', '日本語ファイル名'.repeat(6)));
+    harness.emitActivity(work('change', '日本語ファイル名'.repeat(6)));
     const wide = harness.rows().at(-1) ?? '';
     expect(wide.endsWith('…')).toBe(true);
     expect(stringWidth(wide)).toBeLessThanOrEqual(60);
@@ -381,15 +493,15 @@ describe('OperatorInterface activity pane', () => {
     at(5);
     harness.emit(developerTurn());
     at(6);
-    harness.emit(work('command', 'rg --files src'));
+    harness.emitActivity(work('command', 'rg --files src'));
     at(7);
-    harness.emit(work('result', '12 files'));
+    harness.emitActivity(work('result', '12 files'));
     at(8);
-    harness.emit(work('change', 'src/parser.ts'));
+    harness.emitActivity(work('change', 'src/parser.ts'));
     at(9);
-    harness.emit(work('command', 'npm test'));
+    harness.emitActivity(work('command', 'npm test'));
     at(10);
-    harness.emit(message('Now implementing the change'));
+    harness.emitActivity(message('Now implementing the change'));
 
     expect(harness.rows()).toEqual([
       '03:04:05 developer Develop · task NEX-7 · profile nexus-flash',
@@ -407,7 +519,7 @@ describe('OperatorInterface activity pane', () => {
     harness.emit(developerTurn());
     const text = '日本語の説明をここに書きます👩‍👩‍👧 with e\u0301 and more text';
     at(6);
-    harness.emit(message(text));
+    harness.emitActivity(message(text));
 
     const rows = harness.rows().slice(1);
     expect(rows.length).toBeGreaterThan(1);
@@ -427,19 +539,19 @@ describe('OperatorInterface activity pane', () => {
 
   it.each([
     { label: 'a ten-row terminal', rows: 10, bound: 6 },
-    { label: 'a thirty-row terminal', rows: 30, bound: 20 },
-  ])('bounds the pane to $bound rows on $label', ({ rows, bound }) => {
-    const harness = createHarness({ columns: 60, rows });
+    { label: 'a thirty-row terminal', rows: 30, bound: 10 },
+  ])('bounds one pane to $bound rows on $label', ({ rows, bound }) => {
+    const harness = createHarness({ columns: 100, rows });
     harness.operatorInterface.start();
     at(5);
     harness.emit(developerTurn());
     for (let index = 1; index <= bound + 4; index += 1) {
       at(5 + index);
-      harness.emit(message(`message row ${index}`));
+      harness.emitActivity(message(`message row ${index}`));
     }
     const before = harness.rows();
     at(bound + 10);
-    harness.emit(message(`message row ${bound + 5}`));
+    harness.emitActivity(message(`message row ${bound + 5}`));
     const after = harness.rows();
 
     // The pane never redraws more than its bound, and it fills to that bound.
@@ -463,55 +575,74 @@ describe('OperatorInterface activity pane', () => {
     expect(arrivals).toEqual(Array.from({ length: bound + 5 }, (_value, index) => index + 1));
   });
 
-  it('drops an overflowing work row instead of committing message rows to scrollback', () => {
-    const harness = createHarness({ columns: 60, rows: 10 });
+  it('gives work rows way before releasing any message row from the pane', () => {
+    // A ten-row terminal: one heading plus five activity rows.
+    const harness = createHarness({ columns: 100, rows: 10 });
     harness.operatorInterface.start();
     at(5);
     harness.emit(developerTurn());
-    for (let index = 1; index <= 6; index += 1) {
+    for (let index = 1; index <= 5; index += 1) {
       at(5 + index);
-      harness.emit(message(`message row ${index}`));
+      harness.emitActivity(message(`message row ${index}`));
     }
-    expect(harness.rows()).toHaveLength(7);
+    expect(harness.rows()).toHaveLength(6);
+
+    at(11);
+    harness.emitActivity(work('command', 'npm test -- --run'));
+
+    // The work row gives way, so every message row stays in the pane.
+    let rows = harness.rows();
+    expect(rows.some((row) => row.endsWith('npm test -- --run'))).toBe(false);
+    expect(rows.map((row) => /message row (\d+)$/.exec(row)?.[1]).filter(Boolean)).toEqual([
+      '1',
+      '2',
+      '3',
+      '4',
+      '5',
+    ]);
 
     at(12);
-    harness.emit(work('command', 'npm test -- --run'));
+    harness.emitActivity(message('message row 6'));
 
-    // The only work row gives way, so every full-pane message row stays where it is.
-    const rows = harness.rows();
-    expect(rows).toHaveLength(7);
-    expect(rows.some((row) => row.endsWith('npm test -- --run'))).toBe(false);
-    const arrivals = rows.slice(1).map((row) => /message row (\d+)$/.exec(row)?.[1]);
-    expect(arrivals).toEqual(['1', '2', '3', '4', '5', '6']);
+    // With no work row left to give way, the oldest message row enters scrollback exactly once.
+    rows = harness.rows();
+    expect(rows.at(-1)).toBe('03:04:12 message message row 6');
+    expect(rows.map((row) => /message row (\d+)$/.exec(row)?.[1]).filter(Boolean)).toEqual([
+      '1',
+      '2',
+      '3',
+      '4',
+      '5',
+      '6',
+    ]);
   });
 
   it('removes the oldest work rows anywhere before committing any message row', () => {
-    const harness = createHarness({ columns: 60, rows: 10 });
+    const harness = createHarness({ columns: 100, rows: 10 });
     harness.operatorInterface.start();
     at(5);
     harness.emit(developerTurn());
     at(6);
-    harness.emit(message('first message'));
+    harness.emitActivity(message('first message'));
     at(7);
-    harness.emit(work('command', 'rg --files src'));
+    harness.emitActivity(work('command', 'rg --files src'));
     at(8);
-    harness.emit(work('result', '12 files'));
+    harness.emitActivity(work('result', '12 files'));
     at(9);
-    harness.emit(work('change', 'src/parser.ts'));
+    harness.emitActivity(work('change', 'src/parser.ts'));
     at(10);
-    harness.emit(work('command', 'npm test'));
+    harness.emitActivity(work('command', 'npm test'));
     at(11);
-    harness.emit(message('second message'));
+    harness.emitActivity(message('second message'));
     at(12);
-    harness.emit(message('third message'));
+    harness.emitActivity(message('third message'));
     at(13);
-    harness.emit(work('result', 'checks passed'));
+    harness.emitActivity(work('result', 'checks passed'));
 
     // The overflowing work row nearest the start gives way, keeping every message row.
     expect(harness.rows()).toEqual([
       '03:04:05 developer Develop · task NEX-7 · profile nexus-flash',
       '03:04:06 message first message',
-      '03:04:09 change src/parser.ts',
       '03:04:10 command npm test',
       '03:04:11 message second message',
       '03:04:12 message third message',
@@ -519,22 +650,23 @@ describe('OperatorInterface activity pane', () => {
     ]);
   });
 
-  it('finalizes the pane for ordinary progress and continues below it in arrival order', () => {
+  it('writes ordinary progress above the live panes and keeps them below it', () => {
     const harness = createHarness();
     harness.operatorInterface.start();
     at(5);
     harness.emit(developerTurn());
     at(6);
-    harness.emit(message('Starting the change'));
+    harness.emitActivity(message('Starting the change'));
     at(7);
-    harness.emit({ source: 'execution-runner', type: 'state', data: { name: 'verify' } });
+    harness.emit({ source: 'execution-runner', type: 'state', data: { value: 'verify' } });
     at(8);
-    harness.emit(message('Continuing after verification'));
+    harness.emitActivity(message('Continuing after verification'));
 
+    // Progress keeps its own arrival order above the live pane, which stays below it.
     expect(harness.rows()).toEqual([
+      '03:04:07 execution-runner state verify',
       '03:04:05 developer Develop · task NEX-7 · profile nexus-flash',
       '03:04:06 message Starting the change',
-      '03:04:07 execution-runner state verify',
       '03:04:08 message Continuing after verification',
     ]);
   });
@@ -545,23 +677,31 @@ describe('OperatorInterface activity pane', () => {
     at(5);
     harness.emit(developerTurn());
     at(6);
-    harness.emit(message('Implementing the parser change'));
-    const finished = harness.rows();
+    harness.emitActivity(message('Implementing the parser change'));
+    const beforeFinish = harness.rows();
     at(7);
-    harness.emit({ source: 'develop', type: 'agent-finished', data: null });
-    expect(harness.rows()).toEqual(finished);
+    harness.emit(finished('dev-1'));
+    expect(harness.rows()).toEqual(beforeFinish);
 
     at(8);
     harness.emit({
-      // The Application forwards the invocation's activity; the role comes from the event data.
+      // Application runs the review invocation; its role comes from the boundary data.
       source: 'application',
       type: 'agent-started',
-      data: { role: 'reviewer', operation: 'Review', profile: 'nexus-astra', task: 'NEX-7' },
+      data: {
+        agentName: 'reviewer',
+        invocationId: 'review-1',
+        startedAtUnixMs: 1_767_325_448_000,
+        log: { path: '/srv/nexus/logs/agents/reviewer-1-review-1.jsonl' },
+        operation: 'Review',
+        profile: 'nexus-astra',
+        task: 'NEX-7',
+      },
     });
     at(9);
-    harness.emit(message('The change looks correct', 'application'));
+    harness.emitActivity(message('The change looks correct', 'review-1'));
     at(10);
-    harness.emit(work('command', 'git diff main...HEAD', 'application'));
+    harness.emitActivity(work('command', 'git diff main...HEAD', 'review-1'));
 
     expect(harness.rows()).toEqual([
       '03:04:05 developer Develop · task NEX-7 · profile nexus-flash',
@@ -576,22 +716,116 @@ describe('OperatorInterface activity pane', () => {
     expect(raw).toContain('\u001b[90m03:04:10 command git diff main...HEAD\u001b[0m');
   });
 
+  it('keeps interleaved invocations in their own panes and closes only the finished one', () => {
+    const harness = createHarness({ columns: 100 });
+    harness.operatorInterface.start();
+    at(5);
+    harness.emit(
+      boundary({
+        agentName: 'purpose-verifier',
+        operation: 'PurposeVerifier',
+        invocationId: 'pv-1',
+        idea: 'NEX-1',
+      }),
+    );
+    at(6);
+    harness.emit(
+      boundary({
+        agentName: 'researcher',
+        operation: 'Researcher',
+        invocationId: 'r-1',
+        idea: 'NEX-1',
+      }),
+    );
+    at(7);
+    harness.emitActivity(message('Purpose: the idea serves the charter.', 'pv-1'));
+    at(8);
+    harness.emitActivity(message('Research: related prior art.', 'r-1'));
+    at(9);
+    harness.emitActivity(work('command', 'rg --files docs', 'pv-1'));
+    at(10);
+    harness.emit(finished('r-1', 'researcher'));
+    at(11);
+    harness.emitActivity(message('Purpose: no conflict found.', 'pv-1'));
+
+    // The researcher ended; the purpose verifier's remaining rows and its reopened pane are
+    // separate, and neither invocation's activity appears in the other's rows.
+    expect(harness.rows()).toEqual([
+      '03:04:05 purpose-verifier PurposeVerifier · idea NEX-1 · profile nexus-flash',
+      '03:04:07 message Purpose: the idea serves the charter.',
+      '03:04:09 command rg --files docs',
+      '03:04:06 researcher Researcher · idea NEX-1 · profile nexus-flash',
+      '03:04:08 message Research: related prior art.',
+      '03:04:05 purpose-verifier PurposeVerifier · idea NEX-1 · profile nexus-flash',
+      '03:04:11 message Purpose: no conflict found.',
+    ]);
+    const raw = harness.writes.join('');
+    // Each message keeps its own role's color while both invocations are live.
+    expect(raw).toContain('\u001b[33m03:04:07 message Purpose: the idea serves the charter.');
+    expect(raw).toContain('\u001b[33m03:04:08 message Research: related prior art.');
+  });
+
+  it('redraws only the pane whose activity changed once its rows are stable', () => {
+    const harness = createHarness({ columns: 120 });
+    harness.operatorInterface.start();
+    at(5);
+    harness.emit(
+      boundary({
+        agentName: 'purpose-verifier',
+        operation: 'PurposeVerifier',
+        invocationId: 'pv-1',
+        idea: 'NEX-1',
+      }),
+    );
+    at(6);
+    harness.emit(
+      boundary({
+        agentName: 'researcher',
+        operation: 'Researcher',
+        invocationId: 'r-1',
+        idea: 'NEX-1',
+      }),
+    );
+    at(7);
+    harness.emitActivity(message('research note', 'r-1'));
+    harness.emitActivity(message('purpose note', 'pv-1'));
+    // The purpose pane keeps its latest three work entries, so its row count stays stable.
+    for (let index = 1; index <= 5; index += 1) {
+      at(7 + index);
+      harness.emitActivity(work('command', `work row ${String(index)}`, 'pv-1'));
+    }
+
+    const before = harness.writes.length;
+    at(14);
+    harness.emitActivity(work('change', 'src/parser.ts', 'pv-1'));
+    const written = harness.writes.slice(before).join('');
+
+    // Only the purpose pane was rewritten: the researcher's rows were left as they are.
+    expect(written).toContain('src/parser.ts');
+    expect(written).not.toContain('research note');
+    expect(harness.rows()).toContain('03:04:07 message research note');
+  });
+
   it('uses the terminal default for recovery and grey for its tool activity', () => {
     const harness = createHarness();
     harness.operatorInterface.start();
     at(5);
-    harness.emit({
-      source: 'application',
-      type: 'agent-started',
-      data: { role: 'recovery', operation: 'Recover', profile: 'nexus-recovery' },
-    });
+    harness.emit(
+      boundary({
+        agentName: 'recovery',
+        operation: 'Recovery',
+        invocationId: 'recovery-1',
+        profile: 'nexus-recovery',
+        source: 'application',
+      }),
+    );
     at(6);
-    harness.emit(message('Investigating the interrupted execution', 'application'));
+    harness.emitActivity(message('Investigating the interrupted execution', 'recovery-1'));
     at(7);
-    harness.emit(work('command', 'git status', 'application'));
+    harness.emitActivity(work('command', 'git status', 'recovery-1'));
 
     expect(harness.rows()).toEqual([
-      '03:04:05 recovery Recover · profile nexus-recovery',
+      '03:04:05 recovery Recovery · profile nexus-recovery',
       '03:04:06 message Investigating the interrupted execution',
       '03:04:07 command git status',
     ]);
@@ -609,7 +843,7 @@ describe('OperatorInterface terminal handling', () => {
     at(5);
     harness.emit(developerTurn());
     at(6);
-    harness.emit(
+    harness.emitActivity(
       message('plain\u001b[31mred\u001b[0m\u001b[2J\u0007\u001b]0;title\u0007done\r\nnext\ttab'),
     );
 
@@ -628,11 +862,11 @@ describe('OperatorInterface terminal handling', () => {
     at(5);
     harness.emit(developerTurn());
     at(6);
-    harness.emit(message('first '.repeat(12).trim()));
+    harness.emitActivity(message('first '.repeat(12).trim()));
     const before = harness.rows();
     harness.resize(30, 24);
     at(7);
-    harness.emit(message('second '.repeat(8).trim()));
+    harness.emitActivity(message('second '.repeat(8).trim()));
     const after = harness.rows();
 
     expect(after.slice(0, before.length)).toEqual(before);
@@ -649,17 +883,17 @@ describe('OperatorInterface terminal handling', () => {
     at(5);
     harness.emit(developerTurn());
     at(6);
-    harness.emit(message('kept in the pane'));
+    harness.emitActivity(message('kept in the pane'));
     harness.resize(10, 24);
     const writesBefore = harness.writes.length;
     at(7);
-    harness.emit(message('after the resize'));
+    harness.emitActivity(message('after the resize'));
 
     expect(harness.writes.slice(writesBefore).join('')).not.toContain('\u001b');
     expect(harness.rows()).toEqual([
-      '03:04:05 developer Develop · task NEX-7 · profile nexus-flash',
+      '03:04:05 developer Develop · task NEX-7 · profile nexus-fla…',
       '03:04:06 message kept in the pane',
-      '03:04:07 message after the resize',
+      '03:04:07 developer message after the resize',
     ]);
   });
 
@@ -669,21 +903,24 @@ describe('OperatorInterface terminal handling', () => {
     at(5);
     harness.emit(developerTurn());
     at(6);
-    harness.emit(message('first '.repeat(12).trim()));
+    harness.emitActivity(message('first '.repeat(12).trim()));
     const before = harness.rows();
 
     harness.resize(30, 24);
     const shrinkStart = harness.writes.length;
     at(7);
-    harness.emit(message('second '.repeat(8).trim()));
+    harness.emitActivity(message('second '.repeat(8).trim()));
     const shrunk = harness.rows();
     const shrinkWrites = harness.writes.slice(shrinkStart).join('');
 
-    // The old rows are neither redrawn nor erased: the pane moved no cursor over them.
+    // The old rows are neither redrawn nor erased: the new writes only move the cursor inside the
+    // fresh pane drawn below them.
     expect(shrunk.slice(0, before.length)).toEqual(before);
-    expect(cursorUps(harness.writes.slice(shrinkStart))).toEqual([]);
+    expect(cursorUps(harness.writes.slice(shrinkStart)).every((move) => move <= 1)).toBe(true);
     expect(shrinkWrites).not.toContain('first');
-    const wrappedAt30 = shrunk.slice(before.length);
+    // The reopened pane is named again at the new width and wraps its activity to that width.
+    const [headingAt30, ...wrappedAt30] = shrunk.slice(before.length);
+    expect(headingAt30).toBe('03:04:05 developer Develop · …');
     expect(wrappedAt30.length).toBeGreaterThan(1);
     for (const row of wrappedAt30) {
       expect(stringWidth(row)).toBeLessThanOrEqual(30);
@@ -695,14 +932,16 @@ describe('OperatorInterface terminal handling', () => {
     harness.resize(80, 24);
     const expandStart = harness.writes.length;
     at(8);
-    harness.emit(message('third '.repeat(14).trim()));
+    harness.emitActivity(message('third '.repeat(14).trim()));
     const expanded = harness.rows();
     const expandWrites = harness.writes.slice(expandStart).join('');
 
     expect(expanded.slice(0, shrunk.length)).toEqual(shrunk);
-    expect(cursorUps(harness.writes.slice(expandStart))).toEqual([]);
+    // Only the reopened pane moves the cursor, inside its own rows.
+    expect(cursorUps(harness.writes.slice(expandStart)).every((move) => move <= 1)).toBe(true);
     expect(expandWrites).not.toContain('second');
-    const wrappedAt80 = expanded.slice(shrunk.length);
+    const [headingAt80, ...wrappedAt80] = expanded.slice(shrunk.length);
+    expect(stringWidth(headingAt80 ?? '')).toBeLessThanOrEqual(80);
     for (const row of wrappedAt80) {
       expect(stringWidth(row)).toBeLessThanOrEqual(80);
     }
@@ -723,13 +962,13 @@ describe('OperatorInterface terminal handling', () => {
       at(5);
       harness.emit(developerTurn());
       at(6);
-      harness.emit(message('kept in the pane'));
+      harness.emitActivity(message('kept in the pane'));
       const before = harness.rows();
 
       harness.resize(columns, rows);
       const fallbackStart = harness.writes.length;
       at(7);
-      harness.emit(message('printed while plain'));
+      harness.emitActivity(message('printed while plain'));
       expect(harness.writes.slice(fallbackStart).join('')).not.toContain('\u001b');
       const plain = harness.rows();
       expect(plain.slice(0, before.length)).toEqual(before);
@@ -737,13 +976,13 @@ describe('OperatorInterface terminal handling', () => {
       harness.resize(60, 24);
       const expandStart = harness.writes.length;
       at(8);
-      harness.emit(message('pane again '.repeat(10).trim()));
+      harness.emitActivity(message('pane again '.repeat(10).trim()));
       const after = harness.rows();
       const expandWrites = harness.writes.slice(expandStart).join('');
 
-      // The plain line and the old pane rows stay untouched; the new segment draws below them.
+      // The plain line and the old pane rows stay untouched; the reopened pane draws below them.
       expect(after.slice(0, plain.length)).toEqual(plain);
-      expect(cursorUps(harness.writes.slice(expandStart))).toEqual([]);
+      expect(cursorUps(harness.writes.slice(expandStart)).every((move) => move <= 1)).toBe(true);
       expect(expandWrites).not.toContain('kept in the pane');
       expect(expandWrites).not.toContain('printed while plain');
       const later = after.slice(plain.length);
@@ -771,9 +1010,9 @@ describe('OperatorInterface terminal handling', () => {
     at(5);
     harness.emit(developerTurn());
     at(6);
-    harness.emit(message('Implementing the parser change'));
+    harness.emitActivity(message('Implementing the parser change'));
     at(7);
-    harness.emit(work('command', 'npm test -- --run'));
+    harness.emitActivity(work('command', 'npm test -- --run'));
     at(8);
     harness.emit({
       source: 'verify',
@@ -790,8 +1029,8 @@ describe('OperatorInterface terminal handling', () => {
     expect(harness.writes.join('')).not.toContain('\u001b');
     expect(harness.rows()).toEqual([
       '03:04:05 developer Develop · task NEX-7 · profile nexus-flash',
-      '03:04:06 message Implementing the parser change',
-      '03:04:07 command npm test -- --run',
+      '03:04:06 developer message Implementing the parser change',
+      '03:04:07 developer command npm test -- --run',
       '03:04:08 verify task NEX-7 · round 1 · passed · 1 check',
     ]);
   });
@@ -803,26 +1042,27 @@ describe('OperatorInterface lifecycle', () => {
     harness.operatorInterface.start();
     harness.operatorInterface.start();
     expect(harness.subscriptions()).toBe(1);
-    expect(harness.listeners()).toBe(1);
+    expect(harness.activitySubscriptions()).toBe(1);
+    expect(harness.listeners()).toBe(2);
 
     at(5);
     harness.emit(developerTurn());
     at(6);
-    harness.emit(message('Implementing the parser change'));
+    harness.emitActivity(message('Implementing the parser change'));
     const visible = harness.rows();
     expect(visible).toHaveLength(2);
 
     harness.operatorInterface.stop();
-    expect(harness.unsubscriptions()).toBe(1);
+    expect(harness.unsubscriptions()).toBe(2);
     expect(harness.listeners()).toBe(0);
     expect(harness.rows()).toEqual(visible);
     expect(harness.writes.join('')).toContain('\u001b[0m');
 
     at(7);
-    harness.emit(message('after stop'));
+    harness.emitActivity(message('after stop'));
     expect(harness.rows()).toEqual(visible);
     harness.operatorInterface.stop();
-    expect(harness.unsubscriptions()).toBe(1);
+    expect(harness.unsubscriptions()).toBe(2);
   });
 
   it('stops rendering to an output stream that closes', () => {
@@ -834,7 +1074,7 @@ describe('OperatorInterface lifecycle', () => {
       at(5);
       harness.emit(developerTurn());
       at(6);
-      harness.emit(message('Implementing the parser change'));
+      harness.emitActivity(message('Implementing the parser change'));
       harness.operatorInterface.stop();
     }).not.toThrow();
     expect(harness.writes).toEqual([]);

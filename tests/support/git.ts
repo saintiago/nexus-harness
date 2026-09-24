@@ -1,4 +1,9 @@
-import type { BranchHead, GitAdapter, RepositoryState } from '../../src/adapters/git.js';
+import type {
+  BranchHead,
+  CheckoutIdentity,
+  GitAdapter,
+  RepositoryState,
+} from '../../src/adapters/git.js';
 import { ok, type Result } from '../../src/result.js';
 
 /**
@@ -21,6 +26,15 @@ export function repositoryState(overrides: Partial<RepositoryState> = {}): Repos
 
 /** The Git operations a test supplies beyond the scripted inspections. */
 export type GitOperations = {
+  cloneRepository?(
+    source: string,
+    destination: string,
+  ): Result<CheckoutIdentity> | Promise<Result<CheckoutIdentity>>;
+  pullBranch?(
+    repository: string,
+    remote: string,
+    branch: string,
+  ): Result<BranchHead> | Promise<Result<BranchHead>>;
   pushBranch?(
     repository: string,
     branch: string,
@@ -64,14 +78,20 @@ export function scriptedGit(
           ? { ok: false, fault: { message: observation.message } }
           : ok(observation);
       },
-      async cloneRepository() {
-        return unexpected('cloneRepository');
+      async cloneRepository(source, destination) {
+        calls.push(`clone:${source}:${destination}`);
+        return operations.cloneRepository
+          ? await operations.cloneRepository(source, destination)
+          : unexpected('cloneRepository');
       },
       async fetchRevision() {
         return unexpected('fetchRevision');
       },
-      async pullBranch() {
-        return unexpected('pullBranch');
+      async pullBranch(repository, remote, branch) {
+        calls.push(`pull:${repository}:${remote}:${branch}`);
+        return operations.pullBranch
+          ? await operations.pullBranch(repository, remote, branch)
+          : unexpected('pullBranch');
       },
       async createBranch() {
         return unexpected('createBranch');

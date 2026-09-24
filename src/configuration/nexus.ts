@@ -5,6 +5,11 @@ import { deepFreeze, readDocument, resolveExecutable, validate } from './documen
 /** Required paths and identifiers are nonempty. */
 const identifier = z.string().trim().min(1);
 
+/** The workflows the operator command selects; each name identifies its configured definition. */
+export const workflowNames = ['finite-delivery', 'idea-refinement'] as const;
+
+export type WorkflowName = (typeof workflowNames)[number];
+
 /** Profiles conform to AgentProfile in the AgentRuntime design. */
 const profileSchema = z.strictObject({
   id: identifier,
@@ -17,10 +22,24 @@ const profileSchema = z.strictObject({
 /** A credential reference names an entry in the Credentials settings; the host resolves its value. */
 const credentialReference = identifier;
 
+/** The six idea refinement role profiles and the council-cycle bound. */
+const ideaRefinementSchema = z.strictObject({
+  profiles: z.strictObject({
+    purposeVerifier: identifier,
+    researcher: identifier,
+    briefWriter: identifier,
+    purposeCouncil: identifier,
+    evidenceCouncil: identifier,
+    simplicityCouncil: identifier,
+  }),
+  maxCouncilCycles: z.number().int().positive(),
+});
+
 const nexusConfigurationSchema = z
   .strictObject({
     workflow: z.strictObject({
-      path: identifier,
+      'finite-delivery': identifier,
+      'idea-refinement': identifier,
     }),
     storage: z.strictObject({
       root: identifier,
@@ -46,6 +65,7 @@ const nexusConfigurationSchema = z
       recoveryProfile: identifier,
       maxRecoveryAttempts: z.number().int().positive(),
     }),
+    ideaRefinement: ideaRefinementSchema,
     notifications: z.strictObject({
       provider: z.literal('sns'),
       // The AWS Region that owns the destination topic.
@@ -111,6 +131,17 @@ const nexusConfigurationSchema = z
       });
     }
 
+    const ideaProfiles = configuration.ideaRefinement.profiles;
+    for (const [role, profile] of Object.entries(ideaProfiles)) {
+      if (!profileIds.has(profile)) {
+        context.addIssue({
+          code: 'custom',
+          path: ['ideaRefinement', 'profiles', role],
+          message: `Unknown profile "${profile}"`,
+        });
+      }
+    }
+
     const credentialReferences: [string, (string | number)[]][] = [
       [
         configuration.notifications.credentials.accessKeyId,
@@ -174,7 +205,10 @@ function resolveNexusConfiguration(
         executable: resolveExecutable(configuration.agentRuntime.provider.executable, directory),
       },
     },
-    workflow: { path: path.resolve(directory, configuration.workflow.path) },
+    workflow: {
+      'finite-delivery': path.resolve(directory, configuration.workflow['finite-delivery']),
+      'idea-refinement': path.resolve(directory, configuration.workflow['idea-refinement']),
+    },
     storage: { root: path.resolve(directory, configuration.storage.root) },
   });
 }
