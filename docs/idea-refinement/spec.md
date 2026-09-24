@@ -17,8 +17,8 @@ A separate Requirements and Design workflow may consume an approved brief later.
 
 - **Ready for design:** every council reviewer approves the exact current brief revision. Save
   the original idea, approved brief, purpose assessment, research and sources, alternatives,
-  council decisions and deferred design decisions as one handoff artifact. Publish the approved
-  brief to Jira for the Requirements and Design workflow; keep internal agent feedback in
+  council decisions as one handoff artifact. Publish the approved brief to Jira for the
+  Requirements and Design workflow; keep internal agent feedback in
   artifacts and logs. Move the source item to its configured approved state. For HARN Jira, this is
   `Idea Refinement -> Draft`. No automatic move to To Do.
 - **Returned to author:** at least one reviewer finds the idea unworkable, or bounded internal
@@ -85,9 +85,8 @@ do not change source statuses. Nexus actions own artifacts and source updates.
 4. Brief Writer creates revision 1. It sees the current captured idea, both reports, earlier
    briefs and feedback when present, and every council criterion below. It records a short
    problem/value statement, project fit, supporting evidence with links, alternatives, smallest
-   useful scope, assumptions and decisions deferred to Requirements and Design. It must make
-   purpose, value, evidence and scope clear enough for the council to decide, and distinguish
-   evidence from proposal.
+   useful scope and assumptions. It must make purpose, value, evidence and scope clear enough
+   for the council to decide, and distinguish evidence from proposal.
 5. Three council reviewers run concurrently and independently on the same immutable brief revision.
    They see the current captured idea, brief and available history, but not one another's
    current-cycle verdicts before submitting their own. Each emits exactly one verdict:
@@ -106,8 +105,8 @@ do not change source statuses. Nexus actions own artifacts and source updates.
    immediately. Both routes post the human-facing reason and requested action to Jira, then set
    `Waiting for Feedback`; their decision artifacts retain distinct reasons and full feedback.
 9. An approved handoff is available to the Requirements and Design workflow from the approved
-   source state. That workflow owns the deferred design decisions, resolves them while defining
-   requirements and architecture, and may then produce a To Do implementation ticket.
+   source state. That workflow defines requirements and architecture, and may then produce a
+   To Do implementation ticket.
 
 A reviewer may choose minor only when the current purpose and research reports remain valid.
 Choose major when the premise, purpose fit, evidence or alternatives require renewed investigation.
@@ -161,9 +160,8 @@ one another's pending outputs.
 > of phrase makes the brief clearer; keep the substance and tone suitable for a project decision.
 > Preserve intent while applying justified steering. Include the problem and expected value,
 > project fit, supporting evidence and links, existing alternatives, smallest useful scope,
-> assumptions, and decisions deferred to the Requirements and Design workflow. Make
-> purpose, value, evidence and scope clear enough for the council to decide. Address each
-> prior objection explicitly. Do not turn this brief into requirements, architecture or an
+> assumptions. Make purpose, value, evidence and scope clear enough for the council to
+> decide. Address each prior objection explicitly. Do not turn this brief into requirements, architecture or an
 > implementation plan. The council will check fidelity, evidence and simplicity. Return a complete
 > brief revision and a short change summary.
 
@@ -342,8 +340,8 @@ remain individually attributable through those contracts.
   investigation, with cited provisional inferences and uncertainty, rather than an operational fault.
   The purpose council evaluates that evidence without treating missing documents alone as a veto.
 - Approval leaves no unresolved question that prevents judging purpose, value, evidence or
-  smallest useful scope. The handoff identifies deferred design decisions for the Requirements
-  and Design workflow to resolve before a To Do implementation ticket is produced.
+  smallest useful scope. Requirements and Design defines the solution before a To Do
+  implementation ticket is produced.
 - A selected HARN idea moves `Idea -> Idea Refinement` before agent work. It reaches `Draft`
   only after unanimous approval on one exact revision. Rejection or exhaustion moves it to
   `Waiting for Feedback` with a human-facing Jira comment; internal agent feedback stays in
