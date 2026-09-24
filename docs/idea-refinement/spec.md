@@ -16,10 +16,11 @@ A separate Requirements and Design workflow may consume an approved brief later.
 ## Expected outcomes
 
 - **Ready for design:** every council reviewer approves the exact current brief revision. Save
-  the original idea, approved brief, purpose assessment, research and sources, alternatives,
-  council decisions as one handoff artifact. Publish the approved brief to Jira for the
-  Requirements and Design workflow; keep internal agent feedback in artifacts and logs.
-  Move the source item to its configured approved state. For HARN Jira, this is
+  one handoff artifact with the source issue workspace and references to the captured idea,
+  approved brief, purpose assessment, research and council decisions. Later workflows can read
+  the full retained history from that workspace. Publish the approved brief to Jira for the
+  Requirements and Design workflow; keep internal agent feedback in artifacts and logs. Move
+  the source item to its configured approved state. For HARN Jira, this is
   `Idea Refinement -> Draft`. No automatic move to To Do.
 - **Returned to author:** at least one reviewer finds the idea unworkable, or bounded internal
   revision cannot converge. Publish concise, actionable human-facing feedback in a Jira comment
@@ -55,8 +56,9 @@ selection query. HARN selects Jira Task issues in `Idea`; `Idea Refinement` is t
 `Draft` is the approved status and `Waiting for Feedback` awaits human input.
 
 SelectIdea reads the Jira issue and its relevant comments once, then moves it
-to the active status. It uses a stable workspace path for the issue, reusing that workspace when
-it already exists. The captured content is the input for this run. Publication uses that
+to the active status. It reuses the source issue's stable workspace root when present, or creates
+that root when absent, and derives its `refinement/` area. The source workspace pointer names the
+shared issue root. The captured content is the input for this run. Publication uses that
 snapshot and the run artifacts without another Jira read. The adapter owns Jira identity and
 transition details; the workflow owns selection, verdicts and publication decisions.
 
@@ -204,11 +206,11 @@ one another's pending outputs.
 
 ## Artifacts and revision binding
 
-Use a stable workflow-specific workspace under
-`<storage root>/workspaces/<project>/<idea>/refinement/`. Selection reuses it when present and
-creates it when absent. Keep a read-only project snapshot or references under `worktree/`; Nexus
-owns writes under `artifacts/` and `state/`. Each entry from `Idea` has its own numbered history
-within the same workspace:
+Use the `refinement/` area under the stable
+`<storage root>/workspaces/<project>/<issue>/` workspace. Selection reuses the area when present
+and creates it when absent. Keep a read-only project snapshot or references under its `worktree/`;
+Nexus owns writes under its `artifacts/` and `state/`. Each entry from `Idea` has its own
+numbered history in that area:
 
 ```text
 state/
@@ -234,7 +236,9 @@ reviewer identity, verdict, criteria and feedback. A council set is valid only w
 results name the current brief artifact. Captured inputs, decisions and prior cycles are
 retained in the workspace. The decision artifact records the route, strongest verdict, full
 feedback and source update evidence, including the human-facing Jira comment when applicable.
-These artifact paths are specific to idea refinement; finite delivery's round layout is unchanged.
+These artifact paths are specific to idea refinement; finite delivery's round layout at the
+shared issue root is unchanged. Later workflows may read all retained artifacts in the issue
+workspace without changing refinement state.
 
 StartIdeaRound owns `state/current-round.json` with the active submission number, council cycle
 and selected role profiles:

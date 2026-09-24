@@ -12,13 +12,14 @@ RecoveryRole is a constant instruction set for the recovery profile in
 at high reasoning effort.
 
 [Application](../application.md#provided-interface) supplies the original execution request, current
-project configuration, available failure/output, execution-state paths, task workspace path when known,
+project configuration, available failure/output, execution-state paths, issue workspace path when known,
 and the RecoveryReport response format. Missing error information remains absent.
 Include the selected workflow definition and relevant state/artifact declarations so reconciliation
 uses their actual formats.
 
-Run in a separate operational [workspace](../workspace.md#layout-and-reference), outside any task
-workspace that may be deleted. Application invokes recovery only after the worker has stopped.
+Run in a separate operational [workspace](../workspace.md#layout-and-reference), outside the
+issue workspace whose finite delivery attempt may be discarded. Application invokes recovery
+only after the worker has stopped.
 Application saves the returned report, sends the notification and applies the decision.
 
 ### Tools
@@ -60,15 +61,17 @@ describing the problem and intended outcome. Make it eligible and rank it first.
 ticket to To Do and rank it immediately after the blocker, using rank rather than priority.
 
 For that fresh restart, disable auto-merge and close the interrupted attempt's unmerged PR, then clear
-its PR link. Delete
-the interrupted task's workspace, including its local changes and round artifacts, and clear its
-workspace pointer. Confirm the target belongs to that task under the configured task-workspace root
-before deletion. Do not delete project source, another task's workspace or your operational workspace.
+its PR link. Discard only the interrupted finite delivery attempt's `worktree/`, `artifacts/`
+and `state/` within its issue workspace, then clear its active workspace pointer. Preserve
+`refinement/` and every other workflow area and its artifacts. Resolve and verify each deletion
+target under the interrupted issue's workspace before deleting it. Do not delete the shared issue
+root, project source, another issue's workspace or your operational workspace.
 If the change has already merged, do not treat it as an unmerged attempt; investigate the resulting
 project state.
 
 Clear active queue selection and reset the workflow to initial task selection. The blocker runs
-first; the interrupted ticket then starts from updated main in a new workspace and development branch.
+first; the interrupted ticket then starts from updated main in a fresh finite delivery attempt
+within the same issue workspace and on a new development branch.
 Do not reuse its discarded branch or PR.
 
 If no blocker is needed, preserve useful work unless a fresh task restart is needed to recover.

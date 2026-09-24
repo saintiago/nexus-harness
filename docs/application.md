@@ -93,8 +93,8 @@ OperatorInterface receives worker and parent events through one combined subscri
 agent activity through a separate live subscription.
 Prepare recovery context from the original request, failure, available output, execution-state paths
 and task [workspace reference](workspace.md#layout-and-reference) when known. Always run recovery in
-a separate operational workspace, so it can delete a broken task workspace without deleting its own
-working directory. Initialize that workspace's worktree as a Git repository before the invocation,
+a separate operational workspace, so it can discard a broken finite delivery attempt without
+deleting its own working directory. Initialize that workspace's worktree as a Git repository before the invocation,
 so the configured [coding provider](adapters/coding-runtime.md#behavior) accepts its working
 directory. Include the current project configuration and recovery scope in the context. Pass
 context to AgentRuntime.run with the configured recovery profile.
@@ -157,8 +157,9 @@ A resume decision restarts the worker with the same project configuration and th
 by recovery.
 
 For finite delivery, when a blocker must run first, recovery ranks it first and returns the interrupted ticket to To Do
-immediately after it. Recovery discards the broken task workspace, clears its source pointer and
-active selection, and resets queue execution to initial selection. The normal workflow processes the
+immediately after it. Recovery discards the broken finite delivery worktree, round artifacts and state within the
+shared issue workspace, preserving other workflow areas. It clears the active source pointer and
+selection, then resets queue execution to initial selection. The normal workflow processes the
 blocker, then starts the interrupted task anew from updated main. Cleanup of the discarded attempt
 follows the RecoveryRole contract. Application has no special blocker execution mode or return target.
 
@@ -186,12 +187,12 @@ Finite delivery uses:
 
 Idea refinement uses a separate `<storage root>/executions/<project>/idea-refinement/` directory
 with its own workflow.json, selection.json, logs/ and recovery/. Its selected source item and
-business artifacts live in the refinement workspace.
+business artifacts live in the shared issue workspace's refinement area.
 
 The runner owns workflow.json; the selection action owns selection.json. These records are outside task
 workspaces. Application retains its request, recovery count and reports under recovery/, alongside
-the separate operational workspace. Task workspaces live under
-`<storage root>/workspaces/<project>/<task>/`. Project identity distinguishes execution directories.
+the separate operational workspace. Issue workspaces live under
+`<storage root>/workspaces/<project>/<issue>/`. Project identity distinguishes execution directories.
 
 At worker startup the runner resets terminal workflow state before execution, as specified in
 [ExecutionRunner](task-engine/execution-runner.md#persistence). This does not erase an active selection or workspace; recovery explicitly reconciles those
@@ -245,7 +246,7 @@ for a logging failure. Initialization errors before a log can be opened remain s
 The [idea refinement workflow](idea-refinement/spec.md) is selected explicitly for a connected
 project. Application loads its XState definition and binds project-scoped actions; it does not
 provide a separate idea router. Source selection and updates use the project's Jira task-source
-adapter. Selection reuses the issue's refinement workspace when present, and StartIdeaRound creates
+adapter. Selection reuses the issue workspace's refinement area when present, and StartIdeaRound creates
 a plan for each council cycle. An idea moved to the waiting-for-feedback state is a successful
 terminal workflow outcome, not an execution fault requiring recovery. A provider or agent failure
 remains an execution fault.

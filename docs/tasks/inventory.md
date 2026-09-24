@@ -30,3 +30,4 @@ In progress means implementation or review is underway. Pending means work has n
 | [Action implementation simplification](action-simplification.md) | Verified |
 | [Implementation/design conformance](implementation-design-conformance.md) | Verified |
 | [Jira status labels](jira-status-language.md) | Verified |
+| [Shared issue workspace](shared-issue-workspace.md) | Pending |

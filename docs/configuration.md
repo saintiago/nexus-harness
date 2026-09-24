@@ -34,7 +34,7 @@ of the target project's directory. Relative paths are relative to the Nexus conf
 | Settings | Definition |
 | --- | --- |
 | Workflow | Definition paths for the explicitly selected finite delivery or idea refinement workflow |
-| Storage | Root for queue execution state, recovery and task workspaces |
+| Storage | Root for queue execution state, recovery and shared issue workspaces |
 | Agent runtime | Base instructions, profile catalogue, provider connections and tool configuration |
 | Execution policy | Invocation limits, developer ladder and repair allowances, reviewer selection and maximum recovery attempts per supervised execution |
 | Notifications | Destination, provider connection and host credential references |
@@ -42,7 +42,7 @@ of the target project's directory. Relative paths are relative to the Nexus conf
 | Nexus Lens | GitHub App identity and installation credential references for review publication |
 
 The storage root is configurable. [Application](application.md#state-and-reports) defines execution
-and task-workspace locations. The [workspace layout](workspace.md#layout-and-reference) is fixed
+and issue-workspace locations. The [workspace layout](workspace.md#layout-and-reference) is fixed
 and has no configuration overrides.
 
 Notifications name the destination topic, the SNS Region that owns it and the host credential

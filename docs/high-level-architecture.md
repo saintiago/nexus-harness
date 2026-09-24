@@ -46,8 +46,9 @@ Application is the parent of the Nexus worker process. Application constructs Ta
 dependencies in the worker. Actions use AgentRuntime for delivery and idea refinement roles; Application uses it for recovery.
 Adapters are modules at external boundaries, not a registry or additional service.
 
-Workspace and configuration are data designs. WorkspaceRef identifies an instance; artifact layout
-is owned by the selected workflow.
+Workspace and configuration are data designs. One issue workspace retains artifacts across
+workflows. WorkspaceRef identifies the active workflow area; each workflow owns its artifact layout
+and later workflows can read retained artifacts from the shared issue root.
 
 ## Application and configuration
 
@@ -174,8 +175,9 @@ inconclusive Review or exhausted round planning stops the task without beginning
 When work cannot continue, Application invokes recovery with the failure and available context.
 Recovery investigates, performs repairs and decides whether to resume or request operator attention.
 When a blocker must run first, recovery ranks it first, moves the interrupted task to To Do immediately
-after it, deletes the broken task workspace and clears its pointer, and reconciles queue state to
-restart task selection before resuming. The interrupted task starts anew after the blocker. Normal queue processing
+after it, discards the broken finite delivery attempt within the issue workspace, clears its
+active pointer and reconciles queue state to restart task selection before resuming. Earlier
+workflow artifacts remain available when the interrupted task starts anew after the blocker. Normal queue processing
 handles both tasks. Recovery and blocker execution stay within the current project. Cross-project
 repair and Nexus installation changes require operator attention.
 Application applies the decision within its configured recovery allowance.
@@ -191,11 +193,12 @@ Jira task source; Nexus configuration supplies the workflow and role profiles. T
 Verifier discovers purpose documents in the connected project and infers direction from code
 and commits where documents are absent or incomplete. Every entry from `Idea` uses the same
 selection path and stable issue workspace. StartIdeaRound opens a council cycle and records its role
-plan from that workspace's history. Purpose and research run in parallel, followed by a brief
-writer and a parallel three-reviewer council. XState joins both groups and routes unanimous
+plan from the refinement area's history. The approved handoff keeps references to the shared
+workspace and its artifacts for subsequent workflows. Purpose and research run in parallel,
+followed by a brief writer and a parallel three-reviewer council. XState joins both groups and routes unanimous
 approval, minor correction, major rework or return to author. Selection moves the idea to its
-active state before agents run. Approval publishes a ready-for-design handoff and moves it to the approved state. A nonapproval posts
-human-facing feedback to Jira and moves it to the waiting-for-feedback state; internal agent
+active state before agents run. Approval publishes a ready-for-design handoff and moves it to the
+approved state. A nonapproval posts human-facing feedback to Jira and moves it to the waiting-for-feedback state; internal agent
 feedback remains in artifacts and logs. The author replies in a Jira comment and moves the idea
 back to the submitted state to resubmit it. For HARN Jira, the path is
 `Idea -> Idea Refinement -> Draft` or `Idea -> Idea Refinement -> Waiting for Feedback -> Idea`.
