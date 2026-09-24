@@ -3,7 +3,18 @@
 Documentation is the law; code is not. Documentation states intent, and code is its embodiment.
 If code contradicts documentation, correct the code.
 
-## Simplicity
+## Core design principles
+
+Apply these principles when shaping requirements, workflows, architecture, code and tests.
+
+- **KISS:** Prefer the simplest design that meets the need and is easy to understand, debug and
+  maintain.
+- **DRY:** Keep each rule or contract in one authoritative place. Extract repeated behavior when
+  the cases truly share a responsibility; do not force unrelated cases into one abstraction.
+- **YAGNI:** Add a capability, setting, state or extension point only when a current requirement
+  needs it.
+- **Avoid premature optimization:** Require evidence of a bottleneck before adding performance
+  complexity to an architecture or implementation.
 
 Use the smallest design that satisfies an explicit requirement or solves a demonstrated problem.
 Every contract field, abstraction, validation rule and persistent record must serve a concrete need.
@@ -32,6 +43,20 @@ own responsibilities and state. System composition and flows belong in the high-
 
 Contract tests verify individual boundaries. Integration and workflow tests verify cooperation.
 A multi-component flow does not create a special shared contract.
+
+## SOLID principles
+
+Apply these to component responsibilities and public contracts as well as code. Do not introduce
+inheritance, interfaces or extension points solely to satisfy the acronym.
+
+- **Single Responsibility:** Give a component, module or action one coherent reason to change.
+- **Open/Closed:** Keep stable public contracts when adding a supported variation; change the
+  design directly when that is simpler than an extension mechanism.
+- **Liskov Substitution:** Any alternative implementation must honor the behavior promised by its
+  public contract.
+- **Interface Segregation:** Let consumers depend only on the focused capabilities they use.
+- **Dependency Inversion:** Make policy depend on owned public contracts at external boundaries,
+  not on concrete providers.
 
 ## Purpose and design
 
