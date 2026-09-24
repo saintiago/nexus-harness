@@ -110,3 +110,10 @@ export const finiteDelivery = createMachine(
     },
   },
 );
+
+// Application loads this module for both entry points: the default export is the workflow finite
+// execution runs and successfulOutcomes names its successful terminal outcomes. The blocked
+// outcome is not successful; it stops the execution.
+export const successfulOutcomes: readonly string[] = ['drained'];
+
+export default finiteDelivery;

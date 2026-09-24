@@ -18,7 +18,8 @@ nexus --help
 ```
 
 The process supplies arguments, working directory, environment and standard streams. The installation
-supplies the Nexus configuration filepath. Resolve the project filepath against the working directory.
+supplies the Nexus configuration filepath through the `NEXUS_CONFIG` environment setting. Resolve the
+project filepath against the working directory.
 Reject missing arguments and unknown options. Help requires no configuration or external connections.
 Launch shortcuts invoke this command; they contain no execution logic.
 
@@ -77,6 +78,10 @@ and capabilities its contract requires.
 | Worker | Bind action capabilities, selection storage and event publishing; construct [TaskEngine](task-engine/architecture.md#interface) with the selected workflow and workflow-state filepath |
 | Worker | Subscribe to TaskEngine events before calling run; send events and the final result through the worker protocol |
 
+Terminal capabilities come from the process's standard output. A stream that fails or closes stops
+presentation rendering to it while execution continues; the boundary releases its stream listeners
+once presentation has stopped and the failures of the writes it issued have arrived.
+
 OperatorInterface receives worker and parent events through one combined subscription.
 Prepare recovery context from the original request, failure, available output, execution-state paths
 and task [workspace reference](workspace.md#layout-and-reference) when known. Always run recovery in
@@ -108,6 +113,8 @@ with 1. The parent evaluates both the outcome and process exit; zero exit alone 
 The parent reads installation configuration before constructing its dependencies. Each worker launch
 reads project and installation configuration and loads the selected workflow. Resolve relative paths
 against their owning configuration file. Validate required values and references before use.
+The configured workflow module default-exports its XState definition and exports
+`successfulOutcomes`, the terminal outcomes that complete successfully.
 
 Supply resolved settings as immutable values. Resolve credential references from the host;
 do not print secret values or place them in agent context. Lifecycle settings and the selected

@@ -1,3 +1,4 @@
+import path from 'node:path';
 import {
   developmentRoleInstructions,
   recoveryRoleInstructions,
@@ -14,6 +15,7 @@ import {
   type NexusConfiguration,
   type ProjectConfiguration,
 } from '../configuration/index.js';
+import { installationConfigSetting } from './installation.js';
 
 /**
  * Composition turns resolved project and Nexus configuration into the construction settings of
@@ -149,4 +151,104 @@ export function createAgentRuntimeSettings(
     invocationLimitMinutes: nexus.executionPolicy.agentInvocationLimitMinutes,
     onActivity,
   };
+}
+
+/** The stable queue execution state and record paths for one configured project. */
+export type ExecutionPaths = {
+  /** The execution directory: workflow state, task selection and recovery records. */
+  readonly directory: string;
+  /** The ExecutionRunner's workflow-state filepath. */
+  readonly workflowStateFile: string;
+  /** SelectTask's selection filepath. */
+  readonly selectionFile: string;
+};
+
+/** The queue execution directory and record paths Application supplies for a project. */
+export function executionPaths(
+  nexus: NexusConfiguration,
+  project: ProjectConfiguration,
+): ExecutionPaths {
+  const directory = path.join(nexus.storage.root, 'executions', project.taskSource.project);
+  return {
+    directory,
+    workflowStateFile: path.join(directory, 'workflow.json'),
+    selectionFile: path.join(directory, 'selection.json'),
+  };
+}
+
+/** The root under which task workspaces live for every configured project. */
+export function workspaceRoot(nexus: NexusConfiguration): string {
+  return path.join(nexus.storage.root, 'workspaces');
+}
+
+/** The host environment without the named settings, ready to spawn a child with. */
+function withoutSettings(
+  environment: Readonly<Record<string, string | undefined>>,
+  names: readonly string[],
+): Record<string, string> {
+  const excluded = new Set(names);
+  const result: Record<string, string> = {};
+  for (const [name, value] of Object.entries(environment)) {
+    if (value !== undefined && !excluded.has(name)) {
+      result[name] = value;
+    }
+  }
+  return result;
+}
+
+/** The host environment settings a list of credential references resolve their values from. */
+function credentialSettings(nexus: NexusConfiguration, references: readonly string[]): string[] {
+  return references.flatMap((reference) => {
+    const resolution = nexus.credentials[reference];
+    return resolution === undefined ? [] : [resolution.environment];
+  });
+}
+
+/** The credential references the Notifications adapter resolves. */
+function notificationCredentialReferences(nexus: NexusConfiguration): string[] {
+  const { accessKeyId, secretAccessKey, sessionToken } = nexus.notifications.credentials;
+  return sessionToken === undefined
+    ? [accessKeyId, secretAccessKey]
+    : [accessKeyId, secretAccessKey, sessionToken];
+}
+
+/**
+ * The environment the worker process runs with: the parent environment without the notification
+ * credentials only the parent's Notifications adapter resolves, and with the installation
+ * configuration filepath the worker must read. The worker resolves the project's Jira credential
+ * and the Nexus Lens private key for its own adapters.
+ */
+export function workerProcessEnvironment(
+  nexus: NexusConfiguration,
+  environment: Readonly<Record<string, string | undefined>>,
+  installationConfigPath: string,
+): Record<string, string> {
+  return {
+    ...withoutSettings(
+      environment,
+      credentialSettings(nexus, notificationCredentialReferences(nexus)),
+    ),
+    [installationConfigSetting]: installationConfigPath,
+  };
+}
+
+/**
+ * The environment Nexus commands and agents run with: the host settings they need without any
+ * credential setting the project or Nexus configuration resolves — the Jira API token, the Nexus
+ * Lens private key and the SNS keys. Provider credentials stay, because the coding provider's own
+ * installed settings supply them. Credential values never enter prompts or artifacts.
+ */
+export function toolEnvironment(
+  project: ProjectConfiguration,
+  nexus: NexusConfiguration,
+  environment: Readonly<Record<string, string | undefined>>,
+): Record<string, string> {
+  return withoutSettings(
+    environment,
+    credentialSettings(nexus, [
+      project.taskSource.credential,
+      ...notificationCredentialReferences(nexus),
+      nexus.nexusLens.privateKey,
+    ]),
+  );
 }

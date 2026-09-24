@@ -23,6 +23,6 @@ In progress means implementation or review is underway. Pending means work has n
 | [Delivery, review and completion](delivery-review-completion.md) | Verified |
 | [Complete prompt transport](prompt-transport.md) | Verified |
 | [OperatorInterface](operator-interface.md) | Verified |
-| [Application execution](application.md) | In progress |
-| [Recovery integration](recovery.md) | Pending |
+| [Application execution](application.md) | Verified |
+| [Recovery integration](recovery.md) | In progress |
 | [Finite execution system journeys](finite-execution-system-tests.md) | Pending |

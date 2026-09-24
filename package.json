@@ -9,15 +9,20 @@
     "node": ">=24.0.0"
   },
   "scripts": {
+    "build": "tsc --project tsconfig.build.json && chmod +x dist/src/application/cli.js",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "lint": "eslint . --cache --cache-location .turbo/eslint/.eslintcache --cache-strategy content",
     "lint:fix": "eslint . --fix",
+    "smoke:help": "npm run build && node dist/src/application/cli.js --help",
     "typecheck": "tsc --noEmit",
     "boundaries": "depcruise .",
     "test": "vitest run",
     "test:watch": "vitest",
     "validate": "turbo run format:check lint typecheck boundaries test"
+  },
+  "bin": {
+    "nexus": "dist/src/application/cli.js"
   },
   "dependencies": {
     "@aws-sdk/client-sns": "^3.1138.0",
