@@ -75,3 +75,6 @@ precedence. A setting supplied under the wrong owner is invalid.
 An execution's resolved settings are immutable values. Reloading creates a new settings value; it
 does not mutate an existing one. Configuration data contains no action instances, runtime process
 handles, artifact contents or saved workflow state.
+
+A profile may be selected for more than one role. Profile reuse does not combine role instructions;
+each invocation receives the instructions of its selected role.

@@ -320,7 +320,6 @@ describe('Develop', () => {
   it('records failed when a completed turn leaves uncommitted or misplaced work', async () => {
     const cases: ReadonlyArray<readonly [string, RepositoryState, RegExp]> = [
       ['tracked changes', repositoryState({ headRevision, trackedChanges: true }), /uncommitted/],
-      ['untracked files', repositoryState({ headRevision, untrackedChanges: true }), /uncommitted/],
       ['another branch', repositoryState({ headRevision, branch: 'feature' }), /"feature"/],
     ];
 
@@ -362,6 +361,52 @@ describe('Develop', () => {
         data: { reason: expect.stringMatching(expected) },
       });
     }
+  });
+
+  it('accepts the untracked dependencies and verification output a completed turn leaves', async () => {
+    const { workspaceRoot, selectionFile } = await workspace();
+    const { jira } = sourceWithComments();
+    // Installing dependencies or running focused checks leaves untracked files; they do not make
+    // the committed revision unreviewable.
+    const { git } = scriptedGit([
+      repositoryState(),
+      repositoryState({ headRevision, untrackedChanges: true }),
+    ]);
+    const { runtime } = scriptedRuntime(() =>
+      JSON.stringify({
+        status: 'completed',
+        summary: 'Implemented the retry guard.',
+        findingResponses: [],
+      }),
+    );
+    const develop = createDevelop({
+      selectionFile,
+      initialProfile: 'dev-a',
+      runtime,
+      git,
+      jira,
+      publish: (event) => events.push(event),
+    });
+
+    await expect(develop()).resolves.toBe('completed');
+
+    expect(await readRoundArtifact(workspaceRoot, 1, 'development.json')).toEqual({
+      taskKey: 'NEX-1',
+      profile: 'dev-a',
+      status: 'completed',
+      baseRevision,
+      headRevision,
+      summary: 'Implemented the retry guard.',
+      findingResponses: [],
+    });
+    expect(events).toEqual([
+      {
+        source: 'develop',
+        type: 'agent-started',
+        data: { role: 'developer', operation: 'Develop', profile: 'dev-a', task: 'NEX-1' },
+      },
+      { source: 'develop', type: 'agent-finished', data: null },
+    ]);
   });
 
   it('carries the observed readiness failure into the next repair invocation', async () => {

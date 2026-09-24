@@ -1,4 +1,4 @@
-import { createAgentRuntime } from '../agent-runtime/index.js';
+import { createAgentRuntime, type AgentRuntime } from '../agent-runtime/index.js';
 import type { CodingRuntime } from '../adapters/coding-runtime.js';
 import type { GitAdapter } from '../adapters/git.js';
 import type { GitHubAdapter } from '../adapters/github.js';
@@ -21,7 +21,12 @@ import { selectionDeclaration } from '../task-engine/actions/select-task/artifac
 import { createSelectTask } from '../task-engine/actions/select-task/index.js';
 import { createStartRound } from '../task-engine/actions/start-round/index.js';
 import { createVerify } from '../task-engine/actions/verify/index.js';
-import { createAgentRuntimeSettings, workspaceRoot, type ExecutionPaths } from './composition.js';
+import {
+  createAgentRuntimeSettings,
+  workspaceRoot,
+  type ExecutionPaths,
+  type ProfileRole,
+} from './composition.js';
 
 /**
  * The worker's action binding: Application assembles the implementations the workflow invokes from
@@ -68,11 +73,16 @@ export function createActionBinding(
   }
 
   return (publish) => {
-    const runtime = createAgentRuntime(
-      createAgentRuntimeSettings(nexus, settings.codingRuntime, (activity) => {
-        publish({ source: 'agent-runtime', type: 'agent-activity', data: activity });
-      }),
-    );
+    // One runtime per role: a profile selected for several roles carries only the invoked role's
+    // constant instructions.
+    const runtimeFor = (role: ProfileRole): AgentRuntime =>
+      createAgentRuntime(
+        createAgentRuntimeSettings(nexus, role, settings.codingRuntime, (activity) => {
+          publish({ source: 'agent-runtime', type: 'agent-activity', data: activity });
+        }),
+      );
+    const developerRuntime = runtimeFor('developer');
+    const reviewerRuntime = runtimeFor('reviewer');
 
     /** An action constructed with the workspace of the selection the workflow currently retains. */
     const selectedWorkspace = (
@@ -113,7 +123,7 @@ export function createActionBinding(
       Develop: createDevelop({
         selectionFile,
         initialProfile: initialDeveloper.profile,
-        runtime,
+        runtime: developerRuntime,
         git: settings.git,
         jira: settings.jira,
         publish,
@@ -134,7 +144,7 @@ export function createActionBinding(
         reviewCheck: delivery.reviewCheck,
         nexusLens: { appId: nexus.nexusLens.appId, login: nexus.nexusLens.login },
         reviewerProfile: nexus.executionPolicy.reviewerProfile,
-        runtime,
+        runtime: reviewerRuntime,
         git: settings.git,
         github: settings.github,
         jira: settings.jira,

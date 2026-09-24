@@ -41,7 +41,8 @@ for the approved head; a same-name check from another producer is not the Lens g
 changed, do not transfer the old approval.
 
 Observe the actual merge and require every configured post-merge check to succeed for that merge
-revision. Those successful results are the completion evidence. Pending work remains pending within
+revision. All matching runs must succeed; a newer successful run does not supersede a failed matching run.
+Those successful results are the completion evidence. Pending work remains pending within
 the configured completion wait; failed checks or expiry cannot produce completed.
 
 Write completion evidence after the merge and checks are confirmed. Transition the ticket to Done

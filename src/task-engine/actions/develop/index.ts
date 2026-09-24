@@ -81,7 +81,11 @@ function profileForRound(
   );
 }
 
-/** Why the observed worktree is not a committed implementation ready for verification, or null. */
+/**
+ * Why the observed worktree does not hold the committed implementation ready for verification, or
+ * null. Untracked files are the dependencies, caches and verification output the worktree is
+ * expected to carry; only uncommitted tracked changes contradict the recorded revision.
+ */
 function readinessProblem(state: RepositoryState, prepared: PreparedWorkspace): string | null {
   if (state.headRevision === null) {
     return 'the worktree has no revision';
@@ -91,9 +95,6 @@ function readinessProblem(state: RepositoryState, prepared: PreparedWorkspace): 
   }
   if (state.trackedChanges) {
     return 'tracked changes are uncommitted';
-  }
-  if (state.untrackedChanges) {
-    return 'untracked files are uncommitted';
   }
   return null;
 }

@@ -37,9 +37,6 @@ const runnerSource = 'execution-runner';
 /** The state-node map of a supplied workflow, however its context and events are typed. */
 type WorkflowStates = AnyStateMachine['root']['states'];
 
-/** One state node of a supplied workflow. */
-type WorkflowStateNode = WorkflowStates[string];
-
 /** Read the persisted snapshot, or decide to start the workflow from its initial state. */
 type LoadedState =
   | { readonly kind: 'fresh' }
@@ -93,59 +90,6 @@ async function loadState(stateFile: string): Promise<LoadedState> {
     };
   }
   return { kind: 'restore', snapshot };
-}
-
-/**
- * The state nodes the snapshot's value selects, or null when the value is not a state value of
- * the workflow. XState resolves the value itself during restoration; this only recognizes it.
- */
-function activeStateNodes(node: WorkflowStateNode, value: unknown): WorkflowStateNode[] | null {
-  if (typeof value === 'string') {
-    const child = node.states[value];
-    return child === undefined ? null : [child];
-  }
-  if (!isRecord(value)) {
-    return null;
-  }
-  const nodes: WorkflowStateNode[] = [];
-  for (const [key, nested] of Object.entries(value)) {
-    const child = node.states[key];
-    if (child === undefined) {
-      return null;
-    }
-    const descendants = activeStateNodes(child, nested);
-    if (descendants === null) {
-      return null;
-    }
-    nodes.push(child, ...descendants);
-  }
-  return nodes;
-}
-
-/**
- * Why the active snapshot cannot resume, or null when it can. XState restores invoked children
- * only from the snapshot's children map and silently accepts an active state whose child is
- * missing, leaving run waiting forever, so reject that corruption before starting the actor.
- */
-function snapshotProblem(
-  workflow: AnyStateMachine,
-  snapshot: Record<string, unknown>,
-): string | null {
-  const nodes = activeStateNodes(workflow.root, snapshot.value);
-  if (nodes === null) {
-    return `state value ${JSON.stringify(snapshot.value)} is not part of the workflow`;
-  }
-  const children =
-    isRecord(snapshot.children) && !Array.isArray(snapshot.children) ? snapshot.children : {};
-  for (const node of [workflow.root, ...nodes]) {
-    for (const invoke of node.invoke) {
-      const child = children[invoke.id];
-      if (!isRecord(child) || child.src !== invoke.src) {
-        return `state "${node.id}" has no child for its invoked operation "${String(invoke.src)}"`;
-      }
-    }
-  }
-  return null;
 }
 
 /** The operations the workflow definition invokes, in state definition order. */
@@ -216,12 +160,6 @@ async function runWorkflow(settings: ExecutionRunnerSettings): Promise<WorkflowR
   const loaded = await loadState(settings.stateFile);
   if (loaded.kind === 'problem') {
     return fault(loaded.message);
-  }
-  if (loaded.kind === 'restore') {
-    const problem = snapshotProblem(workflow, loaded.snapshot);
-    if (problem !== null) {
-      return fault(`Workflow state at "${settings.stateFile}" cannot be restored: ${problem}.`);
-    }
   }
 
   const actor = createActor(

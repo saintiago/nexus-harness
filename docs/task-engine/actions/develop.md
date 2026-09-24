@@ -74,9 +74,11 @@ require them. Verification uses this same worktree.
 
 Interpret the returned report and inspect the resulting branch and revision. Completed work must be
 committed and ready for verification. Record failed when the turn reports incomplete work or leaves
-implementation changes uncommitted; when a completed turn's observed worktree is not ready, the
+tracked implementation changes uncommitted; when a completed turn's observed worktree is not ready, the
 recorded summary keeps the agent's explanation and the observed readiness failure. Finish writing
 the report before returning.
 
 On repetition, inspect existing work and the current-round report before deciding whether another
 invocation is needed. A report for a different task or revision is not evidence for the current work.
+
+Untracked files do not prevent completion. Do not classify or reject them as a readiness check.

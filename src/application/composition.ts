@@ -19,23 +19,16 @@ import { installationConfigSetting } from './installation.js';
 
 /**
  * Composition turns resolved project and Nexus configuration into the construction settings of
- * the components. It resolves credential references against the host, attaches each profile's role
- * instructions and hands every capability through unchanged. Each component's own constructor
- * performs the construction; this module contains no lifecycle or commands.
+ * the components. It resolves credential references against the host, attaches the selected role's
+ * constant instructions and hands every capability through unchanged. Each component's own
+ * constructor performs the construction; this module contains no lifecycle or commands.
  */
 
 /** The host environment credential references resolve their values from. */
 type HostEnvironment = Readonly<Record<string, string | undefined>>;
 
-/** The role whose constant instructions a profile carries, selected by the execution policy. */
-type ProfileRole = 'developer' | 'reviewer' | 'recovery';
-
-/** How the execution policy selects a profile for each role, named in conflict reports. */
-const roleSelection: Record<ProfileRole, string> = {
-  developer: 'a developer ladder entry',
-  reviewer: 'the reviewer profile',
-  recovery: 'the recovery profile',
-};
+/** The role whose constant instructions one invocation carries, selected by the execution policy. */
+export type ProfileRole = 'developer' | 'reviewer' | 'recovery';
 
 /** The complete constant instructions of each role, defined by the role contracts. */
 const roleInstructions: Record<ProfileRole, readonly string[]> = {
@@ -45,33 +38,23 @@ const roleInstructions: Record<ProfileRole, readonly string[]> = {
 };
 
 /**
- * The role each execution-policy-selected profile serves: developer ladder entries identify
+ * The profiles the execution policy selects for one role: developer ladder entries identify
  * developer profiles, the reviewer profile identifies a reviewer profile and the recovery profile
- * identifies a recovery profile. A profile carries one role's instructions, so selecting the same
- * ID for another role is a configuration conflict, reported instead of silently choosing a role.
+ * identifies a recovery profile. One profile may be selected for more than one role.
  */
-function selectedProfileRoles(configuration: NexusConfiguration): ReadonlyMap<string, ProfileRole> {
-  const roles = new Map<string, ProfileRole>();
-  const select = (profile: string, role: ProfileRole): void => {
-    const selected = roles.get(profile);
-    if (selected === undefined) {
-      roles.set(profile, role);
-      return;
-    }
-    if (selected !== role) {
-      throw new Error(
-        `Agent profile "${profile}" is referenced as both ${roleSelection[selected]} and ` +
-          `${roleSelection[role]}; one profile cannot serve incompatible roles. Configure ` +
-          'separate profile IDs for each role.',
-      );
-    }
-  };
-  for (const entry of configuration.executionPolicy.developerLadder) {
-    select(entry.profile, 'developer');
+function profilesForRole(
+  configuration: NexusConfiguration,
+  role: ProfileRole,
+): ReadonlySet<string> {
+  const { developerLadder, reviewerProfile, recoveryProfile } = configuration.executionPolicy;
+  switch (role) {
+    case 'developer':
+      return new Set(developerLadder.map((entry) => entry.profile));
+    case 'reviewer':
+      return new Set([reviewerProfile]);
+    case 'recovery':
+      return new Set([recoveryProfile]);
   }
-  select(configuration.executionPolicy.reviewerProfile, 'reviewer');
-  select(configuration.executionPolicy.recoveryProfile, 'recovery');
-  return roles;
 }
 
 /**
@@ -115,25 +98,27 @@ export function createNotificationSettings(
 }
 
 /**
- * The AgentRuntime construction settings: the supplied coding-provider capability and activity
- * observer, the configured base instructions and invocation limit, and the configured profiles as
- * AgentProfile values carrying one role's constant instructions followed by their configured
- * instructions and their native tool settings. A configured instruction that exactly repeats a
- * selected role constant is dropped, so the constant is stated once per invocation; all other
- * configured instructions keep their order.
+ * The AgentRuntime construction settings for one role: the supplied coding-provider capability and
+ * activity observer, the configured base instructions and invocation limit, and the configured
+ * profiles as AgentProfile values. The profiles this role selects carry that role's constant
+ * instructions followed by their configured instructions and their native tool settings. A
+ * configured instruction that exactly repeats a selected role constant is dropped, so the constant
+ * is stated once per invocation; all other configured instructions keep their order. Selecting one
+ * profile for several roles attaches only the invoked role's constant, so role instructions are
+ * never combined.
  */
 export function createAgentRuntimeSettings(
   nexus: NexusConfiguration,
+  role: ProfileRole,
   codingRuntime: CodingRuntime,
   onActivity: (activity: AgentEvent) => void,
 ): AgentRuntimeSettings {
-  const roles = selectedProfileRoles(nexus);
+  const selected = profilesForRole(nexus, role);
   return {
     codingRuntime,
     baseInstructions: nexus.agentRuntime.baseInstructions,
     profiles: nexus.agentRuntime.profiles.map((profile): AgentProfile => {
-      const role = roles.get(profile.id);
-      const constants = role === undefined ? undefined : roleInstructions[role];
+      const constants = selected.has(profile.id) ? roleInstructions[role] : undefined;
       return {
         id: profile.id,
         model: profile.model,

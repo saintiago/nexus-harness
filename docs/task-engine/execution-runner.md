@@ -41,8 +41,9 @@ XState executes it.
 
 Save the XState persisted snapshot as JSON at the supplied filepath. At the start of run, inspect the
 saved state. If absent, start from the initial state. If terminal, discard that snapshot and start
-from the initial state. Otherwise restore the active execution. Invalid or unreadable state is an
-error, not permission to discard it. Business artifacts stay outside the snapshot.
+from the initial state. Otherwise pass the snapshot to XState for restoration. Report JSON read/parse
+errors and restoration errors from XState; do not inspect its internal state tree or invoked-child
+records. Errors are not permission to discard saved state. Business artifacts stay outside the snapshot.
 
 Subscribe before starting the XState actor. On each state update, capture its persisted snapshot
 and save it. Serialize writes in notification order so an older save cannot overwrite a newer one.

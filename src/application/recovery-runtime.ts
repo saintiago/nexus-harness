@@ -26,7 +26,7 @@ export function createRecoveryRuntime(settings: RecoveryRuntimeConstruction): Re
       // One runtime per invocation so the invocation's own activity observer receives it;
       // AgentRuntime keeps no state between invocations.
       const runtime = createAgentRuntime(
-        createAgentRuntimeSettings(nexus, codingRuntime, request.onActivity),
+        createAgentRuntimeSettings(nexus, 'recovery', codingRuntime, request.onActivity),
       );
       return runtime.run(nexus.executionPolicy.recoveryProfile, request.workspace, request.context);
     },

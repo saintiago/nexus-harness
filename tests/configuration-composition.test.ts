@@ -11,6 +11,7 @@ import {
   createAgentRuntimeSettings,
   createJiraSettings,
   createNotificationSettings,
+  type ProfileRole,
 } from '../src/application/composition.js';
 import {
   createAgentRuntime,
@@ -144,8 +145,11 @@ describe('AgentRuntime construction', () => {
   const workspaceRoot = '/srv/nexus/workspaces/NEX-7';
   const context = 'Task NEX-7\n\nImplement the requested change and return the report.';
 
-  /** A real AgentRuntime over a recording coding provider with its composed settings. */
-  function harness(configuration: NexusConfiguration): {
+  /** A real AgentRuntime over a recording coding provider with the settings composed for a role. */
+  function harness(
+    configuration: NexusConfiguration,
+    role: ProfileRole,
+  ): {
     readonly runtime: ReturnType<typeof createAgentRuntime>;
     readonly settings: ReturnType<typeof createAgentRuntimeSettings>;
     readonly requests: CodingRuntimeRequest[];
@@ -157,23 +161,25 @@ describe('AgentRuntime construction', () => {
         return Promise.resolve({ ok: true, value: { output: '{"status":"completed"}' } });
       },
     };
-    const settings = createAgentRuntimeSettings(configuration, codingRuntime, () => {});
+    const settings = createAgentRuntimeSettings(configuration, role, codingRuntime, () => {});
     return { runtime: createAgentRuntime(settings), settings, requests };
   }
 
-  it('preserves configured instructions and includes each selected role constant exactly once', async () => {
+  it('includes each selected role constant exactly once for its role', async () => {
     const configuration = nexus();
-    const { runtime, settings, requests } = harness(configuration);
     const selected = [
       {
+        role: 'developer',
         profile: configuration.executionPolicy.developerLadder[0]!.profile,
         instructions: developmentRoleInstructions,
       },
       {
+        role: 'reviewer',
         profile: configuration.executionPolicy.reviewerProfile,
         instructions: reviewerRoleInstructions,
       },
       {
+        role: 'recovery',
         profile: configuration.executionPolicy.recoveryProfile,
         instructions: recoveryRoleInstructions,
       },
@@ -183,7 +189,8 @@ describe('AgentRuntime construction', () => {
     )!;
     expect(configuredInitialProfile.instructions.length).toBeGreaterThan(0);
 
-    for (const { profile, instructions } of selected) {
+    for (const { role, profile, instructions } of selected) {
+      const { runtime, settings, requests } = harness(configuration, role);
       const result = await runtime.run(profile, { root: workspaceRoot }, context);
       expect(result.ok).toBe(true);
 
@@ -209,8 +216,8 @@ describe('AgentRuntime construction', () => {
       expect(request.timeLimitMs).toBe(
         configuration.executionPolicy.agentInvocationLimitMinutes * 60_000,
       );
+      expect(requests).toHaveLength(1);
     }
-    expect(requests).toHaveLength(selected.length);
   });
 
   it('drops a configured copy of the selected role constant and keeps the other instructions', async () => {
@@ -229,7 +236,7 @@ describe('AgentRuntime construction', () => {
       'Close with the verification evidence.',
     ];
     const configuration = parseNexusConfiguration(configured, installationDirectory);
-    const { runtime, settings, requests } = harness(configuration);
+    const { runtime, settings, requests } = harness(configuration, 'developer');
 
     expect(
       settings.profiles.find((candidate) => candidate.id === developer.id)?.instructions,
@@ -247,39 +254,83 @@ describe('AgentRuntime construction', () => {
     expect(occurrences(requests[0]!.prompt, adapted)).toBe(1);
   });
 
-  it('reports a profile selected for incompatible roles instead of choosing a role', () => {
-    const codingRuntime: CodingRuntime = {
-      execute: () => Promise.resolve({ ok: true, value: { output: '{}' } }),
-    };
-
+  it('gives a profile shared by the developer ladder and the reviewer only the invoked role', async () => {
     const developerAndReviewer = nexusConfiguration();
-    developerAndReviewer.executionPolicy.reviewerProfile = 'nexus-flash';
-    expect(() =>
-      createAgentRuntimeSettings(
-        parseNexusConfiguration(developerAndReviewer, installationDirectory),
-        codingRuntime,
-        () => {},
-      ),
-    ).toThrow(
-      /Agent profile "nexus-flash" is referenced as both a developer ladder entry and the reviewer profile/,
-    );
+    const shared = developerAndReviewer.executionPolicy.developerLadder[0]!.profile;
+    developerAndReviewer.executionPolicy.reviewerProfile = shared;
+    const configuration = parseNexusConfiguration(developerAndReviewer, installationDirectory);
+    const configured = configuration.agentRuntime.profiles.find(
+      (candidate) => candidate.id === shared,
+    )!;
 
+    const developer = harness(configuration, 'developer');
+    await expect(developer.runtime.run(shared, { root: workspaceRoot }, context)).resolves.toEqual({
+      ok: true,
+      value: { output: '{"status":"completed"}' },
+    });
+    const developerPrompt = developer.requests[0]!.prompt;
+    for (const instruction of developmentRoleInstructions) {
+      expect(occurrences(developerPrompt, instruction)).toBe(1);
+    }
+    expect(developerPrompt).not.toContain(reviewerRoleInstructions[0]!);
+    for (const instruction of configured.instructions) {
+      expect(occurrences(developerPrompt, instruction)).toBe(1);
+    }
+
+    const reviewer = harness(configuration, 'reviewer');
+    await expect(reviewer.runtime.run(shared, { root: workspaceRoot }, context)).resolves.toEqual({
+      ok: true,
+      value: { output: '{"status":"completed"}' },
+    });
+    const reviewerPrompt = reviewer.requests[0]!.prompt;
+    for (const instruction of reviewerRoleInstructions) {
+      expect(occurrences(reviewerPrompt, instruction)).toBe(1);
+    }
+    expect(reviewerPrompt).not.toContain(developmentRoleInstructions[0]!);
+    for (const instruction of configured.instructions) {
+      expect(occurrences(reviewerPrompt, instruction)).toBe(1);
+    }
+  });
+
+  it('gives a profile shared by the reviewer and recovery only the invoked role', async () => {
     const reviewerAndRecovery = nexusConfiguration();
-    reviewerAndRecovery.executionPolicy.recoveryProfile = 'nexus-review';
-    expect(() =>
-      createAgentRuntimeSettings(
-        parseNexusConfiguration(reviewerAndRecovery, installationDirectory),
-        codingRuntime,
-        () => {},
-      ),
-    ).toThrow(
-      /Agent profile "nexus-review" is referenced as both the reviewer profile and the recovery profile/,
-    );
+    const shared = reviewerAndRecovery.executionPolicy.reviewerProfile;
+    reviewerAndRecovery.executionPolicy.recoveryProfile = shared;
+    const configuration = parseNexusConfiguration(reviewerAndRecovery, installationDirectory);
+    const configured = configuration.agentRuntime.profiles.find(
+      (candidate) => candidate.id === shared,
+    )!;
+
+    const reviewer = harness(configuration, 'reviewer');
+    await expect(reviewer.runtime.run(shared, { root: workspaceRoot }, context)).resolves.toEqual({
+      ok: true,
+      value: { output: '{"status":"completed"}' },
+    });
+    const reviewerPrompt = reviewer.requests[0]!.prompt;
+    for (const instruction of reviewerRoleInstructions) {
+      expect(occurrences(reviewerPrompt, instruction)).toBe(1);
+    }
+    expect(reviewerPrompt).not.toContain(recoveryRoleInstructions[0]!);
+
+    const recovery = harness(configuration, 'recovery');
+    await expect(recovery.runtime.run(shared, { root: workspaceRoot }, context)).resolves.toEqual({
+      ok: true,
+      value: { output: '{"status":"completed"}' },
+    });
+    const recoveryPrompt = recovery.requests[0]!.prompt;
+    for (const instruction of recoveryRoleInstructions) {
+      expect(occurrences(recoveryPrompt, instruction)).toBe(1);
+    }
+    expect(recoveryPrompt).not.toContain(reviewerRoleInstructions[0]!);
+    for (const instruction of configured.instructions) {
+      expect(occurrences(reviewerPrompt, instruction)).toBe(1);
+      expect(occurrences(recoveryPrompt, instruction)).toBe(1);
+    }
   });
 
   it('keeps host credential values out of the assembled prompt', async () => {
     const configuration = nexus();
-    const { runtime, requests } = harness(configuration);
+    const { runtime, requests } = harness(configuration, 'reviewer');
 
     await runtime.run(
       configuration.executionPolicy.reviewerProfile,

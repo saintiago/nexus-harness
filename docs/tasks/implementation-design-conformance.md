@@ -1,3 +1,5 @@
 # Reconcile implementation with design
 
-Review and correct implementation behavior against [Develop](../task-engine/actions/develop.md), [CompleteTask](../task-engine/actions/complete-task.md), [Configuration](../configuration.md) and [Testing](../testing.md). Examine blanket untracked-file rejection, treatment of superseded check runs, restrictions on sharing profiles between roles, and test scopes and execution order. Remove unsupported restrictions where documented intent is clear. Report ambiguous product decisions instead of inventing requirements or changing documentation to justify existing code.
+Remove the blanket rejection of untracked files from Develop and the restriction preventing a profile from being shared across roles. Keep role-specific instructions correct when a profile is reused. Keep completion requiring all matching check runs to succeed. Align test scopes and execution order with [Testing](../testing.md). Follow [Develop](../task-engine/actions/develop.md), [CompleteTask](../task-engine/actions/complete-task.md) and [Configuration](../configuration.md). Report other unsupported behavior instead of inventing requirements.
+
+Remove custom XState snapshot inspection and the corruption-specific tests that require it. Keep ordinary JSON loading and XState restoration/error handling; do not replace the inspection with another validator.

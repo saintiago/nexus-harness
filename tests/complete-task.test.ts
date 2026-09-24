@@ -130,6 +130,7 @@ const reviewCheckObservation: CheckObservation = {
 /** One workflow run observation for the merge revision. */
 function workflowRun(
   overrides: Partial<{
+    readonly id: number;
     readonly name: string | null;
     readonly path: string;
     readonly status: string | null;
@@ -547,6 +548,35 @@ describe('CompleteTask', () => {
       type: 'failed',
       data: { reason: expect.stringMatching(/completion wait of 0s expired/) },
     });
+  });
+
+  it('does not let a newer successful run supersede a failed matching run', async () => {
+    const { workspaceRoot, selectionFile } = await workspace({ name: 'superseded' });
+    const { github } = scriptedGitHub({
+      readChecks: () => ok([reviewCheckObservation]),
+      readPullRequest: () => ok(pullRequest({ state: 'closed', merged: true, mergeRevision })),
+      // The provider lists the newest run first; every matching run must still succeed.
+      readWorkflowRuns: () =>
+        ok([workflowRun({ id: 6 }), workflowRun({ id: 5, conclusion: 'failure' })]),
+    });
+
+    await expect(
+      completeTaskAction({
+        selectionFile,
+        github,
+        jira: scriptedJira({}).jira,
+        wait: scriptedWait().wait,
+      })(),
+    ).resolves.toBe('failed');
+
+    expect(events.at(-1)).toEqual({
+      source: 'complete-task',
+      type: 'failed',
+      data: { reason: expect.stringMatching(/concluded "failure" for revision/) },
+    });
+    await expect(
+      stat(path.join(workspaceRoot, 'artifacts', '1', 'completion.json')),
+    ).rejects.toThrow(/ENOENT/);
   });
 
   it('reuses confirmed evidence and finishes the outstanding completion step', async () => {
