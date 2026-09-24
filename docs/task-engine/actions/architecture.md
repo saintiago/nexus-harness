@@ -62,8 +62,10 @@ and returns their typed contents in argument order. writeOutputArtifact accepts 
 and content of its declared type. Structured contents are stored as JSON.
 
 On each call, read state/current-round.json from the selected workspace and resolve the artifact as
-artifacts/<number>/<pathFromArtifactsRoot>. Missing or invalid round state fails the operation.
-Do not cache the current round between calls. Missing current inputs never fall back to earlier rounds.
+artifacts/<number>/<pathFromArtifactsRoot>. Missing or invalid round state fails the operation, except
+for [StartRound](start-round.md#input) planning the first round. StartRound reads the current round's
+results before replacing that record. Do not cache the current round between calls. Missing current
+inputs never fall back to earlier rounds.
 
 The current-round record is owned by [StartRound](start-round.md#output). These path-resolution rules
 belong to the helpers, not to that action.
@@ -116,7 +118,8 @@ errors. Neither form is silently treated as successful work.
 [SelectTask](select-task.md#output) owns selection.json beside the queue's workflow-state file.
 [PrepareWorkspace](prepare-workspace.md#output) owns state/prepared-workspace.json in the selected
 ticket's workspace. Consumers import these record declarations and read them directly; they are not
-resolved through the current-round helper. StartRound owns the current-round record.
+resolved through the current-round helper. [StartRound](start-round.md#output) owns the current-round
+record and the developer profile and reason in its round plan.
 
 Application binds the selection-file location to the actions that need it. Each invocation reads the
 current selection to obtain its task workspace; it does not retain another ticket's workspace between
@@ -133,6 +136,8 @@ Earlier directories preserve previous exchanges without producers archiving thei
 that need earlier findings or conversation use those directories explicitly as history when assembling
 context; ordinary input reads remain scoped to the current round.
 
-Workflow sequencing starts a round before implementation and starts another before a selected repair.
-Within a round, actions finish writing their outputs before returning. Workflow definitions contain states
-and transitions, not artifact paths or mappings.
+Workflow sequencing starts the initial round before implementation and routes each same-revision
+repair trigger back to StartRound. That action either opens another planned round or reports
+exhaustion; the round policy is part of StartRound, not a separate action or planner. Within a round,
+actions finish writing their outputs before returning. Workflow definitions contain states and
+transitions, not artifact paths or mappings.

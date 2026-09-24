@@ -35,7 +35,7 @@ of the target project's directory. Relative paths are relative to the Nexus conf
 | Workflow | Workflow definition path for finite queue execution |
 | Storage | Root for queue execution state, recovery and task workspaces |
 | Agent runtime | Base instructions, profile catalogue, provider connections and tool configuration |
-| Execution policy | Invocation limits, repair/escalation policies and maximum recovery attempts per supervised execution |
+| Execution policy | Invocation limits, developer ladder and repair allowances, reviewer selection and maximum recovery attempts per supervised execution |
 | Notifications | Destination, provider connection and host credential references |
 | Credentials | Reference names and the host environment settings that supply their values |
 | Nexus Lens | GitHub App identity and installation credential references for review publication |
@@ -49,11 +49,15 @@ references that supply the access key, secret key and optional session token.
 
 Profiles conform to [AgentProfile](agent-runtime/architecture.md#provided-interface). Profile IDs are unique.
 The initial recovery profile is nexus-recovery, with model gpt-6-astra and high reasoning effort.
-Workflow and escalation profile references identify entries in the same Nexus configuration.
+Workflow, developer ladder and reviewer profile references identify entries in the same Nexus
+configuration.
 
-The developer ladder lists profiles in escalation order and the repair allowance for each profile.
-Both failed implementation/checks and review-requested changes consume that policy; starting another
-review round does not reset it. The reviewer profile is configured separately.
+The developer ladder lists profiles in increasing capability order. Its first entry supplies the
+initial round; each entry's repairAllowance is the number of executed repair turns allowed with that
+profile. [StartRound](task-engine/actions/start-round.md#round-planning) owns repair triggers,
+counting, promotion at each second consecutive changesRequested review, the no-downgrade rule and
+exhaustion. The reviewer profile is configured separately and selected by
+[Review](task-engine/actions/review.md#interface), not by StartRound.
 
 The target repository's merge rules require the configured Nexus Lens review check from that App,
 alongside its required CI checks. Project delivery settings identify that required check.
@@ -65,9 +69,10 @@ shell executable. Credential references contain identifiers, not secret values: 
 entry in the Nexus Credentials settings, which names the host environment setting that supplies its
 value.
 
-Required paths and identifiers are nonempty. Duration values state their unit and are nonnegative.
-Recovery allowances are positive integers. Workflow definitions, profile references and configured
-provider settings must be valid for the selected workflow.
+Required paths and identifiers are nonempty. The developer ladder contains at least one profile.
+Duration values state their unit and are nonnegative. Recovery allowances are positive integers.
+Workflow definitions, profile references and configured provider settings must be valid for the
+selected workflow.
 
 Project and Nexus configuration have disjoint ownership. They are not merged through generic override
 precedence. A setting supplied under the wrong owner is invalid.

@@ -45,12 +45,11 @@ A multi-component flow does not create a special shared contract.
 - [Action design](docs/task-engine/actions/architecture.md): action structure, typed input/output artifacts and repeated-round handoffs.
 - [SelectTask design](docs/task-engine/actions/select-task.md): source selection, task input and retained workspace reference.
 - [PrepareWorkspace design](docs/task-engine/actions/prepare-workspace.md): repository preparation and retained-work continuation.
-- [StartRound design](docs/task-engine/actions/start-round.md): round directories, current-round state and artifact-root selection.
-- [Develop design](docs/task-engine/actions/develop.md): implementation context, profile selection and developer output.
+- [StartRound design](docs/task-engine/actions/start-round.md): round planning, developer profile selection and current-round state.
+- [Develop design](docs/task-engine/actions/develop.md): implementation context, selected developer profile and developer output.
 - [Verify design](docs/task-engine/actions/verify.md): configured checks and persisted command results.
 - [Deliver design](docs/task-engine/actions/deliver.md): verified branch publication and developer reporting.
 - [Review design](docs/task-engine/actions/review.md): revision-specific review, complete findings and review publication.
-- [SelectRepair design](docs/task-engine/actions/select-repair.md): shared repair allowance and profile escalation.
 - [CompleteTask design](docs/task-engine/actions/complete-task.md): merge/check evidence and task completion.
 - [AgentRuntime design](docs/agent-runtime/architecture.md): profiles, supplied context and agent invocation.
 - [Native Codex profiles](docs/agent-runtime/profiles.md): repository templates and Linux installation.
