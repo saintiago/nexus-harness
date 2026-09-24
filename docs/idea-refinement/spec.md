@@ -121,8 +121,10 @@ be deferred to design; the council must request a correction or return the idea 
 Each role is a configured AgentRuntime profile with a complete constant prompt plus invocation
 context. The prompts below are required role instructions. Each action supplies the current
 captured idea, all available saved workspace artifacts, project sources, revision/cycle and output
-schema. Agent output is parsed and checked by the owning action; a role's claim never counts as a source
-status update. Profiles may use different models or tools, but all six are separately attributable
+schema. Every invocation also receives the connected project's root `AGENTS.md` content when
+present. Agents follow that guidance and the project documents it references; a missing
+`AGENTS.md` does not block refinement. Agent output is parsed and checked by the owning
+action; a role's claim never counts as a source status update. Profiles may use different models or tools, but all six are separately attributable
 invocations. Purpose and research must be able to run concurrently. Council roles must not read
 one another's pending outputs.
 
