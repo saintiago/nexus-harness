@@ -32,9 +32,10 @@ A separate Requirements and Design workflow may consume an approved brief later.
   source update failure is an operational fault, not a council verdict. Preserve artifacts and
   report it through Application's ordinary recovery/attention path. Never manufacture approval.
 
-Publish each terminal decision once; retries inspect the source before repeating a write. A
-waiting-for-feedback item is excluded from automatic selection until explicit resubmission. The
-workflow never silently waits for author input.
+Publish each terminal decision once. Record the result of each Jira write in the run artifacts;
+an uncertain write outcome requires operational attention rather than another Jira read or an
+automatic replay. A waiting-for-feedback item is excluded from automatic selection until explicit
+resubmission. The workflow never silently waits for author input.
 
 ## Inputs and project context
 
@@ -48,9 +49,10 @@ and storage. Idea refinement uses the same Jira adapter as finite delivery with 
 selection query. HARN selects Jira Task issues in `Idea`; `Idea Refinement` is the active status,
 `Draft` is the approved status and `Waiting for Feedback` awaits human input.
 
-Before publishing a brief or feedback and changing status, the action re-reads the Jira issue
-and reconciles changes to its text or revision. The adapter owns Jira identity and transition
-details; the workflow owns selection, verdicts and publication decisions.
+The action reads the Jira issue and its relevant comments once when selecting it, then moves it
+to the active status. Its captured content is the input for the entire run. Publication uses that
+snapshot and the run artifacts without another Jira read. The adapter owns Jira identity and
+transition details; the workflow owns selection, verdicts and publication decisions.
 
 The Purpose Verifier searches the connected project's documentation for its purpose, charter
 and long-term vision. If these are absent or incomplete, it examines code and commit history
@@ -63,13 +65,12 @@ do not change source statuses. Nexus actions own artifacts and source updates.
 
 ## Behavior
 
-1. Select one eligible submitted idea and capture its exact source revision. In HARN, select Jira
-   Task issues in `Idea`. Move it to `Idea Refinement` before invoking agents. Run at most
-   one refinement execution per connected project so the same revision is not selected twice.
-   On restart, resume the active execution rather than selecting the active item as a fresh idea.
-   A source change before publication requires reconciliation, not overwriting the author's new
-   text. On resubmission, capture the author's response comment made after the prior feedback
-   request along with the current idea text and links as the new run's input.
+1. Select one eligible submitted idea. In HARN, select Jira Task issues in `Idea`. Read the
+   issue and relevant comments once, capture that input, and move it to `Idea Refinement` before
+   invoking agents. Run at most one refinement execution per connected project so the same idea
+   is not selected twice. On restart, resume from saved execution state and artifacts without
+   another Jira read. On resubmission, capture the author's response comment made after the prior
+   feedback request along with the current idea text and links as the new run's input.
 2. Run Purpose Verifier and Researcher concurrently on the original idea. The Purpose Verifier
    finds purpose documents itself and, where needed, infers purpose from code and commit history.
    They work independently and write separate reports. The writer starts only after both reports
@@ -199,8 +200,8 @@ update evidence, including the human-facing Jira comment when applicable. These 
 are specific to idea refinement; finite delivery's round layout is unchanged.
 
 Actions write complete outputs before returning a transition outcome. On restart, an action may
-reuse a validated artifact for the same source revision, cycle and inputs. A changed original idea
-requires a new run; a changed brief invalidates all council results. Concurrent roles have distinct
+reuse a validated artifact for the captured source revision, cycle and inputs. A resubmitted idea
+starts a new run; a changed brief invalidates all council results. Concurrent roles have distinct
 artifact paths and no shared writable output. The runner persists XState control state separately
 from these business artifacts.
 
@@ -290,7 +291,8 @@ lines when interactive panes are unavailable.
   artifacts and logs. Neither route moves the item to To Do. Resubmission requires the author to
   reply in a Jira comment and move the item back to `Idea`. The next run reads that comment.
   Execution faults leave an active item available for recovery without publishing a council
-  verdict or requesting human feedback.
+  verdict or requesting human feedback. A run reads its Jira input only at selection and does
+  not re-read it before publication or during restart.
 - Concurrent agent activity remains attributable in separate durable files and independent 10-line
   terminal panes. Main events include invocation and business-artifact references without detailed
   agent activity.

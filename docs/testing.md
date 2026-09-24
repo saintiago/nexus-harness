@@ -101,11 +101,12 @@ approval on one brief revision, mixed-verdict precedence, minor and major routes
 nonconvergence, and immediate return for an unworkable idea. Verify that purpose documents are
 discovered without configured references and that absent documents produce cited, provisional
 inference from code and commits rather than an execution fault. At the action boundary, verify
-producer-owned artifacts and revision/digest binding, source update idempotency, the configured
-submitted-to-active, active-to-approved, active-to-waiting-for-feedback and
+producer-owned artifacts and revision/digest binding, one Jira issue/comment capture per run,
+and the configured submitted-to-active, active-to-approved, active-to-waiting-for-feedback and
 waiting-for-feedback-to-submitted transitions, including capture of the author's resubmission
-comment. Verify that only human-facing feedback is posted to Jira, while internal feedback stays
-in artifacts, and that a stale or changed source item is not overwritten. A focused integration
-test should interleave two agent activity streams and verify separate durable JSONL files, correct invocation references in
-main events, and independent 10-line panes. Reuse existing component and system test scopes; do
+comment. Verify that publication uses the captured input without a later Jira read, only
+human-facing feedback is posted to Jira, internal feedback stays in artifacts, and an uncertain
+write is not automatically replayed. A focused integration test should interleave two agent
+activity streams and verify separate durable JSONL files, correct invocation references in main
+events, and independent 10-line panes. Reuse existing component and system test scopes; do
 not duplicate XState's own parallel-state tests.
