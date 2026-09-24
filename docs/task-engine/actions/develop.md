@@ -12,13 +12,13 @@ Follow the [action contract](architecture.md). Use the task input from
 and the [Git adapter](../../adapters/git.md#interface). For a Jira task, use the
 [Jira adapter](../../adapters/jira.md#interface) to refresh task content and conversation.
 
-Import the output declarations of [Verify](verify.md#output), [Review](review.md#output) and
-[SelectRepair](select-repair.md#output) for historical context. These are earlier-round reads, not
-fallbacks for missing current-round inputs.
+Import the output declarations of [Verify](verify.md#output) and [Review](review.md#output) for
+historical context. These are earlier-round reads, not fallbacks for missing current-round inputs.
+Read [StartRound](start-round.md#output)'s current-round record for the developer profile selected
+for this round. Develop does not choose or escalate profiles.
 
-Configuration supplies the initial developer profile. A selected repair supplies the next profile.
-Each uses [DevelopmentRole](../../agent-runtime/development-role.md#interface). Supply task-specific
-context and the response format; the profile supplies the constant role instructions.
+Each invocation uses [DevelopmentRole](../../agent-runtime/development-role.md#interface). Supply
+task-specific context and the response format; the profile supplies the constant role instructions.
 Use the [findings contract](findings.md) for complete finding inputs and response values.
 Request DevelopmentResponse below. Repository revisions and
 profile identity are observed by this action rather than accepted from the agent.
@@ -60,9 +60,8 @@ Both outcomes write devArtifact. Invocation failures or unusable output are exec
 
 ## Behavior
 
-Use the initial profile for the first implementation and the recorded repair choice for later rounds.
-Refresh the task and conversation, preserving human changes. Read relevant repository instructions
-and complete preceding findings and responses.
+Use the profile recorded for the current round. Refresh the task and conversation, preserving human
+changes. Read relevant repository instructions and complete preceding findings and responses.
 Update the selection record with the refreshed task and complete conversation, preserving its
 identity and workspace, and provide that file with the existing round history.
 Include available earlier-round history without silently truncating finding bodies.

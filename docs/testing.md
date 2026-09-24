@@ -16,12 +16,12 @@ Cover decisions, meaningful variations and failure outcomes here.
 | --- | --- | --- |
 | Application | Commands, configuration paths, exit codes, recovery invocation and resume/attention decisions within the allowance | Arguments, configuration, work/recovery results and notification responses |
 | SelectTask | Source ordering, eligibility and continuation decisions | Issue data and retained selection |
-| SelectRepair | Repair counting, profile escalation and exhaustion | Round history and policy |
+| StartRound | Initial profile, repair triggers, executed-turn counting, changes-requested promotion, no downgrade, planned-round reuse and exhaustion | Round history, developer ladder and current-round record |
 | Review | Verdict interpretation and rejection of approval with unresolved blocking findings | Agent result and repository observations |
 | CompleteTask | Completion only after merge and successful configured checks for that merge | GitHub observations and source updates |
 | AgentRuntime | Profile resolution and complete context assembly | Coding-provider response |
 | OperatorInterface | Event presentation, activity grouping, pane lifecycle and colors | Events, terminal dimensions and output sink |
-| Workflow | Declared transitions, repair loops and terminal outcomes | Named action outcomes, using the real XState definition |
+| Workflow | Initial, repair and terminal transitions | Named action outcomes, using the real XState definition |
 
 Tests assert observable results and required effects. Do not mirror private methods or incidental
 call order. Verify order when it is the behavior, such as completing checks before marking a task Done.

@@ -23,7 +23,7 @@ The workspace layout is:
 | `artifacts/<roundNumber>/` | Persistent inputs and outputs for one round; earlier rounds form history |
 | `state/prepared-workspace.json` | Task, repository, branch and comparison-base identity |
 | `state/preparation/` | Preparation command output |
-| `state/current-round.json` | The current round number |
+| `state/current-round.json` | The current round plan: number, developer profile and reason |
 
 These names and locations are fixed. roundNumber is a positive integer. Files within each round are defined by
 their individual artifact contracts. The workspace layout does not define their schemas.

@@ -7,8 +7,8 @@ Publish verified work to a pull request, request native auto-merge and publish i
 ## Interface
 
 Follow the [action contract](architecture.md). Import [devArtifact](develop.md#output) and
-[verificationArtifact](verify.md#output), plus prior [repairArtifact](select-repair.md#output) decisions
-for reporting. Use [Selection](select-task.md#output) and [PreparedWorkspace](prepare-workspace.md#output), delivery
+[verificationArtifact](verify.md#output). Read their earlier-round values for reporting. Use
+[Selection](select-task.md#output) and [PreparedWorkspace](prepare-workspace.md#output), delivery
 configuration, the [Git adapter](../../adapters/git.md#interface),
 [GitHub adapter](../../adapters/github.md#interface) and [Jira adapter](../../adapters/jira.md#interface).
 
@@ -45,9 +45,10 @@ checks remain repository merge gates; requesting auto-merge does not wait for Re
 
 Record the resulting pull-request identity and head. Set the ticket's PR field and configured review
 status. Publish a concise developer comment beginning with the profile, followed by what changed and
-why. Count completed developer repair turns when reporting repairs used, and include profile escalation
-when applicable. A selected but unexecuted repair is not a used repair. Keep operational paths and repeated links
-out of the comment. Jira publication applies only to Jira tasks.
+why. Count development reports after the initial round as executed repair turns when reporting repairs
+used, and derive profile escalation from their recorded profiles. A planned round without a
+development report is not a used repair. Keep operational paths and repeated links out of the comment.
+Jira publication applies only to Jira tasks.
 
 Inspect existing publication state on repetition and finish incomplete work, including requesting
 auto-merge if it is not enabled on the open pull request. Use the recorded PR

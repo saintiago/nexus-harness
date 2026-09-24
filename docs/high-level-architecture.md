@@ -23,7 +23,6 @@ Nexus
 │       ├── Develop
 │       ├── Verify
 │       ├── Review
-│       ├── SelectRepair
 │       ├── Deliver
 │       └── CompleteTask
 ├── AgentRuntime
@@ -157,13 +156,14 @@ It does not reserve a fixed batch at startup.
 
 1. Application resolves the project filepath and connects presentation to events.
 2. Application starts its worker entry point, which reads configuration and constructs the selected workflow.
-3. TaskEngine executes selection, implementation, repair, review, delivery and completion actions
-   according to the workflow, then selects again.
+3. TaskEngine executes selection, round planning, implementation, verification, delivery, review and
+   completion actions according to the workflow, then selects again.
 4. Application forwards progress and adds lifecycle events for OperatorInterface to display.
 5. The empty queue produces a drained result; the worker exits and the result is presented.
 
 A source failure is not an empty queue. Ordinary failed checks and review findings follow the
-workflow's repair and escalation decisions.
+workflow's round and profile decisions in StartRound. Approved Review proceeds to CompleteTask;
+inconclusive Review or exhausted round planning stops the task without beginning a repair.
 
 When work cannot continue, Application invokes recovery with the failure and available context.
 Recovery investigates, performs repairs and decides whether to resume or request operator attention.
