@@ -10,7 +10,7 @@ explicit; its filename is unrestricted. Relative paths are relative to that file
 
 | Settings | Definition |
 | --- | --- |
-| Repository | Source location; new delivery task branches start from updated main; idea refinement agents read a project snapshot |
+| Repository | Source location; new delivery task branches start from updated main; idea refinement uses a Git worktree from the same source |
 | Preparation | Commands required to prepare the repository for work |
 | CI/checks | Named commands and criteria used to verify repository changes |
 | Task source | Jira connection, project identity, separate delivery and idea queries, and field/status mappings |

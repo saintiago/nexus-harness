@@ -208,9 +208,10 @@ one another's pending outputs.
 
 Use the `refinement/` area under the stable
 `<storage root>/workspaces/<project>/<issue>/` workspace. Selection reuses the area when present
-and creates it when absent. Keep a read-only project snapshot or references under its `worktree/`;
-Nexus owns writes under its `artifacts/` and `state/`. Each entry from `Idea` has its own
-numbered history in that area:
+and creates it when absent. Prepare a Git worktree from the connected project under its
+`worktree/` before invoking agents. AgentRuntime runs every idea role there through its normal
+working-directory contract. Nexus owns writes under `artifacts/` and `state/`; idea agents do
+not modify project code. Each entry from `Idea` has its own numbered history in that area:
 
 ```text
 state/
@@ -339,7 +340,8 @@ remain individually attributable through those contracts.
 - Selection follows the same path for every item in `Idea`. It reuses the issue's workspace when
   present, retains previous submissions, and StartIdeaRound opens the next submission at cycle 1.
   Each correction calls StartIdeaRound with XState's minor or major route and uses its saved role plan.
-- Purpose and research can overlap; writer cannot start until both finish. All three council
+- Every idea role runs through AgentRuntime in the prepared `refinement/worktree/` Git worktree.
+  Purpose and research can overlap; writer cannot start until both finish. All three council
   reviewers can overlap; routing waits for all three and aggregates all feedback.
 - Mixed verdicts follow the stated precedence and preserve every objection. Minor repeats only the
   writer and council; major repeats purpose, research, writer and council. Every rewrite invalidates
