@@ -51,8 +51,9 @@ separate priority rule.
 Read the candidate's task details and full conversation. Require a title, a description and the
 configured eligibility conditions. Re-read its status before claiming it; preserve intervening human changes.
 
-Choose the existing retained workspace when recorded, or a stable project/task path under the configured
-root. Save selection before updating the configured source status and workspace pointer. This action
+Choose the existing retained issue root when recorded, or the stable project/issue path under
+the configured root. The source workspace pointer names that root, including after idea refinement.
+Save selection before updating the configured source status and workspace pointer. This action
 chooses a reference; it does not create the worktree.
 
 On repetition, inspect the saved selection and current source state. Finish an incomplete claim or
@@ -60,7 +61,9 @@ continue the same unfinished task before selecting unrelated work. A completed p
 fresh selection. Unexpected source state is reported rather than overwritten.
 
 With no saved active selection, select from the current source order. There is no special blocker
-target. Reuse retained work only when it still exists. If recovery deleted the broken workspace and
-cleared its pointer, selection supplies a new workspace reference and preparation starts from updated main.
+target. Reuse retained work only when it still exists. If recovery discarded the broken finite
+delivery attempt and cleared its pointer, selection uses the same stable issue workspace;
+preparation starts a fresh attempt from updated main. Earlier workflow artifacts remain
+available.
 
 The design assumes one queue consumer; no claim lease or distributed locking protocol is added here.

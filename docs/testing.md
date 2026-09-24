@@ -114,5 +114,8 @@ configured submitted-to-active, active-to-approved, active-to-waiting-for-feedba
 waiting-for-feedback-to-submitted transitions, including capture of the complete relevant
 conversation on every entry. Verify that publication uses the captured input without a later
 Jira read, only human-facing feedback is posted to Jira, and internal feedback stays in
-artifacts. Reuse existing component and system test scopes; do not duplicate XState's own
-parallel-state tests.
+artifacts. Verify that the source pointer names the shared issue root, the handoff lets a later workflow
+read retained artifacts without copying them, and a fresh finite delivery attempt preserves the
+refinement area.
+Reuse existing component and system test scopes; do not duplicate XState's own parallel-state
+tests.
