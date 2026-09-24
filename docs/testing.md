@@ -94,7 +94,7 @@ Run fast tests first, then integration and system tests. Routine validation need
 or paid agent turns. Test implementation against documented intent; do not create documentation tests
 or assertions that merely reproduce the implementation.
 
-## Planned idea refinement coverage
+## Idea refinement coverage
 
 At the workflow level, use the real XState definition to prove both parallel joins, unanimous
 approval on one brief revision, mixed-verdict precedence, minor and major routes, bounded

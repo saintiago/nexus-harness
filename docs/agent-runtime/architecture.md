@@ -110,7 +110,7 @@ AgentRuntime has no persistent storage. It streams activity and returns output t
 Wait for the invocation to finish before returning success. The runtime adds no repair turns,
 automatic profile escalation or reuse of an earlier result.
 
-## Planned idea refinement roles
+## Idea refinement roles
 
 The six [idea refinement role prompts](../idea-refinement/spec.md#agents-and-constant-prompts) are
 constant instructions selected by the caller, with project and revision context supplied per

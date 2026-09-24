@@ -36,13 +36,13 @@ A multi-component flow does not create a special shared contract.
 ## Purpose and design
 
 - [Tech stack](docs/tech-stack.md): Linux platform, WSL development, language, tooling and integrations.
-- [High-level architecture](docs/high-level-architecture.md): target composition, component contracts and finite execution.
+- [High-level architecture](docs/high-level-architecture.md): system composition, component contracts and workflows.
 - [Application design](docs/application.md): commands, configuration, worker lifecycle, recovery and process exit.
 - [OperatorInterface design](docs/operator-interface.md): event subscriptions, activity pane and terminal colors.
 - [TaskEngine design](docs/task-engine/architecture.md): declarative execution, action composition and event subscriptions.
 - [ExecutionRunner design](docs/task-engine/execution-runner.md): XState binding, persisted execution state and progress events.
-- [Finite workflow](workflows/finite-delivery.ts): XState definition for the target TaskEngine and Stately visualization.
-- [Idea refinement specification](docs/idea-refinement/spec.md): planned cross-project purpose, roles, council, routing, artifacts and XState pseudocode.
+- [Finite workflow](workflows/finite-delivery.ts): XState definition for finite delivery and Stately visualization.
+- [Idea refinement specification](docs/idea-refinement/spec.md): cross-project purpose, roles, council, routing, artifacts and XState pseudocode.
 - [Action design](docs/task-engine/actions/architecture.md): action structure, typed input/output artifacts and repeated-round handoffs.
 - [SelectTask design](docs/task-engine/actions/select-task.md): source selection, task input and retained workspace reference.
 - [PrepareWorkspace design](docs/task-engine/actions/prepare-workspace.md): repository preparation and retained-work continuation.
