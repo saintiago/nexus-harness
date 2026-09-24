@@ -93,3 +93,14 @@ tests. Use ordinary test-runner setup and cleanup; add shared helpers only for d
 Run fast tests first, then integration and system tests. Routine validation needs no live credentials
 or paid agent turns. Test implementation against documented intent; do not create documentation tests
 or assertions that merely reproduce the implementation.
+
+## Planned idea refinement coverage
+
+At the workflow level, use the real XState definition to prove both parallel joins, unanimous
+approval on one brief revision, mixed-verdict precedence, minor and major routes, bounded
+nonconvergence, and immediate return for an unworkable idea. At the action boundary, verify
+producer-owned artifacts and revision/digest binding, source update idempotency, and that a stale
+or changed source item is not overwritten. A focused integration test should interleave two
+agent activity streams and verify separate durable JSONL files, correct invocation references in
+main events, and independent 10-line panes. Reuse existing component and system test scopes; do
+not duplicate XState's own parallel-state tests.

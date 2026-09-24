@@ -109,3 +109,11 @@ AgentRuntime has no persistent storage. It streams activity and returns output t
 
 Wait for the invocation to finish before returning success. The runtime adds no repair turns,
 automatic profile escalation or reuse of an earlier result.
+
+## Planned idea refinement roles
+
+The six [idea refinement role prompts](../idea-refinement/spec.md#agents-and-constant-prompts) are
+constant instructions selected by the caller, with project and revision context supplied per
+invocation. AgentRuntime remains unaware of their business output schemas and council routing.
+Concurrent calls must have independent activity observers and invocation identity at the caller
+boundary; shared mutable observer state must not assign one role's activity to another.

@@ -49,6 +49,9 @@ Labels identify the source or activity kind even when color is unavailable.
 
 ## Agent activity pane
 
+The following is the current sequential finite delivery presentation. The planned unified
+per-invocation presentation is specified below.
+
 Each invocation starts with a boundary line naming its role, task when supplied, and operation.
 Open a fresh pane below it. Only the current invocation has an active pane; completed turns remain
 above it in terminal scrollback.
@@ -92,3 +95,17 @@ color disabled also use plain lines, without color or cursor-control sequences.
 Treat event text as text: remove embedded terminal control sequences before rendering. Restore
 terminal styling when presentation stops. If the output stream closes, stop rendering to it;
 presentation does not make execution or recovery decisions.
+
+## Planned concurrent agent presentation
+
+The same live pane behavior applies to every agent invocation, whether one or several run.
+Consume attributable agent activity from Application's separate live input, keyed by invocation ID;
+do not infer ownership from the most recently started event. Invocation lifecycle events in the main
+stream open and close panes and supply agent name, Unix start time and log reference.
+
+Show one named rolling 10-line pane per active invocation, stacked by start order. Update each
+pane independently; keep the current role colors, message highlighting and concise work summaries.
+When an invocation ends, leave its final visible lines in scrollback. Progress and action outcomes
+remain concise outside the panes and do not expose file paths or full tool output. For redirected
+output or insufficient terminal space, use plain timestamped attributable lines. The complete
+activity is in the per-invocation log even when a pane drops old lines or presentation closes.

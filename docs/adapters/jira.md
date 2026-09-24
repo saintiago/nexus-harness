@@ -44,3 +44,11 @@ structure rather than flattening it into a shared cross-provider document format
 
 Request English provider labels with `Accept-Language: en-US` so status names match the configured
 English workflow mappings independently of the HTTP client default locale.
+
+## Planned idea refinement use
+
+The [idea refinement workflow](../idea-refinement/spec.md) uses the same Jira adapter for
+configured draft selection, issue revision/author reads, status transitions and author-facing
+feedback. Its actions own eligibility, revision comparison, verdicts and desired statuses. The
+adapter preserves provider identity and revision information needed to avoid overwriting an idea
+that changed after selection. No generic task-source provider layer is required.

@@ -10,10 +10,10 @@ explicit; its filename is unrestricted. Relative paths are relative to that file
 
 | Settings | Definition |
 | --- | --- |
-| Repository | Source location; new task branches start from updated main |
+| Repository | Source location; new delivery task branches start from updated main; planned refinement agents read a project snapshot |
 | Preparation | Commands required to prepare the repository for work |
 | CI/checks | Named commands and criteria used to verify repository changes |
-| Task source | Provider connection, project identity, source selection and source field/workflow mappings |
+| Task source | Provider connection, project identity, source selection and source field/workflow mappings; planned idea refinement adds draft, refining, ready-for-design and returned mappings |
 | Delivery and completion | Target repository/branch, required checks, post-merge requirements and completion polling/wait limits |
 | Credential references | Names of the credentials required by project integrations, resolved through the Nexus Credentials settings |
 
@@ -32,7 +32,7 @@ of the target project's directory. Relative paths are relative to the Nexus conf
 
 | Settings | Definition |
 | --- | --- |
-| Workflow | Workflow definition path for finite queue execution |
+| Workflow | Workflow definition path for finite queue execution; planned refinement adds an explicitly selected workflow |
 | Storage | Root for queue execution state, recovery and task workspaces |
 | Agent runtime | Base instructions, profile catalogue, provider connections and tool configuration |
 | Execution policy | Invocation limits, developer ladder and repair allowances, reviewer selection and maximum recovery attempts per supervised execution |
@@ -83,3 +83,14 @@ handles, artifact contents or saved workflow state.
 
 A profile may be selected for more than one role. Profile reuse does not combine role instructions;
 each invocation receives the instructions of its selected role.
+
+## Planned idea refinement settings
+
+For the [idea refinement workflow](idea-refinement/spec.md), the connected project supplies
+authoritative purpose/charter/vision references, repository and internal knowledge sources, an
+eligible draft query, and source mappings for refining, ready for design, returned and resubmitted
+items. These are project facts, not Nexus role policy. Nexus supplies the idea refinement workflow
+definition, six profile references and maximum council cycles. Use the existing profile catalogue
+and storage root. Do not require a new generic provider registry or configurable artifact paths.
+An explicit operator selection chooses the workflow; the command spelling is defined when that
+interface is implemented.

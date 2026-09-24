@@ -133,7 +133,9 @@ workflow's successful terminal outcomes are available before the first child sta
 4. On a blocked outcome, execution fault, invalid or missing result, or failed exit, invoke recovery.
 5. Save the recovery report, publish it and apply its decision.
 
-Work and recovery run sequentially. Each invocation finishes before the next starts.
+Finite delivery and recovery run sequentially. Recovery starts only after the worker ends.
+The planned idea refinement worker may run independent agent actions concurrently within XState
+parallel states; Application does not join or route those actions.
 An absent error description stays absent; recovery investigates from the available context.
 
 Recovery stays within the current project. It investigates, fixes project execution problems,
@@ -201,6 +203,9 @@ execution ends, including failure.
 
 ## Execution log
 
+The following describes the current finite delivery event stream. The planned unified agent logging
+extension is specified below.
+
 Persist the combined execution event stream independently of terminal presentation. Each execute call
 creates one JSONL file at `<execution directory>/logs/<execution id>/events.jsonl`. Worker restarts
 and recovery within that execution use the same file; a new execution uses a new directory.
@@ -217,3 +222,33 @@ rotation policy or additional workflow state.
 
 A log write failure is reported to stderr once; execution continues. Do not invoke recovery solely for
 a logging failure. Initialization errors before a log can be opened remain stderr diagnostics.
+
+## Planned idea refinement composition and activity transport
+
+The [idea refinement workflow](idea-refinement/spec.md) is selected explicitly for a connected
+project. Application loads the selected XState definition and binds its project-scoped actions;
+it does not provide a separate idea router. Source selection/update operations use the configured
+task-source adapter. A returned idea is a successful terminal workflow outcome, not an execution
+fault requiring recovery. A provider or agent failure remains an execution fault.
+
+The worker protocol carries invocation activity separately from ordinary EngineEvents:
+
+```text
+{ kind: "agent-activity", invocationId, timestamp, activity: AgentEvent }
+```
+
+The matching agent-started and agent-finished events in the main stream carry the role name, Unix
+start time, invocation ID and agent-log ArtifactRef. Activity packets have invocation identity,
+allowing interleaving from simultaneous agents. Application timestamps and persists each packet to
+`<execution directory>/logs/<execution id>/agents/<agent name>-<unix ms>-<invocation id>.jsonl`.
+It sends the packets to OperatorInterface's live activity input. The main
+`events.jsonl` retains only invocation lifecycle events, action outcomes, workflow progress and
+Application lifecycle events; no agent message or tool output is duplicated there. A log file is
+opened by the start event before its first activity packet and drained before finish. One invocation
+uses the same path regardless of concurrency. Terminal closure cannot stop logging.
+
+Idea refinement has its own execution-state location keyed by project and source item, separate
+from the finite delivery queue's workflow.json and selection.json. Original idea and business
+artifacts remain in the refinement workspace. Recovery is given the selected workflow, source
+item, snapshot and relevant log paths so it can diagnose failures without conflating them with
+council rejections.
