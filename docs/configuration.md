@@ -13,7 +13,7 @@ explicit; its filename is unrestricted. Relative paths are relative to that file
 | Repository | Source location; new delivery task branches start from updated main; idea refinement agents read a project snapshot |
 | Preparation | Commands required to prepare the repository for work |
 | CI/checks | Named commands and criteria used to verify repository changes |
-| Task source | Provider connection, project identity, source selection and source field/workflow mappings; idea refinement uses draft, refining, ready-for-design and returned mappings |
+| Task source | Provider connection, project identity, source selection and source field/workflow mappings; idea refinement maps submitted, approved and needs-refinement states |
 | Delivery and completion | Target repository/branch, required checks, post-merge requirements and completion polling/wait limits |
 | Credential references | Names of the credentials required by project integrations, resolved through the Nexus Credentials settings |
 
@@ -21,7 +21,9 @@ Project configuration contains no harness workflow definitions, workspace layout
 profiles or recovery/escalation policies. Task-source workflow mappings refer to external issue
 statuses and transitions; they do not define the harness's executable workflow.
 
-The task source supplies its provider connection. The Jira connection is the API base used verbatim,
+The project configures selection and state mappings separately for the finite delivery queue and
+idea intake. They may use the same provider, as HARN does, or distinct source adapters.
+The Jira connection is the API base used verbatim,
 so a cloud connection's gateway prefix such as `https://api.atlassian.com/ex/jira/<cloudId>` is
 preserved; the credential reference names the operator's API token.
 
@@ -88,8 +90,9 @@ each invocation receives the instructions of its selected role.
 
 For the [idea refinement workflow](idea-refinement/spec.md), the connected project supplies
 authoritative purpose/charter/vision references, repository and internal knowledge sources, an
-eligible draft query, and source mappings for refining, ready for design, returned and resubmitted
-items. These are project facts, not Nexus role policy. Nexus supplies the idea refinement workflow
+eligible idea query, and source mappings for submitted, approved and needs-refinement
+items. HARN's Jira mappings are `Idea`, `Draft` and `Idea Refinement`, respectively.
+These are project facts, not Nexus role policy. Nexus supplies the idea refinement workflow
 definition, six profile references and maximum council cycles. Use the existing profile catalogue
 and storage root. Do not require a new generic provider registry or configurable artifact paths.
 The operator command selects the workflow explicitly.

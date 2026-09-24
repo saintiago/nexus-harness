@@ -17,26 +17,39 @@ A separate Requirements and Design workflow may consume an approved brief later.
 
 - **Ready for design:** every council reviewer approves the exact current brief revision. Publish
   the original idea, approved brief, purpose assessment, research and sources, alternatives, council
-  decisions and unresolved design questions as one handoff. Set the source item to the project's
-  configured ready-for-design state. No automatic move to To Do.
+  decisions and unresolved design questions as one handoff. Move the source item to its configured approved state. For HARN Jira, this is `Draft`.
+  No automatic move to To Do.
 - **Returned to author:** at least one reviewer finds the idea unworkable, or bounded internal
   revision cannot converge. Publish the original idea, latest brief, research and all actionable
-  feedback on the source item for the author, and mark it returned. A human can revise and resubmit it as a new refinement run; this run ends.
+  feedback on the source item for the author, and move it to its configured needs-refinement
+  state. For HARN Jira, this is `Idea Refinement`. A human can revise and resubmit it by
+  returning it to `Idea`; this run ends.
 - **Execution fault:** missing required project context, agent/tool failure, malformed output or
   source update failure is an operational fault, not a council verdict. Preserve artifacts and
   report it through Application's ordinary recovery/attention path. Never manufacture approval.
 
-Publish each terminal decision once; retries inspect the source before repeating a write. A returned item is excluded from automatic selection
-until explicit resubmission. The workflow never silently waits for author input.
+Publish each terminal decision once; retries inspect the source before repeating a write. A
+needs-refinement item is excluded from automatic selection until explicit resubmission. The
+workflow never silently waits for author input.
 
 ## Inputs and project context
 
 The submitted idea is immutable within a run: source key, author, text, links and revision at
 selection. Every agent receives it alongside the latest relevant artifacts. Project configuration
-provides the authoritative purpose/charter/long-term vision references, the task-source query and
-status mappings for draft, refining, ready for design and returned, and repository/document sources
-available to agents. Nexus configuration selects this workflow, the six role profiles, iteration
-limits and storage. Jira is the task-source adapter. Other providers need their own adapter contracts when required.
+provides the authoritative purpose/charter/long-term vision references, the idea-source adapter
+and selection query, mappings for submitted, approved and needs-refinement states, and
+repository/document sources available to agents. Nexus configuration selects this workflow,
+the six role profiles, iteration limits and storage. The workflow uses the source contract rather
+than Jira-specific operations. HARN uses Jira Task issues with `Idea` as submitted, `Draft`
+as approved and `Idea Refinement` as needs refinement. Another connected project may bind
+a different idea source through its adapter.
+
+The idea-source contract has four operations: select an eligible idea, read its text and source
+revision, publish the brief or feedback, and change its state. Before publishing, the action re-reads the
+source revision and reconciles changes. The configured adapter owns provider identity and
+transition details. A connected
+project may use the same provider for ideas and delivery tickets with different selectors;
+neither workflow assumes they share a queue.
 
 Purpose sources must be available and identifiable. If they are absent, return an operational
 needs-attention result asking for project context; agents must not invent a charter. The researcher
@@ -47,9 +60,11 @@ updates.
 
 ## Behavior
 
-1. Select one eligible submitted idea and capture its exact source revision. Mark it refining using
-   the project's configured source mapping. A source change between selection and update requires
-   reconciliation, not overwriting the author's new text.
+1. Select one eligible submitted idea and capture its exact source revision. In HARN, select Jira
+   Task issues in `Idea`. Leave the source item in its submitted state during internal work.
+   Run at most one refinement execution per connected project so the same revision is not
+   selected twice. A source change before publication requires reconciliation, not overwriting
+   the author's new text.
 2. Run Purpose Verifier and Researcher concurrently on the original idea. They work independently
    and write separate reports. The writer starts only after both reports exist.
 3. Brief Writer creates revision 1. It sees the original idea, both reports, previous feedback when
@@ -62,7 +77,7 @@ updates.
    `idea_not_working`. A nonapproval names the failed criterion, evidence and actionable correction.
 5. After all council results are saved, route by strongest verdict:
    `idea_not_working > major_rework > minor_corrections > approve`. Preserve all feedback even when
-   one result determines routing. Unanimous approval alone advances to ready for design.
+   one result determines routing. Unanimous approval alone advances to the approved state.
 6. Minor corrections return to Brief Writer using existing purpose and research reports. Major rework
    restarts Purpose Verifier and Researcher concurrently with the original idea, current brief and all
    council feedback. Their next reports must address the objections; the writer then creates a new
@@ -70,10 +85,11 @@ updates.
    revision independently.
 7. The configured maximum number of council cycles bounds internal work. If another revision would
    exceed it, return to the author as unable to converge, with the full feedback. An
-   `idea_not_working` verdict returns immediately. These are different reasons in the return
-   artifact and source update.
-8. An approved handoff is available to the Requirements and Design workflow. That workflow
-   decides requirements and architecture and may ultimately produce a To Do implementation ticket.
+   `idea_not_working` verdict returns immediately. Both routes publish feedback and set the
+   needs-refinement state; their decision artifacts retain distinct reasons.
+8. An approved handoff is available to the Requirements and Design workflow from the approved
+   source state. That workflow decides requirements and architecture and may ultimately produce
+   a To Do implementation ticket.
 
 A reviewer may choose minor only when the current purpose and research reports remain valid.
 Choose major when the premise, purpose fit, evidence or alternatives require renewed investigation.
@@ -185,7 +201,7 @@ named operations and return outcomes; XState owns parallelism, joins, guards and
 machine IdeaRefinement {
   context: { cycle: 1, maxCycles, originalRef, currentBriefRef, verdictRefs: [] }
 
-  selectIdea -> captureOriginal -> markRefining -> assessAndResearch
+  selectIdea -> captureOriginal -> assessAndResearch
 
   state assessAndResearch parallel {
     region purpose  { invoke PurposeVerifier; onDone -> final }
@@ -209,16 +225,16 @@ machine IdeaRefinement {
     entry: collectAllFeedbackAndValidateSameBriefRevision
     always [
       if any(idea_not_working) -> returnToAuthor,
-      if all(approve)         -> publishReadyForDesign,
+      if all(approve)         -> publishApproved,
       if cycle >= maxCycles   -> returnUnableToConverge,
       if any(major_rework)    -> nextCycleThenAssessAndResearch,
       otherwise              -> nextCycleThenWriteBrief
     ]
   }
 
-  publishReadyForDesign -> final("ready-for-design")
-  returnToAuthor        -> final("returned-to-author")
-  returnUnableToConverge-> final("returned-to-author")
+  publishApproved        -> final("approved")       // HARN: Idea -> Draft
+  returnToAuthor         -> final("needs-refinement") // HARN: Idea -> Idea Refinement
+  returnUnableToConverge -> final("needs-refinement")
 }
 ```
 
@@ -253,8 +269,10 @@ lines when interactive panes are unavailable.
 - Mixed verdicts follow the stated precedence and preserve every objection. Minor repeats only the
   writer and council; major repeats purpose, research, writer and council. Every rewrite invalidates
   earlier approvals. Limits and an unworkable verdict return a complete feedback package.
-- A source item reaches ready for design only after unanimous approval on one exact revision and is
-  never moved directly to To Do. Returned items require explicit author resubmission.
+- A source item reaches the approved state only after unanimous approval on one exact revision.
+  In HARN this means `Idea -> Draft`; rejection or exhaustion means
+  `Idea -> Idea Refinement`. Neither route moves the item to To Do. Resubmission requires
+  a human to revise the idea and move it back to `Idea`.
 - Concurrent agent activity remains attributable in separate durable files and independent 10-line
   terminal panes. Main events include invocation and business-artifact references without detailed
   agent activity.
