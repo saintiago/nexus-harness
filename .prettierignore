@@ -1,21 +1,13 @@
-# Generated or installed content.
+# Installed, generated and cached content.
 node_modules/
 dist/
 coverage/
-.harness/
-# The local validation cache (docs/validation-caching.md). Prettier already
-# skips it through .gitignore; naming it here keeps that true if the ignore
-# rules ever change, because a cache that the gate formats would invalidate
-# itself.
 .turbo/
 
 # Generated lockfile.
 package-lock.json
 
-# Supplied design documents are preserved verbatim: the markdown formatter
-# re-pads their tables and is not worth a diff in documents we did not write.
+# Design documentation is maintained as written; the markdown formatter re-pads
+# its tables and would rewrite documents this toolchain does not own.
 AGENTS.md
 docs/
-
-# Archived test reference, not active validation.
-tests_old/

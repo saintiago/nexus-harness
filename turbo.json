@@ -2,66 +2,21 @@
   "$schema": "https://turborepo.dev/schema.json",
   "ui": "stream",
   "concurrency": "1",
-  "envMode": "loose",
-  "cacheDir": ".turbo/cache",
-  "noUpdateNotifier": true,
-  "remoteCache": {
-    "enabled": false
-  },
-  "globalEnv": ["CI", "NODE_ENV", "NODE_OPTIONS", "NEXUS_VALIDATE_NODE", "NEXUS_VALIDATE_NPM"],
-  "globalDependencies": [".gitattributes", ".nvmrc", "package.json", "package-lock.json"],
   "tasks": {
     "format:check": {
-      "inputs": ["$TURBO_DEFAULT$"],
-      "outputs": [],
-      "outputLogs": "new-only"
+      "outputs": []
     },
     "lint": {
-      "inputs": ["$TURBO_DEFAULT$", "!**/*.md", "!docs/**", "!notes/**", "!performance/**"],
-      "outputs": [],
-      "outputLogs": "new-only"
+      "outputs": []
     },
     "typecheck": {
-      "inputs": ["src/**", "tests/**", "tsconfig*.json", "vitest*.config.ts"],
-      "outputs": [],
-      "outputLogs": "new-only"
+      "outputs": []
     },
-    "build": {
-      "inputs": ["src/**", "tsconfig*.json", "scripts/build.mjs"],
-      "outputs": ["dist/**"],
-      "outputLogs": "new-only"
+    "boundaries": {
+      "outputs": []
     },
-    "test:unit": {
-      "inputs": [
-        "src/**",
-        "tests/**",
-        "docs/nexus.config.example.json",
-        "docs/nexus.project.example.json",
-        "turbo.json",
-        "vitest.config.ts"
-      ],
-      "outputs": [],
-      "outputLogs": "new-only"
-    },
-    "test:boundary": {
-      "cache": false,
-      "inputs": ["src/**", "tests/boundary/**", "tests/support.ts", "vitest.config.ts"],
-      "outputs": [],
-      "dependsOn": ["build"],
-      "outputLogs": "new-only"
-    },
-    "test:workflow": {
-      "cache": false,
-      "inputs": [
-        "src/**",
-        "tests/workflow/**",
-        "tests/boundary/integration-support.ts",
-        "tests/support.ts",
-        "vitest.config.ts"
-      ],
-      "outputs": [],
-      "dependsOn": ["build"],
-      "outputLogs": "new-only"
+    "test": {
+      "cache": false
     }
   }
 }

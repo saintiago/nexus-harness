@@ -1,36 +1,20 @@
 name: CI
-
-# The gate, and nothing more: this workflow holds `contents: read`, so it cannot
-# push, open a pull request, approve one, or merge one. A task branch is merged by
-# the operator, or by an agent using the operator's authenticated `gh`, once this
-# check is green (docs/GIT-WORKFLOW.md).
-#
-# It runs once per pull request, and once more when the merged commit lands on
-# `main`: a pushed branch is validated through its pull request, not twice.
 on:
   push:
     branches: [main]
   pull_request:
-
 permissions:
   contents: read
-
 jobs:
   validate:
     name: validate
     runs-on: ubuntu-latest
     steps:
-      - name: Check out the repository
-        uses: actions/checkout@v7
-
-      - name: Use the declared Node version
-        uses: actions/setup-node@v7
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
-          node-version-file: .nvmrc
+          node-version: 24
           cache: npm
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Format, lint, typecheck, test, and build
-        run: npm run validate
+      - run: npm ci
+      - run: npm run validate
+      - run: npm run smoke:help

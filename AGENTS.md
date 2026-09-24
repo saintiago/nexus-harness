@@ -3,26 +3,73 @@
 Documentation is the law; code is not. Documentation states intent, and code is its embodiment.
 If code contradicts documentation, correct the code.
 
+## Simplicity
+
+Use the smallest design that satisfies an explicit requirement or solves a demonstrated problem.
+Every contract field, abstraction, validation rule and persistent record must serve a concrete need.
+Hypothetical failures and possible future extensions alone do not justify additional mechanisms.
+
+Account for the full cost of a design choice: implementation, validation, failure handling, persistence,
+tests, documentation and maintenance. A small field can create obligations across many components.
+Requirements justify mechanisms; mechanisms do not create their own requirements.
+
+Keep specialized guarantees within the component or action that needs them. Shared contracts contain
+only what their consumers require. When a mechanism is unnecessary, remove its dependent validation,
+state and tests as well. Prefer removing the obligation to building machinery around it.
+
+## Low coupling and high cohesion
+
+Each component owns a focused responsibility, its state and the behavior needed to fulfill it.
+Closely related decisions stay within that boundary.
+
+Components depend only on public contracts. Each contract has one authoritative definition, owned
+by its provider; consumers reference it. Internal changes must not require consumer changes while
+the public contract remains compatible. Routine coordinated redesign indicates a boundary problem.
+
+Each component architecture is independent. Its interface section is the only place that names other
+components, imports their contracts or defines interaction with them. Its internal design uses its
+own responsibilities and state. System composition and flows belong in the high-level architecture.
+
+Contract tests verify individual boundaries. Integration and workflow tests verify cooperation.
+A multi-component flow does not create a special shared contract.
+
 ## Purpose and design
 
-- [Long-term vision](docs/LONG_TERM_VISION.md): future purpose and direction; not current behavior.
-- [Architecture](docs/architecture.md): design principles, ownership, testing and tech stack.
-- [Components](docs/components.md): responsibilities and required behavior.
-
-## Behavior and operation
-
-- [Specification](docs/spec.md): required behavior and limits.
-- [Workflow](docs/WORKFLOW.md): configuration and command contracts.
-- [Operations](docs/operations.md): installation, commands and examples.
-- [Connect a project](docs/connect-a-project.md): project onboarding.
-- [Agent tools](docs/nexus-agent-tools.md): runtime profiles and tool setup.
-- [Harness configuration example](docs/nexus.config.example.json): installation settings.
-- [Project configuration example](docs/nexus.project.example.json): connected-project settings.
+- [Tech stack](docs/tech-stack.md): Linux platform, WSL development, language, tooling and integrations.
+- [High-level architecture](docs/high-level-architecture.md): target composition, component contracts and finite execution.
+- [Application design](docs/application.md): commands, configuration, worker lifecycle, recovery and process exit.
+- [OperatorInterface design](docs/operator-interface.md): event subscriptions, activity pane and terminal colors.
+- [TaskEngine design](docs/task-engine/architecture.md): declarative execution, action composition and event subscriptions.
+- [ExecutionRunner design](docs/task-engine/execution-runner.md): XState binding, persisted execution state and progress events.
+- [Finite workflow](workflows/finite-delivery.ts): XState definition for the target TaskEngine and Stately visualization.
+- [Action design](docs/task-engine/actions/architecture.md): action structure, typed input/output artifacts and repeated-round handoffs.
+- [SelectTask design](docs/task-engine/actions/select-task.md): source selection, task input and retained workspace reference.
+- [PrepareWorkspace design](docs/task-engine/actions/prepare-workspace.md): repository preparation and retained-work continuation.
+- [StartRound design](docs/task-engine/actions/start-round.md): round directories, current-round state and artifact-root selection.
+- [Develop design](docs/task-engine/actions/develop.md): implementation context, profile selection and developer output.
+- [Verify design](docs/task-engine/actions/verify.md): configured checks and persisted command results.
+- [Deliver design](docs/task-engine/actions/deliver.md): verified branch publication and developer reporting.
+- [Review design](docs/task-engine/actions/review.md): revision-specific review, complete findings and review publication.
+- [SelectRepair design](docs/task-engine/actions/select-repair.md): shared repair allowance and profile escalation.
+- [CompleteTask design](docs/task-engine/actions/complete-task.md): merge/check evidence and task completion.
+- [AgentRuntime design](docs/agent-runtime/architecture.md): profiles, supplied context and agent invocation.
+- [Native Codex profiles](docs/agent-runtime/profiles.md): repository templates and Linux installation.
+- [DevelopmentRole design](docs/agent-runtime/development-role.md): constant developer instructions and task-specific input boundary.
+- [ReviewerRole design](docs/agent-runtime/reviewer-role.md): evidence-based review instructions and prior-finding evaluation.
+- [RecoveryRole design](docs/agent-runtime/recovery-role.md): current-project diagnosis, queue reconciliation and fresh task restart.
+- [Findings contract](docs/task-engine/actions/findings.md): finding, response and disposition shapes shared across rounds.
+- [Adapters design](docs/adapters/architecture.md): shared external-boundary responsibilities and contract conventions.
+- [Jira adapter](docs/adapters/jira.md): issue data, comments, changes and ranking.
+- [GitHub adapter](docs/adapters/github.md): pull requests, reviews, checks and workflow observations.
+- [Git adapter](docs/adapters/git.md): repository data and explicit Git operations.
+- [Processes adapter](docs/adapters/processes.md): command execution, streamed output and exit results.
+- [Coding runtime adapter](docs/adapters/coding-runtime.md): coding-provider invocation and activity.
+- [Notifications adapter](docs/adapters/notifications.md): notification publication.
+- [Workspace design](docs/workspace.md): directory layout and concrete workspace references.
+- [Configuration design](docs/configuration.md): project/Nexus setting ownership, file locations and value constraints.
 
 ## Development
 
-- [Development guide](docs/development.md): implementation, verification and role boundaries.
-- [Git workflow](docs/GIT-WORKFLOW.md): branches, pull requests and integration.
-- [Testing](docs/testing.md): test pyramid, boundaries and coverage restoration.
-- [Validation caching](docs/validation-caching.md): cache eligibility, invalidation and execution guarantees.
+- [Testing architecture](docs/testing.md): test scopes, contracts and system journeys.
 - [Documentation guide](docs/documentation.md): document ownership and maintenance.
+- [Task inventory](docs/tasks/inventory.md): implementation tasks and current statuses.

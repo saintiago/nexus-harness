@@ -1,29 +1,46 @@
-/**
- * The test pyramid, as the three projects validation runs it in
- * (docs/testing.md).
- *
- * One project per layer, and one layer for every active suite: `unit` decides
- * behavior from explicit inputs and realizes no effect, `boundary` verifies a
- * real contract of this host — processes, Git, files and the service adapters'
- * protocols — and `workflow` assembles the components behind controlled agent
- * and service responses. A suite's directory, and no other property, decides
- * which layer runs it, and every suite runs in exactly one of them
- * (`tests/unit/layers.test.ts` holds that membership to account).
- *
- * `npm test` runs every project directly. The layers are also invoked one at a
- * time by the validation tasks in `turbo.json`, which is what gives a
- * deterministic layer its own cache eligibility (docs/validation-caching.md).
- */
 import { defineConfig } from 'vitest/config';
+
+/**
+ * The test scopes of the testing architecture, run from the narrowest to the broadest. Component
+ * tests exercise real Nexus logic through its public interface with external effects supplied and
+ * run without network access, real processes or filesystem operations. Focused integration tests
+ * exercise one connection — real storage, processes, local services or a protocol adapter with
+ * supplied provider responses. System tests run the assembled application. `npm test` runs the
+ * scopes in that order; an unlisted test file joins the integration scope.
+ */
+const componentTests = [
+  'tests/agent-runtime.test.ts',
+  'tests/application-command.test.ts',
+  'tests/configuration-composition.test.ts',
+  'tests/configuration.test.ts',
+  'tests/operator-interface.test.ts',
+];
+
+const systemTests = ['tests/finite-execution-journeys.test.ts'];
 
 export default defineConfig({
   test: {
-    projects: [
-      { test: { name: 'unit', include: ['tests/unit/**/*.test.ts'] } },
-      { test: { name: 'boundary', include: ['tests/boundary/**/*.test.ts'] } },
-      { test: { name: 'workflow', include: ['tests/workflow/**/*.test.ts'] } },
-    ],
     environment: 'node',
-    maxWorkers: 4,
+    projects: [
+      {
+        test: {
+          name: 'component',
+          include: componentTests,
+        },
+      },
+      {
+        test: {
+          name: 'integration',
+          include: ['tests/**/*.test.ts'],
+          exclude: [...componentTests, ...systemTests],
+        },
+      },
+      {
+        test: {
+          name: 'system',
+          include: systemTests,
+        },
+      },
+    ],
   },
 });

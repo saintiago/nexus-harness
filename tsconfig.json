@@ -1,7 +1,7 @@
 {
   "compilerOptions": {
-    "target": "es2023",
-    "lib": ["es2023"],
+    "target": "es2024",
+    "lib": ["es2024"],
     "module": "nodenext",
     "moduleResolution": "nodenext",
     "types": ["node"],
@@ -12,7 +12,6 @@
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true,
     "verbatimModuleSyntax": true,
-    "erasableSyntaxOnly": true,
     "isolatedModules": true,
     "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true,
@@ -20,6 +19,6 @@
     "incremental": true,
     "tsBuildInfoFile": ".turbo/tsc/typecheck.tsbuildinfo"
   },
-  "include": ["src/**/*.ts", "tests/**/*.ts", "vitest.config.ts"],
-  "exclude": ["tests/fixtures", "tests_old"]
+  "include": ["src/**/*.ts", "tests/**/*.ts", "workflows/**/*.ts", "*.config.ts"],
+  "exclude": ["node_modules", "dist", "tests/fixtures"]
 }

@@ -1,0 +1,80 @@
+# Configuration
+
+Project configuration defines the target project. Nexus configuration defines harness operation.
+Each setting has one owner.
+
+## Project configuration
+
+The project configuration is a JSON file in the target project's root directory. Its filepath is
+explicit; its filename is unrestricted. Relative paths are relative to that file's directory.
+
+| Settings | Definition |
+| --- | --- |
+| Repository | Source location; new task branches start from updated main |
+| Preparation | Commands required to prepare the repository for work |
+| CI/checks | Named commands and criteria used to verify repository changes |
+| Task source | Provider connection, project identity, source selection and source field/workflow mappings |
+| Delivery and completion | Target repository/branch, required checks, post-merge requirements and completion polling/wait limits |
+| Credential references | Names of the credentials required by project integrations, resolved through the Nexus Credentials settings |
+
+Project configuration contains no harness workflow definitions, workspace layout overrides, agent
+profiles or recovery/escalation policies. Task-source workflow mappings refer to external issue
+statuses and transitions; they do not define the harness's executable workflow.
+
+The task source supplies its provider connection. The Jira connection is the API base used verbatim,
+so a cloud connection's gateway prefix such as `https://api.atlassian.com/ex/jira/<cloudId>` is
+preserved; the credential reference names the operator's API token.
+
+## Nexus configuration
+
+The Nexus configuration is a JSON file at the installation's configured path. That path is independent
+of the target project's directory. Relative paths are relative to the Nexus configuration directory.
+
+| Settings | Definition |
+| --- | --- |
+| Workflow | Workflow definition path for finite queue execution |
+| Storage | Root for queue execution state, recovery and task workspaces |
+| Agent runtime | Base instructions, profile catalogue, provider connections and tool configuration |
+| Execution policy | Invocation limits, repair/escalation policies and maximum recovery attempts per supervised execution |
+| Notifications | Destination, provider connection and host credential references |
+| Credentials | Reference names and the host environment settings that supply their values |
+| Nexus Lens | GitHub App identity and installation credential references for review publication |
+
+The storage root is configurable. [Application](application.md#state-and-reports) defines execution
+and task-workspace locations. The [workspace layout](workspace.md#layout-and-reference) is fixed
+and has no configuration overrides.
+
+Notifications name the destination topic, the SNS Region that owns it and the host credential
+references that supply the access key, secret key and optional session token.
+
+Profiles conform to [AgentProfile](agent-runtime/architecture.md#provided-interface). Profile IDs are unique.
+The initial recovery profile is nexus-recovery, with model gpt-6-astra and high reasoning effort.
+Workflow and escalation profile references identify entries in the same Nexus configuration.
+
+The developer ladder lists profiles in escalation order and the repair allowance for each profile.
+Both failed implementation/checks and review-requested changes consume that policy; starting another
+review round does not reset it. The reviewer profile is configured separately.
+
+The target repository's merge rules require the configured Nexus Lens review check from that App,
+alongside its required CI checks. Project delivery settings identify that required check.
+
+## Value constraints
+
+Command definitions contain an executable and an argument array. A shell command requires an explicit
+shell executable. Credential references contain identifiers, not secret values: each identifies an
+entry in the Nexus Credentials settings, which names the host environment setting that supplies its
+value.
+
+Required paths and identifiers are nonempty. Duration values state their unit and are nonnegative.
+Recovery allowances are positive integers. Workflow definitions, profile references and configured
+provider settings must be valid for the selected workflow.
+
+Project and Nexus configuration have disjoint ownership. They are not merged through generic override
+precedence. A setting supplied under the wrong owner is invalid.
+
+An execution's resolved settings are immutable values. Reloading creates a new settings value; it
+does not mutate an existing one. Configuration data contains no action instances, runtime process
+handles, artifact contents or saved workflow state.
+
+A profile may be selected for more than one role. Profile reuse does not combine role instructions;
+each invocation receives the instructions of its selected role.

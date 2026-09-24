@@ -2,12 +2,10 @@
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "noEmit": false,
-    "rootDir": "src",
-    "outDir": "dist",
-    "sourceMap": true,
     "incremental": false,
-    "tsBuildInfoFile": null
+    "rootDir": ".",
+    "outDir": "dist"
   },
-  "include": ["src/**/*.ts"],
-  "exclude": ["tests"]
+  "include": ["src/**/*.ts", "workflows/**/*.ts"],
+  "exclude": ["node_modules", "dist", "tests"]
 }
