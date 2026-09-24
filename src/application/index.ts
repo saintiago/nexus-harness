@@ -5,6 +5,7 @@ import { readRecord } from '../task-engine/actions/records.js';
 import { selectionDeclaration } from '../task-engine/actions/select-task/artifacts.js';
 import type { EngineEvent, Unsubscribe, WorkflowResult } from '../task-engine/index.js';
 import { executionPaths, workerProcessEnvironment } from './composition.js';
+import { createExecutionLog, executionLogFile, type DiagnosticSink } from './execution-log.js';
 import { createRecovery, type RecoveryRuntimeFactory, type RecoverySelection } from './recovery.js';
 import { createRecoveryRuntime } from './recovery-runtime.js';
 import { loadWorkflow } from './workflow.js';
@@ -73,6 +74,8 @@ export type ApplicationSettings = {
   readonly environment: Readonly<Record<string, string | undefined>>;
   /** Launches one worker execution; the operator command supplies the process bridge. */
   readonly launchWorker: WorkerLaunch;
+  /** Reports execution-log failures; the operator command supplies its standard error. */
+  readonly diagnostics?: DiagnosticSink;
   /**
    * Builds the execution's recovery runtime; the default wires the configured recovery profile over
    * the coding provider and the configured Notifications adapter. Tests substitute a controlled
@@ -142,6 +145,7 @@ function completionOf(
 export function createApplication(settings: ApplicationSettings): Application {
   const listeners = new Set<Observer<ExecutionEvent>>();
   const recoveryFactory = settings.recovery ?? createRecoveryRuntime;
+  const diagnostics = settings.diagnostics ?? process.stderr;
 
   /** Forward one event to the observers; listener failures do not affect execution. */
   const publish = (event: ExecutionEvent): void => {
@@ -176,75 +180,87 @@ export function createApplication(settings: ApplicationSettings): Application {
           `The project configuration filepath "${request.projectConfigPath}" is not absolute.`,
         );
       }
-      emitLifecycle('starting', null);
       const nexus = await loadNexusConfiguration(settings.installationConfigPath);
       const project = await loadProjectConfiguration(request.projectConfigPath);
       const workflow = await loadWorkflow(nexus.workflow.path);
       const paths = executionPaths(nexus, project);
-      const recovery = createRecovery({
-        nexus,
-        project,
-        workflow,
-        paths,
-        runtime: recoveryFactory({ nexus, environment: settings.environment }),
-        publish,
-      });
-      // One execute call manages one execution: its request and allowance are recorded before the
-      // first worker starts, so worker restarts cannot reset what recovery has already consumed.
-      await recovery.begin(request);
-      const finished = (result: ExecutionResult): ExecutionResult => {
-        emitLifecycle('finished', result);
-        return result;
-      };
-      /** Delivery failures are reported separately; they never repeat or replace recovery. */
-      const deliveryNote = (): string => {
-        const problems = recovery.deliveryProblems();
-        return problems.length === 0
-          ? ''
-          : `\n${problems
-              .map((problem) => `Recovery report delivery failed: ${problem}`)
-              .join('\n')}`;
-      };
+      // Open the log before the starting event and close it after finished on every exit path.
+      const logFile = executionLogFile(paths.directory);
+      const log = await createExecutionLog({ file: logFile, diagnostics });
+      listeners.add(log.record);
+      try {
+        emitLifecycle('starting', null);
+        const recovery = createRecovery({
+          nexus,
+          project,
+          workflow,
+          paths,
+          logFile,
+          runtime: recoveryFactory({ nexus, environment: settings.environment }),
+          publish,
+        });
+        // One execute call manages one execution: its request and allowance are recorded before the
+        // first worker starts, so worker restarts cannot reset what recovery has already consumed.
+        await recovery.begin(request);
+        const finished = (result: ExecutionResult): ExecutionResult => {
+          emitLifecycle('finished', result);
+          return result;
+        };
+        /** Delivery failures are reported separately; they never repeat or replace recovery. */
+        const deliveryNote = (): string => {
+          const problems = recovery.deliveryProblems();
+          return problems.length === 0
+            ? ''
+            : `\n${problems
+                .map((problem) => `Recovery report delivery failed: ${problem}`)
+                .join('\n')}`;
+        };
 
-      // Work and recovery run sequentially: each invocation finishes before the next starts.
-      for (;;) {
-        emitLifecycle('running', null);
-        const completion = completionOf(
-          await settings.launchWorker(
-            {
-              projectConfigPath: request.projectConfigPath,
-              environment: workerProcessEnvironment(
-                nexus,
-                settings.environment,
-                settings.installationConfigPath,
-              ),
-            },
-            publish,
-          ),
-          workflow.successfulOutcomes,
-        );
-        if (completion.kind === 'completed') {
+        // Work and recovery run sequentially: each invocation finishes before the next starts.
+        for (;;) {
+          emitLifecycle('running', null);
+          const completion = completionOf(
+            await settings.launchWorker(
+              {
+                projectConfigPath: request.projectConfigPath,
+                environment: workerProcessEnvironment(
+                  nexus,
+                  settings.environment,
+                  settings.installationConfigPath,
+                ),
+              },
+              publish,
+            ),
+            workflow.successfulOutcomes,
+          );
+          if (completion.kind === 'completed') {
+            return finished({
+              outcome: 'completed',
+              reason:
+                `The workflow finished with the successful outcome "${completion.outcome}".` +
+                deliveryNote(),
+              report: recovery.savedReport(),
+            });
+          }
+          // Recovery reads the log, so writes pending before its invocation are drained.
+          await log.drain();
+          const outcome = await recovery.recover({
+            failure: completion.failure,
+            output: completion.diagnostics,
+            selection: await retainedSelection(paths.selectionFile),
+          });
+          if (outcome.kind === 'resume') {
+            continue;
+          }
           return finished({
-            outcome: 'completed',
-            reason:
-              `The workflow finished with the successful outcome "${completion.outcome}".` +
-              deliveryNote(),
+            outcome: 'needs-attention',
+            reason: `${completion.failure}\n${outcome.reason}${deliveryNote()}`,
             report: recovery.savedReport(),
           });
         }
-        const outcome = await recovery.recover({
-          failure: completion.failure,
-          output: completion.diagnostics,
-          selection: await retainedSelection(paths.selectionFile),
-        });
-        if (outcome.kind === 'resume') {
-          continue;
-        }
-        return finished({
-          outcome: 'needs-attention',
-          reason: `${completion.failure}\n${outcome.reason}${deliveryNote()}`,
-          report: recovery.savedReport(),
-        });
+      } finally {
+        listeners.delete(log.record);
+        await log.close();
       }
     },
 

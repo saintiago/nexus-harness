@@ -26,6 +26,6 @@ In progress means implementation or review is underway. Pending means work has n
 | [Application execution](application.md) | Verified |
 | [Recovery integration](recovery.md) | Verified |
 | [Finite execution system journeys](finite-execution-system-tests.md) | Verified |
-| [Execution event logging](event-stream-logging.md) | In progress |
-| [Action implementation simplification](action-simplification.md) | Pending |
+| [Execution event logging](event-stream-logging.md) | Verified |
+| [Action implementation simplification](action-simplification.md) | In progress |
 | [Implementation/design conformance](implementation-design-conformance.md) | Pending |

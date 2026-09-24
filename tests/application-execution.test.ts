@@ -6,13 +6,13 @@
  * process beyond the controlled launch, service, credential or agent turn is involved.
  */
 
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import type { AgentResult } from '../src/agent-runtime/index.js';
+import type { AgentEvent, AgentResult } from '../src/agent-runtime/index.js';
 import {
   createApplication,
   type Application,
@@ -94,6 +94,7 @@ type Harness = {
   readonly launches: WorkerLaunchRequest[];
   readonly invocations: RecoveryInvocationRequest[];
   readonly notifications: { readonly subject: string; readonly body: string }[];
+  readonly diagnostics: string[];
 };
 
 /** One execution harness: a real Application over temp configuration and controlled capabilities. */
@@ -126,6 +127,7 @@ async function harness(options: {
   const launches: WorkerLaunchRequest[] = [];
   const invocations: RecoveryInvocationRequest[] = [];
   const notifications: { subject: string; body: string }[] = [];
+  const diagnostics: string[] = [];
   const agent =
     options.agent ??
     (() => Promise.resolve(ok({ output: report('Recovery resumed the queue.', 'resume') })));
@@ -147,6 +149,11 @@ async function harness(options: {
       NEXUS_LENS_PRIVATE_KEY: 'host-lens-key',
     },
     launchWorker,
+    diagnostics: {
+      write: (text) => {
+        diagnostics.push(text);
+      },
+    },
     recovery: (): RecoveryRuntime => ({
       async invoke(request) {
         invocations.push(request);
@@ -170,6 +177,7 @@ async function harness(options: {
     launches,
     invocations,
     notifications,
+    diagnostics,
   };
 }
 
@@ -189,6 +197,29 @@ async function executionRecord(directory: string): Promise<unknown> {
 /** One saved report's content. */
 async function savedReport(reportPath: string): Promise<unknown> {
   return JSON.parse(await readFile(reportPath, 'utf8'));
+}
+
+/** One execution's saved log: its filepath and parsed entries, in file order. */
+type SavedLog = {
+  readonly file: string;
+  readonly entries: readonly { readonly timestamp: string; readonly event: ExecutionEvent }[];
+};
+
+/** The execution's saved event logs, one per execute call. */
+async function savedLogs(executionDirectory: string): Promise<SavedLog[]> {
+  const directories = (await readdir(path.join(executionDirectory, 'logs'))).sort();
+  return Promise.all(
+    directories.map(async (directory) => {
+      const file = path.join(executionDirectory, 'logs', directory, 'events.jsonl');
+      return {
+        file,
+        entries: (await readFile(file, 'utf8'))
+          .trimEnd()
+          .split('\n')
+          .map((line) => JSON.parse(line) as SavedLog['entries'][number]),
+      };
+    }),
+  );
 }
 
 /** The round artifacts whose declared paths and generated shapes the recovery context must state. */
@@ -280,6 +311,110 @@ describe('Application execution', () => {
         },
       },
     ]);
+  });
+
+  it('persists the combined event stream independently of terminal presentation', async () => {
+    const activity = { type: 'tool-call', text: `exploring ${'the repository '.repeat(30)}` };
+    const workerEvent: ExecutionEvent = {
+      source: 'execution-runner',
+      type: 'state',
+      data: { name: 'select', payload: { nested: ['complete', 1, true] } },
+    };
+    const executed = await harness({
+      completions: [successful],
+      emit: (onEvent) => {
+        onEvent(workerEvent);
+        onEvent({ source: 'application', type: 'agent-activity', data: activity });
+      },
+    });
+
+    await executed.application.execute({ projectConfigPath: executed.projectConfigPath });
+
+    const logs = await savedLogs(executed.executionDirectory);
+    expect(logs).toHaveLength(1);
+    // Every received event is saved in order with its receipt timestamp and complete payload.
+    expect(logs[0]!.entries.map((entry) => entry.event)).toEqual(executed.events);
+    for (const entry of logs[0]!.entries) {
+      expect(new Date(entry.timestamp).toISOString()).toBe(entry.timestamp);
+    }
+    expect(
+      logs[0]!.entries.find((entry) => entry.event.type === 'agent-activity')?.event.data,
+    ).toEqual(activity);
+    // The saved stream carries events only, with no configuration or credential values.
+    const text = await readFile(logs[0]!.file, 'utf8');
+    for (const secret of [
+      'host-access-key',
+      'host-secret-key',
+      'host-session-token',
+      'host-jira-token',
+      'host-lens-key',
+    ]) {
+      expect(text).not.toContain(secret);
+    }
+  });
+
+  it('keeps one log file across worker restarts and drains it before recovery reads it', async () => {
+    const activity: AgentEvent = { type: 'message', text: 'investigating the state' };
+    let logFile: string | null = null;
+    let atRecovery = '';
+    const executed = await harness({
+      completions: [stopped('worker diagnostic\n'), successful],
+      agent: async (request) => {
+        // The context names the log, and pending writes were drained before this invocation.
+        logFile = /Execution event log: (\S+)/u.exec(request.context)?.[1] ?? null;
+        if (logFile !== null) {
+          atRecovery = await readFile(logFile, 'utf8');
+        }
+        request.onActivity(activity);
+        return ok({ output: report('Reconciled and resumable.', 'resume') });
+      },
+    });
+
+    await executed.application.execute({ projectConfigPath: executed.projectConfigPath });
+
+    const logs = await savedLogs(executed.executionDirectory);
+    expect(logs).toHaveLength(1);
+    expect(logFile).toBe(logs[0]!.file);
+    expect(logs[0]!.entries.map((entry) => entry.event)).toEqual(executed.events);
+    // Recovery saw the events published before it started.
+    expect(atRecovery).toContain('"type":"starting"');
+    expect(atRecovery).toContain('"type":"running"');
+    expect(atRecovery).not.toContain('"type":"finished"');
+  });
+
+  it('reports a log failure once to stderr and continues execution without recovery', async () => {
+    const executed = await harness({ completions: [successful] });
+    await mkdir(executed.executionDirectory, { recursive: true });
+    // A file where the logs directory belongs makes this execution's log impossible to open.
+    await writeFile(path.join(executed.executionDirectory, 'logs'), 'not a directory\n');
+
+    const result = await executed.application.execute({
+      projectConfigPath: executed.projectConfigPath,
+    });
+
+    expect(result.outcome).toBe('completed');
+    expect(executed.timeline).toEqual(['worker']);
+    expect(executed.invocations).toEqual([]);
+    expect(executed.diagnostics).toHaveLength(1);
+    expect(executed.diagnostics[0]).toContain('Nexus could not write the execution log');
+  });
+
+  it('starts a new log directory for each execute call', async () => {
+    const executed = await harness({ completions: [successful, successful] });
+
+    await executed.application.execute({ projectConfigPath: executed.projectConfigPath });
+    await executed.application.execute({ projectConfigPath: executed.projectConfigPath });
+
+    const logs = await savedLogs(executed.executionDirectory);
+    expect(logs).toHaveLength(2);
+    expect(logs[0]!.file).not.toBe(logs[1]!.file);
+    for (const log of logs) {
+      expect(log.entries.map((entry) => entry.event.type)).toEqual([
+        'starting',
+        'running',
+        'finished',
+      ]);
+    }
   });
 
   it('runs recovery between the stopped worker and the resumed worker', async () => {

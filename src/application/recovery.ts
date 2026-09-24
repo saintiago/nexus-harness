@@ -174,6 +174,8 @@ export type RecoverySettings = {
   readonly project: ProjectConfiguration;
   readonly workflow: Workflow;
   readonly paths: ExecutionPaths;
+  /** The execution's event log, which recovery reads to see what happened. */
+  readonly logFile: string;
   readonly runtime: RecoveryRuntime;
   /** Publishes one event to Application's combined stream, including agent activity. */
   readonly publish: (event: EngineEvent) => void;
@@ -186,6 +188,7 @@ type RecoveryContextSettings = {
   readonly nexus: NexusConfiguration;
   readonly workflow: Workflow;
   readonly paths: ExecutionPaths;
+  readonly logFile: string;
   readonly recoveryDirectory: string;
   readonly workspace: TaskWorkspaceRef;
   readonly reports: readonly string[];
@@ -254,7 +257,7 @@ function recoveryDeclarations(settings: RecoveryContextSettings): RecoveryDeclar
 
 /** The complete context text one recovery invocation receives. */
 function recoveryContextText(settings: RecoveryContextSettings): string {
-  const { nexus, project, workflow, paths, stop, request, invocation } = settings;
+  const { nexus, project, workflow, paths, logFile, stop, request, invocation } = settings;
   const selection = stop.selection;
   const taskWorkspaceRoot = path.join(workspaceRoot(nexus), project.taskSource.project);
   return [
@@ -280,6 +283,8 @@ function recoveryContextText(settings: RecoveryContextSettings): string {
         'nodes and whose children map holds the invoked operations)',
       `Task selection file: ${paths.selectionFile} (SelectTask's record, JSON matching the task ` +
         'selection schema below)',
+      `Execution event log: ${logFile} (newline-delimited JSON, one object per received event, ` +
+        'each holding its ISO receipt timestamp and the event)',
       `Recovery directory: ${settings.recoveryDirectory}`,
       'Saved reports of this execution: ' +
         (settings.reports.length === 0 ? 'none yet' : settings.reports.join(', ')),
@@ -450,6 +455,7 @@ export function createRecovery(settings: RecoverySettings): Recovery {
         nexus,
         workflow,
         paths,
+        logFile: settings.logFile,
         recoveryDirectory: directory,
         workspace,
         reports: earlierReports(invocation),

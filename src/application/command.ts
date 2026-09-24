@@ -117,6 +117,7 @@ export async function runOperatorCommand(settings: OperatorCommandSettings): Pro
   const application = (settings.application ?? createApplication)({
     installationConfigPath: path.resolve(settings.workingDirectory, configuredPath),
     environment: settings.environment,
+    diagnostics: settings.diagnostics,
     launchWorker: createWorkerLaunch({
       executable: process.execPath,
       entry: fileURLToPath(new URL('./worker.js', import.meta.url)),
