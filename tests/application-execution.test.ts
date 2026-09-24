@@ -192,7 +192,7 @@ async function harness(options: {
 
 /** The application lifecycle types one execution emitted, in order. */
 function lifecycleOf(events: readonly ExecutionEvent[]): string[] {
-  const lifecycle = new Set(['starting', 'running', 'recovering', 'finished']);
+  const lifecycle = new Set(['starting', 'running', 'recovering', 'recovered', 'finished']);
   return events
     .filter((event) => event.source === 'application' && lifecycle.has(event.type))
     .map((event) => event.type);
@@ -448,6 +448,7 @@ describe('Application execution', () => {
       'starting',
       'running',
       'recovering',
+      'recovered',
       'running',
       'finished',
     ]);
@@ -472,6 +473,12 @@ describe('Application execution', () => {
     });
     // The report lives in the execution's own directory, numbered by invocation.
     expect(result.report?.path).toMatch(/\/recovery\/reports\/[^/]+\/1\.json$/u);
+    // The saved report is published with its reference once it is written.
+    expect(executed.events.find((event) => event.type === 'recovered')).toEqual({
+      source: 'application',
+      type: 'recovered',
+      data: { decision: 'resume', report: { path: result.report!.path } },
+    });
     expect(await savedReport(result.report!.path)).toEqual({
       summary: 'Reconciled and resumable.',
       decision: { kind: 'resume' },
@@ -501,7 +508,13 @@ describe('Application execution', () => {
     expect(result.reason).toContain('worker diagnostic');
     expect(result.reason).toContain('A human must repair the project.');
     expect(executed.timeline).toEqual(['worker', 'recovery']);
-    expect(lifecycleOf(executed.events)).toEqual(['starting', 'running', 'recovering', 'finished']);
+    expect(lifecycleOf(executed.events)).toEqual([
+      'starting',
+      'running',
+      'recovering',
+      'recovered',
+      'finished',
+    ]);
     expect(await savedReport(result.report!.path)).toEqual({
       summary: 'A human must repair the project.',
       decision: { kind: 'needs-attention' },

@@ -31,7 +31,11 @@ type CompletionOutput = {
 - completed: merge and required post-merge checks are confirmed, and the task is in its completed state.
 - failed: an observed condition prevents completion, with its reason retained for recovery.
 
-Only completed produces a usable completionArtifact. Provider access failures are execution errors.
+Only completed produces a usable completionArtifact. The completed outcome publishes the
+[action outcome event](architecture.md#action-outcome-events) referencing the saved evidence and
+naming the pull request; reusing confirmed evidence publishes the same reference. A failed ticket
+transition that cannot finish the saved evidence publishes the failed outcome with that same
+reference. Provider access failures are execution errors.
 
 ## Behavior
 

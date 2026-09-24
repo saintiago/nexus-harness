@@ -56,10 +56,19 @@ export type ArtifactHelpers = {
 /** The round directories' name under the workspace root. */
 const artifactsDirectory = 'artifacts';
 
+/** The saved location of one declaration's artifact within a workspace round. */
+export function roundArtifactPath(
+  workspaceRoot: string,
+  round: number,
+  pathFromArtifactsRoot: string,
+): string {
+  return path.join(workspaceRoot, artifactsDirectory, String(round), pathFromArtifactsRoot);
+}
+
 /** Create the artifact helpers over the workspace whose rounds they resolve. */
 export function createArtifactHelpers(workspace: { readonly root: string }): ArtifactHelpers {
   const artifactFile = (round: number, pathFromArtifactsRoot: string): string =>
-    path.join(workspace.root, artifactsDirectory, String(round), pathFromArtifactsRoot);
+    roundArtifactPath(workspace.root, round, pathFromArtifactsRoot);
 
   /** The current round number, read from the workspace on every call. */
   async function currentRoundNumber(): Promise<number> {

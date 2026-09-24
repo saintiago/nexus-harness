@@ -2,8 +2,8 @@ import path from 'node:path';
 import type { GitAdapter, RepositoryState } from '../../../adapters/git.js';
 import type { GitHubAdapter, PullRequest } from '../../../adapters/github.js';
 import type { JiraAdapter, JiraTransition } from '../../../adapters/jira.js';
-import type { BoundAction, EventPublisher } from '../../index.js';
-import { createArtifactHelpers } from '../artifacts.js';
+import { actionOutcomeEvent, type BoundAction, type EventPublisher } from '../../index.js';
+import { createArtifactHelpers, roundArtifactPath } from '../artifacts.js';
 import { devArtifact, type DevelopmentOutput } from '../develop/artifacts.js';
 import {
   preparedWorkspaceDeclaration,
@@ -20,6 +20,7 @@ import {
   transitionInto,
   updateIssueFields,
 } from '../source.js';
+import { currentRoundDeclaration, currentRoundFile } from '../start-round/artifacts.js';
 import { verificationArtifact } from '../verify/artifacts.js';
 import { deliveryArtifact, type DeliveryOutput } from './artifacts.js';
 
@@ -133,6 +134,11 @@ export function createDeliver(settings: DeliverSettings): BoundAction {
       verificationArtifact,
     );
     const [recorded] = await helpers.readOptionalInputArtifacts(deliveryArtifact);
+    const round = await readRequiredRecord(
+      path.join(root, currentRoundFile),
+      currentRoundDeclaration,
+      'Current round',
+    );
 
     /** Report an observed condition that prevents publication. */
     function fail(reason: string): 'failed' {
@@ -394,6 +400,17 @@ export function createDeliver(settings: DeliverSettings): BoundAction {
       issue.id,
       comments,
       reportText(development, repairsUsed, escalatedFrom),
+    );
+    settings.publish(
+      actionOutcomeEvent('deliver', {
+        task: selection.taskKey,
+        round: round.number,
+        outcome: 'published',
+        detail: `PR #${String(pullRequestNumber)}`,
+        artifact: {
+          path: roundArtifactPath(root, round.number, deliveryArtifact.pathFromArtifactsRoot),
+        },
+      }),
     );
     return 'published';
   };

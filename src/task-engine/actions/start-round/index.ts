@@ -1,6 +1,6 @@
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
-import type { BoundAction, EventPublisher } from '../../index.js';
+import { actionOutcomeEvent, type BoundAction, type EventPublisher } from '../../index.js';
 import { createArtifactHelpers, type ArtifactHistoryValue } from '../artifacts.js';
 import { devArtifact, type DevelopmentOutput } from '../develop/artifacts.js';
 import { readRecord, writeRecord } from '../records.js';
@@ -29,6 +29,8 @@ export type DeveloperProfileAllowance = {
 };
 
 export type StartRoundSettings = {
+  /** The selected task key the round belongs to. */
+  readonly taskKey: string;
   /** The workspace reference the current selection retains. */
   readonly workspace: { readonly root: string };
   /** The developer ladder in increasing capability order. */
@@ -211,6 +213,15 @@ export function createStartRound(settings: StartRoundSettings): BoundAction {
       await mkdir(path.join(root, 'artifacts', String(number)), { recursive: true });
       await mkdir(path.join(root, 'state'), { recursive: true });
       await writeRecord(recordFile, { number, profile, reason });
+      settings.publish(
+        actionOutcomeEvent('start-round', {
+          task: settings.taskKey,
+          round: number,
+          outcome: 'started',
+          detail: `profile ${profile}`,
+          artifact: { path: recordFile },
+        }),
+      );
       return 'started';
     }
 

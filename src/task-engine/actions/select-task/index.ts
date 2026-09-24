@@ -2,7 +2,7 @@ import { mkdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import type { JiraAdapter, JiraIssue, JiraIssueQuery } from '../../../adapters/jira.js';
 import { fault, messageOf, ok, type Result } from '../../../result.js';
-import type { BoundAction, EventPublisher } from '../../index.js';
+import { actionOutcomeEvent, type BoundAction, type EventPublisher } from '../../index.js';
 import { readRecord, writeRecord } from '../records.js';
 import {
   applyTransition,
@@ -93,6 +93,20 @@ export function createSelectTask(settings: SelectTaskSettings): BoundAction {
     return 'failed';
   }
 
+  /** Report the selected outcome referencing the saved selection record. */
+  function selected(taskKey: string): 'selected' {
+    publish(
+      actionOutcomeEvent('select-task', {
+        task: taskKey,
+        round: null,
+        outcome: 'selected',
+        detail: null,
+        artifact: { path: settings.selectionFile },
+      }),
+    );
+    return 'selected';
+  }
+
   /** The stable project/task workspace path under the configured root. */
   function stableWorkspace(taskKey: string): string {
     return path.join(settings.workspaceRoot, settings.project, taskKey);
@@ -165,7 +179,7 @@ export function createSelectTask(settings: SelectTaskSettings): BoundAction {
     } else {
       await retainWorkspace(issue, workspace.value);
     }
-    return 'selected';
+    return selected(saved.taskKey);
   }
 
   /** Select one fresh eligible candidate from the current source order. */
@@ -204,7 +218,7 @@ export function createSelectTask(settings: SelectTaskSettings): BoundAction {
       if (problem !== null) {
         return fail(problem);
       }
-      return 'selected';
+      return selected(current.key);
     }
     return 'empty';
   }

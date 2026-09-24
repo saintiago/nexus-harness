@@ -1,5 +1,5 @@
 import type { AnyStateMachine } from 'xstate';
-import type { Result } from '../result.js';
+import type { ArtifactRef, Result } from '../result.js';
 import { createExecutionRunner, type BoundAction } from './execution-runner.js';
 
 /**
@@ -24,6 +24,29 @@ export type EventListener = (event: EngineEvent) => void;
 export type Unsubscribe = () => void;
 
 export type EventPublisher = (event: EngineEvent) => void;
+
+/**
+ * One action's saved output and the workflow outcome it returned. The artifact reference names the
+ * file the action saved for that outcome, or the earlier saved file it reused.
+ */
+export type ActionOutcome = {
+  readonly task: string;
+  /** The round whose record or directory holds the output; null before a round exists. */
+  readonly round: number | null;
+  /** The action's returned workflow outcome. */
+  readonly outcome: string;
+  /** One short producer-owned phrase naming the useful fact to show, or null when none applies. */
+  readonly detail: string | null;
+  readonly artifact: ArtifactRef;
+};
+
+/** The type every action outcome event carries. */
+export const actionOutcomeType = 'outcome';
+
+/** Build the outcome event one action publishes with its own source after saving its output. */
+export function actionOutcomeEvent(source: string, outcome: ActionOutcome): EngineEvent {
+  return { source, type: actionOutcomeType, data: outcome };
+}
 
 export type TaskEngine = {
   run(): Promise<WorkflowResult>;

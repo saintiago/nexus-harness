@@ -11,8 +11,12 @@ import {
 } from '../../../adapters/github.js';
 import type { JiraAdapter, JiraComment } from '../../../adapters/jira.js';
 import { messageOf } from '../../../result.js';
-import type { BoundAction, EventPublisher } from '../../index.js';
-import { createArtifactHelpers, type ArtifactHistoryValue } from '../artifacts.js';
+import { actionOutcomeEvent, type BoundAction, type EventPublisher } from '../../index.js';
+import {
+  createArtifactHelpers,
+  roundArtifactPath,
+  type ArtifactHistoryValue,
+} from '../artifacts.js';
 import { deliveryArtifact } from '../deliver/artifacts.js';
 import { devArtifact, type DevelopmentOutput } from '../develop/artifacts.js';
 import { describeIssues, parseDocument } from '../documents.js';
@@ -294,6 +298,8 @@ export function createReview(settings: ReviewSettings): BoundAction {
     );
     const [recorded] = await helpers.readOptionalInputArtifacts(reviewArtifact);
     const issueId = selection.source.issueId;
+    const roundFile = path.join(root, currentRoundFile);
+    const round = await readRequiredRecord(roundFile, currentRoundDeclaration, 'Current round');
 
     if (development.taskKey !== selection.taskKey) {
       throw new Error(
@@ -354,6 +360,21 @@ export function createReview(settings: ReviewSettings): BoundAction {
       await publishComment(settings.jira, issueId, comments, reviewComment(review));
     }
 
+    /** Report the outcome referencing the current round's saved review report. */
+    function report(review: ReviewOutput): void {
+      settings.publish(
+        actionOutcomeEvent('review', {
+          task: selection.taskKey,
+          round: round.number,
+          outcome: review.verdict,
+          detail: `profile ${review.profile}`,
+          artifact: {
+            path: roundArtifactPath(root, round.number, reviewArtifact.pathFromArtifactsRoot),
+          },
+        }),
+      );
+    }
+
     // A saved report for the delivered head is the review of this revision: finish any missing
     // publication for that exact head instead of reviewing again. A report for another revision
     // is not evidence for this one.
@@ -367,6 +388,7 @@ export function createReview(settings: ReviewSettings): BoundAction {
         throw new Error(conversation.fault.message);
       }
       await publishReport(recorded, conversation.value, comments);
+      report(recorded);
       return recorded.verdict;
     }
 
@@ -401,8 +423,6 @@ export function createReview(settings: ReviewSettings): BoundAction {
     if (!conversation.ok) {
       throw new Error(conversation.fault.message);
     }
-    const roundFile = path.join(root, currentRoundFile);
-    const round = await readRequiredRecord(roundFile, currentRoundDeclaration, 'Current round');
     const conversationFile = path.join(
       root,
       'artifacts',
@@ -497,6 +517,7 @@ export function createReview(settings: ReviewSettings): BoundAction {
     };
     await helpers.writeOutputArtifact(reviewArtifact, review);
     await publishReport(review, conversation.value, comments);
+    report(review);
     return review.verdict;
   };
 }

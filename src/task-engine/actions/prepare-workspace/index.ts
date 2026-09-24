@@ -8,7 +8,7 @@ import type {
 } from '../../../adapters/processes.js';
 import type { Command } from '../../../configuration/index.js';
 import { fault, messageOf, ok, type Result } from '../../../result.js';
-import type { BoundAction, EventPublisher } from '../../index.js';
+import { actionOutcomeEvent, type BoundAction, type EventPublisher } from '../../index.js';
 import { readRecord, readRequiredRecord, writeRecord } from '../records.js';
 import { selectionDeclaration, type Selection } from '../select-task/artifacts.js';
 import {
@@ -277,6 +277,15 @@ export function createPrepareWorkspace(settings: PrepareWorkspaceSettings): Boun
     }
 
     await writeRecord(recordFile, established.value);
+    publish(
+      actionOutcomeEvent('prepare-workspace', {
+        task: selection.taskKey,
+        round: null,
+        outcome: 'prepared',
+        detail: `branch ${established.value.branch}`,
+        artifact: { path: recordFile },
+      }),
+    );
     return 'prepared';
   };
 }

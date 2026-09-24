@@ -133,6 +133,26 @@ function verifyOver(options: {
   return createVerify(settings);
 }
 
+/** The outcome event Verify publishes for one workspace's saved verification result. */
+function verificationOutcome(
+  workspaceRoot: string,
+  status: 'passed' | 'failed',
+  checks: number,
+  task = 'NEX-1',
+): EngineEvent {
+  return {
+    source: 'verify',
+    type: 'outcome',
+    data: {
+      task,
+      round: 1,
+      outcome: status,
+      detail: `${String(checks)} check${checks === 1 ? '' : 's'}`,
+      artifact: { path: path.join(workspaceRoot, 'artifacts', '1', 'verification.json') },
+    },
+  };
+}
+
 const validateCheck = {
   name: 'validate',
   command: { executable: 'npm', args: ['run', 'validate'] },
@@ -210,7 +230,8 @@ describe('Verify', () => {
         'utf8',
       ),
     ).toBe('warning\n');
-    expect(events).toEqual([]);
+    // The saved result is what the outcome event references.
+    expect(events).toEqual([verificationOutcome(workspaceRoot, 'passed', 2)]);
   });
 
   it('completes every check and records failed with the failing exit codes', async () => {
@@ -257,6 +278,7 @@ describe('Verify', () => {
         type: 'failed',
         data: { reason: expect.stringContaining('"validate" exited 2') },
       },
+      verificationOutcome(workspaceRoot, 'failed', 2),
     ]);
   });
 
@@ -326,11 +348,12 @@ describe('Verify', () => {
       status: 'failed',
       checks: [{ name: 'validate', exitCode: 0 }],
     });
-    expect(events.at(-1)).toEqual({
+    expect(events.at(-2)).toEqual({
       source: 'verify',
       type: 'failed',
       data: { reason: expect.stringMatching(/left tracked changes/) },
     });
+    expect(events.at(-1)).toEqual(verificationOutcome(workspaceRoot, 'failed', 1));
   });
 
   it('records no verdict and preserves the captured logs when the checks change the revision', async () => {

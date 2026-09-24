@@ -3,8 +3,12 @@ import type { AgentResult, AgentRuntime } from '../../../agent-runtime/index.js'
 import type { GitAdapter, RepositoryState } from '../../../adapters/git.js';
 import type { JiraAdapter } from '../../../adapters/jira.js';
 import { messageOf } from '../../../result.js';
-import type { BoundAction, EventPublisher } from '../../index.js';
-import { createArtifactHelpers, type ArtifactHistoryValue } from '../artifacts.js';
+import { actionOutcomeEvent, type BoundAction, type EventPublisher } from '../../index.js';
+import {
+  createArtifactHelpers,
+  roundArtifactPath,
+  type ArtifactHistoryValue,
+} from '../artifacts.js';
 import { describeIssues, parseDocument } from '../documents.js';
 import {
   preparedWorkspaceDeclaration,
@@ -233,6 +237,21 @@ export function createDevelop(settings: DevelopSettings): BoundAction {
     const profile = round.profile;
     const existing = (await helpers.readOptionalInputArtifacts(devArtifact))[0];
 
+    /** Report the outcome referencing the current round's saved development report. */
+    function report(status: DevelopmentOutput['status']): void {
+      settings.publish(
+        actionOutcomeEvent('develop', {
+          task: selection.taskKey,
+          round: round.number,
+          outcome: status,
+          detail: `profile ${profile}`,
+          artifact: {
+            path: roundArtifactPath(root, round.number, devArtifact.pathFromArtifactsRoot),
+          },
+        }),
+      );
+    }
+
     // A repetition reuses a current-round report only while it still describes this task, profile,
     // comparison base and committed revision. Otherwise another invocation is needed.
     const before = await inspectRepository(settings.git, worktree);
@@ -244,6 +263,7 @@ export function createDevelop(settings: DevelopSettings): BoundAction {
       existing.headRevision === before.headRevision &&
       (existing.status === 'failed' || readinessProblem(before, prepared) === null)
     ) {
+      report(existing.status);
       return existing.status;
     }
 
@@ -326,6 +346,7 @@ export function createDevelop(settings: DevelopSettings): BoundAction {
       findingResponses: response.findingResponses,
     };
     await helpers.writeOutputArtifact(devArtifact, output);
+    report(status);
     return status;
   };
 }

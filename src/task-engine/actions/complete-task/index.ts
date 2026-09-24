@@ -1,12 +1,14 @@
+import path from 'node:path';
 import type { GitHubAdapter } from '../../../adapters/github.js';
 import type { JiraAdapter } from '../../../adapters/jira.js';
-import type { BoundAction, EventPublisher } from '../../index.js';
-import { createArtifactHelpers } from '../artifacts.js';
+import { actionOutcomeEvent, type BoundAction, type EventPublisher } from '../../index.js';
+import { createArtifactHelpers, roundArtifactPath } from '../artifacts.js';
 import { deliveryArtifact } from '../deliver/artifacts.js';
 import { readRequiredRecord } from '../records.js';
 import { reviewArtifact } from '../review/artifacts.js';
 import { selectionDeclaration } from '../select-task/artifacts.js';
 import { applyTransition, readIssue, statusNameOf, transitionInto } from '../source.js';
+import { currentRoundDeclaration, currentRoundFile } from '../start-round/artifacts.js';
 import { completionArtifact, type CompletionOutput } from './artifacts.js';
 
 /**
@@ -65,16 +67,37 @@ export function createCompleteTask(settings: CompleteTaskSettings): BoundAction 
       selectionDeclaration,
       'Selection',
     );
+    const root = selection.workspace.root;
     const helpers = createArtifactHelpers(selection.workspace);
     const [delivery, review] = await helpers.readInputArtifacts(deliveryArtifact, reviewArtifact);
     const [recorded] = await helpers.readOptionalInputArtifacts(completionArtifact);
     const taskKey = selection.taskKey;
     const issueId = selection.source.issueId;
+    const round = await readRequiredRecord(
+      path.join(root, currentRoundFile),
+      currentRoundDeclaration,
+      'Current round',
+    );
 
     /** Report an observed condition that prevents completion. */
     function fail(reason: string): 'failed' {
       settings.publish({ source: 'complete-task', type: 'failed', data: { reason } });
       return 'failed';
+    }
+
+    /** Report the returned outcome referencing the current round's saved completion evidence. */
+    function report(outcome: 'completed' | 'failed'): void {
+      settings.publish(
+        actionOutcomeEvent('complete-task', {
+          task: taskKey,
+          round: round.number,
+          outcome,
+          detail: `PR #${String(delivery.pullRequestNumber)}`,
+          artifact: {
+            path: roundArtifactPath(root, round.number, completionArtifact.pathFromArtifactsRoot),
+          },
+        }),
+      );
     }
 
     // Only an approval of the delivered head completes the task; a changed head does not inherit
@@ -260,7 +283,9 @@ export function createCompleteTask(settings: CompleteTaskSettings): BoundAction 
         return fail(observed.reason);
       }
       if (observed.kind === 'merged' && observed.revision === confirmed.mergeRevision) {
-        return completeTicket();
+        const outcome = await completeTicket();
+        report(outcome);
+        return outcome;
       }
     }
 
@@ -310,6 +335,8 @@ export function createCompleteTask(settings: CompleteTaskSettings): BoundAction 
       checks: observed.checks,
     };
     await helpers.writeOutputArtifact(completionArtifact, output);
-    return completeTicket();
+    const outcome = await completeTicket();
+    report(outcome);
+    return outcome;
   };
 }

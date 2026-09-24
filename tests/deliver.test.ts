@@ -233,7 +233,20 @@ describe('Deliver', () => {
     ]);
     expect(comment).not.toBeNull();
     expect(commentText(comment ?? {})).toBe('profile: dev-a\nImplemented the retry guard.');
-    expect(events).toEqual([]);
+    // The saved delivery record is what the published outcome event references.
+    expect(events).toEqual([
+      {
+        source: 'deliver',
+        type: 'outcome',
+        data: {
+          task: 'NEX-1',
+          round: 1,
+          outcome: 'published',
+          detail: 'PR #7',
+          artifact: { path: path.join(workspaceRoot, 'artifacts', '1', 'delivery.json') },
+        },
+      },
+    ]);
   });
 
   it('records a failed delivery when the verified revision cannot be published', async () => {

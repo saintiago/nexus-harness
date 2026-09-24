@@ -13,7 +13,11 @@ import type { AgentRuntime } from '../src/agent-runtime/index.js';
 import type { RepositoryState } from '../src/adapters/git.js';
 import { ok } from '../src/result.js';
 import { createArtifactHelpers } from '../src/task-engine/actions/artifacts.js';
-import { devArtifact, type FindingResponse } from '../src/task-engine/actions/develop/artifacts.js';
+import {
+  devArtifact,
+  type DevelopmentOutput,
+  type FindingResponse,
+} from '../src/task-engine/actions/develop/artifacts.js';
 import { createDevelop } from '../src/task-engine/actions/develop/index.js';
 import type { Finding, ReviewOutput } from '../src/task-engine/actions/review/artifacts.js';
 import type { EngineEvent } from '../src/task-engine/index.js';
@@ -203,6 +207,27 @@ const precedingReview: ReviewOutput = {
   priorFindings: [],
 };
 
+/** The outcome event Develop publishes for a workspace's saved round-one report. */
+function developmentOutcome(
+  workspaceRoot: string,
+  status: DevelopmentOutput['status'],
+  profile = 'dev-a',
+): EngineEvent {
+  return {
+    source: 'develop',
+    type: 'outcome',
+    data: {
+      task: 'NEX-1',
+      round: 1,
+      outcome: status,
+      detail: `profile ${profile}`,
+      artifact: {
+        path: path.join(workspaceRoot, 'artifacts', '1', 'development.json'),
+      },
+    },
+  };
+}
+
 describe('Develop', () => {
   it('implements the task and records the observed profile and revisions', async () => {
     const { taskKey, workspaceRoot, selectionFile } = await workspace();
@@ -275,6 +300,7 @@ describe('Develop', () => {
         data: { role: 'developer', operation: 'Develop', profile: 'dev-a', task: taskKey },
       },
       { source: 'develop', type: 'agent-finished', data: null },
+      developmentOutcome(workspaceRoot, 'completed'),
     ]);
   });
 
@@ -317,6 +343,7 @@ describe('Develop', () => {
         type: 'failed',
         data: { reason: expect.stringContaining('reported incomplete work') },
       },
+      developmentOutcome(workspaceRoot, 'failed'),
     ]);
   });
 
@@ -357,11 +384,12 @@ describe('Develop', () => {
       // The agent's explanation stays, and the observed readiness failure is durable.
       expect(artifact.summary, label).toContain('Implemented the retry guard.');
       expect(artifact.summary, label).toMatch(expected);
-      expect(events.at(-1), label).toEqual({
+      expect(events.at(-2), label).toEqual({
         source: 'develop',
         type: 'failed',
         data: { reason: expect.stringMatching(expected) },
       });
+      expect(events.at(-1), label).toEqual(developmentOutcome(workspaceRoot, 'failed'));
     }
   });
 
@@ -407,6 +435,7 @@ describe('Develop', () => {
         data: { role: 'developer', operation: 'Develop', profile: 'dev-a', task: 'NEX-1' },
       },
       { source: 'develop', type: 'agent-finished', data: null },
+      developmentOutcome(workspaceRoot, 'completed'),
     ]);
   });
 
@@ -629,7 +658,8 @@ describe('Develop', () => {
     await expect(develop()).resolves.toBe('completed');
 
     expect(requests).toEqual([]);
-    expect(events).toEqual([]);
+    // The reused report stays the saved output the outcome event references.
+    expect(events).toEqual([developmentOutcome(workspaceRoot, 'completed')]);
   });
 
   it('ignores agent claims about the profile and revisions and rejects a wrong report shape', async () => {

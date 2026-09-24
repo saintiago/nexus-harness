@@ -38,6 +38,12 @@ Interpret event source, type and data for presentation only. Unknown events appe
 lines. Do not infer task success from agent messages or tool exit codes; show the reported execution
 outcome. Keep display state in memory, with no artifact reads or persistent display history.
 
+Action outcome events render as one milestone line naming the task, the round when the action names
+one, the returned outcome and the producer's short detail. The line never shows the event's artifact
+path, raw schemas, internal record IDs or full command output. A saved recovery report renders as the
+recovery decision and that its report was saved, without its path. Outcome lines keep the TaskEngine
+progress color; recovery lines use the terminal default.
+
 Timestamp each entry once on receipt using local `HH:mm:ss`; keep that timestamp during redraws.
 Labels identify the source or activity kind even when color is unavailable.
 

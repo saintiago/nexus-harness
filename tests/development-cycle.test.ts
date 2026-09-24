@@ -196,6 +196,7 @@ function actions(runtime: AgentRuntime): {
   });
   return {
     startRound: createStartRound({
+      taskKey: 'NEX-1',
       workspace: { root: workspaceRoot },
       developerLadder: [
         { profile: 'dev-a', repairAllowance: 1 },

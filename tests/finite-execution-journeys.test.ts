@@ -12,7 +12,7 @@
  * artifacts, Git and command execution — is the real implementation.
  */
 
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -558,12 +558,26 @@ function stateNames(events: readonly ExecutionEvent[]): string[] {
     .map((event) => (event.data as { readonly name: string }).name);
 }
 
+/** The saved JSONL execution-log entries of one journey, in receipt order. */
+async function savedLogEntries(executionDirectory: string): Promise<readonly ExecutionEvent[]> {
+  const logsRoot = path.join(executionDirectory, 'logs');
+  const directories = await readdir(logsRoot);
+  expect(directories).toHaveLength(1);
+  const text = await readFile(path.join(logsRoot, directories[0]!, 'events.jsonl'), 'utf8');
+  return text
+    .trimEnd()
+    .split('\n')
+    .map((line) => (JSON.parse(line) as { readonly event: ExecutionEvent }).event);
+}
+
 /** The Application lifecycle event types one journey observed, in publication order. */
 function lifecycleNames(events: readonly ExecutionEvent[]): string[] {
   return events
     .filter((event) => event.source === 'application')
     .map((event) => event.type)
-    .filter((type) => ['starting', 'running', 'recovering', 'finished'].includes(type));
+    .filter((type) =>
+      ['starting', 'running', 'recovering', 'recovered', 'finished'].includes(type),
+    );
 }
 
 describe('finite execution journeys', () => {
@@ -680,6 +694,107 @@ describe('finite execution journeys', () => {
     expect(journey.prompts[0]).toContain('No review findings are supplied for this round.');
     expect(journey.prompts[1]).toContain(`Reviewed revision: ${development.headRevision}`);
     expect(journey.comments()).toHaveLength(2);
+
+    // Every action outcome survives the worker transport into the execution's JSONL log, and each
+    // artifact reference names a file the action really saved.
+    const outcomes = (await savedLogEntries(journey.executionDirectory)).filter(
+      (event) => event.type === 'outcome',
+    );
+    expect(outcomes).toEqual(journey.events.filter((event) => event.type === 'outcome'));
+    expect(outcomes).toEqual([
+      {
+        source: 'select-task',
+        type: 'outcome',
+        data: {
+          task: 'NEX-1',
+          round: null,
+          outcome: 'selected',
+          detail: null,
+          artifact: { path: path.join(journey.executionDirectory, 'selection.json') },
+        },
+      },
+      {
+        source: 'prepare-workspace',
+        type: 'outcome',
+        data: {
+          task: 'NEX-1',
+          round: null,
+          outcome: 'prepared',
+          detail: 'branch task/NEX-1',
+          artifact: { path: path.join(journey.workspace, 'state', 'prepared-workspace.json') },
+        },
+      },
+      {
+        source: 'start-round',
+        type: 'outcome',
+        data: {
+          task: 'NEX-1',
+          round: 1,
+          outcome: 'started',
+          detail: 'profile nexus-flash',
+          artifact: { path: path.join(journey.workspace, 'state', 'current-round.json') },
+        },
+      },
+      {
+        source: 'develop',
+        type: 'outcome',
+        data: {
+          task: 'NEX-1',
+          round: 1,
+          outcome: 'completed',
+          detail: 'profile nexus-flash',
+          artifact: { path: path.join(journey.workspace, 'artifacts', '1', 'development.json') },
+        },
+      },
+      {
+        source: 'verify',
+        type: 'outcome',
+        data: {
+          task: 'NEX-1',
+          round: 1,
+          outcome: 'passed',
+          detail: '1 check',
+          artifact: { path: path.join(journey.workspace, 'artifacts', '1', 'verification.json') },
+        },
+      },
+      {
+        source: 'deliver',
+        type: 'outcome',
+        data: {
+          task: 'NEX-1',
+          round: 1,
+          outcome: 'published',
+          detail: 'PR #7',
+          artifact: { path: path.join(journey.workspace, 'artifacts', '1', 'delivery.json') },
+        },
+      },
+      {
+        source: 'review',
+        type: 'outcome',
+        data: {
+          task: 'NEX-1',
+          round: 1,
+          outcome: 'approved',
+          detail: 'profile nexus-review',
+          artifact: { path: path.join(journey.workspace, 'artifacts', '1', 'review.json') },
+        },
+      },
+      {
+        source: 'complete-task',
+        type: 'outcome',
+        data: {
+          task: 'NEX-1',
+          round: 1,
+          outcome: 'completed',
+          detail: 'PR #7',
+          artifact: { path: path.join(journey.workspace, 'artifacts', '1', 'completion.json') },
+        },
+      },
+    ]);
+    for (const outcome of outcomes) {
+      const { artifact } = outcome.data as { readonly artifact: { readonly path: string } };
+      await expect(readFile(artifact.path)).resolves.toBeDefined();
+    }
   });
 
   it('completes a review-requested repair with the complete finding handoff', async () => {
@@ -867,11 +982,18 @@ describe('finite execution journeys', () => {
       'starting',
       'running',
       'recovering',
+      'recovered',
       'running',
       'finished',
     ]);
     expect(result.outcome).toBe('completed');
     expect(result.report?.path).toMatch(/\/recovery\/reports\/[^/]+\/1\.json$/u);
+    // The saved recovery report is published with its reference once it is written.
+    expect(journey.events.find((event) => event.type === 'recovered')).toEqual({
+      source: 'application',
+      type: 'recovered',
+      data: { decision: 'resume', report: { path: result.report!.path } },
+    });
     expect(JSON.parse(await readFile(result.report?.path ?? '', 'utf8'))).toEqual(report);
     expect(journey.notifications).toHaveLength(1);
     expect(journey.notifications[0]?.subject).toContain('resume');

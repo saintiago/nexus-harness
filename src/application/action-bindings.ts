@@ -16,7 +16,10 @@ import { createDevelop } from '../task-engine/actions/develop/index.js';
 import { createPrepareWorkspace } from '../task-engine/actions/prepare-workspace/index.js';
 import { readRequiredRecord } from '../task-engine/actions/records.js';
 import { createReview } from '../task-engine/actions/review/index.js';
-import { selectionDeclaration } from '../task-engine/actions/select-task/artifacts.js';
+import {
+  selectionDeclaration,
+  type Selection,
+} from '../task-engine/actions/select-task/artifacts.js';
 import { createSelectTask } from '../task-engine/actions/select-task/index.js';
 import { createStartRound } from '../task-engine/actions/start-round/index.js';
 import { createVerify } from '../task-engine/actions/verify/index.js';
@@ -79,17 +82,15 @@ export function createActionBinding(
     const developerRuntime = runtimeFor('developer');
     const reviewerRuntime = runtimeFor('reviewer');
 
-    /** An action constructed with the workspace of the selection the workflow currently retains. */
-    const selectedWorkspace = (
-      create: (workspace: { readonly root: string }) => BoundAction,
-    ): BoundAction => {
+    /** An action constructed with the selection the workflow currently retains. */
+    const selectedWorkspace = (create: (selection: Selection) => BoundAction): BoundAction => {
       return async () => {
         const selection = await readRequiredRecord(
           selectionFile,
           selectionDeclaration,
           'Selection',
         );
-        return create(selection.workspace)();
+        return create(selection)();
       };
     };
 
@@ -114,9 +115,10 @@ export function createActionBinding(
         runCommand: settings.runCommand,
         publish,
       }),
-      StartRound: selectedWorkspace((workspace) =>
+      StartRound: selectedWorkspace((selection) =>
         createStartRound({
-          workspace,
+          taskKey: selection.taskKey,
+          workspace: selection.workspace,
           developerLadder: nexus.executionPolicy.developerLadder,
           publish,
         }),
@@ -128,9 +130,9 @@ export function createActionBinding(
         jira: settings.jira,
         publish,
       }),
-      Verify: selectedWorkspace((workspace) =>
+      Verify: selectedWorkspace((selection) =>
         createVerify({
-          workspace,
+          workspace: selection.workspace,
           checks,
           environment: settings.commandEnvironment,
           git: settings.git,

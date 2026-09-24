@@ -164,7 +164,20 @@ describe('SelectTask', () => {
       'transitions:2',
       'transition:2:31',
     ]);
-    expect(events).toEqual([]);
+    // The saved selection is what the outcome event references.
+    expect(events).toEqual([
+      {
+        source: 'select-task',
+        type: 'outcome',
+        data: {
+          task: 'NEX-2',
+          round: null,
+          outcome: 'selected',
+          detail: null,
+          artifact: { path: selectionFile() },
+        },
+      },
+    ]);
   });
 
   it('holds an empty queue when no candidate is eligible', async () => {
@@ -267,6 +280,20 @@ describe('SelectTask', () => {
     await expect(select()).resolves.toBe('selected');
 
     expect(await readSelection()).toEqual(retained('NEX-1'));
+    // The continued selection is reused, not rewritten, and the outcome event references it.
+    expect(events).toEqual([
+      {
+        source: 'select-task',
+        type: 'outcome',
+        data: {
+          task: 'NEX-1',
+          round: null,
+          outcome: 'selected',
+          detail: null,
+          artifact: { path: selectionFile() },
+        },
+      },
+    ]);
   });
 
   it('finishes an incomplete claim before selecting', async () => {

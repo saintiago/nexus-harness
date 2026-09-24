@@ -32,7 +32,10 @@ type DeliveryOutput = {
 - published: the pull request contains the verified head and the publication steps are complete.
 - failed: an observed delivery condition prevents publication, with its reason retained for recovery.
 
-Only published produces a usable deliveryArtifact. API or command failures are execution errors.
+Only published produces a usable deliveryArtifact; it publishes the
+[action outcome event](architecture.md#action-outcome-events) referencing the saved record and naming
+the pull request. failed saves no record and publishes only its reason. API or command failures are
+execution errors.
 
 ## Behavior
 

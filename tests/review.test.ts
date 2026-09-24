@@ -420,6 +420,7 @@ describe('Review', () => {
       reviews: [],
       reviewComments: [],
     });
+    // The saved report is what the outcome event references.
     expect(events).toEqual([
       {
         source: 'review',
@@ -432,6 +433,17 @@ describe('Review', () => {
         },
       },
       { source: 'review', type: 'agent-finished', data: null },
+      {
+        source: 'review',
+        type: 'outcome',
+        data: {
+          task: 'NEX-1',
+          round,
+          outcome: 'approved',
+          detail: 'profile nexus-review',
+          artifact: { path: path.join(workspaceRoot, 'artifacts', String(round), 'review.json') },
+        },
+      },
     ]);
   });
 
@@ -716,6 +728,22 @@ describe('Review', () => {
     ).resolves.toBe('approved');
     expect(finishedHub.calls).toEqual(['conversation:7', `readChecks:${headRevision}`]);
     expect(finishedJiraCalls).toEqual(['comments:1']);
+    // The reused report is the saved output the outcome event references.
+    expect(events).toEqual([
+      {
+        source: 'review',
+        type: 'outcome',
+        data: {
+          task: 'NEX-1',
+          round: 1,
+          outcome: 'approved',
+          detail: `profile ${saved.profile}`,
+          artifact: {
+            path: path.join(finished.workspaceRoot, 'artifacts', '1', 'review.json'),
+          },
+        },
+      },
+    ]);
 
     // The review was published but its check failed: repeating finishes the check alone.
     events = [];
