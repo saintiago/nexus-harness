@@ -88,9 +88,10 @@ each invocation receives the instructions of its selected role.
 ## Idea refinement settings
 
 For the [idea refinement workflow](idea-refinement/spec.md), the connected project supplies
-authoritative purpose/charter/vision references, repository and internal knowledge sources, an
-eligible idea query, and source mappings for submitted, active, approved and waiting-for-feedback
-items. HARN's Jira mappings are `Idea`, `Idea Refinement`, `Draft` and
+an eligible idea query and source mappings for submitted, active, approved and
+waiting-for-feedback items. The Purpose Verifier discovers project purpose documents through
+the connected repository and infers direction from code and commits when needed; no configured
+purpose references are required. HARN's Jira mappings are `Idea`, `Idea Refinement`, `Draft` and
 `Waiting for Feedback`, respectively.
 These are project facts, not Nexus role policy. Nexus supplies the idea refinement workflow
 definition, six profile references and maximum council cycles. Use the existing profile catalogue

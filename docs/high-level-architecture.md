@@ -186,11 +186,12 @@ The defined workflow includes development, verification, delivery, review and co
 ## Idea refinement
 
 [Idea refinement](idea-refinement/spec.md) is a separate workflow available to any connected
-project. Project configuration supplies purpose sources, an idea selection query and state
-mappings on its Jira task source; Nexus configuration supplies the workflow and role profiles.
-Purpose and research run in parallel, followed by a brief writer and a parallel three-reviewer
-council. XState joins both groups and routes unanimous approval, minor correction, major rework
-or return to author. Selection moves the idea to its active state before agents run. Approval
+project. Project configuration supplies an idea selection query and state mappings on its
+Jira task source; Nexus configuration supplies the workflow and role profiles. The Purpose
+Verifier discovers purpose documents in the connected project and infers direction from code
+and commits where documents are absent or incomplete. Purpose and research run in parallel,
+followed by a brief writer and a parallel three-reviewer council. XState joins both groups
+and routes unanimous approval, minor correction, major rework or return to author. Selection moves the idea to its active state before agents run. Approval
 publishes a ready-for-design handoff and moves it to the approved state. A nonapproval posts
 human-facing feedback to Jira and moves it to the waiting-for-feedback state; internal agent
 feedback remains in artifacts and logs. The author replies in a Jira comment and moves the idea

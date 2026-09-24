@@ -98,7 +98,9 @@ or assertions that merely reproduce the implementation.
 
 At the workflow level, use the real XState definition to prove both parallel joins, unanimous
 approval on one brief revision, mixed-verdict precedence, minor and major routes, bounded
-nonconvergence, and immediate return for an unworkable idea. At the action boundary, verify
+nonconvergence, and immediate return for an unworkable idea. Verify that purpose documents are
+discovered without configured references and that absent documents produce cited, provisional
+inference from code and commits rather than an execution fault. At the action boundary, verify
 producer-owned artifacts and revision/digest binding, source update idempotency, the configured
 submitted-to-active, active-to-approved, active-to-waiting-for-feedback and
 waiting-for-feedback-to-submitted transitions, including capture of the author's resubmission
