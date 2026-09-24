@@ -67,8 +67,7 @@ do not change source statuses. Nexus actions own artifacts and source updates.
 
 1. Select one eligible submitted idea. In HARN, select Jira Task issues in `Idea`. Read the
    issue and relevant comments once, capture that input, and move it to `Idea Refinement` before
-   invoking agents. Run at most one refinement execution per connected project so the same idea
-   is not selected twice. On restart, resume from saved execution state and artifacts without
+   invoking agents. On restart, resume from saved execution state and artifacts without
    another Jira read. On resubmission, capture the author's response comment made after the prior
    feedback request along with the current idea text and links as the new run's input.
 2. Run Purpose Verifier and Researcher concurrently on the original idea. The Purpose Verifier
