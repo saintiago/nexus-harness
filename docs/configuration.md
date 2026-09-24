@@ -55,10 +55,10 @@ configuration.
 
 The developer ladder lists profiles in increasing capability order. Its first entry supplies the
 initial round; each entry's repairAllowance is the number of executed repair turns allowed with that
-profile. [StartRound](task-engine/actions/start-round.md#round-planning) owns repair triggers,
+profile. [StartDevRound](task-engine/actions/start-dev-round.md#round-planning) owns repair triggers,
 counting, promotion at each second consecutive changesRequested review, the no-downgrade rule and
 exhaustion. The reviewer profile is configured separately and selected by
-[Review](task-engine/actions/review.md#interface), not by StartRound.
+[Review](task-engine/actions/review.md#interface), not by StartDevRound.
 
 The target repository's merge rules require the configured Nexus Lens review check from that App,
 alongside its required CI checks. Project delivery settings identify that required check.
@@ -94,6 +94,7 @@ the connected repository and infers direction from code and commits when needed;
 purpose references are required. HARN's Jira mappings are `Idea`, `Idea Refinement`, `Draft` and
 `Waiting for Feedback`, respectively.
 These are project facts, not Nexus role policy. Nexus supplies the idea refinement workflow
-definition, six profile references and maximum council cycles. Use the existing profile catalogue
+definition, six profile references and maximum council cycles. Idea refinement's StartIdeaRound
+records the role profiles selected for each council cycle. Use the existing profile catalogue
 and storage root. Artifact paths belong to the workflow, not project configuration.
 The operator command selects the workflow explicitly.

@@ -1,10 +1,11 @@
-# StartRound
+# StartDevRound
 
 ## Responsibility
 
 Plan and open an implementation round. Select the round's developer profile from the configured
 ladder, persist that choice and its reason as the current round, and report exhaustion when no further
-configured repair turn is available.
+configured repair turn is available. Use the shared round storage functions for plan and
+history I/O; the repair and profile policy remains here.
 
 ## Interface
 
@@ -41,7 +42,7 @@ the same workspace. profile is the developer profile Develop must use for that r
 why the profile was selected.
 
 This record selects the artifact root and carries the round plan; it is outside that root so it can be
-read before resolving round artifacts. StartRound declares no development, review or other business
+read before resolving round artifacts. StartDevRound declares no development, review or other business
 output shapes, and it creates no repair decision artifact.
 
 ### Outcomes
@@ -72,7 +73,7 @@ execution error, not a new round or an exhausted policy.
    - the review result requested changes for the development result's headRevision.
 
    An approval, an inconclusive review, a result for another revision or a missing result is not a
-   repair trigger. The workflow must not invoke StartRound for those cases; if it does, fail rather
+   repair trigger. The workflow must not invoke StartDevRound for those cases; if it does, fail rather
    than opening a repair round.
 4. Count executed repair turns from the retained development reports in rounds after the first. Group
    them by the report's profile. Both completed and failed reports count when the agent returned a
@@ -105,10 +106,10 @@ history, and an existing next directory is retained.
 ## Restart
 
 The current-round record is the round plan. If the worker stops after saving a new plan but before
-saving workflow state, repeating StartRound finds no development result for the current round and
+saving workflow state, repeating StartDevRound finds no development result for the current round and
 reuses the same number and profile. It does not increment a counter or select again.
 
-If the worker stops before saving the new plan, repeating StartRound recomputes the next number from
+If the worker stops before saving the new plan, repeating StartDevRound recomputes the next number from
 the unchanged history and reaches the same decision. A fresh task/PR lifecycle after recovery has its
 own artifact history and starts again at round 1 with the initial profile; discarded history does not
 affect it.

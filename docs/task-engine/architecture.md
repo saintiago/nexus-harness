@@ -18,13 +18,14 @@ TaskEngine
 └── Actions
     ├── SelectTask
     ├── PrepareWorkspace
-    ├── StartRound
+    ├── StartDevRound
     ├── Develop
     ├── Verify
     ├── Review
     ├── Deliver
-    └── CompleteTask
+    ├── CompleteTask
     └── Idea refinement actions (see specification)
+        └── StartIdeaRound
 ```
 
 ExecutionRunner is the core: a thin XState integration that executes the supplied workflow.
@@ -174,7 +175,7 @@ verify: {
     src: 'Verify',
     onDone: [
       { guard: ({ event }) => event.output === 'passed', target: 'deliver' },
-      { guard: ({ event }) => event.output === 'failed', target: 'startRound' },
+      { guard: ({ event }) => event.output === 'failed', target: 'startDevRound' },
       { actions: 'unexpectedOutcome' },
     ],
   },
@@ -184,15 +185,17 @@ verify: {
 The complete finite workflow is defined in [finite-delivery.ts](../../workflows/finite-delivery.ts).
 Queue loops, round and repair loops and waits are workflow choices; the runner only follows
 transitions. The [idea refinement workflow](../idea-refinement/spec.md) expresses parallel
-regions, joins, verdict precedence and bounded correction loops in XState; operations retain their
-artifact and source-update responsibilities.
+regions, joins, verdict precedence and bounded correction loops in XState. It also invokes
+StartIdeaRound for each council cycle, using an idea-specific role plan from the retained workspace;
+XState still chooses minor and major routes. Operations retain their artifact and source-update
+responsibilities.
 
 The finite workflow routes the initial prepared workspace and failed Develop, failed Verify
-and changesRequested Review to StartRound. StartRound returns started for another round or exhausted
+and changesRequested Review to StartDevRound. StartDevRound returns started for another round or exhausted
 for the blocked terminal state. Approved Review still routes to CompleteTask; inconclusive Review
 routes directly to blocked, and operational errors remain execution errors rather than repairs. The
 reviewer profile is selected by Review and is separate from the developer profile selected by
-StartRound.
+StartDevRound.
 
 Nexus registers its operations as promise actors. XState invokes them and follows the declared
 outcome transitions. Unexpected outcomes and rejected operations are execution faults.

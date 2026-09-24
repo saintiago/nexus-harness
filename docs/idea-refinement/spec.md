@@ -37,18 +37,20 @@ The workflow never silently waits for author input.
 
 ## Inputs and project context
 
-The submitted idea is immutable within a run: source key, author, text, links, revision and
-the author's most recent resubmission comment, when present, at selection. Every agent receives
-it alongside the latest relevant artifacts. Project configuration provides an idea selection
-query and submitted, active, approved and waiting-for-feedback status mappings on its existing
-Jira task source. Agents can read the connected project's repository, documents and commit
+Each time an item enters `Idea`, selection captures one immutable input: source key, author,
+current text, links, revision and complete relevant Jira conversation. Every agent receives that
+input alongside the latest relevant artifacts. The entry path is the same every time. In
+this spec, `original idea` means the input captured for the current entry, not the first
+version ever submitted. Project configuration provides an idea selection query and submitted,
+active, approved and waiting-for-feedback status mappings on its existing Jira task source. Agents can read the connected project's repository, documents and commit
 history. Nexus configuration selects this workflow, the six role profiles, iteration limits
 and storage. Idea refinement uses the same Jira adapter as finite delivery with a separate
 selection query. HARN selects Jira Task issues in `Idea`; `Idea Refinement` is the active status,
 `Draft` is the approved status and `Waiting for Feedback` awaits human input.
 
 The action reads the Jira issue and its relevant comments once when selecting it, then moves it
-to the active status. Its captured content is the input for the entire run. Publication uses that
+to the active status. It uses a stable workspace path for the issue, reusing that workspace when
+it already exists. The captured content is the input for this run. Publication uses that
 snapshot and the run artifacts without another Jira read. The adapter owns Jira identity and
 transition details; the workflow owns selection, verdicts and publication decisions.
 
@@ -64,35 +66,38 @@ do not change source statuses. Nexus actions own artifacts and source updates.
 ## Behavior
 
 1. Select one eligible submitted idea. In HARN, select Jira Task issues in `Idea`. Read the
-   issue and relevant comments once, capture that input, and move it to `Idea Refinement` before
-   invoking agents. On resubmission, capture the author's response comment made after the prior
-   feedback request along with the current idea text and links as the new run's input.
-2. Run Purpose Verifier and Researcher concurrently on the original idea. The Purpose Verifier
+   issue and relevant comments once, capture that input, find or create its stable workspace,
+   and move it to `Idea Refinement` before invoking agents. This path also handles an item
+   returned to `Idea` after human feedback; no separate resubmission branch exists.
+2. StartIdeaRound opens the first council cycle for this selection from the workspace history and
+   records the six role profiles. Each later correction enters StartIdeaRound again with the route
+   chosen by XState. The configured council-cycle limit applies to this selection.
+3. Run Purpose Verifier and Researcher concurrently on the original idea. The Purpose Verifier
    finds purpose documents itself and, where needed, infers purpose from code and commit history.
    They work independently and write separate reports. The writer starts only after both reports
    exist.
-3. Brief Writer creates revision 1. It sees the original idea, both reports, previous feedback when
+4. Brief Writer creates revision 1. It sees the original idea, both reports, previous feedback when
    revising, and every council criterion below. It records a short problem/value statement, project
    fit, supporting evidence with links, alternatives, smallest useful scope, assumptions and open
    questions for design. It must distinguish evidence from proposal.
-4. Three council reviewers run concurrently and independently on the same immutable brief revision.
+5. Three council reviewers run concurrently and independently on the same immutable brief revision.
    They see the original idea and relevant evidence, but not one another's verdicts before submitting
    their own. Each emits exactly one verdict: `approve`, `minor_corrections`, `major_rework` or
    `idea_not_working`. A nonapproval names the failed criterion, evidence and actionable correction.
-5. After all council results are saved, route by strongest verdict:
+6. After all council results are saved, route by strongest verdict:
    `idea_not_working > major_rework > minor_corrections > approve`. Preserve all feedback in
    artifacts even when one result determines routing. Unanimous approval alone advances to the
    approved state. Do not post internal council feedback or revision requests to Jira.
-6. Minor corrections return to Brief Writer using existing purpose and research reports. Major rework
+7. Minor corrections return to Brief Writer using existing purpose and research reports. Major rework
    reruns Purpose Verifier and Researcher concurrently with the original idea, current brief and all
    council feedback. Their next reports must address the objections; the writer then creates a new
    brief revision. Any rewrite invalidates every earlier approval. The council reviews the new
    revision independently.
-7. The configured maximum number of council cycles bounds internal work. If another revision would
+8. The configured maximum number of council cycles bounds internal work. If another revision would
    exceed it, return to the author as unable to converge. An `idea_not_working` verdict returns
    immediately. Both routes post the human-facing reason and requested action to Jira, then set
    `Waiting for Feedback`; their decision artifacts retain distinct reasons and full feedback.
-8. An approved handoff is available to the Requirements and Design workflow from the approved
+9. An approved handoff is available to the Requirements and Design workflow from the approved
    source state. That workflow decides requirements and architecture and may ultimately produce
    a To Do implementation ticket.
 
@@ -169,36 +174,64 @@ one another's pending outputs.
 
 ## Artifacts and revision binding
 
-Use a workflow-specific workspace under
-`<storage root>/workspaces/<project>/<idea>/refinement/`. Keep a read-only project snapshot or
-references under `worktree/`; Nexus owns writes under `artifacts/`. A simple layout is:
+Use a stable workflow-specific workspace under
+`<storage root>/workspaces/<project>/<idea>/refinement/`. Selection reuses it when present and
+creates it when absent. Keep a read-only project snapshot or references under `worktree/`; Nexus
+owns writes under `artifacts/` and `state/`. Each entry from `Idea` has its own numbered history
+within the same workspace:
 
 ```text
+state/
+  current-round.json
 artifacts/
-  original.json
-  cycles/<n>/
-    purpose.json
-    research.json
-    brief.json
-    council/purpose.json
-    council/evidence.json
-    council/simplicity.json
-  decision.json
+  submissions/<n>/
+    input.json
+    cycles/<m>/
+      purpose.json
+      research.json
+      brief.json
+      council/purpose.json
+      council/evidence.json
+      council/simplicity.json
+    decision.json
 ```
 
-Cycle numbers are positive integers. Minor revision may reuse the previous purpose/research reports
-by reference, never by falsely relabeling them as new work. Major revision writes new reports.
-Every brief is identified by its cycle and content digest; each council result names both, its
+Submission and cycle numbers are positive integers. The submission number is a storage identity,
+not a different workflow path. Minor revision may reuse the current submission's preceding
+purpose/research reports by reference, never by falsely relabeling them as new work. Major revision
+writes new reports. Every brief is identified by its cycle and content digest; each council result names both, its
 reviewer identity, verdict, criteria and feedback. A council set is valid only when all three
-results name the same current cycle and digest. Original input and prior cycles are retained
-for history. The decision artifact records the route, strongest verdict, full feedback and source
-update evidence, including the human-facing Jira comment when applicable. These artifact paths
-are specific to idea refinement; finite delivery's round layout is unchanged.
+results name the same current cycle and digest. Captured inputs, decisions and prior cycles are
+retained in the workspace. The decision artifact records the route, strongest verdict, full
+feedback and source update evidence, including the human-facing Jira comment when applicable.
+These artifact paths are specific to idea refinement; finite delivery's round layout is unchanged.
 
-Actions write complete outputs before returning a transition outcome. A resubmitted idea
-starts a new run; a changed brief invalidates all council results. Concurrent roles have distinct
-artifact paths and no shared writable output. XState control state is separate from these
-business artifacts.
+StartIdeaRound owns `state/current-round.json` with the active submission number, council cycle,
+route and selected profile for each role:
+
+```ts
+type IdeaRoundPlan = {
+  submission: number;
+  cycle: number;
+  route: "new" | "minor" | "major";
+  roles: IdeaRole[];
+  profiles: Record<IdeaRole, string>;
+};
+```
+
+At each entry from `Idea`, it inspects the existing workspace history, opens the next
+submission and starts cycle 1 with all six configured roles. For a minor correction, it opens
+the next cycle with Brief Writer and the three council roles; for major rework, it includes Purpose
+Verifier and Researcher as well. Prior submissions remain
+available as context, but their approvals do not apply to the new input. StartIdeaRound does not decide
+the correction severity or final verdict: XState supplies the route after collecting all council
+results. StartIdeaRound uses the shared round storage functions for history and plan persistence.
+Its role selection and cycle policy are idea-specific; it does not apply finite delivery's repair
+counters or developer ladder.
+
+Actions write complete outputs before returning a transition outcome. A changed brief invalidates
+all council results for that brief. Concurrent roles have distinct artifact paths and no shared
+writable output. XState control state is separate from these business artifacts.
 
 ## Workflow pseudocode
 
@@ -207,9 +240,19 @@ named operations and return outcomes; XState owns parallelism, joins, guards and
 
 ```ts
 machine IdeaRefinement {
-  context: { cycle: 1, maxCycles, originalRef, currentBriefRef, verdictRefs: [] }
+  context: { cycle, maxCycles, inputRef, roundPlanRef, currentBriefRef, verdictRefs: [] }
 
-  selectIdea -> captureOriginal -> markRefining -> assessAndResearch // HARN: Idea -> Idea Refinement
+  selectIdea -> captureInput -> markRefining -> startIdeaRound("new") // HARN: Idea -> Idea Refinement
+
+  state startIdeaRound(route) {
+    invoke StartIdeaRound(route)
+    onDone({ openedCycle, planRef }) {
+      cycle = openedCycle
+      roundPlanRef = planRef
+      if route == "minor" -> writeBrief
+      otherwise           -> assessAndResearch
+    }
+  }
 
   state assessAndResearch parallel {
     region purpose  { invoke PurposeVerifier; onDone -> final }
@@ -235,8 +278,8 @@ machine IdeaRefinement {
       if any(idea_not_working) -> returnToAuthor,
       if all(approve)         -> publishApproved,
       if cycle >= maxCycles   -> returnUnableToConverge,
-      if any(major_rework)    -> nextCycleThenAssessAndResearch,
-      otherwise              -> nextCycleThenWriteBrief
+      if any(major_rework)    -> startIdeaRound("major"),
+      otherwise              -> startIdeaRound("minor")
     ]
   }
 
@@ -272,6 +315,9 @@ lines when interactive panes are unavailable.
 
 ## Verification criteria
 
+- Selection follows the same path for every item in `Idea`. It reuses the issue's workspace when
+  present, retains previous submissions, and StartIdeaRound opens the next submission at cycle 1.
+  Each correction calls StartIdeaRound with XState's minor or major route and uses its saved role plan.
 - Purpose and research can overlap; writer cannot start until both finish. All three council
   reviewers can overlap; routing waits for all three and aggregates all feedback.
 - Mixed verdicts follow the stated precedence and preserve every objection. Minor repeats only the
@@ -284,9 +330,10 @@ lines when interactive panes are unavailable.
   only after unanimous approval on one exact revision. Rejection or exhaustion moves it to
   `Waiting for Feedback` with a human-facing Jira comment; internal agent feedback stays in
   artifacts and logs. Neither route moves the item to To Do. Resubmission requires the author to
-  reply in a Jira comment and move the item back to `Idea`. The next run reads that comment.
-  Execution faults do not publish a council verdict or request human feedback. A run reads its
-  Jira input only at selection and does not re-read it before publication.
+  reply in a Jira comment and move the item back to `Idea`. Selection captures that comment
+  with the rest of the conversation on the same entry path. Execution faults do not publish a
+  council verdict or request human feedback. A run reads its Jira input only at selection and
+  does not re-read it before publication.
 - Concurrent agent activity remains attributable in separate durable files and independent 10-line
   terminal panes. Main events include invocation and business-artifact references without detailed
   agent activity.
