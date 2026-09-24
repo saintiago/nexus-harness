@@ -11,8 +11,8 @@ Keep documentation current, concise and useful for decisions.
   references and historical instructions in Git history, not in maintained docs or archives.
 - State shared guidance once. Tickets contain the problem and desired outcome, not copied
   policy or an implementation itinerary.
-- Distinguish planned direction from current behavior. Prefer clear principles over detailed
-  prescriptions; remove material that no longer helps a reader act or decide.
+- Describe the intended system without implementation-status notes. Track implementation progress in
+  tasks and Git history. Prefer clear principles over detailed prescriptions.
 - Keep the reference index in `AGENTS.md` synchronized. Do not repeat document descriptions
   or reference lists elsewhere.
 - Keep README to a few sentences for humans, without links. Keep agent guidance in docs.

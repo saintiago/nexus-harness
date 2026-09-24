@@ -1,7 +1,6 @@
 # Idea refinement workflow
 
-Status: target design. The finite delivery workflow remains the current executable workflow.
-This specification defines a separate workflow for any connected project.
+This specification defines a workflow for any connected project, separate from finite delivery.
 
 ## Purpose
 
@@ -37,8 +36,7 @@ selection. Every agent receives it alongside the latest relevant artifacts. Proj
 provides the authoritative purpose/charter/long-term vision references, the task-source query and
 status mappings for draft, refining, ready for design and returned, and repository/document sources
 available to agents. Nexus configuration selects this workflow, the six role profiles, iteration
-limits and storage. The current task-source adapter is Jira; other providers need their own adapter
-contracts when actually required.
+limits and storage. Jira is the task-source adapter. Other providers need their own adapter contracts when required.
 
 Purpose sources must be available and identifiable. If they are absent, return an operational
 needs-attention result asking for project context; agents must not invent a charter. The researcher
@@ -74,7 +72,7 @@ updates.
    exceed it, return to the author as unable to converge, with the full feedback. An
    `idea_not_working` verdict returns immediately. These are different reasons in the return
    artifact and source update.
-8. An approved handoff is available to the future Requirements and Design workflow. That workflow
+8. An approved handoff is available to the Requirements and Design workflow. That workflow
    decides requirements and architecture and may ultimately produce a To Do implementation ticket.
 
 A reviewer may choose minor only when the current purpose and research reports remain valid.

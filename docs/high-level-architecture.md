@@ -25,6 +25,11 @@ Nexus
 │       ├── Review
 │       ├── Deliver
 │       └── CompleteTask
+│   └── Idea refinement actions
+│       ├── Purpose and research
+│       ├── Brief writing
+│       ├── Council review
+│       └── Decision publication
 ├── AgentRuntime
 │   ├── Profile catalogue and instructions
 │   └── Agent execution
@@ -38,7 +43,7 @@ Nexus
 ```
 
 Application is the parent of the Nexus worker process. Application constructs TaskEngine and its
-dependencies in the worker. Actions use AgentRuntime for development/review; Application uses it for recovery.
+dependencies in the worker. Actions use AgentRuntime for delivery and idea refinement roles; Application uses it for recovery.
 Adapters are modules at external boundaries, not a registry or additional service.
 
 Workspace and configuration are data designs. WorkspaceRef identifies an instance; artifact layout
@@ -71,14 +76,13 @@ RecoveryRole investigates failures and chooses how to recover.
 
 ## Execution model
 
-Persisted workflow state is the checkpoint. Save and load it directly. The current design requires
-neither a separate checkpoint subsystem nor a filesystem transaction protocol. A future database
-does not require a storage framework now.
+Persisted workflow state is the checkpoint. Save and load it directly. The design requires
+neither a separate checkpoint subsystem nor a filesystem transaction protocol.
 
-Finite delivery executes actions sequentially. The planned [idea refinement workflow](idea-refinement/spec.md)
+Finite delivery executes actions sequentially. The [idea refinement workflow](idea-refinement/spec.md)
 uses XState parallel regions for independent purpose/research and council actions, then joins before
 writing or routing. Each parallel action owns separate artifacts. Application-level recovery starts
-after the worker invocation ends. Cancellation and shared-writer coordination are not current features.
+after the worker invocation ends. Cancellation and shared-writer coordination are outside these workflows.
 
 ## Component responsibilities
 
@@ -179,14 +183,14 @@ Required task checks and completion gates still belong to the normal actions.
 
 The defined workflow includes development, verification, delivery, review and completion.
 
-## Planned idea refinement
+## Idea refinement
 
-[Idea refinement](idea-refinement/spec.md) is a separate target workflow available to any connected
+[Idea refinement](idea-refinement/spec.md) is a separate workflow available to any connected
 project. Project configuration supplies purpose sources and idea-source mappings; Nexus configuration
 supplies the workflow and role profiles. Purpose and research run in parallel, followed by a brief
 writer and a parallel three-reviewer council. XState joins both groups and routes unanimous approval,
 minor correction, major rework or return to author. Approval produces a ready-for-design handoff for
-a later Requirements and Design workflow; finite delivery still starts from its own To Do queue.
+the Requirements and Design workflow; finite delivery starts from its own To Do queue.
 
 Every agent invocation uses the same identity, activity-log reference and terminal-pane contract,
 regardless of how many roles are active. The Application logger persists each agent's complete

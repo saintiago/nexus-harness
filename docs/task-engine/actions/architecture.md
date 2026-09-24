@@ -148,7 +148,7 @@ exhaustion; the round policy is part of StartRound, not a separate action or pla
 actions finish writing their outputs before returning. Workflow definitions contain states and
 transitions, not artifact paths or mappings.
 
-## Planned idea refinement actions
+## Idea refinement actions
 
 The [idea refinement specification](../../idea-refinement/spec.md) owns its action sequence and
 workflow-specific artifacts. These actions follow the same producer-owned output and named-outcome

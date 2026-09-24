@@ -4,7 +4,7 @@
 
 Execute a task workflow supplied as an XState definition. The workflow defines sequencing, ordinary functions perform
 the actions, and persistent artifacts carry data between actions. Finite delivery uses sequential
-states; the planned idea refinement workflow uses independent parallel regions.
+states; idea refinement uses independent parallel regions.
 
 The public module is `src/task-engine/index.ts`. Its construction inputs are a workflow, an action
 binding that receives the engine's EventPublisher and produces the bound action implementations,
@@ -24,6 +24,7 @@ TaskEngine
     ├── Review
     ├── Deliver
     └── CompleteTask
+    └── Idea refinement actions (see specification)
 ```
 
 ExecutionRunner is the core: a thin XState integration that executes the supplied workflow.
@@ -79,9 +80,6 @@ from actions and other listeners.
 
 ### Agent activity events
 
-The following is the planned unified invocation contract for finite delivery, recovery and idea
-refinement. The current sequential event form remains until this extension is implemented.
-
 The caller assigns each AgentRuntime invocation a role name, unique invocation ID and Unix
 start time in milliseconds. The same contract applies to one or several concurrent invocations,
 including recovery. Transported activity carries that identity so simultaneous roles remain
@@ -101,7 +99,7 @@ and never declares task success. [Application](../application.md#execution-log) 
 
 ### Action outcome events
 
-The following fields describe the current finite delivery action outcomes. Idea refinement actions
+The following fields describe finite delivery action outcomes. Idea refinement actions
 preserve the same saved-artifact reference principle while using an idea key, cycle and brief
 revision where relevant, as defined in its specification.
 
@@ -185,11 +183,11 @@ verify: {
 
 The complete finite workflow is defined in [finite-delivery.ts](../../workflows/finite-delivery.ts).
 Queue loops, round and repair loops and waits are workflow choices; the runner only follows
-transitions. The planned [idea refinement workflow](../idea-refinement/spec.md) expresses parallel
+transitions. The [idea refinement workflow](../idea-refinement/spec.md) expresses parallel
 regions, joins, verdict precedence and bounded correction loops in XState; operations retain their
 artifact and source-update responsibilities.
 
-The target finite workflow routes the initial prepared workspace and failed Develop, failed Verify
+The finite workflow routes the initial prepared workspace and failed Develop, failed Verify
 and changesRequested Review to StartRound. StartRound returns started for another round or exhausted
 for the blocked terminal state. Approved Review still routes to CompleteTask; inconclusive Review
 routes directly to blocked, and operational errors remain execution errors rather than repairs. The

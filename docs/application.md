@@ -14,6 +14,7 @@ The public module is `src/application/index.ts`.
 
 ```text
 nexus queue run --project-config <file>
+nexus ideas refine --project-config <file>
 nexus --help
 ```
 
@@ -31,7 +32,10 @@ interface Application {
   subscribe(listener: Observer<ExecutionEvent>): Unsubscribe;
 }
 
-type ExecutionRequest = { projectConfigPath: string };
+type ExecutionRequest = {
+  projectConfigPath: string;
+  workflow: 'finite-delivery' | 'idea-refinement';
+};
 type ExecutionEvent = EngineEvent;
 
 type ExecutionResult = {
@@ -52,7 +56,7 @@ type RecoveryReport = {
 
 Use the [shared value types](high-level-architecture.md#shared-interface-vocabulary) and
 [TaskEngine event types](task-engine/architecture.md#provided-interface).
-One execute call manages one execution using the absolute project filepath.
+One execute call manages one selected workflow using the absolute project filepath.
 Completed means the configured workflow finished successfully; needs-attention means it could not
 continue. The report points to the saved recovery report when recovery occurred.
 
@@ -61,7 +65,7 @@ unchanged. Emit lifecycle events with source application and types starting, run
 recovered and finished. The finished event carries ExecutionResult. Listener failures do not affect
 execution.
 
-Recovery invocations emit the [agent activity events](task-engine/architecture.md#agent-activity-events)
+Recovery invocations use the [agent invocation contract](task-engine/architecture.md#agent-activity-events)
 with role recovery. Use the [RecoveryRole](agent-runtime/recovery-role.md#interface) prompt, context
 and tool contract. Request RecoveryReport in the recovery context and parse the returned output.
 A malformed report is a failed recovery invocation. Once the report is saved, publish a recovered
@@ -76,7 +80,7 @@ and capabilities its contract requires.
 | Process | Construction and invocation |
 | --- | --- |
 | Parent | Construct recovery [AgentRuntime](agent-runtime/architecture.md#interface) and notification/process [Adapters](adapters/architecture.md#interface) |
-| Parent | Construct [OperatorInterface](operator-interface.md#interface) with the Application event subscription and terminal capabilities; start presentation before execute and stop it afterward |
+| Parent | Construct [OperatorInterface](operator-interface.md#interface) with the combined event subscription, attributable activity subscription and terminal capabilities; start presentation before execute and stop it afterward |
 | Worker | Construct adapters and AgentRuntime from their relevant settings |
 | Worker | Bind action capabilities, selection storage and event publishing; construct [TaskEngine](task-engine/architecture.md#interface) with the selected workflow and workflow-state filepath |
 | Worker | Subscribe to TaskEngine events before calling run; send events and the final result through the worker protocol |
@@ -85,7 +89,8 @@ Terminal capabilities come from the process's standard output. A stream that fai
 presentation rendering to it while execution continues; the boundary releases its stream listeners
 once presentation has stopped and the failures of the writes it issued have arrived.
 
-OperatorInterface receives worker and parent events through one combined subscription.
+OperatorInterface receives worker and parent events through one combined subscription and attributable
+agent activity through a separate live subscription.
 Prepare recovery context from the original request, failure, available output, execution-state paths
 and task [workspace reference](workspace.md#layout-and-reference) when known. Always run recovery in
 a separate operational workspace, so it can delete a broken task workspace without deleting its own
@@ -97,7 +102,7 @@ Use the [Notifications adapter](adapters/notifications.md#interface) to publish 
 
 ### Worker entry point
 
-The internal worker entry receives the absolute project filepath.
+The internal worker entry receives the absolute project filepath and selected workflow.
 It uses the same installation configuration path as the parent. This is an internal launch contract,
 not an additional operator mode.
 
@@ -105,6 +110,7 @@ Send newline-delimited JSON on stdout:
 
 ```text
 { kind: "event", event: EngineEvent }
+{ kind: "agent-activity", invocationId, timestamp, activity: AgentEvent }
 { kind: "result", result: WorkflowResult }
 ```
 
@@ -133,9 +139,9 @@ workflow's successful terminal outcomes are available before the first child sta
 4. On a blocked outcome, execution fault, invalid or missing result, or failed exit, invoke recovery.
 5. Save the recovery report, publish it and apply its decision.
 
-Finite delivery and recovery run sequentially. Recovery starts only after the worker ends.
-The planned idea refinement worker may run independent agent actions concurrently within XState
-parallel states; Application does not join or route those actions.
+Recovery starts only after the worker ends. Finite delivery actions execute sequentially;
+idea refinement runs independent actions concurrently within XState parallel states. Application
+does not join or route those actions.
 An absent error description stays absent; recovery investigates from the available context.
 
 Recovery stays within the current project. It investigates, fixes project execution problems,
@@ -150,7 +156,7 @@ launch a repair there or update the running Nexus installation.
 A resume decision restarts the worker with the same project configuration and the state reconciled
 by recovery.
 
-When a blocker must run first, recovery ranks it first and returns the interrupted ticket to To Do
+For finite delivery, when a blocker must run first, recovery ranks it first and returns the interrupted ticket to To Do
 immediately after it. Recovery discards the broken task workspace, clears its source pointer and
 active selection, and resets queue execution to initial selection. The normal workflow processes the
 blocker, then starts the interrupted task anew from updated main. Cleanup of the discarded attempt
@@ -167,7 +173,8 @@ replace them.
 
 ## State and reports
 
-Application supplies a stable queue execution directory per configured project:
+Application supplies a stable execution directory for each workflow and configured project.
+Finite delivery uses:
 
 ```text
 <storage root>/executions/<project>/
@@ -177,14 +184,18 @@ Application supplies a stable queue execution directory per configured project:
 └── recovery/
 ```
 
-The runner owns workflow.json; SelectTask owns selection.json. These records are outside task
+Idea refinement uses a separate `<storage root>/executions/<project>/idea-refinement/` directory
+with its own workflow.json, selection.json, logs/ and recovery/. Its selected source item and
+business artifacts live in the refinement workspace.
+
+The runner owns workflow.json; the selection action owns selection.json. These records are outside task
 workspaces. Application retains its request, recovery count and reports under recovery/, alongside
 the separate operational workspace. Task workspaces live under
 `<storage root>/workspaces/<project>/<task>/`. Project identity distinguishes execution directories.
 
 At worker startup the runner resets terminal workflow state before execution, as specified in
-[ExecutionRunner](task-engine/execution-runner.md#persistence). This does not erase an active task
-selection or workspace; recovery explicitly reconciles those when a fresh task restart is needed.
+[ExecutionRunner](task-engine/execution-runner.md#persistence). This does not erase an active selection or workspace; recovery explicitly reconciles those
+when a fresh restart is needed.
 Recovery allowance persists across worker restarts. The task source owns queue order.
 
 Publish the saved recovery report. Notification failure is reported separately and does not repeat
@@ -203,52 +214,39 @@ execution ends, including failure.
 
 ## Execution log
 
-The following describes the current finite delivery event stream. The planned unified agent logging
-extension is specified below.
-
-Persist the combined execution event stream independently of terminal presentation. Each execute call
-creates one JSONL file at `<execution directory>/logs/<execution id>/events.jsonl`. Worker restarts
+Persist workflow and invocation activity independently of terminal presentation. Each execute call
+creates a JSONL file at `<execution directory>/logs/<execution id>/events.jsonl`. Worker restarts
 and recovery within that execution use the same file; a new execution uses a new directory.
 
-Each line is `{ "timestamp": <ISO timestamp>, "event": <ExecutionEvent> }`. Timestamp events when
-received and preserve their order and complete payloads, including agent activity and the artifact
-references of action outcome events. Terminal formatting and display truncation do not change the
-saved events. Do not add configuration or credential values to events for logging.
+Each main-log line is `{ "timestamp": <ISO timestamp>, "event": <ExecutionEvent> }`.
+Timestamp events when received and preserve their order and complete payloads, including
+invocation lifecycle and action-outcome artifact references. The main log contains no agent
+messages, commands or tool results. Do not add configuration or credential values to events.
 
-Application owns the logger subscription and file lifecycle. Open it before publishing starting, drain
-pending writes before recovery reads the log, and close it after finished on every exit path. Include
-the log filepath in recovery context. Logging is an ordinary file subscriber, with no logging framework,
-rotation policy or additional workflow state.
+The caller assigns each agent invocation a role name, unique invocation ID and Unix start time.
+Its start and finish events carry those values and an ArtifactRef to its own activity file under
+`<execution directory>/logs/<execution id>/agents/<agent name>-<unix ms>-<invocation id>.jsonl`.
+The worker sends activity packets with invocation identity, allowing simultaneous agents to
+interleave safely. Application timestamps and writes the complete activity to the matching file,
+then forwards it to OperatorInterface's live activity input. Open the file before the first
+packet, drain it before the finish event and keep logging after terminal presentation closes.
+The same contract applies to one or several agents and to recovery.
 
-A log write failure is reported to stderr once; execution continues. Do not invoke recovery solely for
-a logging failure. Initialization errors before a log can be opened remain stderr diagnostics.
+Application owns logger subscriptions and file lifecycle. Open the main log before publishing
+starting, drain pending writes before recovery reads logs, and close logs after finished on every
+exit path. Include relevant log filepaths in recovery context. Logging uses ordinary file
+subscribers, without a logging framework, rotation policy or additional workflow state.
 
-## Planned idea refinement composition and activity transport
+A log write failure is reported to stderr once; execution continues. Do not invoke recovery solely
+for a logging failure. Initialization errors before a log can be opened remain stderr diagnostics.
+
+## Idea refinement composition
 
 The [idea refinement workflow](idea-refinement/spec.md) is selected explicitly for a connected
-project. Application loads the selected XState definition and binds its project-scoped actions;
-it does not provide a separate idea router. Source selection/update operations use the configured
-task-source adapter. A returned idea is a successful terminal workflow outcome, not an execution
-fault requiring recovery. A provider or agent failure remains an execution fault.
+project. Application loads its XState definition and binds project-scoped actions; it does not
+provide a separate idea router. Source selection and updates use the configured task-source
+adapter. A returned idea is a successful terminal workflow outcome, not an execution fault
+requiring recovery. A provider or agent failure remains an execution fault.
 
-The worker protocol carries invocation activity separately from ordinary EngineEvents:
-
-```text
-{ kind: "agent-activity", invocationId, timestamp, activity: AgentEvent }
-```
-
-The matching agent-started and agent-finished events in the main stream carry the role name, Unix
-start time, invocation ID and agent-log ArtifactRef. Activity packets have invocation identity,
-allowing interleaving from simultaneous agents. Application timestamps and persists each packet to
-`<execution directory>/logs/<execution id>/agents/<agent name>-<unix ms>-<invocation id>.jsonl`.
-It sends the packets to OperatorInterface's live activity input. The main
-`events.jsonl` retains only invocation lifecycle events, action outcomes, workflow progress and
-Application lifecycle events; no agent message or tool output is duplicated there. A log file is
-opened by the start event before its first activity packet and drained before finish. One invocation
-uses the same path regardless of concurrency. Terminal closure cannot stop logging.
-
-Idea refinement has its own execution-state location keyed by project and source item, separate
-from the finite delivery queue's workflow.json and selection.json. Original idea and business
-artifacts remain in the refinement workspace. Recovery is given the selected workflow, source
-item, snapshot and relevant log paths so it can diagnose failures without conflating them with
-council rejections.
+Recovery receives the selected workflow, source item, snapshot and relevant log paths. It
+diagnoses execution failures without conflating them with council rejection.

@@ -1,11 +1,10 @@
 # Workspace
 
-WorkspaceRef identifies one workspace instance. Finite delivery and the planned idea refinement
-workflow each own a fixed layout for their different artifacts.
+WorkspaceRef identifies one workspace instance. Finite delivery and idea refinement each own a fixed layout for their different artifacts.
 
 ## Layout and reference
 
-The current finite delivery workspace layout is:
+The finite delivery workspace layout is:
 
 ```text
 <workspace root>/
@@ -42,7 +41,7 @@ not imply that the directory exists.
 All layout paths are relative to root and remain within it. WorkspaceRef is a plain value with no
 methods, process handles, configuration loaders or lifecycle state.
 
-## Planned idea refinement layout
+## Idea refinement layout
 
 The [idea refinement specification](idea-refinement/spec.md#artifacts-and-revision-binding)
 defines a separate workspace under
