@@ -18,8 +18,8 @@ A separate Requirements and Design workflow may consume an approved brief later.
 - **Ready for design:** every council reviewer approves the exact current brief revision. Save
   the original idea, approved brief, purpose assessment, research and sources, alternatives,
   council decisions as one handoff artifact. Publish the approved brief to Jira for the
-  Requirements and Design workflow; keep internal agent feedback in
-  artifacts and logs. Move the source item to its configured approved state. For HARN Jira, this is
+  Requirements and Design workflow; keep internal agent feedback in artifacts and logs.
+  Move the source item to its configured approved state. For HARN Jira, this is
   `Idea Refinement -> Draft`. No automatic move to To Do.
 - **Returned to author:** at least one reviewer finds the idea unworkable, or bounded internal
   revision cannot converge. Publish concise, actionable human-facing feedback in a Jira comment
@@ -161,8 +161,8 @@ one another's pending outputs.
 > Preserve intent while applying justified steering. Include the problem and expected value,
 > project fit, supporting evidence and links, existing alternatives, smallest useful scope,
 > assumptions. Make purpose, value, evidence and scope clear enough for the council to
-> decide. Address each prior objection explicitly. Do not turn this brief into requirements, architecture or an
-> implementation plan. The council will check fidelity, evidence and simplicity. Return a complete
+> decide. Address each prior objection explicitly. Do not turn this brief into requirements,
+> architecture or an implementation plan. The council will check fidelity, evidence and simplicity. Return a complete
 > brief revision and a short change summary.
 
 ### Purpose Council Reviewer
