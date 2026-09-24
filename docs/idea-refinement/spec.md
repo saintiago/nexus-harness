@@ -36,20 +36,16 @@ workflow never silently waits for author input.
 
 The submitted idea is immutable within a run: source key, author, text, links and revision at
 selection. Every agent receives it alongside the latest relevant artifacts. Project configuration
-provides the authoritative purpose/charter/long-term vision references, the idea-source adapter
-and selection query, mappings for submitted, approved and needs-refinement states, and
-repository/document sources available to agents. Nexus configuration selects this workflow,
-the six role profiles, iteration limits and storage. The workflow uses the source contract rather
-than Jira-specific operations. HARN uses Jira Task issues with `Idea` as submitted, `Draft`
-as approved and `Idea Refinement` as needs refinement. Another connected project may bind
-a different idea source through its adapter.
+provides the authoritative purpose/charter/long-term vision references, an idea selection query
+and status mappings on its existing Jira task source, and repository/document sources available
+to agents. Nexus configuration selects this workflow, the six role profiles, iteration limits
+and storage. Idea refinement uses the same Jira adapter as finite delivery with a separate
+selection query. HARN selects Jira Task issues in `Idea`; `Draft` is the approved status and
+`Idea Refinement` is the needs-refinement status.
 
-The idea-source contract has four operations: select an eligible idea, read its text and source
-revision, publish the brief or feedback, and change its state. Before publishing, the action re-reads the
-source revision and reconciles changes. The configured adapter owns provider identity and
-transition details. A connected
-project may use the same provider for ideas and delivery tickets with different selectors;
-neither workflow assumes they share a queue.
+Before publishing a brief or feedback and changing status, the action re-reads the Jira issue
+and reconciles changes to its text or revision. The adapter owns Jira identity and transition
+details; the workflow owns selection, verdicts and publication decisions.
 
 Purpose sources must be available and identifiable. If they are absent, return an operational
 needs-attention result asking for project context; agents must not invent a charter. The researcher

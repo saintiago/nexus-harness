@@ -141,7 +141,7 @@ storage, then calls run again.
 | Port | Provider contract | Use |
 | --- | --- | --- |
 | Agent execution | [AgentRuntime.run](../agent-runtime/architecture.md#provided-interface) | Profile ID, WorkspaceRef, context text and AgentResult |
-| Work source | Configured source adapter; [Jira](../adapters/jira.md#interface) for HARN | Select and read tickets or ideas; publish feedback and update their state |
+| Task source | [Jira](../adapters/jira.md#interface) | Select and read tickets or ideas; publish feedback and update their state |
 | Repository | [Git](../adapters/git.md#interface) | Read repository state and perform Git operations selected by actions |
 | Delivery | [GitHub](../adapters/github.md#interface) | Publish and observe pull requests, review, checks and integration |
 | Commands | [Processes](../adapters/processes.md#interface) | Run configured setup/check commands and return exit codes and output |
