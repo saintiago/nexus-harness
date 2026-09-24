@@ -57,7 +57,7 @@ async function workspace(name = 'workspace'): Promise<{
   await mkdir(path.join(workspaceRoot, 'worktree'), { recursive: true });
   await writeFile(
     path.join(workspaceRoot, 'state', 'current-round.json'),
-    `${JSON.stringify({ number: 1 })}\n`,
+    `${JSON.stringify({ number: 1, profile: 'dev-a', reason: 'Planned.' })}\n`,
     'utf8',
   );
   await writeFile(
@@ -514,7 +514,7 @@ describe('Deliver', () => {
     const { workspaceRoot, selectionFile } = await workspace();
     await writeFile(
       path.join(workspaceRoot, 'state', 'current-round.json'),
-      `${JSON.stringify({ number: 3 })}\n`,
+      `${JSON.stringify({ number: 3, profile: 'dev-b', reason: 'Planned.' })}\n`,
       'utf8',
     );
     await mkdir(path.join(workspaceRoot, 'artifacts', '3'), { recursive: true });
@@ -535,12 +535,6 @@ describe('Deliver', () => {
       headRevision: otherRevision,
       summary: 'Incomplete repair.',
       findingResponses: [],
-    });
-    await writeRoundArtifact(workspaceRoot, 2, 'repair.json', {
-      decision: 'selected',
-      profile: 'dev-b',
-      repairsUsed: 1,
-      reason: 'Profile "dev-a" has no allowance remaining; the repair escalates to "dev-b".',
     });
     await writeVerifiedRound(workspaceRoot, { development: { profile: 'dev-b' } });
     const { git } = scriptedGit([repositoryState({ headRevision })], {

@@ -13,9 +13,9 @@ import {
 } from '../prepare-workspace/artifacts.js';
 import { readRequiredRecord, writeRecord } from '../records.js';
 import { reviewArtifact, type Finding, type ReviewOutput } from '../review/artifacts.js';
-import { repairArtifact, type RepairOutput } from '../select-repair/artifacts.js';
 import { selectionDeclaration } from '../select-task/artifacts.js';
 import { readComments, readIssue } from '../source.js';
+import { currentRoundDeclaration, currentRoundFile } from '../start-round/artifacts.js';
 import { verificationArtifact, type VerificationOutput } from '../verify/artifacts.js';
 import {
   devArtifact,
@@ -28,10 +28,11 @@ import {
 /**
  * Develop implements the selected task or repairs the preceding round's findings in the retained
  * worktree. It refreshes the task and conversation from the source into the selection record,
- * assembles the round's context from the earlier-round artifacts and invokes the developer profile
- * once. The action records the profile and observed repository revisions; the agent supplies only
- * status, summary and finding responses. A completed turn must leave committed work on the prepared
- * branch; otherwise the recorded summary also carries the observed readiness failure.
+ * assembles the round's context from the earlier-round artifacts and invokes the profile the
+ * current round selected once. The action records the profile and observed repository revisions;
+ * the agent supplies only status, summary and finding responses. A completed turn must leave
+ * committed work on the prepared branch; otherwise the recorded summary also carries the observed
+ * readiness failure.
  *
  * Source, repository and invocation failures are execution errors. Unusable agent output is an
  * execution error, not a failed report.
@@ -40,8 +41,6 @@ import {
 export type DevelopSettings = {
   /** The absolute selection-file path beside the queue's workflow-state file. */
   readonly selectionFile: string;
-  /** The configured initial developer profile; a selected repair supplies the later rounds. */
-  readonly initialProfile: string;
   readonly runtime: AgentRuntime;
   readonly git: GitAdapter;
   readonly jira: JiraAdapter;
@@ -53,7 +52,6 @@ type RoundHistories = {
   readonly development: readonly ArtifactHistoryValue<DevelopmentOutput>[];
   readonly verification: readonly ArtifactHistoryValue<VerificationOutput>[];
   readonly review: readonly ArtifactHistoryValue<ReviewOutput>[];
-  readonly repair: readonly ArtifactHistoryValue<RepairOutput>[];
 };
 
 /** The most recent value of an artifact history, or null when it has none. */
@@ -61,24 +59,6 @@ function latest<Value>(
   history: readonly ArtifactHistoryValue<Value>[],
 ): ArtifactHistoryValue<Value> | null {
   return history.at(-1) ?? null;
-}
-
-/** The profile this round runs: the latest selected repair's, or the configured initial profile. */
-function profileForRound(
-  history: readonly ArtifactHistoryValue<RepairOutput>[],
-  initialProfile: string,
-): string {
-  const selected = latest(history);
-  if (selected === null) {
-    return initialProfile;
-  }
-  const { decision, profile } = selected.value;
-  if (decision === 'selected' && profile !== null && profile.trim() !== '') {
-    return profile;
-  }
-  throw new Error(
-    `The repair decision in round ${selected.number} selects no profile for the next round.`,
-  );
 }
 
 /**
@@ -189,13 +169,6 @@ function historySection(root: string, histories: RoundHistories): string {
       reviewArtifact.pathFromArtifactsRoot,
     );
   }
-  for (const value of histories.repair) {
-    add(
-      value.number,
-      `repair decision (${value.value.decision})`,
-      repairArtifact.pathFromArtifactsRoot,
-    );
-  }
   if (rounds.size === 0) {
     return 'Earlier rounds: none.';
   }
@@ -251,9 +224,13 @@ export function createDevelop(settings: DevelopSettings): BoundAction {
       development: await helpers.readArtifactHistory(devArtifact),
       verification: await helpers.readArtifactHistory(verificationArtifact),
       review: await helpers.readArtifactHistory(reviewArtifact),
-      repair: await helpers.readArtifactHistory(repairArtifact),
     };
-    const profile = profileForRound(histories.repair, settings.initialProfile);
+    const round = await readRequiredRecord(
+      path.join(root, currentRoundFile),
+      currentRoundDeclaration,
+      'Current round',
+    );
+    const profile = round.profile;
     const existing = (await helpers.readOptionalInputArtifacts(devArtifact))[0];
 
     // A repetition reuses a current-round report only while it still describes this task, profile,

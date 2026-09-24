@@ -69,7 +69,11 @@ function scriptedRuntime(handler: (request: RuntimeRequest) => string | Promise<
 
 /** One workspace ready for a development round, with its selection record. */
 async function workspace(
-  options: { readonly round?: number; readonly taskKey?: string } = {},
+  options: {
+    readonly round?: number;
+    readonly taskKey?: string;
+    readonly profile?: string;
+  } = {},
 ): Promise<{
   readonly taskKey: string;
   readonly workspaceRoot: string;
@@ -78,6 +82,7 @@ async function workspace(
 }> {
   const taskKey = options.taskKey ?? 'NEX-1';
   const round = options.round ?? 1;
+  const profile = options.profile ?? 'dev-a';
   workspaceCount += 1;
   const workspaceRoot = path.join(root, `workspace-${workspaceCount}`);
   await mkdir(path.join(workspaceRoot, 'state'), { recursive: true });
@@ -85,7 +90,7 @@ async function workspace(
   await mkdir(path.join(workspaceRoot, 'worktree'), { recursive: true });
   await writeFile(
     path.join(workspaceRoot, 'state', 'current-round.json'),
-    `${JSON.stringify({ number: round })}\n`,
+    `${JSON.stringify({ number: round, profile, reason: `Round ${round} uses "${profile}".` })}\n`,
     'utf8',
   );
   await writeFile(
@@ -212,7 +217,6 @@ describe('Develop', () => {
     );
     const develop = createDevelop({
       selectionFile,
-      initialProfile: 'dev-a',
       runtime,
       git,
       jira,
@@ -287,7 +291,6 @@ describe('Develop', () => {
     );
     const develop = createDevelop({
       selectionFile,
-      initialProfile: 'dev-a',
       runtime,
       git,
       jira,
@@ -337,7 +340,6 @@ describe('Develop', () => {
       );
       const develop = createDevelop({
         selectionFile,
-        initialProfile: 'dev-a',
         runtime,
         git,
         jira,
@@ -381,7 +383,6 @@ describe('Develop', () => {
     );
     const develop = createDevelop({
       selectionFile,
-      initialProfile: 'dev-a',
       runtime,
       git,
       jira,
@@ -426,7 +427,6 @@ describe('Develop', () => {
     await expect(
       createDevelop({
         selectionFile,
-        initialProfile: 'dev-a',
         runtime: first.runtime,
         git: firstGit,
         jira,
@@ -443,7 +443,7 @@ describe('Develop', () => {
     // The next round repairs; its context names the failed report, whose summary keeps the reason.
     await writeFile(
       path.join(workspaceRoot, 'state', 'current-round.json'),
-      `${JSON.stringify({ number: 2 })}\n`,
+      `${JSON.stringify({ number: 2, profile: 'dev-a', reason: 'The repair continues.' })}\n`,
       'utf8',
     );
     await mkdir(path.join(workspaceRoot, 'artifacts', '2'), { recursive: true });
@@ -470,7 +470,6 @@ describe('Develop', () => {
     await expect(
       createDevelop({
         selectionFile,
-        initialProfile: 'dev-a',
         runtime: repair.runtime,
         git: repairGit,
         jira,
@@ -482,8 +481,8 @@ describe('Develop', () => {
     expect(priorSummary).toContain('tracked changes are uncommitted');
   });
 
-  it("repairs the preceding review's findings with the recorded repair profile", async () => {
-    const { workspaceRoot, selectionFile } = await workspace({ round: 2 });
+  it("repairs the preceding review's findings with the round plan's profile", async () => {
+    const { workspaceRoot, selectionFile } = await workspace({ round: 2, profile: 'dev-b' });
     await writeRoundArtifact(workspaceRoot, 1, 'development.json', {
       taskKey: 'NEX-1',
       profile: 'dev-a',
@@ -494,12 +493,6 @@ describe('Develop', () => {
       findingResponses: [],
     });
     await writeRoundArtifact(workspaceRoot, 1, 'review.json', precedingReview);
-    await writeRoundArtifact(workspaceRoot, 1, 'repair.json', {
-      decision: 'selected',
-      profile: 'dev-b',
-      repairsUsed: 0,
-      reason: 'Escalated.',
-    });
     await writeRoundArtifact(workspaceRoot, 1, 'verification.json', {
       headRevision,
       status: 'failed',
@@ -531,7 +524,6 @@ describe('Develop', () => {
     );
     const develop = createDevelop({
       selectionFile,
-      initialProfile: 'dev-a',
       runtime,
       git,
       jira,
@@ -556,7 +548,6 @@ describe('Develop', () => {
       path.join(workspaceRoot, 'artifacts', '1', 'checks', '0', 'stdout.log'),
     );
     expect(context).toContain(path.join(workspaceRoot, 'artifacts', '1', 'review.json'));
-    expect(context).toContain(path.join(workspaceRoot, 'artifacts', '1', 'repair.json'));
 
     expect(await readRoundArtifact(workspaceRoot, 2, 'development.json')).toMatchObject({
       profile: 'dev-b',
@@ -597,7 +588,6 @@ describe('Develop', () => {
       );
       const develop = createDevelop({
         selectionFile,
-        initialProfile: 'dev-a',
         runtime,
         git,
         jira,
@@ -630,7 +620,6 @@ describe('Develop', () => {
     });
     const develop = createDevelop({
       selectionFile,
-      initialProfile: 'dev-a',
       runtime,
       git,
       jira,
@@ -660,7 +649,6 @@ describe('Develop', () => {
     await expect(
       createDevelop({
         selectionFile: observed.selectionFile,
-        initialProfile: 'dev-a',
         runtime,
         git,
         jira,
@@ -685,7 +673,6 @@ describe('Develop', () => {
     await expect(
       createDevelop({
         selectionFile: wrong.selectionFile,
-        initialProfile: 'dev-a',
         runtime: wrongRuntime,
         git,
         jira,
@@ -720,7 +707,6 @@ describe('Develop', () => {
     );
     const develop = createDevelop({
       selectionFile,
-      initialProfile: 'dev-a',
       runtime,
       git,
       jira,
@@ -743,7 +729,6 @@ describe('Develop', () => {
     const { runtime } = scriptedRuntime(() => 'not a JSON report');
     const develop = createDevelop({
       selectionFile,
-      initialProfile: 'dev-a',
       runtime,
       git,
       jira,
@@ -760,7 +745,6 @@ describe('Develop', () => {
     });
     const second = createDevelop({
       selectionFile,
-      initialProfile: 'dev-a',
       runtime,
       git,
       jira: unavailable.jira,

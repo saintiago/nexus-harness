@@ -113,7 +113,7 @@ async function startRound(root: string, number: number): Promise<void> {
   await mkdir(path.join(root, 'artifacts', String(number)), { recursive: true });
   await writeFile(
     path.join(root, 'state', 'current-round.json'),
-    `${JSON.stringify({ number }, null, 2)}\n`,
+    `${JSON.stringify({ number, profile: 'dev-a', reason: 'Planned.' }, null, 2)}\n`,
     'utf8',
   );
 }

@@ -77,7 +77,6 @@ function suppliedActions(overrides: Readonly<Record<string, ActionStub>> = {}): 
     Verify: 'passed',
     Deliver: 'published',
     Review: 'approved',
-    SelectRepair: 'selected',
     CompleteTask: 'completed',
   };
   const actions: Record<string, ActionStub> = {};
@@ -128,10 +127,11 @@ describe('TaskEngine over the finite workflow', () => {
 
   it('follows the declared transitions through a repair round', async () => {
     const stateFile = await temporaryStateFile();
+    let rounds = 0;
     const { actions, calls } = suppliedActions({
       SelectTask: async () => 'selected',
       Verify: async () => 'failed',
-      SelectRepair: async () => 'exhausted',
+      StartRound: async () => (rounds++ === 0 ? 'started' : 'exhausted'),
     });
     const engine = createTaskEngine({
       workflow: finiteDelivery,
@@ -146,7 +146,7 @@ describe('TaskEngine over the finite workflow', () => {
       'StartRound',
       'Develop',
       'Verify',
-      'SelectRepair',
+      'StartRound',
     ]);
   });
 
@@ -157,7 +157,6 @@ describe('TaskEngine over the finite workflow', () => {
     const { actions, calls } = suppliedActions({
       SelectTask: async () => (selections++ === 0 ? 'selected' : 'empty'),
       Review: async () => (reviews++ === 0 ? 'changesRequested' : 'approved'),
-      SelectRepair: async () => 'selected',
     });
     const engine = createTaskEngine({
       workflow: finiteDelivery,
@@ -174,7 +173,6 @@ describe('TaskEngine over the finite workflow', () => {
       'Verify',
       'Deliver',
       'Review',
-      'SelectRepair',
       'StartRound',
       'Develop',
       'Verify',

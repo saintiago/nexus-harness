@@ -262,10 +262,13 @@ describe('delivery cycle', () => {
         ]),
     });
 
-    const startRound = createStartRound({ workspace: { root: workspaceRoot } });
+    const startRound = createStartRound({
+      workspace: { root: workspaceRoot },
+      developerLadder: [{ profile: 'dev-a', repairAllowance: 1 }],
+      publish: (event) => events.push(event),
+    });
     const develop = createDevelop({
       selectionFile,
-      initialProfile: 'dev-a',
       runtime: developerRuntime,
       git,
       jira: jiraSource.jira,

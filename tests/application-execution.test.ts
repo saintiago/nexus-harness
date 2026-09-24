@@ -38,7 +38,6 @@ import { deliveryArtifact } from '../src/task-engine/actions/deliver/artifacts.j
 import { devArtifact } from '../src/task-engine/actions/develop/artifacts.js';
 import { preparedWorkspaceDeclaration } from '../src/task-engine/actions/prepare-workspace/artifacts.js';
 import { reviewArtifact } from '../src/task-engine/actions/review/artifacts.js';
-import { repairArtifact } from '../src/task-engine/actions/select-repair/artifacts.js';
 import { selectionDeclaration } from '../src/task-engine/actions/select-task/artifacts.js';
 import { currentRoundDeclaration } from '../src/task-engine/actions/start-round/artifacts.js';
 import { verificationArtifact } from '../src/task-engine/actions/verify/artifacts.js';
@@ -238,7 +237,6 @@ const roundArtifacts = [
   verificationArtifact,
   deliveryArtifact,
   reviewArtifact,
-  repairArtifact,
   completionArtifact,
 ];
 

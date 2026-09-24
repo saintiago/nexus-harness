@@ -1,9 +1,9 @@
 /**
- * Focused integration tests: the real Develop, Verify and SelectRepair run one development cycle
- * over a real temporary repository, real Git and Processes adapters, real round storage and the
- * producer-owned artifact declarations. The agent runtime and the Jira source are controlled, so
- * no provider, network or paid turn is involved. The review result of round 1 is supplied as the
- * input the not-yet-implemented Review action will produce.
+ * Focused integration tests: the real StartRound, Develop and Verify run one development cycle over
+ * a real temporary repository, real Git and Processes adapters, real round storage and the
+ * producer-owned artifact declarations. The agent runtime and the Jira source are controlled, so no
+ * provider, network or paid turn is involved. The review result of round 1 is supplied as the input
+ * the Review action produces.
  */
 
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
@@ -21,8 +21,6 @@ import {
 } from '../src/task-engine/actions/develop/artifacts.js';
 import { createDevelop } from '../src/task-engine/actions/develop/index.js';
 import { reviewArtifact, type Finding } from '../src/task-engine/actions/review/artifacts.js';
-import { createSelectRepair } from '../src/task-engine/actions/select-repair/index.js';
-import type { RepairOutput } from '../src/task-engine/actions/select-repair/artifacts.js';
 import { createStartRound } from '../src/task-engine/actions/start-round/index.js';
 import { createVerify } from '../src/task-engine/actions/verify/index.js';
 import type { VerificationOutput } from '../src/task-engine/actions/verify/artifacts.js';
@@ -191,17 +189,22 @@ function actions(runtime: AgentRuntime): {
   readonly startRound: ReturnType<typeof createStartRound>;
   readonly develop: ReturnType<typeof createDevelop>;
   readonly verify: ReturnType<typeof createVerify>;
-  readonly selectRepair: ReturnType<typeof createSelectRepair>;
 } {
   const { jira } = scriptedJira({
     readIssue: () => ok(taskIssue),
     readComments: () => ok([{ id: 'c1', body: 'Original request.' }]),
   });
   return {
-    startRound: createStartRound({ workspace: { root: workspaceRoot } }),
+    startRound: createStartRound({
+      workspace: { root: workspaceRoot },
+      developerLadder: [
+        { profile: 'dev-a', repairAllowance: 1 },
+        { profile: 'dev-b', repairAllowance: 1 },
+      ],
+      publish: (event) => events.push(event),
+    }),
     develop: createDevelop({
       selectionFile,
-      initialProfile: 'dev-a',
       runtime,
       git,
       jira,
@@ -220,13 +223,6 @@ function actions(runtime: AgentRuntime): {
       runCommand: run,
       publish: (event) => events.push(event),
     }),
-    selectRepair: createSelectRepair({
-      workspace: { root: workspaceRoot },
-      developerLadder: [
-        { profile: 'dev-a', repairAllowance: 1 },
-        { profile: 'dev-b', repairAllowance: 1 },
-      ],
-    }),
   };
 }
 
@@ -237,8 +233,15 @@ async function readArtifact(round: number, name: string): Promise<unknown> {
   ) as unknown;
 }
 
+/** The current round plan as StartRound recorded it. */
+async function readCurrentRound(): Promise<unknown> {
+  return JSON.parse(
+    await readFile(path.join(workspaceRoot, 'state', 'current-round.json'), 'utf8'),
+  ) as unknown;
+}
+
 describe('development cycle', () => {
-  it('consumes the produced artifacts through a repair round and an escalated profile', async () => {
+  it('plans each round from the review rejection and the failed check', async () => {
     const finding: Finding = {
       id: 'NEX-1-finding-1',
       title: 'The feature has no regression check',
@@ -287,8 +290,13 @@ describe('development cycle', () => {
     const cycle = actions(developer.runtime);
     const helpers = createArtifactHelpers({ root: workspaceRoot });
 
-    // Round 1: implement, verify and review the change.
+    // Round 1: plan, implement, verify and review the change.
     await expect(cycle.startRound()).resolves.toBe('started');
+    expect(await readCurrentRound()).toEqual({
+      number: 1,
+      profile: 'dev-a',
+      reason: expect.stringContaining('initial implementation uses the first profile "dev-a"'),
+    });
     await expect(cycle.develop()).resolves.toBe('completed');
     const firstDevelopment = (await readArtifact(1, 'development.json')) as DevelopmentOutput;
     await expect(cycle.verify()).resolves.toBe('passed');
@@ -303,16 +311,15 @@ describe('development cycle', () => {
       priorFindings: [],
     });
 
-    // The review requests changes; the shared policy continues the initial profile.
-    await expect(cycle.selectRepair()).resolves.toBe('selected');
-    expect((await readArtifact(1, 'repair.json')) as RepairOutput).toMatchObject({
-      decision: 'selected',
+    // Round 2: the review requested changes, so the round policy continues the initial profile.
+    await expect(cycle.startRound()).resolves.toBe('started');
+    expect(await readCurrentRound()).toEqual({
+      number: 2,
       profile: 'dev-a',
-      repairsUsed: 0,
+      reason: expect.stringContaining('continues with the initial profile "dev-a"'),
     });
 
-    // Round 2: the repair answers the review's finding but fails the configured check.
-    await expect(cycle.startRound()).resolves.toBe('started');
+    // The repair answers the review's finding but fails the configured check.
     await expect(cycle.develop()).resolves.toBe('completed');
     expect((await readArtifact(2, 'development.json')) as DevelopmentOutput).toMatchObject({
       profile: 'dev-a',
@@ -324,16 +331,15 @@ describe('development cycle', () => {
       checks: [{ name: 'feature-check', exitCode: 1 }],
     });
 
-    // The same counter escalates to the next configured profile.
-    await expect(cycle.selectRepair()).resolves.toBe('selected');
-    expect((await readArtifact(2, 'repair.json')) as RepairOutput).toMatchObject({
-      decision: 'selected',
+    // The executed repair turn used "dev-a"'s allowance; the failed check advances to "dev-b".
+    await expect(cycle.startRound()).resolves.toBe('started');
+    expect(await readCurrentRound()).toEqual({
+      number: 3,
       profile: 'dev-b',
-      repairsUsed: 1,
+      reason: expect.stringContaining('advances to profile "dev-b"'),
     });
 
     // Round 3: the escalated profile repairs the change and passes verification.
-    await expect(cycle.startRound()).resolves.toBe('started');
     await expect(cycle.develop()).resolves.toBe('completed');
     expect((await readArtifact(3, 'development.json')) as DevelopmentOutput).toMatchObject({
       profile: 'dev-b',

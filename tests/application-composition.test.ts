@@ -162,7 +162,6 @@ describe('worker action binding', () => {
         'Develop',
         'PrepareWorkspace',
         'Review',
-        'SelectRepair',
         'SelectTask',
         'StartRound',
         'Verify',
@@ -199,9 +198,17 @@ describe('worker action binding', () => {
 
     expect(
       JSON.parse(await readFile(path.join(firstWorkspace, 'state/current-round.json'), 'utf8')),
-    ).toEqual({ number: 1 });
+    ).toEqual({
+      number: 1,
+      profile: 'nexus-flash',
+      reason: expect.stringContaining('first profile "nexus-flash"'),
+    });
     expect(
       JSON.parse(await readFile(path.join(secondWorkspace, 'state/current-round.json'), 'utf8')),
-    ).toEqual({ number: 1 });
+    ).toEqual({
+      number: 1,
+      profile: 'nexus-flash',
+      reason: expect.stringContaining('first profile "nexus-flash"'),
+    });
   });
 });

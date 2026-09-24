@@ -16,7 +16,6 @@ const actionDirectories = [
   'develop',
   'verify',
   'review',
-  'select-repair',
   'deliver',
   'complete-task',
 ];

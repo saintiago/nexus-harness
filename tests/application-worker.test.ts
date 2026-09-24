@@ -125,7 +125,11 @@ describe('worker entry', () => {
     });
     expect(
       JSON.parse(await readFile(path.join(workspace, 'state/current-round.json'), 'utf8')),
-    ).toEqual({ number: 1 });
+    ).toEqual({
+      number: 1,
+      profile: 'nexus-flash',
+      reason: expect.stringContaining('first profile "nexus-flash"'),
+    });
     for (const value of Object.values(credentials)) {
       expect(stdout.join('')).not.toContain(value);
     }

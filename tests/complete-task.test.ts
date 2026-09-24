@@ -52,7 +52,7 @@ async function workspace(
   await mkdir(path.join(workspaceRoot, 'artifacts', '1'), { recursive: true });
   await writeFile(
     path.join(workspaceRoot, 'state', 'current-round.json'),
-    `${JSON.stringify({ number: 1 })}\n`,
+    `${JSON.stringify({ number: 1, profile: 'dev-a', reason: 'Planned.' })}\n`,
     'utf8',
   );
   const selectionFile = path.join(
