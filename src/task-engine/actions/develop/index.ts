@@ -1,9 +1,14 @@
 import path from 'node:path';
-import type { AgentResult, AgentRuntime } from '../../../agent-runtime/index.js';
+import type { AgentResult } from '../../../agent-runtime/index.js';
 import type { GitAdapter, RepositoryState } from '../../../adapters/git.js';
 import type { JiraAdapter } from '../../../adapters/jira.js';
 import { messageOf } from '../../../result.js';
-import { actionOutcomeEvent, type BoundAction, type EventPublisher } from '../../index.js';
+import {
+  actionOutcomeEvent,
+  type AgentRoleRunner,
+  type BoundAction,
+  type EventPublisher,
+} from '../../index.js';
 import {
   createArtifactHelpers,
   roundArtifactPath,
@@ -45,7 +50,8 @@ import {
 export type DevelopSettings = {
   /** The absolute selection-file path beside the queue's workflow-state file. */
   readonly selectionFile: string;
-  readonly runtime: AgentRuntime;
+  /** The developer role's agent runner, which owns the invocation's identity and activity. */
+  readonly runner: AgentRoleRunner;
   readonly git: GitAdapter;
   readonly jira: JiraAdapter;
   readonly publish: EventPublisher;
@@ -294,17 +300,13 @@ export function createDevelop(settings: DevelopSettings): BoundAction {
       responseInstructions,
     ].join('\n\n');
 
-    settings.publish({
-      source: 'develop',
-      type: 'agent-started',
-      data: { role: 'developer', operation: 'Develop', profile, task: selection.taskKey },
+    const result: AgentResult = await settings.runner.run({
+      operation: 'Develop',
+      profile,
+      workspace: { root },
+      context,
+      task: selection.taskKey,
     });
-    let result: AgentResult;
-    try {
-      result = await settings.runtime.run(profile, { root }, context);
-    } finally {
-      settings.publish({ source: 'develop', type: 'agent-finished', data: null });
-    }
     if (!result.ok) {
       throw new Error(result.fault.message);
     }

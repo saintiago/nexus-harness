@@ -8,7 +8,7 @@
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createTaskEngine, type EngineEvent } from '../src/task-engine/index.js';
 import { ideaRefinement } from '../workflows/idea-refinement.js';
 import type { CouncilVerdict } from '../src/task-engine/actions/review-council/artifacts.js';
@@ -121,6 +121,65 @@ function parallelStates(events: readonly EngineEvent[]): string[] {
 }
 
 describe('idea refinement workflow', () => {
+  it('ends a failed parallel region only after the started sibling invocation has ended', async () => {
+    const stateFile = await temporaryStateFile();
+    const observed: EngineEvent[] = [];
+    let releaseResearcher: () => void = () => undefined;
+    const researcherPending = new Promise<void>((resolve) => {
+      releaseResearcher = resolve;
+    });
+    const defaults: Record<string, () => Promise<string>> = {
+      SelectIdea: async () => 'selected',
+      StartIdeaRound: async () => 'opened',
+      BriefWriter: async () => 'written',
+      PurposeCouncil: async () => 'approve',
+      EvidenceCouncil: async () => 'approve',
+      SimplicityCouncil: async () => 'approve',
+      PublishDecision: async () => 'approved',
+    };
+    const engine = createTaskEngine({
+      workflow: ideaRefinement,
+      stateFile,
+      bindActions: (publish) => ({
+        ...defaults,
+        PurposeVerifier: async () => {
+          publish({ source: 'PurposeVerifier', type: 'agent-finished', data: null });
+          throw new Error('the purpose verifier invocation failed');
+        },
+        Researcher: async () => {
+          await researcherPending;
+          publish({ source: 'Researcher', type: 'agent-finished', data: null });
+          return 'reported';
+        },
+      }),
+    });
+    engine.subscribe((event) => observed.push(event));
+
+    let settled = false;
+    const run = engine.run().then((result) => {
+      settled = true;
+      return result;
+    });
+    await vi.waitFor(() => {
+      expect(observed.some((event) => event.source === 'PurposeVerifier')).toBe(true);
+    });
+    // The failed region ended the workflow, but the pending sibling is still running.
+    expect(settled).toBe(false);
+
+    releaseResearcher();
+    const result = await run;
+
+    // The original fault survives, and the sibling's end precedes the workflow's final result.
+    expect(result.ok).toBe(false);
+    expect(result.ok ? '' : result.fault.message).toContain(
+      'the purpose verifier invocation failed',
+    );
+    expect(observed.filter((event) => event.source !== 'execution-runner')).toEqual([
+      { source: 'PurposeVerifier', type: 'agent-finished', data: null },
+      { source: 'Researcher', type: 'agent-finished', data: null },
+    ]);
+  });
+
   it('joins purpose and research before the writer, and the council before routing', async () => {
     const { result, calls, events } = await run({ verdicts: ['approve', 'approve', 'approve'] });
 

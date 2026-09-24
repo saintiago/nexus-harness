@@ -10,7 +10,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { JiraIssue, JiraTransition } from '../src/adapters/jira.js';
-import { ok } from '../src/result.js';
+import { fault, ok } from '../src/result.js';
 import type { EngineEvent } from '../src/task-engine/index.js';
 import {
   ideaSelectionDeclaration,
@@ -44,8 +44,9 @@ async function temporaryDirectory(): Promise<string> {
 }
 
 /** A controlled submitted idea whose status follows the transitions it is asked to apply. */
-function controlledSource() {
+function controlledSource(options: { readonly pointerFailures?: number } = {}) {
   let status = 'Idea';
+  let pointerFailures = options.pointerFailures ?? 0;
   const fields: Record<string, unknown> = {};
   const transitions: Readonly<Record<string, readonly JiraTransition[]>> = {
     Idea: [{ id: '11', name: 'Start refinement', to: { id: '2', name: 'Idea Refinement' } }],
@@ -70,6 +71,10 @@ function controlledSource() {
     readComments: () => ok([{ id: 'c1', body: { text: 'the author\u2019s idea' } }]),
     readTransitions: () => ok(transitions[status] ?? []),
     updateFields: (_id, updates) => {
+      if (pointerFailures > 0) {
+        pointerFailures -= 1;
+        return fault('The workspace pointer could not be updated.');
+      }
       if (updates.workspacePointer !== undefined) {
         fields[workspacePointerField] = updates.workspacePointer;
       }
@@ -105,14 +110,23 @@ async function harness(options?: {
   readonly clone?: boolean;
   readonly cloneRemote?: string;
   readonly observations?: readonly (ReturnType<typeof repositoryState> | Error)[];
+  /** The number of initial clone attempts that fail before the clone succeeds. */
+  readonly cloneFailures?: number;
+  /** The number of initial workspace-pointer updates that fail. */
+  readonly pointerFailures?: number;
 }) {
   const root = await temporaryDirectory();
   const storage = path.join(root, 'storage');
   const selectionFile = path.join(root, 'execution', 'selection.json');
-  const controlled = controlledSource();
+  const controlled = controlledSource({ pointerFailures: options?.pointerFailures });
   const clone = options?.clone ?? true;
+  let cloneFailures = options?.cloneFailures ?? 0;
   const git = scriptedGit(options?.observations ?? [repositoryState({ branch: 'main' })], {
     cloneRepository: async (_source, destination) => {
+      if (cloneFailures > 0) {
+        cloneFailures -= 1;
+        return fault('The repository could not be cloned.');
+      }
       await mkdir(destination, { recursive: true });
       return ok({
         remoteUrl: options?.cloneRemote ?? source,
@@ -149,6 +163,10 @@ async function harness(options?: {
     issueWorkspace: path.join(storage, 'NEX', issueKey),
     refinement: path.join(storage, 'NEX', issueKey, 'refinement'),
     clone: () => clone,
+    /** Make the next attempts fail before a repository clone is prepared. */
+    failClones: (count: number) => {
+      cloneFailures = count;
+    },
   };
 }
 
@@ -222,6 +240,7 @@ describe('SelectIdea', () => {
           fromActive: [],
         },
         claimed: false,
+        retainedSubmissions: 0,
         workspace: { root: harnessed.refinement },
         issueWorkspace: { root: harnessed.issueWorkspace },
       }),
@@ -231,9 +250,11 @@ describe('SelectIdea', () => {
 
     expect(harnessed.source.status()).toBe('Idea Refinement');
     expect((await harnessed.selection())?.claimed).toBe(true);
-    // The actual status is read before completing the claim; the conversation is not read again.
+    expect(harnessed.source.fields()[workspacePointerField]).toBe(harnessed.issueWorkspace);
+    // The actual status and pointer are read before completing the claim; no conversation reread.
     expect(harnessed.source.calls).toEqual([
       `read:${issueId}`,
+      `update:${issueId}:{"workspacePointer":"${harnessed.issueWorkspace}"}`,
       `transition:${issueId}:11`,
       `transitions:${issueId}`,
     ]);
@@ -258,6 +279,7 @@ describe('SelectIdea', () => {
           fromActive: [],
         },
         claimed: false,
+        retainedSubmissions: 0,
         workspace: { root: harnessed.refinement },
         issueWorkspace: { root: harnessed.issueWorkspace },
       }),
@@ -270,6 +292,8 @@ describe('SelectIdea', () => {
     expect(harnessed.source.calls.some((call) => call.startsWith('transition:'))).toBe(false);
     expect(harnessed.source.calls).toContain(`transitions:${issueId}`);
     expect((await harnessed.selection())?.claimed).toBe(true);
+    // The unrecorded claim finishes its pointer update even though the move already happened.
+    expect(harnessed.source.fields()[workspacePointerField]).toBe(harnessed.issueWorkspace);
   });
 
   it('selects again when the retained refinement already reached a decision', async () => {
@@ -302,6 +326,64 @@ describe('SelectIdea', () => {
       'search:project = NEX AND status = Idea order by Rank ASC',
     );
     expect(harnessed.source.calls.filter((call) => call.startsWith('read:'))).toHaveLength(1);
+  });
+
+  it('continues a claimed resubmission whose own submission has no decision yet', async () => {
+    const harnessed = await harness();
+    // The previous entry's submission already reached a decision and the author resubmitted.
+    await harnessed.action();
+    harnessed.source.resubmit();
+    const previous = path.join(harnessed.refinement, 'artifacts/submissions/1');
+    await mkdir(previous, { recursive: true });
+    await writeFile(
+      path.join(previous, decisionArtifact.pathFromArtifactsRoot),
+      JSON.stringify({
+        decision: 'returned-to-author',
+        strongestVerdict: 'idea_not_working',
+        brief: 'brief.json',
+        revision: 1,
+        feedback: [],
+        comment: null,
+        source: {
+          transition: { id: '22', to: 'Waiting for Feedback' },
+          status: 'Waiting for Feedback',
+          commentId: null,
+        },
+      }),
+    );
+
+    // The fresh selection claims the item, then the interrupted worktree preparation fails (no
+    // checkout was retained from the previous entry).
+    await rm(path.join(harnessed.refinement, 'worktree'), { recursive: true, force: true });
+    harnessed.failClones(1);
+    await expect(harnessed.action()).resolves.toBe('failed');
+    const captured = await harnessed.selection();
+    expect(captured).toMatchObject({ claimed: true, retainedSubmissions: 1 });
+    expect(harnessed.source.status()).toBe('Idea Refinement');
+
+    // A retry continues this selection instead of treating the earlier decision as its own.
+    await expect(harnessed.action()).resolves.toBe('selected');
+    expect((await harnessed.selection())?.taskKey).toBe(issueKey);
+    // The retried preparation cloned the worktree the interrupted attempt never produced.
+    expect(harnessed.git.calls.filter((call) => call.startsWith('clone:'))).toHaveLength(3);
+  });
+
+  it('retries an interrupted workspace-pointer update before claiming the idea', async () => {
+    const harnessed = await harness({ pointerFailures: 1 });
+
+    // The pointer update fails after the selection record was saved, so no claim was attempted.
+    await expect(harnessed.action()).rejects.toThrow('workspace pointer could not be updated');
+    const captured = await harnessed.selection();
+    expect(captured).toMatchObject({ claimed: false });
+    expect(harnessed.source.status()).toBe('Idea');
+    expect(harnessed.source.fields()[workspacePointerField]).toBeUndefined();
+
+    await expect(harnessed.action()).resolves.toBe('selected');
+
+    expect(harnessed.source.fields()[workspacePointerField]).toBe(harnessed.issueWorkspace);
+    expect(harnessed.source.status()).toBe('Idea Refinement');
+    expect(harnessed.source.calls.filter((call) => call.startsWith('update:'))).toHaveLength(2);
+    expect((await harnessed.selection())?.claimed).toBe(true);
   });
 
   it('reuses a recorded shared issue workspace', async () => {

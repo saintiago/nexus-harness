@@ -10,7 +10,6 @@ import {
   researcherRoleInstructions,
   reviewerRoleInstructions,
   simplicityCouncilRoleInstructions,
-  type AgentEvent,
   type AgentProfile,
   type AgentRuntimeSettings,
 } from '../agent-runtime/index.js';
@@ -131,8 +130,9 @@ export function createNotificationSettings(
 
 /**
  * The AgentRuntime construction settings for one role: the supplied coding-provider capability and
- * activity observer, the configured base instructions and invocation limit, and the configured
- * profiles as AgentProfile values. The profiles this role selects carry that role's constant
+ * the configured base instructions and invocation limit, and the configured profiles as
+ * AgentProfile values. Each invocation supplies its own activity observer. The profiles this role
+ * selects carry that role's constant
  * instructions followed by their configured instructions and their native tool settings. A
  * configured instruction that exactly repeats a selected role constant is dropped, so the constant
  * is stated once per invocation; all other configured instructions keep their order. Selecting one
@@ -143,7 +143,6 @@ export function createAgentRuntimeSettings(
   nexus: NexusConfiguration,
   role: ProfileRole,
   codingRuntime: CodingRuntime,
-  onActivity: (activity: AgentEvent) => void,
 ): AgentRuntimeSettings {
   const selected = profilesForRole(nexus, role);
   return {
@@ -166,7 +165,6 @@ export function createAgentRuntimeSettings(
       };
     }),
     invocationLimitMinutes: nexus.executionPolicy.agentInvocationLimitMinutes,
-    onActivity,
   };
 }
 

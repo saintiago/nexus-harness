@@ -99,6 +99,9 @@ function controlledApplication(outcome: ExecutionResult['outcome']): {
           listeners.delete(listener);
         };
       },
+      subscribeActivity() {
+        return () => undefined;
+      },
     },
   };
 }
@@ -251,6 +254,7 @@ describe('operator command', () => {
     const application: Application = {
       execute: () => Promise.reject(new Error('Cannot read Nexus configuration /missing.json')),
       subscribe: () => () => {},
+      subscribeActivity: () => () => {},
     };
 
     const code = await runOperatorCommand({
@@ -296,6 +300,9 @@ describe('operator command output failure', () => {
           unsubscriptions += 1;
         };
       },
+      subscribeActivity() {
+        return () => undefined;
+      },
     };
 
     const code = await runOperatorCommand({
@@ -335,6 +342,9 @@ describe('operator command output failure', () => {
         return () => {
           listeners.delete(listener);
         };
+      },
+      subscribeActivity() {
+        return () => undefined;
       },
     };
 
@@ -383,6 +393,9 @@ describe('operator command output failure', () => {
         return () => {
           listeners.delete(listener);
         };
+      },
+      subscribeActivity() {
+        return () => undefined;
       },
     };
 

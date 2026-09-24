@@ -1,4 +1,4 @@
-import { createAgentRuntime, type AgentRuntime, type IdeaRole } from '../agent-runtime/index.js';
+import { createAgentRuntime, type AgentResult, type IdeaRole } from '../agent-runtime/index.js';
 import type { CodingRuntime } from '../adapters/coding-runtime.js';
 import type { GitAdapter } from '../adapters/git.js';
 import type { GitHubAdapter } from '../adapters/github.js';
@@ -13,7 +13,14 @@ import type {
   ProjectConfiguration,
   WorkflowName,
 } from '../configuration/index.js';
-import type { BoundAction, EventPublisher } from '../task-engine/index.js';
+import { messageOf } from '../result.js';
+import {
+  beginAgentInvocation,
+  type AgentActivityPublisher,
+  type AgentRoleRunner,
+  type BoundAction,
+  type EventPublisher,
+} from '../task-engine/index.js';
 import { createBriefWriter } from '../task-engine/actions/brief-writer/index.js';
 import { createCompleteTask } from '../task-engine/actions/complete-task/index.js';
 import { createDeliver } from '../task-engine/actions/deliver/index.js';
@@ -72,49 +79,88 @@ export type ActionBindingSettings = {
   readonly runCommand: CommandExecution;
   /** The environment configured commands and agents run with. */
   readonly commandEnvironment: Readonly<Record<string, string>>;
+  /** The execution's agent activity directory: every invocation's own log lives under it. */
+  readonly activityDirectory: string;
   /** Wait before the next completion poll, supplied so tests control time instead of passing it. */
   readonly wait: (milliseconds: number) => Promise<void>;
 };
 
 /**
- * Bind the selected workflow's operations to their action implementations. The AgentRuntime
- * publishes its activity through the engine's event publisher, so ordinary events and agent
- * activity travel the same stream; the invocation boundary events name the calling action.
+ * Bind the selected workflow's operations to their action implementations. Each agent-backed
+ * action receives its role's agent runner, which carries the invocation's identity and its
+ * attributable activity on the engine's separate activity channel.
  */
 export function createActionBinding(
   settings: ActionBindingSettings,
-): (publish: EventPublisher) => Readonly<Record<string, BoundAction>> {
-  return (publish) =>
+): (
+  publish: EventPublisher,
+  publishActivity: AgentActivityPublisher,
+) => Readonly<Record<string, BoundAction>> {
+  return (publish, publishActivity) =>
     settings.workflow === 'idea-refinement'
-      ? ideaRefinementActions(settings, publish)
-      : finiteDeliveryActions(settings, publish);
+      ? ideaRefinementActions(settings, publish, publishActivity)
+      : finiteDeliveryActions(settings, publish, publishActivity);
 }
 
-/** One runtime per role: a profile selected for several roles carries only the invoked role's
- * constant instructions. */
-function runtimeFor(
+/**
+ * One role's agent runner: the shared caller boundary of AgentRuntime. A profile selected for
+ * several roles carries only the invoked role's constant instructions. The runner assigns each
+ * invocation's identity, announces its boundaries on the engine's event stream, transports its
+ * activity on the engine's activity channel and runs the selected profile.
+ */
+function agentRunnerFor(
   settings: ActionBindingSettings,
   publish: EventPublisher,
+  publishActivity: AgentActivityPublisher,
   role: ProfileRole,
-): AgentRuntime {
-  return createAgentRuntime(
-    createAgentRuntimeSettings(settings.nexus, role, settings.codingRuntime, (activity) => {
-      publish({ source: 'agent-runtime', type: 'agent-activity', data: activity });
-    }),
+): AgentRoleRunner {
+  const runtime = createAgentRuntime(
+    createAgentRuntimeSettings(settings.nexus, role, settings.codingRuntime),
   );
+  return {
+    async run(request): Promise<AgentResult> {
+      const invocation = beginAgentInvocation({
+        agentName: role,
+        operation: request.operation,
+        profile: request.profile,
+        task: request.task ?? null,
+        idea: request.idea ?? null,
+        directory: settings.activityDirectory,
+        publish,
+        publishActivity,
+      });
+      let result: AgentResult;
+      try {
+        result = await runtime.run(
+          request.profile,
+          request.workspace,
+          request.context,
+          (activity) => invocation.activity(activity),
+        );
+      } catch (error) {
+        invocation.finish({ outcome: 'failed', reason: messageOf(error) });
+        throw error;
+      }
+      invocation.finish(
+        result.ok ? { outcome: 'finished' } : { outcome: 'failed', reason: result.fault.message },
+      );
+      return result;
+    },
+  };
 }
 
 /** The finite delivery workflow's bound operations. */
 function finiteDeliveryActions(
   settings: ActionBindingSettings,
   publish: EventPublisher,
+  publishActivity: AgentActivityPublisher,
 ): Readonly<Record<string, BoundAction>> {
   const { project, nexus, paths } = settings;
   const { selectionFile } = paths;
-  // One runtime per role: a profile selected for several roles carries only the invoked role's
+  // One runner per role: a profile selected for several roles carries only the invoked role's
   // constant instructions.
-  const developerRuntime = runtimeFor(settings, publish, 'developer');
-  const reviewerRuntime = runtimeFor(settings, publish, 'reviewer');
+  const developerRunner = agentRunnerFor(settings, publish, publishActivity, 'developer');
+  const reviewerRunner = agentRunnerFor(settings, publish, publishActivity, 'reviewer');
 
   /** An action constructed with the selection the workflow currently retains. */
   const selectedWorkspace = (create: (selection: Selection) => BoundAction): BoundAction => {
@@ -155,7 +201,7 @@ function finiteDeliveryActions(
     ),
     Develop: createDevelop({
       selectionFile,
-      runtime: developerRuntime,
+      runner: developerRunner,
       git: settings.git,
       jira: settings.jira,
       publish,
@@ -176,7 +222,7 @@ function finiteDeliveryActions(
       reviewCheck: delivery.reviewCheck,
       nexusLens: { appId: nexus.nexusLens.appId, login: nexus.nexusLens.login },
       reviewerProfile: nexus.executionPolicy.reviewerProfile,
-      runtime: reviewerRuntime,
+      runner: reviewerRunner,
       git: settings.git,
       github: settings.github,
       jira: settings.jira,
@@ -236,6 +282,7 @@ function ideaProfiles(nexus: NexusConfiguration): Readonly<Record<IdeaRole, stri
 function ideaRefinementActions(
   settings: ActionBindingSettings,
   publish: EventPublisher,
+  publishActivity: AgentActivityPublisher,
 ): Readonly<Record<string, BoundAction>> {
   const { project, nexus, paths } = settings;
   const { selectionFile } = paths;
@@ -287,21 +334,21 @@ function ideaRefinementActions(
     PurposeVerifier: forSelection((workspace) =>
       createPurposeVerifier({
         workspace,
-        runtime: runtimeFor(settings, publish, 'purpose-verifier'),
+        runner: agentRunnerFor(settings, publish, publishActivity, 'purpose-verifier'),
         publish,
       }),
     ),
     Researcher: forSelection((workspace) =>
       createResearcher({
         workspace,
-        runtime: runtimeFor(settings, publish, 'researcher'),
+        runner: agentRunnerFor(settings, publish, publishActivity, 'researcher'),
         publish,
       }),
     ),
     BriefWriter: forSelection((workspace) =>
       createBriefWriter({
         workspace,
-        runtime: runtimeFor(settings, publish, 'brief-writer'),
+        runner: agentRunnerFor(settings, publish, publishActivity, 'brief-writer'),
         publish,
       }),
     ),
@@ -309,7 +356,7 @@ function ideaRefinementActions(
       createCouncilReviewer({
         reviewer: 'purpose',
         workspace,
-        runtime: runtimeFor(settings, publish, 'purpose-council'),
+        runner: agentRunnerFor(settings, publish, publishActivity, 'purpose-council'),
         publish,
       }),
     ),
@@ -317,7 +364,7 @@ function ideaRefinementActions(
       createCouncilReviewer({
         reviewer: 'evidence',
         workspace,
-        runtime: runtimeFor(settings, publish, 'evidence-council'),
+        runner: agentRunnerFor(settings, publish, publishActivity, 'evidence-council'),
         publish,
       }),
     ),
@@ -325,7 +372,7 @@ function ideaRefinementActions(
       createCouncilReviewer({
         reviewer: 'simplicity',
         workspace,
-        runtime: runtimeFor(settings, publish, 'simplicity-council'),
+        runner: agentRunnerFor(settings, publish, publishActivity, 'simplicity-council'),
         publish,
       }),
     ),

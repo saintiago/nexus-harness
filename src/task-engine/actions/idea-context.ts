@@ -1,17 +1,19 @@
 import path from 'node:path';
 import { z } from 'zod';
-import type { AgentRuntime, IdeaRole } from '../../agent-runtime/index.js';
+import type { IdeaRole } from '../../agent-runtime/index.js';
 import { messageOf } from '../../result.js';
-import { actionOutcomeEvent, type EventPublisher } from '../index.js';
+import { actionOutcomeEvent, type AgentRoleRunner, type EventPublisher } from '../index.js';
 import type { ArtifactDeclaration } from './artifacts.js';
 import { briefArtifact } from './brief-writer/artifacts.js';
 import { describeIssues, parseDocument, readDocumentText } from './documents.js';
 import {
   ideaCycleDirectory,
+  ideaSubmissionArtifactFile,
   ideaSubmissionInputFile,
   listIdeaCycles,
   listIdeaSubmissions,
   readCycleArtifact,
+  readSubmissionArtifact,
 } from './idea-storage.js';
 import { decisionArtifact } from './publish-decision/artifacts.js';
 import { purposeArtifact } from './purpose-verifier/artifacts.js';
@@ -53,7 +55,6 @@ const cycleHistory: readonly CycleHistoryEntry[] = [
     pendingReviewer: reviewer,
     declaration: councilArtifacts[reviewer],
   })),
-  { label: 'decision record', pendingReviewer: null, declaration: decisionArtifact },
 ];
 
 /** True when this history line is a concurrent reviewer's pending result. */
@@ -109,6 +110,12 @@ export async function retainedHistoryText(
           );
         }
       }
+    }
+    // The decision is a submission-level artifact, not a cycle-level one.
+    if ((await readSubmissionArtifact(root, submission, decisionArtifact)) !== null) {
+      lines.push(
+        `  - decision record: ${ideaSubmissionArtifactFile(root, submission, decisionArtifact)}`,
+      );
     }
   }
   return lines.join('\n');
@@ -188,13 +195,13 @@ export type IdeaInvocationSettings<Schema extends z.ZodType> = {
   /** The caller-prepared context: role instructions, captured idea, history and sources. */
   readonly context: string;
   readonly schema: Schema;
-  readonly runtime: AgentRuntime;
-  readonly publish: EventPublisher;
+  /** The role's agent runner: it assigns the invocation's identity and transports its activity. */
+  readonly runner: AgentRoleRunner;
 };
 
 /**
  * Run one idea role through AgentRuntime with the profile the round plan selected, then parse its
- * declared report. The invocation boundary names the role, operation, profile and idea so
+ * declared report. The runner assigns the invocation's identity and announces its boundaries, so
  * concurrent roles stay attributable; a provider failure is an execution error.
  */
 export async function invokeIdeaRole<Schema extends z.ZodType>(
@@ -207,22 +214,13 @@ export async function invokeIdeaRole<Schema extends z.ZodType>(
         `${String(settings.plan.cycle)}) selects no "${settings.role}" profile.`,
     );
   }
-  settings.publish({
-    source: settings.operation,
-    type: 'agent-started',
-    data: {
-      role: settings.role,
-      operation: settings.operation,
-      profile,
-      idea: settings.taskKey,
-    },
+  const result = await settings.runner.run({
+    operation: settings.operation,
+    profile,
+    workspace: { root: settings.root },
+    context: settings.context,
+    idea: settings.taskKey,
   });
-  let result;
-  try {
-    result = await settings.runtime.run(profile, { root: settings.root }, settings.context);
-  } finally {
-    settings.publish({ source: settings.operation, type: 'agent-finished', data: null });
-  }
   if (!result.ok) {
     throw new Error(result.fault.message);
   }

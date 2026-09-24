@@ -1,12 +1,13 @@
 import { StringDecoder } from 'node:string_decoder';
+import { agentEventKinds, type AgentEvent } from '../agent-runtime/index.js';
 import { messageOf } from '../result.js';
-import type { EngineEvent, WorkflowResult } from '../task-engine/index.js';
+import type { AgentActivity, EngineEvent, WorkflowResult } from '../task-engine/index.js';
 
 /**
  * The worker protocol from the Application design: newline-delimited JSON on the worker's standard
- * output. The worker sends each TaskEngine event unchanged and its final workflow result as its
- * last message; standard error carries diagnostics. The parent reads both and never treats a zero
- * exit alone as completion.
+ * output. The worker sends each TaskEngine event unchanged, each attributable agent activity packet
+ * with its invocation identity, and its final workflow result as its last message; standard error
+ * carries diagnostics. The parent reads both and never treats a zero exit alone as completion.
  */
 
 /** The worker's standard output sink. */
@@ -15,6 +16,7 @@ export type OutputSink = { write(text: string): unknown };
 /** One message the worker sends to its parent. */
 export type WorkerMessage =
   | { readonly kind: 'event'; readonly event: EngineEvent }
+  | ({ readonly kind: 'agent-activity' } & AgentActivity)
   | { readonly kind: 'result'; readonly result: WorkflowResult };
 
 /** Encode one protocol message as one newline-terminated JSON line. */
@@ -25,6 +27,15 @@ export function encodeWorkerMessage(message: WorkerMessage): string {
 /** True for a JSON object. */
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** One activity entry the worker reported, or null when the value is not one. */
+function parseActivity(value: unknown): AgentEvent | null {
+  if (!isRecord(value) || typeof value['text'] !== 'string') {
+    return null;
+  }
+  const type = agentEventKinds.find((kind) => kind === value['type']);
+  return type === undefined ? null : { type, text: value['text'] };
 }
 
 /** The workflow result a message carries, or null when the value is not one. */
@@ -82,6 +93,29 @@ export function parseWorkerLine(line: string): WorkerLine {
       },
     };
   }
+  if (kind === 'agent-activity') {
+    const invocationId = value['invocationId'];
+    const timestamp = value['timestamp'];
+    const activity = parseActivity(value['activity']);
+    if (
+      typeof invocationId !== 'string' ||
+      invocationId === '' ||
+      typeof timestamp !== 'string' ||
+      timestamp === '' ||
+      activity === null
+    ) {
+      return {
+        kind: 'invalid',
+        reason:
+          'The worker wrote an agent-activity message without an invocation identity and ' +
+          'complete activity entry.',
+      };
+    }
+    return {
+      kind: 'message',
+      message: { kind: 'agent-activity', invocationId, timestamp, activity },
+    };
+  }
   if (kind === 'result') {
     const result = parseResult(value['result']);
     if (result === null) {
@@ -135,6 +169,7 @@ export function createWorkerLineReader(onLine: (line: string) => void): {
 /** The worker side of the protocol: write events and the final result to standard output. */
 export type WorkerProtocol = {
   event(event: EngineEvent): void;
+  activity(activity: AgentActivity): void;
   result(result: WorkflowResult): void;
 };
 
@@ -153,6 +188,9 @@ export function createWorkerProtocol(stdout: OutputSink, diagnostics: OutputSink
   return {
     event: (event) => {
       send({ kind: 'event', event });
+    },
+    activity: (activity) => {
+      send({ kind: 'agent-activity', ...activity });
     },
     result: (result) => {
       send({ kind: 'result', result });

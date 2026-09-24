@@ -47,6 +47,12 @@ export const ideaSelectionSchema = z.object({
   }),
   /** Whether the item has been moved into the active status this selection claims. */
   claimed: z.boolean(),
+  /**
+   * The latest submission retained when this selection captured the item; the submission this
+   * selection opens is the next number. Completion is judged against this selection's own
+   * submission, not against an earlier one the item already decided.
+   */
+  retainedSubmissions: z.number().int().nonnegative(),
   /** The refinement workflow area the idea actions write under. */
   workspace: z.object({ root: z.string().min(1) }),
   /** The shared issue workspace root the source pointer retains. */

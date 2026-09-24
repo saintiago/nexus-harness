@@ -1,12 +1,13 @@
 /**
  * Event interpretation for presentation. The event stream is the TaskEngine's public event
- * contract, carrying the Application's lifecycle events and the agent activity events; this module
- * reads source, type and data to decide what an operator sees. Unknown events become plain
- * diagnostic lines built from their source and type, so internal identifiers and configuration
- * inventory never reach the live view.
+ * contract, carrying the Application's lifecycle events and each agent invocation's boundaries;
+ * attributable activity arrives on Application's separate activity subscription. This module reads
+ * source, type and data to decide what an operator sees. Unknown events become plain diagnostic
+ * lines built from their source and type, so internal identifiers and configuration inventory
+ * never reach the live view.
  */
 
-import { actionOutcomeType, type EngineEvent } from '../task-engine/index.js';
+import { actionOutcomeType, type AgentActivity, type EngineEvent } from '../task-engine/index.js';
 import { ideaRoles, type IdeaRole } from '../agent-runtime/index.js';
 import { sanitize } from './text.js';
 
@@ -23,20 +24,28 @@ type ActivityKind = 'message' | 'command' | 'result' | 'change';
 export type Interpretation =
   | {
       readonly kind: 'boundary';
+      /** The invocation the boundary opened; panes and activity match on this identity. */
+      readonly invocationId: string;
       readonly role: AgentRole;
       readonly operation: string;
       readonly profile: string | null;
       readonly task: string | null;
       readonly idea: string | null;
     }
-  | { readonly kind: 'activity'; readonly activity: ActivityKind; readonly text: string }
-  | { readonly kind: 'end' }
+  | { readonly kind: 'end'; readonly invocationId: string }
   | {
       readonly kind: 'progress';
       readonly label: string;
       readonly text: string;
       readonly style: Style;
     };
+
+/** One activity entry, interpreted for the pane its invocation owns. */
+export type ActivityInterpretation = {
+  readonly invocationId: string;
+  readonly activity: ActivityKind;
+  readonly text: string;
+};
 
 const applicationSource = 'application';
 
@@ -153,15 +162,6 @@ function hasArtifactRef(data: unknown, key: string): boolean {
   return typeof artifactPath === 'string' && artifactPath !== '';
 }
 
-/** One supplied event's data field, keeping empty text that is still a present value. */
-function activityField(data: unknown, key: string): string | null {
-  if (typeof data !== 'object' || data === null) {
-    return null;
-  }
-  const value = (data as Record<string, unknown>)[key];
-  return typeof value === 'string' ? sanitize(value) : null;
-}
-
 /**
  * The milestone line an action outcome event renders as: task, round or council cycle when the
  * action names one, the returned outcome and the producer's short detail. The artifact path is
@@ -230,11 +230,13 @@ export function interpret(event: EngineEvent): Interpretation {
   const label = sanitize(event.source);
   const type = sanitize(event.type);
   if (type === 'agent-started') {
-    const role = agentRole(textField(event.data, 'role'));
+    const role = agentRole(textField(event.data, 'agentName'));
     const operation = textField(event.data, 'operation');
-    if (role !== null && operation !== null) {
+    const invocationId = textField(event.data, 'invocationId');
+    if (role !== null && operation !== null && invocationId !== null) {
       return {
         kind: 'boundary',
+        invocationId,
         role,
         operation,
         profile: textField(event.data, 'profile'),
@@ -242,14 +244,11 @@ export function interpret(event: EngineEvent): Interpretation {
         idea: textField(event.data, 'idea'),
       };
     }
-  } else if (type === 'agent-activity') {
-    const activity = activityKind(textField(event.data, 'type'));
-    const text = activityField(event.data, 'text');
-    if (activity !== null && text !== null) {
-      return { kind: 'activity', activity, text };
-    }
   } else if (type === 'agent-finished') {
-    return { kind: 'end' };
+    const invocationId = textField(event.data, 'invocationId');
+    if (invocationId !== null) {
+      return { kind: 'end', invocationId };
+    }
   } else if (type === actionOutcomeType) {
     const text = outcomeMilestone(event.data);
     if (text !== null) {
@@ -266,5 +265,18 @@ export function interpret(event: EngineEvent): Interpretation {
     label,
     text: progressText(type, event.data),
     style: label === applicationSource ? 'default' : 'white',
+  };
+}
+
+/** Interpret one attributable activity entry for its pane; null when it names no activity kind. */
+export function interpretActivity(activity: AgentActivity): ActivityInterpretation | null {
+  const kind = activityKind(activity.activity.type);
+  if (kind === null) {
+    return null;
+  }
+  return {
+    invocationId: activity.invocationId,
+    activity: kind,
+    text: sanitize(activity.activity.text),
   };
 }

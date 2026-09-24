@@ -54,6 +54,11 @@ XState proceeds without waiting for these writes. There is no persistence gate a
 Before returning a terminal outcome, wait for the pending writes, including the terminal snapshot,
 to finish.
 
+Started invocations also end before the terminal outcome is returned. When one parallel region
+fails, a sibling invocation may still be running after XState stops the actor: wait for every
+invoked operation to settle, so its activity and outcome events precede the workflow's final
+result. The terminal outcome of the workflow is unchanged by the drained siblings.
+
 On restoration, XState restarts an active invocation. A terminal result ends the current run; it is
 reset only on the next run, not looped automatically. Saved state may lag execution: a crash can
 cause one or more completed operations, including parallel invocations, to run again. Handling repeated execution and existing work belongs to those operations.

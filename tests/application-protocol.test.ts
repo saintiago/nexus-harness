@@ -10,7 +10,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import type { EngineEvent } from '../src/task-engine/index.js';
+import type { AgentActivity, EngineEvent } from '../src/task-engine/index.js';
 import {
   createWorkerLineReader,
   createWorkerProtocol,
@@ -38,9 +38,11 @@ afterAll(async () => {
 /** Launch the controlled worker with one scenario and record the events it reported. */
 async function launch(scenario: string): Promise<{
   readonly events: readonly EngineEvent[];
+  readonly activity: readonly AgentActivity[];
   readonly completion: Awaited<ReturnType<ReturnType<typeof createWorkerLaunch>>>;
 }> {
   const events: EngineEvent[] = [];
+  const activity: AgentActivity[] = [];
   const completion = await createWorkerLaunch({
     executable: process.execPath,
     entry: controlledWorker,
@@ -48,13 +50,17 @@ async function launch(scenario: string): Promise<{
     {
       projectConfigPath,
       workflow: 'finite-delivery',
+      logDirectory: workingDirectory,
       environment: { NEXUS_TEST_SCENARIO: scenario },
     },
     (event) => {
       events.push(event);
     },
+    (packet) => {
+      activity.push(packet);
+    },
   );
-  return { events, completion };
+  return { events, activity, completion };
 }
 
 describe('worker protocol messages', () => {
@@ -88,6 +94,17 @@ describe('worker protocol messages', () => {
       kind: 'message',
       message: { kind: 'result', result: { ok: false, fault: { message: 'invalid state' } } },
     });
+
+    const activity = {
+      kind: 'agent-activity',
+      invocationId: 'inv-1',
+      timestamp: '2026-09-24T22:00:00.000Z',
+      activity: { type: 'message', text: 'implementing the change' },
+    } as const;
+    expect(parseWorkerLine(encodeWorkerMessage(activity).trimEnd())).toEqual({
+      kind: 'message',
+      message: activity,
+    });
   });
 
   it('rejects lines that are not protocol messages', () => {
@@ -96,6 +113,9 @@ describe('worker protocol messages', () => {
       '[]',
       '{"kind":"start"}',
       '{"kind":"event","event":{"source":"test"}}',
+      '{"kind":"agent-activity","timestamp":"2026-09-24T22:00:00.000Z","activity":{"type":"message","text":"x"}}',
+      '{"kind":"agent-activity","invocationId":"inv-1","activity":{"type":"message","text":"x"}}',
+      '{"kind":"agent-activity","invocationId":"inv-1","timestamp":"2026-09-24T22:00:00.000Z","activity":{"type":"typing","text":"x"}}',
       '{"kind":"result","result":{"ok":true}}',
       '{"kind":"result","result":{"ok":false,"fault":{}}}',
     ];
@@ -153,6 +173,21 @@ describe('worker bridge', () => {
     });
   });
 
+  it('forwards attributable activity with its invocation identity', async () => {
+    const { events, activity, completion } = await launch('activity');
+
+    expect(events).toEqual([]);
+    expect(activity).toEqual([
+      {
+        invocationId: 'inv-1',
+        timestamp: '2026-09-24T22:00:00.000Z',
+        activity: { type: 'message', text: 'controlled activity' },
+      },
+    ]);
+    expect(completion.result).toEqual({ ok: true, value: 'drained' });
+    expect(completion.problem).toBeNull();
+  });
+
   it('carries a returned execution fault with its failing exit', async () => {
     const { completion } = await launch('fault');
 
@@ -191,6 +226,7 @@ describe('worker bridge', () => {
       truncated: /incomplete protocol line/,
       'two-results': /more than one final result/,
       'late-event': /event after its final result/,
+      'late-activity': /agent activity after its final result/,
     };
     for (const [scenario, message] of Object.entries(expected)) {
       const { completion } = await launch(scenario);

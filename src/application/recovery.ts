@@ -20,6 +20,7 @@ import { ideaRoundPlanDeclaration } from '../task-engine/actions/start-idea-roun
 import { currentRoundDeclaration } from '../task-engine/actions/start-round/artifacts.js';
 import { verificationArtifact } from '../task-engine/actions/verify/artifacts.js';
 import type { EngineEvent } from '../task-engine/index.js';
+import { beginAgentInvocation, type AgentActivityPublisher } from '../task-engine/index.js';
 import type { WorkflowName } from '../configuration/index.js';
 import { workspaceRoot, type ExecutionPaths } from './composition.js';
 import type { ExecutionRequest } from './index.js';
@@ -184,11 +185,15 @@ export type RecoverySettings = {
   readonly paths: ExecutionPaths;
   /** The execution's event log, which recovery reads to see what happened. */
   readonly logFile: string;
+  /** The execution's agent activity directory the recovery invocation's own log lives under. */
+  readonly activityDirectory: string;
   /** The environment the operational workspace preparation runs with. */
   readonly environment: Readonly<Record<string, string>>;
   readonly runtime: RecoveryRuntime;
-  /** Publishes one event to Application's combined stream, including agent activity. */
+  /** Publishes one progress or agent boundary event to Application's combined stream. */
   readonly publish: (event: EngineEvent) => void;
+  /** Records and forwards one attributable activity entry through Application. */
+  readonly publishActivity: AgentActivityPublisher;
 };
 
 /** The context the recovery agent receives, assembled from the resolved configuration and stop. */
@@ -201,6 +206,7 @@ type RecoveryContextSettings = {
   readonly workflowPath: string;
   readonly paths: ExecutionPaths;
   readonly logFile: string;
+  readonly activityDirectory: string;
   readonly recoveryDirectory: string;
   readonly workspace: TaskWorkspaceRef;
   readonly reports: readonly string[];
@@ -284,7 +290,8 @@ function recoveryDeclarations(settings: RecoveryContextSettings): RecoveryDeclar
 
 /** The complete context text one recovery invocation receives. */
 function recoveryContextText(settings: RecoveryContextSettings): string {
-  const { nexus, project, workflow, paths, logFile, stop, request, invocation } = settings;
+  const { nexus, project, workflow, paths, logFile, activityDirectory, stop, request, invocation } =
+    settings;
   const selection = stop.selection;
   const taskWorkspaceRoot = path.join(workspaceRoot(nexus), project.taskSource.project);
   return [
@@ -313,6 +320,8 @@ function recoveryContextText(settings: RecoveryContextSettings): string {
         'JSON matching the selection schema below)',
       `Execution event log: ${logFile} (newline-delimited JSON, one object per received event, ` +
         'each holding its ISO receipt timestamp and the event)',
+      `Agent activity logs: ${activityDirectory} (one JSONL file per invocation, named with the ` +
+        'agent name, Unix start time and invocation ID)',
       `Recovery directory: ${settings.recoveryDirectory}`,
       'Saved reports of this execution: ' +
         (settings.reports.length === 0 ? 'none yet' : settings.reports.join(', ')),
@@ -538,6 +547,7 @@ export function createRecovery(settings: RecoverySettings): Recovery {
         workflowPath: settings.workflowPath,
         paths,
         logFile: settings.logFile,
+        activityDirectory: settings.activityDirectory,
         recoveryDirectory: directory,
         workspace,
         reports: earlierReports(invocation),
@@ -546,30 +556,33 @@ export function createRecovery(settings: RecoverySettings): Recovery {
       });
 
       publish({ source: 'application', type: 'recovering', data: { reason: stop.failure } });
-      publish({
-        source: 'application',
-        type: 'agent-started',
-        data: {
-          role: 'recovery',
-          operation: 'Recovery',
-          profile,
-          ...(stop.selection === null ? {} : { task: stop.selection.task }),
-        },
+      const agentInvocation = beginAgentInvocation({
+        agentName: 'recovery',
+        operation: 'Recovery',
+        profile,
+        task: stop.selection === null ? null : stop.selection.task,
+        directory: settings.activityDirectory,
+        publish: settings.publish,
+        publishActivity: settings.publishActivity,
       });
-      let result: AgentResult;
-      try {
-        result = await runtime.invoke({
-          context,
-          workspace,
-          onActivity: (activity) => {
-            publish({ source: 'application', type: 'agent-activity', data: activity });
-          },
-        });
-      } catch (error) {
-        result = { ok: false, fault: { message: messageOf(error) } };
-      } finally {
-        publish({ source: 'application', type: 'agent-finished', data: null });
-      }
+      /** One recovery invocation; a provider failure becomes the invocation's fault result. */
+      const invoke = async (): Promise<AgentResult> => {
+        try {
+          return await runtime.invoke({
+            context,
+            workspace,
+            onActivity: (activity) => {
+              agentInvocation.activity(activity);
+            },
+          });
+        } catch (error) {
+          return { ok: false, fault: { message: messageOf(error) } };
+        }
+      };
+      const result = await invoke();
+      agentInvocation.finish(
+        result.ok ? { outcome: 'finished' } : { outcome: 'failed', reason: result.fault.message },
+      );
       if (!result.ok) {
         return attention(`The recovery invocation failed: ${result.fault.message}`);
       }

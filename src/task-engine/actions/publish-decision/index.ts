@@ -195,6 +195,7 @@ export function createPublishDecision(settings: PublishDecisionSettings): BoundA
     }
     const briefFile = path.join(cycleRoot, briefArtifact.pathFromArtifactsRoot);
     const terminal: IdeaTerminal = decision === 'approved' ? 'approved' : 'waiting-for-feedback';
+    const decisionFile = ideaSubmissionArtifactFile(root, plan.submission, decisionArtifact);
 
     /** Publish the outcome of the decision and its saved record. */
     function reported(record: IdeaDecisionRecord, file: string): IdeaTerminal {
@@ -210,6 +211,30 @@ export function createPublishDecision(settings: PublishDecisionSettings): BoundA
       return terminal;
     }
 
+    /**
+     * Write the approval's handoff for the reviewed brief revision. The handoff is a required
+     * output of the approved route: a repeated invocation that finds the decision already saved
+     * establishes it before reporting the same outcome.
+     */
+    async function writeHandoff(): Promise<void> {
+      const references = await reportReferences(root, plan.submission, plan.cycle);
+      const handoff: IdeaHandoff = {
+        issue: { id: selection.source.issueId, key: selection.taskKey },
+        issueWorkspace: selection.issueWorkspace.root,
+        capturedInput: ideaSubmissionInputFile(root, plan.submission),
+        brief: briefFile,
+        purpose: references.purpose,
+        research: references.research,
+        council: {
+          purpose: path.join(cycleRoot, councilArtifacts.purpose.pathFromArtifactsRoot),
+          evidence: path.join(cycleRoot, councilArtifacts.evidence.pathFromArtifactsRoot),
+          simplicity: path.join(cycleRoot, councilArtifacts.simplicity.pathFromArtifactsRoot),
+        },
+        decision: decisionFile,
+      };
+      await writeRecord(path.join(root, ideaHandoffFile), handoff);
+    }
+
     const existing = await readSubmissionArtifact(root, plan.submission, decisionArtifact);
     if (existing !== null) {
       if (existing.decision !== decision) {
@@ -218,11 +243,12 @@ export function createPublishDecision(settings: PublishDecisionSettings): BoundA
             `"${existing.decision}" decision; it cannot also record "${decision}".`,
         );
       }
-      // The route's work is already saved; a repeated invocation reuses its record.
-      return reported(
-        existing,
-        ideaSubmissionArtifactFile(root, plan.submission, decisionArtifact),
-      );
+      // The route's source updates are already saved; a repeated invocation completes any
+      // outstanding required output and reuses the record.
+      if (decision === 'approved') {
+        await writeHandoff();
+      }
+      return reported(existing, decisionFile);
     }
 
     const reports = await cycleCouncilReports(root, plan);
@@ -299,22 +325,7 @@ export function createPublishDecision(settings: PublishDecisionSettings): BoundA
     };
     const file = await writeSubmissionArtifact(root, plan.submission, decisionArtifact, record);
     if (decision === 'approved') {
-      const references = await reportReferences(root, plan.submission, plan.cycle);
-      const handoff: IdeaHandoff = {
-        issue: { id: selection.source.issueId, key: selection.taskKey },
-        issueWorkspace: selection.issueWorkspace.root,
-        capturedInput: ideaSubmissionInputFile(root, plan.submission),
-        brief: briefFile,
-        purpose: references.purpose,
-        research: references.research,
-        council: {
-          purpose: path.join(cycleRoot, councilArtifacts.purpose.pathFromArtifactsRoot),
-          evidence: path.join(cycleRoot, councilArtifacts.evidence.pathFromArtifactsRoot),
-          simplicity: path.join(cycleRoot, councilArtifacts.simplicity.pathFromArtifactsRoot),
-        },
-        decision: file,
-      };
-      await writeRecord(path.join(root, ideaHandoffFile), handoff);
+      await writeHandoff();
     }
     return reported(record, file);
   };

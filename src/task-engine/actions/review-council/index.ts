@@ -1,6 +1,5 @@
 import path from 'node:path';
-import type { AgentRuntime } from '../../../agent-runtime/index.js';
-import type { BoundAction, EventPublisher } from '../../index.js';
+import type { AgentRoleRunner, BoundAction, EventPublisher } from '../../index.js';
 import { briefArtifact } from '../brief-writer/artifacts.js';
 import {
   capturedIdeaText,
@@ -57,7 +56,8 @@ export type CouncilReviewerSettings = {
   readonly reviewer: CouncilReviewer;
   /** The refinement area the cycle's artifacts live in. */
   readonly workspace: { readonly root: string };
-  readonly runtime: AgentRuntime;
+  /** The council role's agent runner, which owns the invocation's identity and activity. */
+  readonly runner: AgentRoleRunner;
   readonly publish: EventPublisher;
 };
 
@@ -95,7 +95,12 @@ export function createCouncilReviewer(settings: CouncilReviewerSettings): BoundA
     const existing = await readCycleArtifact(cycleRoot, artifact);
     if (existing !== null && existing.brief === briefFile && existing.revision === brief.revision) {
       // This reviewer already answered for this exact revision; reuse the saved verdict.
-      report(existing.verdict, plan.cycle, input.taskKey, briefFile);
+      report(
+        existing.verdict,
+        plan.cycle,
+        input.taskKey,
+        path.join(cycleRoot, artifact.pathFromArtifactsRoot),
+      );
       return existing.verdict;
     }
 
@@ -120,8 +125,7 @@ export function createCouncilReviewer(settings: CouncilReviewerSettings): BoundA
       taskKey: input.taskKey,
       context,
       schema: councilResponseSchema,
-      runtime: settings.runtime,
-      publish: settings.publish,
+      runner: settings.runner,
     });
     if (response.verdict === 'approve' && response.findings.length > 0) {
       throw new Error(

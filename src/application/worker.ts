@@ -34,6 +34,8 @@ export type WorkerSettings = {
   readonly projectConfigPath: string;
   /** The workflow this invocation runs. */
   readonly workflow: WorkflowName;
+  /** The execution's log directory: the worker names each invocation's activity log under it. */
+  readonly logDirectory: string;
   readonly installationConfigPath: string;
   readonly environment: Readonly<Record<string, string | undefined>>;
   readonly stdout: OutputSink;
@@ -90,6 +92,7 @@ export async function runWorker(settings: WorkerSettings): Promise<number> {
         }),
         runCommand: run,
         commandEnvironment: environment,
+        activityDirectory: path.join(settings.logDirectory, 'agents'),
         wait: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
       }),
     });
@@ -103,6 +106,9 @@ export async function runWorker(settings: WorkerSettings): Promise<number> {
     engine.subscribe((event) => {
       protocol.event(event);
     });
+    engine.subscribeActivity((activity) => {
+      protocol.activity(activity);
+    });
     const result = await engine.run();
     protocol.result(result);
     return result.ok ? 0 : 1;
@@ -115,6 +121,7 @@ const entryPath = process.argv[1];
 if (entryPath !== undefined && import.meta.url === pathToFileURL(entryPath).href) {
   const projectConfigPath = process.argv[2];
   const workflowName = process.argv[3];
+  const logDirectory = process.argv[4];
   const installationConfigPath = process.env[installationConfigSetting];
   const workflow = workflowNames.find((name) => name === workflowName);
   if (projectConfigPath === undefined || !path.isAbsolute(projectConfigPath)) {
@@ -128,6 +135,11 @@ if (entryPath !== undefined && import.meta.url === pathToFileURL(entryPath).href
         `${workflowNames.map((name) => `"${name}"`).join(', ')}.\n`,
     );
     process.exitCode = 1;
+  } else if (logDirectory === undefined || !path.isAbsolute(logDirectory)) {
+    process.stderr.write(
+      'The Nexus worker requires the absolute execution log directory argument.\n',
+    );
+    process.exitCode = 1;
   } else if (installationConfigPath === undefined || installationConfigPath.trim() === '') {
     process.stderr.write(
       `The Nexus worker requires the ${installationConfigSetting} environment setting.\n`,
@@ -137,6 +149,7 @@ if (entryPath !== undefined && import.meta.url === pathToFileURL(entryPath).href
     process.exitCode = await runWorker({
       projectConfigPath,
       workflow,
+      logDirectory: path.resolve(logDirectory),
       installationConfigPath: path.resolve(installationConfigPath),
       environment: process.env,
       stdout: process.stdout,

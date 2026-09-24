@@ -9,7 +9,7 @@ import type {
 } from '../../../adapters/jira.js';
 import { fault, messageOf, ok, type Result } from '../../../result.js';
 import { actionOutcomeEvent, type BoundAction, type EventPublisher } from '../../index.js';
-import { submissionDecided } from '../idea-storage.js';
+import { listIdeaSubmissions, submissionDecided } from '../idea-storage.js';
 import { readRecord, writeRecord } from '../records.js';
 import { capturedTransition, readComments, readIssue, statusNameOf } from '../source.js';
 import { ideaSelectionDeclaration, type IdeaSelection } from './artifacts.js';
@@ -243,8 +243,11 @@ export function createSelectIdea(settings: SelectIdeaSettings): BoundAction {
   async function continueSelection(saved: IdeaSelection): Promise<string> {
     let selection = saved;
     if (!selection.claimed) {
-      // The claim was not recorded, so read the item's actual status before completing it.
+      // The claim was not recorded, so read the item's actual status and workspace pointer before
+      // completing it. The pointer update is part of the claim: an interrupted attempt that failed
+      // it is completed here instead of leaving the shared issue root unrecorded.
       const issue = await readIssue(jira, selection.source.issueId);
+      await retainWorkspace(issue, selection.issueWorkspace.root);
       const claimed = await claim(selection, statusNameOf(issue) ?? '');
       if (!claimed.ok) {
         return fail(claimed.fault.message);
@@ -291,6 +294,9 @@ export function createSelectIdea(settings: SelectIdeaSettings): BoundAction {
         conversation,
         transitions: { toActive: toActive.value, fromActive: [] },
         claimed: false,
+        // The submission this selection opens is the next retained number, so an earlier
+        // submission's decision never finishes this selection.
+        retainedSubmissions: (await listIdeaSubmissions(refinementRoot)).at(-1) ?? 0,
         workspace: { root: refinementRoot },
         issueWorkspace: { root: issueRoot.value },
       };
@@ -311,12 +317,26 @@ export function createSelectIdea(settings: SelectIdeaSettings): BoundAction {
     return 'empty';
   }
 
+  /**
+   * True when this retained selection's own submission already reached a decision. The
+   * refinement area may hold earlier submissions the item decided before this entry; only a
+   * submission opened after this selection captured the item finishes it.
+   */
+  async function selectionDecided(selection: IdeaSelection): Promise<boolean> {
+    const latest = (await listIdeaSubmissions(selection.workspace.root)).at(-1);
+    return (
+      latest !== undefined &&
+      latest > selection.retainedSubmissions &&
+      (await submissionDecided(selection.workspace.root, latest))
+    );
+  }
+
   return async () => {
     const saved = await readRecord(settings.selectionFile, ideaSelectionDeclaration);
-    if (saved !== null && !(await submissionDecided(saved.workspace.root))) {
+    if (saved !== null && !(await selectionDecided(saved))) {
       // Unfinished work of this execution: its captured input stays authoritative and the item is
-      // not read or claimed again. A selection whose refinement area already decided its latest
-      // submission is finished, so the next entry selects from the source again.
+      // not read or claimed again. A selection whose own submission already decided is finished,
+      // so the next entry selects from the source again.
       return continueSelection(saved);
     }
     return selectFresh();

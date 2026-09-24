@@ -18,10 +18,13 @@ import {
   workspaceRoot,
 } from '../src/application/composition.js';
 import { installationConfigSetting } from '../src/application/installation.js';
+import type { CodingRuntime } from '../src/adapters/coding-runtime.js';
 import type { GitHubAdapter } from '../src/adapters/github.js';
 import type { GitAdapter } from '../src/adapters/git.js';
 import type { JiraAdapter } from '../src/adapters/jira.js';
 import { parseNexusConfiguration, parseProjectConfiguration } from '../src/configuration/index.js';
+import { ok } from '../src/result.js';
+import type { AgentActivity, EngineEvent } from '../src/task-engine/index.js';
 import { nexusConfiguration, projectConfiguration } from './support/configuration.js';
 
 const installationDirectory = '/srv/nexus/installation';
@@ -171,10 +174,18 @@ describe('worker action binding', () => {
       codingRuntime: unusedCapability('coding runtime'),
       runCommand: unusedCapability('processes'),
       commandEnvironment: {},
+      activityDirectory: path.join(directory, 'logs', 'agents'),
       wait: () => Promise.resolve(),
     });
 
-    expect(Object.keys(bind(() => {})).sort()).toEqual(
+    expect(
+      Object.keys(
+        bind(
+          () => {},
+          () => {},
+        ),
+      ).sort(),
+    ).toEqual(
       [
         'CompleteTask',
         'Deliver',
@@ -201,6 +212,8 @@ describe('worker action binding', () => {
         conversation: [],
         transitions: { toActive: null, fromActive: [] },
         claimed: true,
+
+        retainedSubmissions: 0,
         workspace: { root: refinement },
         issueWorkspace: { root: path.dirname(refinement) },
       }),
@@ -220,8 +233,13 @@ describe('worker action binding', () => {
       codingRuntime: unusedCapability('coding runtime'),
       runCommand: unusedCapability('processes'),
       commandEnvironment: {},
+
+      activityDirectory: path.join(directory, 'logs', 'agents'),
       wait: () => Promise.resolve(),
-    })(() => {});
+    })(
+      () => {},
+      () => {},
+    );
 
     expect(Object.keys(actions).sort()).toEqual(
       [
@@ -248,6 +266,141 @@ describe('worker action binding', () => {
     ).toMatchObject({ taskKey: 'NEX-1', source: { issueId: '10518' } });
   });
 
+  it('gives concurrent idea role invocations distinct identities and attributable activity', async () => {
+    const directory = await temporaryDirectory();
+    const refinement = await temporaryDirectory();
+    const selectionFile = path.join(directory, 'selection.json');
+    await writeFile(
+      selectionFile,
+      JSON.stringify({
+        taskKey: 'NEX-1',
+        source: { kind: 'jira', issueId: '10518' },
+        issue: { id: '10518', key: 'NEX-1', fields: {} },
+        conversation: [],
+        transitions: { toActive: null, fromActive: [] },
+        claimed: true,
+        retainedSubmissions: 0,
+        workspace: { root: refinement },
+        issueWorkspace: { root: path.dirname(refinement) },
+      }),
+    );
+    // Both role invocations must overlap: neither provider call finishes before the other starts.
+    let arrivals = 0;
+    let releaseBoth: () => void = () => undefined;
+    const bothStarted = new Promise<void>((resolve) => {
+      releaseBoth = resolve;
+    });
+    const activityDirectory = path.join(directory, 'logs', 'agents');
+    const codingRuntime: CodingRuntime = {
+      async execute(request, onActivity) {
+        arrivals += 1;
+        if (arrivals === 2) {
+          releaseBoth();
+        }
+        await bothStarted;
+        const purpose = request.prompt.includes('Be wise and philosophical');
+        onActivity({ type: 'message', text: purpose ? 'purpose words' : 'research words' });
+        return ok({
+          output: JSON.stringify(
+            purpose
+              ? {
+                  summary: 'The idea serves the project purpose.',
+                  conflicts: [],
+                  steering: ['Keep the scope small.'],
+                  sources: ['docs/purpose.md'],
+                  provisional: false,
+                  uncertainty: [],
+                }
+              : {
+                  summary: 'Linters keep reviews focused.',
+                  findings: ['Teams catch style defects early.'],
+                  suggestions: ['Start with one rule set.'],
+                  options: ['Adopt the smallest lint configuration.'],
+                  sources: [],
+                },
+          ),
+        });
+      },
+    };
+    const events: EngineEvent[] = [];
+    const activity: AgentActivity[] = [];
+    const actions = createActionBinding({
+      workflow: 'idea-refinement',
+      project,
+      nexus,
+      paths: {
+        directory,
+        workflowStateFile: path.join(directory, 'workflow.json'),
+        selectionFile,
+      },
+      jira: unusedCapability<JiraAdapter>('Jira'),
+      github: unusedCapability<GitHubAdapter>('GitHub'),
+      git: unusedCapability<GitAdapter>('Git'),
+      codingRuntime,
+      runCommand: unusedCapability('processes'),
+      commandEnvironment: {},
+      activityDirectory,
+      wait: () => Promise.resolve(),
+    })(
+      (event) => events.push(event),
+      (packet) => activity.push(packet),
+    );
+    await actions['StartIdeaRound']?.({ route: 'new' });
+
+    await expect(
+      Promise.all([actions['PurposeVerifier']?.(), actions['Researcher']?.()]),
+    ).resolves.toEqual(['reported', 'reported']);
+
+    const started = events.filter((event) => event.type === 'agent-started');
+    const boundaries = started.map(
+      (event) =>
+        event.data as {
+          readonly agentName: string;
+          readonly invocationId: string;
+          readonly startedAtUnixMs: number;
+          readonly log: { readonly path: string };
+          readonly operation: string;
+          readonly idea: string;
+        },
+    );
+    expect(boundaries.map((boundary) => boundary.agentName).sort()).toEqual([
+      'purpose-verifier',
+      'researcher',
+    ]);
+    // Each invocation has its own identity and its own log under the execution's agents directory.
+    const ids = boundaries.map((boundary) => boundary.invocationId);
+    expect(new Set(ids).size).toBe(2);
+    for (const boundary of boundaries) {
+      expect(boundary.log.path).toBe(
+        path.join(
+          activityDirectory,
+          `${boundary.agentName}-${String(boundary.startedAtUnixMs)}-${boundary.invocationId}.jsonl`,
+        ),
+      );
+    }
+    // Every activity packet names the invocation of the role that reported it.
+    const purposeId = boundaries.find(
+      (boundary) => boundary.agentName === 'purpose-verifier',
+    )?.invocationId;
+    const researchId = boundaries.find(
+      (boundary) => boundary.agentName === 'researcher',
+    )?.invocationId;
+    expect(activity).toHaveLength(2);
+    expect(activity.find((packet) => packet.activity.text === 'purpose words')?.invocationId).toBe(
+      purposeId,
+    );
+    expect(activity.find((packet) => packet.activity.text === 'research words')?.invocationId).toBe(
+      researchId,
+    );
+    // Each finish names the identity its start announced.
+    expect(
+      events
+        .filter((event) => event.type === 'agent-finished')
+        .map((event) => (event.data as { readonly invocationId: string }).invocationId)
+        .sort(),
+    ).toEqual([...ids].sort());
+  });
+
   it('runs workspace-scoped actions in the workspace of the current selection', async () => {
     const directory = await temporaryDirectory();
     const firstWorkspace = await temporaryDirectory();
@@ -269,8 +422,13 @@ describe('worker action binding', () => {
       codingRuntime: unusedCapability('coding runtime'),
       runCommand: unusedCapability('processes'),
       commandEnvironment: {},
+
+      activityDirectory: path.join(directory, 'logs', 'agents'),
       wait: () => Promise.resolve(),
-    })(() => {});
+    })(
+      () => {},
+      () => {},
+    );
 
     await expect(actions['StartRound']?.()).resolves.toBe('started');
     await writeFile(selectionFile, JSON.stringify(selectionDocument(secondWorkspace)));

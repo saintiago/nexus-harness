@@ -1,6 +1,6 @@
 import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import type { AgentResult, AgentRuntime } from '../../../agent-runtime/index.js';
+import type { AgentResult } from '../../../agent-runtime/index.js';
 import type { GitAdapter, RepositoryState } from '../../../adapters/git.js';
 import {
   reviewEncoding,
@@ -11,7 +11,12 @@ import {
 } from '../../../adapters/github.js';
 import type { JiraAdapter, JiraComment } from '../../../adapters/jira.js';
 import { messageOf } from '../../../result.js';
-import { actionOutcomeEvent, type BoundAction, type EventPublisher } from '../../index.js';
+import {
+  actionOutcomeEvent,
+  type AgentRoleRunner,
+  type BoundAction,
+  type EventPublisher,
+} from '../../index.js';
 import {
   createArtifactHelpers,
   roundArtifactPath,
@@ -94,7 +99,8 @@ export type ReviewSettings = {
   readonly nexusLens: { readonly appId: number; readonly login: string };
   /** The configured reviewer profile. */
   readonly reviewerProfile: string;
-  readonly runtime: AgentRuntime;
+  /** The reviewer role's agent runner, which owns the invocation's identity and activity. */
+  readonly runner: AgentRoleRunner;
   readonly git: GitAdapter;
   readonly github: GitHubAdapter;
   readonly jira: JiraAdapter;
@@ -471,22 +477,13 @@ export function createReview(settings: ReviewSettings): BoundAction {
       responseInstructions,
     ].join('\n\n');
 
-    settings.publish({
-      source: 'review',
-      type: 'agent-started',
-      data: {
-        role: 'reviewer',
-        operation: 'Review',
-        profile: settings.reviewerProfile,
-        task: selection.taskKey,
-      },
+    const result: AgentResult = await settings.runner.run({
+      operation: 'Review',
+      profile: settings.reviewerProfile,
+      workspace: { root },
+      context,
+      task: selection.taskKey,
     });
-    let result: AgentResult;
-    try {
-      result = await settings.runtime.run(settings.reviewerProfile, { root }, context);
-    } finally {
-      settings.publish({ source: 'review', type: 'agent-finished', data: null });
-    }
     if (!result.ok) {
       throw new Error(result.fault.message);
     }

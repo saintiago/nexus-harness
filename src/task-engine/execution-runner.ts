@@ -117,11 +117,22 @@ function invokedOperations(workflow: AnyStateMachine): string[] {
 /** Register each bound action as the promise actor its workflow state invokes. */
 function promiseActors(
   actions: Readonly<Record<string, BoundAction>>,
+  started: Set<Promise<unknown>>,
 ): Record<string, AnyActorLogic> {
   return Object.fromEntries(
     Object.entries(actions).map(([name, action]) => [
       name,
-      fromPromise(async ({ input }: { readonly input?: unknown }) => action(input)),
+      fromPromise(async ({ input }: { readonly input?: unknown }) => {
+        const running = action(input);
+        // Track every invoked operation, so a terminal outcome waits for started siblings whose
+        // action promises outlive the XState actor.
+        started.add(running);
+        try {
+          return await running;
+        } finally {
+          started.delete(running);
+        }
+      }),
     ]),
   );
 }
@@ -151,9 +162,10 @@ export function createExecutionRunner(settings: ExecutionRunnerSettings): Execut
 }
 
 async function runWorkflow(settings: ExecutionRunnerSettings): Promise<WorkflowResult> {
+  const started = new Set<Promise<unknown>>();
   let workflow: AnyStateMachine;
   try {
-    workflow = settings.workflow.provide({ actors: promiseActors(settings.actions) });
+    workflow = settings.workflow.provide({ actors: promiseActors(settings.actions, started) });
   } catch (error) {
     return fault(`Cannot bind the workflow to its actions: ${messageOf(error)}`);
   }
@@ -208,6 +220,14 @@ async function runWorkflow(settings: ExecutionRunnerSettings): Promise<WorkflowR
       }
       settled = true;
       void (async () => {
+        // Started invocations end before the runner reports its outcome: a parallel sibling must
+        // not publish activity or an outcome after the workflow's final result. Their events and
+        // artifacts are drained; the terminal outcome of the workflow stays unchanged.
+        let running = [...started];
+        while (running.length > 0) {
+          await Promise.allSettled(running);
+          running = [...started];
+        }
         // The terminal snapshot and every earlier notification are saved before returning.
         await pendingWrite;
         actor.stop();

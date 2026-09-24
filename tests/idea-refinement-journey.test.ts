@@ -38,7 +38,11 @@ import type { RecoveryRuntimeFactory } from '../src/application/recovery.js';
 import { loadWorkflow } from '../src/application/workflow.js';
 import { loadNexusConfiguration, loadProjectConfiguration } from '../src/configuration/index.js';
 import { fault, ok } from '../src/result.js';
-import { createTaskEngine, type EngineEvent } from '../src/task-engine/index.js';
+import {
+  createTaskEngine,
+  type AgentActivity,
+  type EngineEvent,
+} from '../src/task-engine/index.js';
 import type { IdeaRole } from '../src/agent-runtime/index.js';
 import type { Brief } from '../src/task-engine/actions/brief-writer/artifacts.js';
 import type {
@@ -154,6 +158,7 @@ type IdeaJourney = {
   readonly worktree: string;
   readonly issueWorkspace: string;
   readonly events: readonly ExecutionEvent[];
+  readonly activity: readonly AgentActivity[];
   readonly prompts: string[];
   readonly jiraCalls: readonly string[];
   readonly diagnostics: readonly string[];
@@ -271,6 +276,7 @@ async function ideaJourney(): Promise<IdeaJourney> {
   });
 
   const events: ExecutionEvent[] = [];
+  const activity: AgentActivity[] = [];
   const prompts: string[] = [];
   const diagnostics: string[] = [];
   const unusedGitHub = new Proxy({} as GitHubAdapter, {
@@ -278,7 +284,7 @@ async function ideaJourney(): Promise<IdeaJourney> {
   });
 
   /** The in-process worker launch: the real worker wiring over the journey's capabilities. */
-  const launchWorker: WorkerLaunch = async (request, onEvent) => {
+  const launchWorker: WorkerLaunch = async (request, onEvent, onActivity) => {
     const loaded = await loadNexusConfiguration(installationConfigPath);
     const loadedProject = await loadProjectConfiguration(request.projectConfigPath);
     const workflow = await loadWorkflow(loaded.workflow[request.workflow]);
@@ -298,17 +304,20 @@ async function ideaJourney(): Promise<IdeaJourney> {
         codingRuntime: journeyRuntime,
         runCommand: run,
         commandEnvironment: toolEnvironment(loadedProject, loaded, hostEnvironment),
+        activityDirectory: path.join(request.logDirectory, 'agents'),
         wait: () => Promise.resolve(),
       }),
     });
     const unsubscribe = engine.subscribe((event: EngineEvent) => {
       onEvent(event);
     });
+    const unsubscribeActivity = engine.subscribeActivity(onActivity);
     let result;
     try {
       result = await engine.run();
     } finally {
       unsubscribe();
+      unsubscribeActivity();
     }
     return { result, exitCode: result.ok ? 0 : 1, problem: null, diagnostics: '' };
   };
@@ -334,6 +343,7 @@ async function ideaJourney(): Promise<IdeaJourney> {
     worktree,
     issueWorkspace,
     events,
+    activity,
     prompts,
     jiraCalls: source.calls,
     diagnostics,
@@ -394,6 +404,7 @@ async function ideaJourney(): Promise<IdeaJourney> {
         application: (settings: ApplicationSettings) => {
           const application = createApplication({ ...settings, launchWorker, recovery });
           application.subscribe((event) => events.push(event));
+          application.subscribeActivity((packet) => activity.push(packet));
           return application;
         },
       });
@@ -532,6 +543,28 @@ describe('idea refinement journeys', () => {
     expect(published).toContain('Approved idea brief (revision 1)');
     expect(published).toContain('Enable the smallest lint gate');
     expect(published).not.toContain('purpose review of the revision');
+
+    // Every role's activity is attributable to its own invocation, including the two roles that
+    // run concurrently: each announcement carries a distinct identity and its own activity log.
+    const started = journey.events.filter((event) => event.type === 'agent-started');
+    expect(started).toHaveLength(6);
+    const identities = started.map(
+      (event) => (event.data as { readonly invocationId: string }).invocationId,
+    );
+    expect(new Set(identities).size).toBe(6);
+    expect(
+      started.map((event) => (event.data as { readonly log: { readonly path: string } }).log.path),
+    ).toEqual(identities.map((id) => expect.stringContaining(id)));
+    expect(journey.activity).toHaveLength(6);
+    expect(new Set(journey.activity.map((packet) => packet.invocationId)).size).toBe(6);
+    for (const packet of journey.activity) {
+      expect(identities).toContain(packet.invocationId);
+    }
+    expect(
+      journey.events
+        .filter((event) => event.type === 'agent-finished')
+        .map((event) => (event.data as { readonly invocationId: string }).invocationId),
+    ).toEqual(identities);
 
     // Every role ran in the prepared refinement worktree with the captured idea and AGENTS.md.
     expect(journey.prompts).toHaveLength(6);

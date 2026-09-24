@@ -13,6 +13,7 @@ import type { AgentRuntime } from '../src/agent-runtime/index.js';
 import type { JiraComment, JiraTransition } from '../src/adapters/jira.js';
 import { ok } from '../src/result.js';
 import type { EngineEvent } from '../src/task-engine/index.js';
+import { runnerOf } from './support/agent-runner.js';
 import { briefArtifact, type Brief } from '../src/task-engine/actions/brief-writer/artifacts.js';
 import { createBriefWriter } from '../src/task-engine/actions/brief-writer/index.js';
 import {
@@ -239,7 +240,7 @@ describe('idea role actions', () => {
     const agent = scriptedRuntime([purposeReport]);
     const action = createPurposeVerifier({
       workspace: { root: area.root },
-      runtime: agent.runtime,
+      runner: runnerOf(agent.runtime),
       publish: (event) => area.events.push(event),
     });
 
@@ -254,13 +255,9 @@ describe('idea role actions', () => {
     expect(request?.context).toContain('Retained workspace history');
     expect(request?.context).toContain(path.join(area.root, 'worktree'));
     expect(await area.read(1, purposeArtifact.pathFromArtifactsRoot)).toEqual(purposeReport);
+    // The invocation boundaries belong to the caller's agent runner, not to the action.
     expect(area.events).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({
-          source: 'PurposeVerifier',
-          type: 'agent-started',
-          data: expect.objectContaining({ role: 'purpose-verifier', idea: 'NEX-1' }),
-        }),
         expect.objectContaining({
           source: 'purpose-verifier',
           type: 'outcome',
@@ -279,7 +276,7 @@ describe('idea role actions', () => {
     const agent = scriptedRuntime([researchReport]);
     const action = createResearcher({
       workspace: { root: area.root },
-      runtime: agent.runtime,
+      runner: runnerOf(agent.runtime),
       publish: (event) => area.events.push(event),
     });
 
@@ -308,7 +305,7 @@ describe('idea role actions', () => {
     ]);
     const action = createBriefWriter({
       workspace: { root: area.root },
-      runtime: agent.runtime,
+      runner: runnerOf(agent.runtime),
       publish: (event) => area.events.push(event),
     });
 
@@ -324,6 +321,45 @@ describe('idea role actions', () => {
     // A repeated invocation reuses the revision it already wrote.
     await expect(action()).resolves.toBe('written');
     expect(agent.requests).toHaveLength(1);
+  });
+
+  it('gives the role a retained submission decision at its producer-owned path', async () => {
+    const area = await refinementArea({ submission: 2 });
+    const decisionFile = path.join(
+      area.root,
+      'artifacts/submissions/1',
+      decisionArtifact.pathFromArtifactsRoot,
+    );
+    await mkdir(path.dirname(decisionFile), { recursive: true });
+    await writeFile(
+      decisionFile,
+      JSON.stringify({
+        decision: 'returned-to-author',
+        strongestVerdict: 'idea_not_working',
+        brief: 'brief.json',
+        revision: 1,
+        feedback: [],
+        comment: null,
+        source: {
+          transition: { id: '22', to: 'Waiting for Feedback' },
+          status: 'Waiting for Feedback',
+          commentId: null,
+        },
+      }),
+    );
+    const agent = scriptedRuntime([purposeReport]);
+    const action = createPurposeVerifier({
+      workspace: { root: area.root },
+      runner: runnerOf(agent.runtime),
+      publish: () => undefined,
+    });
+
+    await expect(action()).resolves.toBe('reported');
+
+    const context = agent.requests[0]?.context ?? '';
+    expect(context).toContain(`decision record: ${decisionFile}`);
+    // The cycle-level path it is not saved at is never named.
+    expect(context).not.toContain(path.join(area.cycleDirectory(), 'decision.json'));
   });
 
   it('carries the preceding objections and reuses the preceding reports in a minor cycle', async () => {
@@ -357,7 +393,7 @@ describe('idea role actions', () => {
     ]);
     const action = createBriefWriter({
       workspace: { root: area.root },
-      runtime: agent.runtime,
+      runner: runnerOf(agent.runtime),
       publish: (event) => area.events.push(event),
     });
 
@@ -379,7 +415,7 @@ describe('idea role actions', () => {
     const agent = scriptedRuntime([{}]);
     const action = createBriefWriter({
       workspace: { root: area.root },
-      runtime: agent.runtime,
+      runner: runnerOf(agent.runtime),
       publish: () => undefined,
     });
 
@@ -407,7 +443,7 @@ describe('council reviewers', () => {
     const action = createCouncilReviewer({
       reviewer: 'purpose',
       workspace: { root: area.root },
-      runtime: agent.runtime,
+      runner: runnerOf(agent.runtime),
       publish: (event) => area.events.push(event),
     });
 
@@ -448,12 +484,23 @@ describe('council reviewers', () => {
     const action = createCouncilReviewer({
       reviewer: 'simplicity',
       workspace: { root: area.root },
-      runtime: agent.runtime,
-      publish: () => undefined,
+      runner: runnerOf(agent.runtime),
+      publish: (event) => area.events.push(event),
     });
 
     await expect(action()).resolves.toBe('major_rework');
     expect(agent.requests).toEqual([]);
+    // The reused outcome names the verdict artifact the reviewer saved, not the input brief.
+    expect(area.events.at(-1)).toMatchObject({
+      source: 'SimplicityCouncil',
+      type: 'outcome',
+      data: {
+        outcome: 'major_rework',
+        artifact: {
+          path: path.join(area.cycleDirectory(), councilArtifacts.simplicity.pathFromArtifactsRoot),
+        },
+      },
+    });
   });
 
   it('rejects an approval with unresolved findings and a nonapproval without any', async () => {
@@ -470,7 +517,7 @@ describe('council reviewers', () => {
       createCouncilReviewer({
         reviewer: 'purpose',
         workspace: { root: area.root },
-        runtime: withFindings.runtime,
+        runner: runnerOf(withFindings.runtime),
         publish: () => undefined,
       })(),
     ).rejects.toThrow('while naming unresolved findings');
@@ -482,7 +529,7 @@ describe('council reviewers', () => {
       createCouncilReviewer({
         reviewer: 'evidence',
         workspace: { root: area.root },
-        runtime: withoutFindings.runtime,
+        runner: runnerOf(withoutFindings.runtime),
         publish: () => undefined,
       })(),
     ).rejects.toThrow('without naming a criterion, evidence and correction');
@@ -504,6 +551,7 @@ describe('decision publication', () => {
       ] satisfies JiraTransition[],
     },
     claimed: true,
+    retainedSubmissions: 0,
     workspace: { root: '' },
     issueWorkspace: { root: '' },
   };
@@ -663,6 +711,52 @@ describe('decision publication', () => {
 
     expect(jira.comments).toHaveLength(comments);
     expect(jira.transitions).toEqual(['21']);
+  });
+
+  it('completes an interrupted approval handoff when the saved decision is retried', async () => {
+    const area = await refinementArea();
+    await area.write(1, purposeArtifact, purposeReport);
+    await area.write(1, researchArtifact, researchReport);
+    const briefFile = await area.write(1, briefArtifact, briefOf(1));
+    for (const reviewer of councilReviewers) {
+      await area.write(
+        1,
+        councilArtifacts[reviewer],
+        councilReport(reviewer, 'approve', briefFile, 1),
+      );
+    }
+    const jira = source();
+    // An obstruction where the handoff belongs makes the approval's handoff write fail after the
+    // decision, its comment and its transition were saved.
+    await mkdir(path.join(area.root, ideaHandoffFile), { recursive: true });
+    await expect(publication(area, jira)({ decision: 'approved' })).rejects.toThrow();
+    expect(
+      await readFile(
+        path.join(area.root, 'artifacts/submissions/1', decisionArtifact.pathFromArtifactsRoot),
+        'utf8',
+      ),
+    ).toContain('"approved"');
+
+    // The obstruction goes away; the repeated publication establishes the handoff before it
+    // reports the same outcome, and it repeats none of the source updates.
+    await rm(path.join(area.root, ideaHandoffFile), { recursive: true, force: true });
+    const comments = jira.comments.length;
+    await expect(publication(area, jira)({ decision: 'approved' })).resolves.toBe('approved');
+
+    expect(jira.comments).toHaveLength(comments);
+    expect(jira.transitions).toEqual(['21']);
+    const handoff = JSON.parse(
+      await readFile(path.join(area.root, ideaHandoffFile), 'utf8'),
+    ) as IdeaHandoff;
+    expect(handoff).toMatchObject({
+      issue: { id: '10518', key: 'NEX-1' },
+      brief: briefFile,
+      decision: path.join(
+        area.root,
+        'artifacts/submissions/1',
+        decisionArtifact.pathFromArtifactsRoot,
+      ),
+    });
   });
 
   it('refuses an approval the council did not grant and a council set for another revision', async () => {

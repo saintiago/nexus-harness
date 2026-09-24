@@ -139,6 +139,7 @@ export async function runOperatorCommand(settings: OperatorCommandSettings): Pro
   const terminal = terminalCapabilities(settings.output, settings.environment);
   const presentation = createOperatorInterface({
     subscribe: (listener) => application.subscribe(listener),
+    subscribeActivity: (listener) => application.subscribeActivity(listener),
     terminal,
   });
   presentation.start();

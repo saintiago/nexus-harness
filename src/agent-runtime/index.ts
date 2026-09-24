@@ -20,9 +20,14 @@ export type AgentProfile = {
   readonly toolSettings: Readonly<Record<string, unknown>>;
 };
 
+/** The activity kinds an invocation reports while it runs. */
+export const agentEventKinds = ['message', 'command', 'result', 'change'] as const;
+
+export type AgentEventKind = (typeof agentEventKinds)[number];
+
 /** One activity entry the invocation reported while it ran. */
 export type AgentEvent = {
-  readonly type: 'message' | 'command' | 'result' | 'change';
+  readonly type: AgentEventKind;
   readonly text: string;
 };
 
@@ -38,16 +43,16 @@ export type AgentRuntime = {
     profile: ProfileId,
     workspaceRef: WorkspaceRef,
     additionalContext: string,
+    onActivity: (activity: AgentEvent) => void,
   ): Promise<AgentResult>;
 };
 
-/** Construction settings: caller instructions, the profile catalogue, provider, limit and observer. */
+/** Construction settings: caller instructions, the profile catalogue, provider and limit. */
 export type AgentRuntimeSettings = {
   readonly codingRuntime: CodingRuntime;
   readonly baseInstructions: readonly string[];
   readonly profiles: readonly AgentProfile[];
   readonly invocationLimitMinutes: number;
-  readonly onActivity: (activity: AgentEvent) => void;
 };
 
 /** The target repository working copy within a workspace root (Workspace design). */
@@ -75,7 +80,7 @@ function assemblePrompt(
 /** Create the agent runtime over the supplied configuration. */
 export function createAgentRuntime(settings: AgentRuntimeSettings): AgentRuntime {
   return {
-    async run(profileId, workspaceRef, additionalContext) {
+    async run(profileId, workspaceRef, additionalContext, onActivity) {
       const profile = settings.profiles.find((candidate) => candidate.id === profileId);
       if (profile === undefined) {
         return { ok: false, fault: { message: `Unknown agent profile "${profileId}".` } };
@@ -97,7 +102,7 @@ export function createAgentRuntime(settings: AgentRuntimeSettings): AgentRuntime
         },
         (activity) => {
           try {
-            settings.onActivity(activity);
+            onActivity(activity);
           } catch {
             // Observer failures do not affect the invocation or its result.
           }

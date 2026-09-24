@@ -114,6 +114,7 @@ both components' events to presentation without duplicate subscriptions.
 | --- | --- | --- |
 | Application | Nexus worker / TaskEngine | Launch configured workflow and receive events/result |
 | TaskEngine, through Application | OperatorInterface | Unchanged worker event stream |
+| TaskEngine, through Application | OperatorInterface | Attributable agent activity, matched to panes by invocation ID |
 | Application | OperatorInterface | Lifecycle events, including the final execution result |
 | TaskEngine actions | AgentRuntime | run(profile, workspaceRef, additionalContext) |
 | Application | AgentRuntime | Same run interface with recovery profile and failure context |
@@ -149,9 +150,10 @@ Observer errors do not change execution decisions.
 
 ### Process boundary
 
-The [Application worker protocol](application.md#worker-entry-point) carries events and the final
-workflow result to the parent. Application observes these alongside process exit. A failed exit,
-missing result or invalid result is an execution failure. Terminal text is not a control protocol.
+The [Application worker protocol](application.md#worker-entry-point) carries events, attributable
+agent activity and the final workflow result to the parent. Application observes these alongside
+process exit. A failed exit, missing result or invalid result is an execution failure. Terminal text
+is not a control protocol.
 
 Application connects event publishing before execution. TaskEngine forwards events unchanged;
 Application forwards them and emits its own lifecycle events. OperatorInterface presents the stream.

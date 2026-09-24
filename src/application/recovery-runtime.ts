@@ -23,12 +23,17 @@ export function createRecoveryRuntime(settings: RecoveryRuntimeConstruction): Re
   });
   return {
     async invoke(request) {
-      // One runtime per invocation so the invocation's own activity observer receives it;
-      // AgentRuntime keeps no state between invocations.
+      // AgentRuntime keeps no state between invocations; each invocation supplies its own
+      // activity observer, so recovery activity stays attributable to its invocation.
       const runtime = createAgentRuntime(
-        createAgentRuntimeSettings(nexus, 'recovery', codingRuntime, request.onActivity),
+        createAgentRuntimeSettings(nexus, 'recovery', codingRuntime),
       );
-      return runtime.run(nexus.executionPolicy.recoveryProfile, request.workspace, request.context);
+      return runtime.run(
+        nexus.executionPolicy.recoveryProfile,
+        request.workspace,
+        request.context,
+        request.onActivity,
+      );
     },
     async notify(subject, body) {
       return createNotificationsAdapter(createNotificationSettings(nexus, environment)).publish(

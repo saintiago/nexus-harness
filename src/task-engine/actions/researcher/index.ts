@@ -1,5 +1,4 @@
-import type { AgentRuntime } from '../../../agent-runtime/index.js';
-import type { BoundAction, EventPublisher } from '../../index.js';
+import type { AgentRoleRunner, BoundAction, EventPublisher } from '../../index.js';
 import {
   capturedIdeaText,
   invokeIdeaRole,
@@ -26,7 +25,8 @@ import { researchArtifact, researchReportSchema } from './artifacts.js';
 export type ResearcherSettings = {
   /** The refinement area the cycle's artifacts live in. */
   readonly workspace: { readonly root: string };
-  readonly runtime: AgentRuntime;
+  /** The research role's agent runner, which owns the invocation's identity and activity. */
+  readonly runner: AgentRoleRunner;
   readonly publish: EventPublisher;
 };
 
@@ -56,8 +56,7 @@ export function createResearcher(settings: ResearcherSettings): BoundAction {
       taskKey: input.taskKey,
       context,
       schema: researchReportSchema,
-      runtime: settings.runtime,
-      publish: settings.publish,
+      runner: settings.runner,
     });
     const file = await writeCycleArtifact(
       ideaCycleDirectory(root, plan.submission, plan.cycle),

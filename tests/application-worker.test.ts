@@ -90,6 +90,7 @@ async function configuredWorker(options?: {
     settings: {
       projectConfigPath,
       workflow: 'finite-delivery',
+      logDirectory: path.join(workspace, 'logs'),
       installationConfigPath,
       environment: { ...credentials, ...options?.environment },
       stdout: { write: (text) => stdout.push(text) },

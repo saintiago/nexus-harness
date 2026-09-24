@@ -1,6 +1,5 @@
 import path from 'node:path';
-import type { AgentRuntime } from '../../../agent-runtime/index.js';
-import type { BoundAction, EventPublisher } from '../../index.js';
+import type { AgentRoleRunner, BoundAction, EventPublisher } from '../../index.js';
 import {
   capturedIdeaText,
   invokeIdeaRole,
@@ -37,7 +36,8 @@ import { briefArtifact, briefContentSchema, type Brief } from './artifacts.js';
 export type BriefWriterSettings = {
   /** The refinement area the cycle's artifacts live in. */
   readonly workspace: { readonly root: string };
-  readonly runtime: AgentRuntime;
+  /** The writer role's agent runner, which owns the invocation's identity and activity. */
+  readonly runner: AgentRoleRunner;
   readonly publish: EventPublisher;
 };
 
@@ -150,8 +150,7 @@ export function createBriefWriter(settings: BriefWriterSettings): BoundAction {
       taskKey: input.taskKey,
       context,
       schema: briefContentSchema,
-      runtime: settings.runtime,
-      publish: settings.publish,
+      runner: settings.runner,
     });
     const brief: Brief = {
       ...content,
