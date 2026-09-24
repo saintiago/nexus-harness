@@ -297,6 +297,9 @@ export function createJiraAdapter(
     selection: JiraIssueQuery,
   ): Promise<Result<readonly JiraIssueIdentity[]>> {
     const jql = `${selection.query} order by ${selection.orderBy}`;
+    // The search endpoint returns a bare issue identity unless the key field is requested, so
+    // every page asks for it explicitly.
+    const fields = ['key'];
     const identities: JiraIssueIdentity[] = [];
     const followedTokens = new Set<string>();
     let token: string | undefined;
@@ -305,7 +308,7 @@ export function createJiraAdapter(
         'POST',
         '/rest/api/3/search/jql',
         searchPageSchema,
-        token === undefined ? { jql } : { jql, nextPageToken: token },
+        token === undefined ? { jql, fields } : { jql, fields, nextPageToken: token },
       );
       if (!page.ok) {
         return page;

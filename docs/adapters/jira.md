@@ -35,7 +35,9 @@ need and decide whether a further write is necessary.
 ## Behavior
 
 Keep task reads and conversation retrieval separate. Preserve full requested comment bodies,
-attribution and source ordering. Ranking changes rank, not priority.
+attribution and source ordering. Request each search result's issue key explicitly: the search
+endpoint returns only the issue id unless the `key` field is requested. Ranking changes rank, not
+priority.
 
 Translate requested fields and transitions through the configured mappings. Preserve Jira document
 structure rather than flattening it into a shared cross-provider document format.

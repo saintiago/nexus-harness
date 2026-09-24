@@ -4,6 +4,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import type { AgentEvent, AgentResult } from '../agent-runtime/index.js';
 import type { NotificationAcceptance } from '../adapters/notifications.js';
+import { run } from '../adapters/processes.js';
 import type { NexusConfiguration, ProjectConfiguration } from '../configuration/index.js';
 import { messageOf, type ArtifactRef, type Result } from '../result.js';
 import type { ArtifactDeclaration } from '../task-engine/actions/artifacts.js';
@@ -176,6 +177,8 @@ export type RecoverySettings = {
   readonly paths: ExecutionPaths;
   /** The execution's event log, which recovery reads to see what happened. */
   readonly logFile: string;
+  /** The environment the operational workspace preparation runs with. */
+  readonly environment: Readonly<Record<string, string>>;
   readonly runtime: RecoveryRuntime;
   /** Publishes one event to Application's combined stream, including agent activity. */
   readonly publish: (event: EngineEvent) => void;
@@ -361,6 +364,38 @@ function reportNotification(settings: {
   };
 }
 
+/**
+ * Prepare the recovery operational workspace's worktree. The configured Codex provider refuses to
+ * start in a working directory outside a Git repository, so the worktree is initialized as an
+ * empty repository; `git init` is idempotent for a later recovery invocation of the same
+ * execution.
+ */
+async function prepareOperationalWorktree(
+  directory: string,
+  environment: Readonly<Record<string, string>>,
+): Promise<void> {
+  await mkdir(directory, { recursive: true });
+  const diagnostics: Uint8Array[] = [];
+  const result = await run(
+    { executable: 'git', args: ['init', '--quiet'], directory, environment },
+    (output) => {
+      if (output.stream === 'stderr') {
+        diagnostics.push(output.chunk);
+      }
+    },
+  );
+  if (!result.ok) {
+    throw new Error(result.fault.message);
+  }
+  if (result.value.exitCode !== 0) {
+    const detail = Buffer.concat(diagnostics).toString('utf8').trim();
+    throw new Error(
+      `git init exited with code ${String(result.value.exitCode)}` +
+        (detail === '' ? '' : `: ${detail}`),
+    );
+  }
+}
+
 /** Create the recovery lifecycle of one execution over resolved configuration. */
 export function createRecovery(settings: RecoverySettings): Recovery {
   const { nexus, project, workflow, paths, runtime, publish } = settings;
@@ -443,7 +478,10 @@ export function createRecovery(settings: RecoverySettings): Recovery {
       }
 
       try {
-        await mkdir(path.join(workspace.root, worktreeDirectory), { recursive: true });
+        await prepareOperationalWorktree(
+          path.join(workspace.root, worktreeDirectory),
+          settings.environment,
+        );
       } catch (error) {
         return attention(
           `The recovery operational workspace could not be prepared: ${messageOf(error)}`,

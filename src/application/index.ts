@@ -4,7 +4,7 @@ import type { ArtifactRef, Observer } from '../result.js';
 import { readRecord } from '../task-engine/actions/records.js';
 import { selectionDeclaration } from '../task-engine/actions/select-task/artifacts.js';
 import type { EngineEvent, Unsubscribe, WorkflowResult } from '../task-engine/index.js';
-import { executionPaths, workerProcessEnvironment } from './composition.js';
+import { executionPaths, toolEnvironment, workerProcessEnvironment } from './composition.js';
 import { createExecutionLog, executionLogFile, type DiagnosticSink } from './execution-log.js';
 import { createRecovery, type RecoveryRuntimeFactory, type RecoverySelection } from './recovery.js';
 import { createRecoveryRuntime } from './recovery-runtime.js';
@@ -196,6 +196,7 @@ export function createApplication(settings: ApplicationSettings): Application {
           workflow,
           paths,
           logFile,
+          environment: toolEnvironment(project, nexus, settings.environment),
           runtime: recoveryFactory({ nexus, environment: settings.environment }),
           publish,
         });

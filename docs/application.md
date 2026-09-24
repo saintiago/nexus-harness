@@ -86,8 +86,10 @@ OperatorInterface receives worker and parent events through one combined subscri
 Prepare recovery context from the original request, failure, available output, execution-state paths
 and task [workspace reference](workspace.md#layout-and-reference) when known. Always run recovery in
 a separate operational workspace, so it can delete a broken task workspace without deleting its own
-working directory. Include the current project configuration and recovery scope in the context.
-Pass context to AgentRuntime.run with the configured recovery profile.
+working directory. Initialize that workspace's worktree as a Git repository before the invocation,
+so the configured [coding provider](adapters/coding-runtime.md#behavior) accepts its working
+directory. Include the current project configuration and recovery scope in the context. Pass
+context to AgentRuntime.run with the configured recovery profile.
 Use the [Notifications adapter](adapters/notifications.md#interface) to publish the recovery report.
 
 ### Worker entry point

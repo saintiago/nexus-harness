@@ -42,7 +42,9 @@ dispatcher. A missing selected configuration is a launch error, not a fallback t
 ## Behavior
 
 Apply the supplied settings. Unsupported settings and provider failures are errors.
-Preserve complete prompts, output and activity without silently truncating them.
+Run in the supplied working directory; the Codex provider's non-interactive mode refuses one
+outside a Git repository, so the caller prepares a directory it accepts. Preserve complete prompts,
+output and activity without silently truncating them.
 
 Use temporary transport files only when required by the provider. Do not persist Nexus artifacts,
 select another model or add repair turns.
