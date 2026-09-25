@@ -22,6 +22,7 @@ import {
 } from '../src/task-engine/actions/idea-storage.js';
 import {
   ideaDefinitionText,
+  ideaStageGuidanceText,
   projectGuidanceInstruction,
 } from '../src/task-engine/actions/idea-context.js';
 import {
@@ -48,7 +49,10 @@ import {
   type CouncilReviewer,
   type CouncilVerdict,
 } from '../src/task-engine/actions/review-council/artifacts.js';
-import { createCouncilReviewer } from '../src/task-engine/actions/review-council/index.js';
+import {
+  councilObjectionStandard,
+  createCouncilReviewer,
+} from '../src/task-engine/actions/review-council/index.js';
 import { ideaInputDeclaration } from '../src/task-engine/actions/select-idea/artifacts.js';
 import type { IdeaSelection } from '../src/task-engine/actions/select-idea/artifacts.js';
 import {
@@ -497,6 +501,14 @@ describe('idea role actions', () => {
     expect(agent.requests).toEqual([]);
   });
 
+  it('supplies the authoritative idea definition verbatim, apart from the stage guidance', () => {
+    expect(ideaDefinitionText).toContain(
+      'An idea describes a desirable change in software, why it matters, and the principle ' +
+        'behind it\u2014without yet committing to implementation.',
+    );
+    expect(ideaStageGuidanceText).not.toContain('An idea describes');
+  });
+
   it('gives all six roles the same idea definition once before their own context', async () => {
     const area = await refinementArea();
     await area.write(1, purposeArtifact, purposeReport);
@@ -555,18 +567,22 @@ describe('idea role actions', () => {
 
     expect(contexts.map((entry) => entry.role)).toEqual([...ideaRoles]);
     for (const { role, context } of contexts) {
-      // The one shared definition text arrives exactly once, ahead of the role's own context.
+      // The one shared definition and the separate stage guidance arrive exactly once each,
+      // ahead of the role's own context.
       expect(context.split(ideaDefinitionText)).toHaveLength(2);
-      expect(context.startsWith(`${ideaDefinitionText}\n\n`)).toBe(true);
+      expect(context.split(ideaStageGuidanceText)).toHaveLength(2);
+      expect(context.startsWith(`${ideaDefinitionText}\n\n${ideaStageGuidanceText}\n\n`)).toBe(
+        true,
+      );
       // The role-specific context follows it: the captured idea and the project guidance.
       expect(context.indexOf('Add a lint gate')).toBeGreaterThan(
-        context.indexOf(ideaDefinitionText),
+        context.indexOf(ideaStageGuidanceText),
       );
       expect(context).toContain('Prefer the smallest change.');
       // The project guidance arrives once, with the project's own AGENTS.md text.
       expect(context.split(projectGuidanceInstruction)).toHaveLength(2);
       // The one shared objection standard reaches every council invocation and no other role.
-      expect(context.split('ask how the objection improves the idea')).toHaveLength(
+      expect(context.split(councilObjectionStandard)).toHaveLength(
         role.endsWith('-council') ? 2 : 1,
       );
     }

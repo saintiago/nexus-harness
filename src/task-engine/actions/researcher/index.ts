@@ -38,12 +38,16 @@ export function createResearcher(settings: ResearcherSettings): BoundAction {
     const input = await readIdeaInput(root, plan.submission);
     const guidance = await projectGuidanceText(root);
     const context = [
-      'Enrich the current captured idea with useful findings, options and sources.',
+      'Enrich the stated idea\u2019s proposed change, why it matters and the principle behind it',
+      'with sourced knowledge, examples and conceptual possibilities that give it substance.',
       capturedIdeaText(root, plan, input),
       await retainedHistoryText(root, plan, { reviewer: null }),
       'Use the prepared worktree, project knowledge, existing work and your configured web tools.',
-      'Give links and access dates for external sources and keep source facts distinct from your',
-      'own suggestions. Do not scrutinize or reject the idea and do not select an architecture.',
+      'Keep suggestions and options at idea level: strengthen the author\u2019s proposal without',
+      'replacing it with another idea, and produce no implementation plan or draft configuration,',
+      'role catalogues, trigger mechanisms, vote policies, artifact layouts or requirements. Give',
+      'links and access dates for external sources and keep source facts distinct from your own',
+      'suggestions. Do not scrutinize or reject the idea and do not select an architecture.',
       ...(guidance === null ? [] : [guidance]),
       responseFormatText(researchReportSchema),
     ].join('\n\n');

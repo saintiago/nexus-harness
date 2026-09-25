@@ -10,7 +10,7 @@ import { describeIssues, parseDocument, readDocumentText } from '../documents.js
  * a later cycle writes a new revision at its own path, which invalidates every earlier approval.
  */
 
-/** The supporting sections every brief revision carries, whatever shape its improvement text has. */
+/** The supporting sections every brief revision carries, whatever shape its idea statement has. */
 const briefSectionsSchema = z.object({
   evidence: z.array(z.string().trim().min(1)),
   alternatives: z.array(z.string().trim().min(1)),
@@ -26,8 +26,9 @@ const briefSectionsSchema = z.object({
 /** The brief's substance: the smallest coherent case the council decides on. */
 export const briefContentSchema = briefSectionsSchema.extend({
   /**
-   * The proposed improvement as one idea: the need, opportunity or desired outcome and why it may
-   * matter or fit, rather than separate problem, value and project-fit essays.
+   * The author's idea as one coherent proposal: the proposed change, why it matters and the
+   * principle behind it, rather than separate problem, value and project-fit essays or a more
+   * generic restatement. Concrete requirements and design stay deferred.
    */
   idea: z.string().trim().min(1),
 });

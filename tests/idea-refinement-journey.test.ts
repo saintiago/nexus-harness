@@ -45,7 +45,10 @@ import {
 } from '../src/task-engine/index.js';
 import type { IdeaRole } from '../src/agent-runtime/index.js';
 import type { Brief } from '../src/task-engine/actions/brief-writer/artifacts.js';
-import { ideaDefinitionText } from '../src/task-engine/actions/idea-context.js';
+import {
+  ideaDefinitionText,
+  ideaStageGuidanceText,
+} from '../src/task-engine/actions/idea-context.js';
 import type {
   IdeaDecisionRecord,
   IdeaHandoff,
@@ -575,9 +578,11 @@ describe('idea refinement journeys', () => {
       expect(prompt).toContain('Add a lint gate');
       expect(prompt).toContain('Prefer the smallest change that fulfils the purpose.');
       expect(prompt).toContain(path.join(journey.worktree));
-      // The shared definition arrives exactly once, ahead of the role's own context and duties.
+      // The shared definition and the separate stage guidance arrive exactly once each, ahead of
+      // the role's own context and duties.
       expect(prompt.split(ideaDefinitionText)).toHaveLength(2);
-      expect(prompt.indexOf(ideaDefinitionText)).toBeLessThan(prompt.indexOf('Add a lint gate'));
+      expect(prompt.split(ideaStageGuidanceText)).toHaveLength(2);
+      expect(prompt.indexOf(ideaStageGuidanceText)).toBeLessThan(prompt.indexOf('Add a lint gate'));
     }
     expect((await readFile(path.join(journey.worktree, 'readme.md'), 'utf8')).trim()).toBe(
       'the connected project',

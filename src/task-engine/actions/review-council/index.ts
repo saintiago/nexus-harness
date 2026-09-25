@@ -32,6 +32,24 @@ import {
  * context. A repeated invocation for the same brief revision reuses the result it already saved.
  */
 
+/**
+ * The one shared objection standard every council invocation carries. It adds no output field and
+ * no route. It keeps objections on the idea as the author proposed it and keeps unresolved design
+ * choices out of the verdict unless they change the idea-stage decision; the remaining choices
+ * belong to Requirements and Design.
+ */
+export const councilObjectionStandard = [
+  'Before you object, ask how the objection improves the idea. An objection may sharpen, narrow',
+  'or correct the idea as the author proposed it, name a genuine ambiguity in the stated idea, or',
+  'show that it should not proceed (idea_not_working): preventing a bad idea is a real improvement.',
+  'An objection never silently replaces the author\u2019s proposal with a different or more generic',
+  'idea. Factual or design nitpicks that do not change the idea-stage outcome are not objections,',
+  'incidental implementation detail the brief should not contain is not an objection, and the',
+  'brief\u2019s length alone is never a fault. An unresolved design choice is a blocker only when it',
+  'changes the idea-stage decision: whether the idea is worth developing, its purpose fit, value,',
+  'evidence or smallest useful scope. Otherwise it belongs to Requirements and Design.',
+].join('\n');
+
 /** The operation name each reviewer's invocation boundary carries. */
 export const councilOperations: Readonly<Record<CouncilReviewer, string>> = {
   purpose: 'PurposeCouncil',
@@ -42,7 +60,8 @@ export const councilOperations: Readonly<Record<CouncilReviewer, string>> = {
 /** The review each reviewer focuses on, supplied as invocation context. */
 const reviewFocus: Readonly<Record<CouncilReviewer, string>> = {
   purpose:
-    'Check project fit, coherent value, evidence quality and fidelity to the author\u2019s intent.',
+    'Check project fit, coherent value, evidence quality and fidelity to the stated idea; flag a ' +
+    'genuine ambiguity in it rather than silently replacing the proposal.',
   evidence:
     'Check that the idea\u2019s need, value and fit are substantiated, alternatives are represented ' +
     'fairly, sources support the claims and uncertainty is explicit.',
@@ -107,10 +126,7 @@ export function createCouncilReviewer(settings: CouncilReviewerSettings): BoundA
     const guidance = await projectGuidanceText(root);
     const context = [
       `Independently review brief revision ${String(brief.revision)} of the current captured idea.`,
-      'Before you object, ask how the objection improves the idea. An objection may sharpen,',
-      'redirect or narrow the idea, or show that it should not proceed (idea_not_working):',
-      'preventing a bad idea is a real improvement. Factual or design nitpicks that do not change',
-      'the idea-stage outcome are not objections.',
+      councilObjectionStandard,
       'Object only to material gaps that affect the idea-stage decision. Do not request',
       'implementation detail, file inventories, acceptance criteria or resolved design tradeoffs',
       'the brief should not contain, and do not fail it on word count or style. Keep your summary',
