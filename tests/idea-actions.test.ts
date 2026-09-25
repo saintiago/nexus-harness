@@ -403,7 +403,15 @@ describe('idea role actions', () => {
     expect(context).toContain('Address each objection of the preceding council cycle');
     expect(context).toContain('purpose correction');
     expect(context).toContain('Latest earlier brief revision (cycle 1)');
+    expect(context).toContain('Its cumulative change summary');
     expect(context).toContain('Purpose assessment in force (cycle 1)');
+    expect(context).toContain('about 300-500 words');
+    // The prior objections arrive as corrections; their raw reports stay at their paths.
+    expect(context).not.toContain('purpose evidence');
+    expect(context).not.toContain('"verdict": "minor_corrections"');
+    expect(context).toContain(
+      path.join(area.cycleDirectory(1), councilArtifacts.purpose.pathFromArtifactsRoot),
+    );
     expect(await area.read<Brief>(2, briefArtifact.pathFromArtifactsRoot)).toMatchObject({
       revision: 2,
       cycle: 2,
@@ -619,6 +627,9 @@ describe('decision publication', () => {
     const published = JSON.stringify(jira.comments[0]?.body);
     expect(published).toContain('Approved idea brief (revision 1)');
     expect(published).toContain('Enable the smallest lint gate (revision 1)');
+    expect(published).toContain('Council cycles used: 1');
+    expect(published).toContain('What refinement changed: Brief revision 1.');
+    expect(published).toContain('Key uncertainty and assumptions: none recorded.');
     expect(published).not.toContain('purpose review');
 
     const decision = JSON.parse(
@@ -678,8 +689,13 @@ describe('decision publication', () => {
     const published = JSON.stringify(jira.comments[0]?.body);
     expect(published).toContain('simplicity correction');
     expect(published).toContain('back to \\"Idea\\" to resubmit it.');
+    expect(published).toContain('Council cycles used: 1');
+    expect(published).toContain('What refinement changed: Brief revision 1.');
+    expect(published).toContain('Reviewer reason: simplicity review.');
     // Other reviewers' feedback stays in artifacts.
     expect(published).not.toContain('evidence correction');
+    // Raw council evidence and code citations stay in artifacts.
+    expect(published).not.toContain('simplicity evidence');
     expect(await area.exists(ideaHandoffFile)).toBe(false);
     expect(
       JSON.parse(
@@ -689,6 +705,54 @@ describe('decision publication', () => {
         ),
       ),
     ).toMatchObject({ decision: 'returned-to-author', strongestVerdict: 'idea_not_working' });
+  });
+
+  it('reports exhaustion with the last brief, cycles used, change summary and objections', async () => {
+    const area = await refinementArea({ cycle: 2, route: 'minor' });
+    const briefFile = await area.write(2, briefArtifact, briefOf(2));
+    await area.write(
+      2,
+      councilArtifacts.purpose,
+      councilReport('purpose', 'minor_corrections', briefFile, 2),
+    );
+    await area.write(
+      2,
+      councilArtifacts.evidence,
+      councilReport('evidence', 'minor_corrections', briefFile, 2),
+    );
+    await area.write(
+      2,
+      councilArtifacts.simplicity,
+      councilReport('simplicity', 'approve', briefFile, 2),
+    );
+    const jira = source();
+
+    await expect(publication(area, jira)({ decision: 'unable-to-converge' })).resolves.toBe(
+      'waiting-for-feedback',
+    );
+
+    const published = JSON.stringify(jira.comments[0]?.body);
+    expect(published).toContain('Refinement attempts were exhausted');
+    expect(published).not.toContain('cannot move forward');
+    expect(published).toContain('Last brief (revision 2)');
+    expect(published).toContain('Problem: Reviewers spend time on style defects.');
+    expect(published).toContain('What refinement changed: Brief revision 2.');
+    expect(published).toContain('Council cycles used: 2');
+    // Every non-approving reviewer's material objection reaches the exhausted return.
+    expect(published).toContain('purpose criterion: purpose correction');
+    expect(published).toContain('evidence criterion: evidence correction');
+    // The reviewer's raw evidence text stays in the artifacts.
+    expect(published).not.toContain('purpose evidence');
+    expect(published).not.toContain('evidence evidence');
+    expect(jira.transitions).toEqual(['22']);
+    expect(
+      JSON.parse(
+        await readFile(
+          path.join(area.root, 'artifacts/submissions/1', decisionArtifact.pathFromArtifactsRoot),
+          'utf8',
+        ),
+      ),
+    ).toMatchObject({ decision: 'unable-to-converge', strongestVerdict: 'minor_corrections' });
   });
 
   it('reuses a decision it already recorded instead of publishing again', async () => {

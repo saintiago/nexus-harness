@@ -77,7 +77,8 @@ function isPending(
 
 /**
  * The retained workspace history as readable references: every submission's captured input and
- * every cycle's artifacts, in history order. References are for reading; roles never rewrite them.
+ * every cycle's artifacts, in history order. References are for selective reading; roles never
+ * rewrite them and open only the artifacts that bear on their current decision.
  */
 export async function retainedHistoryText(
   root: string,
@@ -89,8 +90,10 @@ export async function retainedHistoryText(
     return 'Retained workspace history: none yet.';
   }
   const lines = [
-    'Retained workspace history (read these for the author\u2019s earlier submissions, briefs,',
-    'purpose and research reports and council feedback):',
+    'Retained workspace history (the author\u2019s earlier submissions, briefs, purpose and',
+    'research reports and council feedback). Read it selectively: open only the artifacts that',
+    'bear on your current decision, and use the latest brief\u2019s cumulative changeSummary to',
+    'understand what refinement has already changed:',
   ];
   for (const submission of submissions) {
     lines.push(`- Submission ${String(submission)}:`);

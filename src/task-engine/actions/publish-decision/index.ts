@@ -24,6 +24,7 @@ import { researchArtifact } from '../researcher/artifacts.js';
 import {
   councilArtifacts,
   strongestVerdict,
+  type CouncilFinding,
   type CouncilReport,
 } from '../review-council/artifacts.js';
 import { capturedTransition, publishDocument } from '../source.js';
@@ -100,39 +101,65 @@ function bullets(label: string, items: readonly string[]): string[] {
     : [`${label}:`, ...items.map((item) => `- ${item}`)];
 }
 
-/** The approved brief as the human-facing comment the Requirements and Design workflow reads. */
-function approvedComment(brief: Brief): string {
+/** The concise brief every human-facing comment reproduces: a decision aid, not the full case. */
+function briefSection(brief: Brief, heading: string): string[] {
   return [
-    `Approved idea brief (revision ${String(brief.revision)})`,
+    `${heading} (revision ${String(brief.revision)})`,
     '',
     `Problem: ${brief.problem}`,
     `Expected value: ${brief.value}`,
     `Project fit: ${brief.projectFit}`,
     '',
-    ...bullets('Supporting evidence', brief.evidence),
-    ...bullets('Existing alternatives', brief.alternatives),
+    ...bullets('Strongest supporting evidence', brief.evidence),
+    ...bullets('Meaningful alternatives', brief.alternatives),
     '',
-    `Smallest useful scope: ${brief.scope}`,
-    ...bullets('Assumptions', brief.assumptions),
+    `Smallest plausible scope: ${brief.scope}`,
+    ...bullets('Key uncertainty and assumptions', brief.assumptions),
+  ];
+}
+
+/** The approved brief as the human-facing comment the Requirements and Design workflow reads. */
+function approvedComment(brief: Brief): string {
+  return [
+    ...briefSection(brief, 'Approved idea brief'),
+    '',
+    `Council cycles used: ${String(brief.cycle)}`,
+    `What refinement changed: ${brief.changeSummary}`,
   ].join('\n');
 }
 
-/** The human-facing reason and requested action of one returned idea. */
+/**
+ * The human-facing reason, concise brief and remaining objections of one returned idea.
+ * Exhaustion is reported as exhaustion, never as rejection of the idea; an unworkable verdict
+ * reports the reviewer's actual reason. Raw council evidence, code citations and tool
+ * transcripts stay in the cycle artifacts.
+ */
 function returnedComment(
+  brief: Brief,
   strongest: CouncilReport,
-  reason: string,
+  decision: IdeaDecision,
+  findings: readonly CouncilFinding[],
   submittedStatus: string,
 ): string {
+  const reason =
+    decision === 'unable-to-converge'
+      ? 'Refinement attempts were exhausted: the council could not approve the idea within the ' +
+        'configured cycle limit. Exhaustion is not a rejection of the idea; the remaining ' +
+        'material objections below stand between it and approval.'
+      : 'A council reviewer found that no internal revision is likely to make this idea ' +
+        `worthwhile. Reviewer reason: ${strongest.summary}`;
   return [
-    'This idea cannot move forward as submitted.',
+    reason,
     '',
-    `Reason: ${reason}`,
-    strongest.summary,
+    ...briefSection(brief, 'Last brief'),
     '',
-    'Requested changes:',
-    ...strongest.findings.map(
-      (finding) => `- ${finding.criterion}: ${finding.correction} (evidence: ${finding.evidence})`,
-    ),
+    `Council cycles used: ${String(brief.cycle)}`,
+    `What refinement changed: ${brief.changeSummary}`,
+    '',
+    'Remaining material objection(s) blocking approval:',
+    ...(findings.length === 0
+      ? ['- The council recorded no actionable correction.']
+      : findings.map((finding) => `- ${finding.criterion}: ${finding.correction}`)),
     '',
     'Please reply with your feedback or a revised idea in a Jira comment, then move the item ' +
       `back to "${submittedStatus}" to resubmit it.`,
@@ -283,15 +310,22 @@ export function createPublishDecision(settings: PublishDecisionSettings): BoundA
 
     const targetStatus =
       decision === 'approved' ? settings.statuses.approved : settings.statuses.waitingForFeedback;
+    // An exhausted return publishes every non-approving reviewer's material objection; an
+    // unworkable verdict publishes the reason the strongest reviewer gave.
+    const blockingFindings =
+      decision === 'unable-to-converge'
+        ? reports
+            .filter((report) => report.verdict !== 'approve')
+            .flatMap((report) => report.findings)
+        : strongestReport.findings;
     const text =
       decision === 'approved'
         ? approvedComment(brief)
         : returnedComment(
+            brief,
             strongestReport,
-            decision === 'returned-to-author'
-              ? 'A council reviewer found that an internal revision is unlikely to make this ' +
-                  'idea worthwhile.'
-              : 'The idea did not converge within the configured council cycles.',
+            decision,
+            blockingFindings,
             settings.statuses.submitted,
           );
     const comment = await publishDocument(

@@ -16,7 +16,10 @@ export const briefContentSchema = z.object({
   alternatives: z.array(z.string().trim().min(1)),
   scope: z.string().trim().min(1),
   assumptions: z.array(z.string().trim().min(1)),
-  /** What changed from the preceding revision, or the initial summary for revision 1. */
+  /**
+   * The cumulative account of what refinement changed across the submission's cycles, or the
+   * initial summary for revision 1. The brief's cycle number is the council cycles used.
+   */
   changeSummary: z.string().trim().min(1),
 });
 
