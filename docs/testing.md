@@ -105,12 +105,15 @@ uses the same selection path, reuses a retained workspace, and invokes StartIdea
 initial, minor and major cycles from history without applying StartDevRound's repair policy.
 Verify that every invocation receives the current captured idea and available saved history,
 including earlier briefs and feedback on resubmission. Verify that each of the six role invocations
-receives the shared definition of *idea* exactly once, ahead of its role-specific context. When
-present, the connected project's root `AGENTS.md` is included too. Council reviewers cannot read
-one another's pending verdicts, and each council invocation receives the shared objection
-standard: an objection must improve the idea or show that it should not proceed.
-Verify that a new brief states the improvement as one `idea` and that a retained brief written
-before that field is still read — as history for the next revision and as the one idea the
+receives the shared definition of *idea*, the separate idea-stage guidance and the shared
+communication rule exactly once each, ahead of its role-specific context. When present, the
+connected project's root `AGENTS.md` is included too. Council reviewers cannot read one another's
+pending verdicts, and each council invocation receives the shared objection standard: an objection
+must improve the idea by sharpening, narrowing or correcting it, by naming a genuine ambiguity in
+it, or by showing that it should not proceed, and it never silently replaces the author's proposal.
+An unresolved design choice is a blocker only when it changes the idea-stage decision.
+Verify that a new brief states the author's idea in its one `idea` field and that a retained brief
+written before that field is still read — as history for the next revision and as the one idea the
 publication presents — without rewriting the retained artifact or interrupting retained state.
 Verify that purpose documents are discovered without configured references and that absent
 documents produce cited, provisional inference from code and commits rather than an execution

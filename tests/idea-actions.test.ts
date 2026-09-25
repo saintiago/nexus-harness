@@ -20,7 +20,12 @@ import {
   ideaCycleDirectory,
   ideaSubmissionInputFile,
 } from '../src/task-engine/actions/idea-storage.js';
-import { ideaDefinitionText } from '../src/task-engine/actions/idea-context.js';
+import {
+  ideaCommunicationText,
+  ideaDefinitionText,
+  ideaStageGuidanceText,
+  projectGuidanceInstruction,
+} from '../src/task-engine/actions/idea-context.js';
 import {
   decisionArtifact,
   ideaHandoffFile,
@@ -45,7 +50,10 @@ import {
   type CouncilReviewer,
   type CouncilVerdict,
 } from '../src/task-engine/actions/review-council/artifacts.js';
-import { createCouncilReviewer } from '../src/task-engine/actions/review-council/index.js';
+import {
+  councilObjectionStandard,
+  createCouncilReviewer,
+} from '../src/task-engine/actions/review-council/index.js';
 import { ideaInputDeclaration } from '../src/task-engine/actions/select-idea/artifacts.js';
 import type { IdeaSelection } from '../src/task-engine/actions/select-idea/artifacts.js';
 import {
@@ -494,6 +502,23 @@ describe('idea role actions', () => {
     expect(agent.requests).toEqual([]);
   });
 
+  it('supplies the authoritative idea definition verbatim, apart from the stage guidance', () => {
+    expect(ideaDefinitionText).toContain(
+      'An idea describes a desirable change in software, why it matters, and the principle ' +
+        'behind it\u2014without yet committing to implementation.',
+    );
+    expect(ideaStageGuidanceText).not.toContain('An idea describes');
+  });
+
+  it('keeps the shared communication rule plain, selective and open to rejection', () => {
+    expect(ideaCommunicationText).toContain('one point per statement');
+    expect(ideaCommunicationText).toContain(
+      'Research and cite relevant sources for substantive claims',
+    );
+    expect(ideaCommunicationText).toContain('fact-check incidental wording or nitpick details');
+    expect(ideaCommunicationText).toContain('rejecting an unsuitable idea');
+  });
+
   it('gives all six roles the same idea definition once before their own context', async () => {
     const area = await refinementArea();
     await area.write(1, purposeArtifact, purposeReport);
@@ -552,16 +577,25 @@ describe('idea role actions', () => {
 
     expect(contexts.map((entry) => entry.role)).toEqual([...ideaRoles]);
     for (const { role, context } of contexts) {
-      // The one shared definition text arrives exactly once, ahead of the role's own context.
+      // The one shared definition, the separate stage guidance and the communication rule arrive
+      // exactly once each, ahead of the role's own context.
       expect(context.split(ideaDefinitionText)).toHaveLength(2);
-      expect(context.startsWith(`${ideaDefinitionText}\n\n`)).toBe(true);
+      expect(context.split(ideaStageGuidanceText)).toHaveLength(2);
+      expect(context.split(ideaCommunicationText)).toHaveLength(2);
+      expect(
+        context.startsWith(
+          `${ideaDefinitionText}\n\n${ideaStageGuidanceText}\n\n${ideaCommunicationText}\n\n`,
+        ),
+      ).toBe(true);
       // The role-specific context follows it: the captured idea and the project guidance.
       expect(context.indexOf('Add a lint gate')).toBeGreaterThan(
-        context.indexOf(ideaDefinitionText),
+        context.indexOf(ideaStageGuidanceText),
       );
       expect(context).toContain('Prefer the smallest change.');
+      // The project guidance arrives once, with the project's own AGENTS.md text.
+      expect(context.split(projectGuidanceInstruction)).toHaveLength(2);
       // The one shared objection standard reaches every council invocation and no other role.
-      expect(context.split('ask how the objection improves the idea')).toHaveLength(
+      expect(context.split(councilObjectionStandard)).toHaveLength(
         role.endsWith('-council') ? 2 : 1,
       );
     }
@@ -888,11 +922,22 @@ describe('decision publication', () => {
 
     expect(jira.transitions).toEqual(['22']);
     const published = JSON.stringify(jira.comments[0]?.body);
-    expect(published).toContain('simplicity correction');
+    expect(published).toContain('Returned for feedback: the council did not approve this idea');
+    expect(published).toContain('Latest idea (revision 1)');
+    expect(published).toContain(
+      'Reviewers spend time on style defects; a lint gate would keep reviews on behaviour.',
+    );
+    expect(published).toContain('What stopped approval:');
+    expect(published).toContain('- simplicity correction');
     expect(published).toContain('back to \\"Idea\\" to resubmit it.');
     expect(published).toContain('Council cycles used: 1');
     expect(published).toContain('What refinement changed: Brief revision 1.');
-    expect(published).toContain('Reviewer reason: simplicity review.');
+    // The reviewer's summary, verdict name and criterion label stay internal.
+    expect(published).not.toContain('simplicity review');
+    expect(published).not.toContain('idea_not_working');
+    expect(published).not.toContain('simplicity criterion');
+    // The return reports the refusal to approve, not a judgment of the idea's worth.
+    expect(published).not.toContain('worthwhile');
     // Other reviewers' feedback stays in artifacts.
     expect(published).not.toContain('evidence correction');
     // Raw council evidence and code citations stay in artifacts.
@@ -908,7 +953,7 @@ describe('decision publication', () => {
     ).toMatchObject({ decision: 'returned-to-author', strongestVerdict: 'idea_not_working' });
   });
 
-  it('reports exhaustion with the last brief, cycles used, change summary and objections', async () => {
+  it('reports exhaustion with the latest idea, cycles used, change summary and corrections', async () => {
     const area = await refinementArea({ cycle: 2, route: 'minor' });
     const briefFile = await area.write(2, briefArtifact, briefOf(2));
     await area.write(
@@ -933,20 +978,28 @@ describe('decision publication', () => {
     );
 
     const published = JSON.stringify(jira.comments[0]?.body);
-    expect(published).toContain('Refinement attempts were exhausted');
-    expect(published).not.toContain('cannot move forward');
-    expect(published).toContain('Last brief (revision 2)');
     expect(published).toContain(
-      'Idea: Reviewers spend time on style defects; a lint gate would keep reviews on behaviour.',
+      'Attempts exhausted after 2 cycles: the council did not approve this idea.',
     );
-    expect(published).not.toContain('Problem:');
-    expect(published).not.toContain('Project fit:');
+    expect(published).toContain('Latest idea (revision 2)');
+    expect(published).toContain(
+      'Reviewers spend time on style defects; a lint gate would keep reviews on behaviour.',
+    );
+    // The returned comment reproduces the latest idea alone, not the whole brief.
+    expect(published).not.toContain('Last brief');
+    expect(published).not.toContain('Strongest supporting evidence');
+    expect(published).not.toContain('Meaningful alternatives');
+    expect(published).not.toContain('Smallest plausible scope');
     expect(published).toContain('What refinement changed: Brief revision 2.');
     expect(published).toContain('Council cycles used: 2');
+    expect(published).toContain('What stopped approval:');
     // Every non-approving reviewer's material objection reaches the exhausted return.
-    expect(published).toContain('purpose criterion: purpose correction');
-    expect(published).toContain('evidence criterion: evidence correction');
-    // The reviewer's raw evidence text stays in the artifacts.
+    expect(published).toContain('- purpose correction');
+    expect(published).toContain('- evidence correction');
+    // Criterion labels, verdict names and raw evidence stay in the artifacts.
+    expect(published).not.toContain('purpose criterion');
+    expect(published).not.toContain('evidence criterion');
+    expect(published).not.toContain('minor_corrections');
     expect(published).not.toContain('purpose evidence');
     expect(published).not.toContain('evidence evidence');
     expect(jira.transitions).toEqual(['22']);
@@ -958,6 +1011,49 @@ describe('decision publication', () => {
         ),
       ),
     ).toMatchObject({ decision: 'unable-to-converge', strongestVerdict: 'minor_corrections' });
+  });
+
+  it('keeps every distinct material correction once on an exhausted return', async () => {
+    const area = await refinementArea({ cycle: 2, route: 'minor' });
+    const briefFile = await area.write(2, briefArtifact, briefOf(2));
+    const shared = {
+      criterion: 'internal criterion',
+      evidence: 'internal evidence',
+      correction: 'Narrow the promise to the smallest useful scope.',
+    };
+    await area.write(2, councilArtifacts.purpose, {
+      ...councilReport('purpose', 'minor_corrections', briefFile, 2),
+      findings: [shared],
+    });
+    await area.write(2, councilArtifacts.evidence, {
+      ...councilReport('evidence', 'minor_corrections', briefFile, 2),
+      findings: [
+        shared,
+        {
+          criterion: 'another internal criterion',
+          evidence: 'another internal evidence',
+          correction: 'Say how the idea differs from the existing check.',
+        },
+      ],
+    });
+    await area.write(
+      2,
+      councilArtifacts.simplicity,
+      councilReport('simplicity', 'approve', briefFile, 2),
+    );
+    const jira = source();
+
+    await expect(publication(area, jira)({ decision: 'unable-to-converge' })).resolves.toBe(
+      'waiting-for-feedback',
+    );
+
+    const published = JSON.stringify(jira.comments[0]?.body);
+    // Two reviewers requesting the same change are one request; distinct corrections all stay.
+    expect(published.match(/Narrow the promise to the smallest useful scope\./gu)).toHaveLength(1);
+    expect(published).toContain('Say how the idea differs from the existing check.');
+    // Criterion labels and evidence never reach the author.
+    expect(published).not.toContain('internal criterion');
+    expect(published).not.toContain('internal evidence');
   });
 
   it('reuses a decision it already recorded instead of publishing again', async () => {

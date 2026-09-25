@@ -35,17 +35,50 @@ import type { IdeaRoundPlan } from './start-idea-round/artifacts.js';
  */
 
 /**
- * The shared definition of an idea, supplied to every idea refinement role invocation ahead of its
- * role-specific context. The specification owns the wording, so no role depends on opening it and
- * no role prompt repeats the definition.
+ * The one shared definition of an idea, supplied to every idea refinement role invocation ahead of
+ * its role-specific context. The specification owns the wording, so no role depends on opening it
+ * and no role prompt repeats the definition.
  */
 export const ideaDefinitionText = [
-  'Idea definition (shared by every idea refinement role): an idea is a possible project',
-  'improvement, normally framed as a need, opportunity, or desired outcome. It need not arrive',
-  'with evidence or a complete proposal; refinement develops that. It generally leaves solutions',
-  'to Requirements and Design. An idea about an architectural improvement may name its proposed',
-  'direction at concept level. Preserve the author\u2019s intent and seek the underlying need.',
-  'Keep this definition lightweight and not restrictive.',
+  'Idea definition (shared by every idea refinement role):',
+  'An idea describes a desirable change in software, why it matters, and the principle behind it\u2014without yet committing to implementation.',
+].join('\n');
+
+/**
+ * The shared idea-stage guidance supplied to every idea refinement role invocation with the
+ * definition. It keeps refinement on the idea as the author proposed it, states what the stage
+ * decides and leaves exact selection, configuration and implementation to Requirements and
+ * Design. An initial submission may lack parts of the definition; refinement develops them, while
+ * a finished brief must still let the council decide.
+ */
+export const ideaStageGuidanceText = [
+  'Idea stage (shared by every idea refinement role): an initial submission may lack the proposed',
+  'change, why it matters or the principle behind it; that is not an intake rejection, because',
+  'refinement develops those elements. A finished brief still needs enough clarity and substance',
+  'for the council\u2019s idea-stage decision, and the council may object when it cannot decide.',
+  'Work on the idea as the author proposed it: preserve that concept and intent rather than',
+  'replacing it with a different or more generic need. The stage decides whether the idea is worth',
+  'developing and its smallest useful scope. Exact selection, configuration and implementation',
+  'belong to Requirements and Design; architecture documents are evidence of existing capabilities',
+  'and constraints, not design decisions the idea must settle.',
+].join('\n');
+
+/**
+ * The one shared communication rule supplied to every idea refinement role invocation with the
+ * definition and stage guidance. Each role writes a short, plain turn for the next role, gives
+ * only the observations and citations that bear on the idea-stage decision, and leaves rhetorical
+ * and implementation prose out.
+ */
+export const ideaCommunicationText = [
+  'Idea communication (shared by every idea refinement role): write short, plain, concrete',
+  'sentences addressed to the next role, one point per statement. Lead with what the idea proposes,',
+  'why it matters or a consequential question, and give only your strongest relevant observations',
+  'and source citations. Research and cite relevant sources for substantive claims, but do not',
+  'fact-check incidental wording or nitpick details that cannot change the idea-stage decision.',
+  'Genuine skepticism, useful research and rejecting an unsuitable idea are welcome; rhetorical',
+  'praise, self-assessments of honesty or rigor, repeated claims, abstract labels, long code or file',
+  'inventories and technical detail that belongs to Requirements and Design are not. Preserve the',
+  'author\u2019s idea and your role\u2019s perspective.',
 ].join('\n');
 
 /** The worktree directory under a refinement area (Workspace design). */
@@ -172,6 +205,18 @@ export function capturedIdeaText(root: string, plan: IdeaRoundPlan, input: IdeaI
   ].join('\n');
 }
 
+/**
+ * The shared instruction every idea role receives with the connected project's guidance: follow
+ * the applicable AGENTS.md instructions, and treat the architecture and project documents that
+ * file links as evidence for the current idea rather than as instructions for the role.
+ */
+export const projectGuidanceInstruction = [
+  'Follow its applicable instructions. Treat the architecture and project documents it links as',
+  'evidence to consult only when relevant to the current idea; do not open every link by default.',
+  'Architecture specifications document how the project is designed and behaves and are never role',
+  'instructions.',
+].join('\n');
+
 /** The connected project's root AGENTS.md content, or null when the project has none. */
 export async function projectGuidanceText(root: string): Promise<string | null> {
   const file = path.join(root, worktreeDirectory, 'AGENTS.md');
@@ -180,8 +225,8 @@ export async function projectGuidanceText(root: string): Promise<string | null> 
     return null;
   }
   return [
-    `The connected project's root AGENTS.md (${file}); follow its guidance and the documents it`,
-    'references:',
+    `The connected project's root AGENTS.md (${file}):`,
+    projectGuidanceInstruction,
     text,
   ].join('\n');
 }
@@ -254,7 +299,12 @@ export async function invokeIdeaRole<Schema extends z.ZodType>(
     operation: settings.operation,
     profile,
     workspace: { root: settings.root },
-    context: [ideaDefinitionText, settings.context].join('\n\n'),
+    context: [
+      ideaDefinitionText,
+      ideaStageGuidanceText,
+      ideaCommunicationText,
+      settings.context,
+    ].join('\n\n'),
     idea: settings.taskKey,
   });
   if (!result.ok) {

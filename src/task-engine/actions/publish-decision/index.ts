@@ -24,7 +24,6 @@ import {
   councilArtifacts,
   strongestVerdict,
   type CouncilFinding,
-  type CouncilReport,
 } from '../review-council/artifacts.js';
 import { capturedTransition, publishDocument } from '../source.js';
 import { writeRecord } from '../records.js';
@@ -126,37 +125,37 @@ function approvedComment(brief: Brief): string {
 }
 
 /**
- * The human-facing reason, concise brief and remaining objections of one returned idea.
- * Exhaustion is reported as exhaustion, never as rejection of the idea; an unworkable verdict
- * reports the reviewer's actual reason. Raw council evidence, code citations and tool
- * transcripts stay in the cycle artifacts.
+ * The human-facing comment for one returned idea: the plain outcome, the latest idea, the cycles
+ * used with the cumulative change summary, and the actionable corrections that stopped approval,
+ * followed by the single next step. Exhaustion is reported as exhaustion and a return reports
+ * that the council did not approve; neither judges the idea's worth. Raw reviewer summaries,
+ * verdict names, criteria, evidence, code citations and tool transcripts stay in the artifacts.
  */
 function returnedComment(
   brief: Brief,
-  strongest: CouncilReport,
   decision: IdeaDecision,
   findings: readonly CouncilFinding[],
   submittedStatus: string,
 ): string {
-  const reason =
+  const outcome =
     decision === 'unable-to-converge'
-      ? 'Refinement attempts were exhausted: the council could not approve the idea within the ' +
-        'configured cycle limit. Exhaustion is not a rejection of the idea; the remaining ' +
-        'material objections below stand between it and approval.'
-      : 'A council reviewer found that no internal revision is likely to make this idea ' +
-        `worthwhile. Reviewer reason: ${strongest.summary}`;
+      ? `Attempts exhausted after ${String(brief.cycle)} ` +
+        `${brief.cycle === 1 ? 'cycle' : 'cycles'}: the council did not approve this idea.`
+      : 'Returned for feedback: the council did not approve this idea.';
+  // Distinct corrections only: two reviewers requesting the same change are one request.
+  const corrections = [...new Set(findings.map((finding) => finding.correction))];
   return [
-    reason,
+    outcome,
     '',
-    ...briefSection(brief, 'Last brief'),
+    `Latest idea (revision ${String(brief.revision)}):`,
+    '',
+    brief.idea,
     '',
     `Council cycles used: ${String(brief.cycle)}`,
     `What refinement changed: ${brief.changeSummary}`,
-    '',
-    'Remaining material objection(s) blocking approval:',
-    ...(findings.length === 0
-      ? ['- The council recorded no actionable correction.']
-      : findings.map((finding) => `- ${finding.criterion}: ${finding.correction}`)),
+    ...(corrections.length === 0
+      ? []
+      : ['', 'What stopped approval:', ...corrections.map((correction) => `- ${correction}`)]),
     '',
     'Please reply with your feedback or a revised idea in a Jira comment, then move the item ' +
       `back to "${submittedStatus}" to resubmit it.`,
@@ -307,8 +306,8 @@ export function createPublishDecision(settings: PublishDecisionSettings): BoundA
 
     const targetStatus =
       decision === 'approved' ? settings.statuses.approved : settings.statuses.waitingForFeedback;
-    // An exhausted return publishes every non-approving reviewer's material objection; an
-    // unworkable verdict publishes the reason the strongest reviewer gave.
+    // An exhausted return publishes every non-approving reviewer's material correction; an
+    // unworkable verdict publishes the corrections of the strongest reviewer.
     const blockingFindings =
       decision === 'unable-to-converge'
         ? reports
@@ -318,13 +317,7 @@ export function createPublishDecision(settings: PublishDecisionSettings): BoundA
     const text =
       decision === 'approved'
         ? approvedComment(brief)
-        : returnedComment(
-            brief,
-            strongestReport,
-            decision,
-            blockingFindings,
-            settings.statuses.submitted,
-          );
+        : returnedComment(brief, decision, blockingFindings, settings.statuses.submitted);
     const comment = await publishDocument(
       jira,
       selection.source.issueId,
