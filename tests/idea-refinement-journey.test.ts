@@ -46,6 +46,7 @@ import {
 import type { IdeaRole } from '../src/agent-runtime/index.js';
 import type { Brief } from '../src/task-engine/actions/brief-writer/artifacts.js';
 import {
+  ideaCommunicationText,
   ideaDefinitionText,
   ideaStageGuidanceText,
 } from '../src/task-engine/actions/idea-context.js';
@@ -578,11 +579,13 @@ describe('idea refinement journeys', () => {
       expect(prompt).toContain('Add a lint gate');
       expect(prompt).toContain('Prefer the smallest change that fulfils the purpose.');
       expect(prompt).toContain(path.join(journey.worktree));
-      // The shared definition and the separate stage guidance arrive exactly once each, ahead of
-      // the role's own context and duties.
+      // The shared definition, the separate stage guidance and the communication rule arrive
+      // exactly once each, ahead of the role's own context and duties.
       expect(prompt.split(ideaDefinitionText)).toHaveLength(2);
       expect(prompt.split(ideaStageGuidanceText)).toHaveLength(2);
+      expect(prompt.split(ideaCommunicationText)).toHaveLength(2);
       expect(prompt.indexOf(ideaStageGuidanceText)).toBeLessThan(prompt.indexOf('Add a lint gate'));
+      expect(prompt.indexOf(ideaCommunicationText)).toBeLessThan(prompt.indexOf('Add a lint gate'));
     }
     expect((await readFile(path.join(journey.worktree, 'readme.md'), 'utf8')).trim()).toBe(
       'the connected project',
@@ -627,12 +630,19 @@ describe('idea refinement journeys', () => {
     expect(journey.status()).toBe('Waiting for Feedback');
     expect(journey.comments()).toHaveLength(1);
     const published = commentText(journey.comments()[0]?.body);
-    expect(published).toContain('no internal revision is likely to make this idea worthwhile');
-    expect(published).toContain('Reviewer reason: simplicity review of the revision.');
-    expect(published).toContain('simplicity criterion: simplicity correction');
+    expect(published).toContain('Returned for feedback: the council did not approve this idea');
+    expect(published).toContain('Latest idea (revision 1)');
+    expect(published).toContain('What stopped approval:');
+    expect(published).toContain('- simplicity correction');
     expect(published).toContain('Council cycles used: 1');
     expect(published).toContain('What refinement changed: Brief revision 1.');
     expect(published).toContain('to "Idea" to resubmit it');
+    // The reviewer's summary, verdict name and criterion label stay internal.
+    expect(published).not.toContain('simplicity review of the revision');
+    expect(published).not.toContain('idea_not_working');
+    expect(published).not.toContain('simplicity criterion');
+    // The return reports the refusal to approve, not a judgment of the idea's worth.
+    expect(published).not.toContain('worthwhile');
     // The internal reviewers' feedback stays in artifacts, not on the issue.
     expect(published).not.toContain('purpose criterion');
     expect(published).not.toContain('simplicity evidence');
@@ -673,11 +683,15 @@ describe('idea refinement journeys', () => {
     expect(await journey.exists('artifacts/submissions/1/cycles/1/brief.json')).toBe(true);
     expect(await journey.exists('artifacts/submissions/1/cycles/2/brief.json')).toBe(true);
     const published = commentText(journey.comments()[0]?.body);
-    expect(published).toContain('Refinement attempts were exhausted');
-    expect(published).toContain('Last brief (revision 2)');
+    expect(published).toContain(
+      'Attempts exhausted after 2 cycles: the council did not approve this idea.',
+    );
+    expect(published).toContain('Latest idea (revision 2)');
     expect(published).toContain('Council cycles used: 2');
     expect(published).toContain('What refinement changed: Brief revision 2.');
-    expect(published).toContain('evidence criterion: evidence correction');
+    expect(published).toContain('- evidence correction');
+    expect(published).not.toContain('evidence criterion');
+    expect(published).not.toContain('minor_corrections');
     expect(published).not.toContain('evidence evidence');
     expect(
       await journey.artifact<IdeaDecisionRecord>('artifacts/submissions/1/decision.json'),

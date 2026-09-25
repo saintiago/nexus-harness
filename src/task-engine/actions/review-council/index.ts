@@ -47,7 +47,10 @@ export const councilObjectionStandard = [
   'incidental implementation detail the brief should not contain is not an objection, and the',
   'brief\u2019s length alone is never a fault. An unresolved design choice is a blocker only when it',
   'changes the idea-stage decision: whether the idea is worth developing, its purpose fit, value,',
-  'evidence or smallest useful scope. Otherwise it belongs to Requirements and Design.',
+  'evidence or smallest useful scope. Otherwise it belongs to Requirements and Design. Keep every',
+  'finding\u2019s parts distinct and author-facing: the criterion names the standard that failed, the',
+  'evidence carries the internal justification, and the correction is the short request in plain',
+  'language that the author can act on, standing alone without your evidence or summary.',
 ].join('\n');
 
 /** The operation name each reviewer's invocation boundary carries. */
@@ -130,7 +133,7 @@ export function createCouncilReviewer(settings: CouncilReviewerSettings): BoundA
       'Object only to material gaps that affect the idea-stage decision. Do not request',
       'implementation detail, file inventories, acceptance criteria or resolved design tradeoffs',
       'the brief should not contain, and do not fail it on word count or style. Keep your summary',
-      'short, every correction actionable, and read the retained history selectively.',
+      'short and internal, and read the retained history selectively.',
       reviewFocus[settings.reviewer],
       capturedIdeaText(root, plan, input),
       `The exact brief revision you review: ${briefFile}\n` + JSON.stringify(brief, null, 2),

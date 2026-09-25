@@ -63,6 +63,24 @@ export const ideaStageGuidanceText = [
   'and constraints, not design decisions the idea must settle.',
 ].join('\n');
 
+/**
+ * The one shared communication rule supplied to every idea refinement role invocation with the
+ * definition and stage guidance. Each role writes a short, plain turn for the next role, gives
+ * only the observations and citations that bear on the idea-stage decision, and leaves rhetorical
+ * and implementation prose out.
+ */
+export const ideaCommunicationText = [
+  'Idea communication (shared by every idea refinement role): write short, plain, concrete',
+  'sentences addressed to the next role, one point per statement. Lead with what the idea proposes,',
+  'why it matters or a consequential question, and give only your strongest relevant observations',
+  'and source citations. Research and cite relevant sources for substantive claims, but do not',
+  'fact-check incidental wording or nitpick details that cannot change the idea-stage decision.',
+  'Genuine skepticism, useful research and rejecting an unsuitable idea are welcome; rhetorical',
+  'praise, self-assessments of honesty or rigor, repeated claims, abstract labels, long code or file',
+  'inventories and technical detail that belongs to Requirements and Design are not. Preserve the',
+  'author\u2019s idea and your role\u2019s perspective.',
+].join('\n');
+
 /** The worktree directory under a refinement area (Workspace design). */
 const worktreeDirectory = 'worktree';
 
@@ -281,7 +299,12 @@ export async function invokeIdeaRole<Schema extends z.ZodType>(
     operation: settings.operation,
     profile,
     workspace: { root: settings.root },
-    context: [ideaDefinitionText, ideaStageGuidanceText, settings.context].join('\n\n'),
+    context: [
+      ideaDefinitionText,
+      ideaStageGuidanceText,
+      ideaCommunicationText,
+      settings.context,
+    ].join('\n\n'),
     idea: settings.taskKey,
   });
   if (!result.ok) {

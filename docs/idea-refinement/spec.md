@@ -28,10 +28,15 @@ settle. Genuine ambiguity in the stated idea is a legitimate finding, while need
 value, evidence and simplicity stay open to scrutiny. Rejecting an unsuitable idea is a valid
 outcome.
 
-Nexus supplies the definition and this idea-stage guidance to every idea refinement role invocation
-ahead of that role's own context; this specification states their intent rather than acting as a
-run-time playbook. No role depends on reading this specification, and the role prompts below add
-only role-specific duties.
+Nexus supplies the definition, this idea-stage guidance and one shared communication rule to every
+idea refinement role invocation ahead of that role's own context; this specification states their
+intent rather than acting as a run-time playbook. The communication rule asks for short, plain,
+concrete turns addressed to the next role, with only the observations and citations that bear on
+the idea-stage decision. It asks roles to research and cite relevant sources for substantive
+claims, but not fact-check incidental wording or nitpick details that cannot change the idea-stage
+decision. It welcomes genuine skepticism, useful research and rejecting an unsuitable idea, and
+keeps rhetorical and implementation prose out. No role depends on reading this specification, and
+the role prompts below add only role-specific duties.
 
 Refinement tests purpose, substance and simplicity while change is cheap. The result is a decision
 aid, not a design document: about 300–500 words whose `idea` field states the author's proposed
@@ -53,15 +58,18 @@ may consume an approved brief later.
   `Idea Refinement -> Draft`. No automatic move to To Do.
 - **Returned to author:** at least one reviewer finds the idea unworkable, or bounded internal
   revision cannot converge. Publish a concise, actionable human-facing comment and move the item
-  to its configured waiting-for-feedback state. An exhausted return says that attempts were
-  exhausted, reproduces the last concise brief with its cycle count and cumulative change summary,
-  and names the remaining material objections with their corrections; exhaustion alone is not a
-  rejection. An `idea_not_working` return states the reviewer's actual reason. For HARN Jira, this
-  is `Idea Refinement -> Waiting for Feedback`. The author replies in a Jira comment with their
-  feedback or revised idea and moves the item back to `Idea` to resubmit it; this run ends.
-  The original idea, latest brief, research and complete council feedback remain in artifacts
-  and logs; raw council evidence, code citations and tool transcripts are not published. Internal
-  agent feedback is not published to Jira.
+  to its configured waiting-for-feedback state. The comment states the plain outcome — returned
+  for feedback, or attempts exhausted after the cycles used — reproduces the latest idea from the
+  brief's one `idea` field with the cycle count and cumulative change summary, lists the
+  actionable corrections under what stopped approval, and closes with the single next step. An
+  exhausted return keeps every distinct material correction and never reads as rejection; a
+  return reports that the council did not approve the idea, never that the idea has no worth. For
+  HARN Jira, this is `Idea Refinement -> Waiting for Feedback`. The author replies in a Jira
+  comment with their feedback or revised idea and moves the item back to `Idea` to resubmit it;
+  this run ends. The original idea, latest brief, research and complete council feedback remain in
+  artifacts and logs; raw reviewer summaries, council verdict names, criteria, evidence, code
+  citations and tool transcripts are not published. Internal agent feedback is not published to
+  Jira.
 - **Execution fault:** inaccessible project sources, agent/tool failure, malformed output or
   source update failure is an operational fault, not a council verdict. Application handles it
   under the common execution-fault contract. Never manufacture approval.
@@ -140,17 +148,21 @@ do not change source statuses. Nexus actions own artifacts and source updates.
    They see the current captured idea, brief and available history, but not one another's
    current-cycle verdicts before submitting their own. Each emits exactly one verdict:
    `approve`, `minor_corrections`, `major_rework` or `idea_not_working`. A nonapproval names the
-   failed criterion, evidence and actionable correction. Every council invocation carries one
-   shared objection standard: ask how the objection improves the idea. An objection may sharpen,
-   narrow or correct the idea as the author proposed it, name a genuine ambiguity in the stated
-   idea, or show that it should not proceed (`idea_not_working`); preventing a bad idea is a real
-   improvement. An objection never silently replaces the author's proposal with a different or
-   more generic idea. Factual or design nitpicks that do not improve the idea-stage outcome are not
-   objections, incidental implementation detail the brief should not contain is not an objection,
-   and the brief's length alone is never a fault. An unresolved design choice is a blocker only
-   when it changes the idea-stage decision: whether the idea is worth developing, its purpose fit,
-   value, evidence or smallest useful scope. Otherwise it belongs to Requirements and Design. The
-   standard adds no output field and no route.
+   failed criterion, evidence and correction, and writes that correction as a short, plain-language
+   request the author can act on, distinct from the internal evidence and summary. Every council
+   invocation carries one shared objection standard: ask how the objection improves the idea. An
+   objection may sharpen, narrow or correct the idea as the author proposed it, name a genuine
+   ambiguity in the stated idea, or show that it should not proceed (`idea_not_working`);
+   preventing a bad idea is a real improvement. An objection never silently replaces the author's
+   proposal with a different or more generic idea. Factual or design nitpicks that do not improve
+   the idea-stage outcome are not objections, incidental implementation detail the brief should not
+   contain is not an objection, and the brief's length alone is never a fault. An unresolved design
+   choice is a blocker only when it changes the idea-stage decision: whether the idea is worth
+   developing, its purpose fit, value, evidence or smallest useful scope. Otherwise it belongs to
+   Requirements and Design. Every finding keeps its parts distinct and author-facing: the criterion
+   names the standard that failed, the evidence carries the internal justification, and the
+   correction is the short request in plain language that the author can act on, standing alone
+   without the reviewer's evidence or summary. The standard adds no output field and no route.
 6. After all council results are saved, route by strongest verdict:
    `idea_not_working > major_rework > minor_corrections > approve`. Preserve all feedback in
    artifacts even when one result determines routing. Unanimous approval alone advances to the
@@ -162,13 +174,14 @@ do not change source statuses. Nexus actions own artifacts and source updates.
    revision independently.
 8. The configured maximum number of council cycles bounds internal work. If another revision would
    exceed it, return to the author as unable to converge: the comment says that attempts were
-   exhausted, reproduces the last concise brief with the cycles used and the cumulative change
-   summary, and lists the remaining material objections and requested corrections. An
-   `idea_not_working` verdict returns immediately with the reviewer's actual reason and actionable
-   corrections. Both routes post a concise human-facing comment to Jira, then set
-   `Waiting for Feedback`; their decision artifacts retain distinct reasons and full feedback.
-   Publication never dumps raw council evidence, code citations or tool transcripts, and
-   exhaustion never reads as rejection of the idea.
+   exhausted after the cycles used and lists every distinct material correction. An
+   `idea_not_working` verdict returns immediately with the corrections that stopped approval. Both
+   routes state the plain outcome, the latest idea, the cycles used, the cumulative change summary,
+   what stopped approval and the single next step; a return reports that the council did not
+   approve the idea rather than that it has no worth. Both post a concise human-facing comment to
+   Jira, then set `Waiting for Feedback`; their decision artifacts retain distinct reasons and full
+   feedback. Publication never dumps raw reviewer summaries, verdict names, criteria, evidence,
+   code citations or tool transcripts, and exhaustion never reads as rejection of the idea.
 9. An approved handoff is available to the Requirements and Design workflow from the approved
    source state. That workflow defines requirements and architecture, and may then produce a
    To Do implementation ticket.
@@ -183,16 +196,17 @@ be deferred to design; the council must request a correction or return the idea 
 ## Agents and constant prompts
 
 Each role is a configured AgentRuntime profile with a complete constant prompt plus invocation
-context. Every invocation receives the shared definition of *idea* and the idea-stage guidance from
-the Purpose section ahead of its role-specific context, and every council invocation receives the
-shared objection standard from Behavior step 5 the same way. The prompts below are required role
-instructions. Each action supplies the current captured idea, the saved workspace artifacts as
-readable references with an instruction to read them selectively, the current cycle's inputs
-directly, project sources, revision/cycle and output schema. Every invocation also receives the
-connected project's root `AGENTS.md` content when present. Agents follow its applicable
-instructions and treat the architecture and project documents it links as evidence to consult only
-when relevant to the current idea: they do not open every link by default and never treat
-architecture specifications as role instructions. A missing `AGENTS.md` does not block refinement.
+context. Every invocation receives the shared definition of *idea*, the idea-stage guidance and
+the communication rule from the Purpose section exactly once each, ahead of its role-specific
+context, and every council invocation receives the shared objection standard from Behavior step 5
+the same way. The prompts below are required role instructions. Each action supplies the current
+captured idea, the saved workspace artifacts as readable references with an instruction to read
+them selectively, the current cycle's inputs directly, project sources, revision/cycle and output
+schema. Every invocation also receives the connected project's root `AGENTS.md` content when
+present. Agents follow its applicable instructions and treat the architecture and project documents
+it links as evidence to consult only when relevant to the current idea: they do not open every link
+by default and never treat architecture specifications as role instructions. A missing `AGENTS.md`
+does not block refinement.
 Agent output is parsed and checked by the owning action; a role's claim never counts as a source
 status update. Profiles may use different models or tools, but all six are separately attributable
 invocations. Purpose and research must be able to run concurrently. Council roles must not read one
@@ -217,8 +231,8 @@ another's pending outputs.
 > or more generic proposal. Do not design architecture, write requirements, decide implementation
 > priority or ask the idea to settle design decisions such as component ownership, routing,
 > configuration or artifact layout. Architecture and design documents are evidence of existing
-> capabilities and constraints. Return a concise purpose assessment, conflicts, suggested steering
-> and source references.
+> capabilities and constraints. Return a short purpose assessment: only the few material findings,
+> the steering that improves fit and the source references that support them.
 
 ### Researcher
 
@@ -232,8 +246,8 @@ another's pending outputs.
 > or draft configuration, role catalogues, trigger mechanisms, vote policies, artifact layouts or
 > requirements. Give links and access dates for external sources; distinguish source facts from
 > your suggestions. Do not scrutinize, reject or argue against the idea, and do not select an
-> architecture. Return a concise enrichment report with useful knowledge, suggestions, options and
-> sources.
+> architecture. Return a short enrichment report with a few enriching examples, the knowledge they
+> add and their sources, not a catalogue.
 
 ### Brief Writer
 
@@ -255,7 +269,7 @@ another's pending outputs.
 > criteria or resolution of design tradeoffs. Write changeSummary as the cumulative account of what
 > refinement has changed across cycles, not only the latest edit. Address each prior objection
 > explicitly. The council will check fidelity, evidence and simplicity. Return a complete brief
-> revision and a concise cumulative change summary.
+> revision and a short cumulative change summary.
 
 ### Purpose Council Reviewer
 
@@ -267,11 +281,12 @@ another's pending outputs.
 > more generic proposal. Object only to gaps that materially affect the idea-stage
 > decision; do not request implementation detail the brief should not contain, and do not fail
 > it on length or style. Read the retained history selectively. Keep your summary short and
-> every correction actionable. Choose exactly one: approve when criteria are met;
-> minor_corrections for a brief-only fix; major_rework when purpose or research must be
-> revisited; idea_not_working when revision is unlikely to make the idea worthwhile. Do not
-> raise severity for style or personality. For any objection, name the criterion, cite evidence
-> and give a concrete correction. Do not review other council verdicts or design the solution.
+> internal and report only the few findings that change the idea-stage decision. Choose exactly
+> one: approve when criteria are met; minor_corrections for a brief-only fix; major_rework when
+> purpose or research must be revisited; idea_not_working when revision is unlikely to make the
+> idea worthwhile. Do not raise severity for style or personality. For any objection, name the
+> criterion, cite evidence and give a concise correction the author can act on. Do not review
+> other council verdicts or design the solution.
 
 ### Evidence Council Reviewer
 
@@ -282,12 +297,12 @@ another's pending outputs.
 > claims, and uncertainty is explicit. Object only to material gaps in the idea-stage evidence;
 > do not demand implementation detail, file inventories or resolved design tradeoffs, and do not
 > fail the brief on length or style. Read the retained history selectively. Keep your summary
-> short and every correction actionable. Choose exactly one: approve when criteria are met;
-> minor_corrections for a brief-only fix; major_rework when purpose or research must be
-> revisited; idea_not_working when revision is unlikely to make the idea worthwhile. Keep
-> severity proportionate to the material gap. For any objection, name the criterion, cite
-> evidence and give a concrete correction. Do not review other council verdicts or invent
-> missing evidence.
+> short and internal and report only the few findings that change the idea-stage decision. Choose
+> exactly one: approve when criteria are met; minor_corrections for a brief-only fix; major_rework
+> when purpose or research must be revisited; idea_not_working when revision is unlikely to make
+> the idea worthwhile. Keep severity proportionate to the material gap. For any objection, name
+> the criterion, cite evidence and give a concise correction the author can act on. Do not review
+> other council verdicts or invent missing evidence.
 
 ### Simplicity Council Reviewer
 
@@ -298,12 +313,12 @@ another's pending outputs.
 > design decisions to the next workflow. Object only when avoidable complexity or an oversized
 > promise materially affects the idea-stage decision; do not demand implementation detail or
 > resolved design tradeoffs, and do not fail the brief on length or style. Read the retained
-> history selectively. Keep your summary short and every correction actionable. Choose exactly
-> one: approve when criteria are met; minor_corrections for a brief-only fix; major_rework when
-> purpose or research must be revisited; idea_not_working when revision is unlikely to make the
-> idea worthwhile. Keep severity proportionate to the material gap. For any objection, name the
-> criterion, cite evidence and give a concrete correction. Do not review other council
-> verdicts.
+> history selectively. Keep your summary short and internal and report only the few findings that
+> change the idea-stage decision. Choose exactly one: approve when criteria are met;
+> minor_corrections for a brief-only fix; major_rework when purpose or research must be revisited;
+> idea_not_working when revision is unlikely to make the idea worthwhile. Keep severity
+> proportionate to the material gap. For any objection, name the criterion, cite evidence and give
+> a concise correction the author can act on. Do not review other council verdicts.
 
 ## Artifacts and revision binding
 
@@ -462,27 +477,32 @@ the operator sees the same milestone line without internal paths.
 - Mixed verdicts follow the stated precedence and preserve every objection. Minor repeats only the
   writer and council; major repeats purpose, research, writer and council. Every rewrite invalidates
   earlier approvals. Limits and an unworkable verdict return a complete feedback package. The
-  human-facing comment is a concise decision aid and never publishes raw council evidence, code
-  citations or tool transcripts.
+  human-facing comment is a concise decision aid and never publishes reviewer summaries, verdict
+  names, criteria, evidence, code citations or tool transcripts.
 - The brief is a decision aid of about 300–500 words: one `idea` stating the author's proposed
   change, why it matters and the principle behind it, the strongest supporting evidence, meaningful
   alternatives, smallest plausible scope and key uncertainty, without prescribing implementation,
   requirements, code detail or design resolutions. Its length is guidance for the writer and never
   a validated execution gate.
 - The published brief and the returned comment report the council cycles used and the cumulative
-  change summary. An exhausted return says that attempts were exhausted, reproduces the last
-  concise brief and names the remaining material objections without implying rejection; an
-  unworkable verdict states its actual reason and actionable corrections.
+  change summary. A returned comment states the plain outcome, reproduces the latest idea alone,
+  lists the actionable corrections under what stopped approval and closes with the reply-and-move
+  next step; it never publishes reviewer summaries, verdict names, criteria, evidence, code
+  citations, research detail, alternatives or tool text. An exhausted return says that attempts
+  were exhausted and keeps every distinct material correction without implying rejection; a
+  return reports that the council did not approve, never that the idea has no worth.
 - Council reviewers apply one shared objection standard: an objection must improve the idea. It may
   sharpen, narrow or correct the idea as the author proposed it, name a genuine ambiguity in the
   stated idea, or show that it should not proceed (`idea_not_working`); preventing a bad idea is a
   real improvement, and an objection never silently replaces the author's proposal with a different
   or more generic idea. Factual or design nitpicks are not objections, and an unresolved design
-  choice is a blocker only when it changes the idea-stage decision. Agent reports stay concise, and
-  every role reads retained artifacts through their references and selectively.
-- Every role invocation receives the shared definition of *idea* and the separate idea-stage
-  guidance exactly once each, ahead of its role-specific context. Role prompts carry only
-  role-specific duties and do not repeat either text.
+  choice is a blocker only when it changes the idea-stage decision. Every finding writes its
+  correction as a short, plain-language request the author can act on, distinct from the internal
+  evidence and summary. Agent turns stay short, plain and concrete for the next role, and every
+  role reads retained artifacts through their references and selectively.
+- Every role invocation receives the shared definition of *idea*, the separate idea-stage guidance
+  and the shared communication rule exactly once each, ahead of its role-specific context. Role
+  prompts carry only role-specific duties and do not repeat that text.
 - A retained brief written before the `idea` field stays readable: its problem, value and project
   fit are read as one idea for the next revision and for publication, and the artifact itself is
   never rewritten.
