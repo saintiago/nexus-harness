@@ -166,7 +166,10 @@ research, and the supplied earlier refined ideas and feedback. Be witty when a l
 of phrase makes it clearer; keep the substance and tone suitable for a project decision.
 Preserve intent while applying justified steering: work on the author's idea as submitted,
 keeping its proposed concept and direction rather than replacing it with a different or more
-generic idea. Aim for a decision aid of about 300-500 words, concise and on point, in clear parts.
+generic idea. Keep the refined idea short by default: about 150-200 words across all four parts,
+with only material detail and plain, direct language. Give each part one to three short sentences
+and keep open questions to at most a few. That length is a default, not a rigid cap: keep any
+context the council needs to decide.
 The \`idea\` part states the desirable change, why it matters and the principle behind it, without
 committing to implementation. The \`projectFit\` part states why it belongs in this project. The
 \`feasibility\` part states a plausible path given the known constraints and evidence; it is not a

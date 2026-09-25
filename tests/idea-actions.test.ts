@@ -357,8 +357,9 @@ describe('idea role actions', () => {
     expect(context).toContain('No earlier council objections exist');
     expect(context).toContain('Keep detailed research in the research artifact');
     // The writer is told the refined idea's parts and what each states.
-    expect(context).toContain('`projectFit` states why it belongs in this project');
-    expect(context).toContain('`feasibility` states a plausible path');
+    const guidance = context.replace(/\s+/gu, ' ');
+    expect(guidance).toContain('`projectFit` states why it belongs in this project');
+    expect(guidance).toContain('`feasibility` states a plausible path');
     const refinedIdea = await area.read<Record<string, unknown>>(
       1,
       refinedIdeaArtifact.pathFromArtifactsRoot,
@@ -457,7 +458,12 @@ describe('idea role actions', () => {
     expect(context).toContain('Latest earlier refined idea (cycle 1)');
     expect(context).toContain('Its cumulative change summary');
     expect(context).toContain('Purpose assessment in force (cycle 1)');
-    expect(context).toContain('about 300-500 words');
+    // The writer keeps the short-default guidance on every revision, not only the first.
+    const guidance = context.replace(/\s+/gu, ' ');
+    expect(guidance).toContain('about 150-200 words');
+    expect(guidance).toContain('one to three short sentences');
+    expect(guidance).toContain('not a rigid cap');
+    expect(guidance).toContain('keep any context the council needs to decide');
     // The prior objections arrive as corrections; their raw reports stay at their paths.
     expect(context).not.toContain('purpose evidence');
     expect(context).not.toContain('"verdict": "minor_corrections"');

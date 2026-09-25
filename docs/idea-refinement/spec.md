@@ -47,13 +47,14 @@ keeps rhetorical and implementation prose out. No role depends on reading this s
 the role prompts below add only role-specific duties.
 
 Refinement tests purpose, substance and simplicity while change is cheap. The result is a decision
-aid, not a design document: a refined idea of about 300–500 words whose parts state the idea, its
-project fit, its feasibility and any material open question, while the strongest supporting
-evidence, meaningful alternatives, smallest plausible scope and key uncertainty stay in the
-purpose and research reports it draws on. It does not design the solution, write implementation
-requirements, modify project code or create a To Do delivery ticket. Research detail stays in its
-research artifact. A separate Requirements and Design workflow may consume an approved refined
-idea later.
+aid, not a design document: a refined idea of about 150–200 words across its four parts, with only
+material detail and plain, direct language. Each part gets one to three short sentences, and open
+questions stay at a few. The length is a default, not a rigid cap: keep any context the council
+needs to decide. The strongest supporting evidence, meaningful alternatives, smallest plausible
+scope and key uncertainty stay in the purpose and research reports it draws on. It does not design
+the solution, write implementation requirements, modify project code or create a To Do delivery
+ticket. Research detail stays in its research artifact. A separate Requirements and Design
+workflow may consume an approved refined idea later.
 
 ## Expected outcomes
 
@@ -137,11 +138,13 @@ do not change source statuses. Nexus actions own artifacts and source updates.
    needed, infers purpose from code and commit history. They work independently and write
    separate reports. The writer starts only after both reports exist.
 4. Brief Writer creates revision 1. It sees the current captured idea, both reports, earlier
-   refined ideas and feedback when present, and every council criterion below. It records a
-   decision aid of about 300–500 words as a refined idea revision, concise and on point, in clear
-   parts. The `idea` part states the author's idea: the proposed change, why it matters and the
-   principle behind it, without committing to implementation. The `projectFit` part states why it
-   belongs in this project. The `feasibility` part states a plausible path given the known
+   refined ideas and feedback when present, and every council criterion below. It records a short
+   refined idea revision of about 150–200 words across its four parts, concise and on point, with
+   one to three short sentences per part, at most a few open questions, only material detail and
+   plain, direct language. Length is a default, not a rigid cap: keep any context the council
+   needs to decide. The `idea` part states the author's idea: the proposed change, why it matters
+   and the principle behind it, without committing to implementation. The `projectFit` part states
+   why it belongs in this project. The `feasibility` part states a plausible path given the known
    constraints and evidence, not a design or implementation plan. The `openQuestions` part lists
    only the material questions the next workflow must answer, and may be absent. It preserves the
    author's intent. The strongest supporting evidence, meaningful alternatives, smallest plausible
@@ -268,7 +271,10 @@ another's pending outputs.
 > of phrase makes it clearer; keep the substance and tone suitable for a project decision.
 > Preserve intent while applying justified steering: work on the author's idea as submitted,
 > keeping its proposed concept and direction rather than replacing it with a different or more
-> generic idea. Aim for a decision aid of about 300-500 words, concise and on point, in clear parts.
+> generic idea. Keep the refined idea short by default: about 150-200 words across all four parts,
+> with only material detail and plain, direct language. Give each part one to three short sentences
+> and keep open questions to at most a few. That length is a default, not a rigid cap: keep any
+> context the council needs to decide.
 > The `idea` part states the desirable change, why it matters and the principle behind it, without
 > committing to implementation. The `projectFit` part states why it belongs in this project. The
 > `feasibility` part states a plausible path given the known constraints and evidence; it is not a
@@ -495,14 +501,16 @@ the operator sees the same milestone line without internal paths.
   earlier approvals. Limits and an unworkable verdict return a complete feedback package. The
   human-facing comment is a concise decision aid and never publishes reviewer summaries, verdict
   names, criteria, evidence, code citations or tool transcripts.
-- The refined idea is a decision aid of about 300–500 words, concise and on point: `idea` states
-  the author's proposed change, why it matters and the principle behind it; `projectFit` states why
-  it belongs in this project; `feasibility` states a plausible path given the known constraints and
-  evidence; and `openQuestions` states only the material questions the next workflow must answer,
-  or is absent. It neither prescribes implementation, requirements, code detail or design
-  resolutions, nor carries the supporting evidence, alternatives and uncertainty that stay in the
-  purpose and research reports. Its length is guidance for the writer and never a validated
-  execution gate.
+- The refined idea is a short decision aid of about 150–200 words across its four parts, concise
+  and on point, in plain, direct language: one to three short sentences per part, at most a few
+  open questions, and only material detail. `idea` states the author's proposed change, why it
+  matters and the principle behind it; `projectFit` states why it belongs in this project;
+  `feasibility` states a plausible path given the known constraints and evidence; and
+  `openQuestions` states only the material questions the next workflow must answer, or is absent.
+  It neither prescribes implementation, requirements, code detail or design resolutions, nor
+  carries the supporting evidence, alternatives and uncertainty that stay in the purpose and
+  research reports. Its length is guidance for the writer and never a validated execution gate or
+  rigid cap; necessary context is never dropped to fit it.
 - The published refined idea and the returned comment report the council cycles used and the
   cumulative change summary. A returned comment states the plain outcome, reproduces the latest
   refined idea, lists the actionable corrections under what stopped approval and closes with the
