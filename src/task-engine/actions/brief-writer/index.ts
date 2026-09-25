@@ -62,6 +62,21 @@ async function precedingCouncil(
   return reports;
 }
 
+/**
+ * The preceding objections as a compact list: each non-approving reviewer's verdict, short
+ * summary and correction per criterion. The full reports stay at their artifact paths; the writer
+ * prompt never copies them wholesale.
+ */
+function condensedObjections(reports: readonly CouncilReport[]): string {
+  const lines = reports
+    .filter((report) => report.verdict !== 'approve')
+    .flatMap((report) => [
+      `- ${report.reviewer} council (${report.verdict}) summary: ${report.summary}`,
+      ...report.findings.map((finding) => `  - ${finding.criterion}: ${finding.correction}`),
+    ]);
+  return lines.length === 0 ? '- no unaddressed objection was recorded.' : lines.join('\n');
+}
+
 /** The latest brief written before the current cycle, when one exists. */
 async function precedingBrief(
   root: string,
@@ -128,12 +143,20 @@ export function createBriefWriter(settings: BriefWriterSettings): BoundAction {
         `${research.path}\n${JSON.stringify(research.value, null, 2)}`,
       earlier === null
         ? 'No earlier brief revision exists for this submission.'
-        : `Latest earlier brief revision (cycle ${String(earlier.cycle)}): ` +
-          `${earlier.path}\n${JSON.stringify(earlier.value, null, 2)}`,
+        : `Latest earlier brief revision (cycle ${String(earlier.cycle)}): ${earlier.path}\n` +
+          'Its cumulative change summary (carry it forward and extend it): ' +
+          earlier.value.changeSummary,
       objections === null
         ? 'No earlier council objections exist for this submission.'
-        : 'Address each objection of the preceding council cycle explicitly:\n' +
-          JSON.stringify(objections, null, 2),
+        : 'Address each objection of the preceding council cycle explicitly. Full reports stay ' +
+          `readable at their artifact paths if you need them:\n${condensedObjections(objections)}`,
+      'Aim for a decision aid of about 300-500 words: concise problem, expected value, project',
+      'fit, strongest supporting evidence, meaningful alternatives, smallest plausible scope and',
+      'key uncertainty (state the key uncertainty in the assumptions list). Do not prescribe',
+      'implementation, detailed requirements, command syntax, file or line inventories, schemas,',
+      'component placement, acceptance criteria or resolution of design tradeoffs; an idea about',
+      'architectural improvement may state its proposed direction at concept level only. Keep',
+      'research detail in the research artifact and cite it selectively.',
       'The council reviews this revision for project fit, coherent value, fidelity to the',
       'author\u2019s intent, evidence quality, fairly represented alternatives, explicit',
       'uncertainty and the smallest useful scope.',

@@ -617,11 +617,15 @@ describe('idea refinement journeys', () => {
     expect(journey.status()).toBe('Waiting for Feedback');
     expect(journey.comments()).toHaveLength(1);
     const published = commentText(journey.comments()[0]?.body);
-    expect(published).toContain('cannot move forward as submitted');
-    expect(published).toContain('simplicity correction');
+    expect(published).toContain('no internal revision is likely to make this idea worthwhile');
+    expect(published).toContain('Reviewer reason: simplicity review of the revision.');
+    expect(published).toContain('simplicity criterion: simplicity correction');
+    expect(published).toContain('Council cycles used: 1');
+    expect(published).toContain('What refinement changed: Brief revision 1.');
     expect(published).toContain('to "Idea" to resubmit it');
     // The internal reviewers' feedback stays in artifacts, not on the issue.
     expect(published).not.toContain('purpose criterion');
+    expect(published).not.toContain('simplicity evidence');
     expect(await journey.exists('artifacts/handoff.json')).toBe(false);
     expect(
       await journey.artifact<IdeaDecisionRecord>('artifacts/submissions/1/decision.json'),
@@ -658,6 +662,13 @@ describe('idea refinement journeys', () => {
     expect(secondWriter).toContain('Address each objection of the preceding council cycle');
     expect(await journey.exists('artifacts/submissions/1/cycles/1/brief.json')).toBe(true);
     expect(await journey.exists('artifacts/submissions/1/cycles/2/brief.json')).toBe(true);
+    const published = commentText(journey.comments()[0]?.body);
+    expect(published).toContain('Refinement attempts were exhausted');
+    expect(published).toContain('Last brief (revision 2)');
+    expect(published).toContain('Council cycles used: 2');
+    expect(published).toContain('What refinement changed: Brief revision 2.');
+    expect(published).toContain('evidence criterion: evidence correction');
+    expect(published).not.toContain('evidence evidence');
     expect(
       await journey.artifact<IdeaDecisionRecord>('artifacts/submissions/1/decision.json'),
     ).toMatchObject({ decision: 'unable-to-converge', strongestVerdict: 'minor_corrections' });

@@ -108,6 +108,10 @@ export function createCouncilReviewer(settings: CouncilReviewerSettings): BoundA
     const context = [
       `Independently review brief revision ${String(brief.revision)} of the current captured idea.`,
       reviewFocus[settings.reviewer],
+      'Object only to material gaps that affect the idea-stage decision. Do not request',
+      'implementation detail, file inventories, acceptance criteria or resolved design tradeoffs',
+      'the brief should not contain, and do not fail it on word count or style. Keep your summary',
+      'short, every correction actionable, and read the retained history selectively.',
       capturedIdeaText(root, plan, input),
       `The exact brief revision you review: ${briefFile}\n` + JSON.stringify(brief, null, 2),
       'Submit your own verdict before considering any other result, and do not read the other',
