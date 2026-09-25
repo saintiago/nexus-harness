@@ -75,6 +75,7 @@ async function area(options: {
     await mkdir(cycleRoot, { recursive: true });
     await writeFile(
       path.join(cycleRoot, briefArtifact.pathFromArtifactsRoot),
+      // A retained cycle from before the `idea` field: opening the next cycle never rewrites it.
       JSON.stringify({
         revision: options.completedCycle,
         submission: options.plan.submission,
@@ -197,14 +198,14 @@ describe('StartIdeaRound', () => {
         'simplicity-council': 'nexus-simplicity-council',
       },
     });
-    // Earlier cycles and their artifacts remain as history.
+    // Earlier cycles and their artifacts remain as history, including the pre-`idea` brief shape.
     expect(await listIdeaCycles(started.root, 1)).toEqual([1, 2]);
-    expect(
-      await readFile(
-        path.join(ideaCycleDirectory(started.root, 1, 1), briefArtifact.pathFromArtifactsRoot),
-        'utf8',
-      ),
-    ).toContain('problem');
+    const retainedBrief = await readFile(
+      path.join(ideaCycleDirectory(started.root, 1, 1), briefArtifact.pathFromArtifactsRoot),
+      'utf8',
+    );
+    expect(retainedBrief).toContain('"problem"');
+    expect(retainedBrief).not.toContain('"idea"');
   });
 
   it('opens a major cycle with every role', async () => {

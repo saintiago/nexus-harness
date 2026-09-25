@@ -45,6 +45,7 @@ import {
 } from '../src/task-engine/index.js';
 import type { IdeaRole } from '../src/agent-runtime/index.js';
 import type { Brief } from '../src/task-engine/actions/brief-writer/artifacts.js';
+import { ideaDefinitionText } from '../src/task-engine/actions/idea-context.js';
 import type {
   IdeaDecisionRecord,
   IdeaHandoff,
@@ -434,9 +435,7 @@ const researchReport: ResearchReport = {
 /** The brief revision a journey's writer returns for the supplied cycle. */
 function briefParts(cycle: number): Omit<Brief, 'revision' | 'submission' | 'cycle'> {
   return {
-    problem: 'Reviewers spend time on style defects.',
-    value: 'Reviews focus on behaviour.',
-    projectFit: 'The project already enforces checks in CI.',
+    idea: 'Reviewers spend time on style defects; a lint gate keeps reviews on behaviour.',
     evidence: ['docs/purpose.md'],
     alternatives: ['Keep reviewing style by eye.'],
     scope: `Enable the smallest lint gate (revision ${String(cycle)}).`,
@@ -541,6 +540,9 @@ describe('idea refinement journeys', () => {
     expect(journey.comments()).toHaveLength(1);
     const published = commentText(journey.comments()[0]?.body);
     expect(published).toContain('Approved idea brief (revision 1)');
+    expect(published).toContain(
+      'Idea: Reviewers spend time on style defects; a lint gate keeps reviews on behaviour.',
+    );
     expect(published).toContain('Enable the smallest lint gate');
     expect(published).not.toContain('purpose review of the revision');
 
@@ -573,6 +575,9 @@ describe('idea refinement journeys', () => {
       expect(prompt).toContain('Add a lint gate');
       expect(prompt).toContain('Prefer the smallest change that fulfils the purpose.');
       expect(prompt).toContain(path.join(journey.worktree));
+      // The shared definition arrives exactly once, ahead of the role's own context and duties.
+      expect(prompt.split(ideaDefinitionText)).toHaveLength(2);
+      expect(prompt.indexOf(ideaDefinitionText)).toBeLessThan(prompt.indexOf('Add a lint gate'));
     }
     expect((await readFile(path.join(journey.worktree, 'readme.md'), 'utf8')).trim()).toBe(
       'the connected project',

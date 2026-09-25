@@ -9,7 +9,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { AgentRuntime } from '../src/agent-runtime/index.js';
+import { ideaRoles, type AgentRuntime, type IdeaRole } from '../src/agent-runtime/index.js';
 import type { JiraComment, JiraTransition } from '../src/adapters/jira.js';
 import { ok } from '../src/result.js';
 import type { EngineEvent } from '../src/task-engine/index.js';
@@ -20,6 +20,7 @@ import {
   ideaCycleDirectory,
   ideaSubmissionInputFile,
 } from '../src/task-engine/actions/idea-storage.js';
+import { ideaDefinitionText } from '../src/task-engine/actions/idea-context.js';
 import {
   decisionArtifact,
   ideaHandoffFile,
@@ -91,6 +92,21 @@ const researchReport: ResearchReport = {
 };
 
 function briefOf(revision: number, submission = 1): Brief {
+  return {
+    revision,
+    submission,
+    cycle: revision,
+    idea: 'Reviewers spend time on style defects; a lint gate would keep reviews on behaviour.',
+    evidence: ['docs/purpose.md'],
+    alternatives: ['Keep reviewing style by eye.'],
+    scope: `Enable the smallest lint gate (revision ${String(revision)}).`,
+    assumptions: [],
+    changeSummary: `Brief revision ${String(revision)}.`,
+  };
+}
+
+/** One retained brief revision written before `idea` replaced the three separate fields. */
+function legacyBriefOf(revision: number, submission = 1) {
   return {
     revision,
     submission,
@@ -293,9 +309,7 @@ describe('idea role actions', () => {
     await area.write(1, researchArtifact, researchReport);
     const agent = scriptedRuntime([
       {
-        problem: 'problem',
-        value: 'value',
-        projectFit: 'fit',
+        idea: 'idea',
         evidence: ['docs/purpose.md'],
         alternatives: [],
         scope: 'scope',
@@ -316,7 +330,7 @@ describe('idea role actions', () => {
     expect(context).toContain('Linters keep reviews focused.');
     expect(context).toContain('No earlier council objections exist');
     const brief = await area.read<Brief>(1, briefArtifact.pathFromArtifactsRoot);
-    expect(brief).toMatchObject({ revision: 1, submission: 1, cycle: 1, problem: 'problem' });
+    expect(brief).toMatchObject({ revision: 1, submission: 1, cycle: 1, idea: 'idea' });
 
     // A repeated invocation reuses the revision it already wrote.
     await expect(action()).resolves.toBe('written');
@@ -381,9 +395,7 @@ describe('idea role actions', () => {
     }
     const agent = scriptedRuntime([
       {
-        problem: 'problem',
-        value: 'value',
-        projectFit: 'fit',
+        idea: 'idea',
         evidence: [],
         alternatives: [],
         scope: 'scope',
@@ -418,6 +430,57 @@ describe('idea role actions', () => {
     });
   });
 
+  it('reads a retained brief written before the idea field for the next revision', async () => {
+    const area = await refinementArea({ cycle: 2, route: 'minor' });
+    await area.write(1, purposeArtifact, purposeReport);
+    await area.write(1, researchArtifact, researchReport);
+    const legacyFile = await area.write(1, briefArtifact, legacyBriefOf(1));
+    for (const reviewer of councilReviewers) {
+      await area.write(
+        1,
+        councilArtifacts[reviewer],
+        councilReport(
+          reviewer,
+          reviewer === 'purpose' ? 'minor_corrections' : 'approve',
+          legacyFile,
+          1,
+        ),
+      );
+    }
+    const agent = scriptedRuntime([
+      {
+        idea: 'idea',
+        evidence: [],
+        alternatives: [],
+        scope: 'scope',
+        assumptions: [],
+        changeSummary: 'addressed the objection',
+      },
+    ]);
+    const action = createBriefWriter({
+      workspace: { root: area.root },
+      runner: runnerOf(agent.runtime),
+      publish: (event) => area.events.push(event),
+    });
+
+    await expect(action()).resolves.toBe('written');
+
+    const context = agent.requests[0]?.context ?? '';
+    // The retained revision is readable history, and its cumulative summary carries forward.
+    expect(context).toContain(`cycle 1 brief revision: ${legacyFile}`);
+    expect(context).toContain('Its cumulative change summary');
+    expect(context).toContain('Brief revision 1.');
+    // The retained artifact stays as it was; the new revision states only the one idea.
+    expect(await readFile(legacyFile, 'utf8')).toContain('"projectFit"');
+    const written = await readFile(
+      path.join(area.cycleDirectory(2), briefArtifact.pathFromArtifactsRoot),
+      'utf8',
+    );
+    expect(written).toContain('"idea"');
+    expect(written).not.toContain('"problem"');
+    expect(written).not.toContain('"projectFit"');
+  });
+
   it('rejects writing a brief without the reports it must build on', async () => {
     const area = await refinementArea();
     const agent = scriptedRuntime([{}]);
@@ -429,6 +492,79 @@ describe('idea role actions', () => {
 
     await expect(action()).rejects.toThrow('needs the purpose assessment and research report');
     expect(agent.requests).toEqual([]);
+  });
+
+  it('gives all six roles the same idea definition once before their own context', async () => {
+    const area = await refinementArea();
+    await area.write(1, purposeArtifact, purposeReport);
+    await area.write(1, researchArtifact, researchReport);
+    const answers: Record<IdeaRole, unknown> = {
+      'purpose-verifier': purposeReport,
+      researcher: researchReport,
+      'brief-writer': {
+        idea: 'idea',
+        evidence: [],
+        alternatives: [],
+        scope: 'scope',
+        assumptions: [],
+        changeSummary: 'initial',
+      },
+      'purpose-council': { verdict: 'approve', summary: 'approved', findings: [] },
+      'evidence-council': { verdict: 'approve', summary: 'approved', findings: [] },
+      'simplicity-council': { verdict: 'approve', summary: 'approved', findings: [] },
+    };
+    const outcomes: Record<IdeaRole, string> = {
+      'purpose-verifier': 'reported',
+      researcher: 'reported',
+      'brief-writer': 'written',
+      'purpose-council': 'approve',
+      'evidence-council': 'approve',
+      'simplicity-council': 'approve',
+    };
+    const contexts: { readonly role: IdeaRole; readonly context: string }[] = [];
+    const runtime: AgentRuntime = {
+      async run(profile, _workspace, context) {
+        const role = ideaRoles.find((candidate) => profiles[candidate] === profile);
+        if (role === undefined) {
+          return { ok: false, fault: { message: `Unknown idea role profile "${profile}".` } };
+        }
+        contexts.push({ role, context });
+        return ok({ output: JSON.stringify(answers[role]) });
+      },
+    };
+    const settings = {
+      workspace: { root: area.root },
+      runner: runnerOf(runtime),
+      publish: () => undefined,
+    };
+    const actions: Record<IdeaRole, () => Promise<string>> = {
+      'purpose-verifier': createPurposeVerifier(settings),
+      researcher: createResearcher(settings),
+      'brief-writer': createBriefWriter(settings),
+      'purpose-council': createCouncilReviewer({ ...settings, reviewer: 'purpose' }),
+      'evidence-council': createCouncilReviewer({ ...settings, reviewer: 'evidence' }),
+      'simplicity-council': createCouncilReviewer({ ...settings, reviewer: 'simplicity' }),
+    };
+
+    for (const role of ideaRoles) {
+      await expect(actions[role]()).resolves.toBe(outcomes[role]);
+    }
+
+    expect(contexts.map((entry) => entry.role)).toEqual([...ideaRoles]);
+    for (const { role, context } of contexts) {
+      // The one shared definition text arrives exactly once, ahead of the role's own context.
+      expect(context.split(ideaDefinitionText)).toHaveLength(2);
+      expect(context.startsWith(`${ideaDefinitionText}\n\n`)).toBe(true);
+      // The role-specific context follows it: the captured idea and the project guidance.
+      expect(context.indexOf('Add a lint gate')).toBeGreaterThan(
+        context.indexOf(ideaDefinitionText),
+      );
+      expect(context).toContain('Prefer the smallest change.');
+      // The one shared objection standard reaches every council invocation and no other role.
+      expect(context.split('ask how the objection improves the idea')).toHaveLength(
+        role.endsWith('-council') ? 2 : 1,
+      );
+    }
   });
 });
 
@@ -509,6 +645,38 @@ describe('council reviewers', () => {
         },
       },
     });
+  });
+
+  it('reviews a retained brief written before the idea field as the one idea it expresses', async () => {
+    const area = await refinementArea();
+    const legacyFile = await area.write(1, briefArtifact, legacyBriefOf(1));
+    const agent = scriptedRuntime([{ verdict: 'approve', summary: 'approved', findings: [] }]);
+    const action = createCouncilReviewer({
+      reviewer: 'evidence',
+      workspace: { root: area.root },
+      runner: runnerOf(agent.runtime),
+      publish: () => undefined,
+    });
+
+    await expect(action()).resolves.toBe('approve');
+
+    const context = agent.requests[0]?.context ?? '';
+    expect(context).toContain(
+      'Reviewers spend time on style defects. Reviews focus on behaviour. ' +
+        'The project already enforces checks in CI.',
+    );
+    // The retained shape does not leak into the reviewer's reading of the revision.
+    expect(context).not.toContain('"problem"');
+    expect(
+      await area.read<CouncilReport>(1, councilArtifacts.evidence.pathFromArtifactsRoot),
+    ).toEqual(
+      expect.objectContaining({
+        reviewer: 'evidence',
+        verdict: 'approve',
+        brief: legacyFile,
+        revision: 1,
+      }),
+    );
   });
 
   it('rejects an approval with unresolved findings and a nonapproval without any', async () => {
@@ -626,6 +794,10 @@ describe('decision publication', () => {
     expect(jira.comments).toHaveLength(1);
     const published = JSON.stringify(jira.comments[0]?.body);
     expect(published).toContain('Approved idea brief (revision 1)');
+    expect(published.match(/Idea: /gu)).toHaveLength(1);
+    expect(published).toContain(
+      'Idea: Reviewers spend time on style defects; a lint gate would keep reviews on behaviour.',
+    );
     expect(published).toContain('Enable the smallest lint gate (revision 1)');
     expect(published).toContain('Council cycles used: 1');
     expect(published).toContain('What refinement changed: Brief revision 1.');
@@ -657,6 +829,35 @@ describe('decision publication', () => {
     expect(handoff.purpose).toBe(
       path.join(area.cycleDirectory(), purposeArtifact.pathFromArtifactsRoot),
     );
+  });
+
+  it('publishes a retained brief written before the idea field as the one idea it expresses', async () => {
+    const area = await refinementArea();
+    await area.write(1, purposeArtifact, purposeReport);
+    await area.write(1, researchArtifact, researchReport);
+    const legacyFile = await area.write(1, briefArtifact, legacyBriefOf(1));
+    for (const reviewer of councilReviewers) {
+      await area.write(
+        1,
+        councilArtifacts[reviewer],
+        councilReport(reviewer, 'approve', legacyFile, 1),
+      );
+    }
+    const jira = source();
+
+    await expect(publication(area, jira)({ decision: 'approved' })).resolves.toBe('approved');
+
+    const published = JSON.stringify(jira.comments[0]?.body);
+    expect(published.match(/Idea: /gu)).toHaveLength(1);
+    expect(published).toContain(
+      'Idea: Reviewers spend time on style defects. Reviews focus on behaviour. ' +
+        'The project already enforces checks in CI.',
+    );
+    expect(published).not.toContain('Problem:');
+    expect(published).not.toContain('Expected value:');
+    expect(published).not.toContain('Project fit:');
+    // Publication reads the retained artifact; it never rewrites it.
+    expect(await readFile(legacyFile, 'utf8')).toContain('"projectFit"');
   });
 
   it('returns only human-facing feedback and moves the item to the waiting status', async () => {
@@ -735,7 +936,11 @@ describe('decision publication', () => {
     expect(published).toContain('Refinement attempts were exhausted');
     expect(published).not.toContain('cannot move forward');
     expect(published).toContain('Last brief (revision 2)');
-    expect(published).toContain('Problem: Reviewers spend time on style defects.');
+    expect(published).toContain(
+      'Idea: Reviewers spend time on style defects; a lint gate would keep reviews on behaviour.',
+    );
+    expect(published).not.toContain('Problem:');
+    expect(published).not.toContain('Project fit:');
     expect(published).toContain('What refinement changed: Brief revision 2.');
     expect(published).toContain('Council cycles used: 2');
     // Every non-approving reviewer's material objection reaches the exhausted return.
