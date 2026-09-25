@@ -7,14 +7,13 @@ import type {
 } from '../../../adapters/jira.js';
 import { fault, ok, type Result } from '../../../result.js';
 import type { BoundAction, EventPublisher } from '../../index.js';
-import { briefArtifact, type Brief } from '../brief-writer/artifacts.js';
+import { briefArtifact, readBriefRevision, type Brief } from '../brief-writer/artifacts.js';
 import { cycleCouncilReports, publishIdeaOutcome } from '../idea-context.js';
 import {
   ideaCycleDirectory,
   ideaSubmissionInputFile,
   ideaSubmissionArtifactFile,
   latestCycleArtifact,
-  readCycleArtifact,
   readIdeaPlan,
   readSubmissionArtifact,
   writeSubmissionArtifact,
@@ -106,9 +105,7 @@ function briefSection(brief: Brief, heading: string): string[] {
   return [
     `${heading} (revision ${String(brief.revision)})`,
     '',
-    `Problem: ${brief.problem}`,
-    `Expected value: ${brief.value}`,
-    `Project fit: ${brief.projectFit}`,
+    `Idea: ${brief.idea}`,
     '',
     ...bullets('Strongest supporting evidence', brief.evidence),
     ...bullets('Meaningful alternatives', brief.alternatives),
@@ -213,7 +210,7 @@ export function createPublishDecision(settings: PublishDecisionSettings): BoundA
     const decision = decisionOf(input);
     const plan = await readIdeaPlan(root);
     const cycleRoot = ideaCycleDirectory(root, plan.submission, plan.cycle);
-    const brief = await readCycleArtifact(cycleRoot, briefArtifact);
+    const brief = await readBriefRevision(cycleRoot);
     if (brief === null) {
       throw new Error(
         `No brief revision exists for submission ${String(plan.submission)} cycle ` +

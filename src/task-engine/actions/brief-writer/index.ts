@@ -23,7 +23,7 @@ import {
   councilReviewers,
   type CouncilReport,
 } from '../review-council/artifacts.js';
-import { briefArtifact, briefContentSchema, type Brief } from './artifacts.js';
+import { briefArtifact, briefContentSchema, readBriefRevision, type Brief } from './artifacts.js';
 
 /**
  * BriefWriter runs the writer role for the open council cycle and saves the revision the council
@@ -85,7 +85,7 @@ async function precedingBrief(
 ): Promise<{ readonly cycle: number; readonly path: string; readonly value: Brief } | null> {
   for (let number = cycle - 1; number >= 1; number -= 1) {
     const cycleRoot = ideaCycleDirectory(root, submission, number);
-    const value = await readCycleArtifact(cycleRoot, briefArtifact);
+    const value = await readBriefRevision(cycleRoot);
     if (value !== null) {
       return {
         cycle: number,
@@ -103,7 +103,7 @@ export function createBriefWriter(settings: BriefWriterSettings): BoundAction {
     const root = settings.workspace.root;
     const plan = await readIdeaPlan(root);
     const cycleRoot = ideaCycleDirectory(root, plan.submission, plan.cycle);
-    const existing = await readCycleArtifact(cycleRoot, briefArtifact);
+    const existing = await readBriefRevision(cycleRoot);
     if (
       existing !== null &&
       existing.submission === plan.submission &&
@@ -150,13 +150,14 @@ export function createBriefWriter(settings: BriefWriterSettings): BoundAction {
         ? 'No earlier council objections exist for this submission.'
         : 'Address each objection of the preceding council cycle explicitly. Full reports stay ' +
           `readable at their artifact paths if you need them:\n${condensedObjections(objections)}`,
-      'Aim for a decision aid of about 300-500 words: concise problem, expected value, project',
-      'fit, strongest supporting evidence, meaningful alternatives, smallest plausible scope and',
-      'key uncertainty (state the key uncertainty in the assumptions list). Do not prescribe',
+      'Aim for a decision aid of about 300-500 words. State the improvement as one idea: the need,',
+      'opportunity or desired outcome and why it may matter or fit the project, as coherent prose',
+      'rather than separate problem, value and project-fit essays. The remaining fields carry the',
+      'strongest supporting evidence, meaningful alternatives, smallest plausible scope and key',
+      'uncertainty (state the key uncertainty in the assumptions list). Do not prescribe',
       'implementation, detailed requirements, command syntax, file or line inventories, schemas,',
-      'component placement, acceptance criteria or resolution of design tradeoffs; an idea about',
-      'architectural improvement may state its proposed direction at concept level only. Keep',
-      'research detail in the research artifact and cite it selectively.',
+      'component placement, acceptance criteria or resolution of design tradeoffs. Keep research',
+      'detail in the research artifact and cite it selectively.',
       'The council reviews this revision for project fit, coherent value, fidelity to the',
       'author\u2019s intent, evidence quality, fairly represented alternatives, explicit',
       'uncertainty and the smallest useful scope.',

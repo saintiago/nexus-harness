@@ -1,6 +1,6 @@
 import path from 'node:path';
 import type { AgentRoleRunner, BoundAction, EventPublisher } from '../../index.js';
-import { briefArtifact } from '../brief-writer/artifacts.js';
+import { briefArtifact, readBriefRevision } from '../brief-writer/artifacts.js';
 import {
   capturedIdeaText,
   invokeIdeaRole,
@@ -44,8 +44,8 @@ const reviewFocus: Readonly<Record<CouncilReviewer, string>> = {
   purpose:
     'Check project fit, coherent value, evidence quality and fidelity to the author\u2019s intent.',
   evidence:
-    'Check that the problem and value are substantiated, alternatives are represented fairly, ' +
-    'sources support the claims and uncertainty is explicit.',
+    'Check that the idea\u2019s need, value and fit are substantiated, alternatives are represented ' +
+    'fairly, sources support the claims and uncertainty is explicit.',
   simplicity:
     'Check that the smallest useful scope is proposed, that nothing avoidable is promised and ' +
     'that design decisions are left to the next workflow.',
@@ -84,7 +84,7 @@ export function createCouncilReviewer(settings: CouncilReviewerSettings): BoundA
     const plan = await readIdeaPlan(root);
     const cycleRoot = ideaCycleDirectory(root, plan.submission, plan.cycle);
     const input = await readIdeaInput(root, plan.submission);
-    const brief = await readCycleArtifact(cycleRoot, briefArtifact);
+    const brief = await readBriefRevision(cycleRoot);
     if (brief === null) {
       throw new Error(
         `No brief revision exists for submission ${String(plan.submission)} cycle ` +
@@ -107,11 +107,15 @@ export function createCouncilReviewer(settings: CouncilReviewerSettings): BoundA
     const guidance = await projectGuidanceText(root);
     const context = [
       `Independently review brief revision ${String(brief.revision)} of the current captured idea.`,
-      reviewFocus[settings.reviewer],
+      'Before you object, ask how the objection improves the idea. An objection may sharpen,',
+      'redirect or narrow the idea, or show that it should not proceed (idea_not_working):',
+      'preventing a bad idea is a real improvement. Factual or design nitpicks that do not change',
+      'the idea-stage outcome are not objections.',
       'Object only to material gaps that affect the idea-stage decision. Do not request',
       'implementation detail, file inventories, acceptance criteria or resolved design tradeoffs',
       'the brief should not contain, and do not fail it on word count or style. Keep your summary',
       'short, every correction actionable, and read the retained history selectively.',
+      reviewFocus[settings.reviewer],
       capturedIdeaText(root, plan, input),
       `The exact brief revision you review: ${briefFile}\n` + JSON.stringify(brief, null, 2),
       'Submit your own verdict before considering any other result, and do not read the other',

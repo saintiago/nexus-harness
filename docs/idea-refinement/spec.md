@@ -9,18 +9,23 @@ architecture work, or return it to its author with specific feedback. The workfl
 idea waiting in an internal holding state. Approval means **ready for design**, not ready for
 implementation or movement into the delivery queue.
 
-An **idea** is a possible project improvement, normally framed as a need, opportunity or desired
-outcome. Entering refinement does not require evidence or a complete proposal; finding the
-strongest supporting evidence is part of refinement. A solution is generally left to Requirements
-and Design, though an idea about an architectural improvement may state its proposed direction at
-concept level. Refinement preserves the author's intent while looking for the underlying need.
+An **idea** is a possible project improvement, normally framed as a need, opportunity, or desired
+outcome. It need not arrive with evidence or a complete proposal; refinement develops that. It
+generally leaves solutions to Requirements and Design. An idea about an architectural improvement
+may name its proposed direction at concept level. Preserve the author's intent and seek the
+underlying need. Keep this definition lightweight and not restrictive.
+
+This definition is supplied automatically to every idea refinement role invocation, ahead of that
+role's own context. No role depends on reading this specification, and the role prompts below add
+only role-specific duties.
 
 Refinement tests purpose, substance and simplicity while change is cheap. The result is a decision
-aid, not a design document: about 300–500 words with the concise problem, expected value, purpose
-fit, strongest supporting evidence, meaningful alternatives, smallest plausible scope and key
-uncertainty. It does not design the solution, write implementation requirements, modify project
-code or create a To Do delivery ticket. Research detail stays in its research artifact. A separate
-Requirements and Design workflow may consume an approved brief later.
+aid, not a design document: about 300–500 words that state the improvement as one concise `idea` —
+the need, opportunity or desired outcome and why it may matter or fit — with the strongest
+supporting evidence, meaningful alternatives, smallest plausible scope and key uncertainty. It does
+not design the solution, write implementation requirements, modify project code or create a To Do
+delivery ticket. Research detail stays in its research artifact. A separate Requirements and Design
+workflow may consume an approved brief later.
 
 ## Expected outcomes
 
@@ -102,23 +107,28 @@ do not change source statuses. Nexus actions own artifacts and source updates.
    separate reports. The writer starts only after both reports exist.
 4. Brief Writer creates revision 1. It sees the current captured idea, both reports, earlier
    briefs and feedback when present, and every council criterion below. It records a decision aid
-   of about 300–500 words: the concise problem, expected value, project fit, strongest supporting
-   evidence, meaningful alternatives, smallest plausible scope and key uncertainty, which the
-   existing assumptions list carries. Research detail stays in the research artifact. The brief
-   must not prescribe implementation, detailed requirements, command syntax, file or line
-   inventories, schemas, component placement,
-   acceptance criteria or resolution of design tradeoffs; an idea about architectural improvement
-   may state its proposed direction at concept level only. `changeSummary` is the cumulative
-   account of what refinement changed across the submission's cycles, and the brief's cycle number
-   records how many council cycles were used. It must make purpose, value, evidence and scope clear
-   enough for the council to decide, and distinguish evidence from proposal.
+   of about 300–500 words. The `idea` field states the proposed improvement coherently: the need,
+   opportunity or desired outcome and why it may matter or fit, as one idea rather than separate
+   problem, value and project-fit essays. The other fields carry the strongest supporting evidence,
+   meaningful alternatives, smallest plausible scope and key uncertainty, which the existing
+   assumptions list holds. Research detail stays in the research artifact. The brief must not
+   prescribe implementation, detailed requirements, command syntax, file or line inventories,
+   schemas, component placement, acceptance criteria or resolution of design tradeoffs.
+   `changeSummary` is the cumulative account of what refinement changed across the submission's
+   cycles, and the brief's cycle number records how many council cycles were used. It must make
+   purpose, value, evidence and scope clear enough for the council to decide, and distinguish
+   evidence from proposal.
 5. Three council reviewers run concurrently and independently on the same immutable brief revision.
    They see the current captured idea, brief and available history, but not one another's
    current-cycle verdicts before submitting their own. Each emits exactly one verdict:
    `approve`, `minor_corrections`, `major_rework` or `idea_not_working`. A nonapproval names the
-   failed criterion, evidence and actionable correction. Reviewers object only to material gaps
-   that affect the idea-stage decision; incidental implementation detail the brief should not
-   contain is not an objection, and the brief's length alone is never a fault.
+   failed criterion, evidence and actionable correction. Every council invocation carries one
+   shared objection standard: ask how the objection improves the idea. An objection may sharpen,
+   redirect or narrow the idea, or show that it should not proceed (`idea_not_working`);
+   preventing a bad idea is a real improvement. Factual or design nitpicks that do not improve the
+   idea-stage outcome are not objections, incidental implementation detail the brief should not
+   contain is not an objection, and the brief's length alone is never a fault. The standard adds no
+   output field and no route.
 6. After all council results are saved, route by strongest verdict:
    `idea_not_working > major_rework > minor_corrections > approve`. Preserve all feedback in
    artifacts even when one result determines routing. Unanimous approval alone advances to the
@@ -151,22 +161,23 @@ be deferred to design; the council must request a correction or return the idea 
 ## Agents and constant prompts
 
 Each role is a configured AgentRuntime profile with a complete constant prompt plus invocation
-context. The prompts below are required role instructions. Each action supplies the current
-captured idea, the saved workspace artifacts as readable references with an instruction to read
-them selectively, the current cycle's inputs directly, project sources, revision/cycle and output
-schema. Every invocation also receives the connected project's root `AGENTS.md` content when
-present. Agents follow that guidance and the project documents it references; a missing
-`AGENTS.md` does not block refinement. Agent output is parsed and checked by the owning
-action; a role's claim never counts as a source status update. Profiles may use different models or tools, but all six are separately attributable
-invocations. Purpose and research must be able to run concurrently. Council roles must not read
-one another's pending outputs.
+context. Every invocation receives the shared definition of *idea* from the Purpose section ahead
+of its role-specific context, and every council invocation receives the shared objection standard
+from Behavior step 5 the same way. The prompts below are required role instructions. Each action
+supplies the current captured idea, the saved workspace artifacts as readable references with an
+instruction to read them selectively, the current cycle's inputs directly, project sources,
+revision/cycle and output schema. Every invocation also receives the connected project's root
+`AGENTS.md` content when present. Agents follow that guidance and the project documents it
+references; a missing `AGENTS.md` does not block refinement. Agent output is parsed and checked by
+the owning action; a role's claim never counts as a source status update. Profiles may use
+different models or tools, but all six are separately attributable invocations. Purpose and
+research must be able to run concurrently. Council roles must not read one another's pending
+outputs.
 
 ### Purpose Verifier
 
 > Be wise and philosophical about the project's enduring purpose: consider the values and
-> long-term direction behind the idea, then ground every conclusion in evidence. Treat the idea
-> lightly: it is a possible improvement framed as a need, opportunity or desired outcome, and
-> missing evidence or completeness is not by itself a reason to reject it. Find this
+> long-term direction behind the idea, then ground every conclusion in evidence. Find this
 > project's purpose, charter and long-term vision in its documentation. If those documents
 > are absent or incomplete, inspect the connected project's code and commit history
 > and infer its direction as well as the evidence permits. Read the supplied prior briefs and
@@ -175,9 +186,8 @@ one another's pending outputs.
 > bear on the current decision. Identify where it supports or conflicts with the project's
 > direction and the smallest steering that would improve fit. Cite documents, files and commits
 > for each material claim; distinguish stated intent from inference and name uncertainty
-> or conflicts. Preserve the author's intent. Do not design architecture, write requirements or
-> decide implementation priority. Return a concise purpose assessment, conflicts, suggested
-> steering and source references.
+> or conflicts. Do not design architecture, write requirements or decide implementation priority.
+> Return a concise purpose assessment, conflicts, suggested steering and source references.
 
 ### Researcher
 
@@ -197,16 +207,16 @@ one another's pending outputs.
 > research, and the supplied earlier briefs and feedback. Be witty when a light, precise turn
 > of phrase makes the brief clearer; keep the substance and tone suitable for a project decision.
 > Preserve intent while applying justified steering. Aim for a decision aid of about 300-500
-> words covering, concisely, the problem, expected value, project fit, strongest supporting
-> evidence, meaningful existing alternatives, smallest plausible scope and key uncertainty.
+> words. State the improvement as one idea: the need, opportunity or desired outcome and why it
+> may matter or fit the project, as coherent prose rather than separate problem, value and
+> project-fit essays. The remaining fields carry the strongest supporting evidence, meaningful
+> existing alternatives, smallest plausible scope and key uncertainty.
 > Keep research detail in the research artifact and cite it selectively. Do not prescribe
 > implementation, detailed requirements, command syntax, file or line inventories, schemas,
-> component placement, acceptance criteria or resolution of design tradeoffs; an idea about
-> architectural improvement may state its proposed direction at concept level only. Write
-> changeSummary as the cumulative account of what refinement has changed across cycles, not only
-> the latest edit. Address each prior objection explicitly. The council will check fidelity,
-> evidence and simplicity. Return a complete brief revision and a concise cumulative change
-> summary.
+> component placement, acceptance criteria or resolution of design tradeoffs. Write changeSummary
+> as the cumulative account of what refinement has changed across cycles, not only the latest
+> edit. Address each prior objection explicitly. The council will check fidelity, evidence and
+> simplicity. Return a complete brief revision and a concise cumulative change summary.
 
 ### Purpose Council Reviewer
 
@@ -227,8 +237,8 @@ one another's pending outputs.
 
 > Be unforgiving about unsupported claims, pragmatic about the evidence needed for a useful
 > decision, and precise in every finding. Independently review the exact supplied brief
-> revision against the research and its cited sources. Check that the problem and value are
-> substantiated, duplicates and alternatives are represented fairly, sources support the
+> revision against the research and its cited sources. Check that the idea's need, value and fit
+> are substantiated, duplicates and alternatives are represented fairly, sources support the
 > claims, and uncertainty is explicit. Object only to material gaps in the idea-stage evidence;
 > do not demand implementation detail, file inventories or resolved design tradeoffs, and do not
 > fail the brief on length or style. Read the retained history selectively. Keep your summary
@@ -244,7 +254,7 @@ one another's pending outputs.
 > Be unforgiving about avoidable complexity, pragmatic about the smallest useful scope,
 > and precise about what to remove. Independently review the exact supplied brief revision.
 > Challenge unnecessary features, process, configuration, abstractions and promised guarantees
-> relative to the stated problem and evidence. Check that the brief is understandable and leaves
+> relative to the stated need and evidence. Check that the brief is understandable and leaves
 > design decisions to the next workflow. Object only when avoidable complexity or an oversized
 > promise materially affects the idea-stage decision; do not demand implementation detail or
 > resolved design tradeoffs, and do not fail the brief on length or style. Read the retained
@@ -292,7 +302,9 @@ feedback and source update evidence, including the human-facing Jira comment whe
 A brief revision's `cycle` is the number of council cycles used for the submission, and its
 `changeSummary` is the cumulative account of what refinement changed. These existing fields carry
 the reporting publication needs, so briefs retained from earlier runs stay readable without
-migration.
+migration. A brief written before the `idea` field keeps being read: its problem, value and project
+fit are presented as the one idea they already express. That compatibility is read-time only:
+retained artifacts and interrupted state are never rewritten, and new briefs write `idea` alone.
 An approval also writes the single `handoff.json` with the shared issue workspace and references to
 the captured input, approved brief, purpose assessment, research and council decisions. SelectIdea's
 selection record sits beside the idea-refinement execution's workflow state; StartIdeaRound writes
@@ -412,16 +424,26 @@ the operator sees the same milestone line without internal paths.
   earlier approvals. Limits and an unworkable verdict return a complete feedback package. The
   human-facing comment is a concise decision aid and never publishes raw council evidence, code
   citations or tool transcripts.
-- The brief is a decision aid of about 300–500 words: concise problem, value, purpose fit,
-  strongest supporting evidence, meaningful alternatives, smallest plausible scope and key
-  uncertainty, without prescribing implementation, requirements, code detail or design resolutions.
-  Its length is guidance for the writer and never a validated execution gate.
+- The brief is a decision aid of about 300–500 words: one `idea` stating the need, opportunity or
+  desired outcome and why it may matter or fit, the strongest supporting evidence, meaningful
+  alternatives, smallest plausible scope and key uncertainty, without prescribing implementation,
+  requirements, code detail or design resolutions. Its length is guidance for the writer and never
+  a validated execution gate.
 - The published brief and the returned comment report the council cycles used and the cumulative
   change summary. An exhausted return says that attempts were exhausted, reproduces the last
   concise brief and names the remaining material objections without implying rejection; an
   unworkable verdict states its actual reason and actionable corrections.
-- Council reviewers object only to material gaps in the idea-stage decision. Agent reports stay
-  concise, and every role reads retained artifacts through their references and selectively.
+- Council reviewers apply one shared objection standard: an objection must improve the idea by
+  sharpening, redirecting or narrowing it, or show that it should not proceed (`idea_not_working`);
+  preventing a bad idea is a real improvement, and factual or design nitpicks are not objections.
+  Agent reports stay concise, and every role reads retained artifacts through their references and
+  selectively.
+- Every role invocation receives the shared definition of *idea* exactly once, ahead of its
+  role-specific context. Role prompts carry only role-specific duties and do not repeat the
+  definition.
+- A retained brief written before the `idea` field stays readable: its problem, value and project
+  fit are read as one idea for the next revision and for publication, and the artifact itself is
+  never rewritten.
 - The Purpose Verifier searches project documents. Missing purpose documents trigger code and commit
   investigation, with cited provisional inferences and uncertainty, rather than an operational fault.
   The purpose council evaluates that evidence without treating missing documents alone as a veto.

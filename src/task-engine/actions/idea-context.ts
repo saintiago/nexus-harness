@@ -4,7 +4,7 @@ import type { IdeaRole } from '../../agent-runtime/index.js';
 import { messageOf } from '../../result.js';
 import { actionOutcomeEvent, type AgentRoleRunner, type EventPublisher } from '../index.js';
 import type { ArtifactDeclaration } from './artifacts.js';
-import { briefArtifact } from './brief-writer/artifacts.js';
+import { briefArtifact, readBriefRevision } from './brief-writer/artifacts.js';
 import { describeIssues, parseDocument, readDocumentText } from './documents.js';
 import {
   ideaCycleDirectory,
@@ -34,6 +34,20 @@ import type { IdeaRoundPlan } from './start-idea-round/artifacts.js';
  * reviewers' current-cycle results, so it never reads a pending verdict before submitting its own.
  */
 
+/**
+ * The shared definition of an idea, supplied to every idea refinement role invocation ahead of its
+ * role-specific context. The specification owns the wording, so no role depends on opening it and
+ * no role prompt repeats the definition.
+ */
+export const ideaDefinitionText = [
+  'Idea definition (shared by every idea refinement role): an idea is a possible project',
+  'improvement, normally framed as a need, opportunity, or desired outcome. It need not arrive',
+  'with evidence or a complete proposal; refinement develops that. It generally leaves solutions',
+  'to Requirements and Design. An idea about an architectural improvement may name its proposed',
+  'direction at concept level. Preserve the author\u2019s intent and seek the underlying need.',
+  'Keep this definition lightweight and not restrictive.',
+].join('\n');
+
 /** The worktree directory under a refinement area (Workspace design). */
 const worktreeDirectory = 'worktree';
 
@@ -43,18 +57,37 @@ type CycleHistoryEntry = {
   /** The reviewer whose pending result this is, or null for shared history. */
   readonly pendingReviewer: CouncilReviewer | null;
   readonly declaration: ArtifactDeclaration;
+  /** Reads the artifact; a brief revision also accepts the retained shape written before `idea`. */
+  readonly read: (cycleRoot: string) => Promise<unknown | null>;
 };
+
+/** One history entry that reads its declared artifact as it is stored. */
+function artifactEntry(
+  label: string,
+  pendingReviewer: CouncilReviewer | null,
+  declaration: ArtifactDeclaration,
+): CycleHistoryEntry {
+  return {
+    label,
+    pendingReviewer,
+    declaration,
+    read: (cycleRoot) => readCycleArtifact(cycleRoot, declaration),
+  };
+}
 
 /** The cycle artifacts the retained history lists, in cycle order. */
 const cycleHistory: readonly CycleHistoryEntry[] = [
-  { label: 'purpose assessment', pendingReviewer: null, declaration: purposeArtifact },
-  { label: 'research report', pendingReviewer: null, declaration: researchArtifact },
-  { label: 'brief revision', pendingReviewer: null, declaration: briefArtifact },
-  ...councilReviewers.map((reviewer): CycleHistoryEntry => ({
-    label: `${reviewer} council result`,
-    pendingReviewer: reviewer,
-    declaration: councilArtifacts[reviewer],
-  })),
+  artifactEntry('purpose assessment', null, purposeArtifact),
+  artifactEntry('research report', null, researchArtifact),
+  {
+    label: 'brief revision',
+    pendingReviewer: null,
+    declaration: briefArtifact,
+    read: readBriefRevision,
+  },
+  ...councilReviewers.map((reviewer) =>
+    artifactEntry(`${reviewer} council result`, reviewer, councilArtifacts[reviewer]),
+  ),
 ];
 
 /** True when this history line is a concurrent reviewer's pending result. */
@@ -104,7 +137,7 @@ export async function retainedHistoryText(
         if (isPending(entry, plan, { reviewer: options.reviewer, submission, cycle })) {
           continue;
         }
-        if ((await readCycleArtifact(cycleRoot, entry.declaration)) !== null) {
+        if ((await entry.read(cycleRoot)) !== null) {
           lines.push(
             `  - cycle ${String(cycle)} ${entry.label}: ${path.join(
               cycleRoot,
@@ -221,7 +254,7 @@ export async function invokeIdeaRole<Schema extends z.ZodType>(
     operation: settings.operation,
     profile,
     workspace: { root: settings.root },
-    context: settings.context,
+    context: [ideaDefinitionText, settings.context].join('\n\n'),
     idea: settings.taskKey,
   });
   if (!result.ok) {
