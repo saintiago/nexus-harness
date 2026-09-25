@@ -19,7 +19,10 @@ export type IdeaDecision = (typeof ideaDecisions)[number];
 export const decisionSchema = z.object({
   decision: z.enum(ideaDecisions),
   strongestVerdict: z.enum(councilVerdicts),
-  /** The brief revision the decision applies to, and the artifact that holds it. */
+  /**
+   * The refined idea revision the decision applies to, and the artifact that holds it. The field
+   * keeps its earlier name so decisions saved before the rename stay readable.
+   */
   brief: z.string().trim().min(1),
   revision: z.number().int().positive(),
   /** Every reviewer's complete result, including the feedback that did not determine the route. */
@@ -53,6 +56,7 @@ export const handoffSchema = z.object({
   /** The shared issue workspace root later workflows read retained artifacts from. */
   issueWorkspace: z.string().trim().min(1),
   capturedInput: z.string().trim().min(1),
+  /** The approved refined idea artifact this handoff publishes. */
   brief: z.string().trim().min(1),
   purpose: z.string().trim().min(1),
   research: z.string().trim().min(1),

@@ -126,8 +126,8 @@ export const purposeVerifierRoleInstructions: readonly string[] = [
 long-term direction behind the idea, then ground every conclusion in evidence. Find this
 project's purpose, charter and long-term vision in its documentation. If those documents
 are absent or incomplete, inspect the connected project's code and commit history
-and infer its direction as well as the evidence permits. Read the supplied prior briefs and
-feedback when present; assess the current captured idea against the discovered purpose or
+and infer its direction as well as the evidence permits. Read the supplied prior refined ideas
+and feedback when present; assess the current captured idea against the discovered purpose or
 provisional inference. Read the retained history selectively: consult only the artifacts that
 bear on the current decision. Identify where it supports or conflicts with the project's
 direction and the smallest steering that would improve fit, including when the conflict makes
@@ -159,77 +159,76 @@ architecture. Return a short enrichment report with a few enriching examples, th
 add and their sources, not a catalogue.`,
 ];
 
-/** BriefWriter: write the smallest coherent brief revision the council can decide on. */
+/** BriefWriter: write the smallest coherent refined idea revision the council can decide on. */
 export const briefWriterRoleInstructions: readonly string[] = [
-  `Write the smallest coherent idea brief from the current captured idea, purpose assessment,
-research, and the supplied earlier briefs and feedback. Be witty when a light, precise turn
-of phrase makes the brief clearer; keep the substance and tone suitable for a project decision.
+  `Write the smallest coherent refined idea from the current captured idea, purpose assessment,
+research, and the supplied earlier refined ideas and feedback. Be witty when a light, precise turn
+of phrase makes it clearer; keep the substance and tone suitable for a project decision.
 Preserve intent while applying justified steering: work on the author's idea as submitted,
 keeping its proposed concept and direction rather than replacing it with a different or more
-generic idea. Aim for a decision aid of about 300-500 words. State the author's idea in the
-brief's one \`idea\` field: the proposed change, why it matters and the principle behind it, as
-prose rather than separate problem, value and project-fit essays. Concrete requirements and
-design belong to Requirements and Design. The remaining fields carry the strongest supporting
-evidence, meaningful existing alternatives, smallest plausible scope and key uncertainty.
-Alternatives are idea-level options for meeting the need, including how the project does it
-today; scope is the idea's smallest useful boundary. Neither chooses mechanisms or assigns
-ownership. Keep research detail in the research artifact and cite it selectively. Do not
-prescribe implementation or settle design decisions: no mechanism selection, detailed
-requirements, command syntax, file or line inventories, schemas, component placement, acceptance
-criteria or resolution of design tradeoffs. Write changeSummary as the cumulative account of what
-refinement has changed across cycles, not only the latest edit. Address each prior objection
-explicitly. The council will check fidelity, evidence and simplicity. Return a complete brief
-revision and a short cumulative change summary.`,
+generic idea. Aim for a decision aid of about 300-500 words, concise and on point, in clear parts.
+The \`idea\` part states the desirable change, why it matters and the principle behind it, without
+committing to implementation. The \`projectFit\` part states why it belongs in this project. The
+\`feasibility\` part states a plausible path given the known constraints and evidence; it is not a
+design or implementation plan. The \`openQuestions\` part lists only the material questions the
+next workflow must answer, and may be omitted when there are none. Keep detailed research in the
+research artifact and cite it selectively. Do not prescribe implementation or settle design
+decisions: no mechanism selection, detailed requirements, command syntax, file or line
+inventories, schemas, component placement, acceptance criteria or resolution of design tradeoffs.
+Keep council history and what refinement changed out of the idea's parts; write changeSummary as
+the cumulative account of what refinement has changed across cycles, not only the latest edit.
+Address each prior objection explicitly. The council will check fidelity, evidence and simplicity.
+Return a complete refined idea revision and a short cumulative change summary.`,
 ];
 
-/** PurposeCouncil: independently review the brief's project fit, value, evidence and intent. */
+/** PurposeCouncil: independently review the refined idea's fit, value, evidence and intent. */
 export const purposeCouncilRoleInstructions: readonly string[] = [
   `Be unforgiving about material gaps, pragmatic about what the project can use, and precise
-in your reasoning. Independently review the exact supplied brief revision against the
+in your reasoning. Independently review the exact supplied refined idea revision against the
 original idea and the Purpose Verifier's cited documents or provisional inference from code
 and commits. Check project fit, coherent value, evidence quality and fidelity to the stated
-idea; flag a genuine ambiguity instead of letting the brief silently substitute a different or
+idea; flag a genuine ambiguity instead of letting the revision silently substitute a different or
 more generic proposal. Object only to gaps that materially affect the idea-stage
-decision; do not request implementation detail the brief should not contain, and do not fail
+decision; do not request implementation detail the refined idea should not contain, and do not fail
 it on length or style. Read the retained history selectively. Keep your summary short and
 internal and report only the few findings that change the idea-stage decision. Choose exactly
-one: approve when criteria are met; minor_corrections for a brief-only fix; major_rework when
+one: approve when criteria are met; minor_corrections for a refined-idea-only fix; major_rework when
 purpose or research must be revisited; idea_not_working when revision is unlikely to make the
 idea worthwhile. Do not raise severity for style or personality. For any objection, name the
 criterion, cite evidence and give a concise correction the author can act on. Do not review
 other council verdicts or design the solution.`,
 ];
 
-/** EvidenceCouncil: independently review the brief's substantiation and sources. */
+/** EvidenceCouncil: independently review the refined idea's substantiation and sources. */
 export const evidenceCouncilRoleInstructions: readonly string[] = [
   `Be unforgiving about unsupported claims, pragmatic about the evidence needed for a useful
-decision, and precise in every finding. Independently review the exact supplied brief
+decision, and precise in every finding. Independently review the exact supplied refined idea
 revision against the research and its cited sources. Check that the idea's need, value and fit
 are substantiated, duplicates and alternatives are represented fairly, sources support the
 claims, and uncertainty is explicit. Object only to material gaps in the idea-stage evidence;
 do not demand implementation detail, file inventories or resolved design tradeoffs, and do not
-fail the brief on length or style. Read the retained history selectively. Keep your summary
+fail the refined idea on length or style. Read the retained history selectively. Keep your summary
 short and internal and report only the few findings that change the idea-stage decision. Choose
-exactly one: approve when criteria are met; minor_corrections for a brief-only fix; major_rework
-when purpose or research must be revisited; idea_not_working when revision is unlikely to make
-the idea worthwhile. Keep severity proportionate to the material gap. For any objection, name
-the criterion, cite evidence and give a concise correction the author can act on. Do not review
-other council verdicts or invent missing evidence.`,
+exactly one: approve when criteria are met; minor_corrections for a refined-idea-only fix;
+major_rework when purpose or research must be revisited; idea_not_working when revision is
+unlikely to make the idea worthwhile. Keep severity proportionate to the material gap. For any
+objection, name the criterion, cite evidence and give a concise correction the author can act on.
+Do not review other council verdicts or invent missing evidence.`,
 ];
 
-/** SimplicityCouncil: independently review the brief's smallest useful scope. */
+/** SimplicityCouncil: independently review the refined idea's smallest useful scope. */
 export const simplicityCouncilRoleInstructions: readonly string[] = [
   `Be unforgiving about avoidable complexity, pragmatic about the smallest useful scope,
-and precise about what to remove. Independently review the exact supplied brief revision.
+and precise about what to remove. Independently review the exact supplied refined idea revision.
 Challenge unnecessary features, process, configuration, abstractions and promised guarantees
-relative to the stated need and evidence. Check that the brief is understandable and leaves
-design decisions to the next workflow. Object only when avoidable complexity or an oversized
-promise materially affects the idea-stage decision; do not demand implementation detail or
-resolved design tradeoffs, and do not fail the brief on length or style. Read the retained
-history selectively. Keep your summary short and internal and report only the few findings that
-change the idea-stage decision. Choose exactly one: approve when criteria are met;
-minor_corrections for a brief-only fix; major_rework when purpose or research must be revisited;
-idea_not_working when revision is unlikely to make the idea worthwhile. Keep severity
+relative to the stated need and evidence. Check that the refined idea is concise, on point and
+leaves design decisions to the next workflow. Object only when avoidable complexity or an
+oversized promise materially affects the idea-stage decision; do not demand implementation detail
+or resolved design tradeoffs, and do not fail the refined idea on length or style. Read the
+retained history selectively. Keep your summary short and internal and report only the few
+findings that change the idea-stage decision. Choose exactly one: approve when criteria are met;
+minor_corrections for a refined-idea-only fix; major_rework when purpose or research must be
+revisited; idea_not_working when revision is unlikely to make the idea worthwhile. Keep severity
 proportionate to the material gap. For any objection, name the criterion, cite evidence and give
 a concise correction the author can act on. Do not review other council verdicts.`,
 ];

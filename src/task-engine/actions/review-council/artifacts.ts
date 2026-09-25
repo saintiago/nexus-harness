@@ -4,8 +4,8 @@ import type { ArtifactDeclaration } from '../artifacts.js';
 
 /**
  * The three council reviewers' artifact contract. Each reviewer emits exactly one verdict, names
- * the immutable brief revision it reviewed, and names the criterion, evidence and correction of
- * every objection. The verdict precedence is shared by routing and publication.
+ * the immutable refined idea revision it reviewed, and names the criterion, evidence and
+ * correction of every objection. The verdict precedence is shared by routing and publication.
  */
 
 /** The three independent council reviewers. */
@@ -48,10 +48,13 @@ export const councilResponseSchema = z.object({
 
 export type CouncilResponse = z.infer<typeof councilResponseSchema>;
 
-/** The stored council result: the response bound to its reviewer and the brief it reviewed. */
+/** The stored council result: the response bound to its reviewer and the revision it reviewed. */
 export const councilReportSchema = councilResponseSchema.extend({
   reviewer: z.enum(councilReviewers),
-  /** The absolute path of the immutable brief artifact this result reviewed. */
+  /**
+   * The absolute path of the immutable refined idea artifact this result reviewed. The field
+   * keeps its earlier name so results saved before the rename stay readable.
+   */
   brief: z.string().trim().min(1),
   revision: z.number().int().positive(),
 });

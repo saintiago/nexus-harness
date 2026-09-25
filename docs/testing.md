@@ -99,27 +99,29 @@ or assertions that merely reproduce the implementation.
 ## Idea refinement coverage
 
 At the workflow level, use the real XState definition to prove both parallel joins, unanimous
-approval on one brief revision, mixed-verdict precedence, minor and major routes, bounded
+approval on one refined idea revision, mixed-verdict precedence, minor and major routes, bounded
 nonconvergence, and immediate return for an unworkable idea. Verify that each `Idea` entry
 uses the same selection path, reuses a retained workspace, and invokes StartIdeaRound to plan the
 initial, minor and major cycles from history without applying StartDevRound's repair policy.
 Verify that every invocation receives the current captured idea and available saved history,
-including earlier briefs and feedback on resubmission. Verify that each of the six role invocations
-receives the shared definition of *idea*, the separate idea-stage guidance and the shared
-communication rule exactly once each, ahead of its role-specific context. When present, the
+including earlier refined ideas and feedback on resubmission. Verify that each of the six role
+invocations receives the shared definition of *idea*, the separate idea-stage guidance and the
+shared communication rule exactly once each, ahead of its role-specific context. When present, the
 connected project's root `AGENTS.md` is included too. Council reviewers cannot read one another's
 pending verdicts, and each council invocation receives the shared objection standard: an objection
 must improve the idea by sharpening, narrowing or correcting it, by naming a genuine ambiguity in
 it, or by showing that it should not proceed, and it never silently replaces the author's proposal.
 An unresolved design choice is a blocker only when it changes the idea-stage decision.
-Verify that a new brief states the author's idea in its one `idea` field and that a retained brief
-written before that field is still read — as history for the next revision and as the one idea the
-publication presents — without rewriting the retained artifact or interrupting retained state.
+Verify that a new revision states the author's idea in the refined idea's `idea`, `projectFit`,
+`feasibility` and optional `openQuestions` parts and that a retained brief written at its earlier
+path, in either earlier shape, is still read — as history for the next revision and as the refined
+idea the publication presents — without rewriting the retained artifact or interrupting retained
+state.
 Verify that purpose documents are discovered without configured references and that absent
 documents produce cited, provisional inference from code and commits rather than an execution
 fault. At the action boundary, verify producer-owned artifacts,
-council binding to the current brief artifact, one Jira issue/comment capture per run, and the
-configured submitted-to-active, active-to-approved, active-to-waiting-for-feedback and
+council binding to the current refined idea artifact, one Jira issue/comment capture per run, and
+the configured submitted-to-active, active-to-approved, active-to-waiting-for-feedback and
 waiting-for-feedback-to-submitted transitions, including capture of the complete relevant
 conversation on every entry. Verify that publication uses the captured input without a later
 Jira read, only human-facing feedback is posted to Jira, and internal feedback stays in

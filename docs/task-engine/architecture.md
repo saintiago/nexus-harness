@@ -110,8 +110,8 @@ and never declares task success. [Application](../application.md#execution-log) 
 ### Action outcome events
 
 The following fields describe finite delivery action outcomes. Idea refinement actions
-preserve the same saved-artifact reference principle while using an idea key, cycle and brief
-revision where relevant, as defined in its specification.
+preserve the same saved-artifact reference principle while using an idea key, cycle and refined
+idea revision where relevant, as defined in its specification.
 
 An action publishes one outcome event after it finishes writing the durable output for the outcome it
 returns. Its type is `outcome`, its source is the producing action, and its data is:
