@@ -20,7 +20,10 @@ import {
   ideaCycleDirectory,
   ideaSubmissionInputFile,
 } from '../src/task-engine/actions/idea-storage.js';
-import { ideaDefinitionText } from '../src/task-engine/actions/idea-context.js';
+import {
+  ideaDefinitionText,
+  projectGuidanceInstruction,
+} from '../src/task-engine/actions/idea-context.js';
 import {
   decisionArtifact,
   ideaHandoffFile,
@@ -560,6 +563,8 @@ describe('idea role actions', () => {
         context.indexOf(ideaDefinitionText),
       );
       expect(context).toContain('Prefer the smallest change.');
+      // The project guidance arrives once, with the project's own AGENTS.md text.
+      expect(context.split(projectGuidanceInstruction)).toHaveLength(2);
       // The one shared objection standard reaches every council invocation and no other role.
       expect(context.split('ask how the objection improves the idea')).toHaveLength(
         role.endsWith('-council') ? 2 : 1,

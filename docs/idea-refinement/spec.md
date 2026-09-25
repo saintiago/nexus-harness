@@ -1,6 +1,10 @@
 # Idea refinement workflow
 
-This specification defines a workflow for any connected project, separate from finite delivery.
+This specification documents Nexus's design and behavior for a workflow any connected project can
+run, separate from finite delivery. It is authoritative for implementing Nexus and is relevant
+evidence for ideas about this workflow, but it is not an operating guide for idea refinement roles:
+each run's roles follow their supplied role instructions, the captured idea, artifacts and relevant
+project evidence.
 
 ## Purpose
 
@@ -167,9 +171,11 @@ from Behavior step 5 the same way. The prompts below are required role instructi
 supplies the current captured idea, the saved workspace artifacts as readable references with an
 instruction to read them selectively, the current cycle's inputs directly, project sources,
 revision/cycle and output schema. Every invocation also receives the connected project's root
-`AGENTS.md` content when present. Agents follow that guidance and the project documents it
-references; a missing `AGENTS.md` does not block refinement. Agent output is parsed and checked by
-the owning action; a role's claim never counts as a source status update. Profiles may use
+`AGENTS.md` content when present. Agents follow its applicable instructions and treat the
+architecture and project documents it links as evidence to consult only when relevant to the
+current idea: they do not open every link by default and never treat architecture specifications as
+role instructions. A missing `AGENTS.md` does not block refinement. Agent output is parsed and
+checked by the owning action; a role's claim never counts as a source status update. Profiles may use
 different models or tools, but all six are separately attributable invocations. Purpose and
 research must be able to run concurrently. Council roles must not read one another's pending
 outputs.
