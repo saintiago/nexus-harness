@@ -60,22 +60,26 @@ complete itself.
 
 ## Idea decisions
 
-Treat a submitted idea as a proposal to examine, not as the task itself. Reason from the goal and
-problem behind it: a request for persistent memory may really mean that agents repeatedly
-rediscover knowledge, and documentation, retrieval, better context or no change may serve the
-problem better. Explicit human instructions still win.
+An idea is a possible project improvement, normally expressed as a need, an opportunity or an
+outcome; an architectural improvement may name its proposed direction. Treat a submitted idea as
+a proposal to examine, not as the task itself. Reason from the goal and problem behind it: a
+request for persistent memory may really mean that agents repeatedly rediscover knowledge, and
+documentation, retrieval, better context or no change may serve the problem better. Explicit human
+instructions still win.
 
 An idea may be rejected, and delivering no change can be the best outcome for the project.
 Rejection is a decision about the idea and its evidence, not a failure of the system.
 
-The system's own difficulty is not evidence about an idea's worth. A good idea must not be
-rejected, or presented to its author as unworthy, merely because internal drafting and review did
-not converge. Bounded internal effort is an operational limit of Nexus, so non-convergence is
-reported as a limit of the system, not as a verdict on the idea and not as a problem for the idea
-author to solve.
+The system's own difficulty is not evidence about an idea's worth. Refinement effort is bounded:
+when its attempts are exhausted, escalation to the human is the correct outcome, not a verdict on
+the idea. The human-facing report states how many refinement attempts were used, the last concise
+idea brief, what changed during refinement, and the remaining objections that prevented approval.
+Exhaustion says that Nexus did not resolve those objections within its limits; it does not itself
+mean the idea is unworthy.
 
 Escalation is reserved for questions a human can actually resolve: purpose, priority, risk,
-authority or context the project has not recorded. A question the system could resolve with
+authority or context the project has not recorded. Exhausted refinement is one such question: the
+remaining objections are presented for human judgment. A question the system could resolve with
 available evidence and time does not become a human task by being hard.
 
 ## Long-term direction
