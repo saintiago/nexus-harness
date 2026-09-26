@@ -105,7 +105,7 @@ success. Agent messages and tool
 activity are absent from the main durable event file; they use the per-invocation activity channel
 for logging and live presentation. A finished event means the invocation ended, including failure,
 and never declares task success. [Application](../application.md#execution-log) owns storage; the
-[OperatorInterface](../operator-interface.md#agent-activity-pane) owns rendering.
+[OperatorInterface](../operator-interface.md#agent-activity-panes) owns rendering.
 
 ### Action outcome events
 
@@ -194,10 +194,10 @@ verify: {
 The complete finite workflow is defined in [finite-delivery.ts](../../workflows/finite-delivery.ts).
 Queue loops, round and repair loops and waits are workflow choices; the runner only follows
 transitions. The [idea refinement workflow](../idea-refinement/spec.md) expresses parallel
-regions, joins, verdict precedence and bounded correction loops in XState. It also invokes
-StartIdeaRound for each council cycle, using an idea-specific role plan from the retained workspace;
-XState still chooses minor and major routes. Operations retain their artifact and source-update
-responsibilities.
+regions for research and project guidance, joins, and bounded editor/challenger exchanges in XState.
+It invokes StartIdeaRound for each conversation cycle using an idea-specific role plan from retained
+history. XState routes approval, discussion, focused contributions and returns to the author.
+Operations retain their artifact and source-update responsibilities.
 
 The finite workflow routes the initial prepared workspace and failed Develop, failed Verify
 and changesRequested Review to StartDevRound. StartDevRound returns started for another round or exhausted
